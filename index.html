@@ -801,10 +801,9 @@ async function loadStock() {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>Cargando...</div>';
   try {
     allStock = await api('stock.listar');
-    // llenar select categorías
-    const cats = [...new Set(allStock.map(r=>r.Categoria))];
+    const cats = [...new Set(allStock.map(r=>r.Prenda||r.Categoria).filter(Boolean))].sort();
     const sel  = document.getElementById('filtro-cat');
-    sel.innerHTML = '<option value="">Todas las categorías</option>' +
+    sel.innerHTML = '<option value="">Todas las prendas</option>' +
       cats.map(c=>`<option>${c}</option>`).join('');
     renderStockTable(allStock);
   } catch(e) { el.innerHTML=`<div class="empty">Error: ${e.message}</div>`; }
@@ -815,31 +814,64 @@ function filtrarStock() {
   renderStockTable(cat ? allStock.filter(r=>r.Categoria===cat) : allStock);
 }
 
+let stockVista = 'stock';
+function setStockVista(v, el) {
+  stockVista = v;
+  document.querySelectorAll('.stock-vista-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  renderStockTable(allStock.filter(r=>{
+    const cat = document.getElementById('filtro-cat').value;
+    return !cat || r.Categoria===cat || r.Prenda===cat;
+  }));
+}
+
 function renderStockTable(rows) {
   const el = document.getElementById('stock-table');
   if (!rows.length) { el.innerHTML='<div class="empty">Sin datos de stock</div>'; return; }
+
+  const prefix = stockVista==='conf'?'Conf_':stockVista==='ventas'?'Ventas_':stockVista==='alerta'?'AlertaRep_':'Stock_';
+  const esAlerta = stockVista==='alerta';
+
   el.innerHTML = `
+  <div style="display:flex;gap:6px;padding:14px 16px 0;flex-wrap:wrap">
+    <button class="btn btn-ghost btn-sm stock-vista-btn ${stockVista==='stock'?'active':''}" onclick="setStockVista('stock',this)">Stock</button>
+    <button class="btn btn-ghost btn-sm stock-vista-btn ${stockVista==='conf'?'active':''}" onclick="setStockVista('conf',this)">Confección</button>
+    <button class="btn btn-ghost btn-sm stock-vista-btn ${stockVista==='ventas'?'active':''}" onclick="setStockVista('ventas',this)">Ventas</button>
+    <button class="btn btn-ghost btn-sm stock-vista-btn ${stockVista==='alerta'?'active':''}" onclick="setStockVista('alerta',this)">Alertas rep.</button>
+  </div>
   <div class="table-wrap">
   <table class="table stock-table">
     <thead>
       <tr>
-        <th>Categoría</th><th>Modelo</th><th>Color</th>
+        <th>Prenda</th><th>Modelo</th><th>Color</th><th>Alerta</th>
         ${TALLAS.map(t=>`<th style="text-align:center">${t}</th>`).join('')}
         <th style="text-align:center">Total</th>
       </tr>
     </thead>
     <tbody>
     ${rows.map(r=>{
+      const alerta = r['Alerta']||'';
+      const alertaBadge = alerta.includes('urg') ? `<span class="badge badge-red" style="font-size:10px">${alerta}</span>`
+        : alerta.includes('Rep') ? `<span class="badge badge-amber" style="font-size:10px">${alerta}</span>`
+        : alerta ? `<span class="badge badge-gray" style="font-size:10px">${alerta}</span>` : '—';
+
       const tallasCells = TALLAS.map(t=>{
-        const v = parseInt(r[t])||0;
+        if (esAlerta) {
+          const a = r[prefix+t]||'';
+          const cls = a.includes('urg')?'s-neg':a.includes('Reponer')&&!a.includes('No')?'s-low':a==='Ok'?'s-high':a.includes('No')?'s-zero':'s-mid';
+          return `<td style="text-align:center"><span class="stock-cell ${cls}" style="font-size:10px;min-width:60px">${a||'—'}</span></td>`;
+        }
+        const v = parseInt(r[prefix+t])||0;
         const cls = v<0?'s-neg':v===0?'s-zero':v<=5?'s-low':v<=20?'s-mid':'s-high';
         return `<td style="text-align:center"><span class="stock-cell ${cls}">${v}</span></td>`;
       }).join('');
-      const total = TALLAS.reduce((s,t)=>s+(parseInt(r[t])||0),0);
+
+      const total = esAlerta ? '—' : TALLAS.reduce((s,t)=>s+(parseInt(r[prefix+t])||0),0);
       return `<tr>
-        <td style="color:var(--muted);font-size:12px">${r.Categoria}</td>
-        <td style="font-weight:500">${r.Modelo}</td>
-        <td style="color:var(--muted);font-size:12px">${r.Color}</td>
+        <td style="color:var(--muted);font-size:12px">${r.Prenda||r.Categoria||''}</td>
+        <td style="font-weight:500">${r.Modelo||''}</td>
+        <td style="color:var(--muted);font-size:12px">${r.Color||''}</td>
+        <td>${alertaBadge}</td>
         ${tallasCells}
         <td style="text-align:center;font-weight:600;color:var(--muted)">${total}</td>
       </tr>`;
