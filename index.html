@@ -896,6 +896,10 @@ function npBqUpdLabel() {
 }
 
 // ── FILTRO LOCAL INSTANTÁNEO ──────────────────────────────
+// ── Estado de búsqueda backend en curso (evitar llamadas duplicadas)
+let NP_bqTimer = null;
+let NP_bqBackendTimer = null;
+
 function npBqFiltrar(q) {
   const resEl = document.getElementById('np-bresultados');
   if (!q || q.length < 2) { resEl.innerHTML = ''; return; }
@@ -903,75 +907,152 @@ function npBqFiltrar(q) {
   const tipo = document.getElementById('np-btipo').value;
 
   if (NP.modo === 'existente') {
-    if (!NP.idxReady || !NP.idxData) {
-      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">Cargando clientes...</div>';
-      return;
-    }
-    const ql = q.toLowerCase();
-    let resultados;
-    if (tipo === 'nombre') {
-      // Coincidencia con cada palabra del query
-      const words = ql.split(/\s+/).filter(Boolean);
-      resultados = NP.idxData.filter(c => words.every(w => c.n.toLowerCase().includes(w)));
-    } else if (tipo === 'telefono') {
-      resultados = NP.idxData.filter(c => c.t && c.t.includes(q));
-    } else if (tipo === 'dni') {
-      resultados = NP.idxData.filter(c => c.d && c.d.includes(q));
+    // 1. Buscar primero en el JSON local (instantáneo)
+    const locales = npBuscarLocal(q, tipo);
+
+    if (locales.length > 0) {
+      // Encontró en JSON — mostrar y cancelar cualquier búsqueda backend pendiente
+      clearTimeout(NP_bqBackendTimer);
+      npRenderClientes(locales.slice(0, 8), resEl);
+    } else if (!NP.idxReady) {
+      // JSON todavía cargando — mostrar spinner y buscar en backend directamente
+      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">⏳ Cargando índice...</div>';
+      clearTimeout(NP_bqBackendTimer);
+      NP_bqBackendTimer = setTimeout(() => npBqBackend(q, tipo, resEl), 300);
     } else {
-      resultados = [];
+      // JSON cargado pero sin resultados → buscar en backend (clientes nuevos)
+      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">🔍 Buscando clientes recientes...</div>';
+      clearTimeout(NP_bqBackendTimer);
+      NP_bqBackendTimer = setTimeout(() => npBqBackend(q, tipo, resEl), 300);
     }
-    npRenderClientes(resultados.slice(0, 8), resEl);
 
   } else if (NP.modo === 'agregar') {
-    if (!NP.pendData) {
-      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">Cargando pedidos pendientes...</div>';
-      return;
-    }
-
     if (tipo === 'nropedido') {
-      // Buscar por número exacto de pedido
+      // Buscar por número exacto de pedido en pendientes
+      if (!NP.pendData) {
+        resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">Cargando pedidos pendientes...</div>';
+        return;
+      }
       const entry = Object.values(NP.pendData).find(p => String(p.nro) === q.trim());
       if (entry) npRenderPedido(entry, resEl);
-      else if (q.length >= 3) resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontró el pedido #'+esc(q)+'</div>';
+      else if (q.length >= 4) resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontró el pedido #'+esc(q)+'</div>';
       return;
     }
 
-    // Buscar en el índice de clientes y cruzar con pendientes
-    if (!NP.idxReady || !NP.idxData) {
-      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">Cargando...</div>';
-      return;
-    }
-    const ql = q.toLowerCase();
-    let candidatos;
-    if (tipo === 'nombre') {
-      const words = ql.split(/\s+/).filter(Boolean);
-      candidatos = NP.idxData.filter(c => words.every(w => c.n.toLowerCase().includes(w)));
-    } else if (tipo === 'telefono') {
-      candidatos = NP.idxData.filter(c => c.t && c.t.includes(q));
-    } else if (tipo === 'dni') {
-      candidatos = NP.idxData.filter(c => c.d && c.d.includes(q));
-    } else {
-      candidatos = [];
+    // Buscar candidatos en JSON local
+    const candidatos = npBuscarLocal(q, tipo);
+
+    // Cruzar con pedidos pendientes
+    if (NP.pendData) {
+      let encontrado = null;
+      for (const c of candidatos) {
+        const key = c.n.toLowerCase();
+        if (NP.pendData[key])  { encontrado = NP.pendData[key]; break; }
+        if (c.t && NP.pendData[c.t]) { encontrado = NP.pendData[c.t]; break; }
+      }
+      if (encontrado) { npRenderPedido(encontrado, resEl); return; }
     }
 
-    // Para cada candidato, ver si tiene pedido pendiente
-    let encontrado = null;
-    for (const c of candidatos) {
-      const key = c.n.toLowerCase();
-      if (NP.pendData[key]) { encontrado = NP.pendData[key]; break; }
-      // También buscar por teléfono
-      if (c.t && NP.pendData[c.t]) { encontrado = NP.pendData[c.t]; break; }
-    }
-
-    if (encontrado) {
-      npRenderPedido(encontrado, resEl);
-    } else if (candidatos.length > 0) {
-      resEl.innerHTML = '<div style="background:#451a0320;border:1px solid var(--am);border-radius:var(--r);padding:12px;font-size:12px"><strong style="color:var(--am)">Sin pedidos pendientes</strong><br><span style="color:var(--mu)">'+esc(candidatos[0].n)+' no tiene pedidos activos para agregar prendas.</span></div>';
+    if (candidatos.length > 0) {
+      // Encontró al cliente pero no tiene pedidos pendientes
+      resEl.innerHTML = '<div style="background:#451a0320;border:1px solid var(--am);border-radius:var(--r);padding:12px;font-size:12px">'
+        + '<strong style="color:var(--am)">Sin pedidos pendientes</strong><br>'
+        + '<span style="color:var(--mu)">'+esc(candidatos[0].n)+' no tiene pedidos activos para agregar prendas.</span></div>';
     } else if (q.length >= 3) {
-      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontraron clientes con ese criterio.</div>';
+      // No encontró en JSON → buscar en backend (cliente nuevo)
+      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">🔍 Buscando...</div>';
+      clearTimeout(NP_bqBackendTimer);
+      NP_bqBackendTimer = setTimeout(() => npBqBackendAgregar(q, tipo, resEl), 300);
     }
   }
 }
+
+// Búsqueda local en el índice JSON
+function npBuscarLocal(q, tipo) {
+  if (!NP.idxData || !NP.idxData.length) return [];
+  const ql = q.toLowerCase();
+  if (tipo === 'nombre') {
+    const words = ql.split(/\s+/).filter(Boolean);
+    return NP.idxData.filter(c => words.every(w => c.n.toLowerCase().includes(w)));
+  } else if (tipo === 'telefono') {
+    return NP.idxData.filter(c => c.t && c.t.includes(q));
+  } else if (tipo === 'dni') {
+    return NP.idxData.filter(c => c.d && c.d.includes(q));
+  }
+  return [];
+}
+
+// Búsqueda en backend para clientes nuevos (modo existente)
+async function npBqBackend(q, tipo, resEl) {
+  try {
+    const data = await api('clientes.listar', {q, limit: 8});
+    // Filtrar según tipo
+    const ql = q.toLowerCase();
+    let filtrados = data;
+    if (tipo === 'telefono') filtrados = data.filter(c => String(c.Telefono||'').includes(q));
+    else if (tipo === 'dni')  filtrados = data.filter(c => String(c.DNI||'').includes(q));
+    else {
+      const words = ql.split(/\s+/).filter(Boolean);
+      filtrados = data.filter(c => words.every(w => (c.Nombre||'').toLowerCase().includes(w)));
+    }
+
+    if (!filtrados.length) {
+      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontraron clientes.</div>';
+      return;
+    }
+
+    // Convertir al formato del índice local y mostrar
+    const convertidos = filtrados.map(c => ({
+      n: c.Nombre||'', t: c.Telefono||'', d: c.DNI||'',
+      dir: c.Direccion||'', dst: c.Distrito||'',
+      prv: c.Provincia||'', reg: c.Region||'',
+      ref: c.Referencia||'', can: c.Canal||'',
+    }));
+
+    // Agregar al índice local para futuras búsquedas en esta sesión
+    if (NP.idxData) {
+      convertidos.forEach(c => {
+        const existe = NP.idxData.find(x => x.n.toLowerCase() === c.n.toLowerCase());
+        if (!existe) NP.idxData.push(c);
+      });
+    }
+
+    npRenderClientes(convertidos.slice(0, 8), resEl);
+  } catch(e) {
+    resEl.innerHTML = '<div style="font-size:12px;color:var(--rd)">Error: '+esc(e.message)+'</div>';
+  }
+}
+
+// Búsqueda en backend para pedidos pendientes (modo agregar, cliente nuevo)
+async function npBqBackendAgregar(q, tipo, resEl) {
+  try {
+    const data = await api('clientes.listar', {q, limit: 5});
+    const ql = q.toLowerCase();
+    let filtrados = data;
+    if (tipo === 'telefono') filtrados = data.filter(c => String(c.Telefono||'').includes(q));
+    else if (tipo === 'dni')  filtrados = data.filter(c => String(c.DNI||'').includes(q));
+
+    if (!filtrados.length) {
+      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontraron clientes.</div>';
+      return;
+    }
+    // Cruzar con pendientes
+    if (NP.pendData) {
+      for (const c of filtrados) {
+        const key = (c.Nombre||'').toLowerCase();
+        const tel  = c.Telefono||'';
+        if (NP.pendData[key])  { npRenderPedido(NP.pendData[key], resEl); return; }
+        if (NP.pendData[tel])  { npRenderPedido(NP.pendData[tel], resEl); return; }
+      }
+    }
+    resEl.innerHTML = '<div style="background:#451a0320;border:1px solid var(--am);border-radius:var(--r);padding:12px;font-size:12px">'
+      + '<strong style="color:var(--am)">Sin pedidos pendientes</strong><br>'
+      + '<span style="color:var(--mu)">'+esc(filtrados[0].Nombre||'—')+' no tiene pedidos activos.</span></div>';
+  } catch(e) {
+    resEl.innerHTML = '<div style="font-size:12px;color:var(--rd)">Error: '+esc(e.message)+'</div>';
+  }
+}
+
 
 // ── RENDER RESULTADOS ─────────────────────────────────────
 function npRenderClientes(clientes, resEl) {
