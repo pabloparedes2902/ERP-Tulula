@@ -1035,7 +1035,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
       <div id="cfg-backup-wrap" class="cfg-panel" style="display:none">
         <div class="card" style="padding:14px;margin-bottom:12px">
           <h3 style="margin:0 0 6px 0;font-size:15px">Backup automático semanal</h3>
-          <p style="font-size:12px;color:var(--mu);margin:0 0 14px 0">Los backups se ejecutan automáticamente <b>los lunes a las 6:00 AM</b>. Se conservan las últimas <b>8 semanas</b>. Los backups anteriores se mueven a la papelera de Drive.</p>
+          <p style="font-size:12px;color:var(--mu);margin:0 0 14px 0">Los backups se ejecutan automáticamente <b>todos los días a las 5:00 AM</b>. Se conservan las últimas <b>8 fechas</b>. Los backups anteriores se mueven a la papelera de Drive.</p>
           <div style="display:flex;flex-direction:column;gap:12px">
             <div>
               <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Carpeta Drive destino</label>
@@ -1965,10 +1965,14 @@ async function api(action, params) {
   }, action);
 }
 async function apiSend(action, body) {
+  // 13/07 ANTI-DUPLICADO: id único por operación. Los reintentos automáticos de red
+  // llevan el MISMO id → si el servidor ya la procesó (y la respuesta se perdió en el
+  // camino), NO la repite: re-entrega la misma respuesta. Evita pagos duplicados.
+  const _reqId = 'rq_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
   return _fetchJson(() => {
     const u = new URL(API);
     u.searchParams.set('action', action);
-    u.searchParams.set('data', JSON.stringify(body));
+    u.searchParams.set('data', JSON.stringify(Object.assign({}, body, { _reqId: _reqId })));
     if (SESSION_TOKEN) u.searchParams.set('token', SESSION_TOKEN);
     return { url: u.toString(), opts: undefined };
   }, action);
@@ -1976,13 +1980,14 @@ async function apiSend(action, body) {
 // POST con Content-Type text/plain → no dispara preflight CORS en Apps Script.
 // Usar para payloads grandes (ej. imágenes base64) o cuando GET falla por límite de URL.
 async function apiPost(action, body) {
+  const _reqId = 'rq_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10); // 13/07 anti-duplicado (mismo id en todos los reintentos)
   return _fetchJson(() => {
     const u = new URL(API);
     u.searchParams.set('action', action);
     return { url: u.toString(), opts: {
       method: 'POST',
       headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      body: JSON.stringify(Object.assign({}, body, {action: action, token: SESSION_TOKEN})),
+      body: JSON.stringify(Object.assign({}, body, {action: action, token: SESSION_TOKEN, _reqId: _reqId})),
       redirect: 'follow',
     } };
   }, action);
@@ -9161,8 +9166,57 @@ function _npBuildProvisional(job, provNro) {
 let _npSaveQueue = [];
 let _npSaveActive = false;
 
+// ── 13/07 COLA PERSISTENTE: la cola vive también en localStorage. Si la pestaña se
+// cierra o recarga con guardados pendientes, al volver a abrir el ERP se ofrece
+// reintentarlos (antes: se perdían en silencio — el pedido nunca llegaba a la hoja).
+const _NPQ_LS_KEY = 'np_save_queue_v1';
+function _npQueuePersist() {
+  try {
+    if (!_npSaveQueue.length) { localStorage.removeItem(_NPQ_LS_KEY); return; }
+    try { localStorage.setItem(_NPQ_LS_KEY, JSON.stringify(_npSaveQueue)); }
+    catch (e) {
+      // Cuota llena (vouchers pesados): guardar SIN vouchers — el pedido importa más
+      // que la foto (la constancia se puede re-adjuntar después desde el detalle).
+      try {
+        const light = _npSaveQueue.map(j => Object.assign({}, j, { pagosData: (j.pagosData || []).map(p => Object.assign({}, p, { vouchers: [] })) }));
+        localStorage.setItem(_NPQ_LS_KEY, JSON.stringify(light));
+      } catch (e2) {}
+    }
+  } catch (e) {}
+}
+function _npQueueRestore() {
+  try {
+    const raw = localStorage.getItem(_NPQ_LS_KEY); if (!raw) return;
+    const jobs = JSON.parse(raw);
+    if (!Array.isArray(jobs) || !jobs.length) { localStorage.removeItem(_NPQ_LS_KEY); return; }
+    const bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--bg2);color:var(--tx);border:2px solid var(--ac2);padding:12px 16px;border-radius:12px;z-index:900;box-shadow:0 6px 24px rgba(0,0,0,.5);display:flex;gap:12px;align-items:center;font-size:13px;max-width:92vw';
+    bar.innerHTML = '<span>⚠ Quedaron <b>' + jobs.length + '</b> guardado(s) sin terminar de la sesión anterior.</span>';
+    const b1 = document.createElement('button');
+    b1.textContent = 'Reintentar ahora';
+    b1.style.cssText = 'background:var(--ac2);color:#fff;border:none;padding:7px 14px;border-radius:8px;cursor:pointer;font-weight:700;font-family:inherit;font-size:13px';
+    const b2 = document.createElement('button');
+    b2.textContent = 'Descartar';
+    b2.style.cssText = 'background:transparent;color:var(--mu);border:1px solid var(--bd);padding:7px 14px;border-radius:8px;cursor:pointer;font-family:inherit;font-size:13px';
+    b1.onclick = () => { bar.remove(); localStorage.removeItem(_NPQ_LS_KEY); jobs.forEach(j => _npEnqueueSave(j)); };
+    b2.onclick = () => { bar.remove(); localStorage.removeItem(_NPQ_LS_KEY); };
+    bar.appendChild(b1); bar.appendChild(b2);
+    document.body.appendChild(bar);
+  } catch (e) {}
+}
+// Si intentan cerrar/recargar con guardados en curso: persistir + aviso del navegador.
+window.addEventListener('beforeunload', function (ev) {
+  if (_npSaveQueue.length || _npSaveActive) {
+    _npQueuePersist();
+    ev.preventDefault();
+    ev.returnValue = 'Hay pedidos guardándose todavía.';
+    return ev.returnValue;
+  }
+});
+
 function _npEnqueueSave(job) {
   _npSaveQueue.push(job);
+  _npQueuePersist();
   _npUpdateSaveIndicator();
   _npProcessSaveQueue();
 }
@@ -9175,6 +9229,7 @@ async function _npProcessSaveQueue() {
     try {
       const nroReal = await _npExecuteSave(job);
       _npSaveQueue.shift(); // éxito → quitar de la cola
+      _npQueuePersist();
       _npUpdateSaveIndicator();
       // PERF v12 — convertir el provisional en REAL al instante (sin esperar al polling).
       try {
@@ -9387,6 +9442,7 @@ function _npShowSaveError(job, err) {
   o.querySelector('#np-err-descartar').addEventListener('click', () => {
     o.remove();
     _npSaveQueue.shift(); // descartar el job fallido
+    _npQueuePersist();
     _npUpdateSaveIndicator();
     _npProcessSaveQueue(); // seguir con los demás
   });
@@ -18539,6 +18595,7 @@ function bootApp(){
   if(_rb){ const _m={'Administrador':'ADMIN','Logistica':'LOGISTICA','Ventas':'VENTAS'}; _rb.textContent = _m[MY_ROLE] || (MY_ROLE||'').toUpperCase(); }
   const _lb = document.getElementById('btn-logout'); if(_lb && !_lb._wired){ _lb._wired = true; _lb.addEventListener('click', logout); }
   _applyRoleUI();
+  try{ _npQueueRestore(); }catch(e){} // 13/07: ofrecer reintentar guardados que quedaron pendientes
   if(MY_ROLE === 'Ventas') _initVentasGuard();   // guardián read-only en todos los módulos
   // Restaurar el ÚLTIMO módulo visitado (persistido en localStorage). Si no hay historial
   // o el módulo está oculto para el rol, el default es Pedidos (decisión Pablo).
