@@ -496,7 +496,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         </div>
         <!-- 5. Dirección + 6. Distrito -->
         <div class="fr">
-          <div class="fg"><label>Dirección</label><input id="np-dir" type="text" placeholder="Calle, número..."></div>
+          <div class="fg"><label style="display:flex;justify-content:space-between;align-items:center">Dirección<span style="font-weight:400;font-size:11px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;color:var(--ac)"><input type="checkbox" id="np-recojo" onchange="_npRecojoToggle()" style="cursor:pointer;margin:0"> RECOJO</span></label><input id="np-dir" type="text" placeholder="Calle, número..."></div>
           <div class="fg"><label>Distrito</label><div class="aw"><input id="np-dist" type="text" placeholder="Escribe un distrito..." autocomplete="off"><div id="np-dlst" class="acl"></div></div></div>
         </div>
         <!-- 7. Provincia + 8. Región -->
@@ -8875,6 +8875,22 @@ async function npGuardar() {
   }
   vbox.style.display = 'none';
 
+  // (c) Aviso si el pago no cuadra con el total del pedido (solo si hay pagos registrados).
+  if (pagos.length) {
+    const _sub = [...document.querySelectorAll('#np-prendas .pbox')].reduce((s, d) => {
+      const nom = d.querySelector('.np-prenda') ? d.querySelector('.np-prenda').value.trim() : '';
+      if (!nom) return s;
+      const prec = parseFloat(d.querySelector('.np-prec') ? d.querySelector('.np-prec').value : '') || 0;
+      const cant = parseFloat(d.querySelector('.np-cant') ? d.querySelector('.np-cant').value : '') || 1;
+      return s + prec * cant;
+    }, 0);
+    const _env = parseFloat(document.getElementById('np-env').value) || 0;
+    const _pag = [...document.querySelectorAll('#np-pagos .np-pm')].reduce((s, i) => s + (parseFloat(i.value) || 0), 0);
+    if (Math.abs((_sub + _env) - _pag) > 0.01) {
+      if (!await npConfirm('Hay una diferencia entre el monto pagado y el monto del pedido, ¿aún así quiere confirmar el pedido?')) return;
+    }
+  }
+
   // FIX (bug "Nombre es obligatorio"): capturar la IDENTIDAD del cliente AHORA, recién validada,
   // ANTES de los modales async (pedidos vigentes / stock) que esperan al usuario. Si el formulario
   // cambia o se reinicia durante esas esperas, el job igual conserva el nombre correcto.
@@ -9518,6 +9534,18 @@ function _npShowSaveError(job, err) {
   });
 }
 
+// RECOJO: al activar, bloquea y limpia Dirección/Distrito/Provincia/Región y pone Courier = RECOJO.
+function _npRecojoToggle() {
+  const on = !!(document.getElementById('np-recojo') || {}).checked;
+  ['np-dir', 'np-dist', 'np-prov', 'np-reg'].forEach(id => {
+    const el = document.getElementById(id); if (!el) return;
+    if (on) { el.value = ''; el.disabled = true; el.style.opacity = '0.5'; }
+    else { el.disabled = false; el.style.opacity = ''; }
+  });
+  const cour = document.getElementById('np-courier');
+  if (cour && on && [...cour.options].some(o => o.value === 'RECOJO')) cour.value = 'RECOJO';
+}
+
 function npConfirm(msg) {
   return new Promise(resolve => {
     const o = document.createElement('div');
@@ -9538,6 +9566,14 @@ function npValidar() {
   // Al menos una prenda con nombre
   const prendasValidas = [...document.querySelectorAll('#np-prendas .np-prenda')].filter(i => i.value.trim());
   if (!prendasValidas.length) errs.push('Debes ingresar al menos una Prenda');
+  // Precio obligatorio: toda prenda con nombre debe tener precio > 0.
+  const _algunaSinPrecio = [...document.querySelectorAll('#np-prendas .pbox')].some(d => {
+    const nom = d.querySelector('.np-prenda') ? d.querySelector('.np-prenda').value.trim() : '';
+    if (!nom) return false;
+    const prec = parseFloat(d.querySelector('.np-prec') ? d.querySelector('.np-prec').value : '') || 0;
+    return prec <= 0;
+  });
+  if (_algunaSinPrecio) errs.push('Es obligatorio asignar un precio a todas las prendas');
   const emailVal = (document.getElementById('np-email').value || '').trim();
   if (emailVal && !emailVal.includes('@')) errs.push('El correo electrónico debe contener el signo @');
   const dtp = document.getElementById('np-dtp').value;
@@ -9554,6 +9590,8 @@ function npValidar() {
 }
 
 function npLimpiar() {
+  // RECOJO: reset (desmarca y reactiva los campos de dirección).
+  const _rc = document.getElementById('np-recojo'); if (_rc) { _rc.checked = false; _npRecojoToggle(); }
   const adEl=document.getElementById('np-autodetect'); if(adEl){adEl.style.display='none';adEl.innerHTML='';}
   const sbEl=document.getElementById('np-saldos-banner'); if(sbEl){sbEl.style.display='none';sbEl.innerHTML='';}
   // Reset estado de saldos
