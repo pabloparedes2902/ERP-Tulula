@@ -10294,6 +10294,19 @@ function _abrirColorPicker(colorName, onApplied){
 }
 
 let stData=null, stCatActiva='', stOrden='reciente', stFiltroTxt='';
+// Búsqueda en tiempo real (Stock + Inventario): cada palabra escrita debe aparecer en
+// Categoría, Prenda, Diseño o Color (sin importar tildes ni mayúsculas).
+// Ej: "short malva verde" → prendas SHORT del diseño MALVA en color VERDE.
+const _stNoAcc = s => String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+function _stFiltrarRows(rows){
+  const q=_stNoAcc(stFiltroTxt).trim();
+  if(!q) return rows;
+  const terms=q.split(/\s+/);
+  return rows.filter(d=>{
+    const hay=_stNoAcc((d.cat||'')+' '+(d.prenda||'')+' '+(d.diseno||'')+' '+(d.color||''));
+    return terms.every(t=>hay.indexOf(t)!==-1);
+  });
+}
 let stVistas=[]; // vistas de orden manual guardadas (compartidas): [{nombre,orden:[clave],por,fecha}]
 const _stGrpKey = g => String(g._prenda||'')+'|||'+String(g._diseno||'');
 async function cargarVistasStock(){ try{ stVistas = await api('vistas.stock.listar') || []; }catch(e){ stVistas = stVistas||[]; } return stVistas; }
@@ -10376,7 +10389,18 @@ function _stCrsMousedown(e){
 }
 
 function renderStock(el) {
-  if(!stData||!stData.length){el.innerHTML='<div class="empty">Sin datos</div>';return;}
+  // Datos invalidados (p.ej. tras cambiar un color): mostrar "Actualizando…" y recargar solos,
+  // en vez del antiguo "Sin datos" que se quedaba pegado hasta salir y volver a entrar.
+  if(!stData){
+    el.innerHTML='<div class="empty">Actualizando…</div>';
+    if(!window._stReloading){ window._stReloading=true; Promise.resolve().then(()=>loadStock()).catch(()=>{}).finally(()=>{ window._stReloading=false; }); }
+    return;
+  }
+  if(!stData.length){el.innerHTML='<div class="empty">Sin datos</div>';return;}
+  // Conserva el foco y la posición del cursor del buscador a través del re-render.
+  const _pi=document.getElementById('st-txt');
+  const _hadFocus=!!(_pi&&document.activeElement===_pi);
+  const _selS=_hadFocus?_pi.selectionStart:null, _selE=_hadFocus?_pi.selectionEnd:null;
 
   // Pestañas categoría
   // Pestañas = categorías de Maestros (col K). Si Maestros no cargó aún, cae a las de los datos. Siempre "Todos".
@@ -10400,7 +10424,7 @@ function renderStock(el) {
 
   // Barra filtros
   let ctrl='<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">';
-  ctrl+='<input id="st-txt" type="text" placeholder="Filtrar por prenda, diseño o color..." autocomplete="off" value="'+esc(stFiltroTxt)+'" style="flex:1;min-width:180px;padding:7px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">';
+  ctrl+='<input id="st-txt" type="text" placeholder="Buscar: categoría, prenda, diseño y/o color…" autocomplete="off" value="'+esc(stFiltroTxt)+'" style="flex:1;min-width:180px;padding:7px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">';
   ctrl+='<select id="st-ord" style="padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">'
     +'<option value="reciente"'+(stOrden==='reciente'?' selected':'')+'>↓ Más reciente</option>'
     +'<option value="antiguo"'+(stOrden==='antiguo'?' selected':'')+'>↑ Más antiguo</option>'
@@ -10419,7 +10443,7 @@ function renderStock(el) {
   // Filtrar
   let rows=[...stData];
   if(stCatActiva) rows=rows.filter(d=>d.cat===stCatActiva);
-  if(stFiltroTxt){const q=stFiltroTxt.toLowerCase();rows=rows.filter(d=>d.prenda.toLowerCase().includes(q)||d.diseno.toLowerCase().includes(q)||d.color.toLowerCase().includes(q));}
+  rows=_stFiltrarRows(rows);
   // Ocultar colores sin stock (>0 en alguna talla). Si todos los colores de un diseño quedan ocultos, el diseño desaparece;
   // si queda 1+, el bloque Cat/Prenda/Diseño se mantiene (centrado h/v) con ese/esos color(es).
   if(stHideNoStock) rows=rows.filter(d=>TALLAS_STD.some(t=>(d.stock&&d.stock[t]>0)));
@@ -10582,9 +10606,15 @@ function renderStock(el) {
   if(txtInp){
     txtInp.addEventListener('input',function(){
       clearTimeout(stTxtTimer);
-      stTxtTimer=setTimeout(()=>{stFiltroTxt=this.value.trim();renderStock(el);},100);
+      const v=this.value;                 // SIN trim: no se come el espacio al escribir 2+ palabras
+      stTxtTimer=setTimeout(()=>{stFiltroTxt=v;renderStock(el);},120);
     });
-    if(stFiltroTxt){txtInp.focus();txtInp.setSelectionRange(txtInp.value.length,txtInp.value.length);}
+    // Devuelve el foco SOLO si el usuario estaba escribiendo (no lo roba en re-renders de fondo).
+    if(_hadFocus){
+      txtInp.focus();
+      const L=txtInp.value.length, a=Math.min(_selS==null?L:_selS,L), b=Math.min(_selE==null?L:_selE,L);
+      try{txtInp.setSelectionRange(a,b);}catch(e){}
+    }
   }
   const ordSel=document.getElementById('st-ord');
   if(ordSel) ordSel.addEventListener('change',function(){stOrden=this.value;_stOrdenSave(stOrden);renderStock(el);});
@@ -10627,7 +10657,16 @@ async function loadInv(){
 }
 
 function renderInv(el){
-  if(!stData||!stData.length){ el.innerHTML='<div class="empty">Sin datos</div>'; return; }
+  if(!stData){
+    el.innerHTML='<div class="empty">Actualizando…</div>';
+    if(!window._ivReloading){ window._ivReloading=true; Promise.resolve().then(()=>loadInv()).catch(()=>{}).finally(()=>{ window._ivReloading=false; }); }
+    return;
+  }
+  if(!stData.length){ el.innerHTML='<div class="empty">Sin datos</div>'; return; }
+  // Conserva el foco y el cursor del buscador a través del re-render.
+  const _pi=document.getElementById('iv-txt');
+  const _hadFocus=!!(_pi&&document.activeElement===_pi);
+  const _selS=_hadFocus?_pi.selectionStart:null, _selE=_hadFocus?_pi.selectionEnd:null;
 
   // Pestañas categoría = categorías REALES presentes en el stock (no de Maestros cacheado → sin basura).
   const _catSrc=stData.map(d=>d.cat);
@@ -10655,7 +10694,7 @@ function renderInv(el){
 
   // Barra de FILTROS (mismo estado que Stock)
   let ctrl='<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">';
-  ctrl+='<input id="iv-txt" type="text" placeholder="Filtrar por prenda, diseño o color..." autocomplete="off" value="'+esc(stFiltroTxt)+'" style="flex:1;min-width:180px;padding:7px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">';
+  ctrl+='<input id="iv-txt" type="text" placeholder="Buscar: categoría, prenda, diseño y/o color…" autocomplete="off" value="'+esc(stFiltroTxt)+'" style="flex:1;min-width:180px;padding:7px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">';
   ctrl+='<select id="iv-ord" style="padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">'
     +'<option value="reciente"'+(stOrden==='reciente'?' selected':'')+'>↓ Más reciente</option>'
     +'<option value="antiguo"'+(stOrden==='antiguo'?' selected':'')+'>↑ Más antiguo</option>'
@@ -10672,7 +10711,7 @@ function renderInv(el){
   // Filtrar
   let rows=[...stData];
   if(stCatActiva) rows=rows.filter(d=>d.cat===stCatActiva);
-  if(stFiltroTxt){ const q=stFiltroTxt.toLowerCase(); rows=rows.filter(d=>d.prenda.toLowerCase().includes(q)||d.diseno.toLowerCase().includes(q)||d.color.toLowerCase().includes(q)); }
+  rows=_stFiltrarRows(rows);
   if(stHideNoStock) rows=rows.filter(d=>TALLAS_STD.some(t=>(d.stock&&d.stock[t]>0)));
 
   // Agrupar por Prenda+Diseño (colores como sub-filas)
@@ -10804,7 +10843,18 @@ function renderInv(el){
   // Eventos — filtros
   el.querySelectorAll('.tab[data-ivcat]').forEach(btn=>btn.addEventListener('click',function(){ stCatActiva=this.getAttribute('data-ivcat'); renderInv(el); }));
   let ivTxtTimer=null; const txtInp=document.getElementById('iv-txt');
-  if(txtInp){ txtInp.addEventListener('input',function(){ clearTimeout(ivTxtTimer); ivTxtTimer=setTimeout(()=>{ stFiltroTxt=this.value.trim(); renderInv(el); },100); }); if(stFiltroTxt){ txtInp.focus(); txtInp.setSelectionRange(txtInp.value.length,txtInp.value.length); } }
+  if(txtInp){
+    txtInp.addEventListener('input',function(){
+      clearTimeout(ivTxtTimer);
+      const v=this.value;                 // SIN trim: no se come el espacio al escribir 2+ palabras
+      ivTxtTimer=setTimeout(()=>{ stFiltroTxt=v; renderInv(el); },120);
+    });
+    if(_hadFocus){
+      txtInp.focus();
+      const L=txtInp.value.length, a=Math.min(_selS==null?L:_selS,L), b=Math.min(_selE==null?L:_selE,L);
+      try{txtInp.setSelectionRange(a,b);}catch(e){}
+    }
+  }
   const ordSel=document.getElementById('iv-ord');
   if(ordSel) ordSel.addEventListener('change',function(){ stOrden=this.value; _stOrdenSave(stOrden); renderInv(el); });
   const hideChk=document.getElementById('iv-hide');
