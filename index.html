@@ -548,7 +548,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <!-- 24. Courier + 25. Comentario Envío -->
         <div class="fr">
           <div class="fg"><label>Courier</label><select id="np-courier"><option value="">— Seleccionar courier —</option></select></div>
-          <div class="fg"><label>Comentario Envío</label><input id="np-obs" type="text" placeholder="Notas de envío..."></div>
+          <div class="fg"><label>Comentario Envío</label><input id="np-obs" type="text" list="np-obs-presets" placeholder="Elige o escribe una nota..."><datalist id="np-obs-presets"><option value="Envío paga en destino"></option><option value="Falta pago"></option></datalist></div>
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
           <button class="btn bg" id="btn-limpiar">Limpiar</button>
@@ -1604,6 +1604,41 @@ function badgeEstadoPago(pagado, subtotal) {
   const DARK  = {COMPLETO:{c:'#4ade80',bg:'#4ade8022'}, INCOMPLETO:{c:'#fbbf24',bg:'#fbbf2422'}, PENDIENTE:{c:'#f87171',bg:'#f8717122'}};
   const m = (_isLight()?LIGHT:DARK)[label] || DARK[label];
   return '<span style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;border:none;background:'+m.bg+';color:'+m.c+';white-space:nowrap">'+label+'</span>';
+}
+// B3 — Estado de Pago: badge marcado cuando hay ajuste manual vigente.
+function badgeEstadoPagoManual(label){
+  const LIGHT = {COMPLETO:{c:'#15803d',bg:'#d1f0db'}, INCOMPLETO:{c:'#b45309',bg:'#fde8c8'}, PENDIENTE:{c:'#b91c1c',bg:'#fbd9d9'}};
+  const DARK  = {COMPLETO:{c:'#4ade80',bg:'#4ade8022'}, INCOMPLETO:{c:'#fbbf24',bg:'#fbbf2422'}, PENDIENTE:{c:'#f87171',bg:'#f8717122'}};
+  const m = (_isLight()?LIGHT:DARK)[label] || DARK[label] || {c:'#888',bg:'#8882'};
+  return '<span title="Ajustado a mano — se mantiene hasta el próximo pago o edición" style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;border:none;background:'+m.bg+';color:'+m.c+';white-space:nowrap">✏️ '+label+'</span>';
+}
+// Lee el override manual "ESTADO|pagadoSnapshot". Es válido solo si el total pagado
+// no cambió desde que se fijó (si entró un pago nuevo, expira y vuelve a automático).
+function _epManVigente(p){
+  const raw = String((p && p['EstadoPagoManual'])||'').trim();
+  if (!raw) return '';
+  const parts = raw.split('|');
+  const man = String(parts[0]||'').trim().toUpperCase();
+  if (['COMPLETO','INCOMPLETO','PENDIENTE'].indexOf(man) < 0) return '';
+  const snap = parts.length > 1 ? parseFloat(parts[1]) : NaN;
+  const pagNow = (p && p._totalPagado) || 0;
+  if (!isNaN(snap) && Math.abs(pagNow - snap) >= 0.01) return '';   // entró un pago → expiró
+  return man;
+}
+// Devuelve el badge correcto: ajuste manual vigente si existe, si no el automático por saldo.
+function epBadgeFor(p){
+  const man = _epManVigente(p);
+  if (man) return badgeEstadoPagoManual(man);
+  return badgeEstadoPago((p&&p._totalPagado)||0, (p&&p['Subtotal'])||0);
+}
+// B2 — Comentario de envío: colapsa/expande la altura de una fila sin afectar a las demás.
+// La fila queda a altura fija (una línea) y con clic muestra el comentario completo.
+function _tglCmt(el){
+  try{
+    var b = el.parentNode.querySelector('.cmt-body'); if(!b) return;
+    if(b.classList.contains('open')){ b.classList.remove('open'); b.style.maxHeight='34px'; el.textContent='⌄ ver'; }
+    else { b.classList.add('open'); b.style.maxHeight='600px'; el.textContent='⌃ menos'; }
+  }catch(e){}
 }
 const _COURIER_COL = {
   'INDRIVER':'#39ff14','SALVA':'#00b4ff','SHALOM':'#ff7a1a',
@@ -5000,7 +5035,7 @@ function renderPT(el, rows, total, hayMas) {
               let cellHTML;
               if (sheetKey === 'Estado') cellHTML = badgeE(valor);
               else if (sheetKey === 'Courier') cellHTML = badgeCourier(valor);
-              else if (sheetKey === 'Estado Pago') cellHTML = badgeEstadoPago(p._totalPagado||0, p['Subtotal']||0);
+              else if (sheetKey === 'Estado Pago') cellHTML = epBadgeFor(p);
               else cellHTML = esc(valor);
               td.innerHTML = cellHTML;
             }
@@ -5245,7 +5280,7 @@ function mkTBody(rows) {
       } else if (c.k==='Estado') {
         tds += '<td'+TC+'>'+badgeE(v)+'</td>';
       } else if (c.k==='Estado Pago') {
-        tds += '<td'+TC+'>'+badgeEstadoPago(p._totalPagado, p['Subtotal'])+'</td>';
+        tds += '<td'+TC+'>'+epBadgeFor(p)+'</td>';
       } else if (c.k==='Courier') {
         tds += '<td'+TC+'>'+badgeCourier(v, p['Estado'], _cliColor[nroFor]==='RED')+'</td>';
       } else if (c.k==='CANAL'||c.k==='ORIGEN') {
@@ -5263,11 +5298,16 @@ function mkTBody(rows) {
         const _full = esc(_arr.join(' | '));
         const _vis = _arr.slice(0, 2);
         const _resto = _arr.length - _vis.length;
-        const _html = _arr.length
-          ? _vis.map(cm => '<div style="font-size:11px;color:var(--mu);line-height:1.35">• '+esc(String(cm))+'</div>').join('')
-            + (_resto > 0 ? '<div style="font-size:10px;color:var(--ac);font-weight:600">+'+_resto+' comentario(s) — ver en el pedido</div>' : '')
+        // B2 — todos los comentarios en el cuerpo colapsable (altura fija ~1 fila; expandible con clic).
+        const _htmlAll = _arr.length
+          ? _arr.map(cm => '<div style="font-size:11px;color:var(--mu);line-height:1.35">• '+esc(String(cm))+'</div>').join('')
           : '<span style="color:var(--mu)">—</span>';
-        tds += '<td'+TC+' style="max-width:0;white-space:normal" title="'+_full+'">'+_html+'</td>';
+        const _needsTgl = _arr.length ? (_arr.length > 1 || String(_arr.join(' ')).length > 38) : false;
+        const _cellInner = _arr.length
+          ? '<div class="cmt-body" style="max-height:34px;overflow:hidden;transition:max-height .2s ease">'+_htmlAll+'</div>'
+            + (_needsTgl ? '<span onclick="_tglCmt(this)" style="cursor:pointer;color:var(--ac);font-weight:600;font-size:10px;user-select:none;white-space:nowrap">⌄ ver</span>' : '')
+          : _htmlAll;
+        tds += '<td'+TC+' style="max-width:0;white-space:normal;vertical-align:top" title="'+_full+'">'+_cellInner+'</td>';
       } else if (c.k==='Prenda') {
         const t = esc(String(v||''));
         // Resaltar SOLO la prenda que está realmente en cambio/devolución.
@@ -6390,15 +6430,23 @@ function verPed(p) {
     +'</div>';
   // Estado Pago: calculado automáticamente según saldo
   const _epInfo = calcEstadoPago(totalPagado, p['Subtotal']||0);
+  // B3 — ajuste manual del Estado de Pago. Vacío = automático por saldo.
+  // Solo se preselecciona si el ajuste sigue vigente (no entró un pago después).
+  const _epMan = _epManVigente(p);
+  const _epSelSt = 'width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
+  const _epManOpts = ['','COMPLETO','INCOMPLETO','PENDIENTE'].map(function(o){
+    return '<option value="'+o+'"'+(o===_epMan?' selected':'')+'>'+(o===''?'Automático (por saldo)':o)+'</option>';
+  }).join('');
   h += '<div class="fr"><div class="fg"><label>Estado pago</label>'
-    +'<div style="display:flex;align-items:center;gap:10px;padding:6px 0">'
+    +'<div style="display:flex;align-items:center;gap:10px;padding:6px 0;flex-wrap:wrap">'
     +'<span style="display:inline-block;padding:5px 14px;border-radius:20px;font-size:12px;font-weight:700;'
     +'border:none;background:'+_epInfo.bg+';color:'+_epInfo.color+';'
     +'">'+_epInfo.label+'</span>'
-    +'<span style="font-size:11px;color:var(--mu)">Calculado automáticamente</span>'
+    +'<span style="font-size:11px;color:var(--mu)">'+(_epMan?'✏️ Ajustado a mano (hasta el próximo pago)':'Calculado automáticamente')+'</span>'
     +'</div>'
     +'<input type="hidden" id="medit-EstadoPago" value="'+_epInfo.label+'">'
-    +'</div><div></div></div>';
+    +'</div>'
+    +'<div class="fg"><label>Ajuste manual del estado</label><select id="medit-EstadoPagoManual" style="'+_epSelSt+'">'+_epManOpts+'</select></div></div>';
   const inpSt = 'width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
   // Forma de pago — leer columna FORMA PAGO de Maestros (con fallback hardcoded)
   const formasMaestros = mOpts('FORMA PAGO', ['ANA','ANA EMPRESA','BBVA','BCP','EFECTIVO','IBK','N/A','PABLO','PABLO EMPRESA','TARJETA CREDITO']);
@@ -6841,7 +6889,7 @@ function verPed(p) {
       Provincia:'medit-Provincia', Region:'medit-Region', Referencia:'medit-Referencia',
       Estado:'medit-Estado', Courier:'medit-Courier',
       FechaPedido:'medit-FechaPedido', FechaEnvio:'medit-FechaEnvio',
-      EstadoPago:'medit-EstadoPago', ComentariosEnvio:'medit-ComentariosEnvio',
+      EstadoPago:'medit-EstadoPago', EstadoPagoManual:'medit-EstadoPagoManual', ComentariosEnvio:'medit-ComentariosEnvio',
       Envio:'medit-Envio',
     };
     Object.entries(campos).forEach(([k,id])=>{
@@ -6855,13 +6903,22 @@ function verPed(p) {
     // Envío: el campo muestra el TOTAL del pedido (suma por lote). Si no se cambió a propósito,
     // NO reenviarlo (evita escribir ese total en cada fila y multiplicar el envío por lote).
     if (String(body.Envio||'') === String(envioTotalDisp||0)) delete body.Envio;
+    // B3 — Ajuste manual del Estado de Pago: solo se guarda si la asesora tocó el selector.
+    // Se almacena "ESTADO|pagadoSnapshot"; vuelve a automático cuando cambie el total pagado.
+    {
+      const _epSelEl = qId('medit-EstadoPagoManual');
+      const _epSelVal = _epSelEl ? String(_epSelEl.value||'') : '';
+      if (_epSelVal === _epMan) { delete body.EstadoPagoManual; }                              // no cambió → no reescribir
+      else if (_epSelVal === '') { body.EstadoPagoManual = ''; }                               // volver a automático
+      else { body.EstadoPagoManual = _epSelVal + '|' + (parseFloat(totalPagado)||0); }         // nuevo manual + foto del pagado
+    }
     // 1. Actualizar cache local de inmediato
     const fMap = {
       NombreApellido:'Nombres y Apellidos', Celular:'Celular', DNI:'DNI',
       Canal:'CANAL', Direccion:'Direccion', Distrito:'Distrito',
       Provincia:'Provincia', Region:'Region', Referencia:'Referencia',
       Estado:'Estado', Courier:'Courier', FechaPedido:'Fecha Pedido',
-      FechaEnvio:'Fecha Envio', EstadoPago:'Estado Pago', ComentariosEnvio:'Comentarios Envio',
+      FechaEnvio:'Fecha Envio', EstadoPago:'Estado Pago', EstadoPagoManual:'EstadoPagoManual', ComentariosEnvio:'Comentarios Envio',
       Envio:'Envio',
     };
     pRaw.forEach(r => {
