@@ -1636,8 +1636,8 @@ function epBadgeFor(p){
 function _tglCmt(el){
   try{
     var b = el.parentNode.querySelector('.cmt-body'); if(!b) return;
-    if(b.classList.contains('open')){ b.classList.remove('open'); b.style.maxHeight='34px'; el.textContent='⌄ ver'; }
-    else { b.classList.add('open'); b.style.maxHeight='600px'; el.textContent='⌃ menos'; }
+    if(b.classList.contains('open')){ b.classList.remove('open'); b.style.maxHeight='18px'; el.textContent='⌄'; }
+    else { b.classList.add('open'); b.style.maxHeight='600px'; el.textContent='⌃'; }
   }catch(e){}
 }
 const _COURIER_COL = {
@@ -4669,7 +4669,7 @@ function renderPT(el, rows, total, hayMas) {
   // Opciones por campo
   const BULK_CAMPOS = {
     Estado:      { tipo:'select', opts: () => mOpts('Estado', ['ENVIAR','EN CAMINO','ENTREGADO','SEPARAR','DEVOLUCION']) },
-    EstadoPago:  { tipo:'select', opts: () => ['PENDIENTE','INCOMPLETO','COMPLETO'] },
+    EstadoPago:  { tipo:'select', opts: () => ['COMPLETO','INCOMPLETO','PENDIENTE','AUTO'] },
     Canal:       { tipo:'select', opts: () => mOpts('Canal', ['TIKTOK','WHATSAPP','CONTACTO','PAGINA WEB','SHOWROOM','INSTAGRAM','OTROS','MARKETPLACE','FACEBOOK']) },
     Origen:      { tipo:'select', opts: () => mOpts('Origen', ['ADS','ANA','LIVE','ORGANICO','OTROS','PABLO','PAGINA WEB','PRESENCIAL','SAGA','VIRTUAL']) },
     Courier:     { tipo:'select', opts: () => mOpts('Courier', ['INDRIVER','N/A','OLVA','RECOJO','SALVA','SHALOM']) },
@@ -5008,13 +5008,24 @@ function renderPT(el, rows, total, hayMas) {
     btn.disabled = true; btn.textContent = 'Aplicando...';
 
     try {
-      const sheetKey = BULK_SHEET_KEY[campo] || campo;
+      // B3 — el masivo de "Estado Pago" ajusta el override MANUAL (no la columna vieja).
+      //       valor 'AUTO' = volver a automático por saldo.
+      let sheetKey = BULK_SHEET_KEY[campo] || campo;   // columna visible a re-pintar
+      let dataKey  = sheetKey;                          // columna de datos donde se escribe
+      let valEfectivo  = valor;
+      let campoServidor = campo;
+      if (campo === 'EstadoPago') {
+        sheetKey     = 'Estado Pago';
+        dataKey      = 'EstadoPagoManual';
+        valEfectivo  = (String(valor).toUpperCase() === 'AUTO') ? '' : valor;
+        campoServidor = 'EstadoPagoManual';
+      }
 
       // ── Paso 1: actualización optimista — UI instantánea ──
       // Actualizar pRaw y las celdas del DOM sin esperar al servidor
       const nrosSet = new Set(nros);
       pRaw.forEach(row => {
-        if (nrosSet.has(String(row['NroPedido']))) row[sheetKey] = valor;
+        if (nrosSet.has(String(row['NroPedido']))) row[dataKey] = valEfectivo;
       });
       // Actualizar celdas visibles en la tabla directamente (sin full re-render)
       const colDef = PCOLS.find(c => c.k === sheetKey || c.k === campo);
@@ -5031,12 +5042,12 @@ function renderPT(el, rows, total, hayMas) {
             // Usar la función de render de celda si existe, si no texto plano
             const p = pAll.find(p => String(p['NroPedido']) === nro);
             if (p) {
-              p[sheetKey] = valor;
+              p[dataKey] = valEfectivo;
               let cellHTML;
-              if (sheetKey === 'Estado') cellHTML = badgeE(valor);
-              else if (sheetKey === 'Courier') cellHTML = badgeCourier(valor);
+              if (sheetKey === 'Estado') cellHTML = badgeE(valEfectivo);
+              else if (sheetKey === 'Courier') cellHTML = badgeCourier(valEfectivo);
               else if (sheetKey === 'Estado Pago') cellHTML = epBadgeFor(p);
-              else cellHTML = esc(valor);
+              else cellHTML = esc(valEfectivo);
               td.innerHTML = cellHTML;
             }
           }
@@ -5055,7 +5066,7 @@ function renderPT(el, rows, total, hayMas) {
 
       // ── Paso 2: una sola llamada al servidor en background ──
       // Si falla, avisa pero no revierte (el dato ya fue guardado optimistamente)
-      apiPost('pedidos.actualizarMasivo', { nros, campo, valor })
+      apiPost('pedidos.actualizarMasivo', { nros, campo: campoServidor, valor: valEfectivo })
         .catch(e => toast('⚠ Error al sincronizar: '+esc(e.message), 'err'));
 
     } catch(e) {
@@ -5302,10 +5313,12 @@ function mkTBody(rows) {
         const _htmlAll = _arr.length
           ? _arr.map(cm => '<div style="font-size:11px;color:var(--mu);line-height:1.35">• '+esc(String(cm))+'</div>').join('')
           : '<span style="color:var(--mu)">—</span>';
-        const _needsTgl = _arr.length ? (_arr.length > 1 || String(_arr.join(' ')).length > 38) : false;
+        const _needsTgl = _arr.length ? (_arr.length > 1 || String(_arr.join(' ')).length > 30) : false;
         const _cellInner = _arr.length
-          ? '<div class="cmt-body" style="max-height:34px;overflow:hidden;transition:max-height .2s ease">'+_htmlAll+'</div>'
-            + (_needsTgl ? '<span onclick="_tglCmt(this)" style="cursor:pointer;color:var(--ac);font-weight:600;font-size:10px;user-select:none;white-space:nowrap">⌄ ver</span>' : '')
+          ? '<div style="display:flex;align-items:flex-start;gap:6px">'
+            + '<div class="cmt-body" style="flex:1;min-width:0;max-height:18px;overflow:hidden;line-height:1.35;transition:max-height .2s ease">'+_htmlAll+'</div>'
+            + (_needsTgl ? '<span onclick="_tglCmt(this)" style="flex:none;cursor:pointer;color:var(--ac);font-weight:700;font-size:12px;user-select:none;white-space:nowrap;padding-top:1px" title="Ver comentario completo">⌄</span>' : '')
+            + '</div>'
           : _htmlAll;
         tds += '<td'+TC+' style="max-width:0;white-space:normal;vertical-align:top" title="'+_full+'">'+_cellInner+'</td>';
       } else if (c.k==='Prenda') {
