@@ -2358,7 +2358,7 @@ function loadPg(pg) {
 // PANEL GG — Glance diario WhatsApp Ads. Lee Resumen_ROAS vía panel.roas.
 // Todo se agrega en el navegador → filtros de fecha y comparativos sin ir al server.
 // ══════════════════════════════════════════════════════════════════════════
-const PANEL = { dias: null, _gen: '', rango: '30', vista: 'total', d1: null, d2: null, cargando: false };
+const PANEL = { dias: null, _gen: '', rango: '30', canal: 'whatsapp', vista: 'total', d1: null, d2: null, cargando: false };
 
 const _panelISO = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 const _panelAddDays = (iso, n) => { const d=new Date(iso+'T00:00:00'); d.setDate(d.getDate()+n); return _panelISO(d); };
@@ -2375,33 +2375,56 @@ function _panelRangoPreset(preset){
   return [_panelAddDays(hoyISO,-29), hoyISO];
 }
 
-// Suma cruda de los días del rango (sin derivar). Todo lo demás se calcula por vista.
+// Suma cruda de los días del rango (sin derivar). Incluye WhatsApp y Web.
 function _panelAgg(dias, d1, d2){
-  const a = {gWA:0,msg:0,vAds:0,vOrg:0,vTot:0,nAds:0,nTot:0,costoAds:0,costoTot:0,prendasAds:0,prendasOrg:0,sinCosto:0,ndias:0};
+  const a = {gWA:0,gWeb:0,msg:0,vAds:0,vOrg:0,nAds:0,nTot:0,costoAds:0,costoTot:0,prendasAds:0,prendasOrg:0,sinCosto:0,
+             wvAds:0,wvOrg:0,wnAds:0,wnTot:0,wcostoAds:0,wcostoTot:0,wprendasAds:0,wprendasOrg:0,ndias:0};
   (dias||[]).forEach(function(x){
     if (x.fecha < d1 || x.fecha > d2) return;
-    a.gWA+=x.gWA; a.msg+=x.msg||0; a.vAds+=x.vAds; a.vOrg+=x.vOrg; a.vTot+=x.vTot;
-    a.nAds+=x.nAds; a.nTot+=x.nTot; a.costoAds+=x.costoAds; a.costoTot+=x.costoTot;
-    a.prendasAds+=x.prendasAds||0; a.prendasOrg+=x.prendasOrg||0; a.sinCosto+=x.sinCosto; a.ndias++;
+    a.gWA+=x.gWA; a.gWeb+=x.gWeb||0; a.msg+=x.msg||0;
+    a.vAds+=x.vAds; a.vOrg+=x.vOrg; a.nAds+=x.nAds; a.nTot+=x.nTot;
+    a.costoAds+=x.costoAds; a.costoTot+=x.costoTot; a.prendasAds+=x.prendasAds||0; a.prendasOrg+=x.prendasOrg||0; a.sinCosto+=x.sinCosto;
+    a.wvAds+=x.wvAds||0; a.wvOrg+=x.wvOrg||0; a.wnAds+=x.wnAds||0; a.wnTot+=x.wnTot||0;
+    a.wcostoAds+=x.wcostoAds||0; a.wcostoTot+=x.wcostoTot||0; a.wprendasAds+=x.wprendasAds||0; a.wprendasOrg+=x.wprendasOrg||0;
+    a.ndias++;
   });
   return a;
 }
 
-// Deriva los 8 indicadores para la vista pedida ('ads' | 'org' | 'total').
+// Resuelve la base del canal ('whatsapp' | 'web' | 'meta') a un shape común que consume _panelVista.
+function _panelCanal(a, canal){
+  if (canal==='web') return { vAds:a.wvAds, vOrg:a.wvOrg, gasto:a.gWeb, nAds:a.wnAds, nTot:a.wnTot,
+    costoAds:a.wcostoAds, costoTot:a.wcostoTot, prendasAds:a.wprendasAds, prendasOrg:a.wprendasOrg, msg:null };
+  if (canal==='meta') return { vAds:a.vAds+a.wvAds, vOrg:a.vOrg+a.wvOrg, gasto:a.gWA+a.gWeb, nAds:a.nAds+a.wnAds, nTot:a.nTot+a.wnTot,
+    costoAds:a.costoAds+a.wcostoAds, costoTot:a.costoTot+a.wcostoTot, prendasAds:a.prendasAds+a.wprendasAds, prendasOrg:a.prendasOrg+a.wprendasOrg, msg:a.msg };
+  return { vAds:a.vAds, vOrg:a.vOrg, gasto:a.gWA, nAds:a.nAds, nTot:a.nTot,
+    costoAds:a.costoAds, costoTot:a.costoTot, prendasAds:a.prendasAds, prendasOrg:a.prendasOrg, msg:a.msg };
+}
+
+// Ventas de un día para canal+vista (para el chart de barras).
+function _panelDiaV(x, canal, vista){
+  let ads, org;
+  if (canal==='web'){ ads=x.wvAds||0; org=x.wvOrg||0; }
+  else if (canal==='meta'){ ads=(x.vAds||0)+(x.wvAds||0); org=(x.vOrg||0)+(x.wvOrg||0); }
+  else { ads=x.vAds||0; org=x.vOrg||0; }
+  return vista==='ads'?ads:(vista==='org'?org:ads+org);
+}
+
+// Deriva los 8 indicadores para la vista ('ads' | 'org' | 'total') sobre una base de canal ya resuelta (cd).
 // Margen = Ventas − Costo prendas − Costo anuncios (el gasto Meta solo aplica a Ads/Total).
-function _panelVista(a, vista){
-  const nOrg = Math.max(0, a.nTot - a.nAds);
-  const costoOrg = Math.max(0, a.costoTot - a.costoAds);
-  let r = { aplicaGasto:true, mensajes:a.msg };
+function _panelVista(cd, vista){
+  const nOrg = Math.max(0, cd.nTot - cd.nAds);
+  const costoOrg = Math.max(0, cd.costoTot - cd.costoAds);
+  let r = { aplicaGasto:true, mensajes:cd.msg };
   if (vista==='ads'){
-    r.ventas=a.vAds; r.gasto=a.gWA; r.pedidos=a.nAds; r.prendas=a.prendasAds; r.costoPrendas=a.costoAds;
-    r.margen = a.vAds - a.costoAds - a.gWA;
+    r.ventas=cd.vAds; r.gasto=cd.gasto; r.pedidos=cd.nAds; r.prendas=cd.prendasAds; r.costoPrendas=cd.costoAds;
+    r.margen = cd.vAds - cd.costoAds - cd.gasto;
   } else if (vista==='org'){
-    r.ventas=a.vOrg; r.gasto=0; r.pedidos=nOrg; r.prendas=a.prendasOrg; r.costoPrendas=costoOrg;
-    r.margen = a.vOrg - costoOrg;  r.aplicaGasto=false; r.mensajes=null;
+    r.ventas=cd.vOrg; r.gasto=0; r.pedidos=nOrg; r.prendas=cd.prendasOrg; r.costoPrendas=costoOrg;
+    r.margen = cd.vOrg - costoOrg;  r.aplicaGasto=false; r.mensajes=null;
   } else {
-    r.ventas=a.vTot; r.gasto=a.gWA; r.pedidos=a.nTot; r.prendas=a.prendasAds+a.prendasOrg; r.costoPrendas=a.costoTot;
-    r.margen = a.vTot - a.costoTot - a.gWA;
+    r.ventas=cd.vAds+cd.vOrg; r.gasto=cd.gasto; r.pedidos=cd.nTot; r.prendas=cd.prendasAds+cd.prendasOrg; r.costoPrendas=cd.costoTot;
+    r.margen = (cd.vAds+cd.vOrg) - cd.costoTot - cd.gasto;
   }
   r.roas   = r.aplicaGasto && r.gasto>0 ? r.ventas/r.gasto : null;
   r.cac    = r.aplicaGasto && r.pedidos>0 ? r.gasto/r.pedidos : null;
@@ -2462,6 +2485,7 @@ async function loadPanel(force){
 
 window.panelSetRango = function(preset){ PANEL.rango = preset; _panelRender(); };
 window.panelSetVista = function(v){ PANEL.vista = v; _panelRender(); };
+window.panelSetCanal = function(c){ PANEL.canal = c; _panelRender(); };
 window.panelAplicarCustom = function(){
   const a = document.getElementById('panel-d1'), b = document.getElementById('panel-d2');
   if (!a || !b || !a.value || !b.value) return;
@@ -2480,12 +2504,22 @@ function _panelRender(){
   const pD2 = _panelAddDays(d1,-1), pD1 = _panelAddDays(pD2,-(nd-1));
   const aggCur = _panelAgg(PANEL.dias, d1, d2);
   const aggPrev= _panelAgg(PANEL.dias, pD1, pD2);
+  const canal = PANEL.canal || 'whatsapp';
   const vista = PANEL.vista || 'total';
-  const cur = _panelVista(aggCur, vista);
-  const prev= _panelVista(aggPrev, vista);
+  const cdCur = _panelCanal(aggCur, canal), cdPrev = _panelCanal(aggPrev, canal);
+  const cur = _panelVista(cdCur, vista);
+  const prev= _panelVista(cdPrev, vista);
+  const canalNom = canal==='web'?'Página web':(canal==='meta'?'Meta Ads (Web + WhatsApp)':'WhatsApp');
 
   const S = v => 'S/ '+fmt(v);
   const guion = '<span style="color:var(--mu)">—</span>';
+
+  // ── Toggle superior de CANAL ──
+  const canales = [['web','🌐 Página web'],['whatsapp','💬 WhatsApp'],['meta','📊 Meta Ads (Web+WA)']];
+  const canalHtml = canales.map(function(cc){
+    const on = (canal===cc[0]);
+    return '<button onclick="panelSetCanal(\''+cc[0]+'\')" style="background:'+(on?'var(--ac)':'var(--bg2)')+';color:'+(on?'#fff':'var(--tx)')+';border:1px solid '+(on?'var(--ac)':'var(--bd)')+';border-radius:12px;padding:10px 18px;font-size:14px;font-weight:800;cursor:pointer;font-family:inherit">'+cc[1]+'</button>';
+  }).join('');
 
   // ── Presets de fecha ──
   const presets = [['hoy','Hoy'],['7','7 días'],['14','14 días'],['30','30 días'],['mes','Este mes'],['mespasado','Mes pasado']];
@@ -2529,8 +2563,8 @@ function _panelRender(){
       + '</div>';
   }
 
-  // ── Pastel Ads vs Orgánico (% de ventas) ──
-  const vA = aggCur.vAds, vO = aggCur.vOrg, vT = vA+vO;
+  // ── Pastel Ads vs Orgánico (% de ventas del canal seleccionado) ──
+  const vA = cdCur.vAds, vO = cdCur.vOrg, vT = vA+vO;
   const pastel = vT>0
     ? '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:14px;display:flex;gap:16px;align-items:center;flex-wrap:wrap">'
       + '<div>'+_panelDona(vA,vO)+'</div>'
@@ -2542,13 +2576,13 @@ function _panelRender(){
       + '</div>'
     : '';
 
-  // ── Chart de ventas por día (según vista) ──
-  const campoV = vista==='ads'?'vAds':(vista==='org'?'vOrg':'vTot');
+  // ── Chart de ventas por día (según canal + vista) ──
   const enRango = (PANEL.dias||[]).filter(x=>x.fecha>=d1 && x.fecha<=d2);
-  const maxV = Math.max(1, ...enRango.map(x=>x[campoV]));
+  const maxV = Math.max(1, ...enRango.map(x=>_panelDiaV(x,canal,vista)));
   const bars = enRango.map(function(x){
-    const h = Math.round(x[campoV]/maxV*64)+2;
-    return '<div title="'+esc(x.fecha)+': S/ '+fmt(x[campoV])+'" style="flex:1 1 0;min-width:2px;height:'+h+'px;background:var(--ac);border-radius:2px 2px 0 0;opacity:.85"></div>';
+    const dv = _panelDiaV(x,canal,vista);
+    const h = Math.round(dv/maxV*64)+2;
+    return '<div title="'+esc(x.fecha)+': S/ '+fmt(dv)+'" style="flex:1 1 0;min-width:2px;height:'+h+'px;background:var(--ac);border-radius:2px 2px 0 0;opacity:.85"></div>';
   }).join('');
   const chart = enRango.length
     ? '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:12px 14px">'
@@ -2558,16 +2592,19 @@ function _panelRender(){
       + '</div>'
     : '';
 
-  // ── Aviso de datos sin costo ──
-  const aviso = aggCur.sinCosto>0
-    ? '<div style="background:rgba(220,38,38,.08);border:1px solid #dc2626;border-radius:var(--r);padding:10px 14px;font-size:12.5px;color:#dc2626;display:flex;gap:8px;align-items:center">'
-      + '⚠️ <span><b>'+aggCur.sinCosto+'</b> prenda(s) de WhatsApp vendidas SIN costo cargado en el periodo. El margen está <b>sobreestimado</b> hasta cargar esos costos en la hoja Cost.</span></div>'
-    : '<div style="background:rgba(22,163,74,.08);border:1px solid #16a34a;border-radius:var(--r);padding:10px 14px;font-size:12.5px;color:#16a34a">✓ 100% de las prendas WhatsApp del periodo tienen costo cargado — el margen es confiable.</div>';
+  // ── Aviso de datos sin costo (solo cuando el canal incluye WhatsApp; el dato es de WhatsApp) ──
+  const aviso = (canal==='web') ? ''
+    : (aggCur.sinCosto>0
+      ? '<div style="background:rgba(220,38,38,.08);border:1px solid #dc2626;border-radius:var(--r);padding:10px 14px;font-size:12.5px;color:#dc2626;display:flex;gap:8px;align-items:center">'
+        + '⚠️ <span><b>'+aggCur.sinCosto+'</b> prenda(s) de WhatsApp vendidas SIN costo cargado en el periodo. El margen está <b>sobreestimado</b> hasta cargar esos costos en la hoja Cost.</span></div>'
+      : '<div style="background:rgba(22,163,74,.08);border:1px solid #16a34a;border-radius:var(--r);padding:10px 14px;font-size:12.5px;color:#16a34a">✓ 100% de las prendas WhatsApp del periodo tienen costo cargado — el margen es confiable.</div>');
 
   const genTxt = PANEL._gen ? new Date(PANEL._gen).toLocaleString('es-PE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
 
   c.innerHTML =
     '<div style="display:flex;flex-direction:column;gap:14px;max-width:1100px">'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'+canalHtml
+    +   '<span style="margin-left:8px;font-size:13px;color:var(--mu)">Canal: <b style="color:var(--tx)">'+esc(canalNom)+'</b></span></div>'
     + '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">'
     +   '<div style="display:flex;flex-wrap:wrap;gap:8px">'+presetsHtml+'</div>'
     +   '<button onclick="loadPanel(true)" class="btn bg bs" style="font-size:12px" title="Volver a leer Resumen_ROAS">↻ Actualizar datos</button>'
