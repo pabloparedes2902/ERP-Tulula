@@ -379,7 +379,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
     <button class="nb" data-pg="config"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Configuración</button>
   </nav>
   <div class="sbf" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-    <span><span class="dot"></span>Conectado</span>
+    <span id="conn-pill"><span class="dot" id="conn-dot"></span><span id="conn-txt">Conectado</span></span>
     <button id="theme-toggle" title="Cambiar modo claro/oscuro" style="background:var(--bg3);border:1px solid var(--bd);border-radius:14px;padding:4px 10px;cursor:pointer;color:var(--tx);font-family:inherit;font-size:12px">🌙</button>
   </div>
   <div class="sbf" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px">
@@ -1959,11 +1959,32 @@ function applyMaestrosToSelects() {
 // Ahora hacemos hasta 3 intentos con espera creciente y solo entonces fallamos.
 const _API_REINTENTOS = 3;
 const _sleep = ms => new Promise(res => setTimeout(res, ms));
+
+// ── FIX jul-2026 (QA) — Indicador "Conectado" HONESTO ─────────────────────
+// Antes el pill decía "Conectado" siempre, incluso con el polling fallando en
+// bucle (SESION_INVALIDA cada 19s durante 6+ min, medido en vivo). Ahora
+// refleja la salud real de las llamadas: 2 fallas seguidas → rojo con aviso;
+// 1 éxito → verde de nuevo. La asesora nunca opera "a ciegas".
+let _connFallos = 0;
+function _pillConn(ok, msg){
+  try{
+    const t=document.getElementById('conn-txt'), d=document.getElementById('conn-dot');
+    if(!t||!d) return;
+    if(ok){ t.textContent='Conectado'; t.style.color=''; d.style.background=''; }
+    else { t.textContent=msg||'Sin conexión — reintentando…'; t.style.color='#f87171'; d.style.background='#f87171'; }
+  }catch(e){}
+}
+function _connMark(ok, msg){
+  if(ok){ if(_connFallos){ _connFallos=0; _pillConn(true); } }
+  else { _connFallos++; if(_connFallos>=2) _pillConn(false, msg); }
+}
+
 async function _fetchJson(buildReq, action) {
   let ultimoError = null;
   for (let intento = 1; intento <= _API_REINTENTOS; intento++) {
     try {
       const { url, opts } = buildReq();
+      const _tokUsado = SESSION_TOKEN;   // FIX QA: recordar con qué token salió ESTA llamada
       const r = await fetch(url, opts);
       const raw = await r.text();
       let d;
@@ -1972,20 +1993,24 @@ async function _fetchJson(buildReq, action) {
       } catch (parseErr) {
         ultimoError = new Error('Respuesta no válida del servidor (posible backend ocupado).');
         if (intento < _API_REINTENTOS) { await _sleep(600 * intento); continue; }  // 600ms,1200ms
+        _connMark(false);
         throw ultimoError;
       }
       if (!d.ok) {
-        if (d.error === 'SESION_INVALIDA') { _onSessionExpired(); }
+        _connMark(true);   // el servidor respondió: conexión OK (es error de negocio/sesión)
+        if (d.error === 'SESION_INVALIDA') { _onSessionExpired(_tokUsado); }
         const _err = new Error(d.error || 'Error desconocido');
         _err.action = d.action || action;
         throw _err;   // error de negocio: NO reintentar
       }
+      _connMark(true);
       return d.data;
     } catch (netErr) {
       // Falla de red / "Failed to fetch": reintentar. Errores de negocio ya salieron arriba.
       if (netErr && netErr.action) throw netErr;
       ultimoError = netErr;
       if (intento < _API_REINTENTOS) { await _sleep(600 * intento); continue; }
+      _connMark(false);
       throw (ultimoError || netErr);
     }
   }
@@ -3693,6 +3718,30 @@ async function _idbHydratePeds() {
 }
 _idbHydratePeds();
 
+// ── FIX jul-2026 (QA) — Presupuesto de almacenamiento local ─────────────────
+// Medido en vivo: 4.4MB de ~5MB usados (la caché "todo" sola pesa 1.6MB). Cuando
+// el navegador llega al tope, los setItem fallan EN SILENCIO y las cachés dejan
+// de guardarse (lentitud + estados raros). Si pasamos ~4MB, se purgan las cachés
+// de pedidos de los períodos que NO están en uso (se recalculan solas al entrar).
+function _lsPurgaPresupuesto(){
+  try{
+    let tot=0;
+    for(let i=0;i<localStorage.length;i++){ tot+=(localStorage.getItem(localStorage.key(i))||'').length; }
+    if(tot < 4*1024*1024) return;
+    const cur='erp_'+_pedsLsKeyForScope();
+    const victimas=[];
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(/^erp_pedidos_raw_v8_/.test(k) && k!==cur) victimas.push(k);
+    }
+    // duplicado viejo de stock (quedó la v1 junto a la v2):
+    if(localStorage.getItem('erp_stock_resumen')!==null && localStorage.getItem('erp_stock_resumen_v2')!==null) victimas.push('erp_stock_resumen');
+    victimas.forEach(k=>{ try{ localStorage.removeItem(k); }catch(_){}} );
+    if(victimas.length) console.info('[ERP] Limpieza de caché local (presupuesto):', victimas.join(', '));
+  }catch(e){}
+}
+_lsPurgaPresupuesto();
+
 // ── FIX DEFINITIVO Issue B — overlay PERSISTENTE de pedidos recién creados ──
 // Un pedido recién guardado se cae intermitentemente por carreras entre el caché de
 // localStorage y el polling delta. Este overlay (persistido en localStorage) re-inyecta
@@ -4891,7 +4940,7 @@ function renderPT(el, rows, total, hayMas) {
     +'<button class="btn bp bs" id="btn-exp-xl" style="font-size:11px">⬇ Excel</button>'
     +'</div>'
     +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
-    +'<span style="font-size:12px;color:var(--mu)">Mostrando <strong style="color:var(--tx)">'+total+'</strong> pedidos'+(window._pedsCargaEnCurso?' <span style="color:var(--am)">(cargando histórico…)</span>':(window._pedsCargaIncompleta?' <span style="color:#f87171">(⚠ histórico incompleto — pulsa Actualizar)</span>':(hayMas?' <span style="color:var(--am)">(hay más)</span>':'')))+'</span>'
+    +'<span style="font-size:12px;color:var(--mu)">Mostrando <strong style="color:var(--tx)">'+total+'</strong> pedidos'+(window._pedsCargaEnCurso?' <span style="color:var(--am)">(cargando historial: '+total+' de '+(window._pedTotalReal||'?')+'…)</span>':(window._pedsCargaIncompleta?' <span style="color:#f87171">(⚠ histórico incompleto — pulsa Actualizar)</span>':(hayMas?' <span style="color:var(--am)">(hay más)</span>':'')))+'</span>'
     +(Object.keys(pFlt).length ? '<button class="btn bg bs" id="btn-clf">✕ Filtros</button>' : '')
     +'<button class="btn bg bs" id="btn-ref" title="Recargar datos del servidor">🔄</button>'
     +'</div></div>';
@@ -6035,6 +6084,16 @@ async function _pedsCargarRestoProgresivo() {
   }
 }
 
+// FIX jul-2026 (QA): si la carga progresiva quedó a medias (sesión vencida, corte
+// de red), se reanuda SOLA al volver la conexión o al volver a la pestaña. Antes
+// quedaba una lista truncada mostrada como completa hasta un Actualizar manual.
+window.addEventListener('online', function(){
+  try{ if (window._pedsCargaIncompleta && !window._pedsCargaEnCurso && SESSION_TOKEN) _pedsCargarRestoProgresivo(); }catch(_){}
+});
+document.addEventListener('visibilitychange', function(){
+  try{ if (!document.hidden && window._pedsCargaIncompleta && !window._pedsCargaEnCurso && SESSION_TOKEN) _pedsCargarRestoProgresivo(); }catch(_){}
+});
+
 async function pMas(off, tot) {
   const btn = document.getElementById('btn-mas'); if (btn) { btn.disabled=true; btn.textContent='Cargando...'; }
   const p = {limit:2000, offset:off}; if (pEst) p.estado=pEst; pFltParams(p);
@@ -6337,7 +6396,7 @@ function pRenderTBodyFast(el, rows, total, hayMas) {
   const info = el.querySelector(':scope > div:first-child');
   if (info) {
     const span = info.querySelector('span');
-    if (span) span.innerHTML = 'Mostrando <strong style="color:var(--tx)">'+total+'</strong> pedidos'+(window._pedsCargaEnCurso?' <span style="color:var(--am)">(cargando histórico…)</span>':(window._pedsCargaIncompleta?' <span style="color:#f87171">(⚠ histórico incompleto — pulsa Actualizar)</span>':(hayMas?' <span style="color:var(--am)">(hay más)</span>':'')));
+    if (span) span.innerHTML = 'Mostrando <strong style="color:var(--tx)">'+total+'</strong> pedidos'+(window._pedsCargaEnCurso?' <span style="color:var(--am)">(cargando historial: '+total+' de '+(window._pedTotalReal||'?')+'…)</span>':(window._pedsCargaIncompleta?' <span style="color:#f87171">(⚠ histórico incompleto — pulsa Actualizar)</span>':(hayMas?' <span style="color:var(--am)">(hay más)</span>':'')));
     const hasFilters = Object.keys(pFlt).length > 0;
     let clf = info.querySelector('#btn-clf');
     if (hasFilters && !clf) {
@@ -7418,7 +7477,18 @@ function verPed(p) {
   // Eliminar pago — #8 Optimistic UI: aplicar local AL INSTANTE, backend en background con rollback en fallo
   qId('pago-f-delete').addEventListener('click', function() {
     if (!pagoEditState || pagoEditState.esNuevo) return;
-    if (!confirm('¿Eliminar este pago? Esta acción no se puede deshacer.')) return;
+    // FIX jul-2026 (QA): confirmación INLINE de 2 clics. El confirm() nativo del
+    // navegador está prohibido en este ERP (regla de Pablo) y además congela la
+    // página entera mientras está abierto (reproducido en vivo el 21/07).
+    var _delBtn = qId('pago-f-delete');
+    if (_delBtn.dataset.armado !== '1') {
+      _delBtn.dataset.armado = '1';
+      _delBtn.textContent = '¿Seguro? Clic de nuevo para eliminar';
+      setTimeout(function(){ if(_delBtn.dataset.armado==='1'){ _delBtn.dataset.armado=''; _delBtn.textContent='🗑 Eliminar pago'; } }, 4000);
+      return;
+    }
+    _delBtn.dataset.armado = '';
+    _delBtn.textContent = '🗑 Eliminar pago';
     if (pagoEditState.pagoKey) {
       // Fila _PAGO_: eliminar la fila completa del sheet
       const [oldM, oldF, oldD] = pagoEditState.pagoKey.split('|');
@@ -18969,9 +19039,45 @@ function _showLogin(msg){
 }
 function _hideLogin(){ const ov = document.getElementById('authOverlay'); if(ov) ov.style.display = 'none'; }
 
-// Cuando el servidor dice que la sesión ya no vale: limpiar y volver a pedir login.
-function _onSessionExpired(){
+// ── FIX jul-2026 (QA) — Sesión vencida: renovar EN SILENCIO, no expulsar ──
+// Reproducido en vivo: (1) la sesión vencía en pleno uso y expulsaba al login;
+// (2) tras re-loguear, una respuesta REZAGADA con SESION_INVALIDA (de un token
+// viejo) volvía a borrar el token NUEVO → los bucles de fondo quedaban fallando
+// para siempre con la lista truncada. Ahora:
+//  • Solo se invalida si el token que falló es el ACTUAL (se ignoran rezagadas).
+//  • Primero se intenta renovar con Google sin molestar (FedCM auto_select).
+//  • Solo si eso falla (9s) aparece el login — y el trabajo en pantalla se conserva.
+let _sessRenovando = false;
+function _onSessionExpired(tokUsado){
+  if (tokUsado !== undefined && tokUsado !== SESSION_TOKEN) return;  // respuesta vieja: ignorar
   SESSION_TOKEN=''; localStorage.removeItem('erp_sess');
+  _pillConn(false, 'Renovando sesión…');
+  if (_sessRenovando) return;   // ya hay una renovación en curso (evita estampida)
+  _sessRenovando = true;
+  _renovarSesionSilencioso();
+}
+function _renovarSesionSilencioso(){
+  // Plan B a los 9s: si Google no entregó un pase nuevo, mostrar el login clásico.
+  const fallback = setTimeout(function(){
+    if (SESSION_TOKEN) return;            // ya se renovó por otra vía
+    _sessRenovando = false;
+    _showLogin('Tu sesión expiró. Inicia sesión de nuevo (lo que tenías en pantalla no se pierde).');
+  }, 9000);
+  try{
+    if (window.google && google.accounts && google.accounts.id){
+      google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: function(resp){ clearTimeout(fallback); _onGoogleCredential(resp); },
+        use_fedcm_for_prompt: true,
+        itp_support: true,
+        auto_select: true                  // reusar la cuenta ya elegida, sin preguntar
+      });
+      google.accounts.id.prompt();
+      return;
+    }
+  }catch(e){}
+  clearTimeout(fallback);
+  _sessRenovando = false;
   _showLogin('Tu sesión expiró. Inicia sesión de nuevo.');
 }
 
@@ -18986,9 +19092,21 @@ async function _onGoogleCredential(resp){
     localStorage.setItem('erp_rol', MY_ROLE);
     localStorage.setItem('erp_email', MY_EMAIL);
     _hideLogin();
-    bootApp();
+    _sessRenovando = false;
+    _pillConn(true);
+    // FIX jul-2026 (QA): si la app YA estaba corriendo (renovación de sesión en
+    // caliente), NO re-bootear (evita bucles duplicados). Solo avisar y REANUDAR
+    // lo que la sesión vencida dejó a medias (carga de historial + polling).
+    if (window._appBooted){
+      try{ toast('Sesión renovada', 'ok'); }catch(_){}
+      try{ if (window._pedsCargaIncompleta && !window._pedsCargaEnCurso) _pedsCargarRestoProgresivo(); }catch(_){}
+      try{ _pollPedsOnce(); }catch(_){}
+    } else {
+      bootApp();
+    }
   }catch(e){
     SESSION_TOKEN=''; localStorage.removeItem('erp_sess');
+    _sessRenovando = false;
     _showLogin(e.message || 'No se pudo iniciar sesión.');
   }
 }
@@ -19085,6 +19203,7 @@ function _applyRoleUI(){
 
 // ── ARRANQUE REAL DE LA APP (solo después del login) ──
 function bootApp(){
+  window._appBooted = true;   // FIX jul-2026 (QA): renovaciones de sesión posteriores NO re-bootean
   const _le = document.getElementById('me-email'); if(_le) _le.textContent = MY_EMAIL || '';
   const _rb = document.getElementById('role-badge');
   if(_rb){ const _m={'Administrador':'ADMIN','Logistica':'LOGISTICA','Ventas':'VENTAS'}; _rb.textContent = _m[MY_ROLE] || (MY_ROLE||'').toUpperCase(); }
