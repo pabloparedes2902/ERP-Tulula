@@ -3434,24 +3434,6 @@ function onDashSelectorPrincipal(mk){
   });
 }
 
-   function _wsRenderPanel(cm){
-  var money=function(n){return 'S/ '+fmt(Math.round(n||0));};
-  var cob=(cm&&cm.cobrado)||0, ases=(cm&&cm.wsAsesoras)||[], oris=(cm&&cm.wsOrigenes)||[];
-  function bars(arr,key){ if(!arr.length) return '<div class="empty">Sin datos</div>'; var max=Math.max.apply(null,arr.map(function(a){return a[key]||0;}))||1; return arr.map(function(a){var w=Math.round((a[key]||0)/max*100); return '<div class="crw"><span style="flex:1;font-size:13px">'+esc(a.nombre)+'</span><div class="cbw"><div class="cbar" style="width:'+w+'%"></div></div><span style="font-size:13px;font-weight:600;width:85px;text-align:right">'+money(a[key])+'</span></div>';}).join(''); }
-  var h='';
-  h+='<div class="ct" style="margin-bottom:6px">Cobrado WhatsApp (mes)</div>';
-  h+='<div style="font-size:34px;font-weight:700;color:var(--gn);letter-spacing:-1px">'+money(cob)+'</div>';
-  h+='<div style="font-size:11px;color:var(--mu);margin-bottom:14px">plata que realmente entró (incluye envío)</div>';
-  h+='<div style="font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin:10px 0 6px">Ventas por asesora (sin envío)</div>'+bars(ases,'ventas');
-  h+='<div style="font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px">Ventas por origen</div>'+bars(oris,'cobrado');
-  var anun=(cm&&cm.wsAnuncios)||[];
-  if(anun.length){
-    h+='<div style="font-size:12px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 6px">Ventas por anuncio</div>';
-    h+=anun.map(function(a){return '<div class="crw"><span style="flex:1;font-size:13px">'+esc(a.headline||a.adId)+' <span style="color:var(--mu);font-size:11px">('+a.pedidos+' ped · conv '+a.conversion+'%)</span></span><span style="font-size:13px;font-weight:600;width:85px;text-align:right">'+money(a.cobrado)+'</span></div>';}).join('');
-  }
-  return h;
-}
-   
 // ── main render ──
 function renderDash(r) {
   const c30 = r.cambios30 || {count:0, prendas:0, pct:0};
@@ -3483,7 +3465,6 @@ function renderDash(r) {
   h += '<div class="g2">';
   // Default de TODAS las tarjetas = MES VIGENTE (antes 30 días)
   const _cm = (mesActualKey && r.porMes && r.porMes[mesActualKey]) ? r.porMes[mesActualKey] : null;
-   h += '<div class="card">'+_wsRenderPanel(_cm)+'</div>';
 
   // Ticket por canal (default mes vigente)
   h += '<div class="card">'+_dashCardHdr('Ticket promedio por canal', 'ticket')
@@ -3757,6 +3738,31 @@ function _pedsRecienteAdd(nro, rows) {
   o[String(nro)] = { ts: Date.now(), rows: rows.map(r => Object.assign({}, r)) };
   _pedsRecientesSet(o);
 }
+// FIX jul-2026 (QA): sacar un pedido del overlay de "recientes". Sin esto, un pedido
+// creado y luego ELIMINADO en la misma sesión seguía reapareciendo en la lista hasta
+// 15 min (el overlay lo re-inyectaba en cada render porque ya no estaba en datos reales).
+function _pedsRecienteDel(nro) {
+  try { const o = _pedsRecientesGet(); if (o[String(nro)]) { delete o[String(nro)]; _pedsRecientesSet(o); } } catch(e) {}
+}
+
+// ── FIX jul-2026 (QA) — OVERLAY OPTIMISTA DE PAPELERA ───────────────────────
+// CAUSA RAÍZ (la que preguntó Pablo): al eliminar, el pedido se quita al INSTANTE
+// de la lista de Pedidos (optimista), pero la Papelera es OTRA vista que lee solo
+// lo que el servidor ya confirmó — y esa escritura tarda ~3-4s (piso de Apps Script).
+// Si entras a Papelera en esos segundos, el pedido "todavía no aparece". Este overlay
+// muestra el pedido eliminado en la Papelera de inmediato, y lo confirma/suelta cuando
+// el servidor ya lo devuelve (o al expirar). Mismo patrón que _pedsRecientes para crear.
+const PAPELERA_PEND_KEY = 'papelera_pend';
+const PAPELERA_PEND_TTL = 10 * 60 * 1000; // 10 min
+function _papeleraPendGet(){ try { return JSON.parse(localStorage.getItem('erp_'+PAPELERA_PEND_KEY)||'{}')||{}; } catch(e){ return {}; } }
+function _papeleraPendSet(o){ try { localStorage.setItem('erp_'+PAPELERA_PEND_KEY, JSON.stringify(o)); } catch(e){} }
+function _papeleraPendAdd(nro, rows){
+  if(!nro || !Array.isArray(rows) || !rows.length) return;
+  const o = _papeleraPendGet();
+  o[String(nro)] = { ts: Date.now(), rows: rows.map(r => Object.assign({}, r)) };
+  _papeleraPendSet(o);
+}
+function _papeleraPendDel(nro){ try { const o=_papeleraPendGet(); if(o[String(nro)]){ delete o[String(nro)]; _papeleraPendSet(o); } } catch(e){} }
 
 document.getElementById('ped-tabs').addEventListener('click', e => {
   const tab = e.target.closest('.tab'); if (!tab) return;
@@ -7677,13 +7683,19 @@ function verPed(p) {
     if (!ok) return;
     // OPTIMISTA: quitar del pRaw local AL INSTANTE + disparar backend en background
     document.getElementById('modal-ped').classList.remove('on');
+    // FIX QA: capturar las filas del pedido ANTES de quitarlo → overlay de Papelera
+    // para que aparezca ahí de inmediato (no esperar los ~3-4s del servidor).
+    const _rowsEliminadas = pRaw.filter(r => String(r['NroPedido']||'').trim() === String(nro).trim())
+      .map(r => Object.assign({}, r, { 'Eliminado':'SI', 'FechaEliminacion': new Date().toISOString(), 'EliminadoPor': (MY_EMAIL||'') }));
     pRaw = pRaw.filter(r => String(r['NroPedido']||'').trim() !== String(nro).trim());
+    _pedsRecienteDel(nro);   // FIX QA: que un pedido recién creado NO reaparezca tras eliminarlo
+    _papeleraPendAdd(nro, _rowsEliminadas);   // FIX QA: aparece YA en Papelera
     lsSetPeds(pRaw, pLastSyncTs || Date.now());
     try { _renderPedsDesde(pRaw, pEst, true); } catch(e) {}
     toast('✓ Pedido #'+nro+' enviado a Papelera', 'ok');
     apiSend('pedidos.eliminar', {NroPedido:nro})
       .then(() => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){} })
-      .catch(e => toast('Error al eliminar en servidor: '+esc(e.message)+' — refresca para reintentar','err'));
+      .catch(e => { _papeleraPendDel(nro); toast('Error al eliminar en servidor: '+esc(e.message)+' — refresca para reintentar','err'); });
   });
 
   // Cargar cambios de este pedido en background
@@ -18703,8 +18715,20 @@ async function loadPapelera() {
   const w = document.getElementById('papelera-w');
   w.innerHTML = spin('Cargando papelera...');
   try {
-    const rows = await api('pedidos.papelera.listar');
-    _renderPapelera(w, rows||[]);
+    const rows = await api('pedidos.papelera.listar') || [];
+    // FIX QA: fusionar el overlay optimista — pedidos recién eliminados que el
+    // servidor todavía no devuelve (ventana de ~3-4s). Se confirman (y salen del
+    // overlay) cuando ya aparecen en la lista real, o al expirar (10 min).
+    let _pend = _papeleraPendGet(), _pendCh = false;
+    const _nrosServidor = new Set(rows.map(r => String(r['NroPedido']||'').trim()));
+    const _extra = [];
+    Object.keys(_pend).forEach(nro => {
+      if (Date.now() - _pend[nro].ts > PAPELERA_PEND_TTL) { delete _pend[nro]; _pendCh = true; return; }
+      if (_nrosServidor.has(nro)) { delete _pend[nro]; _pendCh = true; return; }  // ya confirmado por servidor
+      _pend[nro].rows.forEach(r => _extra.push(r));
+    });
+    if (_pendCh) _papeleraPendSet(_pend);
+    _renderPapelera(w, _extra.concat(rows));
   } catch(e) {
     w.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>';
   }
@@ -18769,6 +18793,7 @@ function _renderPapelera(w, rows) {
     this.disabled = true; this.textContent = 'Restaurando...';
     try {
       await apiSend('pedidos.papelera.restaurar', {NroPedido: nro});
+      _papeleraPendDel(nro);   // FIX QA: sacar del overlay (ya no está en papelera)
       toast('✓ Pedido #'+nro+' restaurado', 'ok');
       loadPapelera();
     } catch(e) { toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='↶ Restaurar'; }
@@ -18779,6 +18804,7 @@ function _renderPapelera(w, rows) {
     this.disabled = true; this.textContent = 'Eliminando...';
     try {
       await apiSend('pedidos.papelera.eliminarDefinitivo', {NroPedido: nro});
+      _papeleraPendDel(nro);   // FIX QA: sacar del overlay
       toast('✓ Pedido #'+nro+' eliminado definitivamente', 'ok');
       loadPapelera();
     } catch(e) { toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='✕ Eliminar definitivamente'; }
