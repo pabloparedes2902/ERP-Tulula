@@ -9745,8 +9745,21 @@ async function _npProcessSaveQueue() {
         }
       } catch(e) {}
     } catch(e) {
-      // Falló → parar el procesamiento, mantener el job en la cola, alertar
       job.intentos = (job.intentos || 0) + 1;
+      // FIX jul-2026 (post prueba de carga): REINTENTO AUTOMÁTICO ante choque de
+      // candado. Bajo muchos guardados simultáneos, algunos reciben "El sistema está
+      // guardando otro pedido…". Como el pedido lleva requestId (anti-duplicado), reintentar
+      // es 100% seguro: si en realidad ya se guardó, el servidor devuelve el mismo resultado
+      // (no duplica). Reintentamos hasta 3 veces con espera creciente SIN mostrar el error ni
+      // quitar la fila provisional (la asesora sigue viendo su pedido "guardando…"). Solo si
+      // agota los reintentos se muestra el error para reintento manual.
+      const _msg = (e && e.message) || '';
+      if (/guardando otro/i.test(_msg) && job.intentos <= 3) {
+        _npUpdateSaveIndicator();
+        await new Promise(r => setTimeout(r, 1500 * job.intentos));  // 1.5s, 3s, 4.5s
+        continue;   // reintentar el MISMO job (sigue en la cola, mismo requestId)
+      }
+      // Falló definitivo → parar el procesamiento, mantener el job en la cola, alertar
       // Quitar la fila provisional (el guardado no se concretó)
       try {
         if (job._provNro) {
