@@ -18713,24 +18713,36 @@ function _finCostBulkOpen(sinCosto) {
 // ════════════════════════════════════════════════════════════
 async function loadPapelera() {
   const w = document.getElementById('papelera-w');
-  w.innerHTML = spin('Cargando papelera...');
+  // FIX QA — INSTANTÁNEO: pintar PRIMERO el overlay optimista (pedidos recién
+  // eliminados que el servidor aún no devuelve, ventana ~3-4s) para que se vean
+  // de inmediato, y refrescar con la lista real cuando el servidor responda.
+  const _overlayRows = function() {
+    let _pend = _papeleraPendGet(), _pendCh = false; const _out = [];
+    Object.keys(_pend).forEach(nro => {
+      if (Date.now() - _pend[nro].ts > PAPELERA_PEND_TTL) { delete _pend[nro]; _pendCh = true; return; }
+      _pend[nro].rows.forEach(r => _out.push(r));
+    });
+    if (_pendCh) _papeleraPendSet(_pend);
+    return _out;
+  };
+  const _extraNow = _overlayRows();
+  if (_extraNow.length) _renderPapelera(w, _extraNow);          // ← se ve al instante
+  else w.innerHTML = spin('Cargando papelera...');
   try {
     const rows = await api('pedidos.papelera.listar') || [];
-    // FIX QA: fusionar el overlay optimista — pedidos recién eliminados que el
-    // servidor todavía no devuelve (ventana de ~3-4s). Se confirman (y salen del
-    // overlay) cuando ya aparecen en la lista real, o al expirar (10 min).
+    // Al volver del servidor: soltar del overlay los nros ya confirmados y re-render con todo.
     let _pend = _papeleraPendGet(), _pendCh = false;
     const _nrosServidor = new Set(rows.map(r => String(r['NroPedido']||'').trim()));
     const _extra = [];
     Object.keys(_pend).forEach(nro => {
       if (Date.now() - _pend[nro].ts > PAPELERA_PEND_TTL) { delete _pend[nro]; _pendCh = true; return; }
-      if (_nrosServidor.has(nro)) { delete _pend[nro]; _pendCh = true; return; }  // ya confirmado por servidor
+      if (_nrosServidor.has(nro)) { delete _pend[nro]; _pendCh = true; return; }  // ya confirmado
       _pend[nro].rows.forEach(r => _extra.push(r));
     });
     if (_pendCh) _papeleraPendSet(_pend);
     _renderPapelera(w, _extra.concat(rows));
   } catch(e) {
-    w.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>';
+    if (!_extraNow.length) w.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>';
   }
 }
 function _renderPapelera(w, rows) {
