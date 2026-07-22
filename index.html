@@ -2068,6 +2068,76 @@ async function apiPost(action, body) {
   }, action);
 }
 
+// ══════════════════════════════════════════════════════════════
+// LECTURA DIRECTA SUPABASE (jul-2026) — el listado de Pedidos se lee DIRECTO
+// de la base (sin pasar por Apps Script): de ~3 min a ~15 seg la carga completa.
+// Seguridad: entra con el MISMO login de Google del equipo; en Supabase una
+// política RLS solo deja leer a los correos de la tabla erp_usuarios. La anon
+// key es pública por diseño y NO da acceso a ningún dato por sí sola.
+// Si algo falla (sin sesión, sin permiso, red), cae SOLO a la vía Apps Script.
+// ══════════════════════════════════════════════════════════════
+const SB_URL  = 'https://vlilvrxfppppzwyaeviu.supabase.co';
+const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsaWx2cnhmcHBwcHp3eWFldml1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2NDIwMTMsImV4cCI6MjEwMDIxODAxM30.Bmo4CNDDbSF7Vp9JpDm7ceKUlsKKdufKcKFDIGHS4Hs';   // anon key (pública por diseño; RLS manda)
+let _sbTok = null;    // {access_token, refresh_token, expires_at}
+try { _sbTok = JSON.parse(localStorage.getItem('erp_sb_sess')||'null'); } catch(_){}
+function _sbGuardarTok(t){
+  _sbTok = t ? { access_token: t.access_token, refresh_token: t.refresh_token,
+                 expires_at: Date.now() + Math.max(60, (t.expires_in||3600) - 60)*1000 } : null;
+  try { if (_sbTok) localStorage.setItem('erp_sb_sess', JSON.stringify(_sbTok));
+        else localStorage.removeItem('erp_sb_sess'); } catch(_){}
+}
+// Con el "pase" de Google (el mismo del login del ERP) abrimos sesión en Supabase.
+async function _sbAuthConCredencial(cred){
+  if (!SB_ANON || !cred) return;
+  try {
+    const r = await fetch(SB_URL + '/auth/v1/token?grant_type=id_token', {
+      method: 'POST', headers: {'Content-Type':'application/json','apikey':SB_ANON},
+      body: JSON.stringify({ provider: 'google', id_token: cred })
+    });
+    const j = await r.json().catch(()=>({}));
+    if (r.ok && j.access_token) { _sbGuardarTok(j); console.log('[SB] lectura directa ACTIVA'); }
+    else { _sbGuardarTok(null); console.warn('[SB] login directo rechazado:', j.error_description||j.msg||r.status); }
+  } catch(e){ console.warn('[SB] login directo falló:', e); }
+}
+async function _sbTokenVigente(){
+  if (!SB_ANON || !_sbTok) return null;
+  if (Date.now() < (_sbTok.expires_at||0)) return _sbTok.access_token;
+  try {
+    const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+      method: 'POST', headers: {'Content-Type':'application/json','apikey':SB_ANON},
+      body: JSON.stringify({ refresh_token: _sbTok.refresh_token })
+    });
+    const j = await r.json().catch(()=>({}));
+    if (r.ok && j.access_token) { _sbGuardarTok(j); return j.access_token; }
+  } catch(e){}
+  _sbGuardarTok(null); return null;
+}
+// Una página de pedidos DIRECTO de la base. Mismo contrato que pedidos.listar.
+async function _sbListarDirecto(offset, limit){
+  const tok = await _sbTokenVigente();
+  if (!tok) return null;
+  const q = SB_URL + '/rest/v1/pedidos?select=row_json&eliminado=is.null'
+          + '&order=fecha_efectiva.desc.nullslast,id.desc'
+          + '&limit=' + (limit||1000) + '&offset=' + (offset||0);
+  const r = await fetch(q, { headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer '+tok, 'Prefer': 'count=exact' } });
+  if (!r.ok) { if (r.status === 401 || r.status === 403) _sbGuardarTok(null); return null; }
+  const cr = r.headers.get('content-range') || '';
+  const total = (cr && cr.indexOf('/') >= 0) ? parseInt(cr.split('/')[1]) : 0;
+  const arr = await r.json();
+  const rows = arr.map(x => x.row_json || {});
+  return { rows, total, offset: offset||0, limit: limit||1000,
+           hayMas: ((offset||0) + rows.length) < total, serverTs: Date.now() };
+}
+// Wrapper del listado plano (sin filtros ni estado): directo si hay sesión SB, si no Apps Script.
+async function _pedListarPagina(params){
+  params = params || {};
+  const soloPaginacion = Object.keys(params).every(k => k === 'offset' || k === 'limit');
+  if (soloPaginacion) {
+    try { const d = await _sbListarDirecto(params.offset||0, params.limit||1000); if (d && d.rows) return d; } catch(e){}
+  }
+  return api('pedidos.listar', params);
+}
+
 // ── Reparación / diagnóstico campo Cambio en Pedidos ──
 // Llamar desde la consola del navegador:
 //   await repararCambios()
@@ -2883,7 +2953,7 @@ async function loadEnvios() {
   el.innerHTML = spin('Cargando cola de envíos...');
   try {
     if (!Array.isArray(pRaw) || !pRaw.length) {
-      const r = await api('pedidos.listar', _pedsScopeParams());
+      const r = await _pedListarPagina(_pedsScopeParams());
       pRaw = Array.isArray(r) ? r : (r.rows || []);
     }
   } catch(e) {}
@@ -4467,7 +4537,7 @@ async function loadPeds(est, force) {
   el.innerHTML = spin('Cargando pedidos...');
   try {
     const params = Object.assign({offset:0}, _pedsScopeParams());
-    const res = await api('pedidos.listar', params);
+    const res = await _pedListarPagina(params);
     const rows = Array.isArray(res) ? res : (res.rows||[]);
     const serverTs = (res && res.serverTs) || Date.now();
     lsSetPeds(rows, serverTs);
@@ -6103,7 +6173,7 @@ async function _pedsCargarRestoProgresivo() {
       // recientes y provisionales) para no descuadrar la paginación del backend.
       const off = pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length;
       let res;
-      try { res = await api('pedidos.listar', Object.assign(_pedsScopeParams(), { offset: off, limit: 2000 })); }   // 2000 = mitad de viajes → histórico completo en la mitad de tiempo
+      try { res = await _pedListarPagina(Object.assign(_pedsScopeParams(), { offset: off, limit: ((SB_ANON && _sbTok) ? 5000 : 2000) })); }   // directo SB: lotes grandes; Apps Script: 2000
       catch(e) {
         try{_errLog('peds.cargarResto', e);}catch(_){}
         // FIX jul-2026: antes moría en silencio y el usuario filtraba sobre datos a medias.
@@ -19300,6 +19370,8 @@ async function _onGoogleCredential(resp){
   const m = document.getElementById('authMsg'); if(m) m.textContent = '';
   try{
     const data = await apiPost('auth.login', { idToken: resp.credential });
+    // Con el mismo pase de Google, abrir también la sesión de LECTURA DIRECTA Supabase
+    try { _sbAuthConCredencial(resp.credential); } catch(_){}
     SESSION_TOKEN = data.sessionToken; MY_ROLE = data.rol; MY_EMAIL = data.email;
     localStorage.setItem('erp_sess', SESSION_TOKEN);
     localStorage.setItem('erp_rol', MY_ROLE);
