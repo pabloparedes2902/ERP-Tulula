@@ -231,7 +231,11 @@ html.light .bbl{background:#d6e4fb!important;color:#1d4ed8!important}
 html.light .bpu{background:#e7ddf7!important;color:#6d28d9!important}
 /* (regla .crs:hover ya definida arriba en línea 128) */
 /* FILTRO DROPDOWN */
-.fdrop{position:fixed;background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r);width:210px;max-height:280px;overflow:hidden;display:flex;flex-direction:column;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,.6)}
+.fdrop{position:fixed;background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r);width:210px;max-height:340px;overflow:hidden;display:flex;flex-direction:column;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,.6)}
+.fsr{display:flex;flex-direction:column;gap:2px;padding:6px 6px;border-bottom:1px solid var(--bd)}
+.fsr button{text-align:left;padding:6px 8px;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit;background:none;border:none;color:var(--tx)}
+.fsr button:hover{background:var(--bg3)}
+.fnote{padding:6px 10px;font-size:10px;color:var(--mu)}
 .fdrop input{padding:8px 10px;background:var(--bg3);border:none;border-bottom:1px solid var(--bd);color:var(--tx);font-size:12px;outline:none}
 .fdl{overflow-y:auto;flex:1}
 .fi{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;font-size:12px}
@@ -6030,7 +6034,12 @@ function pClick(e) {
 }
 
 function pSort(col) {
-  if (pSC===col) pSA=!pSA; else { pSC=col; pSA=false; }
+  pSortDir(col, (pSC===col) ? !pSA : false);
+}
+// Ordena por columna con dirección explícita (asc=true → A-Z / más viejo primero).
+// Usada por el clic en el encabezado (pSort) y por el menú ▾ tipo Excel.
+function pSortDir(col, asc) {
+  pSC = col; pSA = asc;
   document.querySelectorAll('table.pt th[data-k]').forEach(th => {
     const k = th.getAttribute('data-k');
     const si = th.querySelector('.si'); if (si) si.textContent = k===col?(pSA?'▲':'▼'):'⇅';
@@ -6156,77 +6165,96 @@ function pOpenDrp(col, btn) {
   const cd=PCOLS.find(c=>c.k===col), esL=!!(cd&&cd.lib), fA=pFlt[col];
   const div=document.createElement('div'); div.id='fd-active'; div.className='fdrop';
 
-  if (esL) {
-    const inp=document.createElement('input'); inp.type='text'; inp.placeholder='Escribe para filtrar...'; inp.value=fA?fA.val:'';
-    const fac=document.createElement('div'); fac.className='fac';
-    const cb=document.createElement('button'); cb.className='fclr'; cb.textContent='Limpiar';
-    const ab=document.createElement('button'); ab.className='fapl'; ab.textContent='Buscar';
-    fac.append(cb,ab); div.append(inp,fac);
-    inp.addEventListener('input', function() {
+  // ── MENÚ TIPO EXCEL (jul-2026, pedido de Pablo) ─────────────────────────
+  // Para TODAS las columnas: Ordenar A-Z / Z-A + buscador + lista de valores
+  // únicos con checkboxes (como Google Sheets). En columnas de texto libre,
+  // escribir en el buscador sigue filtrando el grid en vivo (comportamiento
+  // de siempre); marcar checkboxes y Aplicar filtra por valores exactos.
+
+  // 1. Ordenar
+  const srt=document.createElement('div'); srt.className='fsr';
+  const bAZ=document.createElement('button'); bAZ.type='button'; bAZ.textContent='↑  Ordenar A → Z';
+  const bZA=document.createElement('button'); bZA.type='button'; bZA.textContent='↓  Ordenar Z → A';
+  srt.append(bAZ,bZA); div.appendChild(srt);
+  bAZ.addEventListener('click', () => { pSortDir(col, true);  pCloseDrp(); });
+  bZA.addEventListener('click', () => { pSortDir(col, false); pCloseDrp(); });
+
+  // 2. Valores únicos: predefinidos (Maestros) + valores encontrados en pRaw
+  const predefined = MAESTROS_OPTS[col];
+  // Para columnas virtuales (agregate), mapear al campo real en pRaw
+  const rawKey = col === '_formasPago' ? 'Forma pago'
+               : col === '_totalPagado' ? 'Pago'
+               : col;
+  // Datos reales de pRaw (todos los pedidos cargados, no solo los filtrados)
+  const fromData = [...new Set(pRaw.map(r => {
+    const v = String(r[rawKey]||'').trim(); if (!v) return '';
+    // Fechas: mostrar DD/MM/YYYY en el dropdown en lugar de ISO
+    if (PF.has(col)) { return fmtD(r[rawKey]) || ''; }
+    return v;
+  }).filter(Boolean))];
+  const _cmp = (a,b) => String(a).localeCompare(String(b), 'es', {numeric:true});
+  let opts;
+  if (predefined && predefined.length) {
+    // Orden predefinido primero, luego valores no listados del sheet
+    const extra = fromData.filter(v => !predefined.includes(v)).sort(_cmp);
+    opts = [...predefined, ...extra];
+  } else {
+    opts = fromData.sort(_cmp);
+  }
+  const sel = (fA && !fA.lib && fA.val) ? fA.val : new Set();
+  // Valores ya seleccionados que no están en lo cargado (p.ej. vinieron de un
+  // rescate del servidor): mantenerlos visibles para poder des-marcarlos.
+  [...sel].filter(v => !opts.includes(v)).forEach(v => opts.unshift(v));
+  // Tope de render (columnas como Celular pueden tener miles de valores únicos)
+  const MAXV = 1500;
+  const recorte = opts.length > MAXV;
+  if (recorte) opts = opts.slice(0, MAXV);
+
+  const sr=document.createElement('input'); sr.type='text';
+  sr.placeholder = esL ? 'Escribe para filtrar...' : 'Buscar...';
+  if (fA && fA.lib) sr.value = fA.val || '';
+  const lst=document.createElement('div'); lst.className='fdl';
+  opts.forEach(v => {
+    const lbl=document.createElement('label'); lbl.className='fi';
+    const chk=document.createElement('input'); chk.type='checkbox'; chk.value=v; if(sel.has(v))chk.checked=true;
+    const sp=document.createElement('span'); sp.textContent=v;
+    lbl.append(chk,sp); lst.appendChild(lbl);
+  });
+  if (recorte) {
+    const n=document.createElement('div'); n.className='fnote';
+    n.textContent='Mostrando '+MAXV+' valores — escribe arriba para encontrar el resto';
+    lst.appendChild(n);
+  }
+  const fac=document.createElement('div'); fac.className='fac';
+  const cb=document.createElement('button'); cb.className='fclr'; cb.textContent='Limpiar';
+  const ab=document.createElement('button'); ab.className='fapl'; ab.textContent='Aplicar';
+  fac.append(cb,ab); div.append(sr,lst,fac);
+
+  // El buscador filtra la lista de valores en vivo…
+  sr.addEventListener('input', function() {
+    const q=this.value.toLowerCase();
+    lst.querySelectorAll('.fi').forEach(fi=>fi.style.display=fi.querySelector('span').textContent.toLowerCase().includes(q)?'':'none');
+    // …y en columnas de texto libre además filtra el grid en vivo (como siempre)
+    if (esL) {
       clearTimeout(pDeb);
       pDeb = setTimeout(() => {
-        if (!this.value) { delete pFlt[col]; pMrkH(col,false); }
+        if (!this.value) { if (pFlt[col] && pFlt[col].lib) { delete pFlt[col]; pMrkH(col,false); } }
         else { pFlt[col]={lib:true,val:this.value}; pMrkH(col,true); }
         pAply();
       }, 120);
-    });
-    inp.addEventListener('keydown', e => { if(e.key==='Enter') { clearTimeout(pDeb); ab.click(); }});
-    cb.addEventListener('click', () => { delete pFlt[col]; pMrkH(col,false); pCloseDrp(); pAply(); });
-    ab.addEventListener('click', () => {
-      clearTimeout(pDeb);
-      if (!inp.value.trim()) { delete pFlt[col]; pMrkH(col,false); }
-      else { pFlt[col]={lib:true,val:inp.value.trim()}; pMrkH(col,true); }
-      pCloseDrp(); pAply();
-    });
-    setTimeout(()=>inp.focus(), 50);
-  } else {
-    // Fuente de opciones: predefinidas (Maestros) + valores encontrados en pRaw
-    let opts;
-    const predefined = MAESTROS_OPTS[col];
-    // Para columnas virtuales (agregate), mapear al campo real en pRaw
-    const rawKey = col === '_formasPago' ? 'Forma pago'
-                 : col === '_totalPagado' ? 'Pago'
-                 : col;
-    // Datos reales de pRaw (todos los pedidos cargados, no solo los filtrados)
-    const fromData = [...new Set(pRaw.map(r => {
-      const v = String(r[rawKey]||'').trim(); if (!v) return '';
-      // Fechas: mostrar DD/MM/YYYY en el dropdown en lugar de ISO
-      if (PF.has(col)) { return fmtD(r[rawKey]) || ''; }
-      return v;
-    }).filter(Boolean))];
-    if (predefined && predefined.length) {
-      // Orden predefinido primero, luego valores no listados del sheet
-      const extra = fromData.filter(v => !predefined.includes(v)).sort();
-      opts = [...predefined, ...extra];
-    } else {
-      opts = fromData.sort();
     }
-    const sel=fA?fA.val:new Set();
-    const sr=document.createElement('input'); sr.type='text'; sr.placeholder='Buscar...';
-    const lst=document.createElement('div'); lst.className='fdl';
-    opts.forEach(v => {
-      const lbl=document.createElement('label'); lbl.className='fi';
-      const chk=document.createElement('input'); chk.type='checkbox'; chk.value=v; if(sel.has(v))chk.checked=true;
-      const sp=document.createElement('span'); sp.textContent=v;
-      lbl.append(chk,sp); lst.appendChild(lbl);
-    });
-    const fac=document.createElement('div'); fac.className='fac';
-    const cb=document.createElement('button'); cb.className='fclr'; cb.textContent='Limpiar';
-    const ab=document.createElement('button'); ab.className='fapl'; ab.textContent='Aplicar';
-    fac.append(cb,ab); div.append(sr,lst,fac);
-    sr.addEventListener('input', function() {
-      const q=this.value.toLowerCase();
-      lst.querySelectorAll('.fi').forEach(fi=>fi.style.display=fi.querySelector('span').textContent.toLowerCase().includes(q)?'':'none');
-    });
-    cb.addEventListener('click', () => { delete pFlt[col]; pMrkH(col,false); pCloseDrp(); pAply(); });
-    ab.addEventListener('click', () => {
-      const cks=[...div.querySelectorAll('input[type=checkbox]:checked')];
-      if (!cks.length) { delete pFlt[col]; pMrkH(col,false); }
-      else { pFlt[col]={lib:false,val:new Set(cks.map(c=>c.value))}; pMrkH(col,true); }
-      pCloseDrp(); pAply();
-    });
-    setTimeout(()=>sr.focus(), 50);
-  }
+  });
+  sr.addEventListener('keydown', e => { if(e.key==='Enter') { clearTimeout(pDeb); ab.click(); }});
+  cb.addEventListener('click', () => { delete pFlt[col]; pMrkH(col,false); pCloseDrp(); pAply(); });
+  ab.addEventListener('click', () => {
+    clearTimeout(pDeb);
+    const cks=[...lst.querySelectorAll('input[type=checkbox]:checked')];
+    if (cks.length) { pFlt[col]={lib:false,val:new Set(cks.map(c=>c.value))}; pMrkH(col,true); }
+    else if (sr.value.trim()) { pFlt[col]={lib:true,val:sr.value.trim()}; pMrkH(col,true); }
+    else { delete pFlt[col]; pMrkH(col,false); }
+    pCloseDrp(); pAply();
+  });
+  setTimeout(()=>sr.focus(), 50);
 
   document.body.appendChild(div);
   const rect=btn.getBoundingClientRect();
