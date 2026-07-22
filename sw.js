@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-v10';  // v10: menú tipo Excel en columnas de Pedidos (ordenar + valores con checkboxes)
+const SW_VERSION = 'tulula-v10';  // v10: menú Excel en columnas + historial completo en memoria (IDB) + exactos primero + sin Período
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 

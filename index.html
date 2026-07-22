@@ -3599,11 +3599,17 @@ const PEDS_LS_TTL = 30 * 60 * 1000; // 30 minutos (antes: 3 min)
 // La recarga SIEMPRE arranca liviana (default "Último mes"): nunca en "Todo el historial"
 // ni "6 meses", que cargan ~20k filas y hacen que el conteo baile mientras carga.
 // Los scopes livianos (activos / ultimomes / ultimos3meses) sí se recuerdan entre recargas.
-let pScope = (function(){
-  var s = localStorage.getItem('erp_ped_scope') || 'ultimomes';
-  if (s === 'todo' || s === '6meses') s = 'ultimomes';
-  return s;
-})();
+// FIX DEFINITIVO (jul-2026, pedido de Pablo): el selector de Período se eliminó.
+// Pedidos SIEMPRE trabaja con el HISTORIAL COMPLETO en memoria (como Excel):
+// se muestra al instante desde el snapshot local (IndexedDB) y se completa /
+// actualiza en segundo plano. Los scopes viejos (ultimomes/6meses/…) ya no se usan.
+let pScope = 'todo';
+// Limpieza: caches de los scopes retirados (liberan cuota de localStorage)
+try { ['activos','ultimomes','ultimos3meses','6meses'].forEach(function(s){ localStorage.removeItem('erp_' + PEDS_LS_KEY + '_' + s); }); } catch(_){}
+// TTL: para el historial completo, 24h — al abrir se muestra el snapshot local y el
+// delta (pedidos.cambiosDesde) lo pone al día; si el changelog no alcanza, el server
+// manda refetch (recarga completa). Para lo demás se mantiene el TTL corto.
+function _pedsTtl(){ return pScope === 'todo' ? 24*60*60*1000 : PEDS_LS_TTL; }
 // Borde morado en el selector de Período cuando está en un rango distinto al default liviano
 // (= "filtro activo"). En "Último mes" (default) no tiene borde morado.
 function _pScopePintarSelector(){
@@ -3659,21 +3665,43 @@ function lsGetPeds() {
       }
       if (json) {
         const obj = JSON.parse(json);
-        if (Date.now() - obj.ts > PEDS_LS_TTL) { localStorage.removeItem('erp_' + _pedsLsKeyForScope()); }
+        if (Date.now() - obj.ts > _pedsTtl()) { localStorage.removeItem('erp_' + _pedsLsKeyForScope()); }
         else { if (obj.serverTs) pLastSyncTs = obj.serverTs; return obj.data; }
       }
     }
   } catch(e) {}
   // 2. IDB snapshot (hidratado en boot, si la última escritura cayó en IDB por quota)
   if (_idbPedsMem && _idbPedsMem.scope === pScope) {
-    if (Date.now() - _idbPedsMem.ts > PEDS_LS_TTL) { _idbPedsMem = null; idbDel('peds_'+pScope); }
+    if (Date.now() - _idbPedsMem.ts > _pedsTtl()) { _idbPedsMem = null; idbDel('peds_'+pScope); }
     else { if (_idbPedsMem.serverTs) pLastSyncTs = _idbPedsMem.serverTs; return _idbPedsMem.data; }
   }
   return null;
 }
+const PEDS_BIG_ROWS = 6000;  // desde aquí, el snapshot va DIRECTO a IndexedDB (LS/LZ no aguantan)
+let _pedsBigSaveTimer = null, _pedsBigSavePending = null;
 function lsSetPeds(data, serverTs) {
   const ts = Date.now(), st = serverTs || ts;
   const obj = {ts, serverTs: st, data};
+  if (st) pLastSyncTs = st;
+  // HISTORIAL COMPLETO (45k filas): stringify+LZ tomaría segundos de CPU en CADA guardado
+  // y rebalsa localStorage. → directo a IndexedDB, coalescido: escribe YA la primera vez
+  // y luego máximo 1 vez cada 20s (el server sigue siendo la fuente de la verdad; el
+  // snapshot local es solo arranque instantáneo, el delta lo pone al día al abrir).
+  if (Array.isArray(data) && data.length > PEDS_BIG_ROWS) {
+    _idbPedsMem = Object.assign({}, obj, {scope: pScope});
+    try { localStorage.removeItem('erp_' + _pedsLsKeyForScope()); } catch(_){}
+    if (!_pedsBigSaveTimer) {
+      idbSet('peds_'+pScope, obj).catch(err => _errLog('idb.set.peds', err));
+      _pedsBigSaveTimer = setTimeout(() => {
+        _pedsBigSaveTimer = null;
+        const o = _pedsBigSavePending; _pedsBigSavePending = null;
+        if (o) idbSet('peds_'+pScope, o).catch(err => _errLog('idb.set.peds', err));
+      }, 20000);
+    } else {
+      _pedsBigSavePending = obj;
+    }
+    return true;
+  }
   let lsOk = false;
   try {
     const json = JSON.stringify(obj);
@@ -3704,7 +3732,7 @@ async function _idbHydratePeds() {
   _idbHydratePedsPromise = (async () => {
     try {
       const obj = await idbGet('peds_' + pScope);
-      if (obj && obj.data && (Date.now() - obj.ts <= PEDS_LS_TTL)) {
+      if (obj && obj.data && (Date.now() - obj.ts <= _pedsTtl())) {
         _idbPedsMem = Object.assign({}, obj, {scope: pScope});
         if (obj.serverTs) pLastSyncTs = obj.serverTs;
       }
@@ -4399,7 +4427,7 @@ async function loadPeds(est, force) {
   // En las demás pestañas se oculta por completo para no confundir.
   try {
     const _sc = document.getElementById('ped-scope');
-    if (_sc) _sc.style.display = (estVal === '' || estVal === 'ENTREGADO') ? '' : 'none';
+    if (_sc) _sc.style.display = 'none';   // Período ELIMINADO (jul-2026) — siempre historial completo
   } catch(_){}
   const el = document.getElementById('ped-w');
   _pedsLoadToken++;   // cancela cualquier carga progresiva en curso (cambió de vista/scope)
@@ -6066,6 +6094,7 @@ async function _pedsCargarRestoProgresivo() {
   const myToken = ++_pedsLoadToken;
   window._pedsCargaEnCurso = true;
   window._pedsCargaIncompleta = false;   // FIX jul-2026: aviso visible si la carga muere a medias
+  window._pedsRender3k = (pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length >= 3000); // si ya hay ≥3000 en pantalla, no re-dibujar a mitad de carga
   let guard = 0, fallos = 0;
   try {
     while (guard++ < 300) {                       // tope de seguridad: 300×1000 filas
@@ -6089,14 +6118,22 @@ async function _pedsCargarRestoProgresivo() {
       if (!nuevos.length) break;
       pRaw = pRaw.concat(nuevos);
       window._pedTotalReal = (res && res.total) || pRaw.length;
-      // B1 (Supabase): scopes SIN corte de fecha (6 meses / Todos) → no traer las ~45k de golpe.
-      // Cargamos las más recientes (~3000) al instante; el resto se encuentra por búsqueda/filtro
-      // (que consulta al servidor vía "rescate"). El contador sigue mostrando el total real.
-      {
-        const _sinCorte = !((typeof _pPeriodoCutoffTs === 'function') && _pPeriodoCutoffTs());
-        const _realLen = pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length;
-        if (_sinCorte && _realLen >= 3000) { window._pedsCapAlcanzado = true; break; }
+      // FIX DEFINITIVO (jul-2026, pedido de Pablo): cargar TODO el historial en memoria
+      // (como Excel). Ya no hay cap de 3000: el primer bloque se muestra al instante, el
+      // resto sigue llegando en segundo plano con contador en vivo, y al terminar se
+      // persiste COMPLETO en IndexedDB → las próximas aperturas son instantáneas.
+      const _realLen = pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length;
+      // Render intermedio ÚNICO al cruzar 3000 filas (vista útil de inmediato; después,
+      // un solo render final — anti-parpadeo).
+      if (!window._pedsRender3k && _realLen >= 3000) {
+        window._pedsRender3k = true;
+        try { if (!Object.keys(pFlt||{}).length) _renderPedsDesde(pRaw, pEst, true); } catch(_){}
       }
+      // Contador en vivo (solo texto, SIN re-dibujar la tabla): "X de Y filas"
+      try {
+        const _span = document.querySelector('#ped-w > div:first-child span');
+        if (_span) _span.innerHTML = 'Mostrando <strong style="color:var(--tx)">'+((typeof pAll!=='undefined'&&pAll)?pAll.length:0)+'</strong> pedidos <span style="color:var(--am)">(cargando historial: '+_realLen.toLocaleString('es-PE')+' de '+((window._pedTotalReal||0).toLocaleString('es-PE'))+' filas…)</span>';
+      } catch(_){}
       // ANTI-PARPADEO: NO re-dibujar la tabla en cada lote (eso causaba que "saltaran" pedidos
       // distintos mientras cargaba). Solo acumulamos datos en segundo plano; el re-dibujado se
       // hace UNA sola vez al terminar (en el finally). Al cambiar de pestaña, loadPeds cancela
@@ -6114,6 +6151,13 @@ async function _pedsCargarRestoProgresivo() {
       // Único re-render al terminar, respetando la pestaña activa y los filtros.
       try { if (Object.keys(pFlt||{}).length && typeof pAply === 'function') pAply();
             else _renderPedsDesde(pRaw, pEst, true); } catch(_){}
+      // Persistir el historial COMPLETO (lsSetPeds manda datasets grandes directo a
+      // IndexedDB) → la próxima apertura del ERP muestra todo al instante, como Excel.
+      try {
+        if (!window._pedsCargaIncompleta) {
+          lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now());
+        }
+      } catch(_){}
     }
   }
 }
@@ -6336,6 +6380,22 @@ function pAply() {
       if (q) pAll = pAll.filter(p => String(p._constancia||'').toLowerCase().includes(q));
     }
   });
+
+  // Coincidencias EXACTAS primero (pedido de Pablo 22-jul): al filtrar "102", el pedido
+  // 102 sale arriba; 20102, 10233, etc. después (mantienen su orden por fecha).
+  try {
+    const _libs = Object.entries(pFlt).filter(([c,f]) => f && f.lib && String(f.val||'').trim());
+    if (_libs.length) {
+      const _esExacto = (p) => _libs.some(([c,f]) => {
+        const q = String(f.val).trim().toLowerCase();
+        const v = PF.has(c) ? fmtD(p[c]) : String(p[c]||'');
+        return String(v).trim().toLowerCase() === q;
+      });
+      const _ex = [], _rest = [];
+      pAll.forEach(p => (_esExacto(p) ? _ex : _rest).push(p));
+      if (_ex.length) pAll = _ex.concat(_rest);
+    }
+  } catch(_){}
 
   pFlat = pExpandFlat(pAll);
   // P2 — render incremental: si la tabla ya existe, sólo regenerar tbody + sincronizar
