@@ -361,7 +361,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
   <nav>
     <div class="ns">Principal</div>
     <button class="nb on" data-pg="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</button>
-    <button class="nb" data-pg="panel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14"/></svg>Panel</button>
+    <button class="nb" data-pg="panel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14"/></svg>Panel<span id="metacapi-badge" style="display:none;margin-left:auto;background:var(--rd);color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700" title="Ventas con error al enviar a Meta"></span></button>
     <div class="ns">Ventas</div>
     <button class="nb" data-pg="pedidos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>Pedidos</button>
     <button class="nb" data-pg="clientes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>Clientes</button>
@@ -1211,6 +1211,14 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
   <div class="mbox" style="padding-top:0">
     <div class="mhd" style="position:sticky;top:0;z-index:6;background:var(--bg2);height:52px;box-sizing:border-box;margin-bottom:0;padding:16px 0 8px"><h3>Detalle del pedido</h3><button class="btn bg bs" data-cls="modal-ped">✕</button></div>
     <div id="modal-ped-c"></div>
+  </div>
+</div>
+
+<!-- Modal: Envíos a Meta (Conversions API) -->
+<div class="modal" id="modal-metacapi">
+  <div class="mbox" style="max-width:900px;max-height:92vh">
+    <div class="mhd"><h3>📤 Envíos a Meta (señal de ventas)</h3><button class="btn bg bs" onclick="document.getElementById('modal-metacapi').classList.remove('on')">✕</button></div>
+    <div id="metacapi-body"><div class="ld"><div class="sp"></div>Cargando...</div></div>
   </div>
 </div>
 
@@ -2632,7 +2640,10 @@ function _panelRender(){
     +   '<span style="margin-left:8px;font-size:13px;color:var(--mu)">Canal: <b style="color:var(--tx)">'+esc(canalNom)+'</b></span></div>'
     + '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between">'
     +   '<div style="display:flex;flex-wrap:wrap;gap:8px">'+presetsHtml+'</div>'
-    +   '<button onclick="loadPanel(true)" class="btn bg bs" style="font-size:12px" title="Volver a leer Resumen_ROAS">↻ Actualizar datos</button>'
+    +   '<div style="display:flex;gap:8px">'
+    +     '<button onclick="metaCapiPanelAbrir()" class="btn bg bs" style="font-size:12px" title="Ver ventas enviadas a Meta">📤 Envíos a Meta</button>'
+    +     '<button onclick="loadPanel(true)" class="btn bg bs" style="font-size:12px" title="Volver a leer Resumen_ROAS">↻ Actualizar datos</button>'
+    +   '</div>'
     + '</div>'
     + '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12px;color:var(--mu)">'
     +   '<span>Rango: <b style="color:var(--tx)">'+esc(d1)+'</b> → <b style="color:var(--tx)">'+esc(d2)+'</b> ('+nd+' d) · vs '+esc(pD1)+' → '+esc(pD2)+'</span>'
@@ -3610,11 +3621,11 @@ const pHighlight = new Set();
 function _pedsScopeParams() {
   // 'activos': sin limit explícito — el backend devuelve todo el scope (ya acotado por estados + 3 días)
   if (pScope === 'activos') return { activos: '1', diasRecientes: 3 };
-  // 6meses / todo / ultimomes / ultimos3meses: primer lote de 500 (vista instantánea, el
-  // backend ordena por fecha DESC → lo más reciente llega primero). El resto se carga
-  // progresivo (de 1000 en 1000) en segundo plano. Para los períodos acotados por fecha
-  // la carga progresiva se detiene sola al pasar el corte (ver _pedsCargarRestoProgresivo).
-  return { limit: 500 };
+  // 6meses / todo / ultimomes / ultimos3meses: UNA sola carga de las ~3000 más recientes
+  // (el backend ordena por fecha DESC → lo más nuevo primero). Es instantáneo y evita la
+  // paginación progresiva (frágil con Supabase). Para pedidos más viejos → búsqueda/filtro,
+  // que consulta al servidor (rescate) sobre TODA la historia.
+  return { limit: 3000 };
 }
 // #5 — Corte de fecha (timestamp ms) según el período elegido. null = sin corte (todo/6meses/activos).
 function _pPeriodoCutoffTs() {
@@ -6069,6 +6080,14 @@ async function _pedsCargarRestoProgresivo() {
       if (!nuevos.length) break;
       pRaw = pRaw.concat(nuevos);
       window._pedTotalReal = (res && res.total) || pRaw.length;
+      // B1 (Supabase): scopes SIN corte de fecha (6 meses / Todos) → no traer las ~45k de golpe.
+      // Cargamos las más recientes (~3000) al instante; el resto se encuentra por búsqueda/filtro
+      // (que consulta al servidor vía "rescate"). El contador sigue mostrando el total real.
+      {
+        const _sinCorte = !((typeof _pPeriodoCutoffTs === 'function') && _pPeriodoCutoffTs());
+        const _realLen = pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length;
+        if (_sinCorte && _realLen >= 3000) { window._pedsCapAlcanzado = true; break; }
+      }
       // ANTI-PARPADEO: NO re-dibujar la tabla en cada lote (eso causaba que "saltaran" pedidos
       // distintos mientras cargaba). Solo acumulamos datos en segundo plano; el re-dibujado se
       // hace UNA sola vez al terminar (en el finally). Al cambiar de pestaña, loadPeds cancela
@@ -18906,6 +18925,61 @@ async function _pollAlertBadge() {
   } catch(e) {}
 }
 
+// ── Panel de envíos a Meta (Conversions API) ──────────────────
+function _updateMetaCapiBadge(n){
+  const b = document.getElementById('metacapi-badge');
+  if(!b) return;
+  if(n>0){ b.textContent=n; b.style.display=''; } else { b.style.display='none'; }
+}
+async function _pollMetaCapiBadge(){
+  try{ const r = await api('metacapi.panel'); _updateMetaCapiBadge((r.errores&&r.errores.count)||0); }catch(e){}
+}
+async function metaCapiPanelAbrir(){
+  const m = document.getElementById('modal-metacapi');
+  const body = document.getElementById('metacapi-body');
+  if(!m || !body) return;
+  m.classList.add('on');
+  body.innerHTML = '<div class="ld"><div class="sp"></div>Cargando envíos a Meta...</div>';
+  let r;
+  try{ r = await api('metacapi.panel'); }
+  catch(e){ body.innerHTML = '<div style="padding:20px;color:var(--rd)">Error: '+esc(e.message)+'</div>'; return; }
+  _updateMetaCapiBadge((r.errores&&r.errores.count)||0);
+  const S = v => 'S/ '+fmt(v||0);
+  const card = (t,v,s,col) => '<div style="background:var(--bg3);border:1px solid var(--bd);border-radius:12px;padding:14px 16px;flex:1;min-width:150px">'
+    + '<div style="font-size:12px;color:var(--mu)">'+t+'</div>'
+    + '<div style="font-size:22px;font-weight:800;color:'+(col||'var(--tx)')+'">'+v+'</div>'
+    + '<div style="font-size:11px;color:var(--mu)">'+(s||'')+'</div></div>';
+  const estadoTxt = r.activo ? '<span style="color:#16a34a;font-weight:700">● ACTIVO</span>' : '<span style="color:var(--rd);font-weight:700">● APAGADO</span>';
+  let h = '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Interruptor de envío: '+estadoTxt+' · Solo WhatsApp + Ads/Orgánico.</div>';
+  h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">'
+    + card('Enviados hoy', r.enviadosHoy.count, S(r.enviadosHoy.valor))
+    + card('Esta semana', r.enviadosSemana.count, S(r.enviadosSemana.valor))
+    + card('En cola', r.enCola, r.enCola? 'salen en < 5 min' : 'todo al día', r.enCola? '#d97706':'var(--tx)')
+    + card('Con error', r.errores.count, r.errores.count? 'requieren revisión' : 'sin fallas', r.errores.count? 'var(--rd)':'#16a34a')
+    + '</div>';
+  if(r.errores.count){
+    h += '<div style="font-weight:700;margin:8px 0;color:var(--rd)">⚠ Ventas con error</div>';
+    h += '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:16px">'
+      + '<tr style="text-align:left;color:var(--mu)"><th style="padding:6px">Pedido</th><th>Hora</th><th>Valor</th><th>Motivo</th></tr>';
+    r.errores.items.forEach(function(it){
+      h += '<tr style="border-top:1px solid var(--bd)"><td style="padding:6px;font-family:monospace">'+esc(it.nro)+'</td><td>'+esc(it.hora)+'</td><td>'+S(it.valor)+'</td><td style="color:var(--rd)">'+esc(it.motivo)+'</td></tr>';
+    });
+    h += '</table>';
+  }
+  h += '<div style="font-weight:700;margin:8px 0">Últimas ventas enviadas</div>';
+  if(!r.ultimas.length){ h += '<div style="color:var(--mu);font-size:13px">Aún no hay envíos registrados.</div>'; }
+  else {
+    h += '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+      + '<tr style="text-align:left;color:var(--mu)"><th style="padding:6px">Pedido</th><th>Hora</th><th>Valor</th><th>Origen</th><th>Estado</th></tr>';
+    r.ultimas.forEach(function(it){
+      var col = it.estado==='ENVIADO'?'#16a34a':(it.estado==='ERROR'?'var(--rd)':'#d97706');
+      h += '<tr style="border-top:1px solid var(--bd)"><td style="padding:6px;font-family:monospace">'+esc(it.nro)+'</td><td>'+esc(it.hora)+'</td><td>'+S(it.valor)+'</td><td>'+esc(it.origen)+'</td><td style="font-weight:700;color:'+col+'">'+esc(it.estado)+'</td></tr>';
+    });
+    h += '</table>';
+  }
+  body.innerHTML = h;
+}
+
 // ════════════════════════════════════════════════════════════
 // ── FASE B: REPORTES MENSUALES ──────────────────────────────
 // ════════════════════════════════════════════════════════════
@@ -19275,6 +19349,10 @@ function bootApp(){
   cargarVistasStock(); // precarga las vistas de orden de Stock (compartidas)
   setTimeout(_pollAlertBadge, 20000);
   setInterval(_pollAlertBadge, 10*60*1000); // Refrescar cada 10 min
+  if(MY_ROLE==='Administrador'){            // badge de errores de envío a Meta (solo admin)
+    setTimeout(_pollMetaCapiBadge, 22000);
+    setInterval(_pollMetaCapiBadge, 10*60*1000);
+  }
 }
 
 // Punto de entrada: si hay sesión guardada y sigue válida, entra directo.
