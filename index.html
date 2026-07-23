@@ -4593,6 +4593,7 @@ async function _pollPedsOnce() {
   const pedView = document.getElementById('pg-pedidos');
   if (!pedView || !pedView.classList.contains('on')) return;
   _pedsPollInFlight = true;
+  try { _sbReconciliarTope(); } catch(_){}   // en paralelo: fusionar pedidos creados fuera del ERP (web/importadores)
   try {
     const params = Object.assign({ desde: pLastSyncTs }, _pedsScopeParams());
     delete params.limit; delete params.offset;
@@ -6487,17 +6488,20 @@ function pAply() {
   // local está incompleta, o si el filtro dio 0 resultados (por si existe un pedido
   // creado hace segundos que el delta aún no trajo).
   const _filasLocal = pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length;
-  const _histCompleto = !window._pedsCargaEnCurso && !window._pedsCargaIncompleta &&
-                        window._pedTotalReal && _filasLocal >= (window._pedTotalReal - 100);
-  if (_hayFiltro && !_histCompleto && (pScope === 'todo' || pScope === '6meses')) _pedsRescateServidor();
-  else if (!pAll.length && _hayFiltro) {
-    // 0 resultados en la pestaña activa: con historial completo local, buscar primero
-    // en la MEMORIA fuera de la pestaña (instantáneo, sin toast); al servidor solo si
-    // tampoco está localmente (ej. pedido creado hace segundos).
-    if (_histCompleto && _pedsRescateLocal()) { pAply(); return; }
+  // "Completo" = por CONTEO (con tolerancia): así un top-up en curso de 2 segundos no
+  // manda filtros al servidor sin necesidad (QA 22-jul).
+  const _histCompleto = window._pedTotalReal && _filasLocal >= (window._pedTotalReal - 100);
+  if (_hayFiltro && _histCompleto) {
+    // Historial completo en memoria: el filtro busca TAMBIÉN fuera de la pestaña activa,
+    // en local (instantáneo, sin toast) — p.ej. "102" desde Activos encuentra el 102
+    // histórico. Al servidor solo si ni siquiera existe localmente (recién creado).
+    if (window._pTabNros && _pedsRescateLocal()) { pAply(); return; }
+    if (!pAll.length) _pedsRescateServidor();
+  } else if (_hayFiltro && (pScope === 'todo' || pScope === '6meses')) {
+    _pedsRescateServidor();
+  } else if (!pAll.length) {
     _pedsRescateServidor();
   }
-  else if (!pAll.length) _pedsRescateServidor();
 }
 
 // ══════════════════════════════════════════════════════════
@@ -6533,6 +6537,52 @@ function _pedsRescateLocal() {
     return nuevos > 0;
   } catch(e){ return false; }
 }
+// ── RECONCILIACIÓN DIRECTA CON LA BASE (QA 22-jul) ─────────────────────────
+// Los pedidos creados FUERA del ERP (web Shopify por webhook, importadores) no pasan
+// por el changelog → pedidos.cambiosDesde no los ve y quedaban invisibles hasta una
+// recarga completa. Cada ~60s se comparan las 50 filas más nuevas de la BASE (vía
+// lectura directa Supabase) contra lo local y se fusiona lo que falte o haya cambiado.
+let _sbRecoLast = 0, _sbRecoInFlight = false;
+async function _sbReconciliarTope(){
+  try {
+    if (_sbRecoInFlight) return;
+    if (Date.now() - _sbRecoLast < 55000) return;
+    _sbRecoInFlight = true; _sbRecoLast = Date.now();
+    const d = await _sbListarDirecto(0, 50);
+    if (!d || !d.rows || !d.rows.length) return;
+    if (d.total) window._pedTotalReal = d.total;
+    const porNro = {};
+    d.rows.forEach(r => { const n = String(r['NroPedido']||'').trim(); if (n) (porNro[n] = porNro[n] || []).push(r); });
+    const localUM = {};
+    pRaw.forEach(r => {
+      const n = String(r['NroPedido']||'').trim();
+      if (porNro[n]) { const t = Date.parse(r['UltimaModif']||'') || 0; localUM[n] = Math.max(localUM[n]||0, t); }
+    });
+    let cambios = false; const nuevos = [];
+    Object.keys(porNro).forEach(n => {
+      const umBase = Math.max.apply(null, porNro[n].map(r => Date.parse(r['UltimaModif']||'') || 0));
+      const esNuevo = !(n in localUM);
+      if (!esNuevo && !(umBase > (localUM[n]||0))) return;
+      pRaw = pRaw.filter(r => String(r['NroPedido']||'').trim() !== n).concat(porNro[n]);
+      if (esNuevo) nuevos.push(n);
+      cambios = true;
+    });
+    if (!cambios) return;
+    // Pedidos NUEVOS: visibles de inmediato en Activos/Todos (las pestañas de trabajo)
+    if (window._pTabNros && nuevos.length && (pEst === '_ACTIVOS' || pEst === '')) nuevos.forEach(n => window._pTabNros.add(n));
+    try { pEnrichPagos(pRaw); } catch(_){}
+    try {
+      const pedView = document.getElementById('pg-pedidos');
+      if (pedView && pedView.classList.contains('on') && !window._pedsCargaEnCurso) {
+        if (Object.keys(pFlt||{}).length && typeof pAply === 'function') pAply();
+        else _renderPedsDesde(pRaw, pEst, true);
+      }
+    } catch(_){}
+    try { lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now()); } catch(_){}
+  } catch(e){}
+  finally { _sbRecoInFlight = false; }
+}
+
 let _pRescTimer = null, _pRescInFlight = false, _pRescLastSig = '';
 function _pedsRescateServidor() {
   let sig = '';

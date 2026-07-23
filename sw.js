@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-v12';  // v12: rescate LOCAL — buscar clientas antiguas desde cualquier pestaña sin ir al servidor
+const SW_VERSION = 'tulula-v13';  // v13: reconciliación con la base (pedidos web/importados visibles solos) + buscar cruza pestañas
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 
