@@ -6490,6 +6490,13 @@ function pAply() {
   const _histCompleto = !window._pedsCargaEnCurso && !window._pedsCargaIncompleta &&
                         window._pedTotalReal && _filasLocal >= (window._pedTotalReal - 100);
   if (_hayFiltro && !_histCompleto && (pScope === 'todo' || pScope === '6meses')) _pedsRescateServidor();
+  else if (!pAll.length && _hayFiltro) {
+    // 0 resultados en la pestaña activa: con historial completo local, buscar primero
+    // en la MEMORIA fuera de la pestaña (instantáneo, sin toast); al servidor solo si
+    // tampoco está localmente (ej. pedido creado hace segundos).
+    if (_histCompleto && _pedsRescateLocal()) { pAply(); return; }
+    _pedsRescateServidor();
+  }
   else if (!pAll.length) _pedsRescateServidor();
 }
 
@@ -6502,6 +6509,30 @@ function pAply() {
 // ~1s) y lo que encuentre se fusiona a la vista. Idea de Pablo: "jalar el pedido
 // por etapas — primero lo filtrado, después el resto".
 // ══════════════════════════════════════════════════════════
+// RESCATE LOCAL (22-jul): con el historial completo en memoria, si el filtro da 0 en la
+// pestaña activa, los pedidos que SÍ coinciden se buscan en pRaw completo y se suman a
+// la vista (_pTabNros) — mismo efecto que el rescate al servidor, pero instantáneo.
+function _pedsRescateLocal() {
+  try {
+    if (!window._pTabNros) return false;
+    let cand = pRaw.filter(r => !r._provisional);
+    let alguno = false;
+    Object.entries(pFlt).forEach(([col, f]) => {
+      if (col.startsWith('_')) return;   // columnas calculadas: no aplican aquí
+      if (f.lib) {
+        const q = String(f.val||'').toLowerCase(); if (!q) return; alguno = true;
+        cand = cand.filter(r => { const v = PF.has(col) ? fmtD(r[col]) : String(r[col]||''); return String(v).toLowerCase().includes(q); });
+      } else if (f.val && f.val.size) {
+        alguno = true;
+        cand = cand.filter(r => { const v = PF.has(col) ? fmtD(r[col]) : String(r[col]||'').trim(); return f.val.has(v); });
+      }
+    });
+    if (!alguno || !cand.length) return false;
+    let nuevos = 0;
+    cand.forEach(r => { const n = String(r['NroPedido']||'').trim(); if (n && !window._pTabNros.has(n)) { window._pTabNros.add(n); nuevos++; } });
+    return nuevos > 0;
+  } catch(e){ return false; }
+}
 let _pRescTimer = null, _pRescInFlight = false, _pRescLastSig = '';
 function _pedsRescateServidor() {
   let sig = '';
