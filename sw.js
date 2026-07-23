@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-v13';  // v13: reconciliación con la base (pedidos web/importados visibles solos) + buscar cruza pestañas
+const SW_VERSION = 'tulula-v15';  // v15: F1+F2+duplicados (escáner, prevención por nombre, marca web)
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 

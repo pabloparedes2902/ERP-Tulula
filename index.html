@@ -236,6 +236,9 @@ html.light .bpu{background:#e7ddf7!important;color:#6d28d9!important}
 .fsr button{text-align:left;padding:6px 8px;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit;background:none;border:none;color:var(--tx)}
 .fsr button:hover{background:var(--bg3)}
 .fnote{padding:6px 10px;font-size:10px;color:var(--mu)}
+/* F3 (23-jul): pedido marcado como POSIBLE DUPLICADO (web) — franja ámbar visible */
+tr.ped-dup td{background:rgba(251,191,36,.14)!important}
+tr.ped-dup td:first-child{border-left:3px solid #f59e0b!important}
 .fdrop input{padding:8px 10px;background:var(--bg3);border:none;border-bottom:1px solid var(--bd);color:var(--tx);font-size:12px;outline:none}
 .fdl{overflow-y:auto;flex:1}
 .fi{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;font-size:12px}
@@ -1825,6 +1828,14 @@ async function loadMAESTROS() {
       MAESTROS = cached;
       applyMaestrosToSelects();
       console.log('[MAESTROS] Cargado desde localStorage cache.');
+      // F1 23-jul: revalidar en background en CADA apertura → un SKU creado por otra
+      // asesora aparece en el desplegable al siguiente arranque (antes: hasta 4 horas).
+      setTimeout(async () => {
+        try {
+          const m = await api('maestros.listar', {});
+          if (m && Object.keys(m).length) { MAESTROS = m; lsSet('maestros_v2', m); applyMaestrosToSelects(); }
+        } catch(_){}
+      }, 4000);
       return;
     }
     MAESTROS = await api('maestros.listar', {});
@@ -2044,6 +2055,12 @@ async function apiSend(action, body) {
   // llevan el MISMO id → si el servidor ya la procesó (y la respuesta se perdió en el
   // camino), NO la repite: re-entrega la misma respuesta. Evita pagos duplicados.
   const _reqId = 'rq_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+  // F1 23-jul: marcar el nro como "editado localmente" → la reconciliación con la base
+  // (que puede venir hasta 5 min atrás) no pisa esta escritura durante 6 min.
+  try {
+    const _n = body && (body.NroPedido || body.nro || body.nroPedido);
+    if (_n && typeof _pedsEditLocalMark === 'function' && /^(pedidos|pago|cambios|cambios2|devoluciones)\./.test(action)) _pedsEditLocalMark(_n);
+  } catch(_){}
   return _fetchJson(() => {
     const u = new URL(API);
     u.searchParams.set('action', action);
@@ -4730,6 +4747,8 @@ function _mergePedsDelta(editados, eliminados) {
   if (eliminados.length) {
     const elSet = new Set(eliminados.map(String));
     pRaw = pRaw.filter(r => !elSet.has(String(r.NroPedido||'')));
+    // F1 23-jul: lápida local también para eliminados que avisó el servidor
+    try { eliminados.forEach(n => _pedsTombAdd(n)); } catch(_){}
   }
   // 2. Mergear editados/nuevos (un NroPedido puede tener varias filas: prendas + _PAGO_)
   if (editados.length) {
@@ -5660,10 +5679,13 @@ function mkTBody(rows) {
   //   - Otro caso → sin color
   // IMPORTANTE: incluir filas de continuación (prendas 2da+ del mismo pedido).
   const _cliColor = {};  // NroPedido → 'GREEN' | 'RED' | ''
+  const _cliDup = {};    // F3 (23-jul): NroPedido → texto "⚠ vs #NNN" si es posible duplicado (web)
   const _byNro = {};
   rows.forEach(p => {
     const nro = String(p['NroPedido']||'').trim();
     if (!nro) return;
+    const _dupTxt = String(p['PosibleDuplicado']||'').trim();
+    if (_dupTxt && !_cliDup[nro]) _cliDup[nro] = _dupTxt;
     const pr = String(p['Prenda']||'').trim().toUpperCase();
     if (!pr || pr.startsWith('_PAGO_')) return;
     if (!_byNro[nro]) _byNro[nro] = [];
@@ -5688,8 +5710,9 @@ function mkTBody(rows) {
     const _courMap = {'INDRIVER':'indriver','SALVA':'salva','SHALOM':'shalom','OLVA':'olva','RECOJO':'recojo','N/A':'na'};
     // P3 — si el pedido tiene una prenda en ROJO, NO se pinta el color del courier (fila)
     const _courClass = (_estU === 'ENVIAR' && _courMap[_courU] && _cliColor[nroFor] !== 'RED') ? ('cour-'+_courMap[_courU]) : '';
-    const trCls = [esCont ? 'ped-cont' : '', p._hasSaldo ? 'ped-saldo' : '', isFlash ? 'ped-sync-flash' : '', _courClass].filter(Boolean).join(' ');
-    const trAttr = (trCls ? ' class="'+trCls+'"' : '') + (nroFor ? ' data-nro="'+esc(nroFor)+'"' : '');
+    const trCls = [esCont ? 'ped-cont' : '', p._hasSaldo ? 'ped-saldo' : '', isFlash ? 'ped-sync-flash' : '', _courClass, (_cliDup[nroFor] ? 'ped-dup' : '')].filter(Boolean).join(' ');
+    const trAttr = (trCls ? ' class="'+trCls+'"' : '') + (nroFor ? ' data-nro="'+esc(nroFor)+'"' : '')
+      + (_cliDup[nroFor] ? ' title="POSIBLE DUPLICADO '+esc(_cliDup[nroFor])+' — revisar antes de despachar"' : '');
     let tds = '';
 
     // J-9 — sin width inline (lo dicta el <col>). Solo left para el sticky.
@@ -6537,6 +6560,45 @@ function _pedsRescateLocal() {
     return nuevos > 0;
   } catch(e){ return false; }
 }
+// ── LÁPIDAS LOCALES + PROTECCIÓN DE EDICIONES (F1 23-jul) ──────────────────
+// 1) Lápidas: nros eliminados recientemente (TTL 6h). La reconciliación con Supabase
+//    (que va hasta 5 min atrás) NO puede resucitar un pedido borrado.
+// 2) Ediciones recientes: nros con escritura local en los últimos 6 min. La
+//    reconciliación no los toca (evita "pisar" visualmente una edición fresca).
+function _pedsTombsGet(){
+  try {
+    const o = JSON.parse(localStorage.getItem('erp_peds_tombs')||'{}');
+    const now = Date.now(); let ch = false;
+    Object.keys(o).forEach(n => { if (now - o[n] > 6*3600*1000) { delete o[n]; ch = true; } });
+    if (ch) localStorage.setItem('erp_peds_tombs', JSON.stringify(o));
+    return o;
+  } catch(_){ return {}; }
+}
+function _pedsTombAdd(nro){ try { const o = _pedsTombsGet(); o[String(nro).trim()] = Date.now(); localStorage.setItem('erp_peds_tombs', JSON.stringify(o)); } catch(_){} }
+function _pedsTombDel(nro){ try { const o = _pedsTombsGet(); delete o[String(nro).trim()]; localStorage.setItem('erp_peds_tombs', JSON.stringify(o)); } catch(_){} }
+const _pedsEditLocal = {};
+function _pedsEditLocalMark(nro){ try { if (nro) _pedsEditLocal[String(nro).trim()] = Date.now(); } catch(_){} }
+function _pedsEditLocalReciente(nro){ const t = _pedsEditLocal[String(nro).trim()]; return !!t && (Date.now() - t < 6*60*1000); }
+
+// Recarga desde el servidor las filas de pedidos puntuales y las funde a pRaw.
+// Usado tras crear/editar/cancelar un CAMBIO y al RESTAURAR de papelera (F1 23-jul):
+// esos flujos no pasan (aún) por el changelog, así el grid queda al día al instante.
+async function _pedsRefrescarNros(nros){
+  try {
+    const list = [...new Set((nros||[]).map(n => String(n||'').trim()).filter(Boolean))];
+    if (!list.length) return;
+    const res = await api('pedidos.porNros', { nros: list.join(',') });
+    const rows = (res && Array.isArray(res.rows)) ? res.rows : (Array.isArray(res) ? res : []);
+    const setN = new Set(list);
+    pRaw = pRaw.filter(r => !setN.has(String(r['NroPedido']||'').trim()));
+    if (rows.length) pRaw.push(...rows);
+    list.forEach(n => _pedsEditLocalMark(n));   // que la reconciliación no lo pise con datos viejos
+    try { pEnrichPagos(pRaw); } catch(_){}
+    try { lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now()); } catch(_){}
+    try { _pedsRenderSuave(); } catch(_){}
+  } catch(e){ try{ _errLog('peds.refrescarNros', e); }catch(_){} }
+}
+
 // ── RECONCILIACIÓN DIRECTA CON LA BASE (QA 22-jul) ─────────────────────────
 // Los pedidos creados FUERA del ERP (web Shopify por webhook, importadores) no pasan
 // por el changelog → pedidos.cambiosDesde no los ve y quedaban invisibles hasta una
@@ -6559,7 +6621,9 @@ async function _sbReconciliarTope(){
       if (porNro[n]) { const t = Date.parse(r['UltimaModif']||'') || 0; localUM[n] = Math.max(localUM[n]||0, t); }
     });
     let cambios = false; const nuevos = [];
+    const _tombs = _pedsTombsGet();   // F1: no resucitar borrados ni pisar ediciones frescas
     Object.keys(porNro).forEach(n => {
+      if (_tombs[n] || _pedsEditLocalReciente(n)) return;
       const umBase = Math.max.apply(null, porNro[n].map(r => Date.parse(r['UltimaModif']||'') || 0));
       const esNuevo = !(n in localUM);
       if (!esNuevo && !(umBase > (localUM[n]||0))) return;
@@ -6575,7 +6639,7 @@ async function _sbReconciliarTope(){
       const pedView = document.getElementById('pg-pedidos');
       if (pedView && pedView.classList.contains('on') && !window._pedsCargaEnCurso) {
         if (Object.keys(pFlt||{}).length && typeof pAply === 'function') pAply();
-        else _renderPedsDesde(pRaw, pEst, true);
+        else _pedsRenderSuave();   // F1: no re-dibujar mientras el usuario scrollea/tipea
       }
     } catch(_){}
     try { lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now()); } catch(_){}
@@ -7955,6 +8019,7 @@ function verPed(p) {
     pRaw = pRaw.filter(r => String(r['NroPedido']||'').trim() !== String(nro).trim());
     _pedsRecienteDel(nro);   // FIX QA: que un pedido recién creado NO reaparezca tras eliminarlo
     _papeleraPendAdd(nro, _rowsEliminadas);   // FIX QA: aparece YA en Papelera
+    try { _pedsTombAdd(nro); } catch(_){}     // F1 23-jul: lápida — la reconciliación no lo resucita
     lsSetPeds(pRaw, pLastSyncTs || Date.now());
     try { _renderPedsDesde(pRaw, pEst, true); } catch(e) {}
     toast('✓ Pedido #'+nro+' enviado a Papelera', 'ok');
@@ -8056,7 +8121,7 @@ function _npPrecheckDuplicados() {
     const key = dni + '|' + tels.join(',') + '|' + prendas.join(',');
     if (NP.dupCheck.key === key && (Date.now() - NP.dupCheck.ts) < 120000) return; // ya chequeado
     try {
-      const res = await apiSend('pedidos.detectarDuplicados', {dni:dni, tels:tels, ventanaHoras:48, prendas:prendas});
+      const res = await apiSend('pedidos.detectarDuplicados', {dni:dni, tels:tels, ventanaHoras:48, prendas:prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
       NP.dupCheck = { key: key, candidatos: (res && Array.isArray(res.candidatos)) ? res.candidatos : [], ts: Date.now() };
     } catch(e) { /* silencioso — si falla, npGuardar hará el chequeo bloqueante como fallback */ }
   }, 700);
@@ -9646,7 +9711,7 @@ async function npGuardar() {
         if (NP.dupCheck && NP.dupCheck.key === _dupKey && (Date.now() - NP.dupCheck.ts) < 120000) {
           cand = NP.dupCheck.candidatos || [];
         } else {
-          const res = await apiSend('pedidos.detectarDuplicados', {dni:_dni, tels:_tels, ventanaHoras:48, prendas:_prendas});
+          const res = await apiSend('pedidos.detectarDuplicados', {dni:_dni, tels:_tels, ventanaHoras:48, prendas:_prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
           cand = (res && Array.isArray(res.candidatos)) ? res.candidatos : [];
         }
         if (cand.length) {
@@ -13846,7 +13911,14 @@ async function _camProcessSaveQueue() {
     try {
       // UNA sola llamada: crea el cambio completo (multi-prenda / multi-pedido)
       var _r2 = await apiSend('cambios2.registrarYSync', job.payload);
-      _c2Hist = null;  // forzar recarga del mapa v2 en Pedidos 
+      _c2Hist = null;  // forzar recarga del mapa v2 en Pedidos
+      _c2List = null;  // F1 23-jul: también la lista (contador pestaña Cambio)
+      // F1 23-jul: Cambios2 no pasa por el changelog → traer las filas nuevas del
+      // pedido (cargo/pago/prenda extra) al grid de Pedidos AL INSTANTE.
+      try {
+        var _nrosJob = [].concat((job.payload && job.payload.devueltas) || []).map(function(d){ return String((d && d.NroPedido) || '').trim(); }).filter(Boolean);
+        if (typeof _pedsRefrescarNros === 'function' && _nrosJob.length) _pedsRefrescarNros(_nrosJob);
+      } catch(_){}
 
       // Consumir saldo a favor / deuda del pedido de origen
       if ((job.saldosFavor && job.saldosFavor.length) || (job.saldosPendiente && job.saldosPendiente.length) || (job.saldosDevs && job.saldosDevs.length)) {
@@ -14272,7 +14344,18 @@ function editarCambios2(nc){
   (c.nuevas||[]).forEach(function(n){ addNueRow(n); }); if(!(c.nuevas||[]).length) addNueRow();
   ov.querySelector('#c2e-add-dev').addEventListener('click',function(){ addDevRow(); });
   ov.querySelector('#c2e-add-nue').addEventListener('click',function(){ addNueRow(); });
-  function refresca(){ _c2Hist=null; histCamData=null; try{_hcLsDel();}catch(e){} ov.remove(); loadCambios2(); }
+  function refresca(){
+    _c2Hist=null; _c2List=null; histCamData=null; try{_hcLsDel();}catch(e){}
+    // F1 23-jul: refrescar en el grid de Pedidos los pedidos tocados por este cambio
+    // (editar/cancelar no pasan por el changelog → sin esto el grid quedaba desfasado).
+    try {
+      var _nrosC2 = [];
+      try { _nrosC2 = (c && c.pedidos ? [].concat(c.pedidos) : []).map(String); } catch(_){}
+      if (!_nrosC2.length && c && Array.isArray(c.devueltas)) _nrosC2 = c.devueltas.map(function(d){ return String((d && d.NroPedido) || '').trim(); }).filter(Boolean);
+      if (typeof _pedsRefrescarNros === 'function' && _nrosC2.length) _pedsRefrescarNros(_nrosC2);
+    } catch(_){}
+    ov.remove(); loadCambios2();
+  }
   ov.querySelector('[data-c2save]').addEventListener('click', async function(){
     var gv=function(id){var x=ov.querySelector('#'+id);return x?x.value:'';};
     var devs=[].slice.call(ov.querySelectorAll('.c2e-dev-row')).map(function(r){ return { Prenda:(r.querySelector('.c2e-dev-pr').value||'').trim(), NroPedido:(r.querySelector('.c2e-dev-ped').value||'').trim(), Precio:parseFloat(r.querySelector('.c2e-dev-prec').value)||0 }; }).filter(function(d){return d.Prenda;});
@@ -19076,6 +19159,14 @@ function _renderPapelera(w, rows) {
   });
   h += '</tbody></table></div>';
   w.innerHTML = h;
+  // F3 (23-jul): escáner de duplicados (solo Admin) — informe + eliminar con 1 clic
+  if ((MY_ROLE||'') === 'Administrador') {
+    w.insertAdjacentHTML('afterbegin',
+      '<div style="margin-bottom:10px"><button id="pap-dup-scan" class="btn bg bs">🔍 Detectar pedidos duplicados</button>'
+      +' <span style="font-size:11px;color:var(--mu)">Busca en todo el historial: nombre/teléfono igual o similar + fecha ±2 días + prendas parecidas</span></div>');
+    const bScan = w.querySelector('#pap-dup-scan');
+    if (bScan) bScan.addEventListener('click', papEscanearDuplicados);
+  }
   // Bind acciones
   w.querySelectorAll('.pap-restaurar').forEach(b => b.addEventListener('click', async function() {
     const nro = this.dataset.nro;
@@ -19084,6 +19175,9 @@ function _renderPapelera(w, rows) {
     try {
       await apiSend('pedidos.papelera.restaurar', {NroPedido: nro});
       _papeleraPendDel(nro);   // FIX QA: sacar del overlay (ya no está en papelera)
+      // F1 23-jul: quitar la lápida y traer el pedido restaurado al grid AL INSTANTE
+      try { _pedsTombDel(nro); } catch(_){}
+      try { _pedsRefrescarNros([nro]); } catch(_){}
       toast('✓ Pedido #'+nro+' restaurado', 'ok');
       loadPapelera();
     } catch(e) { toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='↶ Restaurar'; }
@@ -19098,6 +19192,54 @@ function _renderPapelera(w, rows) {
       toast('✓ Pedido #'+nro+' eliminado definitivamente', 'ok');
       loadPapelera();
     } catch(e) { toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='✕ Eliminar definitivamente'; }
+  }));
+}
+
+// ── F3 (23-jul): ESCÁNER DE DUPLICADOS — informe con puntaje + eliminar con 1 clic ──
+async function papEscanearDuplicados(){
+  const b=document.getElementById('pap-dup-scan');
+  if(b){ b.disabled=true; b.textContent='Escaneando todo el historial…'; }
+  let res=null;
+  try { res=await api('pedidos.duplicadosEscanear',{ventanaDias:2}); }
+  catch(e){ toast('Error: '+esc(e.message),'err'); }
+  if(b){ b.disabled=false; b.textContent='🔍 Detectar pedidos duplicados'; }
+  if(!res) return;
+  const pares=res.pares||[];
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1200;display:flex;align-items:center;justify-content:center;padding:20px';
+  const fmt=p=>'<div style="flex:1;min-width:0"><div><strong style="color:var(--ac)">#'+esc(p.nro)+'</strong> · '+esc(p.fecha||'')+' · '+esc(p.canal||'')+' · '+esc(p.estado||'')+'</div>'
+    +'<div style="color:var(--tx)">'+esc(p.cliente)+' · '+esc(p.tel||'')+'</div>'
+    +'<div style="font-size:11px;color:var(--mu)">'+esc((p.prendas||[]).join(', '))+'</div>'
+    +'<div style="font-size:11px">Total S/'+((p.total||0).toFixed(2))+' · Pagado <strong>S/'+((p.pagado||0).toFixed(2))+'</strong></div></div>';
+  let html='<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:12px;max-width:860px;width:100%;max-height:85vh;display:flex;flex-direction:column">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--bd)">'
+    +'<strong>🔍 Posibles duplicados: '+pares.length+' pareja(s)'+(res.totalPares>pares.length?' (mostrando '+pares.length+' de '+res.totalPares+')':'')+'</strong>'
+    +'<button id="pdup-close" class="btn bg bs">✕ Cerrar</button></div>'
+    +'<div style="overflow-y:auto;padding:12px 16px">';
+  if(!pares.length) html+='<div class="empty">Sin sospechosos con los criterios actuales 🎉</div>';
+  pares.forEach((par,ix)=>{
+    html+='<div class="pdup-item" data-ix="'+ix+'" style="border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:10px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><strong style="color:'+(par.score>=80?'#f87171':'var(--am)')+'">'+par.score+' pts</strong>'
+      +'<button class="btn bg bs pdup-del" data-nro="'+esc(par.sugeridoEliminar)+'" style="color:var(--rd);border-color:var(--rd)44;font-size:11px">🗑 Enviar #'+esc(par.sugeridoEliminar)+' a papelera</button></div>'
+      +'<div style="display:flex;gap:14px;font-size:12px">'+fmt(par.a)+fmt(par.b)+'</div></div>';
+  });
+  html+='</div></div>';
+  ov.innerHTML=html;
+  document.body.appendChild(ov);
+  ov.querySelector('#pdup-close').addEventListener('click',()=>ov.remove());
+  ov.querySelectorAll('.pdup-del').forEach(btn=>btn.addEventListener('click',async function(){
+    const nro=this.dataset.nro;
+    if(!await npConfirm('¿Enviar el pedido #'+nro+' a la Papelera? (recuperable desde Papelera)')) return;
+    this.disabled=true; this.textContent='Eliminando…';
+    try{
+      await apiSend('pedidos.eliminar',{NroPedido:nro});
+      try{ _pedsTombAdd(nro); }catch(_){}
+      pRaw=pRaw.filter(r=>String(r['NroPedido']||'').trim()!==String(nro));
+      try{ lsSetPeds(pRaw.filter(r=>!r._extraCamDev&&!r._reciente&&!r._provisional), pLastSyncTs||Date.now()); }catch(_){}
+      const it=this.closest('.pdup-item'); if(it) it.style.opacity='.4';
+      this.textContent='✓ En papelera';
+      toast('✓ Pedido #'+nro+' enviado a Papelera','ok');
+    }catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑 Reintentar'; }
   }));
 }
 
