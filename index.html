@@ -3960,6 +3960,33 @@ async function _comprimirConstancia(file) {
   } catch (e) { return _raw(); }
 }
 
+// ── SUBIDA RÁPIDA DE CONSTANCIAS (24-jul) — DIRECTO A SUPABASE STORAGE ──────
+// Medido en vivo: subir vía Apps Script+Drive toma 6-12s (solo el viaje al server
+// ya cuesta 2.5s) — imposible bajar de 2s por esa ruta. Esta sube el archivo
+// DIRECTO del navegador a Supabase Storage (<1s típico). Devuelve la URL pública
+// o null si Storage no está disponible (bucket sin crear, sin sesión SB) — en ese
+// caso el que llama usa el camino clásico por Apps Script como respaldo.
+async function _subirConstanciaRapida(nro, cmp) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const ext = (cmp.mimeType || '').includes('pdf') ? 'pdf' : 'jpg';
+    const nombre = 'constancia_' + String(nro||'0') + '_' + Date.now() + '_' + Math.floor(Math.random()*46656).toString(36) + '.' + ext;
+    // base64 → bytes
+    const bin = atob(cmp.base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const r = await fetch(SB_URL + '/storage/v1/object/constancias/' + nombre, {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': cmp.mimeType || 'image/jpeg' },
+      body: bytes,
+    });
+    if (!r.ok) return null;   // bucket no existe / sin permiso → respaldo Apps Script
+    return SB_URL + '/storage/v1/object/public/constancias/' + nombre;
+  } catch (e) { return null; }
+}
+
 // Pre-calcula _totalPagado y _formasPago agrupando por NroPedido.
 // Arquitectura de constancias (INDEPENDIENTE POR PAGO — reforma jul-2026):
 //   - Pago original (grupo de filas de prenda con el mismo monto|forma|fecha):
@@ -4633,6 +4660,31 @@ function _schedulePedsPoll(delay) {
     _schedulePedsPoll(PEDS_POLL_INTERVAL);
   }, delay);
 }
+// ── RECARGA SILENCIOSA (24-jul) ──────────────────────────────────────────────
+// Recarga la lista completa SIN tocar lo que hay en pantalla: la vista actual
+// sigue visible y usable; cuando llegan los datos frescos, se reemplaza en el
+// mismo frame (renderPT preserva el scroll). Reemplaza al viejo loadPeds(force)
+// del refetch, que borraba todo y ponía un spinner (la "pantalla negra").
+let _recargaSilInFlight = false;
+async function _recargaSilenciosa() {
+  if (_recargaSilInFlight) return;
+  _recargaSilInFlight = true;
+  try {
+    const params = Object.assign({ offset: 0 }, _pedsScopeParams());
+    const res = await _pedListarPagina(params);
+    const rows = Array.isArray(res) ? res : (res && res.rows) || [];
+    if (rows && rows.length) {
+      const serverTs = (res && res.serverTs) || Date.now();
+      lsSetPeds(rows, serverTs);
+      pLastSyncTs = serverTs;
+      _renderPedsDesde(rows, pEst);
+      window._pedTotalReal = (res && res.total) || rows.length;
+      if (pScope !== 'activos' && res && res.hayMas) _pedsCargarRestoProgresivo();
+    }
+  } catch (e) { /* la vista actual sigue en pantalla; el próximo poll reintenta */ }
+  finally { _recargaSilInFlight = false; }
+}
+
 // ── AUTOCURACIÓN CAPA 3 (24-jul) — BANNER DE SALUD DEL ESPEJO ────────────────
 // Franja visible para TODAS las asesoras mientras la sincronización con la base
 // esté con problemas que el sistema no pudo reparar solo. Se muestra y se quita
@@ -4681,10 +4733,11 @@ async function _pollPedsOnce() {
     // FIX changelog — el servidor no pudo registrar algún aviso de cambio (payload
     // grande): recargar la lista completa UNA vez para no quedar desactualizados.
     if (res.refetch) {
-      // FASE 3 (Jul-2026) — transparencia: avisar que es EL SISTEMA sincronizando
-      // (no un "fantasma") y dejar rastro local para medir la frecuencia real de
-      // quiebres del changelog (leer: JSON.parse(localStorage.erp_refetch_log||'[]')).
-      try { toast('Sincronizando lista de pedidos…', ''); } catch(_) {}
+      // FIX 24-jul (pantalla negra + mensaje confuso): antes esta recarga borraba TODA
+      // la tabla y ponía un spinner + toast "Sincronizando pedidos" — se veía como si
+      // la app se rompiera. Ahora es SILENCIOSA: la vista actual queda intacta en
+      // pantalla y los datos frescos la reemplazan cuando llegan (sin mensaje).
+      // El rastro para diagnóstico sigue en localStorage.erp_refetch_log.
       try {
         const _k = 'erp_refetch_log';
         const _log = JSON.parse(localStorage.getItem(_k) || '[]');
@@ -4692,7 +4745,7 @@ async function _pollPedsOnce() {
         while (_log.length > 200) _log.shift();
         localStorage.setItem(_k, JSON.stringify(_log));
       } catch(_) {}
-      try { await loadPeds(pEst, true); } catch(_) {}
+      _recargaSilenciosa();   // en background — no bloquea ni borra la pantalla
       return;
     }
     const editados = res.editados || [];
@@ -7789,10 +7842,11 @@ function verPed(p) {
   }
 
   function recargarModalPago() {
-    pEnrichPagos(pRaw);
-    pAll = pGroupByPedido(pRaw);
-    pFlat = pExpandFlat(pAll);
-    renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false);
+    // FIX 24-jul (salto de grupo): antes re-dibujaba la tabla SIN respetar la pestaña
+    // y filtros activos (renderPT directo con la lista completa) → al cerrar el
+    // formulario, el grid mostraba OTRO conjunto de pedidos. _renderPedsDesde es el
+    // camino oficial: aplica pestaña + filtros + preserva scroll.
+    _renderPedsDesde(pRaw, pEst);
     document.getElementById('modal-ped').classList.remove('on');
     const updated = pAll.find(row => String(row['NroPedido']||'').trim() === nro);
     if (updated) setTimeout(() => verPed(updated), 0);
@@ -7840,18 +7894,34 @@ function verPed(p) {
         // pago en la misma llamada) y todo corre EN SEGUNDO PLANO — puedes seguir
         // trabajando; si falla, el botón vuelve a "Subir" con el motivo.
         btn.disabled = true; btn.textContent = '⏳ Subiendo…';
-        toast('Constancia subiéndose en segundo plano — puedes seguir trabajando', '');
         (async () => {
           const cmp = await _comprimirConstancia(file);
+          // 1) VÍA RÁPIDA (<1-2s): directo del navegador a Supabase Storage
+          let newUrl = await _subirConstanciaRapida(nro, cmp);
+          if (newUrl) {
+            // Archivo YA subido y a salvo → marcar listo AL INSTANTE
+            _syncConstanciaPago(nro, pg._key, newUrl, pg._id);
+            toast('✓ Constancia subida', 'ok');
+            if (btn.isConnected) {
+              btn.disabled = false; btn.textContent = '📄 Ver';
+              btn.removeAttribute('data-upload-const-pago');
+              btn.onclick = function(){ verConstanciasPago(Object.assign({}, pg, { constancia: newUrl }), nro); };
+            }
+            // Asociación en la hoja: en segundo plano (invisible; 1 reintento si falla)
+            const _asociar = () => apiPost('constancia.setPago', {NroPedido:nro, _pagoId:pg._id||'', _pagoKey:pg._key, urls:newUrl});
+            _asociar().catch(() => _asociar().catch(e2 => toast('La constancia se subió pero no se pudo anotar en el pedido: '+esc(e2.message)+' — vuelve a subirla', 'err')));
+            return;
+          }
+          // 2) RESPALDO: camino clásico por Apps Script (1 viaje, en segundo plano)
+          toast('Constancia subiéndose en segundo plano — puedes seguir trabajando', '');
           const up = await apiPost('voucher.subir', {
             NroPedido: nro, imageBase64: cmp.base64, mimeType: cmp.mimeType,
             _pagoId: pg._id||'', _pagoKey: pg._key,   // ← asocia al pago en el MISMO viaje
           });
-          const newUrl = up.url || '';
+          newUrl = up.url || '';
           if (!newUrl) throw new Error('No se obtuvo URL del servidor');
-          _syncConstanciaPago(nro, pg._key, newUrl, pg._id);   // pRaw + re-render (solo ese pago)
+          _syncConstanciaPago(nro, pg._key, newUrl, pg._id);
           toast('✓ Constancia subida', 'ok');
-          // Si el modal sigue abierto, convertir el botón a "Ver" en el sitio (sin recargar nada)
           if (btn.isConnected) {
             btn.disabled = false; btn.textContent = '📄 Ver';
             btn.removeAttribute('data-upload-const-pago');
@@ -18163,8 +18233,8 @@ function _syncConstanciaPago(nro, pagoKey, joined, pagoId) {
       }
     }
     try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); } catch(_) {}
-    pEnrichPagos(pRaw); pAll = pGroupByPedido(pRaw); pFlat = pExpandFlat(pAll);
-    renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false);
+    // FIX 24-jul (salto de grupo): usar el camino oficial que respeta pestaña + filtros + scroll
+    _renderPedsDesde(pRaw, pEst);
   } catch(e) { console.warn('[syncConstanciaPago]', e); }
 }
 
