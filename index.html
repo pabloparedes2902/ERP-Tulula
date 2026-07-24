@@ -3992,6 +3992,60 @@ async function _sbRpcColorPintar(nro, prenda, occ, color) {
   } catch (e) { return false; }
 }
 
+// ── MIGRACIÓN SEMANA 2 (24-jul): constancias (anotación) + campos simples ──
+// Mismo patrón del piloto de colores: escribir DIRECTO en la base (instantáneo,
+// transaccional) + cola_espejo→aplicador mantiene la hoja de Google al día.
+// Si cualquier cosa falla, se cae SOLO a la vía clásica por Apps Script.
+const SB_PILOTO_CONSTANCIAS = true;   // ← reversa: poner en false y publicar
+const SB_PILOTO_CAMPOS = true;        // ← reversa: poner en false y publicar
+// Campos permitidos por la vía rápida (los demás siguen por Apps Script: fechas
+// y EstadoPagoManual tienen lógica especial en la hoja).
+const SB_CAMPOS_MASIVOS = ['Estado','Courier','Canal','Origen','Asesora','ComentariosEnvio'];
+
+async function _sbRpcConstanciaSet(nro, pagoId, urls) {
+  try {
+    if (!SB_PILOTO_CONSTANCIAS) return false;
+    if (!pagoId) return false;   // sin ID exacto de pago → vía clásica (tiene fallback por clave)
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
+    const tok = await _sbTokenVigente();
+    if (!tok) return false;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/constancia_set', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_nro: String(nro), p_pago_id: String(pagoId), p_urls: String(urls || '') }),
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return !!(d && d.ok === true);
+  } catch (e) { return false; }
+}
+
+// Asociar constancia a un pago: vía rápida (base) con caída automática a Apps Script.
+// Mantiene el contrato de apiPost('constancia.setPago'): resuelve si quedó anotada,
+// rechaza solo si AMBAS vías fallaron.
+async function _constanciaAsociar(nro, pagoId, pagoKey, urls) {
+  if (await _sbRpcConstanciaSet(nro, pagoId || '', urls)) return { ok: true, via: 'sb' };
+  return apiPost('constancia.setPago', { NroPedido: String(nro), _pagoId: pagoId || '', _pagoKey: pagoKey || '', urls: urls });
+}
+
+async function _sbRpcCampoMasivo(nros, campo, valor) {
+  try {
+    if (!SB_PILOTO_CAMPOS) return false;
+    if (SB_CAMPOS_MASIVOS.indexOf(campo) < 0) return false;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
+    const tok = await _sbTokenVigente();
+    if (!tok) return false;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/campo_masivo', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_nros: (nros || []).map(String), p_campo: String(campo), p_valor: String(valor === undefined || valor === null ? '' : valor) }),
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return !!(d && d.ok === true);
+  } catch (e) { return false; }
+}
+
 // ── SUBIDA RÁPIDA DE CONSTANCIAS (24-jul) — DIRECTO A SUPABASE STORAGE ──────
 // Medido en vivo: subir vía Apps Script+Drive toma 6-12s (solo el viaje al server
 // ya cuesta 2.5s) — imposible bajar de 2s por esa ruta. Esta sube el archivo
@@ -4308,7 +4362,12 @@ function _renderPedsDesde(rawRows, estVal) {
   // PERF v12 — los pedidos provisionales (guardándose en background) viven en una
   // lista separada (_npProvisionales) que SOBREVIVE a las recargas de pRaw.
   // Antes: al navegar a Pedidos, loadPeds sobreescribía pRaw y el provisional se perdía.
-  const realRows = (rawRows || []).filter(r => r && !r._provisional && !r._reciente);
+  // FIX 24-jul (fantasmas ZZTEST): las pruebas automáticas crean y borran pedidos
+  // 9999xx; si una pestaña abierta los captura, el borrado puede no llegarle y quedan
+  // "fantasmas" imposibles de editar. Este es EL punto de entrada de todos los datos
+  // (caché, servidor, radar, changelog) → aquí se filtran para siempre.
+  const _esNroTest = n => { const x = parseInt(String(n || ''), 10); return x >= 999900 && x <= 999999; };
+  const realRows = (rawRows || []).filter(r => r && !r._provisional && !r._reciente && !_esNroTest(r['NroPedido']));
   pRaw = (typeof _npProvisionales !== 'undefined' && _npProvisionales.length)
     ? realRows.concat(_npProvisionales)
     : realRows.slice();
@@ -5696,8 +5755,11 @@ function renderPT(el, rows, total, hayMas) {
 
       // ── Paso 2: una sola llamada al servidor en background ──
       // Si falla, avisa pero no revierte (el dato ya fue guardado optimistamente)
-      apiPost('pedidos.actualizarMasivo', { nros, campo: campoServidor, valor: valEfectivo })
-        .catch(e => toast('⚠ Error al sincronizar: '+esc(e.message), 'err'));
+      // SEMANA 2: vía rápida directo a la base (campos simples); caída automática a Apps Script.
+      (async () => {
+        if (await _sbRpcCampoMasivo(nros, campoServidor, valEfectivo)) return;
+        return apiPost('pedidos.actualizarMasivo', { nros, campo: campoServidor, valor: valEfectivo });
+      })().catch(e => toast('⚠ Error al sincronizar: '+esc(e.message), 'err'));
 
     } catch(e) {
       toast('Error: '+e.message, 'err');
@@ -7951,7 +8013,7 @@ function verPed(p) {
               btn.onclick = function(){ verConstanciasPago(Object.assign({}, pg, { constancia: newUrl }), nro); };
             }
             // Asociación en la hoja: en segundo plano (invisible; 1 reintento si falla)
-            const _asociar = () => apiPost('constancia.setPago', {NroPedido:nro, _pagoId:pg._id||'', _pagoKey:pg._key, urls:newUrl});
+            const _asociar = () => _constanciaAsociar(nro, pg._id || '', pg._key, newUrl);
             _asociar().catch(() => _asociar().catch(e2 => toast('La constancia se subió pero no se pudo anotar en el pedido: '+esc(e2.message)+' — vuelve a subirla', 'err')));
             return;
           }
@@ -8163,7 +8225,7 @@ function verPed(p) {
           // saveOk es el PagoId cuando se conoce (pago nuevo o editado con ID) — targeting exacto.
           const pid = (typeof saveOk === 'string') ? saveOk : '';
           const key = monto + '|' + forma + '|' + fecha;
-          apiPost('constancia.setPago', {NroPedido:nro, _pagoId:pid, _pagoKey:key, urls:url})
+          _constanciaAsociar(nro, pid, key, url)
             .then(() => { _syncConstanciaPago(nro, key, url, pid); toast('✓ Constancia subida', 'ok'); })
             .catch(e => toast('Error guardando constancia: '+esc(e.message), 'err'));
         });
@@ -10356,7 +10418,7 @@ async function _npExecuteSave(job) {
             } catch(e) { _errLog('voucher.subir', e, {toast:'Pedido #'+nuevoNro+' creado pero no se pudo subir la constancia'}); }
           }
           if (_urls.length) {
-            apiPost('constancia.setPago', {NroPedido:String(nuevoNro), _pagoId:_pid, _pagoKey:_key, urls:_urls.join('\n')})
+            _constanciaAsociar(String(nuevoNro), _pid, _key, _urls.join('\n'))
               .then(() => { try { _syncConstanciaPago(String(nuevoNro), _key, _urls.join('\n'), _pid); } catch(_) {} })
               .catch(e => _errLog('constancia.setPago', e, {toast:'Constancia subida pero no se pudo asociar al pago del #'+nuevoNro}));
           }
@@ -18386,7 +18448,7 @@ document.getElementById('constancia-delete').addEventListener('click', async fun
   btn.disabled=true; btn.textContent='Eliminando...';
   try {
     const restantes = _constanciaUrlsDePago(it.pagoKey, it.pagoId).filter(u => u !== it.url);
-    await apiPost('constancia.setPago', {NroPedido:_constanciaNro, _pagoId:it.pagoId||'', _pagoKey:it.pagoKey, urls:restantes.join('\n')});
+    await _constanciaAsociar(_constanciaNro, it.pagoId || '', it.pagoKey, restantes.join('\n'));
     _constanciaItems.splice(_constanciaIdx, 1);
     _syncConstanciaPago(_constanciaNro, it.pagoKey, restantes.join('\n'), it.pagoId);
     if (_constanciaItems.length === 0) {
