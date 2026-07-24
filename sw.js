@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-v16';  // v16: editar/eliminar prenda por UNIDAD (_prendaOcc) + resync tras fallo — fix pedido 18901
+const SW_VERSION = 'tulula-v17';  // v17: radar por ultima_modif (correcciones a pedidos viejos llegan solas en ~1 min)
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 
