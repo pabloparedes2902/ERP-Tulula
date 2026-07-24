@@ -3968,6 +3968,30 @@ async function _comprimirConstancia(file) {
   } catch (e) { return _raw(); }
 }
 
+// ══ PILOTO MIGRACIÓN S1 (24-jul) — ESCRITURA DIRECTA DE COLORES ═════════════
+// Interruptor de reversa del piloto: false = todo vuelve por Apps Script.
+const SB_PILOTO_COLORES = true;
+async function _sbRpcColorPintar(nro, prenda, occ, color) {
+  try {
+    if (!SB_PILOTO_COLORES) return false;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
+    const tok = await _sbTokenVigente();
+    if (!tok) return false;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/color_pintar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        p_nro: String(nro), p_prenda: String(prenda),
+        p_occ: (occ === undefined || occ === null || occ === '') ? -1 : parseInt(occ, 10),
+        p_color: String(color || ''),
+      }),
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return !!(d && d.ok === true);
+  } catch (e) { return false; }
+}
+
 // ── SUBIDA RÁPIDA DE CONSTANCIAS (24-jul) — DIRECTO A SUPABASE STORAGE ──────
 // Medido en vivo: subir vía Apps Script+Drive toma 6-12s (solo el viaje al server
 // ya cuesta 2.5s) — imposible bajar de 2s por esa ruta. Esta sube el archivo
@@ -6215,7 +6239,18 @@ async function _paintPrendaCell(td) {
 
   // Persistir al backend (no bloqueante para UX)
   try {
-    await apiSend('pedidos.setColorPrenda', { NroPedido: nro, Prenda: prenda, Color: next, Occ: occ });
+    // ══ PILOTO MIGRACIÓN — SEMANA 1 (24-jul) ═══════════════════════════════
+    // Pintar color escribe DIRECTO en la base (RPC transaccional, ~0.1s) en vez
+    // de viajar a Apps Script (~3s). El aplicador (cada 1 min) copia el cambio a
+    // la hoja de Google, que sigue completa como espejo de reportes.
+    // REVERSA: poner SB_PILOTO_COLORES = false y publicar → vuelve a Apps Script.
+    // Si la vía directa falla por lo que sea, cae SOLA al camino clásico.
+    const _directoOK = await _sbRpcColorPintar(nro, prenda, occ, next);
+    if (_directoOK) {
+      try { if (typeof _pedsEditLocalMark === 'function') _pedsEditLocalMark(nro); } catch(_) {}
+    } else {
+      await apiSend('pedidos.setColorPrenda', { NroPedido: nro, Prenda: prenda, Color: next, Occ: occ });
+    }
     // FIX color-persist: actualizar también el cache localStorage para que el
     // color sobreviva a "Actualizar" y a recargar la página. Antes solo se
     // actualizaba memoria (pAll/pFlat/pRaw) + la hoja, pero NO el cache que
