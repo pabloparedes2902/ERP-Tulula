@@ -1264,6 +1264,8 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
+<!-- TIEMPO REAL (24-jul): cliente oficial de Supabase para recibir cambios al instante -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js" defer></script>
 <script>
 const API = 'https://script.google.com/macros/s/AKfycbzQVy2Takv6l8zUTY3RsQCah41ChzkkSWj6AcjgR6TrBRjKnDOXthsO5F3QmfDHdO6pAA/exec';
 
@@ -4769,15 +4771,28 @@ function _schedulePedsPoll(delay) {
 // mismo frame (renderPT preserva el scroll). Reemplaza al viejo loadPeds(force)
 // del refetch, que borraba todo y ponía un spinner (la "pantalla negra").
 let _recargaSilInFlight = false;
+let _recargaSilUltima = 0;
 async function _recargaSilenciosa() {
   if (_recargaSilInFlight) return;
+  // FIX 24-jul (BUCLE): jamás más de 1 recarga completa cada 2 minutos. El bucle
+  // detectado recargaba cada 15-30s pisando la vista con fotos de momentos distintos
+  // (colores que "cambiaban solos", saltos de página). Entre recargas, el radar de
+  // la base (55s) cubre cualquier cambio que el changelog haya perdido.
+  if (Date.now() - _recargaSilUltima < 120000) { try { _sbReconciliarTope(); } catch (_) {} return; }
+  _recargaSilUltima = Date.now();
   _recargaSilInFlight = true;
   try {
-    const params = Object.assign({ offset: 0 }, _pedsScopeParams());
+    // fresh:1 → el servidor REGENERA su caché ahora (reloj nuevo) en vez de servir
+    // una foto vieja cuyo reloj viejo re-disparaba el refetch en el próximo poll.
+    const params = Object.assign({ offset: 0, fresh: 1 }, _pedsScopeParams());
     const res = await _pedListarPagina(params);
     const rows = Array.isArray(res) ? res : (res && res.rows) || [];
     if (rows && rows.length) {
       const serverTs = (res && res.serverTs) || Date.now();
+      // FIX 24-jul (RESURRECCIÓN): si la foto es MÁS VIEJA que lo que ya tenemos en
+      // pantalla, NO pisar (traería estados pasados: colores/ediciones "fantasma").
+      // El radar de la base cubre lo que el changelog haya perdido.
+      if (serverTs < (pLastSyncTs || 0)) { try { _sbReconciliarTope(); } catch (_) {} return; }
       lsSetPeds(rows, serverTs);
       pLastSyncTs = serverTs;
       _renderPedsDesde(rows, pEst);
@@ -6898,6 +6913,91 @@ async function _sbReconciliarTope(){
   } catch(e){}
   finally { _sbRecoInFlight = false; }
 }
+
+// ── TIEMPO REAL NATIVO (24-jul) ──────────────────────────────────────────────
+// La base avisa AL INSTANTE (websocket) cuando cualquier pedido cambia — la
+// pantalla de cada asesora se actualiza en ~1s, sin esperar el polling de 15s
+// ni el radar de 1 min (que SIGUEN activos como red de seguridad).
+// Respeta los mismos guardias que el radar: tombstones, ediciones locales
+// frescas y pintados propios. REVERSA: SB_REALTIME = false y publicar.
+const SB_REALTIME = true;
+let _rtCliente = null, _rtCanal = null, _rtUltTok = null;
+let _rtNrosPend = new Set(), _rtTimer = null;
+
+function _rtProgramar(nro) {
+  try {
+    if (!nro) return;
+    _rtNrosPend.add(String(nro).trim());
+    // Avalancha (ej. re-carga masiva del espejo): dejar que el radar lo maneje
+    if (_rtNrosPend.size > 100) { _rtNrosPend.clear(); return; }
+    clearTimeout(_rtTimer);
+    _rtTimer = setTimeout(_rtAplicar, 800);   // agrupa ráfagas (un guardado = varias filas)
+  } catch (_) {}
+}
+
+async function _rtAplicar() {
+  try {
+    if (typeof pRaw === 'undefined' || !Array.isArray(pRaw) || !pRaw.length) { _rtNrosPend.clear(); return; }
+    const _tombs = _pedsTombsGet();
+    const _now = Date.now();
+    const lista = [..._rtNrosPend].filter(n => n && !_tombs[n] && !_pedsEditLocalReciente(n)
+      && !(window._selfPaint && window._selfPaint[n] && (_now - window._selfPaint[n]) < 90000));
+    _rtNrosPend.clear();
+    if (!lista.length) return;
+    const tok = await _sbTokenVigente(); if (!tok) return;
+    const inList = lista.map(n => '"' + n + '"').join(',');
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=row_json&eliminado=is.null&nro_pedido=in.(' + encodeURIComponent(inList) + ')',
+      { headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok } });
+    if (!r.ok) return;
+    const arr = await r.json();
+    const porNro = {};
+    arr.map(x => x.row_json || {}).forEach(row => { const n = String(row['NroPedido'] || '').trim(); if (n) (porNro[n] = porNro[n] || []).push(row); });
+    // Merge idéntico al radar: solo pisar lo local si la base trae algo MÁS NUEVO
+    const localUM = {};
+    pRaw.forEach(r2 => { const n = String(r2['NroPedido'] || '').trim(); if (porNro[n]) { const t = Date.parse(r2['UltimaModif'] || '') || 0; localUM[n] = Math.max(localUM[n] || 0, t); } });
+    let cambios = false; const nuevos = [];
+    Object.keys(porNro).forEach(n => {
+      const umBase = Math.max.apply(null, porNro[n].map(r2 => Date.parse(r2['UltimaModif'] || '') || 0));
+      const esNuevo = !(n in localUM);
+      if (!esNuevo && !(umBase > (localUM[n] || 0))) return;
+      pRaw = pRaw.filter(r2 => String(r2['NroPedido'] || '').trim() !== n).concat(porNro[n]);
+      if (esNuevo) nuevos.push(n);
+      cambios = true;
+    });
+    if (!cambios) return;
+    if (window._pTabNros && nuevos.length && (pEst === '_ACTIVOS' || pEst === '')) nuevos.forEach(n => window._pTabNros.add(n));
+    try { pEnrichPagos(pRaw); } catch (_) {}
+    try {
+      const pedView = document.getElementById('pg-pedidos');
+      if (pedView && pedView.classList.contains('on') && !window._pedsCargaEnCurso) {
+        if (Object.keys(pFlt || {}).length && typeof pAply === 'function') pAply();
+        else _pedsRenderSuave();
+      }
+    } catch (_) {}
+    try { lsSetPeds(pRaw.filter(r2 => !r2._extraCamDev && !r2._reciente && !r2._provisional), pLastSyncTs || Date.now()); } catch (_) {}
+  } catch (e) {}
+}
+
+async function _rtConectar() {
+  try {
+    if (!SB_REALTIME || _rtCanal) return;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return;
+    if (typeof supabase === 'undefined' || !supabase.createClient) { setTimeout(_rtConectar, 10000); return; }   // CDN aún cargando
+    const tok = await _sbTokenVigente();
+    if (!tok) { setTimeout(_rtConectar, 15000); return; }   // aún sin sesión SB → reintentar
+    _rtCliente = supabase.createClient(SB_URL, SB_ANON, { auth: { persistSession: false } });
+    _rtCliente.realtime.setAuth(tok); _rtUltTok = tok;
+    _rtCanal = _rtCliente.channel('pedidos-rt')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pedidos' }, p => _rtProgramar(p.new && p.new.nro_pedido))
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pedidos' }, p => _rtProgramar(p.new && p.new.nro_pedido))
+      .subscribe(st => { try { console.log('[RT] canal pedidos:', st); } catch (_) {} });
+    // El token del websocket vence (~1h): renovarlo con el vigente cada 5 min
+    setInterval(async () => {
+      try { const t = await _sbTokenVigente(); if (t && t !== _rtUltTok && _rtCliente) { _rtCliente.realtime.setAuth(t); _rtUltTok = t; } } catch (_) {}
+    }, 5 * 60 * 1000);
+  } catch (e) { try { console.warn('[RT] no disponible:', e && e.message); } catch (_) {} }
+}
+setTimeout(_rtConectar, 6000);   // arrancar cuando login + token ya existieron
 
 let _pRescTimer = null, _pRescInFlight = false, _pRescLastSig = '';
 function _pedsRescateServidor() {
