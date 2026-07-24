@@ -4020,11 +4020,23 @@ async function _sbRpcConstanciaSet(nro, pagoId, urls) {
   } catch (e) { return false; }
 }
 
+// FIX 24-jul (flicker): tras escribir por la vía rápida, pedir en SEGUNDO PLANO que
+// el aplicador copie ESTE pedido a la hoja YA (segundos, no ≤1 min). Cierra la ventana
+// en que los lectores de la hoja veían el estado viejo. Si falla, el barrido de 1 min
+// lo cubre igual — por eso se ignora cualquier error.
+function _sbEspejarYa(nros) {
+  try {
+    const arr = (Array.isArray(nros) ? nros : [nros]).map(String).filter(Boolean);
+    if (!arr.length) return;
+    apiSend('espejo.aplicarNro', arr.length === 1 ? { nro: arr[0] } : { nros: arr }).catch(() => {});
+  } catch (_) {}
+}
+
 // Asociar constancia a un pago: vía rápida (base) con caída automática a Apps Script.
 // Mantiene el contrato de apiPost('constancia.setPago'): resuelve si quedó anotada,
 // rechaza solo si AMBAS vías fallaron.
 async function _constanciaAsociar(nro, pagoId, pagoKey, urls) {
-  if (await _sbRpcConstanciaSet(nro, pagoId || '', urls)) return { ok: true, via: 'sb' };
+  if (await _sbRpcConstanciaSet(nro, pagoId || '', urls)) { _sbEspejarYa(nro); return { ok: true, via: 'sb' }; }
   return apiPost('constancia.setPago', { NroPedido: String(nro), _pagoId: pagoId || '', _pagoKey: pagoKey || '', urls: urls });
 }
 
@@ -4867,6 +4879,12 @@ async function _pollPedsOnce() {
 let _pedsPollCount = 0;
 async function _reconcileColores() {
   try {
+    // FIX 24-jul (piloto migración): con la vía rápida activa, los colores se escriben
+    // PRIMERO en la base y la hoja va hasta ~1 min detrás (+60s de caché del snapshot).
+    // Este reconciliador lee la HOJA → revertía colores recién pintados al estado viejo
+    // ("cambian solos y luego se normalizan"). Con el piloto, la verdad de colores es la
+    // BASE (el radar top-200 ya la trae y la autocuración nocturna vigila) → no correr.
+    if (typeof SB_PILOTO_COLORES !== 'undefined' && SB_PILOTO_COLORES) return;
     if (!pRaw || !pRaw.length) return;
     const res = await api('pedidos.coloresSnapshot', {});
     if (!res || !Array.isArray(res.colores)) return;
@@ -4920,7 +4938,10 @@ function _mergePedsDelta(editados, eliminados) {
   try {
     if (window._selfPaint && editados && editados.length) {
       const _now = Date.now();
-      editados = editados.filter(r => { const t = window._selfPaint[String(r.NroPedido||'')]; return !(t && (_now - t) < 25000); });
+      // FIX 24-jul: 25s → 90s. Con el piloto, el eco del propio pintado vuelve vía
+      // aplicador (hasta ~1 min después) — con 25s el eco tardío re-renderizaba y
+      // "saltaba"/parpadeaba la vista del que pintó.
+      editados = editados.filter(r => { const t = window._selfPaint[String(r.NroPedido||'')]; return !(t && (_now - t) < 90000); });
     }
   } catch(_) {}
   // FASE 3 (Jul-2026) — descartar "ecos": entradas cuyo contenido es IDÉNTICO a lo
@@ -5757,7 +5778,7 @@ function renderPT(el, rows, total, hayMas) {
       // Si falla, avisa pero no revierte (el dato ya fue guardado optimistamente)
       // SEMANA 2: vía rápida directo a la base (campos simples); caída automática a Apps Script.
       (async () => {
-        if (await _sbRpcCampoMasivo(nros, campoServidor, valEfectivo)) return;
+        if (await _sbRpcCampoMasivo(nros, campoServidor, valEfectivo)) { _sbEspejarYa(nros); return; }
         return apiPost('pedidos.actualizarMasivo', { nros, campo: campoServidor, valor: valEfectivo });
       })().catch(e => toast('⚠ Error al sincronizar: '+esc(e.message), 'err'));
 
@@ -6310,6 +6331,9 @@ async function _paintPrendaCell(td) {
     const _directoOK = await _sbRpcColorPintar(nro, prenda, occ, next);
     if (_directoOK) {
       try { if (typeof _pedsEditLocalMark === 'function') _pedsEditLocalMark(nro); } catch(_) {}
+      // FIX 24-jul: espejar a la hoja YA (segundos) — evita que radares que leen la
+      // hoja o escrituras clásicas del mismo pedido "pisen" el color recién pintado.
+      try { _sbEspejarYa(nro); } catch(_) {}
     } else {
       await apiSend('pedidos.setColorPrenda', { NroPedido: nro, Prenda: prenda, Color: next, Occ: occ });
     }
