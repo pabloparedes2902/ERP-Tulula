@@ -3919,61 +3919,92 @@ document.getElementById('ped-tabs').addEventListener('click', e => {
   });
 })();
 
+// ── COMPRESIÓN DE CONSTANCIAS EN EL CLIENTE (jul-2026) ────────────────────
+// Comprime imágenes ANTES de subirlas (canvas ≤1200px lado mayor, JPEG 0.82).
+// Una foto de celular de 3-4MB queda en ~150-300KB → subida ~10x más rápida.
+// PDFs y no-imágenes pasan tal cual. Si la imagen no se puede decodificar,
+// cae al archivo original sin romper. Devuelve {base64, mimeType}.
+async function _comprimirConstancia(file) {
+  const _raw = () => new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = e => res({ base64: String(e.target.result).split(',')[1], mimeType: file.type || 'application/octet-stream' });
+    fr.onerror = () => rej(new Error('No se pudo leer el archivo'));
+    fr.readAsDataURL(file);
+  });
+  if (!/^image\//.test(file.type || '')) return _raw();
+  if (file.size < 250 * 1024) return _raw();   // ya es liviana, no vale la pena
+  try {
+    const dataUrl = await new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = e => res(e.target.result);
+      fr.onerror = () => rej(new Error('lectura'));
+      fr.readAsDataURL(file);
+    });
+    const img = await new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => res(im);
+      im.onerror = () => rej(new Error('decode'));
+      im.src = dataUrl;
+    });
+    const MAX = 1200;
+    const k = Math.min(1, MAX / Math.max(img.width || 1, img.height || 1));
+    const w = Math.max(1, Math.round((img.width || 1) * k));
+    const hh = Math.max(1, Math.round((img.height || 1) * k));
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = hh;
+    cv.getContext('2d').drawImage(img, 0, 0, w, hh);
+    const out = cv.toDataURL('image/jpeg', 0.82);
+    // Si la compresión no achicó (imagen ya optimizada), usar la original
+    if (out.length * 0.75 >= file.size) return _raw();
+    return { base64: out.split(',')[1], mimeType: 'image/jpeg' };
+  } catch (e) { return _raw(); }
+}
+
 // Pre-calcula _totalPagado y _formasPago agrupando por NroPedido.
-// Arquitectura de constancias (INDEPENDIENTE POR PAGO):
-//   - Pago original (filas prenda): constancia en columna Constancia de la PRIMERA fila con pago > 0.
-//     Una sola URL por pago (no acumulada). Al subir una nueva, REEMPLAZA la anterior.
-//   - Pagos adicionales (_PAGO_ rows): constancia en su propia fila. Una URL por _PAGO_ row.
-// Cada pago muestra SOLO SU propia constancia — no se comparte.
+// Arquitectura de constancias (INDEPENDIENTE POR PAGO — reforma jul-2026):
+//   - Pago original (grupo de filas de prenda con el mismo monto|forma|fecha):
+//     constancia en la PRIMERA fila del GRUPO. Cada grupo tiene la suya.
+//   - Pagos adicionales (_PAGO_ rows): constancia en su propia fila.
+//   - Un pago puede tener varias URLs (\n-separadas).
+// Cada pago muestra SOLO SU propia constancia — nunca se comparte entre pagos.
 // La columna Constancia de la tabla Pedidos (_constancias) agrega TODAS las URLs únicas del pedido.
 function pEnrichPagos(rows) {
-  // Helper: si el campo tiene múltiples URLs \n-separadas (retrocompat), devolver la primera.
-  const _primeraUrl = (s) => {
-    const t = String(s||'').trim();
-    if (!t) return '';
-    const first = t.split('\n').map(u => u.trim()).filter(Boolean)[0] || '';
-    return first;
-  };
   const map = {};
   rows.forEach(r => {
     const nro = String(r['NroPedido']||'');
-    if (!map[nro]) map[nro] = {total:0, formas:new Set(), pagos:[], prendasConstancia:'', allUrls:new Set()};
+    if (!map[nro]) map[nro] = {total:0, formas:new Set(), pagos:[], allUrls:new Set()};
     const pago      = parseFloat(r['Pago'])||0;
     const forma     = String(r['Forma pago']||'').trim();
     const fecha     = r['Fecha Pago']||'';
-    const constRaw  = _primeraUrl(r['Constancia']);
+    const constRaw  = String(r['Constancia']||'').trim();
     const prenda    = String(r['Prenda']||'').trim();
+    const pagoIdRow = String(r['PagoId']||'').trim();   // ID interno del pago (jul-2026)
     const isPagoRow = prenda === '_PAGO_';
-    // Pago original: tomar la primera constancia no vacía de prenda rows (URL única).
-    if (constRaw && !isPagoRow && !map[nro].prendasConstancia) {
-      map[nro].prendasConstancia = constRaw;
-    }
+    // Lista global del pedido: TODAS las URLs únicas (incluye legacy en filas sin pago)
+    if (constRaw) constRaw.split('\n').map(u=>u.trim()).filter(Boolean).forEach(u=>map[nro].allUrls.add(u));
     if (pago > 0) {
       const key = pago+'|'+forma+'|'+String(fecha instanceof Date ? fecha.toISOString() : fecha).split('T')[0];
       if (isPagoRow) {
         // Filas _PAGO_: pago adicional — nunca deduplicar. Constancia propia e independiente.
         map[nro].total += pago;
         if (forma) map[nro].formas.add(forma);
-        map[nro].pagos.push({monto:pago, forma, fecha, _key:key, _prenda:prenda, _isPagoRow:true, constancia: constRaw, asesora: String(r['AsesoraPago']||'').trim()});
-        if (constRaw) map[nro].allUrls.add(constRaw);
+        map[nro].pagos.push({monto:pago, forma, fecha, _key:key, _id:pagoIdRow, _prenda:prenda, _isPagoRow:true, constancia: constRaw, asesora: String(r['AsesoraPago']||'').trim()});
       } else {
-        // Filas de prenda: pago original — deduplicar por key.
-        const dup = map[nro].pagos.find(p => !p._isPagoRow && p._key===key);
+        // Filas de prenda: pago original — deduplicar por ID (si existe) o por key.
+        // Constancia = primera no vacía DEL MISMO GRUPO (no global del pedido).
+        const dup = map[nro].pagos.find(p => !p._isPagoRow && (pagoIdRow && p._id ? p._id===pagoIdRow : p._key===key));
         if (!dup) {
           map[nro].total += pago;
           if (forma) map[nro].formas.add(forma);
-          // constancia se asigna en pasada 2 (tomada de prendasConstancia una sola vez).
-          map[nro].pagos.push({monto:pago, forma, fecha, _key:key, _prenda:prenda, _isPagoRow:false, constancia: null, asesora: String(r['AsesoraPago']||'').trim()});
+          map[nro].pagos.push({monto:pago, forma, fecha, _key:key, _id:pagoIdRow, _prenda:prenda, _isPagoRow:false, constancia: constRaw, asesora: String(r['AsesoraPago']||'').trim()});
+        } else {
+          if (!dup.constancia && constRaw) dup.constancia = constRaw;
+          if (!dup._id && pagoIdRow) dup._id = pagoIdRow;
         }
       }
     }
   });
-  // — Pasada 2: asignar constancia del pago original y construir lista global única.
   Object.values(map).forEach(info => {
-    info.pagos.forEach(pg => {
-      if (pg.constancia === null) pg.constancia = info.prendasConstancia;
-    });
-    if (info.prendasConstancia) info.allUrls.add(info.prendasConstancia);
     info.constancias = [...info.allUrls];
   });
   rows.forEach(r => {
@@ -7736,10 +7767,10 @@ function verPed(p) {
     btn.addEventListener('click', function() {
       const i = +this.getAttribute('data-edit-pago');
       const pg = pagos[i]; if (!pg) return;
-      // Filas _PAGO_ se identifican por _pagoKey, no por prenda
+      // Filas _PAGO_ se identifican por PagoId (o _pagoKey como respaldo)
       const state = (pg._prenda && pg._prenda !== '_PAGO_')
-        ? {esNuevo: false, prenda: pg._prenda}
-        : {esNuevo: false, pagoKey: pg._key};
+        ? {esNuevo: false, prenda: pg._prenda, pagoId: pg._id||''}
+        : {esNuevo: false, pagoKey: pg._key, pagoId: pg._id||''};
       abrirFormPago('Editar pago #'+(i+1), pg.monto, pg.forma, pg.fecha, state);
     });
   });
@@ -7749,8 +7780,7 @@ function verPed(p) {
     btn.addEventListener('click', function() {
       const i = +this.getAttribute('data-ver-const-pago');
       const pg = pagos[i]; if (!pg) return;
-      const urls = (pg.constancia||'').split('\n').map(u=>u.trim()).filter(Boolean);
-      verConstancias(urls, nro);
+      verConstanciasPago(pg, nro);
     });
   });
 
@@ -7767,47 +7797,18 @@ function verPed(p) {
         const file = this.files[0];
         document.body.removeChild(fileInp);
         if (!file) return;
-        if (file.size > 5 * 1024 * 1024) { toast('Archivo mayor a 5MB', 'err'); return; }
+        if (file.size > 15 * 1024 * 1024) { toast('Archivo mayor a 15MB', 'err'); return; }
         btn.disabled = true; btn.textContent = '⏳...';
         try {
-          const base64 = await new Promise(res => {
-            const fr = new FileReader(); fr.onload = e => res(e.target.result.split(',')[1]); fr.readAsDataURL(file);
-          });
+          // Comprimir en el cliente (≤1200px JPEG) → subida ~10x más rápida
+          const cmp = await _comprimirConstancia(file);
           // skipSheet:true — solo sube a Drive, retorna URL sin tocar el sheet
-          const up = await apiPost('voucher.subir', {NroPedido: nro, imageBase64: base64, mimeType: file.type, skipSheet: true});
+          const up = await apiPost('voucher.subir', {NroPedido: nro, imageBase64: cmp.base64, mimeType: cmp.mimeType, skipSheet: true});
           const newUrl = up.url || '';
           if (!newUrl) throw new Error('No se obtuvo URL del servidor');
-          // Guardar URL solo en la fila específica de este pago
-          const isPagoRow = pg._isPagoRow === true;
-          if (isPagoRow) {
-            // Pago adicional (_PAGO_ row): guardar constancia en esa fila específica
-            await apiPost('pedidos.actualizar', {NroPedido:nro, _pagoKey:pg._key, Constancia:newUrl});
-            // Actualizar en memoria: buscar por monto + forma + fecha (máxima precisión)
-            const pgFecha = String(pg.fecha instanceof Date ? pg.fecha.toISOString() : pg.fecha||'').split('T')[0];
-            const rowPago = pRaw.find(r => {
-              if (String(r['NroPedido']||'').trim() !== nro) return false;
-              if (String(r['Prenda']||'').trim() !== '_PAGO_') return false;
-              if (Math.abs((parseFloat(r['Pago'])||0) - pg.monto) >= 0.01) return false;
-              if (String(r['Forma pago']||'').trim() !== pg.forma) return false;
-              const rFecha = String(r['Fecha Pago'] instanceof Date ? r['Fecha Pago'].toISOString() : r['Fecha Pago']||'').split('T')[0];
-              return rFecha === pgFecha;
-            });
-            if (rowPago) rowPago['Constancia'] = newUrl;
-          } else {
-            // Pago original (filas de prenda): voucherSubir ya excluye _PAGO_ rows y guarda en hoja
-            // En este caso, la URL ya está en Drive (subida con skipSheet:true).
-            // Ahora persisto solo en las prenda rows usando _prendaTarget vacío + _skipPagoRows.
-            await apiPost('voucher.guardarEnSheet', {NroPedido:nro, url:newUrl});
-            // Actualizar en memoria todas las filas de prenda del pedido
-            pRaw.forEach(r => {
-              if (String(r['NroPedido']||'').trim() === nro && String(r['Prenda']||'').trim() !== '_PAGO_')
-                r['Constancia'] = newUrl;
-            });
-          }
-          // Recomputar virtual fields y re-renderizar sin cerrar modal
-          pEnrichPagos(pRaw);
-          pAll = pGroupByPedido(pRaw); pFlat = pExpandFlat(pAll);
-          renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false);
+          // Guardar la URL SOLO en el pago puntual (por ID; clave como respaldo)
+          await apiPost('constancia.setPago', {NroPedido:nro, _pagoId:pg._id||'', _pagoKey:pg._key, urls:newUrl});
+          _syncConstanciaPago(nro, pg._key, newUrl, pg._id);   // actualiza pRaw + re-render (solo ese pago)
           toast('Constancia subida', 'ok');
           // Reabrir el modal con datos actualizados
           const pedActualizado = pAll.find(row => String(row['NroPedido']||'').trim() === nro);
@@ -7862,7 +7863,7 @@ function verPed(p) {
       );
       const _backupRow = idx !== -1 ? pRaw[idx] : null;
       if (idx !== -1) pRaw.splice(idx, 1);
-      apiSend('pago.eliminar', {NroPedido: nro, _pagoKey: pagoEditState.pagoKey})
+      apiSend('pago.eliminar', {NroPedido: nro, _pagoId: pagoEditState.pagoId||'', _pagoKey: pagoEditState.pagoKey})
         .catch(e => {
           // Rollback
           if (_backupRow && idx !== -1) pRaw.splice(idx, 0, _backupRow);
@@ -7919,25 +7920,24 @@ function verPed(p) {
     if (!monto || monto <= 0) { toast('Ingresa un monto válido', 'err'); return; }
     this.disabled = true; this.textContent = 'Guardando...';
 
-    // K-16: Voucher upload EN PARALELO al guardado de pago (no bloquea).
-    // El pago se guarda con constanciaUrl='' al instante. Cuando termine el upload,
-    // se hace un segundo apiPost para actualizar la URL.
+    // K-16 (reforma jul-2026): Voucher upload EN PARALELO al guardado de pago (no bloquea).
+    // Comprimido en el cliente + skipSheet (solo Drive). Cuando terminan upload Y guardado,
+    // constancia.setPago asocia la URL SOLO a este pago (fila _PAGO_ o grupo de prenda).
     let constanciaUrl = '';
     let voucherPromise = null;
     const constFileEl = qId('pago-f-const-file');
     if (constFileEl && constFileEl.files[0]) {
       const file = constFileEl.files[0];
       voucherPromise = (async () => {
-        const base64 = await new Promise(res => {
-          const fr = new FileReader(); fr.onload = e => res(e.target.result.split(',')[1]); fr.readAsDataURL(file);
-        });
-        const up = await apiPost('voucher.subir', {NroPedido: nro, imageBase64: base64, mimeType: file.type});
+        const cmp = await _comprimirConstancia(file);
+        const up = await apiPost('voucher.subir', {NroPedido: nro, imageBase64: cmp.base64, mimeType: cmp.mimeType, skipSheet: true});
         return up.url || '';
       })().catch(e => { toast('Error subiendo constancia: '+esc(e.message), 'err'); return ''; });
     }
 
     try {
       // J-4 — Optimista: actualizar cache local AL INSTANTE y disparar backend en background, con rollback en fallo
+      let _saveP = Promise.resolve(true);   // promesa del guardado — la constancia espera a que exista/actualice el pago
       if (pagoEditState.esNuevo) {
         const baseRow = pRaw.find(r => String(r['NroPedido']||'').trim() === nro) || {};
         const _newRow = Object.assign({}, baseRow, {
@@ -7947,12 +7947,19 @@ function verPed(p) {
           AsesoraPago: asesoraPago || (baseRow['AsesoraPago'] || ''),
         });
         pRaw.push(_newRow);
-        apiPost('pago.agregar', {NroPedido: nro, Monto: monto, FormaPago: forma, FechaPago: fecha, Constancia: constanciaUrl, AsesoraPago: asesoraPago})
+        _saveP = apiPost('pago.agregar', {NroPedido: nro, Monto: monto, FormaPago: forma, FechaPago: fecha, Constancia: constanciaUrl, AsesoraPago: asesoraPago})
+          .then(res => {
+            // PagoId (jul-2026): el pago recién creado vuelve con su ID — guardarlo en el
+            // cache local para que ediciones/constancias inmediatas lo usen.
+            if (res && res.pagoId) { _newRow['PagoId'] = res.pagoId; return res.pagoId; }
+            return true;
+          })
           .catch(e => {
             // Rollback: quitar la fila de pago que agregamos
             const i = pRaw.indexOf(_newRow); if (i !== -1) pRaw.splice(i,1);
             try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
             _errLog('pago.agregar', e, {toast:'No se pudo guardar el pago — se revirtió'});
+            return false;
           });
       } else if (pagoEditState.prenda) {
         const _backups = [];
@@ -7962,11 +7969,13 @@ function verPed(p) {
             Object.assign(r, {Pago:monto, 'Forma pago':forma, 'Fecha Pago':fecha});
           }
         });
-        apiSend('pedidos.actualizar', {NroPedido:nro, _prendaTarget:pagoEditState.prenda, Pago:monto, FormaPago:forma, FechaPago:fecha})
+        _saveP = apiSend('pedidos.actualizar', {NroPedido:nro, _prendaTarget:pagoEditState.prenda, Pago:monto, FormaPago:forma, FechaPago:fecha})
+          .then(() => pagoEditState.pagoId || true)
           .catch(e => {
             _backups.forEach(b => Object.assign(b.row, {Pago:b.Pago, 'Forma pago':b.FP, 'Fecha Pago':b.FE}));
             try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
             _errLog('pedidos.actualizar.pago-prenda', e, {toast:'No se pudo actualizar el pago — se revirtió'});
+            return false;
           });
       } else if (pagoEditState.pagoKey) {
         const [oldM,oldF,oldD] = pagoEditState.pagoKey.split('|');
@@ -7980,35 +7989,29 @@ function verPed(p) {
             Object.assign(r, {Pago:monto, 'Forma pago':forma, 'Fecha Pago':fecha});
           }
         });
-        apiSend('pedidos.actualizar', {NroPedido:nro, _pagoKey:pagoEditState.pagoKey, Pago:monto, FormaPago:forma, FechaPago:fecha})
+        _saveP = apiSend('pedidos.actualizar', {NroPedido:nro, _pagoId:pagoEditState.pagoId||'', _pagoKey:pagoEditState.pagoKey, Pago:monto, FormaPago:forma, FechaPago:fecha})
+          .then(() => pagoEditState.pagoId || true)
           .catch(e => {
             _backups.forEach(b => Object.assign(b.row, {Pago:b.Pago, 'Forma pago':b.FP, 'Fecha Pago':b.FE}));
             try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
             _errLog('pedidos.actualizar.pago-key', e, {toast:'No se pudo actualizar el pago — se revirtió'});
+            return false;
           });
       }
       toast('✓ Pago guardado — sincronizando...','ok');
       recargarModalPago();
-      // K-16: cuando el voucher termine de subir (en paralelo), actualizar la constancia del pago
+      // K-16 (reforma): cuando terminen el upload Y el guardado, asociar la URL a ESTE pago.
+      // FIX bug "editar da error": se usa la clave NUEVA (monto|forma|fecha recién guardados),
+      // no la vieja — la fila ya tiene los valores nuevos cuando corre constancia.setPago.
       if (voucherPromise) {
-        voucherPromise.then(url => {
-          if (!url) return;
-          // Identificar la fila de pago recién creada/editada para actualizar Constancia
-          const key = (pagoEditState && pagoEditState.pagoKey) ? pagoEditState.pagoKey
-                    : (monto + '|' + forma + '|' + fecha);
-          apiPost('pedidos.actualizar', {NroPedido:nro, _pagoKey:key, Constancia:url})
+        Promise.all([voucherPromise, _saveP]).then(([url, saveOk]) => {
+          if (!url || !saveOk) return;
+          // saveOk es el PagoId cuando se conoce (pago nuevo o editado con ID) — targeting exacto.
+          const pid = (typeof saveOk === 'string') ? saveOk : '';
+          const key = monto + '|' + forma + '|' + fecha;
+          apiPost('constancia.setPago', {NroPedido:nro, _pagoId:pid, _pagoKey:key, urls:url})
+            .then(() => { _syncConstanciaPago(nro, key, url, pid); toast('✓ Constancia subida', 'ok'); })
             .catch(e => toast('Error guardando constancia: '+esc(e.message), 'err'));
-          // Actualizar cache local con la URL
-          pRaw.forEach(r => {
-            if (String(r['NroPedido']||'').trim()===nro
-                && String(r['Prenda']||'').trim()==='_PAGO_'
-                && Math.abs((parseFloat(r['Pago'])||0)-monto)<0.01
-                && String(r['Forma pago']||'').trim()===forma
-                && String(r['Fecha Pago']||'').trim().split('T')[0]===fecha) {
-              r['Constancia'] = url;
-            }
-          });
-          toast('✓ Constancia subida', 'ok');
         });
       }
     } catch(err) {
@@ -9556,20 +9559,23 @@ function npAddVoucher(vList) {
   vRm.textContent = '✕'; vRm.addEventListener('click', e => { e.stopPropagation(); vCard.remove(); });
   vCard.appendChild(vRm);
 
-  vFile.addEventListener('change', function() {
+  vFile.addEventListener('change', async function() {
     const file = this.files[0]; if (!file) return;
-    if (file.size > 5 * 1024 * 1024) { toast('El archivo es mayor a 5MB', 'err'); this.value = ''; return; }
-    const reader = new FileReader();
-    reader.onload = e => {
-      vCard.innerHTML = '';
-      const img = document.createElement('img');
-      img.src = e.target.result; img.style.cssText = 'width:100%;height:100%;object-fit:cover';
-      vCard.appendChild(img);
-      vCard.appendChild(vRm); vRm.style.display = 'block';
-      vCard.style.border = '2px solid var(--gn)'; vCard.style.cursor = 'default';
-      vCard.removeEventListener('click', () => vFile.click());
-    };
-    reader.readAsDataURL(file);
+    if (file.size > 15 * 1024 * 1024) { toast('El archivo es mayor a 15MB', 'err'); this.value = ''; return; }
+    // Comprimir AL SELECCIONAR (≤1200px JPEG): la cola de guardado pesa ~10x menos
+    // (menos riesgo de quota en localStorage) y la subida a Drive es mucho más rápida.
+    let src;
+    try {
+      const cmp = await _comprimirConstancia(file);
+      src = 'data:' + cmp.mimeType + ';base64,' + cmp.base64;
+    } catch(e) { toast('No se pudo leer la imagen', 'err'); this.value = ''; return; }
+    vCard.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = src; img.style.cssText = 'width:100%;height:100%;object-fit:cover';
+    vCard.appendChild(img);
+    vCard.appendChild(vRm); vRm.style.display = 'block';
+    vCard.style.border = '2px solid var(--gn)'; vCard.style.cursor = 'default';
+    vCard.removeEventListener('click', () => vFile.click());
   });
 
   vCard.appendChild(vFile);
@@ -10165,22 +10171,40 @@ async function _npExecuteSave(job) {
     requestId: job.requestId, // #9 idempotencia: retry no duplica el pedido
   });
   const nuevoNro = res.NroPedido;
-  // Disparar la subida de vouchers en BACKGROUND (no esperar) — completamente fire-and-forget
+  // Disparar la subida de vouchers en BACKGROUND (no esperar) — fire-and-forget.
+  // Reforma jul-2026: skipSheet (solo Drive) + constancia.setPago asocia las URLs
+  // al PAGO correspondiente (antes voucher.subir las pegaba en TODAS las filas).
   try {
     const _vouchersPorPago = job.pagosData
       .map((pg, idx) => ({ idx, vouchers: pg.vouchers || [] }))
       .filter(x => x.vouchers.length > 0);
     if (_vouchersPorPago.length && nuevoNro) {
       _vouchersPorPago.forEach(({ idx, vouchers }) => {
-        vouchers.forEach(dataUrl => {
-          const parts = dataUrl.split(',');
-          const mimeMatch = parts[0].match(/data:([^;]+);/);
-          apiPost('voucher.subir', {
-            NroPedido: String(nuevoNro),
-            imageBase64: parts[1],
-            mimeType: mimeMatch ? mimeMatch[1] : 'image/jpeg',
-          }).catch(e => _errLog('voucher.subir', e, {toast:'Pedido #'+nuevoNro+' creado pero no se pudo subir la constancia'}));
-        });
+        const _pg = job.pagosData[idx] || {};
+        const _key = (parseFloat(_pg.monto)||0) + '|' + String(_pg.forma||'').trim() + '|' + String(_pg.fecha||'').split('T')[0];
+        // PagoId (jul-2026): pedidos.crear devuelve el ID de cada pago (alineado por índice)
+        const _pid = (res && Array.isArray(res.pagosIds) && res.pagosIds[idx]) || '';
+        (async () => {
+          const _urls = [];
+          for (const dataUrl of vouchers) {
+            try {
+              const parts = dataUrl.split(',');
+              const mimeMatch = parts[0].match(/data:([^;]+);/);
+              const up = await apiPost('voucher.subir', {
+                NroPedido: String(nuevoNro),
+                imageBase64: parts[1],
+                mimeType: mimeMatch ? mimeMatch[1] : 'image/jpeg',
+                skipSheet: true,
+              });
+              if (up && up.url) _urls.push(up.url);
+            } catch(e) { _errLog('voucher.subir', e, {toast:'Pedido #'+nuevoNro+' creado pero no se pudo subir la constancia'}); }
+          }
+          if (_urls.length) {
+            apiPost('constancia.setPago', {NroPedido:String(nuevoNro), _pagoId:_pid, _pagoKey:_key, urls:_urls.join('\n')})
+              .then(() => { try { _syncConstanciaPago(String(nuevoNro), _key, _urls.join('\n'), _pid); } catch(_) {} })
+              .catch(e => _errLog('constancia.setPago', e, {toast:'Constancia subida pero no se pudo asociar al pago del #'+nuevoNro}));
+          }
+        })();
       });
     }
   } catch(e) { /* silencioso — el pedido ya está creado */ }
@@ -17972,9 +17996,12 @@ function hdAbrirEditor(r, containerEl) {
   });
 }
 
-// ── CONSTANCIA LIGHTBOX ───────────────────────────────────
+// ── CONSTANCIA LIGHTBOX (reforma jul-2026: consciente del PAGO) ───────────
+// Cada constancia mostrada sabe a QUÉ pago pertenece (_pagoKey). Agregar /
+// Cambiar / Eliminar operan SOLO sobre ese pago vía constancia.setPago —
+// nunca más se pisa la constancia de otro pago del mismo pedido.
 let _constanciaNro = null;
-let _constanciaUrls = [];
+let _constanciaItems = [];   // [{url, pagoKey}] — pagoKey null = legacy sin pago identificable (solo ver)
 let _constanciaIdx = 0;
 
 function _constanciaPreviewUrl(url) {
@@ -17987,44 +18014,115 @@ function _constanciaDownloadUrl(url) {
 }
 
 function _showConstanciaAt(idx) {
-  const urls = _constanciaUrls;
-  if (!urls.length) return;
-  _constanciaIdx = Math.max(0, Math.min(idx, urls.length-1));
-  const url = urls[_constanciaIdx];
-  document.getElementById('constancia-iframe').src = _constanciaPreviewUrl(url);
-  document.getElementById('constancia-download').href = _constanciaDownloadUrl(url);
+  const items = _constanciaItems;
+  if (!items.length) return;
+  _constanciaIdx = Math.max(0, Math.min(idx, items.length-1));
+  const it = items[_constanciaIdx];
+  document.getElementById('constancia-iframe').src = _constanciaPreviewUrl(it.url);
+  document.getElementById('constancia-download').href = _constanciaDownloadUrl(it.url);
   const nav = document.getElementById('constancia-nav');
-  nav.textContent = urls.length > 1 ? (_constanciaIdx+1)+' / '+urls.length : '';
-  document.getElementById('constancia-prev').style.display = (urls.length>1 && _constanciaIdx>0) ? '' : 'none';
-  document.getElementById('constancia-next').style.display = (urls.length>1 && _constanciaIdx<urls.length-1) ? '' : 'none';
+  nav.textContent = items.length > 1 ? (_constanciaIdx+1)+' / '+items.length : '';
+  document.getElementById('constancia-prev').style.display = (items.length>1 && _constanciaIdx>0) ? '' : 'none';
+  document.getElementById('constancia-next').style.display = (items.length>1 && _constanciaIdx<items.length-1) ? '' : 'none';
+  // Editar/Eliminar solo si sabemos de qué pago es la constancia
+  const editable = !!it.pagoKey;
+  ['constancia-edit','constancia-delete'].forEach(id => {
+    const b = document.getElementById(id);
+    b.disabled = !editable;
+    b.style.opacity = editable ? '' : '.4';
+    b.title = editable ? '' : 'Abre esta constancia desde su pago (pestaña Pagos del pedido) para editarla';
+  });
+  // Desarmar la confirmación de eliminar al navegar
+  const dBtn = document.getElementById('constancia-delete');
+  dBtn.dataset.armado = ''; dBtn.textContent = '🗑 Eliminar';
 }
 
-function verConstancias(urls, nro) {
-  _constanciaUrls = (urls||[]).filter(u=>u);
-  _constanciaNro = nro || null;
-  if (!_constanciaUrls.length) return;
+function _abrirConstanciaModal() {
+  if (!_constanciaItems.length) return;
   _showConstanciaAt(0);
   document.getElementById('modal-constancia').classList.add('on');
 }
 
-// Backward compat (llamado desde lugares antiguos)
+// Desde un pago específico (tabla Pagos del pedido) — TODAS sus URLs con su clave
+function verConstanciasPago(pg, nro) {
+  _constanciaNro = nro || null;
+  _constanciaItems = String(pg.constancia||'').split('\n').map(u=>u.trim()).filter(Boolean)
+    .map(u => ({url:u, pagoKey:pg._key, pagoId:pg._id||''}));
+  _abrirConstanciaModal();
+}
+
+// Backward compat: lista de URLs sin contexto de pago (solo ver/descargar)
+function verConstancias(urls, nro) {
+  _constanciaNro = nro || null;
+  _constanciaItems = (urls||[]).filter(u=>u).map(u => ({url:u, pagoKey:null}));
+  _abrirConstanciaModal();
+}
 function verConstancia(url, nro) { verConstancias([url], nro); }
 
+// Desde la tabla Pedidos (botón 📄 Ver): mapear cada URL a su pago
 function verConstanciasNro(nro) {
   const ped = pAll.find(p => String(p['NroPedido']) === String(nro));
   if (!ped) return;
-  verConstancias(ped._constancias || [], nro);
+  _constanciaNro = nro;
+  const items = [], vistos = new Set();
+  (ped._pagosDetalle||[]).forEach(pg => {
+    String(pg.constancia||'').split('\n').map(u=>u.trim()).filter(Boolean).forEach(u => {
+      if (vistos.has(u)) return;
+      vistos.add(u);
+      items.push({url:u, pagoKey:pg._key, pagoId:pg._id||''});
+    });
+  });
+  // Legacy: URLs del pedido que no corresponden a ningún pago identificable
+  (ped._constancias||[]).forEach(u => {
+    if (!vistos.has(u)) { vistos.add(u); items.push({url:u, pagoKey:null}); }
+  });
+  _constanciaItems = items;
+  _abrirConstanciaModal();
 }
 
-function _syncConstanciaEnMemoria(nro, newList) {
-  const joined = newList.join('\n');
-  // Solo actualizar filas de prenda (no _PAGO_) para no mezclar constancias generales con las de pago
-  pRaw.forEach(r => {
-    if (String(r['NroPedido']) === String(nro) && String(r['Prenda']||'').trim() !== '_PAGO_')
-      r['Constancia'] = joined;
-  });
-  pEnrichPagos(pRaw); pAll = pGroupByPedido(pRaw); pFlat = pExpandFlat(pAll);
-  renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false);
+// Actualiza pRaw con las constancias de UN pago (espejo local de constancia.setPago)
+// y re-renderiza. joined = URLs \n-separadas ('' = sin constancia).
+// pagoId (opcional): targeting exacto por ID; si no hay, cae a la clave.
+function _syncConstanciaPago(nro, pagoKey, joined, pagoId) {
+  try {
+    const pts = String(pagoKey||'').split('|');
+    const km = parseFloat(pts[0])||0, kf = pts[1]||'', kd = pts[2]||'';
+    const _d = v => String(v instanceof Date ? v.toISOString() : v||'').split('T')[0];
+    const match = r => String(r['NroPedido']||'').trim() === String(nro)
+      && Math.abs((parseFloat(r['Pago'])||0) - km) < 0.01
+      && String(r['Forma pago']||'').trim() === kf
+      && _d(r['Fecha Pago']) === kd;
+    // Grupo del pago: por PagoId (exacto) si existe; si no, por clave
+    // (filas _PAGO_ primero; si no hay, grupo de filas de prenda)
+    let grupo = [];
+    if (pagoId) grupo = pRaw.filter(r => String(r['NroPedido']||'').trim() === String(nro) && String(r['PagoId']||'').trim() === pagoId);
+    if (!grupo.length) grupo = pRaw.filter(r => match(r) && String(r['Prenda']||'').trim() === '_PAGO_');
+    if (!grupo.length) grupo = pRaw.filter(r => match(r) && String(r['Prenda']||'').trim() !== '_PAGO_');
+    if (grupo.length) {
+      // Igual que el backend: limpiar duplicados legacy de la MISMA URL en otras filas de prenda
+      const viejas = new Set(grupo.map(r => String(r['Constancia']||'').trim()).filter(Boolean));
+      grupo.forEach((r,i) => { r['Constancia'] = i===0 ? joined : ''; });
+      if (viejas.size) {
+        pRaw.forEach(r => {
+          if (String(r['NroPedido']||'').trim() !== String(nro)) return;
+          if (grupo.includes(r)) return;
+          if (String(r['Prenda']||'').trim() === '_PAGO_') return;
+          if (viejas.has(String(r['Constancia']||'').trim())) r['Constancia'] = '';
+        });
+      }
+    }
+    try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); } catch(_) {}
+    pEnrichPagos(pRaw); pAll = pGroupByPedido(pRaw); pFlat = pExpandFlat(pAll);
+    renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false);
+  } catch(e) { console.warn('[syncConstanciaPago]', e); }
+}
+
+// URLs actuales del pago de la constancia visible (desde los items del lightbox).
+// Compara por PagoId cuando ambos lo tienen; si no, por clave.
+function _constanciaUrlsDePago(pagoKey, pagoId) {
+  return _constanciaItems
+    .filter(it => (pagoId && it.pagoId) ? it.pagoId === pagoId : it.pagoKey === pagoKey)
+    .map(it => it.url);
 }
 
 document.addEventListener('click', function(e) {
@@ -18036,9 +18134,22 @@ document.addEventListener('click', function(e) {
 document.getElementById('constancia-prev').addEventListener('click', () => _showConstanciaAt(_constanciaIdx-1));
 document.getElementById('constancia-next').addEventListener('click', () => _showConstanciaAt(_constanciaIdx+1));
 
-// Agregar nueva constancia (sin reemplazar las existentes)
+// Pago destino para AGREGAR: el de la constancia visible; si el pedido tiene
+// UN solo pago, ese; si no se puede determinar, null. Devuelve {key, id}.
+function _constanciaPagoDestino() {
+  const it = _constanciaItems[_constanciaIdx];
+  if (it && it.pagoKey) return { key: it.pagoKey, id: it.pagoId || '' };
+  const ped = pAll.find(p => String(p['NroPedido']) === String(_constanciaNro));
+  const pagos = (ped && ped._pagosDetalle) || [];
+  if (pagos.length === 1) return { key: pagos[0]._key, id: pagos[0]._id || '' };
+  return null;
+}
+
+// Agregar nueva constancia AL PAGO de la constancia visible (sin reemplazar)
 document.getElementById('constancia-add').addEventListener('click', function() {
   if (!_constanciaNro) return;
+  const dest = _constanciaPagoDestino();
+  if (!dest) { toast('Este pedido tiene varios pagos: sube la constancia desde su pago (pestaña Pagos)', 'err'); return; }
   const inp = document.createElement('input');
   inp.type='file'; inp.accept='image/*,application/pdf'; inp.style.display='none';
   document.body.appendChild(inp); inp.click();
@@ -18047,20 +18158,27 @@ document.getElementById('constancia-add').addEventListener('click', function() {
     const btn = document.getElementById('constancia-add');
     btn.disabled=true; btn.textContent='Subiendo...';
     try {
-      const base64 = await new Promise(r => { const fr=new FileReader(); fr.onload=e=>r(e.target.result.split(',')[1]); fr.readAsDataURL(file); });
-      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:base64, mimeType:file.type});
-      _constanciaUrls.push(res.url);
-      _syncConstanciaEnMemoria(_constanciaNro, _constanciaUrls);
-      _showConstanciaAt(_constanciaUrls.length-1);
+      const cmp = await _comprimirConstancia(file);
+      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, skipSheet:true});
+      if (!res.url) throw new Error('No se obtuvo URL del servidor');
+      const nuevas = _constanciaUrlsDePago(dest.key, dest.id).concat([res.url]);
+      await apiPost('constancia.setPago', {NroPedido:_constanciaNro, _pagoId:dest.id, _pagoKey:dest.key, urls:nuevas.join('\n')});
+      _constanciaItems.push({url:res.url, pagoKey:dest.key, pagoId:dest.id});
+      _syncConstanciaPago(_constanciaNro, dest.key, nuevas.join('\n'), dest.id);
+      _showConstanciaAt(_constanciaItems.length-1);
       toast('Constancia agregada', 'ok');
     } catch(e) { toast('Error: '+esc(e.message), 'err'); }
     finally { btn.disabled=false; btn.textContent='➕ Agregar'; document.body.removeChild(inp); }
   });
 });
 
-// Cambiar la constancia actual (reemplaza solo la del índice visible)
+// Cambiar la constancia visible (reemplaza SOLO esa, SOLO en su pago).
+// FIX bug "reemplazar borra sin subir": primero se sube la nueva; solo si la
+// subida fue OK se reemplaza. Si falla, la anterior queda intacta.
 document.getElementById('constancia-edit').addEventListener('click', function() {
   if (!_constanciaNro) return;
+  const it = _constanciaItems[_constanciaIdx];
+  if (!it || !it.pagoKey) return;
   const inp = document.createElement('input');
   inp.type='file'; inp.accept='image/*,application/pdf'; inp.style.display='none';
   document.body.appendChild(inp); inp.click();
@@ -18069,13 +18187,13 @@ document.getElementById('constancia-edit').addEventListener('click', function() 
     const btn = document.getElementById('constancia-edit');
     btn.disabled=true; btn.textContent='Subiendo...';
     try {
-      const base64 = await new Promise(r => { const fr=new FileReader(); fr.onload=e=>r(e.target.result.split(',')[1]); fr.readAsDataURL(file); });
-      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:base64, mimeType:file.type});
-      // Reemplazar la URL actual en la lista
-      _constanciaUrls[_constanciaIdx] = res.url;
-      // Guardar lista actualizada en Sheets (sin duplicar — voucherSubir ya hizo append, corregimos)
-      await apiSend('pedidos.actualizar', {NroPedido:_constanciaNro, Constancia:_constanciaUrls.join('\n')});
-      _syncConstanciaEnMemoria(_constanciaNro, _constanciaUrls);
+      const cmp = await _comprimirConstancia(file);
+      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, skipSheet:true});
+      if (!res.url) throw new Error('No se obtuvo URL del servidor');
+      const nuevas = _constanciaUrlsDePago(it.pagoKey, it.pagoId).map(u => u === it.url ? res.url : u);
+      await apiPost('constancia.setPago', {NroPedido:_constanciaNro, _pagoId:it.pagoId||'', _pagoKey:it.pagoKey, urls:nuevas.join('\n')});
+      it.url = res.url;
+      _syncConstanciaPago(_constanciaNro, it.pagoKey, nuevas.join('\n'), it.pagoId);
       _showConstanciaAt(_constanciaIdx);
       toast('Constancia reemplazada', 'ok');
     } catch(e) { toast('Error: '+esc(e.message), 'err'); }
@@ -18083,25 +18201,33 @@ document.getElementById('constancia-edit').addEventListener('click', function() 
   });
 });
 
-// Eliminar solo la constancia actualmente visible
+// Eliminar SOLO la constancia visible, SOLO de su pago.
+// Confirmación inline de 2 clics (el confirm() nativo está prohibido en este ERP).
 document.getElementById('constancia-delete').addEventListener('click', async function() {
   if (!_constanciaNro) return;
-  const label = _constanciaUrls.length>1 ? 'esta constancia ('+ (_constanciaIdx+1) +' de '+_constanciaUrls.length+')' : 'la constancia';
-  if (!confirm('¿Eliminar '+label+' del pedido #'+_constanciaNro+'?')) return;
-  const btn=this; btn.disabled=true; btn.textContent='Eliminando...';
+  const it = _constanciaItems[_constanciaIdx];
+  if (!it || !it.pagoKey) return;
+  const btn = this;
+  if (btn.dataset.armado !== '1') {
+    btn.dataset.armado = '1';
+    btn.textContent = '¿Seguro? Clic de nuevo';
+    setTimeout(() => { if (btn.dataset.armado==='1') { btn.dataset.armado=''; btn.textContent='🗑 Eliminar'; } }, 4000);
+    return;
+  }
+  btn.dataset.armado = '';
+  btn.disabled=true; btn.textContent='Eliminando...';
   try {
-    _constanciaUrls.splice(_constanciaIdx, 1);
-    const newValue = _constanciaUrls.join('\n');
-    await apiSend('pedidos.actualizar', {NroPedido:_constanciaNro, Constancia:newValue});
-    _syncConstanciaEnMemoria(_constanciaNro, _constanciaUrls);
-    if (_constanciaUrls.length === 0) {
+    const restantes = _constanciaUrlsDePago(it.pagoKey, it.pagoId).filter(u => u !== it.url);
+    await apiPost('constancia.setPago', {NroPedido:_constanciaNro, _pagoId:it.pagoId||'', _pagoKey:it.pagoKey, urls:restantes.join('\n')});
+    _constanciaItems.splice(_constanciaIdx, 1);
+    _syncConstanciaPago(_constanciaNro, it.pagoKey, restantes.join('\n'), it.pagoId);
+    if (_constanciaItems.length === 0) {
       document.getElementById('modal-constancia').classList.remove('on');
       document.getElementById('constancia-iframe').src='';
-      toast('Constancia eliminada', 'ok');
     } else {
-      _showConstanciaAt(Math.min(_constanciaIdx, _constanciaUrls.length-1));
-      toast('Constancia eliminada', 'ok');
+      _showConstanciaAt(Math.min(_constanciaIdx, _constanciaItems.length-1));
     }
+    toast('Constancia eliminada', 'ok');
   } catch(e) { toast('Error: '+esc(e.message), 'err'); }
   finally { btn.disabled=false; btn.textContent='🗑 Eliminar'; }
 });
