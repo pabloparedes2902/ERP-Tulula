@@ -7437,6 +7437,10 @@ function verPed(p) {
       const editForm = qId('medit-prenda-edit-form');
       const addForm  = qId('medit-prenda-form');
       addForm.style.display = 'none';
+      // F4 (23-jul): nº de ocurrencia — con unidades repetidas, editar SOLO esta fila
+      const _allR = [...document.querySelectorAll('.medit-prenda-row')];
+      const _occ = _allR.slice(0, _allR.indexOf(row)).filter(r2 => r2.dataset.prenda === prendaNombre).length;
+      qId('mpfe-original').dataset.occ = String(_occ);
       qId('mpfe-original').value = prendaNombre;
       qId('mpfe-prenda').value   = prendaNombre;
       qId('mpfe-precio').value   = prendaPrecio;
@@ -7465,11 +7469,17 @@ function verPed(p) {
     const nuevoPrecio = parseFloat(qId('mpfe-precio').value) || 0;
     if (!nuevaPrend) { toast('Escribí el nombre de la prenda', 'err'); return; }
     // K-14: OPTIMISTA — actualizar pRaw + DOM AL INSTANTE. Server en background.
+    // F4 (23-jul): SOLO la unidad elegida (nº de ocurrencia), no todas las del mismo nombre.
+    const _occSel = parseInt(qId('mpfe-original').dataset.occ || '0', 10);
+    let _vis = -1;
     pRaw.forEach(r => {
       if (String(r['NroPedido']||'').trim() === nro && String(r['Prenda']||'').trim() === originalNombre) {
-        r['Prenda'] = nuevaPrend;
-        r['Precio'] = nuevoPrecio;
-        r['Subtotal'] = nuevoPrecio;
+        _vis++;
+        if (_vis === _occSel) {
+          r['Prenda'] = nuevaPrend;
+          r['Precio'] = nuevoPrecio;
+          r['Subtotal'] = nuevoPrecio;
+        }
       }
     });
     const row = document.querySelector('.medit-prenda-row[data-prenda="'+esc(originalNombre)+'"]');
@@ -7487,10 +7497,16 @@ function verPed(p) {
     apiPost('pedidos.actualizar', {
       NroPedido: nro,
       _prendaTarget: originalNombre,
+      _prendaOcc: _occSel,
       Prenda: nuevaPrend,
       Precio: nuevoPrecio,
       Subtotal: nuevoPrecio,
-    }).catch(e => toast('Error al sincronizar: '+esc(e.message), 'err'));
+    }).catch(e => {
+      // F4 (23-jul): si el server rechazó, RE-SINCRONIZAR el pedido desde la hoja
+      // (antes el cambio optimista quedaba en pantalla aunque el server dijera NO).
+      toast('Error al sincronizar: '+esc(e.message)+' — recargando el pedido…', 'err');
+      try { _pedsRefrescarNros([nro]); } catch(_){}
+    });
   });
 
   // ── Eliminar prenda existente — K-15: OPTIMISTA ──────────
@@ -7500,14 +7516,21 @@ function verPed(p) {
       const row = document.querySelector('.medit-prenda-row[data-pi="'+pi+'"]');
       const prendaNombre = row.dataset.prenda;
       if (!await npConfirm('¿Eliminar la prenda "'+prendaNombre+'" del pedido #'+nro+'? Esta acción no se puede deshacer.')) return;
+      // F4 (23-jul): nº de ocurrencia — con unidades repetidas, eliminar SOLO esta fila
+      const _allRd = [...document.querySelectorAll('.medit-prenda-row')];
+      const _occDel = _allRd.slice(0, _allRd.indexOf(row)).filter(r2 => r2.dataset.prenda === prendaNombre).length;
       // OPTIMISTA: actualizar cache + DOM al instante. Server en background, con rollback en fallo.
-      const idx = pRaw.findIndex(r => String(r['NroPedido']||'').trim() === nro && String(r['Prenda']||'').trim() === prendaNombre);
+      let _visD = -1;
+      const idx = pRaw.findIndex(r => {
+        if (String(r['NroPedido']||'').trim() === nro && String(r['Prenda']||'').trim() === prendaNombre) { _visD++; return _visD === _occDel; }
+        return false;
+      });
       const _backupRow = idx !== -1 ? pRaw[idx] : null;
       if (idx !== -1) pRaw.splice(idx, 1);
       row.remove();
       toast('✓ Prenda eliminada', 'ok');
       stData = null; confData = null; pRawEst = null; _invalidarPrefetch();
-      apiPost('pedidos.eliminarPrenda', { NroPedido: nro, _prendaTarget: prendaNombre })
+      apiPost('pedidos.eliminarPrenda', { NroPedido: nro, _prendaTarget: prendaNombre, _prendaOcc: _occDel })
         .catch(e => {
           if (_backupRow && idx !== -1) pRaw.splice(idx, 0, _backupRow);
           try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
