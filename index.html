@@ -4633,6 +4633,35 @@ function _schedulePedsPoll(delay) {
     _schedulePedsPoll(PEDS_POLL_INTERVAL);
   }, delay);
 }
+// ── AUTOCURACIÓN CAPA 3 (24-jul) — BANNER DE SALUD DEL ESPEJO ────────────────
+// Franja visible para TODAS las asesoras mientras la sincronización con la base
+// esté con problemas que el sistema no pudo reparar solo. Se muestra y se quita
+// SOLA (el estado viaja en el poll de 15s). El admin ve además "Reparar ahora".
+function _saludBanner(msg) {
+  let el = document.getElementById('salud-sync-banner');
+  if (!msg) { if (el) el.remove(); return; }
+  const esAdmin = (typeof MY_ROLE === 'undefined') || MY_ROLE === 'Admin';
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'salud-sync-banner';
+    el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9998;background:#7a4a00;color:#ffe3b3;padding:8px 14px;font-size:13px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,.4)';
+    document.body.appendChild(el);
+  }
+  let html = '<span style="font-size:15px">⚠️</span><span style="flex:1">' + esc(msg) + '</span>';
+  if (esAdmin) html += '<button id="salud-sync-reparar" class="btn bg bs" style="font-size:12px;white-space:nowrap">🔧 Reparar ahora</button>';
+  el.innerHTML = html;
+  const btn = document.getElementById('salud-sync-reparar');
+  if (btn) btn.addEventListener('click', async function(){
+    this.disabled = true; this.textContent = 'Reparando… (puede tardar 1-3 min)';
+    try {
+      const r = await apiPost('salud.reparar', {});
+      if (r && r.saludLimpia) { toast('✓ Espejo reparado y verificado', 'ok'); _saludBanner(''); }
+      else toast('La reparación corrió pero aún quedan diferencias — se reintenta esta noche automáticamente', 'err');
+    } catch(e) { toast('Error al reparar: ' + esc(e.message), 'err'); }
+    finally { const b = document.getElementById('salud-sync-reparar'); if (b) { b.disabled = false; b.textContent = '🔧 Reparar ahora'; } }
+  });
+}
+
 async function _pollPedsOnce() {
   if (_pedsPollInFlight) return;          // ya hay una en curso → no disparar otra
   if (!_pedsPollVisible) return;          // pestaña oculta → no pollear
@@ -4647,6 +4676,8 @@ async function _pollPedsOnce() {
     delete params.limit; delete params.offset;
     const res = await api('pedidos.cambiosDesde', params);
     if (!res) return;
+    // AUTOCURACIÓN CAPA 3 (24-jul): banner de salud del espejo (viene en cada poll)
+    try { _saludBanner(res.saludSync || ''); } catch(_) {}
     // FIX changelog — el servidor no pudo registrar algún aviso de cambio (payload
     // grande): recargar la lista completa UNA vez para no quedar desactualizados.
     if (res.refetch) {
@@ -6644,7 +6675,12 @@ async function _sbReconciliarTope(){
     // F5 (24-jul) — RADAR POR ÚLTIMA MODIFICACIÓN: vigila lo último MODIFICADO (no lo
     // más nuevo por fecha) → una corrección a un pedido VIEJO llega sola a todas las
     // pantallas en ~1 min (caso 18901: pedido de abril editado hoy quedaba fuera del radar).
-    const d = await _sbListarDirecto(0, 50, 'ultima_modif.desc.nullslast,id.desc');
+    // F3 (24-jul): radar AMPLIADO en horas pico (9am-9pm: top-200; resto: top-50).
+    // En un día movido, 50 pedidos modificados se superan en minutos y una edición
+    // podía salirse del radar antes de que otras pantallas reconciliaran.
+    const _hLima = new Date().getHours();
+    const _topeRadar = (_hLima >= 9 && _hLima < 21) ? 200 : 50;
+    const d = await _sbListarDirecto(0, _topeRadar, 'ultima_modif.desc.nullslast,id.desc');
     if (!d || !d.rows || !d.rows.length) return;
     if (d.total) window._pedTotalReal = d.total;
     const porNro = {};
@@ -7443,7 +7479,7 @@ function verPed(p) {
               // Rollback in-memory (el DOM ya removido — el polling lo restaurará)
               if (_backupRow && idx !== -1) pRaw.splice(idx, 0, _backupRow);
               try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
-              _errLog('pedidos.eliminarPrenda.fresh', e, {toast:'No se pudo eliminar la prenda — se restauró, refrescá Pedidos'});
+              _errLog('pedidos.eliminarPrenda.fresh', e, {toast:'No se pudo eliminar la prenda: '+esc(e.message)+' — se restauró'});
             });
         });
       }
@@ -7568,7 +7604,7 @@ function verPed(p) {
         .catch(e => {
           if (_backupRow && idx !== -1) pRaw.splice(idx, 0, _backupRow);
           try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
-          _errLog('pedidos.eliminarPrenda', e, {toast:'No se pudo eliminar la prenda — se restauró'});
+          _errLog('pedidos.eliminarPrenda', e, {toast:'No se pudo eliminar la prenda: '+esc(e.message)+' — se restauró'});
         });
     });
   });
@@ -8052,7 +8088,9 @@ function verPed(p) {
     lsSetPeds(pRaw, pLastSyncTs || Date.now());
     try { _renderPedsDesde(pRaw, pEst, true); } catch(e) {}
     toast('✓ Pedido #'+nro+' enviado a Papelera', 'ok');
-    apiSend('pedidos.eliminar', {NroPedido:nro})
+    // F3 (24-jul): Force solo cuando el usuario YA VIO la advertencia de cambio/devolución
+    // y confirmó — si el frontend no lo detectó (datos viejos), el backend bloquea igual.
+    apiSend('pedidos.eliminar', {NroPedido:nro, Force: !!(_hayCam || _hayDev)})
       .then(() => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){} })
       .catch(e => { _papeleraPendDel(nro); toast('Error al eliminar en servidor: '+esc(e.message)+' — refresca para reintentar','err'); });
   });
@@ -14412,14 +14450,22 @@ function editarCambios2(nc){
     var nues=[].slice.call(ov.querySelectorAll('.c2e-nue-row')).map(function(r){ return { Prenda:(r.querySelector('.c2e-nue-pr').value||'').trim(), Cant:parseInt(r.querySelector('.c2e-nue-cant').value)||1 }; }).filter(function(n){return n.Prenda;});
     if(!devs.length){ toast('Agrega al menos una prenda a devolver','err'); return; }
     if(!nues.length){ toast('Agrega al menos una prenda nueva','err'); return; }
-    var body={ NroCambio:nc, Nombre:gv('c2e-nom'), Diferencia:gv('c2e-dif'), PrecioEnvio:gv('c2e-env'), MontoPagadoCliente:gv('c2e-pcli'), MontoAsumidoEmpresa:gv('c2e-pemp'), Motivo:gv('c2e-mot'), MotivoDetalle:gv('c2e-motd'), FechaSolicitud:gv('c2e-fsol'), FechaRecepcionOriginal:gv('c2e-frec'), FechaEnvioNueva:gv('c2e-fenv'), Comentario:gv('c2e-com'), devueltas:devs, nuevas:nues };
+    // F3 (24-jul): mandar la versión que este editor tenía en pantalla — si otro
+    // usuario guardó primero, el backend avisa en vez de pisar su trabajo.
+    var body={ NroCambio:nc, _versionVista:(c&&c.Version)||'', Nombre:gv('c2e-nom'), Diferencia:gv('c2e-dif'), PrecioEnvio:gv('c2e-env'), MontoPagadoCliente:gv('c2e-pcli'), MontoAsumidoEmpresa:gv('c2e-pemp'), Motivo:gv('c2e-mot'), MotivoDetalle:gv('c2e-motd'), FechaSolicitud:gv('c2e-fsol'), FechaRecepcionOriginal:gv('c2e-frec'), FechaEnvioNueva:gv('c2e-fenv'), Comentario:gv('c2e-com'), devueltas:devs, nuevas:nues };
     this.disabled=true; this.textContent='Guardando...';
     try{ await apiSend('cambios2.editarPrendas', body); toast('Cambio actualizado','ok'); refresca(); }
     catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='Guardar'; }
   });
   var del=ov.querySelector('[data-c2del]');
   if(del) del.addEventListener('click', async function(){
-    if(!confirm('Esta acción no se puede deshacer. ¿Confirma que desea anular este cambio?')) return;
+    // FIX 24-jul: confirmación INLINE de 2 clics (el confirm() nativo está prohibido en este ERP)
+    if(this.dataset.armado!=='1'){
+      this.dataset.armado='1'; this.textContent='¿Seguro? Clic de nuevo para anular';
+      var _b=this; setTimeout(function(){ if(_b.dataset.armado==='1'){ _b.dataset.armado=''; _b.textContent='🗑 Anular cambio'; } }, 4000);
+      return;
+    }
+    this.dataset.armado='';
     this.disabled=true; this.textContent='...';
     try{ await api('cambios2.cancelar',{nc:nc}); toast('Cambio anulado','ok'); refresca(); }
     catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑 Anular cambio'; }
