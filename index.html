@@ -7829,33 +7829,38 @@ function verPed(p) {
       fileInp.type = 'file'; fileInp.accept = 'image/*,application/pdf'; fileInp.style.display = 'none';
       document.body.appendChild(fileInp);
       fileInp.click();
-      fileInp.addEventListener('change', async function() {
+      fileInp.addEventListener('change', function() {
         const file = this.files[0];
         document.body.removeChild(fileInp);
         if (!file) return;
         if (file.size > 15 * 1024 * 1024) { toast('Archivo mayor a 15MB', 'err'); return; }
-        btn.disabled = true; btn.textContent = '⏳...';
-        try {
-          // Comprimir en el cliente (≤1200px JPEG) → subida ~10x más rápida
+        // PERF 24-jul — SENSACIÓN INSTANTÁNEA: antes el botón bloqueaba 2 viajes al
+        // servidor seguidos (subir a Drive + asociar al pago) = 20-40s de reloj de
+        // arena. Ahora: feedback al instante, UN solo viaje (voucher.subir asocia al
+        // pago en la misma llamada) y todo corre EN SEGUNDO PLANO — puedes seguir
+        // trabajando; si falla, el botón vuelve a "Subir" con el motivo.
+        btn.disabled = true; btn.textContent = '⏳ Subiendo…';
+        toast('Constancia subiéndose en segundo plano — puedes seguir trabajando', '');
+        (async () => {
           const cmp = await _comprimirConstancia(file);
-          // skipSheet:true — solo sube a Drive, retorna URL sin tocar el sheet
-          const up = await apiPost('voucher.subir', {NroPedido: nro, imageBase64: cmp.base64, mimeType: cmp.mimeType, skipSheet: true});
+          const up = await apiPost('voucher.subir', {
+            NroPedido: nro, imageBase64: cmp.base64, mimeType: cmp.mimeType,
+            _pagoId: pg._id||'', _pagoKey: pg._key,   // ← asocia al pago en el MISMO viaje
+          });
           const newUrl = up.url || '';
           if (!newUrl) throw new Error('No se obtuvo URL del servidor');
-          // Guardar la URL SOLO en el pago puntual (por ID; clave como respaldo)
-          await apiPost('constancia.setPago', {NroPedido:nro, _pagoId:pg._id||'', _pagoKey:pg._key, urls:newUrl});
-          _syncConstanciaPago(nro, pg._key, newUrl, pg._id);   // actualiza pRaw + re-render (solo ese pago)
-          toast('Constancia subida', 'ok');
-          // Reabrir el modal con datos actualizados
-          const pedActualizado = pAll.find(row => String(row['NroPedido']||'').trim() === nro);
-          if (pedActualizado) {
-            document.getElementById('modal-ped').classList.remove('on');
-            verPed(pedActualizado);
+          _syncConstanciaPago(nro, pg._key, newUrl, pg._id);   // pRaw + re-render (solo ese pago)
+          toast('✓ Constancia subida', 'ok');
+          // Si el modal sigue abierto, convertir el botón a "Ver" en el sitio (sin recargar nada)
+          if (btn.isConnected) {
+            btn.disabled = false; btn.textContent = '📄 Ver';
+            btn.removeAttribute('data-upload-const-pago');
+            btn.onclick = function(){ verConstanciasPago(Object.assign({}, pg, { constancia: newUrl }), nro); };
           }
-        } catch(e) {
-          toast('Error: '+esc(e.message), 'err');
-          btn.disabled = false; btn.textContent = '📎 Subir';
-        }
+        })().catch(e => {
+          toast('No se pudo subir la constancia: ' + esc(e.message) + ' — reintenta', 'err');
+          if (btn.isConnected) { btn.disabled = false; btn.textContent = '📎 Subir'; }
+        });
       });
     });
   });
@@ -18205,10 +18210,11 @@ document.getElementById('constancia-add').addEventListener('click', function() {
     btn.disabled=true; btn.textContent='Subiendo...';
     try {
       const cmp = await _comprimirConstancia(file);
-      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, skipSheet:true});
+      // PERF 24-jul: subir + asociar al pago en UN solo viaje (urlsPrevias conserva las existentes)
+      const _previas = _constanciaUrlsDePago(dest.key, dest.id);
+      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, _pagoId:dest.id, _pagoKey:dest.key, urlsPrevias:_previas.join('\n')});
       if (!res.url) throw new Error('No se obtuvo URL del servidor');
-      const nuevas = _constanciaUrlsDePago(dest.key, dest.id).concat([res.url]);
-      await apiPost('constancia.setPago', {NroPedido:_constanciaNro, _pagoId:dest.id, _pagoKey:dest.key, urls:nuevas.join('\n')});
+      const nuevas = _previas.concat([res.url]);
       _constanciaItems.push({url:res.url, pagoKey:dest.key, pagoId:dest.id});
       _syncConstanciaPago(_constanciaNro, dest.key, nuevas.join('\n'), dest.id);
       _showConstanciaAt(_constanciaItems.length-1);
@@ -18234,10 +18240,12 @@ document.getElementById('constancia-edit').addEventListener('click', function() 
     btn.disabled=true; btn.textContent='Subiendo...';
     try {
       const cmp = await _comprimirConstancia(file);
-      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, skipSheet:true});
+      // PERF 24-jul: UN solo viaje — urlsPrevias = las existentes SIN la que se reemplaza;
+      // el servidor le agrega la nueva. Si la subida falla, la anterior queda intacta.
+      const _rest = _constanciaUrlsDePago(it.pagoKey, it.pagoId).filter(u => u !== it.url);
+      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, _pagoId:it.pagoId||'', _pagoKey:it.pagoKey, urlsPrevias:_rest.join('\n')});
       if (!res.url) throw new Error('No se obtuvo URL del servidor');
-      const nuevas = _constanciaUrlsDePago(it.pagoKey, it.pagoId).map(u => u === it.url ? res.url : u);
-      await apiPost('constancia.setPago', {NroPedido:_constanciaNro, _pagoId:it.pagoId||'', _pagoKey:it.pagoKey, urls:nuevas.join('\n')});
+      const nuevas = _rest.concat([res.url]);
       it.url = res.url;
       _syncConstanciaPago(_constanciaNro, it.pagoKey, nuevas.join('\n'), it.pagoId);
       _showConstanciaAt(_constanciaIdx);
