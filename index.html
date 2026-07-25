@@ -5408,6 +5408,22 @@ async function _reconcileColores() {
 // Merge sin destruir la tabla: actualiza pRaw, marca highlights, re-aplica
 // ¿alguna fila del pedido `nro` pasa los filtros de columna activos? (mismas reglas que pAply,
 // solo columnas crudas — cubre Nro/cliente/fecha/etc.). Usado para no redibujar por cambios ocultos.
+// ══════════════════════════════════════════════════════════════════════════
+// FIX 25-jul — BUSCAR "PAGO" EN LA COLUMNA PRENDA
+//
+// Los pagos adicionales de un pedido se guardan como filas aparte con la
+// palabra "_PAGO_" en la columna Prenda. Es un marcador interno, no una prenda.
+// Al buscar "pago" en la columna Prenda salian 286 pedidos que no tenian nada
+// que ver: coincidian con el marcador, no con una prenda.
+//
+// Medido el 25-jul sobre las 45.019 filas: 380 filas marcador y CERO prendas
+// reales que contengan la palabra "pago". O sea, excluir el marcador quita los
+// 286 falsos positivos sin perder un solo resultado legitimo.
+function _filaEsMarcadorPago(r) {
+  try { return String(r && r['Prenda'] || '').trim().toUpperCase() === '_PAGO_'; }
+  catch (e) { return false; }
+}
+
 function _nroPasaFiltro_(nro) {
   const rows = pRaw.filter(r => String(r['NroPedido']||'').trim() === String(nro).trim());
   if (!rows.length) return false;
@@ -5415,6 +5431,8 @@ function _nroPasaFiltro_(nro) {
     !col.startsWith('_') && f && (f.lib ? String(f.val||'').trim()!=='' : (f.val && f.val.size)));
   if (!ents.length) return true;
   return rows.some(r => ents.every(([col,f]) => {
+    // Mismo criterio que pAply: el marcador "_PAGO_" no es una prenda.
+    if (col === 'Prenda' && _filaEsMarcadorPago(r)) return false;
     if (f.lib) { const q=String(f.val||'').toLowerCase(); const val = PF.has(col)?fmtD(r[col]):String(r[col]||''); return val.toLowerCase().includes(q); }
     const v = PF.has(col)?fmtD(r[col]):String(r[col]||'').trim(); return f.val.has(v);
   }));
@@ -7358,6 +7376,8 @@ function pAply() {
     if (f.lib) {
       const q = String(f.val||'').toLowerCase();
       if (q) filtered = filtered.filter(r => {
+        // FIX 25-jul: buscar en Prenda NO debe encontrar el marcador "_PAGO_"
+        if (col === 'Prenda' && _filaEsMarcadorPago(r)) return false;
         // Para columnas de fecha: comparar contra DD/MM/YYYY formateado
         const val = PF.has(col) ? fmtD(r[col]) : String(r[col]||'');
         return val.toLowerCase().includes(q);
@@ -9285,7 +9305,21 @@ function verPed(p) {
             Object.assign(r, {Pago:monto, 'Forma pago':forma, 'Fecha Pago':fecha});
           }
         });
-        _saveP = apiSend('pedidos.actualizar', {NroPedido:nro, _pagoId:pagoEditState.pagoId||'', _pagoKey:pagoEditState.pagoKey, Pago:monto, FormaPago:forma, FechaPago:fecha})
+        // PASO 7 (25-jul) — EDITAR EL PAGO EN LA BASE.
+        // La funcion pago_editar ya existia en Supabase desde el paso 4, sin usar.
+        // Solo sirve cuando el pago tiene su identificador propio (PagoId): sin el
+        // no se sabe CUAL de los pagos del pedido hay que tocar, y ahi se usa la
+        // via de siempre, que sabe encontrarlo por monto+forma+fecha.
+        const _pidEd = pagoEditState.pagoId || '';
+        _saveP = (async () => {
+          if (_pidEd) {
+            const _b = await _sbRpcPago('pago_editar', {
+              p_nro: String(nro), p_pago_id: String(_pidEd),
+              p_monto: monto, p_forma: String(forma||''), p_fecha: String(fecha||''), p_asesora: '' });
+            if (_b) return _b;
+          }
+          return apiSend('pedidos.actualizar', {NroPedido:nro, _pagoId:_pidEd, _pagoKey:pagoEditState.pagoKey, Pago:monto, FormaPago:forma, FechaPago:fecha});
+        })()
           .then(() => pagoEditState.pagoId || true)
           .catch(e => {
             _backups.forEach(b => Object.assign(b.row, {Pago:b.Pago, 'Forma pago':b.FP, 'Fecha Pago':b.FE}));
