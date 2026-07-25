@@ -6426,7 +6426,20 @@ function _pVirtRender(el) {
   if (!sc || !tbody) return;
   const total = pVirt.rows.length;
   const rh = pVirt.rowHeight || 28;
-  const vpH = sc.clientHeight;
+  // FIX 25-jul (3er intento, éste con el diagnóstico correcto) ─────────────
+  // `clientHeight` es la altura VISIBLE del contenedor. En el primer dibujado
+  // el navegador todavía no terminó de acomodar la página, así que devuelve 0 o
+  // un valor chico. Con eso, la cuenta de "hasta qué fila dibujar" daba unas 10
+  // filas y el resto quedaba en blanco hasta que la persona movía el scroll —
+  // ahí se recalculaba con la altura de verdad y aparecía todo de golpe.
+  // Era exactamente lo que Pablo describió: "muestra 15 filas y al hacer scroll
+  // recién figura el resto". No tenía nada que ver con el alto de fila: pasaba
+  // igual antes de tocarlo.
+  // Solución: si la altura todavía no es creíble, usar la de la ventana. Peor
+  // caso, se dibujan unas filas de más — invisible para el usuario y barato.
+  const vpH = (sc.clientHeight && sc.clientHeight > 80)
+    ? sc.clientHeight
+    : Math.max(window.innerHeight || 800, 800);
   const scrollTop = sc.scrollTop;
   let start = Math.floor(scrollTop / rh) - VIRT_BUFFER;
   let end   = Math.ceil((scrollTop + vpH) / rh) + VIRT_BUFFER;
@@ -6483,11 +6496,13 @@ function _pVirtSetData(el, rows) {
   _pVirtRender(el);
   // Medir altura real tras el primer pintado; si difiere, re-render para ajustar buffer
   requestAnimationFrame(() => {
-    const oldH = pVirt.rowHeight;
     _pVirtMeasure(el);
-    // Si el alto real difiere del supuesto, repintar SÍ o SÍ: los separadores
-    // se calcularon con el alto viejo y hay que rehacerlos.
-    if (Math.abs((pVirt.rowHeight || 28) - oldH) > 1) { pVirt._rhUsado = null; _pVirtRender(el); }
+    // Repintar SIEMPRE en el segundo cuadro: recién ahora la página está
+    // acomodada y `clientHeight` dice la verdad. Antes solo se repintaba si
+    // había cambiado el alto de fila, así que si la altura del contenedor era
+    // la que estaba mal, nadie lo corregía y quedaban las filas en blanco.
+    pVirt._rhUsado = null; pVirt.start = -1; pVirt.end = -1;
+    _pVirtRender(el);
   });
 }
 
