@@ -5116,6 +5116,43 @@ function _nroPasaFiltro_(nro) {
   }));
 }
 
+// ── COLOR SOLO-ERP (25-jul) ──────────────────────────────────────────────────
+// El color de la prenda vive ÚNICAMENTE en la base del ERP (Supabase). La hoja de
+// Google quedó FUERA del circuito de colores: ya no se le espeja el color, así que
+// las filas que llegan DE LA HOJA (poll del changelog, pedidos.porNros) traen un
+// ColorPrenda viejo o vacío — y tampoco traen _sbId (el id real de la fila).
+// Antes de reemplazar filas locales por filas de la hoja, esta función CONSERVA el
+// color y el _sbId locales, casando por (pedido, prenda, ocurrencia en orden).
+// Regla de Pablo: el color solo cambia si una PERSONA lo cambia — nunca porque un
+// proceso interno releyó la hoja.
+function _colorConservarLocal(filasViejas, filasNuevas) {
+  try {
+    if (!Array.isArray(filasViejas) || !filasViejas.length) return filasNuevas;
+    if (!Array.isArray(filasNuevas) || !filasNuevas.length) return filasNuevas;
+    const porClave = {}; const occV = {};
+    filasViejas.forEach(r => {
+      if (!r) return;
+      const n = String(r['NroPedido'] || '').trim(), p = String(r['Prenda'] || '').trim();
+      if (!n || !p) return;
+      const ko = n + '|' + p; occV[ko] = occV[ko] || 0;
+      porClave[ko + '|' + occV[ko]] = { color: String(r['ColorPrenda'] || ''), id: (r._sbId != null ? r._sbId : null) };
+      occV[ko]++;
+    });
+    const occN = {};
+    filasNuevas.forEach(r => {
+      if (!r) return;
+      const n = String(r['NroPedido'] || '').trim(), p = String(r['Prenda'] || '').trim();
+      if (!n || !p) return;
+      const ko = n + '|' + p; occN[ko] = occN[ko] || 0;
+      const v = porClave[ko + '|' + occN[ko]]; occN[ko]++;
+      if (!v) return;
+      r['ColorPrenda'] = v.color;                                 // el color local manda (verdad = base)
+      if (v.id != null && r._sbId == null) r._sbId = v.id;        // no perder la identidad de la fila
+    });
+  } catch (_) {}
+  return filasNuevas;
+}
+
 function _mergePedsDelta(editados, eliminados) {
   if (!pRaw || !pRaw.length) return;
   // Descartar cambios propios de pintado (ya aplicados in-place): evita re-render + reordenamiento
@@ -5137,7 +5174,10 @@ function _mergePedsDelta(editados, eliminados) {
       const _norm = v => (v === null || v === undefined) ? '' : String(v);
       const _rowKey = r => {
         const o = {};
-        Object.keys(r).sort().forEach(k => { if (k.charAt(0) === '_') return; o[k] = _norm(r[k]); });
+        // COLOR SOLO-ERP (25-jul): ColorPrenda se excluye de la comparación — la hoja
+        // ya no lleva colores, así que su ColorPrenda difiere SIEMPRE del local y sin
+        // esta exclusión cada poll re-mergearía el pedido por gusto (churn perpetuo).
+        Object.keys(r).sort().forEach(k => { if (k.charAt(0) === '_' || k === 'ColorPrenda') return; o[k] = _norm(r[k]); });
         return JSON.stringify(o);
       };
       const porNroNuevo = {};
@@ -5166,9 +5206,12 @@ function _mergePedsDelta(editados, eliminados) {
   if (editados.length) {
     const nrosNuevos = new Set();
     editados.forEach(r => { nrosNuevos.add(String(r.NroPedido||'')); nrosAfectados.add(String(r.NroPedido||'')); });
-    // Sacar todas las filas viejas de los pedidos afectados, agregar las nuevas
+    // Sacar todas las filas viejas de los pedidos afectados, agregar las nuevas.
+    // COLOR SOLO-ERP (25-jul): estas filas vienen de la HOJA (changelog) → conservar
+    // el color y el _sbId locales antes de reemplazar (la hoja ya no sabe de colores).
+    const _viejasColor = pRaw.filter(r => nrosNuevos.has(String(r.NroPedido||'')));
     pRaw = pRaw.filter(r => !nrosNuevos.has(String(r.NroPedido||'')));
-    pRaw.push(...editados);
+    pRaw.push(..._colorConservarLocal(_viejasColor, editados));
     // MODO SHEETS: si alguien cambió el color de una prenda de estos pedidos, la fórmula
     // del nombre se actualiza — solo para ELLOS, y solo si de verdad cambió algo.
     try { _cliColorRecalcNros([...nrosNuevos]); } catch(_) {}
@@ -6611,18 +6654,17 @@ async function _paintPrendaCell(td) {
 
   // Persistir al backend (no bloqueante para UX)
   try {
-    // ══ PILOTO MIGRACIÓN — SEMANA 1 (24-jul) ═══════════════════════════════
-    // Pintar color escribe DIRECTO en la base (RPC transaccional, ~0.1s) en vez
-    // de viajar a Apps Script (~3s). El aplicador (cada 1 min) copia el cambio a
-    // la hoja de Google, que sigue completa como espejo de reportes.
+    // ══ COLOR SOLO-ERP (25-jul) ════════════════════════════════════════════
+    // El color es una marca VISUAL del ERP: vive ÚNICAMENTE en la base (una sola
+    // escritura por id de fila, transaccional, ~0.1s). Ya NO se espeja a la hoja
+    // de Google: la hoja quedó fuera del circuito de colores (pedido de Pablo,
+    // 25-jul: "no necesito que los colores se pinten en la hoja"). Las demás
+    // pantallas lo reciben por el tiempo real / radar, que leen la base.
     // REVERSA: poner SB_PILOTO_COLORES = false y publicar → vuelve a Apps Script.
     // Si la vía directa falla por lo que sea, cae SOLA al camino clásico.
     const _directoOK = await _sbRpcColorPintar(nro, prenda, occ, next, filaId);
     if (_directoOK) {
       try { if (typeof _pedsEditLocalMark === 'function') _pedsEditLocalMark(nro); } catch(_) {}
-      // FIX 24-jul: espejar a la hoja YA (segundos) — evita que radares que leen la
-      // hoja o escrituras clásicas del mismo pedido "pisen" el color recién pintado.
-      try { _sbEspejarYa(nro); } catch(_) {}
     } else {
       await apiSend('pedidos.setColorPrenda', { NroPedido: nro, Prenda: prenda, Color: next, Occ: occ });
     }
@@ -7152,8 +7194,11 @@ async function _pedsRefrescarNros(nros){
     const res = await api('pedidos.porNros', { nros: list.join(',') });
     const rows = (res && Array.isArray(res.rows)) ? res.rows : (Array.isArray(res) ? res : []);
     const setN = new Set(list);
+    // COLOR SOLO-ERP (25-jul): pedidos.porNros lee la HOJA → conservar color y _sbId
+    // locales antes de reemplazar (la hoja quedó fuera del circuito de colores).
+    const _viejasColor = pRaw.filter(r => setN.has(String(r['NroPedido']||'').trim()));
     pRaw = pRaw.filter(r => !setN.has(String(r['NroPedido']||'').trim()));
-    if (rows.length) pRaw.push(...rows);
+    if (rows.length) pRaw.push(..._colorConservarLocal(_viejasColor, rows));
     try { _cliColorRecalcNros(list); } catch(_) {}   // MODO SHEETS: reflejar cambios reales
     list.forEach(n => _pedsEditLocalMark(n));   // que la reconciliación no lo pise con datos viejos
     try { pEnrichPagos(pRaw); } catch(_){}
@@ -7253,12 +7298,16 @@ async function _rtAplicar() {
     if (!lista.length) return;
     const tok = await _sbTokenVigente(); if (!tok) return;
     const inList = lista.map(n => '"' + n + '"').join(',');
-    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=row_json&eliminado=is.null&nro_pedido=in.(' + encodeURIComponent(inList) + ')',
+    // COLOR SOLO-ERP (25-jul): pedir también el id y pegarlo como _sbId — sin esto,
+    // cada aviso de tiempo real reemplazaba las filas SIN id y el siguiente pintado
+    // de ese pedido caía al camino viejo por posición.
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=id,row_json&eliminado=is.null&nro_pedido=in.(' + encodeURIComponent(inList) + ')',
       { headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok } });
     if (!r.ok) return;
     const arr = await r.json();
     const porNro = {};
-    arr.map(x => x.row_json || {}).forEach(row => { const n = String(row['NroPedido'] || '').trim(); if (n) (porNro[n] = porNro[n] || []).push(row); });
+    arr.map(x => { const row = x.row_json || {}; if (x.id != null && row._sbId == null) row._sbId = x.id; return row; })
+       .forEach(row => { const n = String(row['NroPedido'] || '').trim(); if (n) (porNro[n] = porNro[n] || []).push(row); });
     // Merge idéntico al radar: solo pisar lo local si la base trae algo MÁS NUEVO
     const localUM = {};
     pRaw.forEach(r2 => { const n = String(r2['NroPedido'] || '').trim(); if (porNro[n]) { const t = Date.parse(r2['UltimaModif'] || '') || 0; localUM[n] = Math.max(localUM[n] || 0, t); } });
@@ -20590,6 +20639,195 @@ async function startAuth(){
   _showLogin();
 }
 startAuth();
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ESPÍA DE COLORES v2 (25-jul-2026) — SOLO OBSERVA, NO CAMBIA NADA.
+   Para cazar al culpable de "los colores se despintan solos" (TRASPASO_BUG_COLORES.md §6.1).
+
+   ACTIVAR:    abrir el ERP con ?espia=1 al final de la dirección (queda activado
+               en esa compu hasta apagarlo). APAGAR: abrir con ?espia=0.
+   VER:        aparece un botón flotante "🕵️ N" abajo a la derecha.
+               · 1 clic  → descarga espia_colores.json con todos los eventos
+               · doble clic → borra el registro y arranca de cero
+   QUÉ REGISTRA (sobrevive a recargas, se guarda en el navegador):
+   · cada cambio de ColorPrenda en los DATOS (pRaw), con el FLUJO que lo hizo:
+     poll-hoja(B), radar(C), porNros-hoja(D), carga-historial(E), pintado-local,
+     reconciliador, entrada-datos, o "fondo" si nadie conocido lo tocó.
+   · discrepancias PANTALLA≠DATOS (celda pintada distinto de lo que dicen los
+     datos) → si aparecen, el bug es de RENDER, no de datos.
+   ═══════════════════════════════════════════════════════════════════════════ */
+(function(){
+  var ACT = false;
+  try {
+    var q = new URLSearchParams(location.search);
+    if (q.get('espia') === '1') localStorage.setItem('ERP_ESPIA', '1');
+    if (q.get('espia') === '0') localStorage.removeItem('ERP_ESPIA');
+    ACT = localStorage.getItem('ERP_ESPIA') === '1';
+  } catch(_) {}
+  if (!ACT) return;
+
+  var LOG_KEY = 'ERP_ESPIA_LOG';
+  try { window._espia = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); }
+  catch(_) { window._espia = []; }
+  var _espGuardarPend = false;
+  function guardar(){
+    if (_espGuardarPend) return; _espGuardarPend = true;
+    setTimeout(function(){ _espGuardarPend = false;
+      try { localStorage.setItem(LOG_KEY, JSON.stringify(window._espia.slice(-800))); } catch(_){}
+    }, 500);
+  }
+  function badge(){
+    try {
+      var n = 0;
+      for (var i = 0; i < window._espia.length; i++) { var tp = window._espia[i].tipo || ''; if (tp !== 'BOOT') n++; }
+      var b = document.getElementById('espia-badge');
+      if (!b) {
+        b = document.createElement('div'); b.id = 'espia-badge';
+        b.style.cssText = 'position:fixed;bottom:10px;right:10px;z-index:99999;background:#222;color:#ffd54f;'+
+          'border:1px solid #ffd54f;border-radius:16px;padding:4px 12px;font:12px monospace;cursor:pointer;opacity:.85';
+        b.title = 'Espía de colores activo. Clic: descargar registro. Doble clic: borrar registro.';
+        b.onclick = function(){
+          try {
+            var blob = new Blob([JSON.stringify(window._espia, null, 2)], { type: 'application/json' });
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'espia_colores.json';
+            a.click();
+          } catch(e) { console.warn('[ESPIA] no pude descargar:', e); }
+        };
+        b.ondblclick = function(){ window._espia = []; try { localStorage.removeItem(LOG_KEY); } catch(_){}; badge(); };
+        document.body.appendChild(b);
+      }
+      b.textContent = '🕵️ ' + n;
+    } catch(_) {}
+  }
+  function log(ev){
+    ev.t = new Date().toISOString();
+    try { ev.fondo = document.hidden ? 1 : 0; } catch(_) {}
+    window._espia.push(ev);
+    if (window._espia.length > 2000) window._espia = window._espia.slice(-1000);
+    console.warn('[ESPIA]', ev.tipo, ev.flujo || '', ev.nro || '', ev.prenda || '',
+                 (ev.de === undefined ? '' : (ev.de || '∅') + ' → ' + (ev.a || '∅')));
+    guardar(); badge();
+  }
+
+  // ── Instantánea del estado de colores en los DATOS (pRaw) ────────────────
+  // Clave por fila: id real de la base si se conoce; si no, posición (nro|prenda|ocurrencia)
+  // contada en el orden de pRaw — el mismo criterio que usa el pintado sin id.
+  function fotoDatos(){
+    var m = new Map();
+    if (typeof pRaw === 'undefined' || !Array.isArray(pRaw)) return m;
+    var occ = {};
+    for (var i = 0; i < pRaw.length; i++) {
+      var r = pRaw[i]; if (!r) continue;
+      var nro = String(r['NroPedido'] || '').trim();
+      var pr  = String(r['Prenda'] || '').trim();
+      if (!nro || !pr) continue;
+      var k;
+      if (r._sbId != null) { k = 'id:' + r._sbId; }
+      else { var ko = nro + '|' + pr; occ[ko] = occ[ko] || 0; k = 'pos:' + ko + '|' + occ[ko]; occ[ko]++; }
+      m.set(k, { nro: nro, prenda: pr, color: String(r['ColorPrenda'] || '').trim().toUpperCase() });
+    }
+    return m;
+  }
+  var foto = null;
+  function diff(flujo){
+    var nueva = fotoDatos();
+    if (foto) {
+      nueva.forEach(function(v, k){
+        var o = foto.get(k);
+        if (o && o.color !== v.color)
+          log({ tipo: 'DATO', flujo: flujo, nro: v.nro, prenda: v.prenda, clave: k, de: o.color, a: v.color });
+        else if (!o && v.color)
+          log({ tipo: 'DATO-NUEVA', flujo: flujo, nro: v.nro, prenda: v.prenda, clave: k, de: '', a: v.color });
+      });
+      foto.forEach(function(v, k){
+        if (!nueva.has(k) && v.color)
+          log({ tipo: 'DATO-BORRADA', flujo: flujo, nro: v.nro, prenda: v.prenda, clave: k, de: v.color, a: '' });
+      });
+    }
+    foto = nueva;
+  }
+
+  // ── Envolver los flujos que meten datos: cada cambio queda con su autor ──
+  function envolver(nombre, fn){
+    return function(){
+      try { diff('fondo(antes-de-' + nombre + ')'); } catch(_) {}
+      var res = fn.apply(this, arguments);
+      if (res && typeof res.then === 'function')
+        return res.then(function(x){ try { diff(nombre); } catch(_){} return x; },
+                        function(e){ try { diff(nombre); } catch(_){} throw e; });
+      try { diff(nombre); } catch(_) {}
+      return res;
+    };
+  }
+  try { _mergePedsDelta            = envolver('poll-hoja(B)',        _mergePedsDelta); } catch(_) {}
+  try { _rtAplicar                 = envolver('radar(C)',            _rtAplicar); } catch(_) {}
+  try { _pedsRefrescarNros         = envolver('porNros-hoja(D)',     _pedsRefrescarNros); } catch(_) {}
+  try { _pedsCargarRestoProgresivo = envolver('carga-historial(E)',  _pedsCargarRestoProgresivo); } catch(_) {}
+  try { _renderPedsDesde           = envolver('entrada-datos',       _renderPedsDesde); } catch(_) {}
+  try { _paintPrendaCell           = envolver('pintado-local(clic)', _paintPrendaCell); } catch(_) {}
+  try { if (typeof _reconcileColores === 'function') _reconcileColores = envolver('reconciliador', _reconcileColores); } catch(_) {}
+
+  // ── Red de seguridad: cambios que no pasaron por ningún flujo conocido ───
+  setInterval(function(){ try { diff('fondo(intervalo)'); } catch(_) {} }, 4000);
+
+  // ── Auditoría PANTALLA≠DATOS: ¿la celda pintada dice lo mismo que pRaw? ──
+  // Solo celdas con identidad inequívoca: con id de fila (data-pp-fila), o cuya
+  // prenda no está repetida en el pedido (para no acusar en falso por ocurrencias).
+  var _domReportado = {};
+  setInterval(function(){
+    try {
+      if (typeof pRaw === 'undefined' || !Array.isArray(pRaw) || !pRaw.length) return;
+      var celdas = document.querySelectorAll('#ped-w td[data-paint-prenda]');
+      if (!celdas.length) return;
+      var porId = {}, porNroPr = {}, repetidas = {};
+      for (var i = 0; i < pRaw.length; i++) {
+        var r = pRaw[i]; if (!r) continue;
+        var nro = String(r['NroPedido'] || '').trim(), pr = String(r['Prenda'] || '').trim();
+        if (!nro || !pr) continue;
+        var col = String(r['ColorPrenda'] || '').trim().toUpperCase();
+        if (r._sbId != null) porId[String(r._sbId)] = col;
+        var kk = nro + '|' + pr;
+        if (kk in porNroPr) repetidas[kk] = true; else porNroPr[kk] = col;
+      }
+      celdas.forEach(function(td){
+        var nro = td.getAttribute('data-pp-nro') || '', pr = td.getAttribute('data-pp-prenda') || '';
+        var fila = td.getAttribute('data-pp-fila') || '';
+        var dom = (td.getAttribute('data-pp-color') || '').toUpperCase();
+        var dato = null;
+        if (fila && (fila in porId)) dato = porId[fila];
+        else { var kk2 = nro + '|' + pr; if (!repetidas[kk2] && (kk2 in porNroPr)) dato = porNroPr[kk2]; }
+        if (dato === null) return;
+        var clave = (fila ? 'id:' + fila : 'pos:' + nro + '|' + pr);
+        if (dom !== dato) {
+          if (_domReportado[clave] === dom + '≠' + dato) return;   // ya avisado igual
+          _domReportado[clave] = dom + '≠' + dato;
+          log({ tipo: 'PANTALLA≠DATOS', flujo: 'auditoria-dom', nro: nro, prenda: pr,
+                clave: clave, de: 'pantalla:' + (dom || '∅'), a: 'datos:' + (dato || '∅') });
+        } else if (_domReportado[clave]) {
+          delete _domReportado[clave];
+          log({ tipo: 'PANTALLA-OK-DE-NUEVO', flujo: 'auditoria-dom', nro: nro, prenda: pr, clave: clave });
+        }
+      });
+    } catch(_) {}
+  }, 6000);
+
+  // Resumen rápido en consola: window._espiaResumen()
+  window._espiaResumen = function(){
+    var porFlujo = {};
+    window._espia.forEach(function(e){
+      if (e.tipo === 'BOOT') return;
+      var k = (e.tipo || '?') + ' · ' + (e.flujo || '?');
+      porFlujo[k] = (porFlujo[k] || 0) + 1;
+    });
+    console.table(porFlujo);
+    return porFlujo;
+  };
+
+  log({ tipo: 'BOOT', flujo: 'inicio-de-sesion-del-espia' });
+  console.warn('[ESPIA] activo. Botón 🕵️ abajo a la derecha: clic = descargar registro, doble clic = borrar.');
+})();
 </script>
 </body>
 </html>
