@@ -4111,6 +4111,43 @@ async function _sbRpcPago(fn, params) {
   } catch (e) { try { console.warn('[pago] RPC ' + fn + ' falló → vía Apps Script'); } catch(_){} return null; }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// PASO 5b (25-jul) — CREAR EL PEDIDO EN LA BASE
+//
+// Antes: "Guardar pedido" escribia en la hoja de Google y habia que esperar
+// ~7,7 s (medido en vivo). Ahora el pedido nace en la base en decimas de
+// segundo y el Aplicador lo copia a la hoja por detras, en el siguiente minuto.
+//
+// REVERSA INMEDIATA: poner SB_PILOTO_CREAR = false y publicar. El ERP vuelve a
+// crear por Apps Script exactamente como antes; no hay que deshacer nada mas.
+//
+// RED: si la base no responde, no hay sesion, o la RPC devuelve cualquier cosa
+// que no sea un ok explicito, se crea por la via de siempre. Un pedido NUNCA se
+// pierde por culpa de este atajo.
+//
+// RESERVAS (sin Fecha Pedido) siguen por Apps Script: tienen su propio contador
+// "R-1, R-2…" que no se migro todavia.
+const SB_PILOTO_CREAR = true;
+
+async function _crearPedidoRapido(body) {
+  try {
+    if (!SB_PILOTO_CREAR) return null;
+    if (!String(body && body.FechaPedido || '').trim()) return null;   // reserva → via clasica
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_crear', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_payload: body }),
+    });
+    if (!r.ok) { try { console.warn('[crear] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+    const d = await r.json();
+    if (!(d && d.ok === true && d.NroPedido)) return null;
+    return { ok: true, NroPedido: String(d.NroPedido), filas: d.filas, pagos: d.pagos, pagosIds: d.pagosIds || [], via: 'base' };
+  } catch (e) { try { console.warn('[crear] RPC fallo → via Apps Script'); } catch(_){} return null; }
+}
+
 async function _sbRpcConstanciaSet(nro, pagoId, urls) {
   try {
     if (!SB_PILOTO_CONSTANCIAS) return false;
@@ -11307,13 +11344,15 @@ async function _npExecuteSave(job) {
   const _pagosSinVouchers = job.pagosData.map(pg => ({
     monto: pg.monto, forma: pg.forma, fecha: pg.fecha, asesora: pg.asesora || '', constancia: '',
   }));
-  const res = await apiPost('pedidos.crear', {
+  const _bodyCrear = {
     ...cliBase,
     Descuento: job.dsc,
     prendas: job.prendasData,
     pagos: _pagosSinVouchers,
     requestId: job.requestId, // #9 idempotencia: retry no duplica el pedido
-  });
+  };
+  // PASO 5b — primero la base (decimas de segundo). Si no se puede, Apps Script.
+  const res = (await _crearPedidoRapido(_bodyCrear)) || (await apiPost('pedidos.crear', _bodyCrear));
   const nuevoNro = res.NroPedido;
   // Disparar la subida de vouchers en BACKGROUND (no esperar) — fire-and-forget.
   // Reforma jul-2026: skipSheet (solo Drive) + constancia.setPago asocia las URLs
