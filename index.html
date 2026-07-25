@@ -3999,12 +3999,38 @@ async function _comprimirConstancia(file) {
   } catch (e) { return _raw(); }
 }
 
+// ══ REVERSA REMOTA (25-jul) — EL BOTÓN ROJO ════════════════════════════════
+// Los SB_PILOTO_* de abajo son el estado PUBLICADO en el código. Por ENCIMA de
+// ellos manda un interruptor REMOTO que viaja en el poll de 15s: cambiar una
+// propiedad en el servidor apaga la vía rápida en TODAS las pantallas en ≤15s,
+// sin publicar el front y sin pelear con el caché del Service Worker.
+// Apagar = reversaApagarTodo() en el editor (archivo Supabase.gs).
+// Falla hacia el estado publicado: si el poll no responde, nada cambia.
+window._SB_OFF = new Set();
+function _sbPiloto(clave, publicado) {
+  try { if (window._SB_OFF.has('TODO') || window._SB_OFF.has(clave)) return false; } catch (_) {}
+  return !!publicado;
+}
+function _sbAplicarReversa(txt) {
+  try {
+    const s = new Set(String(txt || '').toUpperCase().split(',').map(x => x.trim()).filter(Boolean));
+    let cambio = (s.size !== window._SB_OFF.size);
+    if (!cambio) { s.forEach(x => { if (!window._SB_OFF.has(x)) cambio = true; }); }
+    window._SB_OFF = s;
+    if (cambio) {
+      const lista = Array.from(s).join(', ');
+      console.log(lista ? ('[reversa] vía rápida APAGADA para: ' + lista + ' — esas operaciones vuelven por Apps Script')
+                        : '[reversa] vía rápida REACTIVADA — escritura directa a la base');
+    }
+  } catch (_) {}
+}
+
 // ══ PILOTO MIGRACIÓN S1 (24-jul) — ESCRITURA DIRECTA DE COLORES ═════════════
 // Interruptor de reversa del piloto: false = todo vuelve por Apps Script.
 const SB_PILOTO_COLORES = true;
 async function _sbRpcColorPintar(nro, prenda, occ, color) {
   try {
-    if (!SB_PILOTO_COLORES) return false;
+    if (!_sbPiloto('COLORES', SB_PILOTO_COLORES)) return false;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
     const tok = await _sbTokenVigente();
     if (!tok) return false;
@@ -4035,7 +4061,7 @@ const SB_CAMPOS_MASIVOS = ['Estado','Courier','Canal','Origen','Asesora','Coment
 
 async function _sbRpcConstanciaSet(nro, pagoId, urls) {
   try {
-    if (!SB_PILOTO_CONSTANCIAS) return false;
+    if (!_sbPiloto('CONSTANCIAS', SB_PILOTO_CONSTANCIAS)) return false;
     if (!pagoId) return false;   // sin ID exacto de pago → vía clásica (tiene fallback por clave)
     if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
     const tok = await _sbTokenVigente();
@@ -4073,7 +4099,7 @@ async function _constanciaAsociar(nro, pagoId, pagoKey, urls) {
 
 async function _sbRpcCampoMasivo(nros, campo, valor) {
   try {
-    if (!SB_PILOTO_CAMPOS) return false;
+    if (!_sbPiloto('CAMPOS', SB_PILOTO_CAMPOS)) return false;
     if (SB_CAMPOS_MASIVOS.indexOf(campo) < 0) return false;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
     const tok = await _sbTokenVigente();
@@ -4911,6 +4937,7 @@ async function _pollPedsOnce() {
     if (!res) return;
     // AUTOCURACIÓN CAPA 3 (24-jul): banner de salud del espejo (viene en cada poll)
     try { _saludBanner(res.saludSync || ''); } catch(_) {}
+    try { _sbAplicarReversa(res.pilotoOff); } catch(_) {}
     // FIX changelog — el servidor no pudo registrar algún aviso de cambio (payload
     // grande): recargar la lista completa UNA vez para no quedar desactualizados.
     if (res.refetch) {
@@ -4962,7 +4989,7 @@ async function _reconcileColores() {
     // Este reconciliador lee la HOJA → revertía colores recién pintados al estado viejo
     // ("cambian solos y luego se normalizan"). Con el piloto, la verdad de colores es la
     // BASE (el radar top-200 ya la trae y la autocuración nocturna vigila) → no correr.
-    if (typeof SB_PILOTO_COLORES !== 'undefined' && SB_PILOTO_COLORES) return;
+    if (typeof SB_PILOTO_COLORES !== 'undefined' && _sbPiloto('COLORES', SB_PILOTO_COLORES)) return;
     if (!pRaw || !pRaw.length) return;
     const res = await api('pedidos.coloresSnapshot', {});
     if (!res || !Array.isArray(res.colores)) return;
