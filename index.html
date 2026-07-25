@@ -4206,13 +4206,34 @@ function _dedupBloquePedidos(rows){
   return out;
 }
 
+// FIX 25-jul-2026 (pedido 21095) — FILA BASE DEL PEDIDO.
+// La lectura directa de Supabase devuelve las filas con `id.desc`, así que la fila
+// MÁS NUEVA de un pedido llega PRIMERO. Si el pedido tiene un pago extra (fila _PAGO_,
+// insertada después de las prendas), esa fila quedaba como "base" del pedido y la tabla
+// mostraba Prenda = "_PAGO_" y Precio = "—" aunque el detalle (que usa _prendas) sí
+// mostraba la prenda real. Aquí se elige SIEMPRE una fila de prenda real como base.
+function _baseRowsPorNro(rows){
+  const m = new Map();
+  for (let i=0; i<rows.length; i++){
+    const r = rows[i]; if (!r) continue;
+    const n = String(r['NroPedido']||''); if (!n) continue;
+    const esPago = String(r['Prenda']||'').trim().toUpperCase() === '_PAGO_';
+    if (!m.has(n)) { m.set(n, r); continue; }
+    if (esPago) continue;                        // esta fila es de pago: nunca mejora la base
+    const prev = m.get(n);
+    if (String(prev['Prenda']||'').trim().toUpperCase() === '_PAGO_') m.set(n, r); // ascenso: prenda real gana
+  }
+  return m;
+}
+
 function pGroupByPedido(rows) {
   rows = _dedupBloquePedidos(rows);   // red de seguridad: nunca mostrar un pedido duplicado
+  const _baseRows = _baseRowsPorNro(rows);   // FIX 21095: la base nunca es una fila _PAGO_
   const map = new Map(), order = [];
   rows.forEach(r => {
     const nro = String(r['NroPedido']||'');
     if (!map.has(nro)) {
-      const base = Object.assign({}, r);
+      const base = Object.assign({}, _baseRows.get(nro) || r);
       base._prendas = [];
       base._subtotalPrendas = 0;
       base._descFechas = {}; // FIX jul-2026: descuento UNA vez por lote (columna Descuento = total del pedido en cada fila, igual que Envio)
@@ -4311,7 +4332,8 @@ function pExpandFlat(grouped) {
     const hasSaldo = (ped._totalPagado||0) < (parseFloat(ped['Subtotal'])||0) - 0.01;
     let prendas = ped._prendas && ped._prendas.length
       ? ped._prendas
-      : [{prenda: String(ped['Prenda']||''), precio: parseFloat(ped['Precio'])||0}];
+      // Respaldo (pedido sin filas de prenda): nunca mostrar el marcador _PAGO_ como si fuera prenda.
+      : [{prenda: (String(ped['Prenda']||'').trim().toUpperCase()==='_PAGO_' ? '' : String(ped['Prenda']||'')), precio: parseFloat(ped['Precio'])||0}];
     // I-10 — Si el pedido tiene cambio/devolución, mostrar solo las prendas ACTIVAS.
     // Cruzo con histCamData/histDevData (cargados en prefetch) para saber qué prendas
     // están en proceso. Las demás se asumen entregadas y se ocultan.
@@ -4369,6 +4391,10 @@ function pExpandFlat(grouped) {
         flat.push(Object.assign({}, ped, {
           _isContinuacion: false,
           _hasSaldo: hasSaldo,
+          // FIX 25-jul-2026 (pedido 21095): la 1ª fila visible debe mostrar la PRENDA de la
+          // lista consolidada, no el valor crudo de la fila base (que podía ser "_PAGO_").
+          Prenda: (pr && pr.prenda !== undefined) ? pr.prenda : ped['Prenda'],
+          Precio: (pr && pr.precio !== undefined) ? pr.precio : ped['Precio'],
           Cambio: cambioPrenda,  // sobreescribe el de la base con el de la prenda
           Estado: estadoPrenda,
           ColorPrenda: (pr && pr.colorPrenda) || String(ped['ColorPrenda']||'').trim().toUpperCase() || '',
