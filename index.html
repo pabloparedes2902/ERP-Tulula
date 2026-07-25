@@ -7401,6 +7401,31 @@ async function _pedsRepararNros(nros){
   return out;
 }
 
+// ── CENTINELA (25-jul) ─────────────────────────────────────────────────────
+// Vigila pRaw y avisa EN EL MOMENTO en que un pedido pierde todas sus prendas,
+// para que nunca más haya que adivinar qué proceso lo rompió. Los repara al vuelo.
+// Apagar con: _pedsCentinelaParar()
+let _pedsCentinelaPrev = null, _pedsCentinelaTimer = null;
+function _pedsCentinelaTick(){
+  try {
+    if (!Array.isArray(pRaw) || !pRaw.length) return;
+    const ahora = new Set(_pedsDetectarSinPrenda(pRaw));
+    if (_pedsCentinelaPrev) {
+      const nuevos = [...ahora].filter(n => !_pedsCentinelaPrev.has(n));
+      if (nuevos.length) {
+        try { console.warn('[ERP][centinela] ' + nuevos.length + ' pedido(s) acaban de quedarse SIN PRENDAS:', nuevos.slice(0, 10).join(', ')); } catch(_){}
+        window._pedsRotosRecientes = (window._pedsRotosRecientes || []).concat(nuevos).slice(-500);
+        nuevos.forEach(n => window._pedsRepIntentados.delete(n));   // permitir reintento
+        setTimeout(() => { try { _pedsAutorepararSinPrenda(40, 4); } catch(_){} }, 1200);
+      }
+    }
+    _pedsCentinelaPrev = ahora;
+  } catch(_) {}
+}
+function _pedsCentinelaArrancar(){ if (!_pedsCentinelaTimer) _pedsCentinelaTimer = setInterval(_pedsCentinelaTick, 3000); }
+window._pedsCentinelaParar = function(){ clearInterval(_pedsCentinelaTimer); _pedsCentinelaTimer = null; };
+setTimeout(_pedsCentinelaArrancar, 12000);
+
 window._pedsRepIntentados = window._pedsRepIntentados || new Set();
 let _pedsRepEnCurso = false;
 // Repara POR TANDAS hasta agotar (o hasta `maxTandas`). Una sola reparación a la vez.
@@ -7619,15 +7644,30 @@ async function _rtAplicar() {
     const localUM = {};
     pRaw.forEach(r2 => { const n = String(r2['NroPedido'] || '').trim(); if (porNro[n]) { const t = Date.parse(r2['UltimaModif'] || '') || 0; localUM[n] = Math.max(localUM[n] || 0, t); } });
     let cambios = false; const nuevos = [];
+    const _aplicar = {};
     Object.keys(porNro).forEach(n => {
       const umBase = Math.max.apply(null, porNro[n].map(r2 => Date.parse(r2['UltimaModif'] || '') || 0));
       const esNuevo = !(n in localUM);
       if (!esNuevo && !(umBase > (localUM[n] || 0))) return;
-      pRaw = pRaw.filter(r2 => String(r2['NroPedido'] || '').trim() !== n).concat(porNro[n]);
-      try { _cliColorRecalcNros(n); } catch(_) {}   // MODO SHEETS: reflejar cambios reales
+      _aplicar[n] = porNro[n];
       if (esNuevo) nuevos.push(n);
-      cambios = true;
     });
+    if (!Object.keys(_aplicar).length) return;
+    // FIX 25-jul — LA CAUSA DE QUE LOS PEDIDOS SE ROMPIERAN SOLOS.
+    // Cada guardado del ERP reescribe el pedido en la base con un DELETE + INSERT
+    // (_sbPushNro_). El aviso de tiempo real llega en ese mismo instante, así que la
+    // consulta puede ver el pedido A MEDIO REINSERTAR: sin prendas todavía, o solo con
+    // la fila del pago. Antes eso se pegaba tal cual en la pantalla y el pedido quedaba
+    // vacío. Ahora pasa por la misma red que el radar: si llega sin prendas y antes las
+    // tenía, se descarta y se vuelve a pedir completo.
+    const _fusRt = _pedsFusionarPedidos(pRaw, _aplicar);
+    if (_fusRt.rechazados.length) {
+      try { console.warn('[RT] aviso incompleto (guardado en curso) — se ignora y se repide:', _fusRt.rechazados.join(', ')); } catch(_){}
+      setTimeout(() => { try { _pedsRepararNros(_fusRt.rechazados); } catch(_){} }, 1500);
+    }
+    cambios = (_fusRt.rows !== pRaw);
+    pRaw = _fusRt.rows;
+    if (cambios) { try { _cliColorRecalcNros(Object.keys(_aplicar)); } catch(_) {} }   // MODO SHEETS
     if (!cambios) return;
     if (window._pTabNros && nuevos.length && (pEst === '_ACTIVOS' || pEst === '')) nuevos.forEach(n => window._pTabNros.add(n));
     try { pEnrichPagos(pRaw); } catch (_) {}
