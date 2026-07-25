@@ -4838,7 +4838,7 @@ async function _ensurePedidosCambioDevol(estVal) {
     let res;
     try { res = await api('pedidos.porNros', { nros: faltan.join(',') }); }
     catch(e) { return; }   // endpoint aún no desplegado en backend → sin romper nada
-    const rows = (res && Array.isArray(res.rows)) ? res.rows : (Array.isArray(res) ? res : []);
+    const rows = _spBlindarFilas((res && Array.isArray(res.rows)) ? res.rows : (Array.isArray(res) ? res : []));
     if (!rows.length) return;
     const have2 = new Set((pRaw||[]).map(r => String(r['NroPedido']||'').trim()));
     const nuevos = rows.filter(r => !have2.has(String(r['NroPedido']||'').trim()));
@@ -5136,8 +5136,72 @@ function _nroPasaFiltro_(nro) {
   }));
 }
 
+/* ==== @test-begin:colores — blindaje de colores recién pintados. NO BORRAR ==== */
+// ── BLINDAJE DE COLORES (25-jul) — POR CONTENIDO, NO POR RELOJ ──────────────
+// El problema real: al pintar, el color se escribe PRIMERO en la base; la hoja de
+// Google se pone al día recién cuando pasa el aplicador. Cualquier dato que llegue
+// LEYENDO LA HOJA en esa ventana trae el color VIEJO y pisa el recién pintado: la
+// fila "se despinta sola" y más tarde vuelve.
+// Antes esto se tapaba descartando ecos durante 60-90 s — un plazo elegido cuando
+// el aplicador corría CADA MINUTO. El 25-jul el aplicador pasó a CADA 15 MINUTOS y
+// el plazo dejó de alcanzar → volvieron los saltos.
+// La cura definitiva no es un plazo más largo (siempre se rompe cuando cambia la
+// latencia): es dejar de mirar el reloj. Se recuerda QUÉ color pintó esta pantalla
+// en cada celda; si llega un dato del servidor con otro color, gana el propio. Si
+// llega YA con el color propio, la marca se borra sola — el servidor se puso al día.
+const SP_TTL_MS = 30 * 60 * 1000;   // caducidad de seguridad: el doble del ciclo del aplicador
+function _spKey(nro, prenda, occ) {
+  return String(nro || '').trim() + '|' + String(prenda || '').trim() + '|' + (parseInt(occ, 10) || 0);
+}
+function _spMark(nro, prenda, occ, color) {
+  try {
+    if (!window._selfPaintCel) window._selfPaintCel = {};
+    window._selfPaintCel[_spKey(nro, prenda, occ)] = { color: String(color || '').trim().toUpperCase(), ts: Date.now() };
+  } catch (_) {}
+}
+function _spGet(nro, prenda, occ) {
+  try {
+    if (!window._selfPaintCel) return null;
+    const k = _spKey(nro, prenda, occ);
+    const m = window._selfPaintCel[k];
+    if (!m) return null;
+    if (Date.now() - m.ts > SP_TTL_MS) { delete window._selfPaintCel[k]; return null; }
+    return m;
+  } catch (_) { return null; }
+}
+function _spBorrar(nro, prenda, occ) {
+  try { delete window._selfPaintCel[_spKey(nro, prenda, occ)]; } catch (_) {}
+}
+// Blinda un lote de filas recién llegadas del servidor (poll de la hoja, refresco
+// puntual, lectura directa de la base). Devuelve las MISMAS filas, con el color
+// corregido donde haga falta. Cuenta las ocurrencias igual que el backend, así dos
+// unidades iguales de la misma prenda no se confunden.
+function _spBlindarFilas(rows) {
+  try {
+    if (!rows || !rows.length || !window._selfPaintCel) return rows;
+    const seen = {};
+    rows.forEach(r => {
+      const nro = String(r['NroPedido'] || '').trim();
+      const pren = String(r['Prenda'] || '').trim();
+      if (!nro || !pren) return;
+      if (typeof _esPago === 'function' && _esPago(pren)) return;
+      const k = nro + '|' + pren;
+      const occ = seen[k] || 0; seen[k] = occ + 1;
+      const m = _spGet(nro, pren, occ);
+      if (!m) return;
+      const servidor = String(r['ColorPrenda'] || '').trim().toUpperCase();
+      if (servidor === m.color) { _spBorrar(nro, pren, occ); return; }   // el servidor ya está al día
+      r['ColorPrenda'] = m.color;                                        // aún viene viejo: no me lo pises
+    });
+  } catch (_) {}
+  return rows;
+}
+/* ==== @test-end:colores ==== */
+
 function _mergePedsDelta(editados, eliminados) {
   if (!pRaw || !pRaw.length) return;
+  // BLINDAJE DE COLOR: lo que yo pinté manda sobre lo que traiga la hoja atrasada.
+  try { editados = _spBlindarFilas(editados); } catch(_) {}
   // Descartar cambios propios de pintado (ya aplicados in-place): evita re-render + reordenamiento
   // que hacía "saltar" la vista. Otros cambios (de otras personas) sí se procesan normal.
   try {
@@ -6559,6 +6623,7 @@ async function _paintPrendaCell(td) {
   // Registrar pintado propio: el polling NO debe re-renderizar este cambio (ya está aplicado
   // in-place). Si no, reordena la lista por UltimaModif y la vista "salta".
   try { window._selfPaint = window._selfPaint || {}; window._selfPaint[String(nro)] = Date.now(); } catch(_) {}
+  try { _spMark(nro, prenda, occ, next); } catch(_) {}
 
   // Actualizar pAll, pRaw y pFlat in-memory ANTES de calcular cliente.
   // CLAVE: actualizar SOLO la ocurrencia 'occ' de esta prenda (mismo nombre), no todas.
@@ -7154,7 +7219,7 @@ async function _pedsRefrescarNros(nros){
     const list = [...new Set((nros||[]).map(n => String(n||'').trim()).filter(Boolean))];
     if (!list.length) return;
     const res = await api('pedidos.porNros', { nros: list.join(',') });
-    const rows = (res && Array.isArray(res.rows)) ? res.rows : (Array.isArray(res) ? res : []);
+    const rows = _spBlindarFilas((res && Array.isArray(res.rows)) ? res.rows : (Array.isArray(res) ? res : []));
     const setN = new Set(list);
     pRaw = pRaw.filter(r => !setN.has(String(r['NroPedido']||'').trim()));
     if (rows.length) pRaw.push(...rows);
@@ -7262,7 +7327,7 @@ async function _rtAplicar() {
     if (!r.ok) return;
     const arr = await r.json();
     const porNro = {};
-    arr.map(x => x.row_json || {}).forEach(row => { const n = String(row['NroPedido'] || '').trim(); if (n) (porNro[n] = porNro[n] || []).push(row); });
+    _spBlindarFilas(arr.map(x => x.row_json || {})).forEach(row => { const n = String(row['NroPedido'] || '').trim(); if (n) (porNro[n] = porNro[n] || []).push(row); });
     // Merge idéntico al radar: solo pisar lo local si la base trae algo MÁS NUEVO
     const localUM = {};
     pRaw.forEach(r2 => { const n = String(r2['NroPedido'] || '').trim(); if (porNro[n]) { const t = Date.parse(r2['UltimaModif'] || '') || 0; localUM[n] = Math.max(localUM[n] || 0, t); } });
