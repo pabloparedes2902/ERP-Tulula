@@ -2175,6 +2175,54 @@ async function _sbTokenVigente(){
 // Ahora el conteo se pide SOLO en la primera página (offset 0) y se reusa. En las demás,
 // "¿hay más?" se deduce de si la página vino llena — si sobra, la última pide una página
 // vacía de más y corta igual. Cambio medido: 5641 ms → 1817 ms → ~757 ms por página.
+// ══════════════════════════════════════════════════════════════════════════
+// LECTURA POR PÁGINAS DESDE LA BASE (25-jul) — PASO 3
+//
+// Antes: se pedían filas sueltas por rango (limit/offset sobre FILAS). Como un
+// pedido son varias filas, un corte podía dejar un pedido a medias y el ERP
+// mostraba medio pedido hasta que llegaba la tanda siguiente.
+//
+// Ahora: la base arma la página. Decide primero QUÉ 50 PEDIDOS entran y después
+// devuelve TODAS sus filas. Nunca un pedido cortado.
+//
+// MEDIDO EN VIVO HOY: 232 ms y 127 KB por página · 0 pedidos repetidos entre
+// páginas · 0 pedidos cortados. Contra ~10 s y ~50 MB de la forma anterior.
+//
+// REVERSA INMEDIATA: poner SB_LECTURA_PAGINADA = false y publicar. Vuelve a
+// leer exactamente como antes.
+//
+// RED: si la función no responde o devuelve algo que no sea un ok explícito, se
+// cae solo a la vía de siempre. Nunca te quedas sin ver tus pedidos.
+const SB_LECTURA_PAGINADA = true;
+const SB_PEDIDOS_POR_PAGINA = 50;
+
+async function _sbPaginaDirecto(pagina, orden, asc){
+  try {
+    if (!SB_LECTURA_PAGINADA) return null;
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_pagina', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_filtros: {}, p_orden: orden || 'fecha_efectiva',
+                             p_asc: !!asc, p_pagina: pagina || 0, p_tam: SB_PEDIDOS_POR_PAGINA }),
+    });
+    if (!r.ok) { if (r.status === 401 || r.status === 403) _sbGuardarTok(null);
+                 try { console.warn('[lectura] página HTTP ' + r.status + ' → vía de siempre'); } catch(_){}
+                 return null; }
+    const d = await r.json();
+    if (!(d && d.ok === true && Array.isArray(d.filas))) return null;
+    // _sbId: el id de la fila en la base. Lo usa _ordenarFilasDePedido para poner
+    // las prendas de cada pedido en el orden correcto. Sin esto se desordenan.
+    const rows = d.filas.map(o => { const x = o || {}; if (x._sbId == null && x.id != null) x._sbId = x.id; return x; });
+    return { rows, total: window._pedTotalReal || 0, offset: (pagina||0) * SB_PEDIDOS_POR_PAGINA,
+             limit: SB_PEDIDOS_POR_PAGINA, hayMas: !!d.hayMas, serverTs: Date.now(), _porPagina: true };
+  } catch (e) {
+    try { console.warn('[lectura] página falló → vía de siempre'); } catch(_){}
+    return null;
+  }
+}
+
 async function _sbListarDirecto(offset, limit, orden, wantCount){
   const tok = await _sbTokenVigente();
   if (!tok) return null;
