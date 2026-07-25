@@ -4005,16 +4005,26 @@ async function _comprimirConstancia(file) {
 // ══ PILOTO MIGRACIÓN S1 (24-jul) — ESCRITURA DIRECTA DE COLORES ═════════════
 // Interruptor de reversa del piloto: false = todo vuelve por Apps Script.
 const SB_PILOTO_COLORES = true;
-async function _sbRpcColorPintar(nro, prenda, occ, color) {
+// FASE 2 (25-jul) — EL COLOR SE ESCRIBE CONTRA EL ID DE LA FILA, NO CONTRA SU POSICIÓN.
+// Antes se mandaba (pedido, prenda, "la N-ésima"): si el orden de las filas cambiaba entre
+// lo que veía la pantalla y lo que tenía la base, el color se escribía en OTRA prenda.
+// Ahora, cuando la fila tiene su id real (filaId), se usa ese id: es la misma idea que una
+// celda de Excel — el color va a ESA fila y a ninguna otra, pase lo que pase con el orden.
+// Si por lo que sea no hay id (fila recién creada en el navegador, o carga vía Apps Script),
+// se usa el camino viejo por posición, que sigue funcionando.
+async function _sbRpcColorPintar(nro, prenda, occ, color, filaId) {
   try {
     if (!SB_PILOTO_COLORES) return false;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
     const tok = await _sbTokenVigente();
     if (!tok) return false;
-    const r = await fetch(SB_URL + '/rest/v1/rpc/color_pintar', {
+    const _porId = (filaId !== undefined && filaId !== null && String(filaId) !== '');
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + (_porId ? 'color_pintar_id' : 'color_pintar'), {
       method: 'POST',
       headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: JSON.stringify(_porId ? {
+        p_id: parseInt(filaId, 10), p_color: String(color || ''),
+      } : {
         p_nro: String(nro), p_prenda: String(prenda),
         p_occ: (occ === undefined || occ === null || occ === '') ? -1 : parseInt(occ, 10),
         p_color: String(color || ''),
@@ -4354,7 +4364,7 @@ function pGroupByPedido(rows) {
       // Permite que el Modo Pintar coloree SOLO la unidad clicada cuando hay 2+ unidades
       // idénticas (mismo modelo+talla), en vez de pintarlas todas por compartir nombre.
       const _occPrev = ped._prendas.reduce((n,x)=> n + (String(x.prenda||'').trim()===prenda ? 1 : 0), 0);
-      ped._prendas.push({ prenda, precio, cambio: camb, estado: est, lote: String(r['Lote']||'').trim().toUpperCase(), colorPrenda: String(r['ColorPrenda']||'').trim().toUpperCase(), comentario: _ce, _occ: _occPrev });
+      ped._prendas.push({ prenda, precio, cambio: camb, estado: est, lote: String(r['Lote']||'').trim().toUpperCase(), colorPrenda: String(r['ColorPrenda']||'').trim().toUpperCase(), comentario: _ce, _occ: _occPrev, _sbId: (r && r._sbId != null) ? r._sbId : null });
       // Envío por lote: registrar el envío UNA sola vez por LOTE (el lote comparte despacho).
       // LOTES F1 — clave = columna Lote (L1, L2…); si la fila aún no tiene lote (pedidos
       // viejos sin migrar), cae a la fecha de pedido (comportamiento anterior, compatible).
@@ -4496,6 +4506,7 @@ function pExpandFlat(grouped) {
           _esPrendaNuevaCambio,
           _c2Nro,
           _prendaOcc: (pr && pr._occ) || 0,
+          _prendaFilaId: (pr && pr._sbId != null) ? pr._sbId : null,   // FASE 2: id REAL de la fila
         }));
       } else {
         flat.push({
@@ -4512,6 +4523,7 @@ function pExpandFlat(grouped) {
           _esPrendaNuevaCambio,
           _c2Nro,
           _prendaOcc: (pr && pr._occ) || 0,
+          _prendaFilaId: (pr && pr._sbId != null) ? pr._sbId : null,   // FASE 2: id REAL de la fila
         });
       }
     });
@@ -5156,8 +5168,10 @@ function _mergePedsDelta(editados, eliminados) {
     editados.forEach(r => { nrosNuevos.add(String(r.NroPedido||'')); nrosAfectados.add(String(r.NroPedido||'')); });
     // Sacar todas las filas viejas de los pedidos afectados, agregar las nuevas
     pRaw = pRaw.filter(r => !nrosNuevos.has(String(r.NroPedido||'')));
-    try { _cliColorInvalidar(); } catch(_) {}   // FIX 25-jul: llegaron datos del servidor -> recalcular color de clienta
     pRaw.push(...editados);
+    // MODO SHEETS: si alguien cambió el color de una prenda de estos pedidos, la fórmula
+    // del nombre se actualiza — solo para ELLOS, y solo si de verdad cambió algo.
+    try { _cliColorRecalcNros([...nrosNuevos]); } catch(_) {}
   }
   eliminados.forEach(n => nrosAfectados.add(String(n)));
   // FIX PARPADEO (jul-2026) — Con un filtro de columna activo, NO redibujar si el cambio
@@ -5581,15 +5595,6 @@ function renderPT(el, rows, total, hayMas) {
       bulkApplyBtn.textContent = '🖨️ Imprimir Rótulos';
       return;
     }
-    if (campo === '_colorPrenda') {
-      bulkValWrap.innerHTML = '<select id="bulk-val" style="padding:6px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px">'
-        + '<option value="GREEN">🟢 Verde — prenda lista</option>'
-        + '<option value="RED">🔴 Rojo — no disponible</option>'
-        + '<option value="">⚪ Vacío — pendiente</option>'
-        + '</select>';
-      bulkApplyBtn.textContent = '🎨 Marcar';
-      return;
-    }
     bulkApplyBtn.textContent = '✓ Aplicar';
     const def = BULK_CAMPOS[campo];
     if (!def) { bulkValWrap.innerHTML = ''; return; }
@@ -5662,69 +5667,15 @@ function renderPT(el, rows, total, hayMas) {
     bulkBar.classList.remove('on');
   };
 
+  // 25-jul (pedido de Pablo): se eliminó el MARCADO MASIVO DE COLOR. Ya no figuraba en el
+  // menú de acciones masivas (era código inalcanzable) y era el último sitio que recalculaba
+  // el mapa completo del color de la clienta. El color se cambia prenda por prenda, y la
+  // fórmula del nombre se recalcula pedido por pedido (_cliColorRecalcNros).
   // Apply — paralelo para máxima velocidad
   document.getElementById('bulk-apply').onclick = async () => {
     const campo = bulkCampo.value;
 
     // ── Color prenda masivo ───────────────────────────────────
-    if (campo === '_colorPrenda') {
-      // P1 — leer del estado externo, no del DOM (virt no monta TRs fuera de viewport)
-      const nros = [...(window._pBulkSelected || new Set())];
-      if (!nros.length) { toast('Seleccioná al menos un pedido', 'err'); return; }
-      const color = (document.getElementById('bulk-val')?.value || '').toUpperCase();
-      // Reunir todas las prendas (no _PAGO_) de los pedidos seleccionados
-      const items = [];
-      pAll.forEach(p => {
-        if (!nros.includes(String(p['NroPedido']))) return;
-        const pr = String(p['Prenda']||'').trim();
-        if (!pr || _esPago(pr)) return;
-        items.push({ NroPedido: String(p['NroPedido']), Prenda: pr, Color: color });
-      });
-      if (!items.length) { toast('No hay prendas para marcar en los pedidos seleccionados', 'err'); return; }
-      const btn = document.getElementById('bulk-apply');
-      btn.disabled = true; btn.textContent = 'Aplicando...';
-      try {
-        const r = await apiSend('pedidos.setColorPrendaBulk', { items });
-        // Actualizar pAll en memoria
-        items.forEach(it => {
-          pAll.forEach(p => {
-            if (String(p['NroPedido']).trim() === it.NroPedido && String(p['Prenda']||'').trim() === it.Prenda) {
-              p['ColorPrenda'] = it.Color;
-            }
-          });
-        });
-        // FIX 25-jul-2026: el marcado masivo actualizaba pAll pero NO pRaw, que es de
-        // donde sale el color del nombre de la clienta. Resultado: marcabas 10 prendas en
-        // verde y los nombres no cambiaban hasta que el servidor devolviera el eco (o nunca).
-        // Ahora se actualiza pRaw también y se invalida el mapa para que se recalcule.
-        items.forEach(it => {
-          if (typeof pRaw === 'undefined' || !Array.isArray(pRaw)) return;
-          pRaw.forEach(r => {
-            if (String(r['NroPedido']||'').trim() === it.NroPedido && String(r['Prenda']||'').trim() === it.Prenda) {
-              r['ColorPrenda'] = it.Color;
-            }
-          });
-        });
-        try { _cliColorInvalidar(); } catch(_) {}
-        const tb = document.querySelector('table.pt tbody');
-        if (tb) {
-          // P1 — respetar virt en este re-render parcial
-          if (Array.isArray(pFlat) && pFlat.length >= VIRT_THRESHOLD) _pVirtSetData(el, pFlat);
-          else tb.innerHTML = mkTBody(pFlat);
-          requestAnimationFrame(fixStickyLeft);
-        }
-        toast('✓ Marcadas '+r.filas+' prenda(s) — '+(color||'vacío'), 'ok');
-        window._pBulkSelected && window._pBulkSelected.clear();
-        el.querySelectorAll('.row-chk').forEach(c => c.checked = false);
-        if (chkAll) chkAll.checked = false;
-        bulkBar.classList.remove('on');
-      } catch(e) {
-        toast('Error: '+e.message, 'err');
-      } finally {
-        btn.disabled = false; btn.textContent = '🎨 Marcar';
-      }
-      return;
-    }
 
     // ── Rótulos Salva masivos ─────────────────────────────────
     if (campo === '_rotulos_salva') {
@@ -6164,11 +6115,14 @@ function _cliColorMapaVigente() {
   // Mientras la carga está en curso se congela el mapa que ya existe; al terminar,
   // _pedsCargarRestoProgresivo() invalida y se recalcula UNA vez con todo cargado.
   if (window._pedsCargaEnCurso && window._cliColorMap) return window._cliColorMap;
-  if (!window._cliColorMap
-      || window._cliColorLen !== arr.length
-      || (Date.now() - window._cliColorTs) > _CLI_COLOR_MAX_EDAD) {
-    return _cliColorRebuild();
-  }
+  // 25-jul — LA FÓRMULA SE CALCULA Y SE QUEDA QUIETA.
+  // Antes se rehacía sola en dos casos más: (a) cada vez que cambiaba la CANTIDAD de filas
+  // en memoria —o sea en cada lote del historial y en cada dato que llegara del servidor—,
+  // y (b) por caducidad, cada 15 segundos. Eso es lo que hacía que un nombre pasara de
+  // verde a rojo sin que nadie tocara nada. Ahora solo se calcula si NO hay mapa (arranque
+  // y fin de la carga del historial, con los pedidos completos); pintar una prenda actualiza
+  // ese pedido al instante vía _cliColorRecalcNro.
+  if (!window._cliColorMap) return _cliColorRebuild();
   return window._cliColorMap;
 }
 
@@ -6197,6 +6151,34 @@ function _cliColorRecalcNro(nro) {
 
 // Fuerza la reconstrucción en el próximo uso (por si algún flujo nuevo toca pRaw).
 function _cliColorInvalidar() { window._cliColorMap = null; }
+
+// ── MODO SHEETS (25-jul) — LA FÓRMULA REACCIONA A CAMBIOS REALES, Y A NADA MÁS ──
+// Regla que pidió Pablo: el color del nombre lo decide la fórmula, venga el cambio de
+// quien venga (él u otra asesora). Lo que NO puede pasar es que se mueva SIN que nadie
+// haya cambiado nada.
+// Antes se hacía con _cliColorInvalidar(): borraba el mapa ENTERO y lo recalculaba desde
+// cero por CUALQUIER dato entrante — aunque ningún color hubiera cambiado, aunque el
+// pedido estuviera a medias en memoria, y además cada 15 s por caducidad. De ahí salían
+// los saltos.
+// Ahora se recalculan SOLO los pedidos cuyas filas acaban de llegar, uno por uno y exacto.
+// Si el color no cambió, el resultado es idéntico y en pantalla no se mueve nada.
+function _cliColorRecalcNros(nros) {
+  try {
+    // Durante la carga del historial hay pedidos INCOMPLETOS en memoria: recalcular ahí
+    // daría "todas verdes" falsos. Al terminar la carga se recalcula todo de una vez.
+    if (window._pedsCargaEnCurso) return;
+    if (!window._cliColorMap) return;          // sin mapa aún: se construye completo en el render
+    const lista = Array.isArray(nros) ? nros : [nros];
+    const vistos = Object.create(null);
+    for (let i = 0; i < lista.length; i++) {
+      const n = String(lista[i] || '').trim();
+      if (!n || vistos[n]) continue;
+      vistos[n] = 1;
+      _cliColorRecalcNro(n);
+    }
+  } catch (_) {}
+}
+
 
 function mkTBody(rows) {
   const verDef = STICKY_MAP['_ver'];
@@ -6404,7 +6386,9 @@ function mkTBody(rows) {
         const _cp = String(p['ColorPrenda']||'').trim().toUpperCase();
         // data-attrs para modo pintar (click-cycle) — TODAS las prendas del pedido
         const _paintAttrs = v
-          ? ' data-paint-prenda="1" data-pp-nro="'+esc(String(p['NroPedido']||''))+'" data-pp-prenda="'+esc(String(v||''))+'" data-pp-occ="'+(parseInt(p['_prendaOcc'])||0)+'" data-pp-color="'+esc(_cp)+'"'
+          ? ' data-paint-prenda="1" data-pp-nro="'+esc(String(p['NroPedido']||''))+'" data-pp-prenda="'+esc(String(v||''))+'" data-pp-occ="'+(parseInt(p['_prendaOcc'])||0)+'"'
+            + (p['_prendaFilaId'] != null ? ' data-pp-fila="'+esc(String(p['_prendaFilaId']))+'"' : '')   // FASE 2
+            + ' data-pp-color="'+esc(_cp)+'"'
           : '';
         const _styleAttr2 = ' style="text-align:center;' + _txtColor + '"';
         tds += '<td'+_tcNoStyle+_styleAttr2+_paintAttrs+'>'+_content+'</td>';
@@ -6526,6 +6510,7 @@ async function _paintPrendaCell(td) {
   const nro    = td.getAttribute('data-pp-nro');
   const prenda = td.getAttribute('data-pp-prenda');
   const occ    = parseInt(td.getAttribute('data-pp-occ')||'0', 10) || 0;  // ocurrencia clicada (0,1,2…)
+  const filaId = td.getAttribute('data-pp-fila');                        // FASE 2: id REAL de la fila en la base
   const cur    = (td.getAttribute('data-pp-color') || '').toUpperCase();
   // Cycle: '' → GREEN → RED → ''
   const next = cur === '' ? 'GREEN' : cur === 'GREEN' ? 'RED' : '';
@@ -6569,14 +6554,20 @@ async function _paintPrendaCell(td) {
     });
   }
   if (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) {
-    // pRaw es crudo (orden de hoja) → contar ocurrencias para ubicar la N-ésima.
-    let _seenR = 0;
-    pRaw.forEach(r => {
-      if (String(r['NroPedido']).trim() === String(nro).trim() && String(r['Prenda']||'').trim() === prenda) {
-        if (_seenR === occ) r['ColorPrenda'] = next;
-        _seenR++;
-      }
-    });
+    // FASE 2: si conocemos el id de la fila, se pinta ESA fila y punto — sin contar posiciones.
+    if (filaId !== undefined && filaId !== null && String(filaId) !== '') {
+      const _fid = String(filaId);
+      pRaw.forEach(r => { if (r && r._sbId != null && String(r._sbId) === _fid) r['ColorPrenda'] = next; });
+    } else {
+      // Sin id (fila nueva del navegador o carga por Apps Script): camino viejo por posición.
+      let _seenR = 0;
+      pRaw.forEach(r => {
+        if (String(r['NroPedido']).trim() === String(nro).trim() && String(r['Prenda']||'').trim() === prenda) {
+          if (_seenR === occ) r['ColorPrenda'] = next;
+          _seenR++;
+        }
+      });
+    }
   }
 
   // Recalcular el color de la clienta y aplicarlo AL INSTANTE a todas las filas
@@ -6626,7 +6617,7 @@ async function _paintPrendaCell(td) {
     // la hoja de Google, que sigue completa como espejo de reportes.
     // REVERSA: poner SB_PILOTO_COLORES = false y publicar → vuelve a Apps Script.
     // Si la vía directa falla por lo que sea, cae SOLA al camino clásico.
-    const _directoOK = await _sbRpcColorPintar(nro, prenda, occ, next);
+    const _directoOK = await _sbRpcColorPintar(nro, prenda, occ, next, filaId);
     if (_directoOK) {
       try { if (typeof _pedsEditLocalMark === 'function') _pedsEditLocalMark(nro); } catch(_) {}
       // FIX 24-jul: espejar a la hoja YA (segundos) — evita que radares que leen la
@@ -7147,7 +7138,7 @@ async function _pedsRefrescarNros(nros){
     const setN = new Set(list);
     pRaw = pRaw.filter(r => !setN.has(String(r['NroPedido']||'').trim()));
     if (rows.length) pRaw.push(...rows);
-    try { _cliColorInvalidar(); } catch(_) {}   // FIX 25-jul: llegaron datos del servidor -> recalcular color de clienta
+    try { _cliColorRecalcNros(list); } catch(_) {}   // MODO SHEETS: reflejar cambios reales
     list.forEach(n => _pedsEditLocalMark(n));   // que la reconciliación no lo pise con datos viejos
     try { pEnrichPagos(pRaw); } catch(_){}
     try { lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now()); } catch(_){}
@@ -7194,7 +7185,7 @@ async function _sbReconciliarTope(){
       const esNuevo = !(n in localUM);
       if (!esNuevo && !(umBase > (localUM[n]||0))) return;
       pRaw = pRaw.filter(r => String(r['NroPedido']||'').trim() !== n).concat(porNro[n]);
-      try { _cliColorInvalidar(); } catch(_) {}   // FIX 25-jul: llegaron datos del servidor -> recalcular color de clienta
+      try { _cliColorRecalcNros(n); } catch(_) {}   // MODO SHEETS: reflejar cambios reales
       if (esNuevo) nuevos.push(n);
       cambios = true;
     });
@@ -7261,7 +7252,7 @@ async function _rtAplicar() {
       const esNuevo = !(n in localUM);
       if (!esNuevo && !(umBase > (localUM[n] || 0))) return;
       pRaw = pRaw.filter(r2 => String(r2['NroPedido'] || '').trim() !== n).concat(porNro[n]);
-      try { _cliColorInvalidar(); } catch(_) {}   // FIX 25-jul: llegaron datos del servidor -> recalcular color de clienta
+      try { _cliColorRecalcNros(n); } catch(_) {}   // MODO SHEETS: reflejar cambios reales
       if (esNuevo) nuevos.push(n);
       cambios = true;
     });
