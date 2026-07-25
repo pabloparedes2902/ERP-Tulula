@@ -2177,6 +2177,39 @@ async function _sbListarDirecto(offset, limit, orden, wantCount){
   }
   return { rows, total, offset: _off, limit: _lim, hayMas, serverTs: Date.now() };
 }
+// Filas COMPLETAS de pedidos puntuales, directo de la base (por índice idx_pedidos_nro).
+// El radar de reconciliación solo ve las filas modificadas más recientemente, así que
+// antes de reemplazar un pedido hay que pedirlo entero por su número.
+// COLOR SOLO-ERP: estas filas vienen de la BASE, que es la verdad del color y trae el
+// id real de cada fila → NO deben pasar por _colorConservarLocal (esa es solo para la hoja).
+// Devuelve { nro: [filas] } o null si no se pudo (sin sesión / error de red).
+async function _sbFilasDePedidos(nros){
+  try {
+    const lista = [...new Set((nros || []).map(x => String(x || '').trim()).filter(Boolean))];
+    if (!lista.length) return {};
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const out = {};
+    for (let i = 0; i < lista.length; i += 80) {
+      const parte = lista.slice(i, i + 80);
+      const inClause = parte.map(x => '"' + String(x).replace(/["\\]/g, '') + '"').join(',');
+      const q = SB_URL + '/rest/v1/pedidos?select=id,row_json&eliminado=is.null'
+              + '&nro_pedido=in.(' + encodeURIComponent(inClause) + ')&order=id.asc&limit=5000';
+      const r = await fetch(q, { headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok } });
+      if (!r.ok) { if (r.status === 401 || r.status === 403) _sbGuardarTok(null); return null; }
+      const arr = await r.json();
+      arr.forEach(x => {
+        const o = x.row_json || {};
+        if (x.id != null && o._sbId == null) o._sbId = x.id;
+        const nr = String(o['NroPedido'] || '').trim();
+        if (!nr) return;
+        (out[nr] = out[nr] || []).push(o);
+      });
+    }
+    return out;
+  } catch (e) { return null; }
+}
+
 // Wrapper del listado plano (sin filtros ni estado): directo si hay sesión SB, si no Apps Script.
 async function _pedListarPagina(params){
   params = params || {};
@@ -4530,6 +4563,93 @@ function pExpandFlat(grouped) {
   });
   return flat;
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// RED DE SEGURIDAD — un pedido NUNCA puede quedarse sin prendas por una
+// sincronización de fondo.  (25-jul-2026, caso del pedido 21089)
+// ──────────────────────────────────────────────────────────────────────────
+// Varias rutas de sincronización reemplazan TODAS las filas locales de un pedido
+// por las que acaban de llegar del servidor. El problema: lo que llega puede venir
+// RECORTADO. El radar de cada minuto mira las 200 filas MODIFICADAS más recientes;
+// un pedido con 4 prendas cargadas la semana pasada y 2 pagos registrados hoy entra
+// al radar SOLO con sus 2 filas de pago → el reemplazo borraba las 4 prendas de la
+// pantalla y el pedido quedaba vacío hasta la siguiente recarga completa
+// ("salía una sola fila y después de un rato aparecían las prendas").
+//
+// Regla: si el pedido YA TENÍA prendas y lo que llega no trae ninguna, el reemplazo
+// se RECHAZA y el pedido se anota para pedirlo completo. Se prefiere un dato viejo
+// completo antes que uno nuevo mutilado.
+function _tienePrendaReal(filas){
+  for (let i = 0; i < (filas || []).length; i++) {
+    const f = filas[i];
+    const p = String((f && f['Prenda']) || '').trim();
+    if (p && !_esPago(p)) return true;
+  }
+  return false;
+}
+
+// Fusiona por pedido aplicando la regla de arriba. Devuelve las filas resultantes y
+// la lista de pedidos cuyo reemplazo se rechazó (hay que pedirlos completos).
+// ⚠️ COLOR SOLO-ERP: si `porNro` trae filas de la HOJA, el llamador debe pasarlas
+// antes por _colorConservarLocal — esta función no toca ColorPrenda ni _sbId.
+function _pedsFusionarPedidos(rowsLocales, porNro){
+  const nros = Object.keys(porNro || {});
+  if (!nros.length) return { rows: rowsLocales, rechazados: [] };
+  const enJuego = new Set(nros);
+  const teniaPrenda = new Set();
+  for (let i = 0; i < rowsLocales.length; i++) {
+    const r = rowsLocales[i];
+    const nr = String((r && r['NroPedido']) || '').trim();
+    if (!enJuego.has(nr) || teniaPrenda.has(nr)) continue;
+    const p = String(r['Prenda'] || '').trim();
+    if (p && !_esPago(p)) teniaPrenda.add(nr);
+  }
+  const aplicar = new Set(), rechazados = [];
+  nros.forEach(nr => {
+    if (teniaPrenda.has(nr) && !_tienePrendaReal(porNro[nr])) { rechazados.push(nr); return; }
+    aplicar.add(nr);
+  });
+  if (!aplicar.size) return { rows: rowsLocales, rechazados: rechazados };
+  const out = [];
+  for (let i = 0; i < rowsLocales.length; i++) {
+    const r = rowsLocales[i];
+    if (!aplicar.has(String((r && r['NroPedido']) || '').trim())) out.push(r);
+  }
+  aplicar.forEach(nr => { const fs = porNro[nr] || []; for (let j = 0; j < fs.length; j++) out.push(fs[j]); });
+  return { rows: out, rechazados: rechazados };
+}
+
+// VISTA SIEMPRE COMPLETA (25-jul-2026) — los filtros de columna deciden QUÉ PEDIDOS se
+// ven, no con qué filas se arma cada uno. Antes, un filtro sobre una columna de fila
+// (Prenda, Precio, Estado, Lote…) dejaba el pedido representado SOLO por las filas
+// coincidentes: filtrar Prenda="pago" lo mostraba sin prenda y con Subtotal vacío, y
+// filtrar una prenda concreta mostraba un Subtotal parcial — un número que parecía real
+// y no lo era. Recibe las filas que pasaron el filtro y todas las filas de la pestaña.
+function _pedsCompletarPedidos(filtered, filasPestana){
+  if (!filtered || !filasPestana) return filtered;
+  if (filtered.length === filasPestana.length) return filtered;   // no se filtró nada
+  const nros = new Set();
+  for (let i = 0; i < filtered.length; i++) nros.add(String(filtered[i]['NroPedido'] || '').trim());
+  if (!nros.size) return filtered;
+  return filasPestana.filter(r => nros.has(String((r && r['NroPedido']) || '').trim()));
+}
+
+// Detecta pedidos que quedaron con filas de PAGO pero SIN NINGUNA PRENDA. En la operación
+// real eso no puede existir: o lo dejó así una sincronización recortada, o el snapshot que
+// guarda el navegador se grabó ya roto. Devuelve la lista de números a reparar.
+function _pedsDetectarSinPrenda(rows){
+  const conPrenda = new Set(), conPago = new Set();
+  const arr = rows || [];
+  for (let i = 0; i < arr.length; i++) {
+    const r = arr[i]; if (!r) continue;
+    const nr = String(r['NroPedido'] || '').trim(); if (!nr) continue;
+    const p = String(r['Prenda'] || '').trim();
+    if (p && !_esPago(p)) conPrenda.add(nr); else if (_esPago(p)) conPago.add(nr);
+  }
+  const out = [];
+  conPago.forEach(nr => { if (!conPrenda.has(nr)) out.push(nr); });
+  return out;
+}
 /* ==== @test-end:pedidos ==== */
 
 // Renderiza pedidos desde un array de raw rows, aplicando filtro de tab local.
@@ -5206,12 +5326,19 @@ function _mergePedsDelta(editados, eliminados) {
   if (editados.length) {
     const nrosNuevos = new Set();
     editados.forEach(r => { nrosNuevos.add(String(r.NroPedido||'')); nrosAfectados.add(String(r.NroPedido||'')); });
-    // Sacar todas las filas viejas de los pedidos afectados, agregar las nuevas.
     // COLOR SOLO-ERP (25-jul): estas filas vienen de la HOJA (changelog) → conservar
     // el color y el _sbId locales antes de reemplazar (la hoja ya no sabe de colores).
+    // El orden importa: PRIMERO se conserva el color, y con esas filas ya arregladas se
+    // decide si el reemplazo es seguro.
     const _viejasColor = pRaw.filter(r => nrosNuevos.has(String(r.NroPedido||'')));
-    pRaw = pRaw.filter(r => !nrosNuevos.has(String(r.NroPedido||'')));
-    pRaw.push(..._colorConservarLocal(_viejasColor, editados));
+    const _editadosOk = _colorConservarLocal(_viejasColor, editados);
+    // FIX 25-jul (pedido 21089) — misma red que el radar: si lo que llega dejaría al
+    // pedido sin prendas y antes las tenía, no se pisa; se pide completo por otra vía.
+    const _porNroEd = {};
+    _editadosOk.forEach(r => { const _n = String(r.NroPedido||''); (_porNroEd[_n] = _porNroEd[_n] || []).push(r); });
+    const _fusEd = _pedsFusionarPedidos(pRaw, _porNroEd);
+    if (_fusEd.rechazados.length) { try { _pedsRefrescarNros(_fusEd.rechazados); } catch(_) {} }
+    pRaw = _fusEd.rows;
     // MODO SHEETS: si alguien cambió el color de una prenda de estos pedidos, la fórmula
     // del nombre se actualiza — solo para ELLOS, y solo si de verdad cambió algo.
     try { _cliColorRecalcNros([...nrosNuevos]); } catch(_) {}
@@ -6842,6 +6969,9 @@ async function _pedsCargarRestoProgresivo() {
   } finally {
     if (myToken === _pedsLoadToken) {
       window._pedsCargaEnCurso = false;
+      // 25-jul: reparar los pedidos que hayan quedado sin prendas (sincronización recortada
+      // o snapshot viejo grabado ya roto). Va en segundo plano, no bloquea la pantalla.
+      try { setTimeout(() => { _pedsAutorepararSinPrenda(40); }, 1500); } catch(_){}
       // Terminó la carga: recalcular el color de los nombres UNA vez, ya con todos los
       // pedidos completos (durante la carga estuvo congelado a propósito — ver
       // _cliColorMapaVigente). Sin esto el mapa quedaría con el valor viejo.
@@ -7038,6 +7168,7 @@ function pAply() {
   let filtered = (window._pTabNros)
     ? pRaw.filter(r => window._pTabNros.has(String(r['NroPedido']||'').trim()))
     : pRaw.slice();
+  const _filasPestana = filtered;   // todas las filas de la pestaña, antes de filtrar
   Object.entries(pFlt).forEach(([col, f]) => {
     if (AGG_COLS.has(col)) return; // manejar después de agrupar
     if (f.lib) {
@@ -7055,6 +7186,9 @@ function pAply() {
       });
     }
   });
+
+  // Paso 1b — FIX 25-jul: VISTA SIEMPRE COMPLETA (ver _pedsCompletarPedidos)
+  filtered = _pedsCompletarPedidos(filtered, _filasPestana);
 
   // Paso 2: agrupar por pedido
   pAll = pGroupByPedido(filtered);
@@ -7207,6 +7341,28 @@ async function _pedsRefrescarNros(nros){
   } catch(e){ try{ _errLog('peds.refrescarNros', e); }catch(_){} }
 }
 
+// ── AUTO-REPARADOR: pedidos que quedaron SIN NINGUNA PRENDA en memoria ─────
+// (25-jul-2026) Un pedido con solo filas de pago y ninguna prenda no puede existir en
+// la operación real: o lo dejó así una sincronización recortada (ver _pedsFusionarPedidos),
+// o el snapshot guardado en el navegador se grabó ya roto y sigue roto al reabrir.
+// Los repara con _pedsRefrescarNros (pedidos.porNros), que YA pasa por _colorConservarLocal
+// → traer las prendas de vuelta no puede cambiarle el color a nadie.
+// Se intenta UNA vez por pedido y por sesión: si de verdad no tiene prendas, no reintenta.
+window._pedsRepIntentados = window._pedsRepIntentados || new Set();
+async function _pedsAutorepararSinPrenda(limite){
+  try {
+    if (window._pedsCargaEnCurso) return 0;
+    const faltan = _pedsDetectarSinPrenda(pRaw)
+      .filter(nr => !window._pedsRepIntentados.has(nr))
+      .slice(0, limite || 40);
+    if (!faltan.length) return 0;
+    faltan.forEach(nr => window._pedsRepIntentados.add(nr));
+    try { console.warn('[ERP] Reparando ' + faltan.length + ' pedido(s) sin prendas:', faltan.join(', ')); } catch(_){}
+    await _pedsRefrescarNros(faltan);
+    return faltan.length;
+  } catch (e) { try { _errLog('peds.autoreparar', e); } catch(_){} return 0; }
+}
+
 // ── RECONCILIACIÓN DIRECTA CON LA BASE (QA 22-jul) ─────────────────────────
 // Los pedidos creados FUERA del ERP (web Shopify por webhook, importadores) no pasan
 // por el changelog → pedidos.cambiosDesde no los ve y quedaban invisibles hasta una
@@ -7240,20 +7396,43 @@ async function _sbReconciliarTope(){
     });
     let cambios = false; const nuevos = [];
     const _tombs = _pedsTombsGet();   // F1: no resucitar borrados ni pisar ediciones frescas
+    const cambiados = [];
     Object.keys(porNro).forEach(n => {
       if (_tombs[n] || _pedsEditLocalReciente(n)) return;
       const umBase = Math.max.apply(null, porNro[n].map(r => Date.parse(r['UltimaModif']||'') || 0));
       const esNuevo = !(n in localUM);
       if (!esNuevo && !(umBase > (localUM[n]||0))) return;
-      pRaw = pRaw.filter(r => String(r['NroPedido']||'').trim() !== n).concat(porNro[n]);
-      try { _cliColorRecalcNros(n); } catch(_) {}   // MODO SHEETS: reflejar cambios reales
+      cambiados.push(n);
       if (esNuevo) nuevos.push(n);
-      cambios = true;
     });
+    if (!cambiados.length) return;
+    // FIX 25-jul (pedido 21089) — PEDIR EL PEDIDO COMPLETO ANTES DE REEMPLAZAR.
+    // El radar ordena por última modificación, así que de un pedido con prendas viejas y
+    // un pago de hoy solo ve la fila del pago. Reemplazar con eso borraba las prendas de
+    // la pantalla. Ahora el radar solo DETECTA qué pedidos cambiaron; las filas se piden
+    // completas por número (consulta indexada, barata). Todo viene de la BASE, así que el
+    // color y el _sbId son los buenos (no hace falta _colorConservarLocal).
+    let completas = null;
+    try { completas = await _sbFilasDePedidos(cambiados); } catch(_) { completas = null; }
+    const porNroFinal = {};
+    cambiados.forEach(n => {
+      const c = completas && completas[n];
+      porNroFinal[n] = (c && c.length) ? c : porNro[n];   // si falló, lo del radar (la red protege)
+    });
+    const _fus = _pedsFusionarPedidos(pRaw, porNroFinal);
+    if (_fus.rechazados.length) {
+      // Llegó recortado y el pedido ya tenía prendas: no se pisa; se pide completo aparte.
+      try { _pedsRefrescarNros(_fus.rechazados); } catch(_) {}
+    }
+    cambios = (_fus.rows !== pRaw);
+    pRaw = _fus.rows;
+    if (cambios) { try { _cliColorRecalcNros(cambiados); } catch(_) {} }   // MODO SHEETS: reflejar cambios reales
     if (!cambios) return;
     // Pedidos NUEVOS: visibles de inmediato en Activos/Todos (las pestañas de trabajo)
     if (window._pTabNros && nuevos.length && (pEst === '_ACTIVOS' || pEst === '')) nuevos.forEach(n => window._pTabNros.add(n));
     try { pEnrichPagos(pRaw); } catch(_){}
+    // Red final: si tras reconciliar algún pedido quedó sin prendas, repararlo de la hoja.
+    try { setTimeout(() => { _pedsAutorepararSinPrenda(20); }, 800); } catch(_){}
     try {
       const pedView = document.getElementById('pg-pedidos');
       if (pedView && pedView.classList.contains('on') && !window._pedsCargaEnCurso) {
