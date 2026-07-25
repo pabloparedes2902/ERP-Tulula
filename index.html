@@ -7335,8 +7335,14 @@ async function _pedsRefrescarNros(nros){
     // COLOR SOLO-ERP (25-jul): pedidos.porNros lee la HOJA → conservar color y _sbId
     // locales antes de reemplazar (la hoja quedó fuera del circuito de colores).
     const _viejasColor = pRaw.filter(r => setN.has(String(r['NroPedido']||'').trim()));
-    pRaw = pRaw.filter(r => !setN.has(String(r['NroPedido']||'').trim()));
-    if (rows.length) pRaw.push(..._colorConservarLocal(_viejasColor, rows));
+    // FIX 25-jul: si el servidor no devolvió nada (timeout, hoja lenta, error silencioso)
+    // NO se toca pRaw. Antes se borraban las filas y no se reponían → el pedido
+    // desaparecía de la pantalla por un fallo de red.
+    if (!rows.length) { if (_viejasColor.length) return; }
+    else {
+      pRaw = pRaw.filter(r => !setN.has(String(r['NroPedido']||'').trim()));
+      pRaw.push(..._colorConservarLocal(_viejasColor, rows));
+    }
     try { _cliColorRecalcNros(list); } catch(_) {}   // MODO SHEETS: reflejar cambios reales
     list.forEach(n => _pedsEditLocalMark(n));   // que la reconciliación no lo pise con datos viejos
     try { pEnrichPagos(pRaw); } catch(_){}
@@ -7352,6 +7358,49 @@ async function _pedsRefrescarNros(nros){
 // Los repara con _pedsRefrescarNros (pedidos.porNros), que YA pasa por _colorConservarLocal
 // → traer las prendas de vuelta no puede cambiarle el color a nadie.
 // Se intenta UNA vez por pedido y por sesión: si de verdad no tiene prendas, no reintenta.
+// Repara pedidos puntuales trayendo sus filas COMPLETAS. Primero de la BASE (consulta
+// indexada, milisegundos, y es la verdad del color); la HOJA queda solo de respaldo para
+// los que la base no tenga (pedidos.porNros lee la hoja fila por fila y es lentísimo:
+// con 40 pedidos se va a timeout y no repara nada — que es lo que estaba pasando).
+// Devuelve un desglose que distingue las dos situaciones posibles:
+//   reparados          → tenían prendas en el origen y ya volvieron a la pantalla
+//   sinPrendaEnOrigen  → el ORIGEN tampoco tiene prendas: el daño es real, no de pantalla
+async function _pedsRepararNros(nros){
+  const list = [...new Set((nros || []).map(x => String(x || '').trim()).filter(Boolean))];
+  const out = { reparados: 0, sinPrendaEnOrigen: [], viaHoja: 0 };
+  if (!list.length) return out;
+  let deLaBase = null;
+  try { deLaBase = await _sbFilasDePedidos(list); } catch(_) { deLaBase = null; }
+  const faltan = [];
+  if (deLaBase) {
+    const aplicar = {};
+    list.forEach(nr => {
+      const fs = deLaBase[nr];
+      if (!fs || !fs.length) { faltan.push(nr); return; }             // no está en la base → probar hoja
+      if (!_tienePrendaReal(fs)) { out.sinPrendaEnOrigen.push(nr); return; }  // la base TAMPOCO tiene prendas
+      aplicar[nr] = fs;
+    });
+    const nrosAplicar = Object.keys(aplicar);
+    if (nrosAplicar.length) {
+      const fus = _pedsFusionarPedidos(pRaw, aplicar);
+      pRaw = fus.rows;
+      out.reparados = nrosAplicar.length;
+      try { _cliColorRecalcNros(nrosAplicar); } catch(_) {}
+      try { pEnrichPagos(pRaw); } catch(_) {}
+      try { lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now()); } catch(_) {}
+      try { _pedsRenderSuave(); } catch(_) {}
+    }
+  } else {
+    faltan.push.apply(faltan, list);   // sin sesión con la base: todo por la hoja
+  }
+  // Respaldo por la HOJA, de a poquitos (es lenta): solo lo que la base no tenía.
+  for (let i = 0; i < faltan.length; i += 5) {
+    await _pedsRefrescarNros(faltan.slice(i, i + 5));
+    out.viaHoja += Math.min(5, faltan.length - i);
+  }
+  return out;
+}
+
 window._pedsRepIntentados = window._pedsRepIntentados || new Set();
 let _pedsRepEnCurso = false;
 // Repara POR TANDAS hasta agotar (o hasta `maxTandas`). Una sola reparación a la vez.
@@ -7369,8 +7418,11 @@ async function _pedsAutorepararSinPrenda(porTanda, maxTandas){
       if (!faltan.length) break;
       faltan.forEach(nr => window._pedsRepIntentados.add(nr));
       try { console.warn('[ERP] Reparando ' + faltan.length + ' pedido(s) sin prendas…'); } catch(_){}
-      await _pedsRefrescarNros(faltan);
-      total += faltan.length;
+      const _r = await _pedsRepararNros(faltan);
+      total += _r.reparados;
+      if (_r.sinPrendaEnOrigen.length) {
+        window._pedsSinPrendaReal = (window._pedsSinPrendaReal || []).concat(_r.sinPrendaEnOrigen);
+      }
       if (t + 1 < TOPE) await new Promise(r => setTimeout(r, 400));
     }
     if (total) {
@@ -7398,13 +7450,44 @@ window.diagPedidosSinPrenda = function(){
 };
 window.repararPedidosSinPrenda = async function(){
   window._pedsRepIntentados = new Set();               // reintentar TODOS
+  window._pedsSinPrendaReal = [];
+  _pedsRepEnCurso = false;                             // el manual manda: no esperar al automático
   const antes = _pedsDetectarSinPrenda(pRaw).length;
-  await _pedsAutorepararSinPrenda(40, 40);             // hasta 1.600 pedidos
+  const lista = _pedsDetectarSinPrenda(pRaw);
+  let reparados = 0; const sinPrendaEnOrigen = [];
+  for (let i = 0; i < lista.length; i += 40) {
+    const _r = await _pedsRepararNros(lista.slice(i, i + 40));
+    reparados += _r.reparados;
+    sinPrendaEnOrigen.push.apply(sinPrendaEnOrigen, _r.sinPrendaEnOrigen);
+    console.log('[ERP] tanda ' + (Math.floor(i/40)+1) + ': reparados ' + _r.reparados
+      + ' · el origen no tiene prendas en ' + _r.sinPrendaEnOrigen.length);
+  }
   const quedan = _pedsDetectarSinPrenda(pRaw).length;
   try { _renderPedsDesde(pRaw, pEst); } catch(_){}
-  const r = { antes: antes, reparados: antes - quedan, quedan: quedan };
+  const r = {
+    antes: antes,
+    reparados: reparados,
+    quedan: quedan,
+    // ⚠️ SI ESTE NÚMERO ES GRANDE, el problema NO es de pantalla: esos pedidos de verdad
+    // no tienen ninguna prenda en la base ni en la hoja.
+    sinPrendaEnElOrigen: sinPrendaEnOrigen.length,
+    ejemplosSinPrendaEnElOrigen: sinPrendaEnOrigen.slice(0, 12),
+  };
   console.log('[ERP] REPARACIÓN MANUAL', r);
-  try { toast('Reparados ' + r.reparados + ' de ' + antes + ' pedidos', r.quedan ? '' : 'ok'); } catch(_){}
+  try { toast('Reparados ' + r.reparados + ' de ' + antes, r.quedan ? '' : 'ok'); } catch(_){}
+  return r;
+};
+
+// Compara UN pedido: qué tiene la pantalla vs qué tiene la base y la hoja.
+window.diagPedido = async function(nro){
+  const n = String(nro || '').trim();
+  const enMemoria = pRaw.filter(r => String(r['NroPedido'] || '').trim() === n).map(r => r['Prenda']);
+  let enLaBase = '(sin sesión con la base)';
+  try { const b = await _sbFilasDePedidos([n]); if (b) enLaBase = (b[n] || []).map(r => r['Prenda']); } catch(e) { enLaBase = 'ERROR: ' + e.message; }
+  let enLaHoja = '(no consultada)';
+  try { const h = await api('pedidos.porNros', { nros: n }); enLaHoja = ((h && h.rows) || []).map(r => r['Prenda']); } catch(e) { enLaHoja = 'ERROR: ' + e.message; }
+  const r = { pedido: n, enPantalla: enMemoria, enLaBase: enLaBase, enLaHoja: enLaHoja };
+  console.log('[ERP] DIAG PEDIDO', r);
   return r;
 };
 
