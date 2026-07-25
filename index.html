@@ -4148,6 +4148,53 @@ async function _crearPedidoRapido(body) {
   } catch (e) { try { console.warn('[crear] RPC fallo → via Apps Script'); } catch(_){} return null; }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// PASO 6b (25-jul) — ELIMINAR EN LA BASE
+//
+// Antes: borrar un pedido tardaba ~9,7 s (medido en vivo) porque reescribia la
+// hoja de Google. Ahora se marca en la base al instante y el Aplicador lo
+// refleja en la hoja por detras.
+//
+// LA PROTECCION SIGUE: la base revisa cambios y devoluciones en curso con las
+// MISMAS reglas de siempre, leyendo las tablas espejo. Si el pedido tiene algo
+// abierto, la base lo rechaza — igual que hoy.
+//
+// REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
+//
+// RED: si la base no responde, se borra por Apps Script como siempre. Pero si
+// la base RECHAZA por un cambio en curso, ese rechazo se respeta y NO se
+// reintenta por la via vieja — saltarse la proteccion seria peor que fallar.
+const SB_PILOTO_ELIMINAR = true;
+
+async function _sbRpcEliminar(fn, params) {
+  try {
+    if (!SB_PILOTO_ELIMINAR) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!r.ok) {
+      let _msg = '';
+      try { const _e = await r.json(); _msg = String(_e && (_e.message || _e.hint) || ''); } catch(_) {}
+      // Rechazo de NEGOCIO (cambio o devolucion en curso): es una respuesta
+      // valida, no una falla de red. Se propaga para que la persona la vea.
+      if (/No se puede eliminar/i.test(_msg)) { const err = new Error(_msg); err._negocio = true; throw err; }
+      try { console.warn('[eliminar] RPC ' + fn + ' HTTP ' + r.status + ' → via Apps Script'); } catch(_){}
+      return null;
+    }
+    const d = await r.json();
+    return (d && d.ok === true) ? d : null;
+  } catch (e) {
+    if (e && e._negocio) throw e;                 // el rechazo del negocio NO se traga
+    try { console.warn('[eliminar] RPC ' + fn + ' fallo → via Apps Script'); } catch(_){}
+    return null;
+  }
+}
+
 async function _sbRpcConstanciaSet(nro, pagoId, urls) {
   try {
     if (!SB_PILOTO_CONSTANCIAS) return false;
@@ -8698,7 +8745,15 @@ function verPed(p) {
       row.remove();
       toast('✓ Prenda eliminada', 'ok');
       stData = null; confData = null; pRawEst = null; _invalidarPrefetch();
-      apiPost('pedidos.eliminarPrenda', { NroPedido: nro, _prendaTarget: prendaNombre, _prendaOcc: _occDel })
+      // PASO 6b — primero la base; si no se puede, Apps Script.
+      (async () => {
+        const _b = await _sbRpcEliminar('pedido_eliminar_prenda', {
+          p_nro: String(nro), p_prenda: String(prendaNombre),
+          p_occ: (_occDel === undefined || _occDel === null || _occDel === '') ? null : parseInt(_occDel, 10),
+          p_force: false });
+        if (_b) return _b;
+        return apiPost('pedidos.eliminarPrenda', { NroPedido: nro, _prendaTarget: prendaNombre, _prendaOcc: _occDel });
+      })()
         .catch(e => {
           if (_backupRow && idx !== -1) pRaw.splice(idx, 0, _backupRow);
           try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
@@ -9233,7 +9288,13 @@ function verPed(p) {
     toast('✓ Pedido #'+nro+' enviado a Papelera', 'ok');
     // F3 (24-jul): Force solo cuando el usuario YA VIO la advertencia de cambio/devolución
     // y confirmó — si el frontend no lo detectó (datos viejos), el backend bloquea igual.
-    apiSend('pedidos.eliminar', {NroPedido:nro, Force: !!(_hayCam || _hayDev)})
+    // PASO 6b — primero la base (decimas de segundo). Si no se puede, Apps Script.
+    (async () => {
+      const _forz = !!(_hayCam || _hayDev);
+      const _base = await _sbRpcEliminar('pedido_eliminar', { p_nro: String(nro), p_motivo: '', p_force: _forz });
+      if (_base) return _base;
+      return apiSend('pedidos.eliminar', {NroPedido:nro, Force:_forz});
+    })()
       .then(() => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){} })
       .catch(e => { _papeleraPendDel(nro); toast('Error al eliminar en servidor: '+esc(e.message)+' — refresca para reintentar','err'); });
   });
