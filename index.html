@@ -4985,6 +4985,9 @@ async function loadPeds(est, force) {
   }
   if (cached) {
     _renderPedsDesde(cached, estVal);
+    // 25-jul: el arranque desde el snapshot local no pasaba por la carga progresiva, así que
+    // los pedidos que el snapshot guardó SIN prendas seguían rotos al reabrir. Repararlos aquí.
+    try { setTimeout(() => { _pedsAutorepararSinPrenda(40, 8); }, 3000); } catch(_){}
     // PERF v9.0 — prefetch DIFERIDO 5s: no competir con la carga de pedidos
     setTimeout(_prefetchBackground, 1500);
     _startPedsPolling();
@@ -4997,6 +5000,7 @@ async function loadPeds(est, force) {
   // a cambiar de módulo sin recargar), renderizar al instante desde memoria. Sin fetch, sin spinner.
   if (!force && Array.isArray(pRaw) && pRaw.length) {
     _renderPedsDesde(pRaw, estVal);
+    try { setTimeout(() => { _pedsAutorepararSinPrenda(40, 8); }, 3000); } catch(_){}
     _startPedsPolling();
     if (pScope !== 'activos') _pedsCargarRestoProgresivo();  // completar histórico en background
     return;
@@ -6971,7 +6975,7 @@ async function _pedsCargarRestoProgresivo() {
       window._pedsCargaEnCurso = false;
       // 25-jul: reparar los pedidos que hayan quedado sin prendas (sincronización recortada
       // o snapshot viejo grabado ya roto). Va en segundo plano, no bloquea la pantalla.
-      try { setTimeout(() => { _pedsAutorepararSinPrenda(40); }, 1500); } catch(_){}
+      try { setTimeout(() => { _pedsAutorepararSinPrenda(40, 8); }, 1500); } catch(_){}
       // Terminó la carga: recalcular el color de los nombres UNA vez, ya con todos los
       // pedidos completos (durante la carga estuvo congelado a propósito — ver
       // _cliColorMapaVigente). Sin esto el mapa quedaría con el valor viejo.
@@ -7349,19 +7353,60 @@ async function _pedsRefrescarNros(nros){
 // → traer las prendas de vuelta no puede cambiarle el color a nadie.
 // Se intenta UNA vez por pedido y por sesión: si de verdad no tiene prendas, no reintenta.
 window._pedsRepIntentados = window._pedsRepIntentados || new Set();
-async function _pedsAutorepararSinPrenda(limite){
+let _pedsRepEnCurso = false;
+// Repara POR TANDAS hasta agotar (o hasta `maxTandas`). Una sola reparación a la vez.
+async function _pedsAutorepararSinPrenda(porTanda, maxTandas){
+  if (_pedsRepEnCurso) return 0;
+  _pedsRepEnCurso = true;
   try {
     if (window._pedsCargaEnCurso) return 0;
-    const faltan = _pedsDetectarSinPrenda(pRaw)
-      .filter(nr => !window._pedsRepIntentados.has(nr))
-      .slice(0, limite || 40);
-    if (!faltan.length) return 0;
-    faltan.forEach(nr => window._pedsRepIntentados.add(nr));
-    try { console.warn('[ERP] Reparando ' + faltan.length + ' pedido(s) sin prendas:', faltan.join(', ')); } catch(_){}
-    await _pedsRefrescarNros(faltan);
-    return faltan.length;
+    const TAM = porTanda || 40, TOPE = maxTandas || 1;
+    let total = 0;
+    for (let t = 0; t < TOPE; t++) {
+      const faltan = _pedsDetectarSinPrenda(pRaw)
+        .filter(nr => !window._pedsRepIntentados.has(nr))
+        .slice(0, TAM);
+      if (!faltan.length) break;
+      faltan.forEach(nr => window._pedsRepIntentados.add(nr));
+      try { console.warn('[ERP] Reparando ' + faltan.length + ' pedido(s) sin prendas…'); } catch(_){}
+      await _pedsRefrescarNros(faltan);
+      total += faltan.length;
+      if (t + 1 < TOPE) await new Promise(r => setTimeout(r, 400));
+    }
+    if (total) {
+      try { console.warn('[ERP] Pedidos pedidos a la hoja: ' + total + '. Siguen sin prenda: ' + _pedsDetectarSinPrenda(pRaw).length); } catch(_){}
+    }
+    return total;
   } catch (e) { try { _errLog('peds.autoreparar', e); } catch(_){} return 0; }
+  finally { _pedsRepEnCurso = false; }
 }
+
+// ── Comandos de consola (para diagnosticar y reparar a mano) ────────────────
+// Pegar en la consola del navegador (F12 → Console):
+//   diagPedidosSinPrenda()        → cuántos pedidos están sin prendas EN MEMORIA
+//   await repararPedidosSinPrenda() → los repara todos contra la hoja
+window.diagPedidosSinPrenda = function(){
+  const rotos = (typeof _pedsDetectarSinPrenda === 'function') ? _pedsDetectarSinPrenda(pRaw) : ['(sin fix)'];
+  const r = {
+    fixCargado: (typeof _pedsCompletarPedidos === 'function' && typeof _pedsFusionarPedidos === 'function'),
+    filasEnMemoria: (Array.isArray(pRaw) ? pRaw.length : 0),
+    pedidosSinPrendaEnMemoria: rotos.length,
+    ejemplos: rotos.slice(0, 12),
+  };
+  console.log('[ERP] DIAGNÓSTICO', r);
+  return r;
+};
+window.repararPedidosSinPrenda = async function(){
+  window._pedsRepIntentados = new Set();               // reintentar TODOS
+  const antes = _pedsDetectarSinPrenda(pRaw).length;
+  await _pedsAutorepararSinPrenda(40, 40);             // hasta 1.600 pedidos
+  const quedan = _pedsDetectarSinPrenda(pRaw).length;
+  try { _renderPedsDesde(pRaw, pEst); } catch(_){}
+  const r = { antes: antes, reparados: antes - quedan, quedan: quedan };
+  console.log('[ERP] REPARACIÓN MANUAL', r);
+  try { toast('Reparados ' + r.reparados + ' de ' + antes + ' pedidos', r.quedan ? '' : 'ok'); } catch(_){}
+  return r;
+};
 
 // ── RECONCILIACIÓN DIRECTA CON LA BASE (QA 22-jul) ─────────────────────────
 // Los pedidos creados FUERA del ERP (web Shopify por webhook, importadores) no pasan
@@ -7432,7 +7477,7 @@ async function _sbReconciliarTope(){
     if (window._pTabNros && nuevos.length && (pEst === '_ACTIVOS' || pEst === '')) nuevos.forEach(n => window._pTabNros.add(n));
     try { pEnrichPagos(pRaw); } catch(_){}
     // Red final: si tras reconciliar algún pedido quedó sin prendas, repararlo de la hoja.
-    try { setTimeout(() => { _pedsAutorepararSinPrenda(20); }, 800); } catch(_){}
+    try { setTimeout(() => { _pedsAutorepararSinPrenda(20, 3); }, 800); } catch(_){}
     try {
       const pedView = document.getElementById('pg-pedidos');
       if (pedView && pedView.classList.contains('on') && !window._pedsCargaEnCurso) {
