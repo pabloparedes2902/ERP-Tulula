@@ -4821,8 +4821,15 @@ function _renderPedsDesde(rawRows, estVal) {
         // el pedido quedaba 2× (subtotal duplicado, parpadeo). Ahora nunca puede doblarse.
         const _nrosR = new Set(window._pRescRows.map(r => String(r['NroPedido']||'').trim()));
         const _antes = pRaw.length;
-        pRaw = pRaw.filter(r => !_nrosR.has(String(r['NroPedido']||'').trim()));
-        pRaw.push(...window._pRescRows);
+        // FIX 25-jul: la re-inyección pasa por la misma red. Si lo guardado viniera
+        // recortado, no puede borrar las prendas que ya están en pantalla.
+        const _porNroR = {};
+        window._pRescRows.forEach(r => {
+          const _n = String(r['NroPedido']||'').trim(); if (!_n) return;
+          (_porNroR[_n] = _porNroR[_n] || []).push(r);
+        });
+        const _fusR = _pedsFusionarPedidos(pRaw, _porNroR);
+        pRaw = _fusR.rows;
         if (pRaw.length !== _antes) { try { pEnrichPagos(pRaw); } catch(_){} }
         _nrosR.forEach(n => { try { window._pTabNros.add(n); } catch(_){} });
       }
@@ -7504,6 +7511,20 @@ window.repararPedidosSinPrenda = async function(){
 };
 
 // Compara UN pedido: qué tiene la pantalla vs qué tiene la base y la hoja.
+// Borra el snapshot guardado en el navegador y vuelve a bajar todo de cero.
+// Es la forma más limpia de restaurar si la memoria local quedó con datos mutilados.
+window.recargarPedidosDesdeCero = async function(){
+  try { window._pRescRows = null; _pRescLastSig = ''; } catch(_){}
+  try { window._pedsRepIntentados = new Set(); } catch(_){}
+  try { localStorage.removeItem('erp_pedidos_raw_v8_' + (typeof pScope !== 'undefined' ? pScope : 'todo')); } catch(_){}
+  try { if (typeof idbDel === 'function') await idbDel('peds_' + (typeof pScope !== 'undefined' ? pScope : 'todo')); } catch(_){}
+  try { window._idbPedsMem = null; } catch(_){}
+  try { pRaw = []; } catch(_){}
+  console.warn('[ERP] Snapshot local borrado. Bajando todo de nuevo…');
+  try { await loadPeds(typeof pEst !== 'undefined' ? pEst : '', true); } catch(e) { console.error(e); }
+  return 'Listo: vuelve a correr diagPedidosSinPrenda() en un minuto.';
+};
+
 window.diagPedido = async function(nro){
   const n = String(nro || '').trim();
   const enMemoria = pRaw.filter(r => String(r['NroPedido'] || '').trim() === n).map(r => r['Prenda']);
@@ -7735,9 +7756,29 @@ function _pedsRescateServidor() {
       _pRescLastSig = sig;
       if (rows.length) {
         const nros = new Set(rows.map(r => String(r.NroPedido||'').trim()));
-        pRaw = pRaw.filter(r => !nros.has(String(r.NroPedido||'').trim()));
-        pRaw.push(...rows);
-        window._pRescRows = rows.slice();   // sobrevive a las recargas de fondo (se re-inyecta)
+        // FIX 25-jul — EL FILTRO YA NO PUEDE DESTRUIR UN PEDIDO.
+        // El servidor devuelve solo las FILAS que coinciden con el filtro (al filtrar
+        // Prenda="pago", solo las filas de pago). Pegarlas encima borraba las prendas de
+        // todos esos pedidos de una sola vez. Ahora se usa la respuesta únicamente para
+        // saber QUÉ PEDIDOS coinciden, y las filas se piden COMPLETAS.
+        const _lista = [...nros].filter(Boolean);
+        let _completas = null;
+        try { _completas = await _sbFilasDePedidos(_lista); } catch(_) { _completas = null; }
+        const _porNro = {};
+        _lista.forEach(nr => {
+          const c = _completas && _completas[nr];
+          _porNro[nr] = (c && c.length) ? c : rows.filter(r => String(r.NroPedido||'').trim() === nr);
+        });
+        const _fusResc = _pedsFusionarPedidos(pRaw, _porNro);
+        pRaw = _fusResc.rows;
+        if (_fusResc.rechazados.length) {
+          // Lo que llegó recortado no pisa lo local; se pide completo aparte.
+          setTimeout(() => { try { _pedsRepararNros(_fusResc.rechazados); } catch(_){} }, 800);
+        }
+        // Guardar las filas COMPLETAS: la re-inyección de las recargas de fondo usa esto,
+        // y con las filas recortadas volvía a romper los pedidos en cada refresco.
+        window._pRescRows = [];
+        _lista.forEach(nr => { const fs = _porNro[nr]; if (fs && fs.length) window._pRescRows.push(...fs); });
         try { pEnrichPagos(pRaw); } catch(e) {}
         if (window._pTabNros) nros.forEach(n => window._pTabNros.add(n));   // que la pestaña no lo oculte
         pAply();
