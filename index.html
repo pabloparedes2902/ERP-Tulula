@@ -5938,6 +5938,12 @@ function renderPT(el, rows, total, hayMas) {
     +'<button class="btn bg bs" id="btn-filtrar-fecha" style="font-size:11px">📅 Filtrar</button>'
     +'<button class="btn bp bs" id="btn-exp-xl" style="font-size:11px">⬇ Excel</button>'
     +(Object.keys(pFlt).length ? '<button class="btn bg bs" id="btn-clf" style="font-size:11px">✕ Filtros</button>' : '');
+  // FIX: pintarla YA. Antes solo se pintaba desde pRenderTBodyFast (el camino
+  // rápido). En el primer dibujado se usa este camino, el completo, así que la
+  // barra de fechas y el contador quedaban en blanco hasta que algo forzara un
+  // repintado parcial. #ped-toolbar vive fuera de la grilla, así que se puede
+  // pintar antes de que la grilla exista.
+  try { _pedPintarCabecera(total, hayMas); } catch (e) {}
   const info = '';
 
   const more = hayMas ? '<div style="padding:12px 16px;text-align:center;border-top:1px solid var(--bd)">'
@@ -6377,7 +6383,7 @@ const VIRT_BUFFER = 12;         // filas extra arriba/abajo del viewport
 const pVirt = {
   enabled: false,
   rows: [],           // pFlat completo (los datos)
-  rowHeight: 32,      // altura típica medida tras el primer render
+  rowHeight: 28,      // altura típica; se mide de verdad tras el primer render (28 desde el 25-jul)
   start: 0, end: 0,
   rafId: 0,
 };
@@ -6419,15 +6425,20 @@ function _pVirtRender(el) {
   const tbody = el && el.querySelector('table.pt tbody');
   if (!sc || !tbody) return;
   const total = pVirt.rows.length;
-  const rh = pVirt.rowHeight || 32;
+  const rh = pVirt.rowHeight || 28;
   const vpH = sc.clientHeight;
   const scrollTop = sc.scrollTop;
   let start = Math.floor(scrollTop / rh) - VIRT_BUFFER;
   let end   = Math.ceil((scrollTop + vpH) / rh) + VIRT_BUFFER;
   start = Math.max(0, start);
   end   = Math.min(total, end);
-  if (start === pVirt.start && end === pVirt.end && tbody.firstElementChild) return;
-  pVirt.start = start; pVirt.end = end;
+  // FIX 25-jul: antes este atajo solo miraba start/end. Si cambiaba el ALTO DE
+  // FILA (se mide después del primer pintado), start y end podían dar iguales y
+  // se salía sin repintar — pero los separadores de arriba y abajo seguían
+  // calculados con el alto viejo. Eso dejaba huecos y filas en blanco hasta que
+  // la persona hacía scroll. Ahora el alto usado también cuenta.
+  if (start === pVirt.start && end === pVirt.end && pVirt._rhUsado === rh && tbody.firstElementChild) return;
+  pVirt.start = start; pVirt.end = end; pVirt._rhUsado = rh;
   const padTop    = start * rh;
   const padBottom = (total - end) * rh;
   const slice = pVirt.rows.slice(start, end);
@@ -6474,7 +6485,9 @@ function _pVirtSetData(el, rows) {
   requestAnimationFrame(() => {
     const oldH = pVirt.rowHeight;
     _pVirtMeasure(el);
-    if (Math.abs((pVirt.rowHeight||32) - oldH) > 1) _pVirtRender(el);
+    // Si el alto real difiere del supuesto, repintar SÍ o SÍ: los separadores
+    // se calcularon con el alto viejo y hay que rehacerlos.
+    if (Math.abs((pVirt.rowHeight || 28) - oldH) > 1) { pVirt._rhUsado = null; _pVirtRender(el); }
   });
 }
 
