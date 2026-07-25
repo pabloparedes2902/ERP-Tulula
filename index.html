@@ -2152,7 +2152,7 @@ async function _sbListarDirecto(offset, limit, orden, wantCount){
   const tok = await _sbTokenVigente();
   if (!tok) return null;
   const _off = offset || 0, _lim = limit || 1000;
-  const q = SB_URL + '/rest/v1/pedidos?select=row_json&eliminado=is.null'
+  const q = SB_URL + '/rest/v1/pedidos?select=id,row_json&eliminado=is.null'
           + '&order=' + (orden || 'fecha_efectiva.desc.nullslast,id.desc')
           + '&limit=' + _lim + '&offset=' + _off;
   const heads = { 'apikey': SB_ANON, 'Authorization': 'Bearer '+tok };
@@ -2160,7 +2160,10 @@ async function _sbListarDirecto(offset, limit, orden, wantCount){
   const r = await fetch(q, { headers: heads });
   if (!r.ok) { if (r.status === 401 || r.status === 403) _sbGuardarTok(null); return null; }
   const arr = await r.json();
-  const rows = arr.map(x => x.row_json || {});
+  // _sbId = id de la fila en la base = ORDEN REAL DE CARGA (el de la hoja). La consulta
+  // pide id.desc para que los pedidos nuevos salgan arriba, pero eso invierte las filas
+  // DENTRO de cada pedido; _ordenarFilasDePedido lo endereza con este dato.
+  const rows = arr.map(x => { const o = x.row_json || {}; if (x.id != null && o._sbId == null) o._sbId = x.id; return o; });
   let total, hayMas;
   if (wantCount) {
     const cr = r.headers.get('content-range') || '';
@@ -3017,7 +3020,7 @@ function renderEnvios(el) {
     const est = String(r['Estado']||'').trim().toUpperCase();
     if (est !== 'PREVENTA') return;
     const prenda = String(r['Prenda']||'').trim();
-    if (!prenda || prenda === '_PAGO_') return;
+    if (!prenda || _esPago(prenda)) return;
     esperando.push({
       nro: String(r['NroPedido']||''),
       cliente: String(r['Nombres y Apellidos']||r['Nombre']||''),
@@ -3030,7 +3033,7 @@ function renderEnvios(el) {
     const est = String(r['Estado']||'').trim().toUpperCase();
     if (est !== 'ENVIAR' && est !== 'SEPARAR') return;
     const prenda = String(r['Prenda']||'').trim();
-    if (!prenda || prenda === '_PAGO_') return;
+    if (!prenda || _esPago(prenda)) return;
     items.push({
       tipo: 'Pedido', est,
       lote: String(r['Lote']||'').trim(),   // LOTES F3
@@ -4124,7 +4127,98 @@ async function _subirConstanciaRapida(nro, cmp) {
 //   - Un pago puede tener varias URLs (\n-separadas).
 // Cada pago muestra SOLO SU propia constancia — nunca se comparte entre pagos.
 // La columna Constancia de la tabla Pedidos (_constancias) agrega TODAS las URLs únicas del pedido.
+/* ==== @test-begin:pedidos — bloque que extraen las pruebas (tests/regresion_pedidos.js). NO BORRAR ==== */
+
+// Marcador interno de "fila de pago" (una fila del pedido que NO es una prenda: registra
+// un pago adicional). PUNTO ÚNICO DE VERDAD. Antes esta comprobación estaba copiada en
+// ~25 sitios con 4 variantes distintas (=== , !== , startsWith, toUpperCase) y cada sitio
+// nuevo era una oportunidad de que el marcador se escapara a la pantalla — que es
+// exactamente lo que pasó con el pedido 21095 (25-jul-2026).
+const FILA_PAGO = '_PAGO_';
+function _esPago(v){ return String(v == null ? '' : v).trim().toUpperCase().startsWith(FILA_PAGO); }
+
+// Deja las filas de CADA pedido en el ORDEN REAL DE LA HOJA (_sbId ascendente), sin alterar
+// el orden en que aparecen los pedidos entre sí. Motivo: la base devuelve las filas con
+// id.desc (para que los pedidos nuevos salgan arriba), lo que dentro de un pedido invierte
+// las prendas y pone los pagos adicionales delante. Sin _sbId (fallback Apps Script, filas
+// recién creadas en el navegador) no toca nada: esas ya vienen en orden.
+//
+// Además quita las filas REPETIDAS por _sbId dentro de un pedido. Ojo: _sbId es la clave
+// de la fila en la base, así que dos filas con el mismo _sbId son literalmente la misma
+// fila duplicada en memoria (rescates, merges, carreras de recarga) — NUNCA dos unidades
+// distintas de la misma prenda (esas tienen ids distintos y se conservan las dos).
+// Hace falta porque al ordenar por id, un duplicado [A,B,A,B] pasa a [A,A,B,B] y deja de
+// parecer un "bloque repetido" para _dedupBloquePedidos, que era la red anterior.
+function _ordenarFilasDePedido(rows){
+  if (!Array.isArray(rows) || rows.length < 2) return rows;
+  let hayId = false;
+  for (let i = 0; i < rows.length; i++) { if (rows[i] && rows[i]._sbId != null) { hayId = true; break; } }
+  if (!hayId) return rows;
+  // ── Atajo barato (~5 ms con 45.000 filas) ──────────────────────────────────
+  // Esto corre en CADA sincronización. El 99% de las veces las filas ya están bien
+  // (se ordenaron en la carga anterior), así que primero se comprueba de una pasada,
+  // sin construir nada. Solo si algo está fuera de sitio se hace el trabajo completo.
+  let ordenado = true;
+  const vistos = new Set();
+  let nroPrev = null, idPrev = -Infinity;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const n = String((r && r['NroPedido']) || '');
+    const id = (r && r._sbId != null) ? Number(r._sbId) : null;
+    if (n !== nroPrev) {
+      if (vistos.has(n)) { ordenado = false; break; }   // el pedido viene partido en dos tramos
+      vistos.add(n); nroPrev = n; idPrev = (id === null ? Infinity : id);
+      continue;
+    }
+    const cur = (id === null ? Infinity : id);
+    if (cur === Infinity && idPrev === Infinity) continue;   // dos filas nuevas seguidas: se respeta su orden
+    if (cur <= idPrev) { ordenado = false; break; }          // fuera de orden o fila repetida
+    idPrev = cur;
+  }
+  if (ordenado) return rows;
+  // ── Camino completo ───────────────────────────────────────────────────────
+  const grupos = new Map(), orden = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const n = String((r && r['NroPedido']) || '');
+    let g = grupos.get(n);
+    if (!g) { g = { items: [], porId: new Map() }; grupos.set(n, g); orden.push(n); }
+    // Sin id = fila creada recién en el navegador → va al final de su pedido (es la más nueva)
+    const id = (r && r._sbId != null) ? Number(r._sbId) : null;
+    if (id !== null && g.porId.has(id)) {
+      const prev = g.porId.get(id);   // misma fila repetida: nos quedamos con la copia más reciente
+      prev.r = r;
+      continue;
+    }
+    const it = { r: r, i: i, id: id };
+    g.items.push(it);
+    if (id !== null) g.porId.set(id, it);
+  }
+  let cambio = false, total = 0;
+  grupos.forEach(g => {
+    total += g.items.length;
+    if (g.items.length < 2) return;
+    const antes = g.items.map(x => x.i);
+    g.items.sort((a, b) => {
+      if (a.id === b.id) return a.i - b.i;          // empate → orden de llegada (estable)
+      if (a.id === null) return 1;                  // sin id → al final
+      if (b.id === null) return -1;
+      return a.id < b.id ? -1 : 1;
+    });
+    for (let k = 0; k < g.items.length; k++) { if (g.items[k].i !== antes[k]) { cambio = true; break; } }
+  });
+  if (!cambio && total === rows.length) return rows;   // ya estaba ordenado y sin repetidas
+  let p = 0;
+  for (let k = 0; k < orden.length; k++) {
+    const g = grupos.get(orden[k]);
+    for (let j = 0; j < g.items.length; j++) rows[p++] = g.items[j].r;
+  }
+  if (p < rows.length) rows.length = p;                // se quitaron filas repetidas
+  return rows;
+}
+
 function pEnrichPagos(rows) {
+  _ordenarFilasDePedido(rows);   // filas de cada pedido en el orden real de la hoja
   const map = {};
   rows.forEach(r => {
     const nro = String(r['NroPedido']||'');
@@ -4135,7 +4229,7 @@ function pEnrichPagos(rows) {
     const constRaw  = String(r['Constancia']||'').trim();
     const prenda    = String(r['Prenda']||'').trim();
     const pagoIdRow = String(r['PagoId']||'').trim();   // ID interno del pago (jul-2026)
-    const isPagoRow = prenda === '_PAGO_';
+    const isPagoRow = _esPago(prenda);
     // Lista global del pedido: TODAS las URLs únicas (incluye legacy en filas sin pago)
     if (constRaw) constRaw.split('\n').map(u=>u.trim()).filter(Boolean).forEach(u=>map[nro].allUrls.add(u));
     if (pago > 0) {
@@ -4206,13 +4300,34 @@ function _dedupBloquePedidos(rows){
   return out;
 }
 
+// FIX 25-jul-2026 (pedido 21095) — FILA BASE DEL PEDIDO.
+// La lectura directa de Supabase devuelve las filas con `id.desc`, así que la fila
+// MÁS NUEVA de un pedido llega PRIMERO. Si el pedido tiene un pago extra (fila _PAGO_,
+// insertada después de las prendas), esa fila quedaba como "base" del pedido y la tabla
+// mostraba Prenda = "_PAGO_" y Precio = "—" aunque el detalle (que usa _prendas) sí
+// mostraba la prenda real. Aquí se elige SIEMPRE una fila de prenda real como base.
+function _baseRowsPorNro(rows){
+  const m = new Map();
+  for (let i=0; i<rows.length; i++){
+    const r = rows[i]; if (!r) continue;
+    const n = String(r['NroPedido']||''); if (!n) continue;
+    const esPago = _esPago(r['Prenda']);
+    if (!m.has(n)) { m.set(n, r); continue; }
+    if (esPago) continue;                        // esta fila es de pago: nunca mejora la base
+    const prev = m.get(n);
+    if (_esPago(prev['Prenda'])) m.set(n, r); // ascenso: prenda real gana
+  }
+  return m;
+}
+
 function pGroupByPedido(rows) {
   rows = _dedupBloquePedidos(rows);   // red de seguridad: nunca mostrar un pedido duplicado
+  const _baseRows = _baseRowsPorNro(rows);   // FIX 21095: la base nunca es una fila _PAGO_
   const map = new Map(), order = [];
   rows.forEach(r => {
     const nro = String(r['NroPedido']||'');
     if (!map.has(nro)) {
-      const base = Object.assign({}, r);
+      const base = Object.assign({}, _baseRows.get(nro) || r);
       base._prendas = [];
       base._subtotalPrendas = 0;
       base._descFechas = {}; // FIX jul-2026: descuento UNA vez por lote (columna Descuento = total del pedido en cada fila, igual que Envio)
@@ -4234,7 +4349,7 @@ function pGroupByPedido(rows) {
     const _ce = String(r['Comentarios Envio']||'').trim();
     if (_ce) ped._comentSet.add(_ce);
     const _um = String(r['UltimaModif']||''); if (_um > ped._umMax) ped._umMax = _um; // ISO → comparación lexical = cronológica
-    if ((prenda && prenda !== '_PAGO_') || precio) {
+    if ((prenda && !_esPago(prenda)) || precio) {
       // _occ = nº de ocurrencia de ESTA prenda (mismo nombre) dentro del pedido (0,1,2…).
       // Permite que el Modo Pintar coloree SOLO la unidad clicada cuando hay 2+ unidades
       // idénticas (mismo modelo+talla), en vez de pintarlas todas por compartir nombre.
@@ -4311,7 +4426,8 @@ function pExpandFlat(grouped) {
     const hasSaldo = (ped._totalPagado||0) < (parseFloat(ped['Subtotal'])||0) - 0.01;
     let prendas = ped._prendas && ped._prendas.length
       ? ped._prendas
-      : [{prenda: String(ped['Prenda']||''), precio: parseFloat(ped['Precio'])||0}];
+      // Respaldo (pedido sin filas de prenda): nunca mostrar el marcador _PAGO_ como si fuera prenda.
+      : [{prenda: (_esPago(ped['Prenda']) ? '' : String(ped['Prenda']||'')), precio: parseFloat(ped['Precio'])||0}];
     // I-10 — Si el pedido tiene cambio/devolución, mostrar solo las prendas ACTIVAS.
     // Cruzo con histCamData/histDevData (cargados en prefetch) para saber qué prendas
     // están en proceso. Las demás se asumen entregadas y se ocultan.
@@ -4369,6 +4485,10 @@ function pExpandFlat(grouped) {
         flat.push(Object.assign({}, ped, {
           _isContinuacion: false,
           _hasSaldo: hasSaldo,
+          // FIX 25-jul-2026 (pedido 21095): la 1ª fila visible debe mostrar la PRENDA de la
+          // lista consolidada, no el valor crudo de la fila base (que podía ser "_PAGO_").
+          Prenda: (pr && pr.prenda !== undefined) ? pr.prenda : ped['Prenda'],
+          Precio: (pr && pr.precio !== undefined) ? pr.precio : ped['Precio'],
           Cambio: cambioPrenda,  // sobreescribe el de la base con el de la prenda
           Estado: estadoPrenda,
           ColorPrenda: (pr && pr.colorPrenda) || String(ped['ColorPrenda']||'').trim().toUpperCase() || '',
@@ -4398,6 +4518,7 @@ function pExpandFlat(grouped) {
   });
   return flat;
 }
+/* ==== @test-end:pedidos ==== */
 
 // Renderiza pedidos desde un array de raw rows, aplicando filtro de tab local.
 // No hace ningún fetch — puro procesamiento en memoria.
@@ -4477,7 +4598,7 @@ function _renderPedsDesde(rawRows, estVal) {
     if (!enviar) return;
     const algunaRoja = rows.some(r => {
       const pr = String(r['Prenda']||'').trim().toUpperCase();
-      if (!pr || pr.startsWith('_PAGO_')) return false;
+      if (!pr || _esPago(pr)) return false;
       return String(r['ColorPrenda']||'').trim().toUpperCase() === 'RED';
     });
     if (algunaRoja) _incompletosSet.add(nro);
@@ -4517,7 +4638,7 @@ function _renderPedsDesde(rawRows, estVal) {
     if (/^R-/i.test(nro)) return;   // reservas no van en Activos (van en Showroom/Todos)
     const tienePrendaActiva = _byNroAll[nro].some(r => {
       const pr = String(r['Prenda']||'').trim().toUpperCase();
-      if (!pr || pr.startsWith('_PAGO_')) return false;   // ignorar filas de pago
+      if (!pr || _esPago(pr)) return false;   // ignorar filas de pago
       const est = String(r['Estado']||'').trim().toUpperCase();
       // LOTES F3: PREVENTA es activa (prenda vendida esperando stock)
       return est === 'ENVIAR' || est === 'SEPARAR' || est === 'PREVENTA';
@@ -4951,7 +5072,7 @@ async function _reconcileColores() {
     pRaw.forEach(r => {
       const nro  = String(r['NroPedido']||'').trim();
       const pren = String(r['Prenda']||'').trim();
-      if (!nro || !pren || pren === '_PAGO_') return;
+      if (!nro || !pren || _esPago(pren)) return;
       // No tocar pedidos pintados por mí hace <60s (mi pintado podría ser más nuevo que el snapshot)
       const t = window._selfPaint && window._selfPaint[nro];
       if (t && (now - t) < 60000) return;
@@ -5556,7 +5677,7 @@ function renderPT(el, rows, total, hayMas) {
       pAll.forEach(p => {
         if (!nros.includes(String(p['NroPedido']))) return;
         const pr = String(p['Prenda']||'').trim();
-        if (!pr || pr.toUpperCase().startsWith('_PAGO_')) return;
+        if (!pr || _esPago(pr)) return;
         items.push({ NroPedido: String(p['NroPedido']), Prenda: pr, Color: color });
       });
       if (!items.length) { toast('No hay prendas para marcar en los pedidos seleccionados', 'err'); return; }
@@ -5713,7 +5834,7 @@ function renderPT(el, rows, total, hayMas) {
         if (!ped) return;
         const nombre  = String(ped['Nombres y Apellidos']||'').trim();
         const courier = String(ped['Courier']||'').trim();
-        const prendas = (ped._prendas||[]).filter(pr => pr.prenda && pr.prenda !== '_PAGO_');
+        const prendas = (ped._prendas||[]).filter(pr => pr.prenda && !_esPago(pr.prenda));
         grupos.push({ nombre, courier, prendas: prendas.length ? prendas : [{prenda:'—'}] });
       });
       if (!grupos.length) { toast('No hay prendas para exportar', 'err'); return; }
@@ -6013,7 +6134,7 @@ function _cliColorRebuild() {
     const nro = String(r['NroPedido'] || '').trim();
     if (!nro) continue;
     const pr = String(r['Prenda'] || '').trim().toUpperCase();
-    if (!pr || pr.startsWith('_PAGO_')) continue;   // las filas de pago no son prendas
+    if (!pr || _esPago(pr)) continue;   // las filas de pago no son prendas
     const c = String(r['ColorPrenda'] || '').trim().toUpperCase();
     let a = acc[nro];
     if (!a) a = acc[nro] = { n: 0, red: false, todasVerdes: true };
@@ -6054,7 +6175,7 @@ function _cliColorRecalcNro(nro) {
     const r = arr[i];
     if (!r || String(r['NroPedido'] || '').trim() !== n) continue;
     const pr = String(r['Prenda'] || '').trim().toUpperCase();
-    if (!pr || pr.startsWith('_PAGO_')) continue;
+    if (!pr || _esPago(pr)) continue;
     const c = String(r['ColorPrenda'] || '').trim().toUpperCase();
     cnt++;
     if (c === 'RED') red = true;
@@ -7571,7 +7692,7 @@ function verPed(p) {
     const _rowsP = (Array.isArray(pRaw)?pRaw:[]).filter(r=>String(r['NroPedido']||'').trim()===String(nro).trim());
     const _lmap = new Map();
     _rowsP.forEach(r=>{
-      const pr=String(r['Prenda']||'').trim(); if(!pr||pr.toUpperCase().startsWith('_PAGO_')) return;
+      const pr=String(r['Prenda']||'').trim(); if(!pr||_esPago(pr)) return;
       const fecha=_lf(r,['Fecha Pedido','FechaPedido']);
       const canal=_lf(r,['CANAL','Canal']), origen=_lf(r,['ORIGEN','Origen']), asesora=_lf(r,['Asesora','ASESORA']);
       const env=parseFloat(r['Envio'])||0;
@@ -7679,7 +7800,9 @@ function verPed(p) {
         +'<td style="padding:7px 12px;font-size:12px;color:var(--mu)">'+(i+1)+'</td>'
         +'<td style="padding:7px 12px;font-size:12px">'+fmtD(pg.fecha)+'</td>'
         +'<td style="padding:7px 12px;font-size:12px;text-align:right;font-family:monospace;font-weight:600;color:var(--tl)">S/'+fmt(pg.monto)+'</td>'
-        +'<td style="padding:7px 12px;font-size:12px">'+esc(pg.forma||'—')+'</td>'
+        +'<td style="padding:7px 12px;font-size:12px">'+esc(pg.forma||'—')
+          + (pg._isPagoRow ? ' <span style="font-size:9px;background:#7c3aed22;color:#a78bfa;padding:1px 6px;border-radius:6px;white-space:nowrap;vertical-align:middle" title="Pago agregado después del pago inicial del pedido">adicional</span>' : '')
+          +'</td>'
         +'<td style="padding:7px 12px;font-size:12px">'+esc(pg.asesora||'—')+'</td>'
         +'<td style="padding:5px 10px;text-align:center">'+constBtn+'</td>'
         +'<td style="padding:5px 10px;text-align:right"><button class="btn bg bs" style="font-size:11px" data-edit-pago="'+i+'">Editar</button></td>'
@@ -8100,7 +8223,7 @@ function verPed(p) {
         pRaw.forEach(rw => {
           if (String(rw['NroPedido']) !== String(nro)) return;
           if (String(rw['Lote']||'').trim().toUpperCase() !== lk) return;
-          if (String(rw['Prenda']||'').trim() === '_PAGO_') return;
+          if (_esPago(rw['Prenda'])) return;
           rw['Estado'] = estado; rw['Courier'] = courier; rw['Fecha Envio'] = fecha;
           if (envioV !== '') rw['Envio'] = parseFloat(envioV) || 0;
         });
@@ -8164,7 +8287,7 @@ function verPed(p) {
       let _primEnv = true;
       pRaw.forEach(r => {
         if (String(r['NroPedido']) !== String(nro)) return;
-        if (String(r['Prenda']||'').trim() === '_PAGO_') return;
+        if (_esPago(r['Prenda'])) return;
         r['Envio'] = _primEnv ? (parseFloat(body.Envio)||0) : 0;
         _primEnv = false;
       });
@@ -8246,7 +8369,7 @@ function verPed(p) {
       const i = +this.getAttribute('data-edit-pago');
       const pg = pagos[i]; if (!pg) return;
       // Filas _PAGO_ se identifican por PagoId (o _pagoKey como respaldo)
-      const state = (pg._prenda && pg._prenda !== '_PAGO_')
+      const state = (pg._prenda && !_esPago(pg._prenda))
         ? {esNuevo: false, prenda: pg._prenda, pagoId: pg._id||''}
         : {esNuevo: false, pagoKey: pg._key, pagoId: pg._id||''};
       abrirFormPago('Editar pago #'+(i+1), pg.monto, pg.forma, pg.fecha, state);
@@ -8355,7 +8478,7 @@ function verPed(p) {
       const [oldM, oldF, oldD] = pagoEditState.pagoKey.split('|');
       const idx = pRaw.findIndex(r =>
         String(r['NroPedido']||'').trim() === nro &&
-        String(r['Prenda']||'').trim() === '_PAGO_' &&
+        _esPago(r['Prenda']) &&
         Math.abs((parseFloat(r['Pago'])||0) - parseFloat(oldM)) < 0.01 &&
         String(r['Forma pago']||'').trim() === oldF &&
         String(r['Fecha Pago']||'').trim().split('T')[0] === oldD
@@ -8440,7 +8563,7 @@ function verPed(p) {
       if (pagoEditState.esNuevo) {
         const baseRow = pRaw.find(r => String(r['NroPedido']||'').trim() === nro) || {};
         const _newRow = Object.assign({}, baseRow, {
-          Prenda:'_PAGO_', Precio:0, Subtotal:0,
+          Prenda:FILA_PAGO, Precio:0, Subtotal:0,
           Pago:monto, 'Forma pago':forma, 'Fecha Pago':fecha,
           Constancia: constanciaUrl,
           AsesoraPago: asesoraPago || (baseRow['AsesoraPago'] || ''),
@@ -11352,7 +11475,7 @@ async function cliOpenHistorial(keyOrObj) {
     // Helper: detectar filas de pago adicionales para excluir del conteo de prendas
     const esFilaPago = p => {
       const pr = String(p.Prenda || p.Diseno || '').trim().toUpperCase();
-      return pr === '' || pr.startsWith('_PAGO_');
+      return pr === '' || _esPago(pr);
     };
 
     // Recálculo POR LOTE (NroPedido + Fecha Pedido). El backend devuelve filas crudas: el envío y el
@@ -14321,7 +14444,7 @@ function camObtenerUltimosPedidos(d, limite) {
     const prenda = String(r['Prenda']||'').trim();
     // FIX cambios: 1 entrada por unidad física (NO deduplicar) para que aparezcan
     // las 6 prendas aunque sean el mismo modelo+talla repetido.
-    if (prenda && prenda !== '_PAGO_') {
+    if (prenda && !_esPago(prenda)) {
       pedMap[nro].prendas.push(prenda);
       const precio = parseFloat(r['Precio'])||0;
       if (precio) pedMap[nro].precioMap[prenda] = precio;
@@ -18609,8 +18732,8 @@ function _syncConstanciaPago(nro, pagoKey, joined, pagoId) {
     // (filas _PAGO_ primero; si no hay, grupo de filas de prenda)
     let grupo = [];
     if (pagoId) grupo = pRaw.filter(r => String(r['NroPedido']||'').trim() === String(nro) && String(r['PagoId']||'').trim() === pagoId);
-    if (!grupo.length) grupo = pRaw.filter(r => match(r) && String(r['Prenda']||'').trim() === '_PAGO_');
-    if (!grupo.length) grupo = pRaw.filter(r => match(r) && String(r['Prenda']||'').trim() !== '_PAGO_');
+    if (!grupo.length) grupo = pRaw.filter(r => match(r) && _esPago(r['Prenda']));
+    if (!grupo.length) grupo = pRaw.filter(r => match(r) && !_esPago(r['Prenda']));
     if (grupo.length) {
       // Igual que el backend: limpiar duplicados legacy de la MISMA URL en otras filas de prenda
       const viejas = new Set(grupo.map(r => String(r['Constancia']||'').trim()).filter(Boolean));
@@ -18619,7 +18742,7 @@ function _syncConstanciaPago(nro, pagoKey, joined, pagoId) {
         pRaw.forEach(r => {
           if (String(r['NroPedido']||'').trim() !== String(nro)) return;
           if (grupo.includes(r)) return;
-          if (String(r['Prenda']||'').trim() === '_PAGO_') return;
+          if (_esPago(r['Prenda'])) return;
           if (viejas.has(String(r['Constancia']||'').trim())) r['Constancia'] = '';
         });
       }
@@ -19781,7 +19904,7 @@ function _renderPapelera(w, rows) {
     const nro = String(r['NroPedido']||'').trim();
     if (!nro) return;
     if (!byNro[nro]) byNro[nro] = { nro, nombre:r['Nombres y Apellidos']||'', dni:r['DNI']||'', tel:r['Celular']||'', felim:r['FechaEliminacion']||'', who:r['EliminadoPor']||'', prendas:[] };
-    if (String(r['Prenda']||'').trim() && r['Prenda'] !== '_PAGO_') byNro[nro].prendas.push(r['Prenda']);
+    if (String(r['Prenda']||'').trim() && !_esPago(r['Prenda'])) byNro[nro].prendas.push(r['Prenda']);
   });
   const pedidos = Object.values(byNro).sort((a,b) => {
     const fa = new Date(a.felim||0).getTime(), fb = new Date(b.felim||0).getTime();
