@@ -4998,6 +4998,7 @@ function _mergePedsDelta(editados, eliminados) {
     editados.forEach(r => { nrosNuevos.add(String(r.NroPedido||'')); nrosAfectados.add(String(r.NroPedido||'')); });
     // Sacar todas las filas viejas de los pedidos afectados, agregar las nuevas
     pRaw = pRaw.filter(r => !nrosNuevos.has(String(r.NroPedido||'')));
+    try { _cliColorInvalidar(); } catch(_) {}   // FIX 25-jul: llegaron datos del servidor -> recalcular color de clienta
     pRaw.push(...editados);
   }
   eliminados.forEach(n => nrosAfectados.add(String(n)));
@@ -5534,6 +5535,19 @@ function renderPT(el, rows, total, hayMas) {
             }
           });
         });
+        // FIX 25-jul-2026: el marcado masivo actualizaba pAll pero NO pRaw, que es de
+        // donde sale el color del nombre de la clienta. Resultado: marcabas 10 prendas en
+        // verde y los nombres no cambiaban hasta que el servidor devolviera el eco (o nunca).
+        // Ahora se actualiza pRaw también y se invalida el mapa para que se recalcule.
+        items.forEach(it => {
+          if (typeof pRaw === 'undefined' || !Array.isArray(pRaw)) return;
+          pRaw.forEach(r => {
+            if (String(r['NroPedido']||'').trim() === it.NroPedido && String(r['Prenda']||'').trim() === it.Prenda) {
+              r['ColorPrenda'] = it.Color;
+            }
+          });
+        });
+        try { _cliColorInvalidar(); } catch(_) {}
         const tb = document.querySelector('table.pt tbody');
         if (tb) {
           // P1 — respetar virt en este re-render parcial
@@ -5914,35 +5928,124 @@ function _pVirtSetData(el, rows) {
   });
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   COLOR DEL NOMBRE DE LA CLIENTA — FUENTE ÚNICA (FIX 25-jul-2026)
+   ────────────────────────────────────────────────────────────────────────────
+   REGLA DE NEGOCIO (no cambia):
+     · alguna prenda del pedido en ROJO   → el nombre de la clienta va ROJO
+     · TODAS las prendas del pedido VERDES → el nombre de la clienta va VERDE
+     · cualquier otro caso                 → el nombre no se pinta
+
+   POR QUÉ EXISTE ESTE MAPA — arregla de raíz dos bugs reales:
+
+   BUG 1 · "se pinta y se despinta solo" / "colores incorrectos"
+     Antes el color se calculaba DENTRO de mkTBody() usando las filas que recibía.
+     Con la tabla virtualizada (>200 filas), mkTBody recibe SOLO las filas visibles
+     en pantalla (_pVirtRender le pasa un slice). Un pedido cuyas prendas cruzan el
+     borde del viewport se evaluaba con la MITAD de sus prendas: si la prenda roja
+     quedaba fuera de la pantalla, la clienta salía VERDE; al scrollear entraba la
+     roja y saltaba a ROJO; al volver, VERDE otra vez. Reproducible a voluntad.
+
+   BUG 2 · fuentes mutiladas
+     pFlat y pAll NO sirven como fuente de verdad: los filtros de columna recortan
+     FILAS (no pedidos) y pExpandFlat esconde las prendas ya despachadas (EN CAMINO /
+     ENTREGADO / DEVOLUCION). Un pedido filtrado llega incompleto.
+     pRaw es la ÚNICA estructura que tiene TODAS las prendas de cada pedido.
+
+   CÓMO FUNCIONA
+     Se calcula UNA vez sobre pRaw completo y queda cacheado. mkTBody pasa a ser un
+     consumidor tonto: mire lo que mire el viewport, lee siempre el mismo valor.
+     · Al pintar una prenda → _cliColorRecalcNro(nro) recalcula SOLO ese pedido (exacto e instantáneo).
+     · Si cambia el largo de pRaw (llegó/se fue un pedido) → se reconstruye entero.
+     · Red de seguridad: se reconstruye igual si pasó más de 1 s (cubre merges del
+       servidor que reemplazan filas sin cambiar el largo). Durante el scroll el mapa
+       nunca se recalcula, así que scrollear no cuesta nada ni puede alterar colores.
+   ════════════════════════════════════════════════════════════════════════════ */
+window._cliColorMap  = null;   // NroPedido → 'GREEN' | 'RED' | ''
+window._cliColorLen  = -1;     // largo de pRaw con el que se construyó
+window._cliColorTs   = 0;      // cuándo se construyó
+const _CLI_COLOR_MAX_EDAD = 15000;  // ms — solo red de seguridad; lo normal es invalidar por evento
+
+// Recorre pRaw una sola vez y arma el mapa completo.
+function _cliColorRebuild() {
+  const arr = (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) ? pRaw : [];
+  const acc = Object.create(null);
+  for (let i = 0; i < arr.length; i++) {
+    const r = arr[i];
+    if (!r) continue;
+    const nro = String(r['NroPedido'] || '').trim();
+    if (!nro) continue;
+    const pr = String(r['Prenda'] || '').trim().toUpperCase();
+    if (!pr || pr.startsWith('_PAGO_')) continue;   // las filas de pago no son prendas
+    const c = String(r['ColorPrenda'] || '').trim().toUpperCase();
+    let a = acc[nro];
+    if (!a) a = acc[nro] = { n: 0, red: false, todasVerdes: true };
+    a.n++;
+    if (c === 'RED') a.red = true;
+    if (c !== 'GREEN') a.todasVerdes = false;
+  }
+  const m = Object.create(null);
+  for (const nro in acc) {
+    const a = acc[nro];
+    m[nro] = a.red ? 'RED' : ((a.n > 0 && a.todasVerdes) ? 'GREEN' : '');
+  }
+  window._cliColorMap = m;
+  window._cliColorLen = arr.length;
+  window._cliColorTs  = Date.now();
+  return m;
+}
+
+// Devuelve el mapa vigente, reconstruyéndolo solo si hace falta.
+function _cliColorMapaVigente() {
+  const arr = (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) ? pRaw : [];
+  if (!window._cliColorMap
+      || window._cliColorLen !== arr.length
+      || (Date.now() - window._cliColorTs) > _CLI_COLOR_MAX_EDAD) {
+    return _cliColorRebuild();
+  }
+  return window._cliColorMap;
+}
+
+// Recalcula UN pedido (tras pintar). Exacto e inmediato, sin recorrer las 45k filas.
+function _cliColorRecalcNro(nro) {
+  const n = String(nro || '').trim();
+  if (!n) return '';
+  const m = window._cliColorMap || _cliColorRebuild();
+  const arr = (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) ? pRaw : [];
+  let cnt = 0, red = false, todasVerdes = true;
+  for (let i = 0; i < arr.length; i++) {
+    const r = arr[i];
+    if (!r || String(r['NroPedido'] || '').trim() !== n) continue;
+    const pr = String(r['Prenda'] || '').trim().toUpperCase();
+    if (!pr || pr.startsWith('_PAGO_')) continue;
+    const c = String(r['ColorPrenda'] || '').trim().toUpperCase();
+    cnt++;
+    if (c === 'RED') red = true;
+    if (c !== 'GREEN') todasVerdes = false;
+  }
+  const val = red ? 'RED' : ((cnt > 0 && todasVerdes) ? 'GREEN' : '');
+  m[n] = val;
+  window._cliColorTs = Date.now();   // este pedido quedó exacto: no forzar rebuild inmediato
+  return val;
+}
+
+// Fuerza la reconstrucción en el próximo uso (por si algún flujo nuevo toca pRaw).
+function _cliColorInvalidar() { window._cliColorMap = null; }
+
 function mkTBody(rows) {
   const verDef = STICKY_MAP['_ver'];
   let html = '';
 
-  // Precomputar color por cliente (NroPedido) basado en TODAS sus prendas:
-  //   - Si alguna prenda tiene ColorPrenda=RED → cliente ROJO
-  //   - Si TODAS las prendas tienen ColorPrenda=GREEN → cliente VERDE
-  //   - Otro caso → sin color
-  // IMPORTANTE: incluir filas de continuación (prendas 2da+ del mismo pedido).
-  const _cliColor = {};  // NroPedido → 'GREEN' | 'RED' | ''
+  // Color de la clienta: SIEMPRE del mapa calculado sobre pRaw COMPLETO.
+  // Nunca se recalcula acá — así el slice del viewport no puede alterarlo.
+  const _cliColor = _cliColorMapaVigente();
+
   const _cliDup = {};    // F3 (23-jul): NroPedido → texto "⚠ vs #NNN" si es posible duplicado (web)
-  const _byNro = {};
   rows.forEach(p => {
     const nro = String(p['NroPedido']||'').trim();
     if (!nro) return;
     const _dupTxt = String(p['PosibleDuplicado']||'').trim();
     if (_dupTxt && !_cliDup[nro]) _cliDup[nro] = _dupTxt;
-    const pr = String(p['Prenda']||'').trim().toUpperCase();
-    if (!pr || pr.startsWith('_PAGO_')) return;
-    if (!_byNro[nro]) _byNro[nro] = [];
-    _byNro[nro].push(p);
-  });
-  Object.keys(_byNro).forEach(nro => {
-    const prendas = _byNro[nro];
-    if (!prendas.length) { _cliColor[nro] = ''; return; }
-    const colors = prendas.map(p => String(p['ColorPrenda']||'').trim().toUpperCase());
-    if (colors.indexOf('RED') >= 0)              _cliColor[nro] = 'RED';
-    else if (colors.every(c => c === 'GREEN'))   _cliColor[nro] = 'GREEN';
-    else                                          _cliColor[nro] = '';
   });
 
   rows.forEach(p => {
@@ -6298,30 +6401,32 @@ async function _paintPrendaCell(td) {
     });
   }
 
-  // Recalcular color del cliente (consolidado del pedido) y aplicar a TODAS
-  // las celdas Cliente del mismo NroPedido en el DOM.
+  // Recalcular el color de la clienta y aplicarlo AL INSTANTE a todas las filas
+  // de ese pedido que estén en pantalla.
+  //
+  // FIX 25-jul-2026 — dos correcciones acá:
+  //  1) FUENTE: antes se calculaba sobre pFlat, que llega mutilado por los filtros de
+  //     columna y por pExpandFlat (esconde prendas despachadas). Ahora usa
+  //     _cliColorRecalcNro(), que mira pRaw = todas las prendas del pedido. Además deja
+  //     el mapa compartido al día, así el próximo render (o scroll) muestra lo mismo.
+  //  2) BUG QUE HACÍA QUE ESTE BLOQUE NO SIRVIERA PARA NADA: buscaba el número de pedido
+  //     en tr.children[2], pero esa celda es 'Última modif.' (PCOLS arranca con UltimaModif,
+  //     el Nro está en children[3]). La comparación nunca daba true → el forEach salía en
+  //     todas las filas y el nombre de la clienta NUNCA se repintaba al hacer clic. Por eso
+  //     el color "tardaba mucho": recién aparecía en el siguiente render completo o al
+  //     scrollear. Ahora se ubica por el atributo data-nro del <tr>, que no depende del
+  //     orden de las columnas y no se rompe si mañana se agrega o mueve una columna.
   const tb = document.querySelector('table.pt tbody');
-  if (tb && typeof pFlat !== 'undefined') {
-    const prendasNro = pFlat.filter(p => {
-      if (String(p['NroPedido']||'').trim() !== String(nro).trim()) return false;
-      const pr = String(p['Prenda']||'').trim().toUpperCase();
-      return pr && !pr.startsWith('_PAGO_');
-    });
-    const colors = prendasNro.map(p => String(p['ColorPrenda']||'').trim().toUpperCase());
-    let cliColor = '';
-    if (colors.indexOf('RED') >= 0) cliColor = 'RED';
-    else if (colors.length && colors.every(c => c === 'GREEN')) cliColor = 'GREEN';
-    // Buscar todas las celdas Cliente de las filas del NroPedido (sticky col 'Nombres y Apellidos')
+  if (tb) {
+    const cliColor = _cliColorRecalcNro(nro);
     const PCOLS_KEYS = (typeof PCOLS !== 'undefined' && PCOLS) ? PCOLS.map(c => c.k) : [];
     const idxCli = PCOLS_KEYS.indexOf('Nombres y Apellidos');
     if (idxCli >= 0) {
-      // Cada <tr> tiene 2 td sticky al inicio (chk + ver), luego PCOLS empieza en idx 2
+      // Cada <tr> tiene 2 td sticky al inicio (chk + ver) y después uno por cada PCOLS.
       const tdIdx = idxCli + 2;
-      tb.querySelectorAll('tr').forEach(tr => {
-        // El TD de NroPedido está en idx 2 (0=chk, 1=ver, 2=NroPedido)
-        const trNroTd = tr.children[2];
-        if (!trNroTd) return;
-        if (trNroTd.textContent.trim() !== String(nro).trim()) return;
+      const _nroT = String(nro).trim();
+      tb.querySelectorAll('tr[data-nro]').forEach(tr => {
+        if (tr.getAttribute('data-nro') !== _nroT) return;
         const cliTd = tr.children[tdIdx];
         if (!cliTd) return;
         // FIX color-igual: usar data-cli-color (mismas reglas CSS que la prenda)
@@ -6851,6 +6956,7 @@ async function _pedsRefrescarNros(nros){
     const setN = new Set(list);
     pRaw = pRaw.filter(r => !setN.has(String(r['NroPedido']||'').trim()));
     if (rows.length) pRaw.push(...rows);
+    try { _cliColorInvalidar(); } catch(_) {}   // FIX 25-jul: llegaron datos del servidor -> recalcular color de clienta
     list.forEach(n => _pedsEditLocalMark(n));   // que la reconciliación no lo pise con datos viejos
     try { pEnrichPagos(pRaw); } catch(_){}
     try { lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now()); } catch(_){}
@@ -6895,6 +7001,7 @@ async function _sbReconciliarTope(){
       const esNuevo = !(n in localUM);
       if (!esNuevo && !(umBase > (localUM[n]||0))) return;
       pRaw = pRaw.filter(r => String(r['NroPedido']||'').trim() !== n).concat(porNro[n]);
+      try { _cliColorInvalidar(); } catch(_) {}   // FIX 25-jul: llegaron datos del servidor -> recalcular color de clienta
       if (esNuevo) nuevos.push(n);
       cambios = true;
     });
@@ -6961,6 +7068,7 @@ async function _rtAplicar() {
       const esNuevo = !(n in localUM);
       if (!esNuevo && !(umBase > (localUM[n] || 0))) return;
       pRaw = pRaw.filter(r2 => String(r2['NroPedido'] || '').trim() !== n).concat(porNro[n]);
+      try { _cliColorInvalidar(); } catch(_) {}   // FIX 25-jul: llegaron datos del servidor -> recalcular color de clienta
       if (esNuevo) nuevos.push(n);
       cambios = true;
     });
