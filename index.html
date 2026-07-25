@@ -4129,6 +4129,52 @@ async function _sbRpcPago(fn, params) {
 // "R-1, R-2…" que no se migro todavia.
 const SB_PILOTO_CREAR = true;
 
+// ══════════════════════════════════════════════════════════════════════════
+// FIX 25-jul — EL LOTE DE LA PRENDA AGREGADA
+//
+// Al agregar una prenda, el ERP la pinta al instante sin esperar al servidor.
+// Pero el LOTE lo decide el servidor (L2, L3…), asi que la fila local nacia sin
+// lote. El total del pedido cuenta el envio UNA VEZ POR LOTE: una fila sin lote
+// forma su propio grupo y el envio se sumaba de mas, hasta que alguien recargaba.
+//
+// Solucion en dos tiempos:
+//   1. Adivinar el lote con la MISMA regla del servidor (el mayor L# + 1), para
+//      que el total en pantalla sea correcto desde el primer segundo.
+//   2. Cuando el servidor responde, si asigno otro lote, se corrige la fila.
+//      Puede pasar si otra asesora agrego una prenda al mismo pedido a la vez.
+// ══════════════════════════════════════════════════════════════════════════
+function _loteSiguienteLocal(nro) {
+  try {
+    var max = 0, hayFilas = false;
+    (pRaw || []).forEach(function (r) {
+      if (String(r && r.NroPedido || '').trim() !== String(nro).trim()) return;
+      hayFilas = true;
+      var m = String(r['Lote'] || '').trim().toUpperCase().match(/^L(\d+)$/);
+      if (m) max = Math.max(max, parseInt(m[1], 10));
+    });
+    if (max >= 1) return 'L' + (max + 1);
+    return hayFilas ? 'L2' : 'L1';     // filas sin lote = L1 implicito
+  } catch (e) { return 'L2'; }
+}
+
+// Corrige el lote de la fila recien agregada si el servidor asigno otro.
+function _corregirLoteAgregada(nro, prenda, loteAdivinado, loteReal) {
+  try {
+    if (!loteReal || String(loteReal) === String(loteAdivinado)) return;
+    var tocadas = 0;
+    (pRaw || []).forEach(function (r) {
+      if (String(r && r.NroPedido || '').trim() !== String(nro).trim()) return;
+      if (String(r['Prenda'] || '').trim() !== String(prenda).trim()) return;
+      if (String(r['Lote'] || '').trim().toUpperCase() !== String(loteAdivinado).toUpperCase()) return;
+      r['Lote'] = String(loteReal); tocadas++;
+    });
+    if (!tocadas) return;
+    try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); } catch (e) {}
+    try { _renderPedsDesde(pRaw, pEst, true); } catch (e) {}
+    try { console.info('[agregar] lote corregido: ' + loteAdivinado + ' → ' + loteReal); } catch (e) {}
+  } catch (e) {}
+}
+
 async function _crearPedidoRapido(body) {
   try {
     if (!SB_PILOTO_CREAR) return null;
@@ -8571,13 +8617,18 @@ function verPed(p) {
       // #9 idempotencia: requestId único → si la red reintenta la MISMA llamada, el
       // backend la reconoce y NO agrega la prenda dos veces.
       const _reqAdd = 'ra_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,10);
+      // FIX 25-jul: adivinar el lote con la misma regla del servidor, para que el
+      // total en pantalla sea correcto desde ya (ver _loteSiguienteLocal).
+      const _loteAdiv = _loteSiguienteLocal(nro);
       apiPost('pedidos.agregar', {
         NroPedido: nro, cliente: cli, requestId: _reqAdd,
         prendas: [{prenda, precio, envio: _envio, subtotal: precio + _envio, pago: 0, formaPago: '', comentarios: _coment}],
         FechaPedido: qId('medit-FechaPedido').value, Estado: qId('medit-Estado').value,
-      }).catch(e => toast('Error al agregar prenda: '+esc(e.message),'err'));
+      })
+        .then(r => _corregirLoteAgregada(nro, prenda, _loteAdiv, r && r.lote))
+        .catch(e => toast('Error al agregar prenda: '+esc(e.message),'err'));
       // Actualizar cache local
-      pRaw.push({ NroPedido: nro, Prenda: prenda, Precio: precio, Envio: _envio, Subtotal: precio + _envio, Pago: 0, 'Forma pago': '', 'Fecha Pago': '', Nombres: cli.Nombre, 'Nombres y Apellidos': cli.Nombre, 'CANAL': cli.Canal, 'ORIGEN': cli.Origen, 'Asesora': cli.Asesora, 'Comentarios Envio': _coment, 'Fecha Pedido': qId('medit-FechaPedido').value });
+      pRaw.push({ NroPedido: nro, Prenda: prenda, Precio: precio, Envio: _envio, Subtotal: precio + _envio, Pago: 0, 'Forma pago': '', 'Fecha Pago': '', Nombres: cli.Nombre, 'Nombres y Apellidos': cli.Nombre, 'CANAL': cli.Canal, 'ORIGEN': cli.Origen, 'Asesora': cli.Asesora, 'Comentarios Envio': _coment, 'Fecha Pedido': qId('medit-FechaPedido').value, 'Lote': _loteAdiv, 'Descuento': 0, 'Estado': qId('medit-Estado').value });
       // Insertar nueva fila en la tabla del modal sin cerrarlo
       const tbody = document.querySelector('#modal-ped tbody');
       if (tbody) {
