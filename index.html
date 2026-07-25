@@ -4079,6 +4079,38 @@ const SB_PILOTO_CAMPOS = true;        // ← reversa: poner en false y publicar
 // y EstadoPagoManual tienen lógica especial en la hoja).
 const SB_CAMPOS_MASIVOS = ['Estado','Courier','Canal','Origen','Asesora','ComentariosEnvio'];
 
+// ══════════════════════════════════════════════════════════════════════════
+// PASO 4 DE LA MIGRACIÓN (25-jul) — PAGOS DIRECTO EN LA BASE
+// ──────────────────────────────────────────────────────────────────────────
+// Agregar y eliminar un pago pasan a escribirse en Supabase con una operación
+// TRANSACCIONAL (todo-o-nada): ~0,1 s en vez de ~3 s, y sin posibilidad de que
+// quede a medias. El Aplicador copia el pago a la hoja de Google en segundos.
+//
+// REVERSA INMEDIATA: poner SB_PILOTO_PAGOS = false y publicar. El ERP vuelve a
+// escribir por Apps Script exactamente como antes; no hay que deshacer nada más.
+//
+// RED: si la base no responde, no hay sesión, o la RPC devuelve cualquier cosa
+// que no sea un ok explícito, se usa la vía de siempre (Apps Script). El pago
+// NUNCA se pierde por culpa de este atajo.
+const SB_PILOTO_PAGOS = true;
+
+async function _sbRpcPago(fn, params) {
+  try {
+    if (!SB_PILOTO_PAGOS) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!r.ok) { try { console.warn('[pago] RPC ' + fn + ' HTTP ' + r.status + ' → vía Apps Script'); } catch(_){} return null; }
+    const d = await r.json();
+    return (d && d.ok === true) ? d : null;
+  } catch (e) { try { console.warn('[pago] RPC ' + fn + ' falló → vía Apps Script'); } catch(_){} return null; }
+}
+
 async function _sbRpcConstanciaSet(nro, pagoId, urls) {
   try {
     if (!SB_PILOTO_CONSTANCIAS) return false;
@@ -8950,7 +8982,15 @@ function verPed(p) {
       );
       const _backupRow = idx !== -1 ? pRaw[idx] : null;
       if (idx !== -1) pRaw.splice(idx, 1);
-      apiSend('pago.eliminar', {NroPedido: nro, _pagoId: pagoEditState.pagoId||'', _pagoKey: pagoEditState.pagoKey})
+      // PASO 4 — primero la BASE (solo si el pago tiene ID exacto); si no, Apps Script.
+      (async () => {
+        const _pid = String(pagoEditState.pagoId || '');
+        if (_pid) {
+          const _rpc = await _sbRpcPago('pago_eliminar', { p_nro: String(nro), p_pago_id: _pid });
+          if (_rpc) { _sbEspejarYa(nro); return; }
+        }
+        return apiSend('pago.eliminar', {NroPedido: nro, _pagoId: _pid, _pagoKey: pagoEditState.pagoKey});
+      })()
         .catch(e => {
           // Rollback
           if (_backupRow && idx !== -1) pRaw.splice(idx, 0, _backupRow);
@@ -9034,8 +9074,23 @@ function verPed(p) {
           AsesoraPago: asesoraPago || (baseRow['AsesoraPago'] || ''),
         });
         pRaw.push(_newRow);
-        _saveP = apiPost('pago.agregar', {NroPedido: nro, Monto: monto, FormaPago: forma, FechaPago: fecha, Constancia: constanciaUrl, AsesoraPago: asesoraPago})
+        // PASO 4 — primero la BASE (instantáneo y transaccional); si no se puede, Apps Script.
+        _saveP = (async () => {
+          const _rpc = await _sbRpcPago('pago_agregar', {
+            p_nro: String(nro), p_monto: monto,
+            p_forma: String(forma || ''), p_fecha: String(fecha || ''),
+            p_constancia: String(constanciaUrl || ''), p_asesora: String(asesoraPago || ''),
+          });
+          if (_rpc && _rpc.pagoId) {
+            _newRow['PagoId'] = _rpc.pagoId;
+            if (_rpc.id != null) _newRow._sbId = _rpc.id;   // identidad real de la fila
+            _sbEspejarYa(nro);                              // que la hoja lo tenga en segundos
+            return _rpc.pagoId;
+          }
+          return apiPost('pago.agregar', {NroPedido: nro, Monto: monto, FormaPago: forma, FechaPago: fecha, Constancia: constanciaUrl, AsesoraPago: asesoraPago});
+        })()
           .then(res => {
+            if (typeof res === 'string' && res) return res;               // ya vino el PagoId de la base
             // PagoId (jul-2026): el pago recién creado vuelve con su ID — guardarlo en el
             // cache local para que ediciones/constancias inmediatas lo usen.
             if (res && res.pagoId) { _newRow['PagoId'] = res.pagoId; return res.pagoId; }
