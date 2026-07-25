@@ -6156,6 +6156,14 @@ function _cliColorRebuild() {
 // Devuelve el mapa vigente, reconstruyéndolo solo si hace falta.
 function _cliColorMapaVigente() {
   const arr = (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) ? pRaw : [];
+  // FIX 25-jul — EL NOMBRE DE LA CLIENTA NO DEBE PARPADEAR MIENTRAS CARGA EL HISTORIAL.
+  // La regla es "TODAS las prendas verdes → nombre verde". Durante la carga progresiva,
+  // pRaw tiene pedidos A MEDIAS (llegan de a 1.000 filas): un pedido de 3 prendas del que
+  // solo llegó la primera, y esa está verde, calcula "todas verdes" → el nombre se pinta
+  // VERDE y se despinta cuando llegan las otras dos. Reproducido en tests/regresion_colores.js.
+  // Mientras la carga está en curso se congela el mapa que ya existe; al terminar,
+  // _pedsCargarRestoProgresivo() invalida y se recalcula UNA vez con todo cargado.
+  if (window._pedsCargaEnCurso && window._cliColorMap) return window._cliColorMap;
   if (!window._cliColorMap
       || window._cliColorLen !== arr.length
       || (Date.now() - window._cliColorTs) > _CLI_COLOR_MAX_EDAD) {
@@ -6744,7 +6752,16 @@ async function _pedsCargarRestoProgresivo() {
       if (myToken !== _pedsLoadToken) return;
       const nuevos = Array.isArray(res) ? res : (res.rows || []);
       if (!nuevos.length) break;
-      pRaw = pRaw.concat(nuevos);
+      // FIX 25-jul — LAS PRENDAS NO DEBEN CAMBIAR DE COLOR MIENTRAS CARGA EL HISTORIAL.
+      // El color de una prenda se guarda contra su POSICIÓN dentro del pedido ("la 2da
+      // BLUSA TOSCANA L del pedido 21096"), contada en el orden de la hoja. La base
+      // devuelve las filas con id.desc, o sea INVERTIDAS dentro de cada pedido, y además
+      // un pedido puede quedar partido entre dos lotes. Si se concatena tal cual, la
+      // "2da blusa" en pantalla no es la misma que guardó el servidor → el color aparece
+      // en la prenda equivocada, y se acomoda solo al terminar la carga (cuando el render
+      // final sí endereza). Enderezando cada lote, la posición es correcta desde el
+      // primer momento. _ordenarFilasDePedido tiene atajo barato (~5 ms en 45.000 filas).
+      pRaw = _ordenarFilasDePedido(pRaw.concat(nuevos));
       window._pedTotalReal = (res && res.total) || pRaw.length;
       // FIX DEFINITIVO (jul-2026, pedido de Pablo): cargar TODO el historial en memoria
       // (como Excel). Ya no hay cap de 3000: el primer bloque se muestra al instante, el
@@ -6776,6 +6793,10 @@ async function _pedsCargarRestoProgresivo() {
   } finally {
     if (myToken === _pedsLoadToken) {
       window._pedsCargaEnCurso = false;
+      // Terminó la carga: recalcular el color de los nombres UNA vez, ya con todos los
+      // pedidos completos (durante la carga estuvo congelado a propósito — ver
+      // _cliColorMapaVigente). Sin esto el mapa quedaría con el valor viejo.
+      try { _cliColorInvalidar(); } catch(_) {}
       // Único re-render al terminar, respetando la pestaña activa y los filtros.
       try { if (Object.keys(pFlt||{}).length && typeof pAply === 'function') pAply();
             else _renderPedsDesde(pRaw, pEst, true); } catch(_){}
