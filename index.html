@@ -2140,27 +2140,48 @@ async function _sbTokenVigente(){
   _sbGuardarTok(null); return null;
 }
 // Una página de pedidos DIRECTO de la base. Mismo contrato que pedidos.listar.
-async function _sbListarDirecto(offset, limit, orden){
+// FIX 25-jul-2026 — CONTEO UNA SOLA VEZ (medido: ~1.060 ms por pedido).
+// Antes TODA petición mandaba 'Prefer: count=exact', y eso obliga a Postgres a contar las
+// 44.986 filas enteras además de traer la página. En un arranque en frío son 10 páginas =
+// 10 conteos idénticos (~10 s regalados), y el radar de cada 55 s pagaba otro conteo más
+// (≈65 por hora) para leer apenas 200 filas.
+// Ahora el conteo se pide SOLO en la primera página (offset 0) y se reusa. En las demás,
+// "¿hay más?" se deduce de si la página vino llena — si sobra, la última pide una página
+// vacía de más y corta igual. Cambio medido: 5641 ms → 1817 ms → ~757 ms por página.
+async function _sbListarDirecto(offset, limit, orden, wantCount){
   const tok = await _sbTokenVigente();
   if (!tok) return null;
+  const _off = offset || 0, _lim = limit || 1000;
   const q = SB_URL + '/rest/v1/pedidos?select=row_json&eliminado=is.null'
           + '&order=' + (orden || 'fecha_efectiva.desc.nullslast,id.desc')
-          + '&limit=' + (limit||1000) + '&offset=' + (offset||0);
-  const r = await fetch(q, { headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer '+tok, 'Prefer': 'count=exact' } });
+          + '&limit=' + _lim + '&offset=' + _off;
+  const heads = { 'apikey': SB_ANON, 'Authorization': 'Bearer '+tok };
+  if (wantCount) heads['Prefer'] = 'count=exact';
+  const r = await fetch(q, { headers: heads });
   if (!r.ok) { if (r.status === 401 || r.status === 403) _sbGuardarTok(null); return null; }
-  const cr = r.headers.get('content-range') || '';
-  const total = (cr && cr.indexOf('/') >= 0) ? parseInt(cr.split('/')[1]) : 0;
   const arr = await r.json();
   const rows = arr.map(x => x.row_json || {});
-  return { rows, total, offset: offset||0, limit: limit||1000,
-           hayMas: ((offset||0) + rows.length) < total, serverTs: Date.now() };
+  let total, hayMas;
+  if (wantCount) {
+    const cr = r.headers.get('content-range') || '';
+    total  = (cr && cr.indexOf('/') >= 0) ? (parseInt(cr.split('/')[1]) || 0) : 0;
+    hayMas = (_off + rows.length) < total;
+  } else {
+    // Sin conteo: reusar el total de la primera página (si ya se supo) y deducir "hay más"
+    // de si la página vino completa. Nunca se salta filas: como mucho sobra una petición.
+    total  = window._pedTotalReal || 0;
+    hayMas = rows.length >= _lim;
+  }
+  return { rows, total, offset: _off, limit: _lim, hayMas, serverTs: Date.now() };
 }
 // Wrapper del listado plano (sin filtros ni estado): directo si hay sesión SB, si no Apps Script.
 async function _pedListarPagina(params){
   params = params || {};
   const soloPaginacion = Object.keys(params).every(k => k === 'offset' || k === 'limit');
   if (soloPaginacion) {
-    try { const d = await _sbListarDirecto(params.offset||0, params.limit||1000); if (d && d.rows) return d; } catch(e){}
+    // Solo la PRIMERA página paga el conteo; el resto lo hereda.
+    const _wantCount = ((params.offset || 0) === 0) || !window._pedTotalReal;
+    try { const d = await _sbListarDirecto(params.offset||0, params.limit||1000, null, _wantCount); if (d && d.rows) return d; } catch(e){}
   }
   return api('pedidos.listar', params);
 }
@@ -4696,9 +4717,17 @@ async function loadPeds(est, force) {
   // El polling incremental (cada 10s) se encarga de mantener los datos al día.
   let cached = !force && lsGetPeds();
   // #10 — Si LS está vacío pero IDB todavía está hidratándose (1ª lectura tras un boot
-  // donde la sesión previa cayó en quota), esperar como máximo 500ms a que termine.
+  // donde la sesión previa cayó en quota), esperar a que termine.
+  //
+  // FIX 25-jul-2026: la espera era de 500 ms y NO alcanzaba. Leer y deserializar el
+  // snapshot de 44.981 filas desde IndexedDB tarda más que eso, así que la carrera la
+  // ganaba el reloj: el ERP daba la caché por inexistente y se bajaba las 45.000 filas
+  // otra vez desde el servidor, TENIÉNDOLAS YA GUARDADAS en el disco del navegador.
+  // Con 2,5 s el snapshot gana y el arranque "en caliente" no vuelve a pedir nada.
+  // No hace más lento el arranque en frío: si no hay snapshot, la promesa resuelve
+  // enseguida y la carrera termina ahí — el tope solo actúa cuando SÍ hay algo que esperar.
   if (!cached && !force && !_idbPedsMem && _idbHydratePedsPromise) {
-    try { await Promise.race([_idbHydratePedsPromise, new Promise(r => setTimeout(r, 500))]); } catch(_) {}
+    try { await Promise.race([_idbHydratePedsPromise, new Promise(r => setTimeout(r, 2500))]); } catch(_) {}
     cached = lsGetPeds();
   }
   if (cached) {
@@ -7003,7 +7032,9 @@ async function _sbReconciliarTope(){
     // podía salirse del radar antes de que otras pantallas reconciliaran.
     const _hLima = new Date().getHours();
     const _topeRadar = (_hLima >= 9 && _hLima < 21) ? 200 : 50;
-    const d = await _sbListarDirecto(0, _topeRadar, 'ultima_modif.desc.nullslast,id.desc');
+    // wantCount = false (25-jul): el radar solo mira las 200 filas tocadas más recientemente.
+    // Contar las 44.986 para eso costaba ~1 s cada 55 s (≈65 conteos por hora) sin ningún uso.
+    const d = await _sbListarDirecto(0, _topeRadar, 'ultima_modif.desc.nullslast,id.desc', false);
     if (!d || !d.rows || !d.rows.length) return;
     if (d.total) window._pedTotalReal = d.total;
     const porNro = {};
