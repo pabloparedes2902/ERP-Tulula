@@ -1853,13 +1853,13 @@ async function loadMAESTROS() {
       // asesora aparece en el desplegable al siguiente arranque (antes: hasta 4 horas).
       setTimeout(async () => {
         try {
-          const m = await api('maestros.listar', {});
+          const m = await _maestrosListarRapido();
           if (m && Object.keys(m).length) { MAESTROS = m; lsSet('maestros_v2', m); applyMaestrosToSelects(); }
         } catch(_){}
       }, 4000);
       return;
     }
-    MAESTROS = await api('maestros.listar', {});
+    MAESTROS = await _maestrosListarRapido();
     lsSet('maestros_v2', MAESTROS);
     applyMaestrosToSelects();
     const k = Object.keys(MAESTROS).find(k => k.toLowerCase() === 'prenda');
@@ -2324,7 +2324,7 @@ async function loadCAT() {
   if (CAT) return CAT;
   const cached = lsGet('catalogo_prendas');
   if (cached) { CAT = cached; return CAT; }
-  CAT = await api('catalogo.prendas');
+  CAT = await _catalogoPrendasRapido();
   lsSet('catalogo_prendas', CAT);
   return CAT;
 }
@@ -2590,7 +2590,7 @@ async function abrirTrazaPrenda(tipo, id, nroPedido, prenda) {
       // Asegurar que histCamData sea un ARRAY válido (puede venir corrupto de caché antigua).
       if (!Array.isArray(histCamData)) {
         if (histCamData && Array.isArray(histCamData.data)) histCamData = histCamData.data;
-        else { toast('Cargando historial de cambios...', 'info'); histCamData = await api('cambios.listar', {}); }
+        else { toast('Cargando historial de cambios...', 'info'); histCamData = await _cambiosListarRapido(); }
       }
       if (!Array.isArray(histCamData)) histCamData = [];
       const _findCam = arr => {
@@ -2606,7 +2606,7 @@ async function abrirTrazaPrenda(tipo, id, nroPedido, prenda) {
       let rec = _findCam(histCamData);
       if (!rec) {
         // Reintento con datos FRESCOS del servidor (la caché puede estar desactualizada).
-        try { const fresh = await api('cambios.listar', {}); if (Array.isArray(fresh)) { histCamData = fresh; try{_hcLsSet(fresh);}catch(e){} rec = _findCam(fresh); } } catch(e) {}
+        try { const fresh = await _cambiosListarRapido(); if (Array.isArray(fresh)) { histCamData = fresh; try{_hcLsSet(fresh);}catch(e){} rec = _findCam(fresh); } } catch(e) {}
       }
       if (!rec) { toast('Marca de cambio huérfana: el pedido '+esc(String(nroPedido||''))+' tiene el sello "CAM" pero no existe el cambio en la hoja Cambios. Usá el botón Reparar (Config) para limpiarlo.', 'err'); return; }
       hcTimeline(rec);
@@ -3176,7 +3176,7 @@ async function loadEnvios() {
       pRaw = Array.isArray(r) ? r : (r.rows || []);
     }
   } catch(e) {}
-  try { if (!Array.isArray(histCamData)) histCamData = await api('cambios.listar', {}); } catch(e) {}
+  try { if (!Array.isArray(histCamData)) histCamData = await _cambiosListarRapido(); } catch(e) {}
   renderEnvios(el);
 }
 
@@ -4636,6 +4636,40 @@ async function _reposicionRapido(dias) {
   return api('reposicion.calc', { dias: dias });
 }
 
+// 26-jul: las lecturas más caras que quedaban. Medido en vivo, una por una:
+//   · catalogo.prendas ... 14.902 ms  ← elegir prenda al crear un pedido
+//   · catalogo.stock ......  8.603 ms  ← la misma pantalla
+//   · cambios.listar ......  3.250 ms  ← pero se pide desde 9 lugares distintos
+//   · colores.listar ......  3.539 ms  ← al arrancar el ERP
+//   · maestros.listar .....  3.164 ms  ← al arrancar el ERP
+// Mismo espejo y mismo respaldo que las demás: si la base no contesta, se le
+// pregunta a Apps Script igual que siempre.
+async function _catalogoPrendasRapido() {
+  const d = await _sbCacheLeer('catalogo.prendas');
+  if (d && (Array.isArray(d) ? d.length : Object.keys(d).length)) return d;
+  return api('catalogo.prendas', {});
+}
+async function _catalogoStockRapido() {
+  const d = await _sbCacheLeer('catalogo.stock');
+  if (d && (Array.isArray(d) ? d.length : Object.keys(d).length)) return d;
+  return api('catalogo.stock', {});
+}
+async function _cambiosListarRapido() {
+  const d = await _sbCacheLeer('cambios.listar');
+  if (Array.isArray(d) && d.length) return d;
+  return api('cambios.listar', {});
+}
+async function _coloresListarRapido() {
+  const d = await _sbCacheLeer('colores.listar');
+  if (d && Object.keys(d).length) return d;
+  return api('colores.listar', {});
+}
+async function _maestrosListarRapido() {
+  const d = await _sbCacheLeer('maestros.listar');
+  if (d && Object.keys(d).length) return d;
+  return api('maestros.listar', {});
+}
+
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
 //
 // RED: si la base no responde, se borra por Apps Script como siempre. Pero si
@@ -5499,7 +5533,7 @@ async function _ensureHistParaPedidos(estVal) {
   // PERF — las 4 son independientes: se disparan EN PARALELO (antes iban en serie ~4x más lento).
   const _jobs = [];
   if (!Array.isArray(histCamData)) _jobs.push(
-    api('cambios.listar', {}).then(r => { histCamData = Array.isArray(r) ? r : []; need = true; })
+    _cambiosListarRapido().then(r => { histCamData = Array.isArray(r) ? r : []; need = true; })
       .catch(e => { if (!Array.isArray(histCamData)) histCamData = []; }));
   if (!Array.isArray(histDevData)) _jobs.push(
     _devListarRapido().then(r => { histDevData = Array.isArray(r) ? r : []; need = true; })
@@ -6130,7 +6164,7 @@ function _prefetchBackground() {
   if (!histCamData) {
     const _hc = (typeof _hcLsGet === 'function') ? _hcLsGet() : null;
     if (_hc && Array.isArray(_hc.data)) histCamData = _hc.data;
-    else api('cambios.listar', {}).then(d => { if (!histCamData) { histCamData = d; try{_hcLsSet(d);}catch(e){} _renderPedsDesde(pRaw, pEst, true); } }).catch(e => _errLog('prefetch.cambios.listar', e));
+    else _cambiosListarRapido().then(d => { if (!histCamData) { histCamData = d; try{_hcLsSet(d);}catch(e){} _renderPedsDesde(pRaw, pEst, true); } }).catch(e => _errLog('prefetch.cambios.listar', e));
   }
   if (!histDevData) {
     const _hd = (typeof _hdLsGet === 'function') ? _hdLsGet() : null;
@@ -7696,9 +7730,22 @@ async function _pedsCargarRestoProgresivo() {
         try { if (!Object.keys(pFlt||{}).length) _renderPedsDesde(pRaw, pEst, true); } catch(_){}
       }
       // Contador en vivo (solo texto, SIN re-dibujar la tabla): "X de Y filas"
+      // 26-jul-2026 — EL CARTEL QUE ASUSTABA. Medido en vivo: al abrir Pedidos, la
+      // tabla se dibuja a los 162 ms desde la copia guardada; después el ERP pide
+      // una tanda de fondo que trae 5 filas nuevas de 44.814. O sea: ya está todo,
+      // solo se está poniendo al día. Pero el cartel decía "cargando historial:
+      // 44.809 de 44.814" durante varios segundos y parecía que faltaba media base.
+      // Ahora el aviso sale SOLO si de verdad falta un pedazo grande (más de 500
+      // filas). Para una puesta al día de unas pocas, se muestra el conteo normal.
       try {
         const _span = document.querySelector('#ped-w > div:first-child span');
-        if (_span) _span.innerHTML = 'Mostrando <strong style="color:var(--tx)">'+((typeof pAll!=='undefined'&&pAll)?pAll.length:0)+'</strong> pedidos <span style="color:var(--am)">(cargando historial: '+_realLen.toLocaleString('es-PE')+' de '+((window._pedTotalReal||0).toLocaleString('es-PE'))+' filas…)</span>';
+        if (_span) {
+          const _faltan = Math.max(0, (window._pedTotalReal||0) - _realLen);
+          const _aviso = (_faltan > 500)
+            ? ' <span style="color:var(--am)">(cargando historial: '+_realLen.toLocaleString('es-PE')+' de '+((window._pedTotalReal||0).toLocaleString('es-PE'))+' filas…)</span>'
+            : '';
+          _span.innerHTML = 'Mostrando <strong style="color:var(--tx)">'+((typeof pAll!=='undefined'&&pAll)?pAll.length:0)+'</strong> pedidos'+_aviso;
+        }
       } catch(_){}
       // ANTI-PARPADEO: NO re-dibujar la tabla en cada lote (eso causaba que "saltaran" pedidos
       // distintos mientras cargaba). Solo acumulamos datos en segundo plano; el re-dibujado se
@@ -12965,7 +13012,7 @@ let COLOR_OVERRIDE = {};
 try { const _co = JSON.parse(localStorage.getItem('erp_colores')||'{}'); if (_co && typeof _co==='object') COLOR_OVERRIDE = _co; } catch(e) {}
 function _coloresLsSet(m){ try { localStorage.setItem('erp_colores', JSON.stringify(m||{})); } catch(e) {} }
 async function cargarColores(){
-  try { const m = await api('colores.listar'); if (m && typeof m==='object') { COLOR_OVERRIDE = m; _coloresLsSet(m); } } catch(e) {}
+  try { const m = await _coloresListarRapido(); if (m && typeof m==='object') { COLOR_OVERRIDE = m; _coloresLsSet(m); } } catch(e) {}
   return COLOR_OVERRIDE;
 }
 function stBg(c)  { const k=String(c||'').toUpperCase().replace(/ /g,'_'); return COLOR_OVERRIDE[k] || ST_BG[k] || null; }
@@ -15317,7 +15364,7 @@ function camAplicarSaldoMonto(amount) {
 // ── CATÁLOGO DE STOCK (para prenda nueva) ───────────────────
 async function camCargarStock() {
   try {
-    CAM.stockCat = await api('catalogo.stock', {});
+    CAM.stockCat = await _catalogoStockRapido();
   } catch(e) {
     CAM.stockCat = [];
     console.error('Error cargando stock para cambios:', e.message);
@@ -15984,7 +16031,7 @@ async function camCargarHistorial() {
   const el = document.getElementById('cam-w');
   el.innerHTML = spin('Cargando historial...');
   try {
-    const rawRows = await api('cambios.listar', {});
+    const rawRows = await _cambiosListarRapido();
     if (!rawRows.length) {
       el.innerHTML = '<div class="empty" style="margin-top:0">Sin cambios registrados aún</div>'; return;
     }
@@ -16494,7 +16541,7 @@ async function loadHistCambios(forceReload) {
       if (ptit && !document.getElementById('hc-refresh-badge')) ptit.appendChild(badge);
     }
     try {
-      histCamData = await api('cambios.listar', {});
+      histCamData = await _cambiosListarRapido();
       _hcLsSet(histCamData);
       renderHistCambios(el, histCamData);
     } catch(e) { /* cached sigue válido */ }
@@ -16527,7 +16574,7 @@ async function loadHistCambios(forceReload) {
   // 3. Sin caché o forceReload — spinner + traer
   el.innerHTML = spin('Cargando cambios y devoluciones...');
   try {
-    histCamData = await api('cambios.listar', {});
+    histCamData = await _cambiosListarRapido();
     _hcLsSet(histCamData);
     renderHistCambios(el, histCamData);
   } catch(e) {
