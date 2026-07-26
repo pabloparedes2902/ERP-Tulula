@@ -12631,7 +12631,9 @@ function renderClis() {
       + td((c.TotalPrendas||0), 'text-align:center')
       + td(_cliCeldaSaldo(c.Saldo), 'text-align:right;white-space:nowrap')
       + (_cliVeAdmin() ? td('S/ '+fmt(c.LTV!=null?c.LTV:c.TotalGastado), 'font-weight:500;color:var(--gn);text-align:right') : '')
-      + (_cliVeAdmin() ? td(c.LTGP!=null ? ('S/ '+fmt(c.LTGP)) : '<span style="color:var(--mu)" title="Falta cargar el costo de algunas prendas">—</span>', 'font-weight:500;color:var(--am);text-align:right') : '')
+      + (_cliVeAdmin() ? td(c.LTGP!=null
+            ? ('<span style="color:'+(c.LTGP<0?'var(--rd)':'var(--am)')+'">S/ '+fmt(c.LTGP)+'</span>')
+            : '<span style="color:var(--mu)" title="A varias de sus prendas les falta el costo cargado">—</span>', 'font-weight:500;text-align:right') : '')
       +'<td style="white-space:nowrap">'
         +'<button class="btn bg bs cli-btn-hist" data-key="'+esc(key)+'" style="margin-right:4px" title="Ver historial">📋</button>'
         +(MY_ROLE!=='Ventas' ? '<button class="btn bg bs cli-btn-edit" data-key="'+esc(key)+'" style="margin-right:4px" title="Editar">✎</button>'
@@ -12918,12 +12920,78 @@ function _cliDatosFicha(c, cuenta) {
   ];
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// EDITAR LO QUE ES DE LA PERSONA (26-jul-2026)
+// Cumpleaños, correo y notas se guardan en la hoja Clientes —una fila por
+// persona— y se editan desde la ficha, con el lápiz al lado del dato. No hay que
+// salir ni abrir otra ventana.
+// ══════════════════════════════════════════════════════════════════════════
+const CLI_EDITABLES = { Cumpleanos:'date', Email:'email', Notas:'text' };
+
+function _cliAbrirEditarDato(c, campo) {
+  const TIT = { Cumpleanos:'Cumpleaños', Email:'Correo', Notas:'Notas' };
+  const valActual = campo === 'Cumpleanos' ? String(c.Cumpleanos||'').slice(0,10) : String(c[campo]||'');
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10001;display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);padding:18px;max-width:420px;width:100%">'
+    + '<div style="font-weight:700;margin-bottom:4px">' + TIT[campo] + '</div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">' + esc(c.Nombre||'') + '</div>'
+    + (campo === 'Notas'
+        ? '<textarea id="ce-val" rows="3" style="width:100%;padding:9px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;resize:vertical;outline:none">' + esc(valActual) + '</textarea>'
+        : '<input id="ce-val" type="' + CLI_EDITABLES[campo] + '" value="' + esc(valActual) + '" style="width:100%;padding:9px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:14px;outline:none">')
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'
+    +   '<button class="btn bg" id="ce-x" style="font-size:12px">Cancelar</button>'
+    +   '<button class="btn bp" id="ce-ok" style="font-size:12px">Guardar</button>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  const inp = ov.querySelector('#ce-val');
+  try { inp.focus(); } catch(e){}
+  const cerrar = () => ov.remove();
+  ov.querySelector('#ce-x').onclick = cerrar;
+  ov.querySelector('#ce-ok').onclick = async () => {
+    const nuevo = String(inp.value||'').trim();
+    ov.querySelector('#ce-ok').disabled = true;
+    try {
+      const cuerpo = { clave: c.Clave || '', Nombre: c.Nombre || '' };
+      cuerpo[campo] = nuevo;
+      if (!cuerpo.clave) throw new Error('No se pudo identificar a la clienta');
+      await apiSend('clientes.ficha.guardar', cuerpo);
+      c[campo] = nuevo;
+      // Que se vea al instante, sin esperar a que el servidor rehaga la lista.
+      try {
+        const enLista = (cliData||[]).find(x => x.Clave === c.Clave);
+        if (enLista) enLista[campo] = nuevo;
+        if (typeof renderClis === 'function' && curPg === 'clientes') renderClis();
+      } catch(e){}
+      try {
+        const _dh = document.getElementById('cli-hist-datos');
+        if (_dh) { _dh.innerHTML = _cliFichaDatosHtml(c, (_cliHist._cuenta||{})); _cliBindEditables(c); }
+      } catch(e){}
+      try { toast(TIT[campo] + ' guardado', 'ok'); } catch(e){}
+      cerrar();
+    } catch (e) {
+      ov.querySelector('#ce-ok').disabled = false;
+      try { toast('No se pudo guardar: ' + e.message, 'err'); } catch(_){}
+    }
+  };
+}
+
+// Engancha los lapicitos del bloque de datos.
+function _cliBindEditables(c) {
+  document.querySelectorAll('.cli-dato-edit').forEach(b => {
+    b.onclick = () => _cliAbrirEditarDato(c, b.dataset.campo);
+  });
+}
+
 // El bloque que se ve arriba de la ficha.
 function _cliFichaDatosHtml(c, cuenta) {
   const D = _cliDatosFicha(c, cuenta);
   const SOLO_CONTACTO = ['Nombre','DNI','Telefono','Email','Cumpleanos','Direccion','Referencia','Distrito','Provincia','Region','Canal','Segmento'];
+  const editable = k => (typeof CLI_EDITABLES !== 'undefined') && (k in CLI_EDITABLES) && (typeof MY_ROLE === 'undefined' || MY_ROLE !== 'Ventas');
   const item = d => '<div style="min-width:0;overflow:hidden">'
-    + '<div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.4px">'+esc(d.t)+'</div>'
+    + '<div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.4px">'+esc(d.t)
+    +   (editable(d.k) ? ' <span class="cli-dato-edit" data-campo="'+esc(d.k)+'" title="Editar" style="cursor:pointer;color:var(--ac);font-size:11px">✎</span>' : '')
+    + '</div>'
     + '<div style="font-size:13px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(String(d.v||''))+'">'+(String(d.v||'').trim() ? esc(String(d.v)) : '<span style="color:var(--mu)">—</span>')+'</div>'
     + '</div>';
   // 26-jul: sin el rótulo "Datos de la clienta" (se entiende solo) y sin el
@@ -13143,6 +13211,7 @@ async function cliOpenHistorial(keyOrObj) {
       const _dh = document.getElementById('cli-hist-datos');
       if (_dh) _dh.innerHTML = _cliFichaDatosHtml(c, _cuenta);
       else kpis.insertAdjacentHTML('beforebegin', '<div id="cli-hist-datos">' + _cliFichaDatosHtml(c, _cuenta) + '</div>');
+      _cliBindEditables(c);
       // El botón vive en la barra del título; se le vuelve a decir de quién es
       // la ficha cada vez que se abre una clienta distinta.
       const _bd = document.getElementById('cli-ficha-descargar');
