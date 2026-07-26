@@ -4603,7 +4603,11 @@ const SB_PESADOS_VENCE_MS = 30 * 60 * 1000;
 
 // Trae de la base el resultado ya calculado de una pantalla.
 // Devuelve null si no se puede o si está vencido → quien llama usa Apps Script.
-async function _sbCacheLeer(clave) {
+async function _sbCacheLeer(clave, venceMs) {
+  // venceMs: cuanto se tolera que este vieja esa clave. Por defecto 30 min (lo
+  // que tarda la vuelta mas lenta del espejo). Las claves del ARCHIVO cambian
+  // solo cuando Pablo corre el archivador a mano, asi que esas piden 24 h.
+  const _vence = (typeof venceMs === 'number' && venceMs > 0) ? venceMs : SB_PESADOS_VENCE_MS;
   if (!SB_LECTURA_PESADOS) return null;
   if (window._sbSaltarEspejo) return null;   // el 🔄 quiere datos del servidor, no del espejo
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
@@ -4617,7 +4621,7 @@ async function _sbCacheLeer(clave) {
     const j = await r.json();
     if (!Array.isArray(j) || !j.length || j[0].datos == null) return null;
     const edad = Date.now() - new Date(j[0].generado).getTime();
-    if (!(edad >= 0) || edad > SB_PESADOS_VENCE_MS) {
+    if (!(edad >= 0) || edad > _vence) {
       try { _errLog('sb.cache.vencida', new Error(clave + ' con ' + Math.round(edad / 60000) + ' min')); } catch (_) {}
       return null;
     }
@@ -4826,13 +4830,13 @@ function _pedDatosArmar(nro, filas) {
 // ══════════════════════════════════════════════════════════════════════════
 const PED_ARCHIVO_MESES = 15;   // el MISMO número que usa Archivo.gs
 
-function _pedEstaArchivado(fechaMs) {
-  if (!fechaMs) return false;
-  const corte = new Date();
-  corte.setMonth(corte.getMonth() - PED_ARCHIVO_MESES);
-  corte.setHours(0, 0, 0, 0);
-  return fechaMs < corte.getTime();
-}
+// 26-jul (2a vuelta) — POR QUÉ SE QUITÓ LA REGLA POR EDAD.
+// La primera versión daba por archivado todo pedido con más de 15 meses. Está
+// mal: el archivador NO corre solo (es un botón en Configuración → Herramientas),
+// así que hay pedidos de 2023 que siguen en la hoja viva y se pueden editar sin
+// problema. Marcarlos de solo lectura habría bloqueado ediciones legítimas.
+// Ahora manda la única verdad: la lista de números que SÍ se mudaron al archivo
+// (clave 'archivo.nros' del espejo). Si esa lista no está, no se bloquea nada.
 
 function _pedDatosFecha(filas) {
   let ms = 0;
@@ -4887,12 +4891,7 @@ async function _pedDatosRapido(p) {
     });
     if (!orden.length) return unoSolo ? null : [];
 
-    if (tipo === 'nro') {
-      const uno = _pedDatosArmar(nro, porNro[nro] || filas);
-      // Se marca acá, donde se conocen las fechas de todas sus filas.
-      if (uno) uno._archivado = _pedEstaArchivado(_pedDatosFecha(porNro[nro] || filas));
-      return uno;
-    }
+    if (tipo === 'nro') return _pedDatosArmar(nro, porNro[nro] || filas);
 
     // El más reciente primero.
     orden.sort((a, b) => _pedDatosFecha(porNro[b]) - _pedDatosFecha(porNro[a]));
@@ -4958,6 +4957,270 @@ async function _cambiosPorPedidoRapido(nro) {
     return todos.filter(r => String(r['NroPedido'] || '').trim() === n)
                 .sort((a, b) => new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0));
   } catch (e) { try { _errLog('sb.cambiosPorPedido', e); } catch (_) {} return api('cambios.porPedido', { nro: n }); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 26-jul · CIERRE DE LA PRIORIDAD 2 — LA FICHA DE LA CLIENTA Y SUS SALDOS
+//
+// POR QUÉ: `clientes.historial` y `clientes.saldosVigentes` son de lo más caro
+// que queda por Apps Script (~3 s cada una) y se piden en dos momentos calientes:
+//   · abrir la ficha de una clienta (Clientes → clic en la fila)
+//   · escribir el nombre/DNI/celular en Nuevo pedido o en Cambios — ahí sale el
+//     aviso rojo de "saldo pendiente / a favor", que decide plata.
+//
+// CÓMO: las tres fuentes que usa el servidor YA están espejadas en la base
+// (pedidos, cambios, devoluciones). Acá se rehace la MISMA cuenta con esas filas.
+//
+// LA PIEZA QUE FALTABA: para traer las filas de UNA clienta hay que poder
+// preguntarle a la base "dame las filas de esta persona". La identidad de una
+// clienta (_claveCliente_) se calculaba solo en Apps Script. Ahora la base la
+// calcula sola en una columna `clave` (ver supabase_clave_cliente.sql) con la
+// MISMA regla, así que la consulta es exacta: nada de "parecidos".
+//
+// REVERSA INMEDIATA: poner SB_LECTURA_CLIENTE = false y publicar.
+// Además, si la columna `clave` no existe, si no hay sesión o si la base falla,
+// cada puerta se va sola por Apps Script — la pantalla nunca queda sin datos.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LECTURA_CLIENTE = true;
+
+// ── La identidad de una clienta, IGUAL que en el servidor (_claveCliente_) ──
+// Un teléfono de 8 dígitos o más manda; si no, el DNI de 7 o más; si no, el
+// nombre. Un "-" o un "N/A" no identifican a nadie — por eso ya no se juntan
+// 622 personas en una sola ficha (lo que pasaba antes del 26-jul).
+function _cliSoloDigitos(v) { return String(v == null ? '' : v).replace(/\D/g, ''); }
+function _cliClaveDe(nombre, tel, dni, nro) {
+  const t = _cliSoloDigitos(tel); if (t.length >= 8) return 't:' + t.slice(-9);
+  const d = _cliSoloDigitos(dni); if (d.length >= 7) return 'd:' + d;
+  const n = String(nombre == null ? '' : nombre).trim().toUpperCase().replace(/\s+/g, ' ');
+  if (n) return 'n:' + n;
+  const p = String(nro == null ? '' : nro).trim();
+  return p ? ('p:' + p) : '';
+}
+// Misma cadena de nombres de columna que usa el servidor para cualquier hoja.
+function _cliClaveDeFila(r) {
+  return _cliClaveDe(
+    r['Nombres y Apellidos'] || r['Nombre'] || '',
+    r['Celular'] || '',
+    r['DNI'] || '',
+    r['NroPedido'] || '');
+}
+
+// ── Qué pedidos ya NO viven en la hoja activa (se mudaron al archivo) ───────
+// La lista la deja el espejo (clave 'archivo.nros'). Si no está, se asume que
+// NO hay nada archivado: es la respuesta segura — no bloquea ni avisa de más.
+let _archNrosCache = null, _archNrosTs = 0;
+async function _archivoNrosRapido() {
+  if (_archNrosCache && (Date.now() - _archNrosTs) < 10 * 60 * 1000) return _archNrosCache;
+  let d = null;
+  try { d = await _sbCacheLeer('archivo.nros', 24 * 60 * 60 * 1000); } catch (e) { d = null; }
+  _archNrosCache = new Set(Array.isArray(d) ? d.map(x => String(x).trim()) : []);
+  _archNrosTs = Date.now();
+  return _archNrosCache;
+}
+
+// ── HISTORIAL DE UNA CLIENTA — mismo resultado que clientes.historial ───────
+async function _cliHistorialRapido(body) {
+  body = body || {};
+  const porApps = () => apiSend('clientes.historial', body);
+  if (!SB_LECTURA_CLIENTE) return porApps();
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
+  if (window._sbSaltarEspejo) return porApps();
+
+  const clave = String(body.clave || '').trim() ||
+                _cliClaveDe(body.nombre, body.telefono, body.dni, '');
+  if (!clave) return porApps();
+
+  try {
+    const tok = await _sbTokenVigente();
+    if (!tok) return porApps();
+
+    // `order=id.asc` = el orden en que se escribieron en la hoja. Acá el orden
+    // importa menos que en un pedido suelto, pero se mantiene por coherencia.
+    const url = SB_URL + '/rest/v1/pedidos?select=row_json&clave=eq.' +
+                encodeURIComponent(clave) + '&order=id.asc&limit=5000';
+    const r = await fetch(url, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    // Si la columna `clave` todavía no existe en la base (falta correr el SQL),
+    // esto devuelve 400. No se inventa nada: se va por Apps Script.
+    if (!r.ok) return porApps();
+    const j = await r.json();
+    if (!Array.isArray(j)) return porApps();
+
+    const arch = await _archivoNrosRapido();
+    const esSi = v => String(v == null ? '' : v).trim().toUpperCase() === 'SI';
+
+    // El servidor lee la hoja ACTIVA: no ve ni las filas borradas ni las
+    // archivadas. Acá se saca lo mismo para que los totales coincidan.
+    const filas = j.map(x => x.row_json).filter(f => f && !esSi(f['Eliminado']) &&
+                          !arch.has(String(f['NroPedido'] || '').trim()));
+
+    const peds = filas.map(f => ({
+      NroPedido:   String(f['NroPedido'] || ''),
+      Nombre:      String(f['Nombres y Apellidos'] || ''),
+      DNI:         String(f['DNI'] || ''),
+      FechaPedido: _cliFechaISO(f['Fecha Pedido']),
+      Prenda:      String(f['Prenda'] || ''),
+      Precio:      parseFloat(f['Precio']) || 0,
+      Envio:       parseFloat(f['Envio']) || 0,
+      Subtotal:    parseFloat(f['Subtotal']) || 0,
+      Pago:        parseFloat(f['Pago']) || 0,
+      FormaPago:   String(f['Forma pago'] || ''),
+      Estado:      String(f['Estado'] || ''),
+      EstadoPago:  String(f['Estado Pago'] || ''),
+      Courier:     String(f['Courier'] || ''),
+      Cambio:      String(f['Cambio'] || ''),
+    })).sort((a, b) => new Date(b.FechaPedido || 0) - new Date(a.FechaPedido || 0));
+
+    // Cambios y devoluciones: sus listas completas ya están espejadas.
+    let cams = [];
+    try {
+      const todos = await _cambiosListarRapido();
+      if (Array.isArray(todos)) cams = todos.filter(x => _cliClaveDeFila(x) === clave);
+    } catch (e) { cams = []; }
+
+    let devs = [];
+    try {
+      const todas = await _sbFilasEspejo('devoluciones');
+      if (Array.isArray(todas)) {
+        devs = todas.filter(x => _cliClaveDeFila(x) === clave)
+                    .sort((a, b) => new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0));
+      } else {
+        const r2 = await porApps(); devs = (r2 && r2.devoluciones) || [];
+      }
+    } catch (e) { devs = []; }
+
+    // Compras viejas ya mudadas al archivo (solo el resumen). Si no hay nada
+    // archivado, ni se pregunta.
+    let historico = null;
+    if (arch.size) {
+      try {
+        const res = await _sbCacheLeer('archivo.resumen', 24 * 60 * 60 * 1000);
+        const m = Array.isArray(res) ? res.find(hc =>
+          _cliClaveDe(hc['Nombre'], hc['Celular'], hc['DNI'], '') === clave) : null;
+        if (m) historico = {
+          prendas: parseInt(m['Prendas']) || 0, pedidos: parseInt(m['Pedidos']) || 0,
+          monto: parseFloat(m['MontoPrendas']) || 0, pagado: parseFloat(m['Pagado']) || 0,
+          primera: String(m['PrimeraCompra'] || ''), ultima: String(m['UltimaCompra'] || ''),
+          detalle: String(m['DetallePrendas'] || ''),
+        };
+      } catch (e) {}
+    }
+
+    return { pedidos: peds, cambios: cams, devoluciones: devs, historico: historico };
+  } catch (e) {
+    try { _errLog('sb.cli.historial', e); } catch (_) {}
+    return porApps();
+  }
+}
+
+// La fecha llega a la base ya en ISO cuando la celda era una fecha de verdad, y
+// tal cual cuando era texto. El servidor hace exactamente lo mismo, así que acá
+// NO se reinterpreta nada: lo que vino, va.
+function _cliFechaISO(v) { return String(v == null ? '' : v); }
+
+// ── SALDOS VIGENTES — mismo resultado que clientes.saldosVigentes ───────────
+// Se calcula sobre el historial (igual que el servidor: allá también empieza
+// llamando a clientesHistorial). Si el historial vino por Apps Script, esta
+// cuenta sale igual: son las mismas filas.
+async function _cliSaldosRapido(body) {
+  body = body || {};
+  const porApps = () => apiSend('clientes.saldosVigentes', body);
+  if (!SB_LECTURA_CLIENTE) return porApps();
+  if (window._sbSaltarEspejo) return porApps();
+  try {
+    const hist = await _cliHistorialRapido(body);
+    if (!hist || !Array.isArray(hist.pedidos)) return porApps();
+    return _cliSaldosDe(hist, body);
+  } catch (e) { try { _errLog('sb.cli.saldos', e); } catch (_) {} return porApps(); }
+}
+
+function _cliSaldosDe(hist, body) {
+  let peds = hist.pedidos || [], devsIn = hist.devoluciones || [];
+
+  // Mismo filtro estricto del servidor: buscando con nombre + (DNI o celular),
+  // solo cuentan los registros cuyo nombre coincide. Evita mezclar saldos de
+  // personas distintas que comparten un DNI de relleno (ej. 40404040).
+  const bNom = String((body && body.nombre) || '').trim().toLowerCase();
+  const bDni = String((body && body.dni) || '').trim();
+  const bTel = String((body && body.telefono) || '').trim();
+  if (bNom && (bDni || bTel)) {
+    const mN = v => String(v == null ? '' : v).trim().toLowerCase() === bNom;
+    peds   = peds.filter(r => mN(r.Nombre));
+    devsIn = devsIn.filter(r => mN(r['Nombre'] || r['Nombres y Apellidos'] || ''));
+  }
+
+  const porNro = {}, orden = [];
+  peds.forEach(p => {
+    const nro = String(p.NroPedido || '').trim();
+    if (!nro) return;
+    if (!porNro[nro]) {
+      porNro[nro] = { NroPedido: nro, Nombre: p.Nombre || '', DNI: p.DNI || '',
+        FechaPedido: p.FechaPedido || '', Estado: p.Estado || '',
+        Subtotal: 0, Pagado: 0, Prendas: [], _pagosKeys: new Set() };
+      orden.push(nro);
+    }
+    const g = porNro[nro];
+    const prenda = String(p.Prenda || '').trim().toUpperCase();
+    const esPago = prenda === '_PAGO_';
+    if (!esPago) {
+      g.Subtotal += parseFloat(p.Subtotal) || 0;
+      if (prenda) g.Prendas.push(p.Prenda);
+    }
+    const pago = parseFloat(p.Pago) || 0;
+    if (pago > 0) {
+      // OJO: el servidor arma esta llave con p.FechaPago, que su propio historial
+      // NO devuelve — o sea, siempre viene vacía. Se copia igual, a propósito:
+      // cambiarlo movería saldos que hoy están cuadrados.
+      const fecha = p.FechaPago || '';
+      const key = pago + '|' + (p.FormaPago || '') + '|' + String(fecha).split('T')[0];
+      if (esPago) g.Pagado += pago;
+      else if (!g._pagosKeys.has(key)) { g._pagosKeys.add(key); g.Pagado += pago; }
+    } else if (pago < 0 && esPago) {
+      g.Pagado += pago;   // saldo aplicado a otro pedido
+    }
+  });
+
+  const pedidosConSaldo = orden.map(n => porNro[n])
+    .filter(p => String(p.Estado || '').trim().toUpperCase() !== 'CANCELADO')
+    .map(p => {
+      const q = Object.assign({}, p); delete q._pagosKeys;
+      q.Saldo = p.Subtotal - p.Pagado;
+      return q;
+    })
+    .filter(p => Math.abs(p.Saldo) > 0.01)
+    .sort((a, b) => new Date(b.FechaPedido || 0) - new Date(a.FechaPedido || 0));
+
+  const vistas = new Set();
+  const devolucionesPendientes = devsIn.filter(d => {
+      if (String(d.Estado || '').trim().toUpperCase() === 'CANCELADO') return false;
+      if (!(d.FechaReembolso && String(d.FechaReembolso).trim())) return false;
+      const total = parseFloat(d.MontoReembolso || 0) || 0;
+      const cash  = parseFloat(d.MontoReembolsoCash || 0) || 0;
+      const usado = parseFloat(d.ReembolsadoViaSaldo || 0) || 0;
+      return (total - cash - usado) > 0.01;
+    })
+    .map(d => {
+      const total = parseFloat(d.MontoReembolso || 0) || 0;
+      const cash  = parseFloat(d.MontoReembolsoCash || 0) || 0;
+      const usado = parseFloat(d.ReembolsadoViaSaldo || 0) || 0;
+      return {
+        ID: String(d.ID || ''),
+        NroDevolucion: String(d.NroDevolucion || d.ID || ''),
+        NroPedido: String(d.NroPedido || ''),
+        MontoReembolso: total - cash - usado,
+        FechaSolicitud: d.FechaSolicitud || '',
+        Estado: d.Estado || '',
+        Prenda: String(d.PrendaDevuelta || ''),
+      };
+    })
+    .filter(d => {
+      if (d.MontoReembolso <= 0.01) return false;
+      const k = d.NroDevolucion || d.ID;
+      if (vistas.has(k)) return false;
+      vistas.add(k);
+      return true;
+    });
+
+  return { pedidosConSaldo, devolucionesPendientes };
 }
 
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
@@ -9004,11 +9267,30 @@ function _loteRefreshModal(nro) {
   } catch(e) { _errLog('loteRefreshModal', e); }
 }
 
+// Consulta la lista de archivados y, si este pedido está ahí, pinta el aviso.
+// Va por detrás (no frena la apertura del modal). Si la lista no llegó, no hace
+// nada: es la respuesta segura.
+async function _pedAvisarSiArchivado(mEl, p, nro) {
+  try {
+    const n = String(nro || '').trim();
+    if (!n) return;
+    const set = await _archivoNrosRapido();
+    if (!set || !set.has(n)) return;
+    // Mientras se preguntaba, la persona pudo cerrar el modal o abrir otro pedido.
+    const cont = document.getElementById('modal-ped');
+    if (!cont || !cont.classList.contains('on')) return;
+    if (String(mEl.dataset.nro || '') !== n) return;
+    if (mEl.querySelector('#ped-arch-aviso')) return;
+    _pedMarcarArchivado(mEl, p);
+  } catch (e) { try { _errLog('ped.avisoArchivado', e); } catch (_) {} }
+}
+
 // Pinta el aviso y bloquea la edición de un pedido archivado.
 function _pedMarcarArchivado(mEl, p) {
   _lockReadonly(mEl);
   const esAdmin = (typeof MY_ROLE === 'undefined') || MY_ROLE === 'Administrador';
   const av = document.createElement('div');
+  av.id = 'ped-arch-aviso';
   av.style.cssText = 'background:#7a4a0022;border:1px solid #b4791f;color:#f0c274;border-radius:var(--r);padding:9px 12px;margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
   av.innerHTML = '<span style="font-size:14px">📦</span>'
     + '<span style="flex:1">Pedido <b>archivado</b> (más de ' + PED_ARCHIVO_MESES + ' meses). Se puede consultar, no editar: '
@@ -9455,7 +9737,11 @@ function verPed(p) {
   if(typeof MY_ROLE!=='undefined' && MY_ROLE==='Ventas') _lockReadonly(mEl); // Ventas: modal solo-lectura
   // 26-jul: un pedido archivado se puede mirar, no editar. Editarlo escribiría
   // en la hoja activa, donde ese pedido ya no vive.
-  try { if (p && p._archivado) _pedMarcarArchivado(mEl, p); } catch(e) { try{_errLog('ped.archivado', e);}catch(_){} }
+  // El aviso NO puede depender de quien llame a verPed: se abre un pedido desde
+  // la grilla, desde el buscador, desde lotes y desde el rescate por número, y
+  // solo uno de esos caminos traía la marca. Ahora se decide acá, siempre.
+  try { mEl.dataset.nro = nro; } catch(e) {}
+  try { if (!p || p._archivado !== false) _pedAvisarSiArchivado(mEl, p, nro); } catch(e) { try{_errLog('ped.archivado', e);}catch(_){} }
   document.getElementById('modal-ped').classList.add('on');
 
   // Scope: usar mEl para queries — evita colisiones con el resto del DOM
@@ -11094,7 +11380,7 @@ async function npLookupSaldosDo() {
     npRenderSaldosBanner(_cachedSV);
   }
   try {
-    const data = await apiSend('clientes.saldosVigentes', { nombre, dni, telefono: tel });
+    const data = await _cliSaldosRapido({ nombre, dni, telefono: tel });
     _npSaldosLsSet(key, data);
     _npSaldos.items = data.pedidosConSaldo || [];
     _npSaldos.devs  = data.devolucionesPendientes || [];
@@ -13387,7 +13673,7 @@ async function cliOpenHistorial(keyOrObj) {
     if (_hc && (Date.now() - _hc.ts < 120000)) {
       res = _hc.data;
     } else {
-      res = await apiSend('clientes.historial', {
+      res = await _cliHistorialRapido({
         nombre: c.Nombre || '',
         dni:    c.DNI    || '',
         telefono: c.Telefono || '',
@@ -15940,7 +16226,7 @@ function camLookupSaldos() {
     camRenderSaldosBanner();
     return;
   }
-  apiSend('clientes.saldosVigentes', { nombre, dni, telefono: tel }).then(data => {
+  _cliSaldosRapido({ nombre, dni, telefono: tel }).then(data => {
     if (typeof _npSaldosLsSet === 'function') _npSaldosLsSet(key, data);
     _camSaldos.items = data.pedidosConSaldo || [];
     _camSaldos.devs  = data.devolucionesPendientes || [];
