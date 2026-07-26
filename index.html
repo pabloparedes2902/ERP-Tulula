@@ -1259,15 +1259,17 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
 
 <!-- Modal historial cliente (global, accesible desde cualquier módulo) -->
 <div id="modal-cli-hist" class="modal">
-  <div class="mbox" style="max-width:1100px;max-height:92vh">
+  <!-- 26-jul: más ancha (los 6 indicadores entran en una fila) y SIN barra
+       propia: la única que se desliza es la de la tabla de pedidos. -->
+  <div class="mbox" style="max-width:1500px;width:96vw;max-height:92vh;overflow:hidden;display:flex;flex-direction:column">
     <div class="mhd"><h3 id="cli-hist-title">Historial del cliente</h3><button class="btn bg bs" onclick="document.getElementById('modal-cli-hist').classList.remove('on')">✕</button></div>
-    <div id="cli-hist-kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px"></div>
+    <div id="cli-hist-kpis" style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:12px"></div>
     <div style="display:flex;gap:6px;margin-bottom:10px;border-bottom:1px solid var(--bd)">
       <button class="btn bg bs cli-hist-tab" data-tab="ped" style="border-radius:var(--r) var(--r) 0 0;border-bottom:2px solid var(--ac)">📦 Prendas <span id="cli-hist-cnt-ped" style="color:var(--mu);font-size:11px"></span></button>
       <button class="btn bg bs cli-hist-tab" data-tab="cam" style="border-radius:var(--r) var(--r) 0 0">⇄ Cambios <span id="cli-hist-cnt-cam" style="color:var(--mu);font-size:11px"></span></button>
       <button class="btn bg bs cli-hist-tab" data-tab="dev" style="border-radius:var(--r) var(--r) 0 0">↩ Devoluciones <span id="cli-hist-cnt-dev" style="color:var(--mu);font-size:11px"></span></button>
     </div>
-    <div id="cli-hist-body" style="min-height:300px;max-height:60vh;overflow:auto"></div>
+    <div id="cli-hist-body" style="flex:1;min-height:0;overflow:visible"></div>
   </div>
 </div>
 <div id="toast" class="toast"></div>
@@ -6237,7 +6239,8 @@ function _crsAutoFit(rs) {
   if (rs.dataset.k)          { key = rs.dataset.k;     dataAttr = 'data-k'; }
   else if (rs.dataset.hckey) { key = rs.dataset.hckey; dataAttr = 'data-hckey'; }
   else if (rs.dataset.hdkey) { key = rs.dataset.hdkey; dataAttr = 'data-hdkey'; }
-  else if (rs.dataset.c2key)  { key = rs.dataset.c2key;  dataAttr = 'data-k'; }   // Cambios
+  else if (rs.dataset.c2key)  { key = rs.dataset.c2key;  dataAttr = 'data-k'; }      // Cambios
+  else if (rs.dataset.fikey)  { key = rs.dataset.fikey;  dataAttr = 'data-fikey'; }  // ficha de clienta
   const colEl = (dataAttr && key) ? table.querySelector('colgroup col['+dataAttr+'="'+key+'"]') : null;
 
   // 1. Snapshot del layout actual (para revertir si algo falla)
@@ -6299,7 +6302,37 @@ function _crsAutoFit(rs) {
   if (rs.dataset.hdkey && window._hdColW)     window._hdColW[rs.dataset.hdkey] = finalW;
   // Cambios guarda sus anchos en el navegador, igual que al arrastrar el borde.
   if (rs.dataset.c2key) { try { var _sv=JSON.parse(localStorage.getItem('erp_c2_colw')||'{}'); _sv[rs.dataset.c2key]=finalW; localStorage.setItem('erp_c2_colw',JSON.stringify(_sv)); } catch(e){} }
+  if (rs.dataset.fikey) { window._fiColW = window._fiColW || {}; window._fiColW[rs.dataset.fikey] = finalW;
+    try { var _sf=JSON.parse(localStorage.getItem('erp_fi_colw')||'{}'); _sf[rs.dataset.fikey]=finalW; localStorage.setItem('erp_fi_colw',JSON.stringify(_sf)); } catch(e){} }
 }
+// Arrastrar el borde de una columna en la ficha de clienta. Mismo gesto que en
+// Pedidos y Cambios; se registra una sola vez para toda la app.
+if (!window._fiCrsBound) {
+  window._fiCrsBound = true;
+  document.addEventListener('mousedown', function (e) {
+    const rs = e.target.closest && e.target.closest('.crs[data-fikey]');
+    if (!rs) return;
+    e.preventDefault(); e.stopPropagation();
+    const k = rs.dataset.fikey;
+    const th = rs.closest('th'), tbl = rs.closest('table');
+    if (!th || !tbl) return;
+    const colEl = tbl.querySelector('colgroup col[data-fikey="' + k + '"]');
+    const w0 = th.getBoundingClientRect().width, x0 = e.pageX;
+    document.body.style.cursor = 'col-resize';
+    const mv = e2 => { const nw = Math.max(50, Math.round(w0 + (e2.pageX - x0)));
+      if (colEl) colEl.style.width = nw + 'px'; th.style.width = nw + 'px'; };
+    const up = () => {
+      document.body.style.cursor = '';
+      document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+      const fin = Math.round(th.getBoundingClientRect().width);
+      window._fiColW = window._fiColW || {}; window._fiColW[k] = fin;
+      try { const sv = JSON.parse(localStorage.getItem('erp_fi_colw')||'{}'); sv[k] = fin;
+            localStorage.setItem('erp_fi_colw', JSON.stringify(sv)); } catch(_) {}
+    };
+    document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+  });
+}
+
 if (!window._crsDblBound) {
   document.addEventListener('dblclick', e => { const rs = e.target.closest && e.target.closest('.crs'); if (rs) { e.preventDefault(); e.stopPropagation(); _crsAutoFit(rs); } });
   window._crsDblBound = true;
@@ -12397,16 +12430,13 @@ async function loadClis(force) {
 const CLI_SOLO_ADMIN = ['LTV','LTGP'];
 const CLI_COLS_TODAS = [
   {k:'Nombre',       label:'Nombre',        num:false, align:'left'},
-  {k:'Telefono',     label:'Teléfono',      num:false, align:'left'},
-  {k:'DNI',          label:'Documento',     num:false, align:'left'},
   {k:'Email',        label:'Correo',        num:false, align:'left'},
   {k:'Cumpleanos',   label:'Cumpleaños',    num:false, align:'center'},
+  {k:'Zona',         label:'Zona',          num:false, align:'left'},
   {k:'Distrito',     label:'Distrito',      num:false, align:'left'},
-  {k:'Canal',        label:'Canal',         num:false, align:'left'},
   {k:'Segmento',     label:'Segmento',      num:false, align:'left'},
   {k:'TotalPedidos', label:'Pedidos #',     num:true,  align:'center'},
   {k:'TotalPrendas', label:'Prendas #',     num:true,  align:'center'},
-  {k:'Devoluciones', label:'Devol.',        num:true,  align:'center'},
   {k:'Saldo',        label:'Saldo',         num:true,  align:'right'},
   {k:'LTV',          label:'Ventas por cliente — LTV',  num:true, align:'right'},
   {k:'LTGP',         label:'Margen por cliente — LTGP', num:true, align:'right'},
@@ -12427,6 +12457,13 @@ function _cliAjustarColumnasAlRol() {
     return !(CLI_SOLO_ADMIN.indexOf(c.k) >= 0 && !_cliVeAdmin());
   });
 }
+// La zona, con su color: Lima morado, Callao celeste, Provincia ámbar.
+function _cliBadgeZona(z) {
+  if (!z) return '<span style="color:var(--mu)">—</span>';
+  const col = z === 'Lima' ? '#a78bfa' : (z === 'Callao' ? '#38bdf8' : '#fbbf24');
+  return '<span class="badge" style="background:' + col + '22;color:' + col + ';border:1px solid ' + col + '55">' + esc(z) + '</span>';
+}
+
 // ¿Esta persona ve los números de negocio (LTV y margen)?
 function _cliVeAdmin() { return (typeof MY_ROLE === 'undefined') || MY_ROLE === 'Administrador'; }
 
@@ -12444,7 +12481,24 @@ function _cliSaveWidths() {
 function cliColValue(c, k) {
   if (k === 'Segmento') return String(c.Segmento||'SIN_CLASIFICAR').replace('_',' ');
   if (k === 'Cumpleanos') return _cliFmtCumple(c.Cumpleanos);
+  if (k === 'Zona') return _cliZona(c);
   return c[k];
+}
+
+// ZONA (26-jul, pedido de Pablo): agrupa el país en tres, que es como se despacha.
+//   · Lima ....... región Lima Y provincia Lima (Lima Metropolitana)
+//   · Callao ..... toda la región Callao
+//   · Provincia .. todo lo demás
+// Ojo: la provincia de Lima que NO es la ciudad (Cañete, Huaral, Barranca…) va
+// como Provincia, que es lo correcto para el envío.
+function _cliZona(c) {
+  const norm = v => String(v == null ? '' : v).toUpperCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const reg = norm(c.Region), prov = norm(c.Provincia);
+  if (reg.indexOf('CALLAO') >= 0) return 'Callao';
+  if (reg.indexOf('LIMA') >= 0 && prov.indexOf('LIMA') >= 0) return 'Lima';
+  if (!reg && !prov) return '';
+  return 'Provincia';
 }
 
 // El cumpleaños se muestra como día y mes: el año no aporta y ocupa lugar.
@@ -12463,10 +12517,9 @@ function _cliFmtCumple(v) {
 function _cliCeldaSaldo(v) {
   var n = parseFloat(v) || 0;
   if (Math.abs(n) < 0.005) return '<span style="color:var(--mu)">—</span>';
-  if (n > 0) return '<span style="color:#60a5fa;font-weight:600">+ S/ ' + fmt(n) + '</span>'
-                  + '<span style="color:var(--mu);font-size:10px;margin-left:5px">a favor</span>';
-  return '<span style="color:var(--rd);font-weight:600">− S/ ' + fmt(Math.abs(n)) + '</span>'
-       + '<span style="color:var(--mu);font-size:10px;margin-left:5px">en contra</span>';
+  // 26-jul: sin la coletilla "a favor"/"en contra" — el signo y el color ya lo dicen.
+  if (n > 0) return '<span style="color:#60a5fa;font-weight:600">+ S/ ' + fmt(n) + '</span>';
+  return '<span style="color:var(--rd);font-weight:600">− S/ ' + fmt(Math.abs(n)) + '</span>';
 }
 
 function cliFiltered() {
@@ -12552,16 +12605,13 @@ function renderClis() {
     const td = (content, extra) => '<td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'+(extra||'')+'">'+content+'</td>';
     h+='<tr data-key="'+esc(key)+'">'
       + td(esc(c.Nombre), 'font-weight:500')
-      + td(esc(c.Telefono), 'color:var(--mu)')
-      + td(esc(c.DNI), 'color:var(--mu)')
       + td(esc(c.Email||'') || '<span style="color:var(--mu)">—</span>', 'color:var(--mu)')
       + td(esc(_cliFmtCumple(c.Cumpleanos)) || '<span style="color:var(--mu)">—</span>', 'text-align:center;color:var(--mu)')
+      + td(_cliBadgeZona(_cliZona(c)), '')
       + td(esc(c.Distrito), 'color:var(--mu)')
-      + td('<span class="badge bgy">'+esc(c.Canal)+'</span>', '')
       + td(segHtml, '')
       + td((c.TotalPedidos||0), 'text-align:center')
       + td((c.TotalPrendas||0), 'text-align:center')
-      + td((c.Devoluciones||0), 'text-align:center'+(c.Devoluciones?';color:var(--rd);font-weight:500':''))
       + td(_cliCeldaSaldo(c.Saldo), 'text-align:right;white-space:nowrap')
       + (_cliVeAdmin() ? td('S/ '+fmt(c.LTV!=null?c.LTV:c.TotalGastado), 'font-weight:500;color:var(--gn);text-align:right') : '')
       + (_cliVeAdmin() ? td(c.LTGP!=null ? ('S/ '+fmt(c.LTGP)) : '<span style="color:var(--mu)" title="Falta cargar el costo de algunas prendas">—</span>', 'font-weight:500;color:var(--am);text-align:right') : '')
@@ -12853,16 +12903,17 @@ function _cliDatosFicha(c, cuenta) {
 function _cliFichaDatosHtml(c, cuenta) {
   const D = _cliDatosFicha(c, cuenta);
   const SOLO_CONTACTO = ['Nombre','DNI','Telefono','Email','Cumpleanos','Direccion','Referencia','Distrito','Provincia','Region','Canal','Segmento'];
-  const item = d => '<div style="min-width:150px">'
+  const item = d => '<div style="min-width:0;overflow:hidden">'
     + '<div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.4px">'+esc(d.t)+'</div>'
-    + '<div style="font-size:13px;margin-top:2px">'+(String(d.v||'').trim() ? esc(String(d.v)) : '<span style="color:var(--mu)">—</span>')+'</div>'
+    + '<div style="font-size:13px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(String(d.v||''))+'">'+(String(d.v||'').trim() ? esc(String(d.v)) : '<span style="color:var(--mu)">—</span>')+'</div>'
     + '</div>';
   return '<div style="background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);padding:12px 14px;margin-bottom:12px">'
     + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">'
     +   '<span style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px">Datos de la clienta</span>'
     +   '<button class="btn bp bs" id="cli-ficha-descargar" style="font-size:11px;white-space:nowrap">⬇ Descargar ficha</button>'
     + '</div>'
-    + '<div style="display:flex;flex-wrap:wrap;gap:14px 26px">'
+    // 26-jul: rejilla de 6 columnas → los 12 datos entran en 2 filas exactas.
+    + '<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px 18px">'
     +   D.filter(d => SOLO_CONTACTO.indexOf(d.k) >= 0).map(item).join('')
     + '</div></div>';
 }
@@ -13042,16 +13093,16 @@ async function cliOpenHistorial(keyOrObj) {
       + '<div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px">'+label+'</div>'
       + '<div style="font-size:16px;font-weight:600;margin-top:3px'+(col?(';color:'+col):'')+'">'+val+'</div>'
       + '</div>';
+    // 26-jul: seis indicadores en UNA fila. Salieron Subtotal (era idéntico a
+    // Total compras) y los conteos de cambios y devoluciones, que ya se ven en
+    // las pestañas de abajo con su propio número.
     kpis.innerHTML =
         kpiBox('Total pedidos',       totalPedidosUnd)
       + kpiBox('Total prendas',       totalPrendasUnd)
-      + kpiBox('Subtotal',            'S/ '+fmt(totalCompras), 'var(--ac2)')
       + kpiBox('Ticket promedio',     'S/ '+fmt(ticketPromedio))
-      + kpiBox('Total cambios',       totalCambios, totalCambios>0?'var(--am)':'')
-      + kpiBox('Total devoluciones',  totalDevoluciones, totalDevoluciones>0?'var(--rd)':'')
+      + kpiBox('Total compras',       'S/ '+fmt(totalCompras), 'var(--ac2)')
       + kpiBox('Total pagado',        'S/ '+fmt(totalPagado), 'var(--gn)')
-      + kpiBox('Total pendiente',     'S/ '+fmt(totalPendiente), totalPendiente>0?'var(--rd)':'var(--gn)')
-      + kpiBox('Total compras',       'S/ '+fmt(totalCompras), 'var(--ac2)');
+      + kpiBox('Total pendiente',     'S/ '+fmt(totalPendiente), totalPendiente>0?'var(--rd)':'var(--gn)');
     // Contadores en tabs
     document.getElementById('cli-hist-cnt-ped').textContent = '('+_cliHist.peds.length+')';
     document.getElementById('cli-hist-cnt-cam').textContent = '('+_cliHist.cams.length+')';
@@ -13094,7 +13145,12 @@ async function cliOpenHistorial(keyOrObj) {
 }
 
 // FASE 5 — caja de resumen de compras archivadas (o '' si no hay)
+// 26-jul (pedido de Pablo): la caja de "Compras anteriores (archivadas)" salió
+// de la ficha — ocupaba varias líneas al pie con un dato que ya está sumado en
+// los indicadores. La función se deja porque hay tres pestañas que la llaman.
 function _cliHistHistoricoBox() {
+  return '';
+  /* eslint-disable no-unreachable */
   const hx = _cliHist.historico;
   if (!hx || (hx.prendas <= 0 && hx.pagado <= 0)) return '';
   return '<div style="margin-top:10px;padding:10px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);font-size:12px">'
@@ -13105,6 +13161,7 @@ function _cliHistHistoricoBox() {
     + (hx.detalle ? '<div style="margin-top:6px;color:var(--mu);font-size:11px">' + esc(hx.detalle) + '</div>' : '')
     + '<div style="margin-top:4px;color:var(--mu);font-size:11px">El detalle completo está en el archivo "Tulula ERP - Historico Pedidos" en Drive.</div>'
     + '</div>';
+  /* eslint-enable no-unreachable */
 }
 function _cliHistRenderTab(t) {
   const body = document.getElementById('cli-hist-body');
@@ -13112,8 +13169,30 @@ function _cliHistRenderTab(t) {
     const peds = _cliHist.peds;
     if (!peds.length) { body.innerHTML = '<div class="empty">Sin pedidos recientes</div>' + _cliHistHistoricoBox(); return; }
     let totPrecio = 0, totEnvio = 0, totSub = 0, totPagado = 0;
-    let h = '<div style="max-height:55vh;overflow:auto;border:1px solid var(--bd);border-radius:var(--r)"><table class="pt" style="width:100%"><thead><tr>'
-      + '<th>Nro Pedido</th><th>Fecha</th><th>Prenda</th><th>Precio</th><th>Envío</th><th>Subtotal</th><th>Pagado</th><th>Estado</th><th>Cambio/Dev</th>'
+    // 26-jul: la tabla entra entera, sin deslizarse de costado, y cada columna
+    // se puede ensanchar arrastrando el borde o ajustar al contenido con doble
+    // clic — igual que en Pedidos y en Cambios.
+    const FI_COLS = [
+      {k:'nro',  t:'Nro Pedido', w:100},
+      {k:'fec',  t:'Fecha',      w:95},
+      {k:'pren', t:'Prenda',     w:300},
+      {k:'pre',  t:'Precio',     w:90},
+      {k:'env',  t:'Envío',      w:85},
+      {k:'sub',  t:'Subtotal',   w:95},
+      {k:'pag',  t:'Pagado',     w:95},
+      {k:'est',  t:'Estado',     w:115},
+      {k:'cam',  t:'Cambio/Dev', w:110},
+    ];
+    window._fiColW = window._fiColW || {};
+    try { const _sv = JSON.parse(localStorage.getItem('erp_fi_colw')||'{}');
+          Object.keys(_sv).forEach(k => { if (_sv[k] > 20) window._fiColW[k] = _sv[k]; }); } catch(e) {}
+    const _fw = c => (window._fiColW[c.k] || c.w);
+    const _fiTot = FI_COLS.reduce((a,c) => a + _fw(c), 0);
+    let h = '<div class="tsc" style="max-height:52vh;overflow:auto;border:1px solid var(--bd);border-radius:var(--r)">'
+      + '<table class="pt" id="fi-tbl" style="table-layout:fixed;width:100%;min-width:'+_fiTot+'px">'
+      + '<colgroup>' + FI_COLS.map(c => '<col data-fikey="'+c.k+'" style="width:'+_fw(c)+'px">').join('') + '</colgroup>'
+      + '<thead><tr>'
+      + FI_COLS.map(c => '<th data-fikey="'+c.k+'" style="position:relative;text-align:center">'+esc(c.t)+'<div class="crs" data-fikey="'+c.k+'"></div></th>').join('')
       + '</tr></thead><tbody>';
     peds.forEach(p => {
       // Valores ya recalculados por lote (envío 1 vez/lote, pago deduplicado) en _histEnrich.
