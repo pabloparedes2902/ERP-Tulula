@@ -5414,8 +5414,12 @@ async function _stockKardexRapido(p) {
     const H = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
 
     // Las cinco piezas salen a la vez.
+    // ⚠️ `order=id.asc` NO ES OPCIONAL. Sin él la base devuelve las ventas en el
+    // orden que se le antoja y dos ventas del MISMO DÍA salían intercambiadas.
+    // Se detectó el 26-jul comparando 8 prendas contra el servidor: BLUSA
+    // TOSCANA ROJO traía las mismas 60 ventas, pero barajadas.
     const urlVentas = SB_URL + '/rest/v1/pedidos?select=row_json&prenda=ilike.' +
-                      encodeURIComponent('%' + dis + '%') + '&limit=8000';
+                      encodeURIComponent('%' + dis + '%') + '&order=id.asc&limit=8000';
     const [conf, fall, ventasRaw, fr, resumen, arch] = await Promise.all([
       _sbFilasSku('confeccion', dis),
       _sbFilasSku('fallas', dis),
@@ -5499,8 +5503,14 @@ async function _stockKardexRapido(p) {
       });
     });
 
-    ev.sort((a, b) => b.fechaMs - a.fechaMs);
-    const eventos = ev.slice(0, 300);
+    // Del más nuevo al más viejo. Entre los del MISMO DÍA se conserva el orden en
+    // que se agregaron (primero Confección, después las ventas por id) — así la
+    // lista sale siempre igual y no baila entre una recarga y otra.
+    ev.forEach((e, i) => { e._i = i; });
+    ev.sort((a, b) => (b.fechaMs - a.fechaMs) || (a._i - b._i));
+    const eventos = ev.slice(0, 300).map(e => {
+      const c = Object.assign({}, e); delete c._i; return c;
+    });
 
     // ── Stock actual y anomalías: del cálculo oficial, ya espejado ──
     const anomalias = [], stockActual = {};
