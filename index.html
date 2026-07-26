@@ -3917,6 +3917,37 @@ let pLastSyncTs = 0;
 // Set de NroPedido recién actualizados — para mostrar flash highlight
 const pHighlight = new Set();
 
+// ══════════════════════════════════════════════════════════════════════════
+// CRONÓMETRO DE LA CARGA DE PEDIDOS (26-jul-2026)
+//
+// PARA QUÉ: medir desde ADENTRO en qué se van los segundos al abrir Pedidos.
+// Desde afuera solo se ve "tardó 11 segundos"; esto dice en cuál de los pasos.
+//
+// NO SE VE NI CUESTA: son apuntes en memoria (una lista de etiquetas con la hora).
+// No dibuja nada, no pide nada, no guarda nada en el navegador.
+//
+// PARA LEERLO: abrir Pedidos y escribir en la consola  copy(_pedTiempos())
+// ══════════════════════════════════════════════════════════════════════════
+window._pedMarcas = [];
+function _pedMarca(etiqueta, extra) {
+  try {
+    window._pedMarcas.push({ t: Math.round(performance.now()), q: etiqueta,
+      filas: (typeof pRaw !== 'undefined' && pRaw) ? pRaw.length : 0,
+      pedidos: (typeof pAll !== 'undefined' && pAll) ? pAll.length : 0,
+      extra: extra == null ? '' : extra });
+    if (window._pedMarcas.length > 400) window._pedMarcas.shift();
+  } catch (e) {}
+}
+// Devuelve el recorrido en milisegundos DESDE que se abrió Pedidos.
+function _pedTiempos() {
+  var m = window._pedMarcas || []; if (!m.length) return 'Sin marcas: entra a Pedidos primero.';
+  var t0 = m[0].t;
+  return m.map(function (x) {
+    return String(x.t - t0).padStart(6) + ' ms · ' + x.q +
+           ' · filas=' + x.filas + ' · pedidos=' + x.pedidos + (x.extra ? (' · ' + x.extra) : '');
+  }).join('\n');
+}
+
 function _pedsScopeParams() {
   // 'activos': sin limit explícito — el backend devuelve todo el scope (ya acotado por estados + 3 días)
   if (pScope === 'activos') return { activos: '1', diasRecientes: 3 };
@@ -4433,6 +4464,7 @@ function _c2Agrupar(filas) {
         Sincronizado: String(r.SyncProcesado || '').toUpperCase() === 'TRUE',
         RecibidoOriginal: String(r.StockDevProcesado || '').toUpperCase() === 'TRUE',
         EnviadaNueva: !!r.FechaEnvioNueva,
+        FechaEnvioNueva: r.FechaEnvioNueva || '',   // 26-jul: para el reloj de la grilla
         Version: String(r.C2Version || '').trim(),
         devueltas: [], nuevas: [], pedidos: {}
       };
@@ -5547,7 +5579,9 @@ async function loadPeds(est, force) {
   // ── 1. Cache localStorage: renderizar INMEDIATAMENTE si existe ────
   // PERF v8.0: NO disparar refresh background si la caché está vigente.
   // El polling incremental (cada 10s) se encarga de mantener los datos al día.
+  window._pedMarcas = []; _pedMarca('abre Pedidos', 'scope=' + pScope + ' · forzado=' + !!force);
   let cached = !force && lsGetPeds();
+  _pedMarca('¿hay algo guardado en el navegador?', cached ? (cached.length + ' filas') : 'no');
   // #10 — Si LS está vacío pero IDB todavía está hidratándose (1ª lectura tras un boot
   // donde la sesión previa cayó en quota), esperar a que termine.
   //
@@ -5559,11 +5593,14 @@ async function loadPeds(est, force) {
   // No hace más lento el arranque en frío: si no hay snapshot, la promesa resuelve
   // enseguida y la carrera termina ahí — el tope solo actúa cuando SÍ hay algo que esperar.
   if (!cached && !force && !_idbPedsMem && _idbHydratePedsPromise) {
+    _pedMarca('espera a que el navegador termine de leer su copia (hasta 2,5 s)');
     try { await Promise.race([_idbHydratePedsPromise, new Promise(r => setTimeout(r, 2500))]); } catch(_) {}
     cached = lsGetPeds();
+    _pedMarca('terminó la espera', cached ? (cached.length + ' filas') : 'seguía sin nada');
   }
   if (cached) {
     _renderPedsDesde(cached, estVal);
+    _pedMarca('PRIMER DIBUJADO desde lo guardado — ya se ve la tabla');
     // 25-jul: el arranque desde el snapshot local no pasaba por la carga progresiva, así que
     // los pedidos que el snapshot guardó SIN prendas seguían rotos al reabrir. Repararlos aquí.
     try { setTimeout(() => { _pedsAutorepararSinPrenda(40, 8); }, 3000); } catch(_){}
@@ -5585,18 +5622,23 @@ async function loadPeds(est, force) {
     return;
   }
 
+  _pedMarca('sigue: no había nada guardado utilizable');
   // ── 2. Sin cache ni memoria: spinner + fetch completo ─────────────
   pRawEst = null;
   el.innerHTML = spin('Cargando pedidos...');
   try {
     const params = Object.assign({offset:0}, _pedsScopeParams());
+    _pedMarca('pide la primera tanda', JSON.stringify(params));
     const res = await _pedListarPagina(params);
     const rows = Array.isArray(res) ? res : (res.rows||[]);
+    _pedMarca('llegó la primera tanda', rows.length + ' filas · hayMas=' + !!(res && res.hayMas));
     const serverTs = (res && res.serverTs) || Date.now();
     lsSetPeds(rows, serverTs);
     _renderPedsDesde(rows, estVal);
+    _pedMarca('PRIMER DIBUJADO — ya se ve la tabla');
     window._pedTotalReal = (res && res.total) || (Array.isArray(rows)?rows.length:0);
-    if (pScope !== 'activos' && res && res.hayMas) _pedsCargarRestoProgresivo();  // resto en background
+    if (pScope !== 'activos' && res && res.hayMas) { _pedMarca('arranca el resto en segundo plano'); _pedsCargarRestoProgresivo(); }
+    else _pedMarca('no hay resto que traer (scope activos o vino todo)');
     // PERF v9.0 — prefetch DIFERIDO 5s: no competir con la carga de pedidos
     setTimeout(_prefetchBackground, 1500);
     _startPedsPolling();
@@ -6139,6 +6181,7 @@ function _crsAutoFit(rs) {
   if (rs.dataset.k)          { key = rs.dataset.k;     dataAttr = 'data-k'; }
   else if (rs.dataset.hckey) { key = rs.dataset.hckey; dataAttr = 'data-hckey'; }
   else if (rs.dataset.hdkey) { key = rs.dataset.hdkey; dataAttr = 'data-hdkey'; }
+  else if (rs.dataset.c2key)  { key = rs.dataset.c2key;  dataAttr = 'data-k'; }   // Cambios
   const colEl = (dataAttr && key) ? table.querySelector('colgroup col['+dataAttr+'="'+key+'"]') : null;
 
   // 1. Snapshot del layout actual (para revertir si algo falla)
@@ -6198,6 +6241,8 @@ function _crsAutoFit(rs) {
   if (rs.dataset.k     && window._pColWidths) window._pColWidths[rs.dataset.k] = finalW;
   if (rs.dataset.hckey && window._hcColW)     window._hcColW[rs.dataset.hckey] = finalW;
   if (rs.dataset.hdkey && window._hdColW)     window._hdColW[rs.dataset.hdkey] = finalW;
+  // Cambios guarda sus anchos en el navegador, igual que al arrastrar el borde.
+  if (rs.dataset.c2key) { try { var _sv=JSON.parse(localStorage.getItem('erp_c2_colw')||'{}'); _sv[rs.dataset.c2key]=finalW; localStorage.setItem('erp_c2_colw',JSON.stringify(_sv)); } catch(e){} }
 }
 if (!window._crsDblBound) {
   document.addEventListener('dblclick', e => { const rs = e.target.closest && e.target.closest('.crs'); if (rs) { e.preventDefault(); e.stopPropagation(); _crsAutoFit(rs); } });
@@ -7597,6 +7642,7 @@ async function _pedsCargarRestoProgresivo() {
       // recientes y provisionales) para no descuadrar la paginación del backend.
       const off = pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length;
       let res;
+      _pedMarca('pide tanda de fondo', 'desde la fila ' + off);
       try { res = await _pedListarPagina(Object.assign(_pedsScopeParams(), { offset: off, limit: ((SB_ANON && _sbTok) ? 5000 : 2000) })); }   // directo SB: lotes grandes; Apps Script: 2000
       catch(e) {
         try{_errLog('peds.cargarResto', e);}catch(_){}
@@ -7643,7 +7689,9 @@ async function _pedsCargarRestoProgresivo() {
       const _realLen = pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length;
       // Render intermedio ÚNICO al cruzar 3000 filas (vista útil de inmediato; después,
       // un solo render final — anti-parpadeo).
+      _pedMarca('llegó tanda de fondo', _realLen + ' filas reales');
       if (!window._pedsYaPintado && _realLen > 0) {
+        _pedMarca('DIBUJADO con la primera tanda de fondo');
         window._pedsYaPintado = true;
         try { if (!Object.keys(pFlt||{}).length) _renderPedsDesde(pRaw, pEst, true); } catch(_){}
       }
@@ -7674,8 +7722,10 @@ async function _pedsCargarRestoProgresivo() {
       // _cliColorMapaVigente). Sin esto el mapa quedaría con el valor viejo.
       try { _cliColorInvalidar(); } catch(_) {}
       // Único re-render al terminar, respetando la pestaña activa y los filtros.
+      _pedMarca('DIBUJADO FINAL');
       try { if (Object.keys(pFlt||{}).length && typeof pAply === 'function') pAply();
             else _renderPedsDesde(pRaw, pEst, true); } catch(_){}
+      _pedMarca('terminó todo');
       // Persistir el historial COMPLETO (lsSetPeds manda datasets grandes directo a
       // IndexedDB) → la próxima apertura del ERP muestra todo al instante, como Excel.
       try {
@@ -16071,6 +16121,22 @@ function _anchoSegunTexto(textos, titulo, min, max) {
   return Math.max(min || 70, Math.min(max || 210, px));
 }
 
+// ── EL RELOJ DE UN TRÁMITE (26-jul) ──────────────────────────────────────
+// "Resuelto en 12d" o "12d sin resolver". Ya existía en Devoluciones; ahora
+// también en Cambios, para poder ver de un vistazo cuáles se están durmiendo.
+// Verde hasta 3 días, ámbar hasta 7, rojo de ahí en más.
+function _relojTramite(fechaInicio, fechaFin) {
+  if (!fechaInicio) return '';
+  var fSol = new Date(fechaInicio); if (isNaN(fSol.getTime())) return '';
+  var fFin = fechaFin ? new Date(fechaFin) : null;
+  if (fFin && isNaN(fFin.getTime())) fFin = null;
+  var dias = Math.round(((fFin || new Date()) - fSol) / 86400000);
+  if (dias < 0) return '';
+  var color = fFin ? 'var(--mu)' : (dias > 7 ? '#ef4444' : dias > 3 ? '#eab308' : '#22c55e');
+  var txt = fFin ? ('Resuelto en ' + dias + 'd') : (dias + 'd sin resolver');
+  return '<span style="font-size:10px;color:' + color + ';margin-left:6px;white-space:nowrap;vertical-align:middle">⏱ ' + txt + '</span>';
+}
+
 // Celda de comentario: una línea, y si no entra, flecha para desplegar.
 function _celdaComentario(txt) {
   var t = String(txt == null ? '' : txt).trim();
@@ -16147,14 +16213,19 @@ function renderCambios2(el, cambios){
     var _vis=cambios.filter(tabFn());
     COLS.forEach(function(col){
       if(col.k==='com') return;                       // el comentario no se mide
-      var textos=_vis.map(function(c){ return col.g(c); });
-      _c2W[col.k]=_anchoSegunTexto(textos, col.t, 70, 210);
+      // La celda de Estado lleva además el reloj ("⏱ Resuelto en 12d"): se mide
+      // el peor caso para que no salga cortado.
+      var extra=(col.k==='est')?'  ⏱ Resuelto en 999d ':'';
+      var textos=_vis.map(function(c){ return col.g(c)+extra; });
+      _c2W[col.k]=_anchoSegunTexto(textos, col.t, 70, (col.k==='est'?320:210));
     });
   }catch(e){}
   // Lo que la persona ajustó a mano manda sobre la medición.
   try{ var _sv=JSON.parse(localStorage.getItem('erp_c2_colw')||'{}'); Object.keys(_sv).forEach(function(k){ if(_sv[k]>20) _c2W[k]=_sv[k]; }); }catch(e){}
   var _colg='<colgroup>'+COLS.map(function(col){return '<col data-k="'+col.k+'" style="width:'+(_c2W[col.k]||110)+'px">';}).join('')+'<col data-k="acc" style="width:'+(_c2W.acc||160)+'px"></colgroup>';
-  var thH='<tr>'+COLS.map(function(col){return '<th data-k="'+col.k+'" style="position:relative;text-align:center">'+esc(col.t)+'<div class="crs"></div></th>';}).join('')+'<th data-k="acc" style="position:relative;text-align:center">Acción<div class="crs"></div></th></tr>';
+  // 26-jul: el separador lleva data-c2key para que el doble clic sepa a qué
+  // columna ajustar. En Devoluciones ya funcionaba; en Cambios no hacía nada.
+  var thH='<tr>'+COLS.map(function(col){return '<th data-k="'+col.k+'" style="position:relative;text-align:center">'+esc(col.t)+'<div class="crs" data-c2key="'+esc(col.k)+'"></div></th>';}).join('')+'<th data-k="acc" style="position:relative;text-align:center">Acción<div class="crs" data-c2key="acc"></div></th></tr>';
   var thF='<tr>'+COLS.map(function(col){return '<td style="padding:2px"><input class="c2-filt" data-k="'+esc(col.k)+'" value="'+esc(filt[col.k]||'')+'" placeholder="filtrar..." style="width:100%;box-sizing:border-box;font-size:11px;padding:3px;background:var(--bg2);border:1px solid var(--bd);color:var(--tx);border-radius:4px;text-align:center"></td>';}).join('')+'<td></td></tr>';
   var _c2TotW=COLS.reduce(function(s,col){return s+(_c2W[col.k]||110);},0)+(_c2W.acc||160);
   el.innerHTML=tabsH+'<div class="tw"><div class="tsc"><table class="pt" style="table-layout:fixed;width:'+_c2TotW+'px">'+_colg+'<thead>'+thH+thF+'</thead><tbody id="c2-tbody"></tbody></table></div></div>';
@@ -16174,7 +16245,10 @@ function renderCambios2(el, cambios){
       var pago=parseFloat(c.MontoPagadoCliente)||0, emp=parseFloat(c.MontoAsumidoEmpresa)||0;
       var totalDif=Math.abs(parseFloat(c.DiferenciaPrecio)||0)+(parseFloat(c.PrecioEnvio)||0); var cub=pago+emp;
       var saldo; if(totalDif<0.005) saldo=guion; else if(cub+0.005>=totalDif) saldo='<span style="color:#4ade80">Pagado</span>'; else saldo='S/'+fmt(totalDif-cub);
-      var estadoBadge=(typeof badgeE==='function')?badgeE(c.Estado||''):esc(c.Estado||'');
+      // 26-jul: al costado del estado, cuántos días lleva o en cuántos se resolvió.
+  // Un cambio se considera resuelto cuando salió la prenda nueva.
+  var estadoBadge=((typeof badgeE==='function')?badgeE(c.Estado||''):esc(c.Estado||''))
+                + _relojTramite(c.FechaSolicitud, c.FechaEnvioNueva || '');
       var motivoCell=c.Motivo?'<span class="badge bgy" style="font-size:10px">'+esc(c.Motivo)+'</span>':guion;
       var accion='<button class="btn bg bs" title="Timeline" data-c2tl="'+esc(c.NroCambio)+'" style="font-size:11px;padding:4px 6px;margin-right:3px">📅</button>'
         +'<button class="btn bg bs" data-c2ver="'+esc(c.NroCambio)+'" style="font-size:11px;padding:4px 8px;margin-right:3px">Ver</button>'
@@ -19021,8 +19095,12 @@ function renderDevoluciones(el, rows) {
   try {
     HD_COLS.forEach(c => {
       if (c.k === 'Comentario' || c.k === 'Accion') return;
-      const textos = groups.map(g => (g._hdv && g._hdv[c.k]) ? g._hdv[c.k].t : '');
-      c.w = _anchoSegunTexto(textos, c.l, 80, 230);
+      // La celda de Estado no lleva solo el estado: al costado va el reloj
+      // ("⏱ Resuelto en 12d"). Si no se cuenta, la columna sale corta y el
+      // estado se corta con puntos suspensivos. Se mide el peor caso.
+      const extra = (c.k === 'Estado') ? '  ⏱ Resuelto en 999d ' : '';
+      const textos = groups.map(g => ((g._hdv && g._hdv[c.k]) ? g._hdv[c.k].t : '') + extra);
+      c.w = _anchoSegunTexto(textos, c.l, 80, (c.k === 'Estado' ? 320 : 230));
     });
   } catch(e) {}
   // Lo que la persona ajustó a mano manda sobre la medición.
