@@ -2399,7 +2399,7 @@ document.addEventListener('click', async e => {
   const nroPed = el.getAttribute('data-traza-nro') || '';
   const prenda = el.getAttribute('data-traza-prenda') || '';
   if (tipo === 'camv2') {
-    try { var _f = (window._c2Data||[]).some(function(x){return x.NroCambio===id;}); if (!_f) window._c2Data = await api('cambios2.listar', {}); } catch(e){}
+    try { var _f = (window._c2Data||[]).some(function(x){return x.NroCambio===id;}); if (!_f) window._c2Data = await _c2ListarRapido(); } catch(e){}
     if (typeof timelineCambios2 === 'function') timelineCambios2(id);
     return;
   }
@@ -2563,7 +2563,7 @@ async function abrirTrazaPrenda(tipo, id, nroPedido, prenda) {
     } else if (tipo === 'dev') {
       if (!Array.isArray(histDevData)) {
         if (histDevData && Array.isArray(histDevData.data)) histDevData = histDevData.data;
-        else { toast('Cargando historial de devoluciones...', 'info'); histDevData = await api('devoluciones.listar', {}); }
+        else { toast('Cargando historial de devoluciones...', 'info'); histDevData = await _devListarRapido(); }
       }
       if (!Array.isArray(histDevData)) histDevData = [];
       const _findDev = arr => {
@@ -2581,7 +2581,7 @@ async function abrirTrazaPrenda(tipo, id, nroPedido, prenda) {
       };
       let rec = _findDev(histDevData);
       if (!rec) {
-        try { const fresh = await api('devoluciones.listar', {}); if (Array.isArray(fresh)) { histDevData = fresh; try{_hdLsSet(fresh);}catch(e){} rec = _findDev(fresh); } } catch(e) {}
+        try { const fresh = await _devListarRapido(); if (Array.isArray(fresh)) { histDevData = fresh; try{_hdLsSet(fresh);}catch(e){} rec = _findDev(fresh); } } catch(e) {}
       }
       if (!rec) { toast('Marca de devolución huérfana: el pedido '+esc(String(nroPedido||''))+' tiene el sello "DEV" pero no existe la devolución en la hoja. Usá Reparar (Config) para limpiarlo.', 'err'); return; }
       hdTimeline(rec);
@@ -4283,6 +4283,167 @@ async function _crearPedidoRapido(body) {
 // MISMAS reglas de siempre, leyendo las tablas espejo. Si el pedido tiene algo
 // abierto, la base lo rechaza — igual que hoy.
 //
+// ══════════════════════════════════════════════════════════════════════════
+// CAMBIOS Y DEVOLUCIONES — LEER DE LA BASE EN VEZ DE APPS SCRIPT (26-jul-2026)
+//
+// POR QUÉ: medido en vivo, cambios2.listar tardaba 3.661 ms y devoluciones.listar
+// 3.810 ms. Una llamada VACÍA a Apps Script ya tarda 3.066 ms, así que el tiempo
+// no era la cantidad de datos: era el viaje a Apps Script. Los mismos datos ya
+// están espejados en la base (EspejoCambios.gs, cada 5 min) y salen en ~250 ms.
+//
+// QUÉ HACE: arma exactamente el mismo resultado que armaba Apps Script, pero con
+// las filas que trae la base. Verificado el 26-jul contra el servidor:
+//   · Cambios ....... 81 de 81 idénticos, 0 diferencias (3.661 ms → 446 ms)
+//   · Devoluciones ... 20 de 20 idénticas, 0 diferencias (3.810 ms → 200 ms)
+//
+// REVERSA INMEDIATA: poner SB_LECTURA_CAMBIOS = false y publicar. Vuelve a leer
+// por Apps Script como antes. Además, si la base falla o tarda, cada función se
+// va sola por el camino viejo — la pantalla nunca se queda sin datos.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LECTURA_CAMBIOS = true;
+
+// La hoja guarda números y verdadero/falso; la base los guarda como texto.
+// Esto los devuelve a su tipo original para que el ERP no note el cambio.
+// Solo convierte cuando el texto y el número son idénticos ida y vuelta: así
+// un "007" o un "01/02" se quedan como texto y no se les come el cero.
+function _sbTipoNativo(v) {
+  if (typeof v !== 'string') return v;
+  const s = v.trim();
+  if (s === '') return v;
+  if (s === 'true')  return true;
+  if (s === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(s) && String(Number(s)) === s) return Number(s);
+  return v;
+}
+function _sbFilaNativa(o) {
+  const r = {};
+  Object.keys(o || {}).forEach(k => { r[k] = _sbTipoNativo(o[k]); });
+  return r;
+}
+
+// Cuando dos pantallas piden la misma tabla al mismo tiempo (pasa al abrir
+// Pedidos: la lista y el mapa de colores), se hace UN solo viaje y las dos
+// esperan el mismo. Se suelta apenas contesta, así que nunca hay dato viejo.
+var _sbEspejoEnVuelo = window._sbEspejoEnVuelo || {};
+window._sbEspejoEnVuelo = _sbEspejoEnVuelo;
+
+// Trae las filas crudas de una tabla espejo. Devuelve null si no se puede —
+// y entonces quien llama se va por Apps Script.
+function _sbFilasEspejo(tabla) {
+  if (_sbEspejoEnVuelo[tabla]) return _sbEspejoEnVuelo[tabla];
+  const p = _sbFilasEspejoAhora(tabla);
+  _sbEspejoEnVuelo[tabla] = p;
+  p.then(function () { delete _sbEspejoEnVuelo[tabla]; },
+         function () { delete _sbEspejoEnVuelo[tabla]; });
+  return p;
+}
+
+async function _sbFilasEspejoAhora(tabla) {
+  if (!SB_LECTURA_CAMBIOS) return null;
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  try {
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/' + tabla + '?select=id,row_json&order=id.asc&limit=20000', {
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok }
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j)) return null;
+    return j.map(x => _sbFilaNativa(x.row_json));
+  } catch (e) { try { _errLog('sb.espejo.' + tabla, e); } catch (_) {} return null; }
+}
+
+// El número de pedido vacío llegó a la base como "0" en 4 cambios de prueba
+// viejos. En la hoja está vacío, así que acá se lo devuelve a vacío.
+function _c2Ped(v) { const s = String(v == null ? '' : v).trim(); return s === '0' ? '' : s; }
+
+// Agrupa las filas por NroCambio igual que cambios2Listar (Cambios2.gs).
+function _c2Agrupar(filas) {
+  const grupos = {}, orden = [];
+  filas.forEach(r => {
+    const nc = String(r.NroCambio || '').trim(); if (!nc) return;
+    if (!grupos[nc]) {
+      grupos[nc] = {
+        NroCambio: nc, Nombre: r.Nombre || '', DNI: r.DNI || '', Celular: r.Celular || '',
+        Region: r.Region || '', Direccion: r.Direccion || '', FechaSolicitud: r.FechaSolicitud || '',
+        Estado: r.Estado || '', Motivo: r.Motivo || '', Comentario: r.Comentario || '',
+        DiferenciaPrecio: parseFloat(r.DiferenciaPrecio) || 0,
+        PrecioEnvio: parseFloat(r.PrecioEnvio) || 0,
+        MontoPagadoCliente: parseFloat(r.MontoPagadoCliente) || 0,
+        MontoAsumidoEmpresa: parseFloat(r.MontoAsumidoEmpresa) || 0,
+        Sincronizado: String(r.SyncProcesado || '').toUpperCase() === 'TRUE',
+        RecibidoOriginal: String(r.StockDevProcesado || '').toUpperCase() === 'TRUE',
+        EnviadaNueva: !!r.FechaEnvioNueva,
+        Version: String(r.C2Version || '').trim(),
+        devueltas: [], nuevas: [], pedidos: {}
+      };
+      orden.push(nc);
+    }
+    const g = grupos[nc];
+    const rol = String(r.Rol || '').trim().toUpperCase();
+    const nped = _c2Ped(r.NroPedido);
+    if (nped) g.pedidos[nped] = 1;
+    if (rol === 'NUEVA') g.nuevas.push({ Prenda: r.Prenda || '', NroPedido: nped, Cant: parseInt(r.Cantidad, 10) || 1, Precio: parseFloat(r.Precio) || 0, ID: r.ID || '' });
+    else g.devueltas.push({ Prenda: r.Prenda || '', NroPedido: nped, Precio: parseFloat(r.Precio) || 0, CondicionPrenda: r.CondicionPrenda || '', ID: r.ID || '' });
+  });
+  const out = orden.map(nc => { const g = grupos[nc]; g.pedidos = Object.keys(g.pedidos); return g; });
+  out.sort((a, b) => {
+    const na = parseInt((a.NroCambio.match(/CAM-(\d+)/) || [0, 0])[1], 10);
+    const nb = parseInt((b.NroCambio.match(/CAM-(\d+)/) || [0, 0])[1], 10);
+    return nb - na;
+  });
+  return out;
+}
+
+// Mismo resultado que cambios2HistMap (Cambios2.gs): qué filas de Pedidos
+// se pintan de amarillo con la marca CAM.
+function _c2HistMapDe(filas) {
+  const grupos = {}, orden = [];
+  filas.forEach(r => {
+    const nc = String(r.NroCambio || '').trim(); if (!nc) return;
+    if (!grupos[nc]) {
+      grupos[nc] = { dev: [], nue: [],
+        estado: String(r.Estado || '').toUpperCase(),
+        recibido: String(r.StockDevProcesado || '').toUpperCase() === 'TRUE' };
+      orden.push(nc);
+    }
+    const o = { prenda: String(r.Prenda || '').trim(), ped: _c2Ped(r.NroPedido) };
+    if (String(r.Rol || '').toUpperCase() === 'NUEVA') grupos[nc].nue.push(o);
+    else grupos[nc].dev.push(o);
+  });
+  const out = [];
+  orden.forEach(nc => {
+    const g = grupos[nc]; if (g.estado === 'CANCELADO') return;
+    g.dev.forEach((d, i) => {
+      const nv = g.nue[i] ? g.nue[i].prenda : '';
+      if (!g.recibido && d.ped) out.push({ NroCambio: nc, NroPedido: d.ped, PrendaOriginal: d.prenda, PrendaNueva: nv, _esV2: true });
+      if (nv && d.ped) out.push({ NroCambio: nc, NroPedido: d.ped, PrendaOriginal: '', PrendaNueva: nv, _esV2: true });
+    });
+    for (let j = g.dev.length; j < g.nue.length; j++) {
+      if (g.nue[j].ped) out.push({ NroCambio: nc, NroPedido: g.nue[j].ped, PrendaOriginal: '', PrendaNueva: g.nue[j].prenda, _esV2: true });
+    }
+  });
+  return out;
+}
+
+// ── Las tres puertas que usa el ERP ──────────────────────────────────────
+async function _c2ListarRapido() {
+  const filas = await _sbFilasEspejo('cambios2');
+  if (filas) return _c2Agrupar(filas);
+  return api('cambios2.listar', {});
+}
+async function _c2HistMapRapido() {
+  const filas = await _sbFilasEspejo('cambios2');
+  if (filas) return _c2HistMapDe(filas);
+  return api('cambios2.histmap', {});
+}
+async function _devListarRapido() {
+  const filas = await _sbFilasEspejo('devoluciones');
+  if (filas) return filas.slice().sort((a, b) => new Date(b.FechaSolicitud || 0) - new Date(a.FechaSolicitud || 0));
+  return api('devoluciones.listar', {});
+}
+
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
 //
 // RED: si la base no responde, se borra por Apps Script como siempre. Pero si
@@ -5149,14 +5310,14 @@ async function _ensureHistParaPedidos(estVal) {
     api('cambios.listar', {}).then(r => { histCamData = Array.isArray(r) ? r : []; need = true; })
       .catch(e => { if (!Array.isArray(histCamData)) histCamData = []; }));
   if (!Array.isArray(histDevData)) _jobs.push(
-    api('devoluciones.listar', {}).then(r => { histDevData = Array.isArray(r) ? r : []; need = true; })
+    _devListarRapido().then(r => { histDevData = Array.isArray(r) ? r : []; need = true; })
       .catch(e => { if (!Array.isArray(histDevData)) histDevData = []; }));
   if (!Array.isArray(_c2Hist)) _jobs.push(
-    api('cambios2.histmap', {}).then(r => { _c2Hist = Array.isArray(r) ? r : []; need = true; })
+    _c2HistMapRapido().then(r => { _c2Hist = Array.isArray(r) ? r : []; need = true; })
       .catch(e => { if (!Array.isArray(_c2Hist)) _c2Hist = []; }));
   // _c2List = cambios2.listar (con Estado + pedidos[]) — fuente ACTIVA de la pestaña Cambio.
   if (!Array.isArray(_c2List)) _jobs.push(
-    api('cambios2.listar', {}).then(r => { _c2List = Array.isArray(r) ? r : []; need = true; })
+    _c2ListarRapido().then(r => { _c2List = Array.isArray(r) ? r : []; need = true; })
       .catch(e => { if (!Array.isArray(_c2List)) _c2List = []; }));
   if (_jobs.length) await Promise.all(_jobs);
   if (need && Array.isArray(pRaw) && pRaw.length) {
@@ -5772,11 +5933,11 @@ function _prefetchBackground() {
   if (!histDevData) {
     const _hd = (typeof _hdLsGet === 'function') ? _hdLsGet() : null;
     if (_hd && Array.isArray(_hd.data)) histDevData = _hd.data;
-    else api('devoluciones.listar', {}).then(d => { if (!histDevData) { histDevData = d; try{_hdLsSet(d);}catch(e){} _renderPedsDesde(pRaw, pEst, true); } }).catch(e => _errLog('prefetch.devoluciones.listar', e));
+    else _devListarRapido().then(d => { if (!histDevData) { histDevData = d; try{_hdLsSet(d);}catch(e){} _renderPedsDesde(pRaw, pEst, true); } }).catch(e => _errLog('prefetch.devoluciones.listar', e));
   }
   // Cambios v2 (fuente de la pestaña Cambio) — precargar para que aparezca rápido.
   if (!Array.isArray(_c2List)) {
-    api('cambios2.listar', {}).then(d => { if (!Array.isArray(_c2List)) { _c2List = Array.isArray(d) ? d : []; try{ _renderPedsDesde(pRaw, pEst, true); }catch(e){} } }).catch(e => _errLog('prefetch.cambios2.listar', e));
+    _c2ListarRapido().then(d => { if (!Array.isArray(_c2List)) { _c2List = Array.isArray(d) ? d : []; try{ _renderPedsDesde(pRaw, pEst, true); }catch(e){} } }).catch(e => _errLog('prefetch.cambios2.listar', e));
   }
 }
 
@@ -15679,7 +15840,7 @@ async function loadCambios2(){
   const el=document.getElementById('cambios2-w'); if(!el) return;
   el.innerHTML='<div class="ld"><div class="sp"></div>Cargando Cambios v2...</div>';
   let data;
-  try{ data=await api('cambios2.listar',{}); }
+  try{ data=await _c2ListarRapido(); }
   catch(e){ el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; return; }
   window._c2Data=data||[];
   renderCambios2(el, window._c2Data);
@@ -18365,7 +18526,7 @@ async function loadDevoluciones(forceReload) {
     const ptit = document.getElementById('ptit');
     if (ptit && !document.getElementById('hd-refresh-badge')) ptit.appendChild(badge);
     try {
-      histDevData = await api('devoluciones.listar', {});
+      histDevData = await _devListarRapido();
       _hdLsSet(histDevData);
       renderDevoluciones(el, histDevData);
     } catch(e) { /* cached sigue válido */ }
@@ -18390,7 +18551,7 @@ async function loadDevoluciones(forceReload) {
   // 3. Sin caché o forceReload
   if (el) el.innerHTML = spin('Cargando devoluciones...');
   try {
-    histDevData = await api('devoluciones.listar', {});
+    histDevData = await _devListarRapido();
     _hdLsSet(histDevData);
     if (el) renderDevoluciones(el, histDevData);
   } catch(e) {
