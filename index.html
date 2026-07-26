@@ -315,6 +315,11 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover{
 #bulk-bar select{padding:6px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px}
 .ped-chk{accent-color:var(--ac);width:14px;height:14px;cursor:pointer}
 /* STOCK */
+/* 26-jul: barras que se pueden deslizar pero NO muestran la barrita gris.
+   Se usan en las cabeceras (Pedidos, Stock): ahí la barrita ocupaba una franja
+   entera y no aportaba nada, porque el contenido casi siempre entra. */
+.sin-barra{scrollbar-width:none;-ms-overflow-style:none}
+.sin-barra::-webkit-scrollbar{display:none;height:0;width:0}
 .st-wrap{overflow:auto;max-height:calc(100dvh - 168px);border:1px solid var(--bd);border-radius:var(--r2)}
 .st-wrap table.stbl td{height:28px;line-height:1.15;vertical-align:middle}
 .st-wrap::-webkit-scrollbar{height:18px;width:18px}.st-wrap::-webkit-scrollbar-track{background:var(--bg3)}.st-wrap::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:4px}
@@ -448,7 +453,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
            ══════════════════════════════════════════════════════════════════ -->
       <!-- 26-jul: UNA sola fila. Si no entra, la barra se desliza de costado en
            vez de partirse en dos renglones y comerse el alto de tres pedidos. -->
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--bd);margin-bottom:8px;flex-wrap:nowrap;overflow-x:auto">
+      <div class="sin-barra" style="display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid var(--bd);margin-bottom:8px;flex-wrap:nowrap;overflow-x:auto">
         <div class="tabs" id="ped-tabs" style="border-bottom:none;margin-bottom:0;flex-wrap:nowrap;white-space:nowrap">
           <button class="tab on" data-e="_ACTIVOS"><span class="lbl">Activos</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e=""><span class="lbl">Todos</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
@@ -12804,6 +12809,124 @@ async function cliDelete(key) {
 // ── CLIENTE: MODAL HISTORIAL (C1) ────────────────────────────
 let _cliHist = { cliente:null, peds:[], cams:[], devs:[], tab:'ped' };
 let _cliHistCache = {}; // PERF v10 — caché de historial por cliente (key dni|tel|nombre)
+// ══════════════════════════════════════════════════════════════════════════
+// FICHA DE CLIENTA — DATOS DE CONTACTO Y DESCARGA A MEDIDA (26-jul-2026)
+//
+// ANTES: la ficha mostraba los números (pedidos, prendas, montos) y las tres
+// pestañas, pero NO los datos de la persona. Para ver su correo o su distrito
+// había que volver a la lista.
+//
+// AHORA: arriba va un bloque con todo lo suyo, y un botón para descargar la
+// ficha eligiendo dato por dato qué llevarse.
+// ══════════════════════════════════════════════════════════════════════════
+
+// Todo lo que se sabe de una clienta, en un solo lugar. `cuenta` son los números
+// ya calculados de la ficha, para no volver a sumarlos.
+function _cliDatosFicha(c, cuenta) {
+  cuenta = cuenta || {};
+  return [
+    { k:'Nombre',       t:'Nombre',            v:c.Nombre||'' },
+    { k:'DNI',          t:'Documento',         v:c.DNI||'' },
+    { k:'Telefono',     t:'Teléfono',          v:c.Telefono||'' },
+    { k:'Email',        t:'Correo',            v:c.Email||'' },
+    { k:'Cumpleanos',   t:'Cumpleaños',        v:_cliFmtCumple(c.Cumpleanos) },
+    { k:'Direccion',    t:'Dirección',         v:c.Direccion||'' },
+    { k:'Referencia',   t:'Referencia',        v:c.Referencia||'' },
+    { k:'Distrito',     t:'Distrito',          v:c.Distrito||'' },
+    { k:'Provincia',    t:'Provincia',         v:c.Provincia||'' },
+    { k:'Region',       t:'Región',            v:c.Region||'' },
+    { k:'Canal',        t:'Canal',             v:c.Canal||'' },
+    { k:'Segmento',     t:'Segmento',          v:String(c.Segmento||'').replace('_',' ') },
+    { k:'Pedidos',      t:'Pedidos #',         v:cuenta.pedidos },
+    { k:'Prendas',      t:'Prendas #',         v:cuenta.prendas },
+    { k:'Cambios',      t:'Cambios #',         v:cuenta.cambios },
+    { k:'Devoluciones', t:'Devoluciones #',    v:cuenta.devoluciones },
+    { k:'Compras',      t:'Total comprado',    v:cuenta.compras },
+    { k:'Pagado',       t:'Total pagado',      v:cuenta.pagado },
+    { k:'Pendiente',    t:'Total pendiente',   v:cuenta.pendiente },
+    { k:'Ticket',       t:'Ticket promedio',   v:cuenta.ticket },
+    { k:'UltimaCompra', t:'Última compra',     v:cuenta.ultima||'' },
+  ];
+}
+
+// El bloque que se ve arriba de la ficha.
+function _cliFichaDatosHtml(c, cuenta) {
+  const D = _cliDatosFicha(c, cuenta);
+  const SOLO_CONTACTO = ['Nombre','DNI','Telefono','Email','Cumpleanos','Direccion','Referencia','Distrito','Provincia','Region','Canal','Segmento'];
+  const item = d => '<div style="min-width:150px">'
+    + '<div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:.4px">'+esc(d.t)+'</div>'
+    + '<div style="font-size:13px;margin-top:2px">'+(String(d.v||'').trim() ? esc(String(d.v)) : '<span style="color:var(--mu)">—</span>')+'</div>'
+    + '</div>';
+  return '<div style="background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);padding:12px 14px;margin-bottom:12px">'
+    + '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px">'
+    +   '<span style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px">Datos de la clienta</span>'
+    +   '<button class="btn bp bs" id="cli-ficha-descargar" style="font-size:11px;white-space:nowrap">⬇ Descargar ficha</button>'
+    + '</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:14px 26px">'
+    +   D.filter(d => SOLO_CONTACTO.indexOf(d.k) >= 0).map(item).join('')
+    + '</div></div>';
+}
+
+// El selector de qué llevarse: una casilla POR DATO, como pidió Pablo.
+// Los dos atajos son solo eso, atajos: marcan o desmarcan las casillas.
+function _cliAbrirDescarga(c, cuenta) {
+  const D = _cliDatosFicha(c, cuenta);
+  const CONTACTO = ['Nombre','DNI','Telefono','Email','Cumpleanos','Direccion','Referencia','Distrito','Provincia','Region'];
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px';
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);padding:18px;max-width:520px;width:100%;max-height:88vh;overflow:auto">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+    +   '<span style="font-weight:700">Descargar ficha de '+esc(c.Nombre||'')+'</span>'
+    +   '<button class="btn bg bs" id="cd-x" style="font-size:12px">✕</button>'
+    + '</div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Marca qué te quieres llevar.</div>'
+    + '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap">'
+    +   '<button class="btn bg bs" id="cd-contacto" style="font-size:11px">Solo datos de contacto</button>'
+    +   '<button class="btn bg bs" id="cd-todo" style="font-size:11px">Todo</button>'
+    +   '<button class="btn bg bs" id="cd-nada" style="font-size:11px">Ninguno</button>'
+    + '</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px">'
+    +   D.map(d => '<label style="display:flex;align-items:center;gap:7px;font-size:13px;cursor:pointer">'
+    +     '<input type="checkbox" class="cd-chk" data-k="'+esc(d.k)+'" checked style="accent-color:var(--ac);width:15px;height:15px;cursor:pointer">'
+    +     esc(d.t)+'</label>').join('')
+    + '</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">'
+    +   '<button class="btn bg" id="cd-cancel" style="font-size:12px">Cancelar</button>'
+    +   '<button class="btn bp" id="cd-ok" style="font-size:12px">⬇ Descargar Excel</button>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  const cerrar = () => ov.remove();
+  ov.querySelector('#cd-x').onclick = cerrar;
+  ov.querySelector('#cd-cancel').onclick = cerrar;
+  const chks = () => [].slice.call(ov.querySelectorAll('.cd-chk'));
+  ov.querySelector('#cd-todo').onclick     = () => chks().forEach(x => { x.checked = true; });
+  ov.querySelector('#cd-nada').onclick     = () => chks().forEach(x => { x.checked = false; });
+  ov.querySelector('#cd-contacto').onclick = () => chks().forEach(x => { x.checked = CONTACTO.indexOf(x.dataset.k) >= 0; });
+  ov.querySelector('#cd-ok').onclick = () => {
+    const elegidos = chks().filter(x => x.checked).map(x => x.dataset.k);
+    if (!elegidos.length) { try { toast('Marca al menos un dato', 'warn'); } catch(e){} return; }
+    _cliDescargarFicha(c, cuenta, elegidos);
+    cerrar();
+  };
+}
+
+// Arma el Excel con lo elegido. Una sola fila: es la ficha de UNA clienta.
+function _cliDescargarFicha(c, cuenta, elegidos) {
+  try {
+    const D = _cliDatosFicha(c, cuenta).filter(d => elegidos.indexOf(d.k) >= 0);
+    const fila = {}; D.forEach(d => { fila[d.t] = d.v; });
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet([fila]);
+    ws['!cols'] = D.map(d => ({ wch: Math.max(14, String(d.t).length + 4) }));
+    XLSX.utils.book_append_sheet(wb, ws, 'Ficha');
+    const limpio = String(c.Nombre||'clienta').replace(/[^A-Za-z0-9ÁÉÍÓÚÑáéíóúñ ]/g,'').trim().replace(/\s+/g,'_') || 'clienta';
+    XLSX.writeFile(wb, 'Ficha_' + limpio + '.xlsx');
+    try { toast('Ficha descargada', 'ok'); } catch(e){}
+  } catch (e) {
+    try { toast('No se pudo descargar: ' + e.message, 'err'); } catch(_){}
+  }
+}
+
 async function cliOpenHistorial(keyOrObj) {
   // Acepta key (string) buscando en cliData, o un objeto {Nombre, DNI, Telefono} directo
   let c;
@@ -12823,6 +12946,8 @@ async function cliOpenHistorial(keyOrObj) {
   const body  = document.getElementById('cli-hist-body');
   title.textContent = c.Nombre + (c.DNI ? ' · DNI ' + c.DNI : '');
   kpis.innerHTML = '';
+  // Limpiar los datos de la clienta anterior antes de cargar los nuevos.
+  try { const _d = document.getElementById('cli-hist-datos'); if (_d) _d.innerHTML = ''; } catch(e) {}
   body.innerHTML = '<div class="ld"><div class="sp"></div>Cargando historial...</div>';
   mod.classList.add('on');
 
@@ -12931,6 +13056,27 @@ async function cliOpenHistorial(keyOrObj) {
     document.getElementById('cli-hist-cnt-ped').textContent = '('+_cliHist.peds.length+')';
     document.getElementById('cli-hist-cnt-cam').textContent = '('+_cliHist.cams.length+')';
     document.getElementById('cli-hist-cnt-dev').textContent = '('+_cliHist.devs.length+')';
+
+    // 26-jul: los datos de la persona, arriba de todo, y el botón para
+    // descargar la ficha eligiendo dato por dato.
+    const _cuenta = {
+      pedidos: totalPedidosUnd, prendas: totalPrendasUnd,
+      cambios: totalCambios, devoluciones: totalDevoluciones,
+      compras: Math.round(totalCompras*100)/100,
+      pagado: Math.round(totalPagado*100)/100,
+      pendiente: Math.round(totalPendiente*100)/100,
+      ticket: Math.round(ticketPromedio*100)/100,
+      ultima: ultFechaTxt
+    };
+    _cliHist._cuenta = _cuenta;
+    try {
+      const _dh = document.getElementById('cli-hist-datos');
+      if (_dh) _dh.innerHTML = _cliFichaDatosHtml(c, _cuenta);
+      else kpis.insertAdjacentHTML('beforebegin', '<div id="cli-hist-datos">' + _cliFichaDatosHtml(c, _cuenta) + '</div>');
+      const _bd = document.getElementById('cli-ficha-descargar');
+      if (_bd) _bd.onclick = () => _cliAbrirDescarga(c, _cuenta);
+    } catch(e) { try{_errLog('ficha.datos', e);}catch(_){} }
+
     _cliHistRenderTab('ped');
   } catch(e) {
     body.innerHTML = '<div class="empty" style="color:var(--rd)">Error cargando historial: '+esc(e.message)+'</div>';
@@ -13567,13 +13713,13 @@ function renderInv(el){
   _catList.sort((a,b)=>(_catIdx(a)-_catIdx(b))||a.localeCompare(b,'es'));
   const cats=['',..._catList];
   // 26-jul: una sola fila. Si no entran, se deslizan de costado en vez de apilarse.
-  let tabs='<div class="tabs" style="margin:0;flex-wrap:wrap;border:0;white-space:nowrap">';
+  let tabs='<div class="tabs sin-barra" style="margin:0;flex-wrap:wrap;border:0;white-space:nowrap">';
   cats.forEach(c=>{ const lbl=c===''?'Todos':c.charAt(0)+c.slice(1).toLowerCase(); tabs+='<button class="tab'+(stCatActiva===c?' on':'')+'" data-ivcat="'+esc(c)+'">'+esc(lbl)+'</button>'; });
   tabs+='</div>';
 
   // Barra de ACCIONES (lo que antes solo tenía Confección)
   // 26-jul: una sola fila — pestañas pegadas a la izquierda, botones a la derecha.
-  let acc='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">';
+  let acc='<div class="sin-barra" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">';
   acc+='<button id="iv-catalogo" class="btn bp bs" style="font-size:12px" title="Ver / crear productos del catálogo">📖 Catálogo</button>';
   acc+='<button id="iv-prod" class="btn bp bs" style="font-size:12px">＋ Ingresar Stock</button>';
   acc+='<button id="iv-falla" class="btn bg bs" style="font-size:12px" title="Marcar unidades como no disponibles (falla, lavado, contenido…)">＋ No disponible</button>';
@@ -13590,7 +13736,7 @@ function renderInv(el){
             + '<div style="flex:0 0 auto">'+acc+'</div></div>';
 
   // Barra de FILTROS (mismo estado que Stock)
-  let ctrl='<div style="display:flex;gap:6px;align-items:center;margin-bottom:5px;flex-wrap:nowrap;overflow-x:auto">';
+  let ctrl='<div class="sin-barra" style="display:flex;gap:6px;align-items:center;margin-bottom:5px;flex-wrap:nowrap;overflow-x:auto">';
   ctrl+='<input id="iv-txt" type="text" placeholder="Buscar: categoría, prenda, diseño y/o color…" autocomplete="off" value="'+esc(stFiltroTxt)+'" style="flex:1;min-width:180px;padding:7px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">';
   ctrl+='<select id="iv-ord" style="padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">'
     +'<option value="reciente"'+(stOrden==='reciente'?' selected':'')+'>↓ Más reciente</option>'
