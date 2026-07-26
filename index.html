@@ -2331,7 +2331,7 @@ async function loadCAT() {
 function loadUBI() { return UBI; } // UBI ya está embebido
 
 // ── NAV ───────────────────────────────────────────────────
-const TITLES = {dashboard:'Dashboard',panel:'Panel WhatsApp Ads',pedidos:'Pedidos',nuevo:'Nuevo pedido',clientes:'Clientes',inventario:'Stock',lotes:'Lotes',reposicion:'Reposición',stock:'Stock',confeccion:'Confección',productos:'Productos',cambios:'Nuevo cambio',histcambios:'Cambios',cambios2:'Cambios',nuevadev:'Nueva devolución',devoluciones:'Devoluciones',envios:'Cola de envíos',config:'Configuración',alertas:'Alertas',papelera:'Papelera de pedidos'};
+const TITLES = {dashboard:'Dashboard',panel:'Panel WhatsApp Ads',pedidos:'Pedidos',nuevo:'Nuevo pedido',clientes:'Clientes',inventario:'Stock',lotes:'Lotes',reposicion:'Reposición',stock:'Stock',confeccion:'Confección',productos:'Catálogo',cambios:'Nuevo cambio',histcambios:'Cambios',cambios2:'Cambios',nuevadev:'Nueva devolución',devoluciones:'Devoluciones',envios:'Cola de envíos',config:'Configuración',alertas:'Alertas',papelera:'Papelera de pedidos'};
 let curPg = 'dashboard';
 
 // Páginas que bloquean scroll de body para que la tabla se ancle al viewport
@@ -2957,8 +2957,8 @@ async function loadProductos() {
   w.innerHTML = '<div class="ld"><div class="sp"></div>Cargando productos...</div>';
   try {
     if (!MAESTROS || !Object.keys(MAESTROS).length) { try { await loadMAESTROS(); } catch(e){} }
-    PROD.data = await api('productos.listar', { force:'1' }) || [];
-    try { PROD._cat = await api('catalogo.maestrosSkus', {}) || []; } catch(e){ PROD._cat = []; }  // catálogo alineado (para desplegables en cascada)
+    PROD.data = await _productosListarRapido() || [];
+    try { PROD._cat = await _maestrosSkusRapido() || []; } catch(e){ PROD._cat = []; }  // catálogo alineado (para desplegables en cascada)
   } catch(e) {
     w.innerHTML = '<div style="padding:24px;color:var(--rd)">Error cargando productos: '+esc(e.message)+'</div>';
     return;
@@ -4574,6 +4574,34 @@ async function _dashboardTodoRapido() {
   const d = await _sbCacheLeer('dashboard.todo');
   if (d && typeof d === 'object' && !Array.isArray(d)) return d;
   return api('dashboard.todo');
+}
+
+// 26-jul: los tres botones de Stock (Catálogo, Reposición, Lotes) tardaban lo
+// mismo que tardaba todo antes: el viaje a Apps Script. Mismo espejo, mismo
+// respaldo — si la base no contesta, se le pregunta al servidor como siempre.
+async function _productosListarRapido() {
+  const d = await _sbCacheLeer('productos.listar');
+  if (Array.isArray(d) && d.length) return d;
+  return api('productos.listar', { force: '1' });
+}
+async function _maestrosSkusRapido() {
+  const d = await _sbCacheLeer('catalogo.maestrosSkus');
+  if (Array.isArray(d) && d.length) return d;
+  return api('catalogo.maestrosSkus', {});
+}
+async function _lotesRapido() {
+  const d = await _sbCacheLeer('lotes.listar');
+  if (Array.isArray(d) && d.length) return d;
+  return api('lotes.listar', {});
+}
+// La reposición se guarda calculada a 30 días. Si se pide otra ventana, se
+// calcula al momento: no tendría sentido guardar una por cada número posible.
+async function _reposicionRapido(dias) {
+  if (Number(dias) === 30) {
+    const d = await _sbCacheLeer('reposicion.calc');
+    if (d && (d.items || Array.isArray(d))) return d;
+  }
+  return api('reposicion.calc', { dias: dias });
 }
 
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
@@ -7553,7 +7581,14 @@ async function _pedsCargarRestoProgresivo() {
   const myToken = ++_pedsLoadToken;
   window._pedsCargaEnCurso = true;
   window._pedsCargaIncompleta = false;   // FIX jul-2026: aviso visible si la carga muere a medias
-  window._pedsRender3k = (pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length >= 3000); // si ya hay ≥3000 en pantalla, no re-dibujar a mitad de carga
+  // 26-jul-2026 — LA PANTALLA EN BLANCO. Medido en vivo: la pestaña Activos tardaba
+  // 11,3 segundos y en TODO ese rato la tabla estaba vacía. El motivo: el dibujado
+  // intermedio solo se hacía al pasar de 3.000 filas, y Activos carga 2.997. Nunca
+  // llegaba al umbral, así que no dibujaba nada hasta el final.
+  // Ahora se dibuja en cuanto llega la PRIMERA tanda (medio segundo) y una sola vez
+  // más al terminar. Siguen siendo dos dibujados, así que el parpadeo que se arregló
+  // en su momento no vuelve.
+  window._pedsYaPintado = (pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length > 0);
   let guard = 0, fallos = 0;
   try {
     while (guard++ < 300) {                       // tope de seguridad: 300×1000 filas
@@ -7608,8 +7643,8 @@ async function _pedsCargarRestoProgresivo() {
       const _realLen = pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional).length;
       // Render intermedio ÚNICO al cruzar 3000 filas (vista útil de inmediato; después,
       // un solo render final — anti-parpadeo).
-      if (!window._pedsRender3k && _realLen >= 3000) {
-        window._pedsRender3k = true;
+      if (!window._pedsYaPintado && _realLen > 0) {
+        window._pedsYaPintado = true;
         try { if (!Object.keys(pFlt||{}).length) _renderPedsDesde(pRaw, pEst, true); } catch(_){}
       }
       // Contador en vivo (solo texto, SIN re-dibujar la tabla): "X de Y filas"
@@ -13356,20 +13391,27 @@ function renderInv(el){
   _catList.sort((a,b)=>(_catIdx(a)-_catIdx(b))||a.localeCompare(b,'es'));
   const cats=['',..._catList];
   // 26-jul: una sola fila. Si no entran, se deslizan de costado en vez de apilarse.
-  let tabs='<div class="tabs" style="margin-bottom:5px;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap">';
+  let tabs='<div class="tabs" style="margin:0;flex-wrap:wrap;border:0;white-space:nowrap">';
   cats.forEach(c=>{ const lbl=c===''?'Todos':c.charAt(0)+c.slice(1).toLowerCase(); tabs+='<button class="tab'+(stCatActiva===c?' on':'')+'" data-ivcat="'+esc(c)+'">'+esc(lbl)+'</button>'; });
   tabs+='</div>';
 
   // Barra de ACCIONES (lo que antes solo tenía Confección)
-  let acc='<div style="display:flex;gap:6px;align-items:center;margin-bottom:5px;flex-wrap:nowrap;overflow-x:auto">';
+  // 26-jul: una sola fila — pestañas pegadas a la izquierda, botones a la derecha.
+  let acc='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">';
   acc+='<button id="iv-catalogo" class="btn bp bs" style="font-size:12px" title="Ver / crear productos del catálogo">📖 Catálogo</button>';
-  acc+='<button id="iv-prod" class="btn bp bs" style="font-size:12px">＋ Ingresar producción</button>';
+  acc+='<button id="iv-prod" class="btn bp bs" style="font-size:12px">＋ Ingresar Stock</button>';
   acc+='<button id="iv-falla" class="btn bg bs" style="font-size:12px" title="Marcar unidades como no disponibles (falla, lavado, contenido…)">＋ No disponible</button>';
   acc+='<button id="iv-recuperar" class="btn bg bs" style="font-size:12px" title="Unidades que vuelven a estar disponibles">♻ Recuperar</button>';
   acc+='<button id="iv-repfallas" class="btn bg bs" style="font-size:12px">📊 Reporte</button>';
   acc+='<button id="iv-reposicion" class="btn bg bs" style="font-size:12px" title="Qué reponer y cuánto">📈 Reposición</button>';
   acc+='<button id="iv-lotes" class="btn bg bs" style="font-size:12px" title="Historial de lotes de producción">📦 Lotes</button>';
   acc+='</div>';
+  // Las dos mitades viven en la MISMA fila: pestañas a la izquierda, botones a la
+  // derecha. Si la pantalla es angosta bajan solas, sin barra deslizadora.
+  const barra='<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;'
+            + 'flex-wrap:wrap;margin-bottom:5px;border-bottom:1px solid var(--bd);padding-bottom:4px">'
+            + '<div style="flex:1 1 auto;min-width:0">'+tabs+'</div>'
+            + '<div style="flex:0 0 auto">'+acc+'</div></div>';
 
   // Barra de FILTROS (mismo estado que Stock)
   let ctrl='<div style="display:flex;gap:6px;align-items:center;margin-bottom:5px;flex-wrap:nowrap;overflow-x:auto">';
@@ -13451,8 +13493,8 @@ function renderInv(el){
   th2+='</tr>';
 
   // BODY
-  // 26-jul: 28px de alto, igual que Pedidos, Cambios y Devoluciones.
-  const P='padding:2px 8px;height:28px;line-height:1.15;',C='text-align:center;';
+  // 26-jul: 24px de alto (Pablo lo bajó de 28 para ver más filas de golpe).
+  const P='padding:1px 8px;height:24px;line-height:1.1;',C='text-align:center;';
   const NCOLS=4+NT*VIS.length;
   const STEMPTY='background:#26262c;';
   let tbody='';
@@ -13469,7 +13511,7 @@ function renderInv(el){
       // en otras según el color de la prenda — se veía desordenado. Ahora TODOS van
       // sobre una cápsula clara: negro si es 0 o positivo, rojo si es negativo.
       // El color de la prenda se sigue viendo alrededor de la cápsula.
-      const _capsula=v=>`<span style="display:inline-block;min-width:24px;padding:0 6px;border-radius:9px;background:rgba(255,255,255,.90);color:${(v<0)?'#c81e1e':'#10101a'};font-weight:${(v<0)?'800':'700'};font-variant-numeric:tabular-nums">${v}</span>`;
+      const _capsula=v=>`<span style="display:inline-block;min-width:24px;padding:0 6px;border-radius:3px;background:rgba(255,255,255,.92);color:${(v<0)?'#c81e1e':'#10101a'};font-weight:${(v<0)?'800':'700'};font-variant-numeric:tabular-nums">${v}</span>`;
       const grpSt=`background:${GRPSEP};color:#10101a;vertical-align:middle;`;
       const _gc='text-align:center;white-space:normal;word-break:break-word;overflow:hidden;line-height:1.15;';
       let tr='<tr>';
@@ -13505,7 +13547,7 @@ function renderInv(el){
   // 26-jul: fuera el cartel "X de Y productos · N diseños" — una línea entera para
   // un dato que no se usa. La plantilla gana ese alto.
 
-  setHTMLKeepScroll(el, tabs+acc+ctrl
+  setHTMLKeepScroll(el, barra+ctrl
     +'<div class="st-wrap"><table class="stbl">'
     +'<thead>'+th1+th2+'</thead>'
     +'<tbody>'+tbody+'</tbody>'
@@ -13517,7 +13559,11 @@ function renderInv(el){
   try {
     const _tabla=el.querySelector('table.stbl');
     if(_tabla){
-      const _f1=_tabla.querySelector('thead tr:first-child th');
+      // OJO: hay que medir una celda que ocupe UNA sola fila (los bloques
+      // Conf. Real / Ventas / Stock). Las cuatro primeras ocupan DOS filas, así
+      // que medirlas mandaba la fila de tallas 27px más abajo de la cuenta.
+      const _f1=_tabla.querySelector('thead tr:first-child th:not([rowspan])')
+             || _tabla.querySelector('thead tr:first-child th');
       const _alto=_f1?Math.round(_f1.getBoundingClientRect().height):0;
       if(_alto>0) _tabla.querySelectorAll('thead tr:nth-child(2) th').forEach(th=>{ th.style.top=_alto+'px'; });
     }
@@ -13622,7 +13668,7 @@ let lotesData=null;
 async function loadLotes(){
   const el=document.getElementById('lotes-w');
   el.innerHTML=spin('Cargando lotes...');
-  try{ lotesData=await api('lotes.listar',{}); renderLotes(el); }
+  try{ lotesData=await _lotesRapido(); renderLotes(el); }
   catch(e){ el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 function renderLotes(el){
@@ -13703,7 +13749,7 @@ let repoData=null, repoDias=30;
 async function loadReposicion(){
   const el=document.getElementById('repo-w');
   el.innerHTML=spin('Calculando reposición...');
-  try{ repoData=await api('reposicion.calc',{dias:repoDias}); renderReposicion(); }
+  try{ repoData=await _reposicionRapido(repoDias); renderReposicion(); }
   catch(e){ el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 function renderReposicion(){
