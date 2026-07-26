@@ -3698,7 +3698,7 @@ async function renderHeroDiario() {
   const host = document.getElementById('dash-hero-diario');
   if (!host) return;
   let r;
-  try { r = await api('dashboard.serieDiaria', _dashHeroMes ? {mes:_dashHeroMes} : {}); }
+  try { r = await _serieDiariaRapido(_dashHeroMes); }
   catch(e) { host.innerHTML = '<div class="empty" style="margin:0">No se pudo cargar el gráfico diario</div>'; return; }
   const dias = r.dias || [];
   const maxV = Math.max(1, ...dias.map(d => d.actual));         // solo este mes (sin barras sombra)
@@ -4709,6 +4709,49 @@ async function _maestrosListarRapido() {
   const d = await _sbCacheLeer('maestros.listar');
   if (d && Object.keys(d).length) return d;
   return api('maestros.listar', {});
+}
+
+// 26-jul · PRIORIDAD 1 DE LA MIGRACIÓN — las cinco lecturas lentas que quedaban.
+// Medido en vivo, una por una, antes de migrarlas:
+//   · dashboard.serieDiaria .. 10.788 ms   (gráfico del Dashboard)
+//   · confeccion.listar ......  8.910 ms   (módulo Confección)
+//   · alertas.listar .........  8.434 ms   (campanita de Alertas)
+//   · fallas.resumen .........  3.739 ms   (reporte de fallas)
+//   · vistas.stock.listar ....  3.537 ms   (orden guardado de Stock)
+//
+// OJO CON LOS PARÁMETROS: tres de estas aceptan filtros (un mes, un rango de
+// fechas). En la base solo se guarda el resultado SIN filtros, que es el que se
+// pide al abrir la pantalla. Si la persona elige otro mes u otro rango, se le
+// pregunta a Apps Script como siempre: mejor esperar unos segundos que mostrar
+// el período equivocado.
+async function _serieDiariaRapido(mes) {
+  if (!mes) {
+    const d = await _sbCacheLeer('dashboard.serieDiaria');
+    if (d && typeof d === 'object') return d;
+  }
+  return api('dashboard.serieDiaria', mes ? { mes: mes } : {});
+}
+async function _confeccionListarRapido() {
+  const d = await _sbCacheLeer('confeccion.listar');
+  if (Array.isArray(d) && d.length) return d;
+  return api('confeccion.listar', {});
+}
+async function _alertasListarRapido() {
+  const d = await _sbCacheLeer('alertas.listar');
+  if (d && typeof d === 'object' && d.totales) return d;
+  return api('alertas.listar');
+}
+async function _fallasResumenRapido(desde, hasta) {
+  if (!desde && !hasta) {
+    const d = await _sbCacheLeer('fallas.resumen');
+    if (d && typeof d === 'object') return d;
+  }
+  return api('fallas.resumen', Object.assign({}, desde ? { desde: desde } : {}, hasta ? { hasta: hasta } : {}));
+}
+async function _vistasStockRapido() {
+  const d = await _sbCacheLeer('vistas.stock.listar');
+  if (Array.isArray(d)) return d;
+  return api('vistas.stock.listar');
 }
 
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
@@ -6210,7 +6253,7 @@ function _prefetchBackground() {
   }
   // Confección — solo si no está cargado
   if (!confData) {
-    api('confeccion.listar', {}).then(d => { if (!confData) confData = d; }).catch(e => _errLog('prefetch.confeccion.listar', e));
+    _confeccionListarRapido().then(d => { if (!confData) confData = d; }).catch(e => _errLog('prefetch.confeccion.listar', e));
   }
   // Catálogo prendas — por si no se cargó aún
   if (!CAT) loadCAT().catch(e => _errLog('prefetch.loadCAT', e, {toast:'No se pudo cargar el catálogo', retry:()=>{ try{lsDel('catalogo_prendas');}catch(_){}; CAT=null; loadCAT().then(()=>toast('Catálogo cargado','ok')).catch(e2 => _errLog('prefetch.loadCAT.retry', e2, {toast:'No se pudo cargar el catálogo', retry:()=>{ try{lsDel('catalogo_prendas');}catch(_){}; CAT=null; loadCAT().catch(()=>{}); }})); }}));
@@ -13531,7 +13574,7 @@ function _stFiltrarRows(rows){
 }
 let stVistas=[]; // vistas de orden manual guardadas (compartidas): [{nombre,orden:[clave],por,fecha}]
 const _stGrpKey = g => String(g._prenda||'')+'|||'+String(g._diseno||'');
-async function cargarVistasStock(){ try{ stVistas = await api('vistas.stock.listar') || []; }catch(e){ stVistas = stVistas||[]; } return stVistas; }
+async function cargarVistasStock(){ try{ stVistas = await _vistasStockRapido() || []; }catch(e){ stVistas = stVistas||[]; } return stVistas; }
 let stHideNoStock=false;            // ocultar filas sin stock (toggle)
 let _stOrdenInit=false;             // ¿ya restauramos el orden guardado del usuario?
 function _stEmail(){ return (typeof MY_EMAIL!=='undefined'&&MY_EMAIL)||''; }
@@ -14433,7 +14476,7 @@ async function loadConf() {
   if (cached) { confData = cached; renderConf(el); return; }
   el.innerHTML = spin('Cargando confección...');
   try {
-    confData = await api('confeccion.listar', {});
+    confData = await _confeccionListarRapido();
     _confLsSet(confData);
     renderConf(el);
   } catch(e) { el.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
@@ -15080,7 +15123,7 @@ async function _confAbrirReporteFallas(confEl) {
     const desde=document.getElementById('falrep-desde').value||'';
     const hasta=document.getElementById('falrep-hasta').value||'';
     try{
-      const r=await api('fallas.resumen', Object.assign({}, desde?{desde:desde}:{}, hasta?{hasta:hasta}:{}));
+      const r=await _fallasResumenRapido(desde, hasta);
       const tbl=(title,rows)=> '<div style="margin:14px 0 6px;font-weight:700;color:var(--tx)">'+title+'</div>'
         + (rows&&rows.length ? '<table style="width:100%;border-collapse:collapse;font-size:12px"><tbody>'
           + rows.map(x=>'<tr style="border-top:1px solid var(--bd)"><td style="padding:5px 8px">'+esc(x.k)+'</td><td style="padding:5px 8px;text-align:right;font-family:monospace;font-weight:700">'+x.v+'</td></tr>').join('')
@@ -21550,7 +21593,7 @@ async function loadAlertas() {
   const w = document.getElementById('alertas-w');
   w.innerHTML = spin('Revisando alertas...');
   try {
-    const r = await api('alertas.listar');
+    const r = await _alertasListarRapido();
     _renderAlertas(w, r);
     _updateAlertBadge(r.total);
   } catch(e) { w.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
@@ -21608,7 +21651,7 @@ function _updateAlertBadge(n) {
 
 async function _pollAlertBadge() {
   try {
-    const r = await api('alertas.listar');
+    const r = await _alertasListarRapido();
     _updateAlertBadge(r.total);
   } catch(e) {}
 }
