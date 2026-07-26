@@ -4754,6 +4754,143 @@ async function _vistasStockRapido() {
   return api('vistas.stock.listar');
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// ABRIR UN PEDIDO — DIRECTO DE LA BASE (26-jul-2026 · prioridad 2)
+//
+// `pedidos.datos` es la lectura más pedida del ERP: 12 lugares distintos. Se
+// dispara al abrir un pedido, al buscar por DNI, por teléfono o por nombre, y
+// al registrar un cambio o una devolución. Medido en vivo: 2,6 a 4,5 segundos
+// cada vez.
+//
+// NO se puede espejar como las demás: pide UN pedido concreto, no una pantalla
+// entera. Así que se consulta la base directamente, que es lo que ya hace la
+// grilla de Pedidos.
+//
+// ⚠️ DE PASO SE ARREGLA UN ERROR QUE ESTABA VIVO. En "Nuevo cambio", buscar por
+// DNI o por teléfono NUNCA encontraba nada. El ERP pedía el tipo "dni_ultimos"
+// (en plural) y el servidor solo conoce "dni_ultimo" (singular), así que caía
+// en la rama del nombre —que llegaba vacío— y devolvía null. Comprobado el
+// 26-jul contra el servidor: dni_ultimos → null · dni_ultimo → el pedido.
+// Acá los dos nombres funcionan.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LECTURA_PEDIDO = true;   // reversa: false y publicar
+
+// Arma el objeto del pedido con las MISMAS reglas que el servidor
+// (_pedDatosObjDesdeFilas en Code.js): la primera fila manda para los datos de
+// la clienta, y la ÚLTIMA prenda manda para canal/origen/asesora.
+function _pedDatosArmar(nro, filas) {
+  if (!filas.length) return null;
+  const r0 = filas[0];
+  const vistas = {}, conPrecio = [], unidades = [];
+  filas.forEach(r => {
+    const pn = String(r['Prenda'] || '').trim();
+    if (!pn || pn === '_PAGO_') return;
+    const precio = parseFloat(r['Precio']) || 0;
+    unidades.push({ prenda: pn, precio });          // una por unidad física
+    if (vistas[pn]) return;
+    vistas[pn] = 1;
+    conPrecio.push({ prenda: pn, precio });         // lista sin repetir
+  });
+  const formas = {};
+  filas.forEach(r => { const f = String(r['Forma pago'] || '').trim(); if (f) formas[f] = 1; });
+  let ultPrenda = null;
+  filas.forEach(r => { const pn = String(r['Prenda'] || '').trim(); if (pn && pn !== '_PAGO_') ultPrenda = r; });
+  const lp = ultPrenda || r0;
+  const T = (r, k) => String(r[k] == null ? '' : r[k]);
+  return {
+    NroPedido: String(nro),
+    Canal: T(lp,'CANAL'), Origen: T(lp,'ORIGEN'), Asesora: T(lp,'Asesora'),
+    Nombre: T(r0,'Nombres y Apellidos'), DNI: T(r0,'DNI'),
+    Direccion: T(r0,'Direccion'), Referencia: T(r0,'Referencia'),
+    Distrito: T(r0,'Distrito'), Provincia: T(r0,'Provincia'), Region: T(r0,'Region'),
+    Celular: T(r0,'Celular'), Correo: T(r0,'Email'), Courier: T(r0,'Courier'),
+    Estado: T(r0,'Estado'), Cambio: T(r0,'Cambio'), Comentario: T(r0,'Comentarios Envio'),
+    Prendas: conPrecio.map(p => p.prenda),
+    PrendasConPrecio: conPrecio,
+    PrendasUnidades: unidades,
+    PrendasUnidadesNombres: unidades.map(p => p.prenda),
+    FormasPago: Object.keys(formas).join(' / '),
+  };
+}
+
+function _pedDatosFecha(filas) {
+  let ms = 0;
+  filas.forEach(r => { const t = Date.parse(r['Fecha Pedido'] || '') || 0; if (t > ms) ms = t; });
+  return ms;
+}
+
+async function _pedDatosRapido(p) {
+  p = p || {};
+  const tipo = String(p.tipo || 'nro');
+  const nro = String(p.nro || '').trim();
+  const dni = String(p.dni || '').trim();
+  const cel = String(p.celular || '').trim();
+  const nom = String(p.nombre || '').trim();
+  // Qué se espera de vuelta: un pedido solo, o una lista de candidatos.
+  const unoSolo = (tipo === 'nro' || tipo === 'dni_ultimo' || tipo === 'celular_ultimo' || tipo === 'nombre_ultimo');
+  const porApps = () => api('pedidos.datos', p);
+
+  if (!SB_LECTURA_PEDIDO) return porApps();
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
+  if (window._sbSaltarEspejo) return porApps();      // el 🔄 quiere datos del servidor
+
+  // Qué columna se consulta según lo que se está buscando.
+  let filtro = '';
+  if (tipo === 'nro') { if (!nro) return null; filtro = 'nro_pedido=eq.' + encodeURIComponent(nro); }
+  else if (tipo.indexOf('dni') === 0)     { if (!dni) return unoSolo ? null : []; filtro = 'dni=eq.' + encodeURIComponent(dni); }
+  else if (tipo.indexOf('celular') === 0) { if (!cel) return unoSolo ? null : []; filtro = 'celular=ilike.' + encodeURIComponent('%' + cel + '%'); }
+  else                                     { if (!nom) return unoSolo ? null : []; filtro = 'nombres=ilike.' + encodeURIComponent('%' + nom + '%'); }
+
+  try {
+    const tok = await _sbTokenVigente();
+    if (!tok) return porApps();
+    // ⚠️ EL `order=id.asc` NO ES OPCIONAL. Sin él, la base devuelve las filas en
+    // el orden que se le antoje, y acá el orden ES el dato: la PRIMERA fila
+    // define los datos de la clienta y la lista de prendas sale en ese orden.
+    // Se detectó el 26-jul comparando 12 pedidos: uno salió con las prendas
+    // barajadas. `id.asc` es el orden en que se escribieron en la hoja.
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=row_json&' + filtro + '&eliminado=is.null&order=id.asc&limit=3000',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return porApps();
+    const j = await r.json();
+    if (!Array.isArray(j)) return porApps();
+    const filas = j.map(x => x.row_json).filter(Boolean);
+    if (!filas.length) return unoSolo ? null : [];
+
+    // Agrupar por número de pedido, respetando el orden en que vinieron.
+    const porNro = {}, orden = [];
+    filas.forEach(f => {
+      const n = String(f['NroPedido'] || '').trim(); if (!n) return;
+      if (!porNro[n]) { porNro[n] = []; orden.push(n); }
+      porNro[n].push(f);
+    });
+    if (!orden.length) return unoSolo ? null : [];
+
+    if (tipo === 'nro') return _pedDatosArmar(nro, porNro[nro] || filas);
+
+    // El más reciente primero.
+    orden.sort((a, b) => _pedDatosFecha(porNro[b]) - _pedDatosFecha(porNro[a]));
+    if (unoSolo) return _pedDatosArmar(orden[0], porNro[orden[0]]);
+
+    // Lista de candidatos: hasta 8, del más nuevo al más viejo.
+    return orden.slice(0, 8).map(n => {
+      const f0 = porNro[n][0], ms = _pedDatosFecha(porNro[n]);
+      return {
+        NroPedido: n,
+        Nombre: String(f0['Nombres y Apellidos'] || ''),
+        DNI: String(f0['DNI'] || ''), Celular: String(f0['Celular'] || ''),
+        Region: String(f0['Region'] || ''), Courier: String(f0['Courier'] || ''),
+        Estado: String(f0['Estado'] || ''),
+        Fecha: ms ? new Date(ms).toISOString().split('T')[0] : '',
+        fechaMs: ms,
+      };
+    });
+  } catch (e) {
+    try { _errLog('sb.pedidos.datos', e); } catch (_) {}
+    return porApps();
+  }
+}
+
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
 //
 // RED: si la base no responde, se borra por Apps Script como siempre. Pero si
@@ -10606,7 +10743,7 @@ function npRellenar(c, resEl) {
   // de la ÚLTIMA prenda del pedido base (las originales conservan los suyos como
   // historial). Prefill editable: el usuario puede cambiarlo antes de guardar.
   if (NP.modo === 'agregar' && NP.nroPedBase && typeof api === 'function') {
-    api('pedidos.datos', { nro: NP.nroPedBase, tipo: 'nro' }).then(d => {
+    _pedDatosRapido({ nro: NP.nroPedBase, tipo: 'nro' }).then(d => {
       if (!d) return;
       const setSel = (id, val) => {
         const s = document.getElementById(id);
@@ -15933,7 +16070,7 @@ async function camBuscarPorDni(dni) {
   hint.textContent = 'Buscando pedidos con DNI/RUC/CE ' + esc(dni) + '...';
   hint.style.color = 'var(--mu)';
   try {
-    const peds = await api('pedidos.datos', { dni, tipo: 'dni_ultimos' });
+    const peds = await _pedDatosRapido({ dni, tipo: 'dni_ultimos' });
     if (!peds || !peds.length) { hint.textContent = '✗ No se encontraron pedidos con ' + esc(dni); hint.style.color = 'var(--rd)'; return; }
     camRellenar(peds[0], peds);
   } catch(e) {
@@ -15947,7 +16084,7 @@ async function camBuscarPorCelular(celular) {
   hint.textContent = 'Buscando pedidos con teléfono ' + esc(celular) + '...';
   hint.style.color = 'var(--mu)';
   try {
-    const peds = await api('pedidos.datos', { celular, tipo: 'celular_ultimos' });
+    const peds = await _pedDatosRapido({ celular, tipo: 'celular_ultimos' });
     if (!peds || !peds.length) { hint.textContent = '✗ No se encontraron pedidos con el teléfono ' + esc(celular); hint.style.color = 'var(--rd)'; return; }
     camRellenar(peds[0], peds);
   } catch(e) {
@@ -15961,7 +16098,7 @@ async function camBuscarPorNro(nro) {
   hint.textContent = 'Buscando pedido #' + esc(nro) + '...';
   hint.style.color = 'var(--mu)';
   try {
-    const d = await api('pedidos.datos', { nro, tipo: 'nro' });
+    const d = await _pedDatosRapido({ nro, tipo: 'nro' });
     if (!d) {
       hint.textContent = '✗ Pedido #' + esc(nro) + ' no encontrado';
       hint.style.color = 'var(--rd)'; return;
@@ -15981,7 +16118,7 @@ async function camBuscarPorNombre(nombre) {
     // PERF v15 — UN solo viaje: el backend localiza el último pedido del
     // cliente (TextFinder sobre la columna Nombre) y devuelve sus datos
     // completos directamente. Antes eran 2 llamadas (lista + detalle).
-    const peds = await api('pedidos.datos', { nombre, tipo: 'nombre_ultimos' });
+    const peds = await _pedDatosRapido({ nombre, tipo: 'nombre_ultimos' });
     if (!peds || !peds.length) {
       hint.textContent = '✗ No se encontraron pedidos para "' + esc(nombre) + '"';
       hint.style.color = 'var(--rd)'; return;
@@ -16151,7 +16288,7 @@ function camRellenar(d, allPeds) {
       if (!_ped.prendas || !_ped.prendas.length) {
         if (_verMas) _verMas.innerHTML = '<span style="font-size:11px;color:var(--mu)">Cargando prendas…</span>';
         try {
-          const _full = await api('pedidos.datos', { nro: _ped.nro, tipo: 'nro' });
+          const _full = await _pedDatosRapido({ nro: _ped.nro, tipo: 'nro' });
           _ped.prendas = (_full && _full.PrendasUnidadesNombres && _full.PrendasUnidadesNombres.length) ? _full.PrendasUnidadesNombres : ((_full && _full.Prendas) || []);
           _ped.precioMap = _ped.precioMap || {};
           if (_full && _full.PrendasConPrecio) _full.PrendasConPrecio.forEach(pp => { _ped.precioMap[pp.prenda] = parseFloat(pp.precio)||0; });
@@ -18660,7 +18797,7 @@ function hcAbrirEditor(r, containerEl) {
 
   // Cargar prendas del pedido (si existe NroPedido)
   if (editor.nro) {
-    api('pedidos.datos', { nro: editor.nro, tipo: 'nro' }).then(d => {
+    _pedDatosRapido({ nro: editor.nro, tipo: 'nro' }).then(d => {
       if (!d || !d.Prendas || !d.Prendas.length) {
         renderPdevFreeText(r['PrendaOriginal']||'');
         return;
@@ -18943,14 +19080,14 @@ function _devBindEvents() {
     hint.style.color = 'var(--mu)';
     try {
       if (tipo === 'nro') {
-        const res = await api('pedidos.datos', { nro: q, tipo: 'nro' });
+        const res = await _pedDatosRapido({ nro: q, tipo: 'nro' });
         if (!res) { hint.textContent = '✗ Pedido #' + esc(q) + ' no encontrado'; hint.style.color='var(--rd)'; return; }
         devRellenar(res);
         hint.textContent = '✓ Pedido #' + res.NroPedido + ' · ' + (res.Nombre||'—');
         hint.style.color = 'var(--gn)';
       } else {
         // K-12: Buscar por nombre — lista compacta + prefetch del detalle en background
-        const lista = await api('pedidos.datos', { nombre: q, tipo: 'nombre' });
+        const lista = await _pedDatosRapido({ nombre: q, tipo: 'nombre' });
         if (!lista || !lista.length) {
           hint.textContent = '✗ No se encontraron pedidos para "' + esc(q) + '"';
           hint.style.color = 'var(--rd)'; return;
@@ -18959,7 +19096,7 @@ function _devBindEvents() {
         window._devDetalleCache = window._devDetalleCache || {};
         const fetchDetalle = (nro) => {
           if (window._devDetalleCache[nro]) return Promise.resolve(window._devDetalleCache[nro]);
-          return api('pedidos.datos', { nro, tipo: 'nro' }).then(d => {
+          return _pedDatosRapido({ nro, tipo: 'nro' }).then(d => {
             if (d) window._devDetalleCache[nro] = d;
             return d;
           });
@@ -19048,7 +19185,7 @@ function devFiltrarNombre(q) {
   const fetchDetalle = (nro) => {
     if (!nro) return Promise.resolve(null);
     if (window._devDetalleCache[nro]) return Promise.resolve(window._devDetalleCache[nro]);
-    return api('pedidos.datos', { nro, tipo: 'nro' }).then(d => {
+    return _pedDatosRapido({ nro, tipo: 'nro' }).then(d => {
       if (d) window._devDetalleCache[nro] = d;
       return d;
     }).catch(()=>null);
@@ -19083,7 +19220,7 @@ function devFiltrarNombre(q) {
           }
         }
         // Fallback (cliente sin ultPedNro en el índice — datos viejos)
-        const lista = await api('pedidos.datos', { nombre: c.n, tipo: 'nombre' });
+        const lista = await _pedDatosRapido({ nombre: c.n, tipo: 'nombre' });
         if (lista && lista.length) {
           const d = await fetchDetalle(lista[0].NroPedido);
           if (d) {
