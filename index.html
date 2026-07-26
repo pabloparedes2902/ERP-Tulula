@@ -1563,7 +1563,7 @@ async function _abrirPedidoDesdeBusqueda(nro) {
     let ped = pAll && pAll.find(p => String(p['NroPedido']) === String(nro));
     if (ped && typeof verPed === 'function') { verPed(ped); return; }
     // No está cargado (histórico): traerlo del backend, agruparlo y abrirlo.
-    const r = await api('pedidos.porNros', { nros: nro });
+    const r = await _pedPorNrosRapido(nro);
     const rows = (r && r.rows) || [];
     if (rows.length) {
       try { if (typeof pEnrichPagos === 'function') pEnrichPagos(rows); } catch(_){}
@@ -4813,6 +4813,27 @@ function _pedDatosArmar(nro, filas) {
   };
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// PEDIDOS ARCHIVADOS — SE VEN, NO SE TOCAN (26-jul-2026)
+//
+// Los pedidos con más de 15 meses se mudan a la hoja "Tulula ERP - Histórico"
+// (Archivo.gs, ARCHIVO_CORTE_MESES = 15). En la base siguen estando todos, así
+// que ahora se pueden CONSULTAR — antes abrirlos decía "no existe".
+//
+// Pero editarlos escribiría en la hoja ACTIVA, donde ya no están: se crearían
+// filas sueltas o el cambio se perdería. Por eso se abren en solo lectura, con
+// un aviso arriba. El administrador puede desbloquearlo si de verdad lo necesita.
+// ══════════════════════════════════════════════════════════════════════════
+const PED_ARCHIVO_MESES = 15;   // el MISMO número que usa Archivo.gs
+
+function _pedEstaArchivado(fechaMs) {
+  if (!fechaMs) return false;
+  const corte = new Date();
+  corte.setMonth(corte.getMonth() - PED_ARCHIVO_MESES);
+  corte.setHours(0, 0, 0, 0);
+  return fechaMs < corte.getTime();
+}
+
 function _pedDatosFecha(filas) {
   let ms = 0;
   filas.forEach(r => { const t = Date.parse(r['Fecha Pedido'] || '') || 0; if (t > ms) ms = t; });
@@ -4866,7 +4887,12 @@ async function _pedDatosRapido(p) {
     });
     if (!orden.length) return unoSolo ? null : [];
 
-    if (tipo === 'nro') return _pedDatosArmar(nro, porNro[nro] || filas);
+    if (tipo === 'nro') {
+      const uno = _pedDatosArmar(nro, porNro[nro] || filas);
+      // Se marca acá, donde se conocen las fechas de todas sus filas.
+      if (uno) uno._archivado = _pedEstaArchivado(_pedDatosFecha(porNro[nro] || filas));
+      return uno;
+    }
 
     // El más reciente primero.
     orden.sort((a, b) => _pedDatosFecha(porNro[b]) - _pedDatosFecha(porNro[a]));
@@ -4889,6 +4915,49 @@ async function _pedDatosRapido(p) {
     try { _errLog('sb.pedidos.datos', e); } catch (_) {}
     return porApps();
   }
+}
+
+// 26-jul · resto de la PRIORIDAD 2 — consultas de UN registro.
+//
+// `pedidos.porNros` trae las filas crudas de uno o varios pedidos. Se usa al
+// rescatar un pedido que el filtro no encontró, al mover lotes y al revisar qué
+// hay de verdad en la hoja. 4 lugares.
+//
+// `cambios.porPedido` son los cambios de UN pedido. No hace falta ir a la base:
+// la lista completa de cambios YA está espejada, así que se filtra de ahí. Cero
+// viajes nuevos.
+async function _pedPorNrosRapido(nros) {
+  const lista = String(nros == null ? '' : nros).split(',').map(x => x.trim()).filter(Boolean);
+  if (!lista.length) return { rows: [] };
+  const porApps = () => api('pedidos.porNros', { nros: lista.join(',') });
+  if (!SB_LECTURA_PEDIDO) return porApps();
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
+  if (window._sbSaltarEspejo) return porApps();
+  try {
+    const tok = await _sbTokenVigente();
+    if (!tok) return porApps();
+    // in.(...) admite varios números de una vez. Las comillas evitan que un
+    // número con espacios o comas rompa la consulta.
+    const enLista = '(' + lista.map(n => '"' + String(n).replace(/"/g, '') + '"').join(',') + ')';
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=row_json&nro_pedido=in.' + encodeURIComponent(enLista) +
+                          '&eliminado=is.null&order=id.asc&limit=5000',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return porApps();
+    const j = await r.json();
+    if (!Array.isArray(j)) return porApps();
+    return { rows: j.map(x => x.row_json).filter(Boolean) };
+  } catch (e) { try { _errLog('sb.porNros', e); } catch (_) {} return porApps(); }
+}
+
+async function _cambiosPorPedidoRapido(nro) {
+  const n = String(nro == null ? '' : nro).trim();
+  if (!n) return [];
+  try {
+    const todos = await _cambiosListarRapido();
+    if (!Array.isArray(todos)) return api('cambios.porPedido', { nro: n });
+    return todos.filter(r => String(r['NroPedido'] || '').trim() === n)
+                .sort((a, b) => new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0));
+  } catch (e) { try { _errLog('sb.cambiosPorPedido', e); } catch (_) {} return api('cambios.porPedido', { nro: n }); }
 }
 
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
@@ -5807,7 +5876,7 @@ async function _ensurePedidosCambioDevol(estVal) {
     const faltan = [...need].filter(n => n && !have.has(n));
     if (!faltan.length) return;
     let res;
-    try { res = await api('pedidos.porNros', { nros: faltan.join(',') }); }
+    try { res = await _pedPorNrosRapido(faltan.join(',')); }
     catch(e) { return; }   // endpoint aún no desplegado en backend → sin romper nada
     const rows = (res && Array.isArray(res.rows)) ? res.rows : (Array.isArray(res) ? res : []);
     if (!rows.length) return;
@@ -8386,7 +8455,7 @@ async function _pedsRefrescarNros(nros){
   try {
     const list = [...new Set((nros||[]).map(n => String(n||'').trim()).filter(Boolean))];
     if (!list.length) return;
-    const res = await api('pedidos.porNros', { nros: list.join(',') });
+    const res = await _pedPorNrosRapido(list.join(','));
     const rows = (res && Array.isArray(res.rows)) ? res.rows : (Array.isArray(res) ? res : []);
     const setN = new Set(list);
     // COLOR SOLO-ERP (25-jul): pedidos.porNros lee la HOJA → conservar color y _sbId
@@ -8581,7 +8650,7 @@ window.diagPedido = async function(nro){
   let enLaBase = '(sin sesión con la base)';
   try { const b = await _sbFilasDePedidos([n]); if (b) enLaBase = (b[n] || []).map(r => r['Prenda']); } catch(e) { enLaBase = 'ERROR: ' + e.message; }
   let enLaHoja = '(no consultada)';
-  try { const h = await api('pedidos.porNros', { nros: n }); enLaHoja = ((h && h.rows) || []).map(r => r['Prenda']); } catch(e) { enLaHoja = 'ERROR: ' + e.message; }
+  try { const h = await _pedPorNrosRapido(n); enLaHoja = ((h && h.rows) || []).map(r => r['Prenda']); } catch(e) { enLaHoja = 'ERROR: ' + e.message; }
   const r = { pedido: n, enPantalla: enMemoria, enLaBase: enLaBase, enLaHoja: enLaHoja };
   console.log('[ERP] DIAG PEDIDO', r);
   return r;
@@ -8933,6 +9002,27 @@ function _loteRefreshModal(nro) {
     const p2 = pAll.find(x => String(x['NroPedido']) === String(nro));
     if (p2) verPed(p2);
   } catch(e) { _errLog('loteRefreshModal', e); }
+}
+
+// Pinta el aviso y bloquea la edición de un pedido archivado.
+function _pedMarcarArchivado(mEl, p) {
+  _lockReadonly(mEl);
+  const esAdmin = (typeof MY_ROLE === 'undefined') || MY_ROLE === 'Administrador';
+  const av = document.createElement('div');
+  av.style.cssText = 'background:#7a4a0022;border:1px solid #b4791f;color:#f0c274;border-radius:var(--r);padding:9px 12px;margin-bottom:12px;font-size:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
+  av.innerHTML = '<span style="font-size:14px">📦</span>'
+    + '<span style="flex:1">Pedido <b>archivado</b> (más de ' + PED_ARCHIVO_MESES + ' meses). Se puede consultar, no editar: '
+    + 'sus filas ya no están en la hoja activa.</span>'
+    + (esAdmin ? '<button class="btn bg bs" id="ped-arch-editar" style="font-size:11px;white-space:nowrap">Editar igual</button>' : '');
+  mEl.insertBefore(av, mEl.firstChild);
+  const b = document.getElementById('ped-arch-editar');
+  if (b) b.onclick = async () => {
+    const ok = await npConfirm('Este pedido está archivado.\n\nGuardar cambios escribe en la hoja ACTIVA, donde este pedido ya no está. '
+      + 'Lo más probable es que el cambio no se aplique o quede una fila suelta.\n\n¿Editar de todas formas?');
+    if (!ok) return;
+    av.remove();
+    verPed(Object.assign({}, p, { _archivado: false }));
+  };
 }
 
 function verPed(p) {
@@ -9363,6 +9453,9 @@ function verPed(p) {
 
   mEl.innerHTML = h;
   if(typeof MY_ROLE!=='undefined' && MY_ROLE==='Ventas') _lockReadonly(mEl); // Ventas: modal solo-lectura
+  // 26-jul: un pedido archivado se puede mirar, no editar. Editarlo escribiría
+  // en la hoja activa, donde ese pedido ya no vive.
+  try { if (p && p._archivado) _pedMarcarArchivado(mEl, p); } catch(e) { try{_errLog('ped.archivado', e);}catch(_){} }
   document.getElementById('modal-ped').classList.add('on');
 
   // Scope: usar mEl para queries — evita colisiones con el resto del DOM
@@ -10242,7 +10335,7 @@ function verPed(p) {
 
   // Cargar cambios de este pedido en background
   if (nro) {
-    api('cambios.porPedido', {nro}).then(cambios => {
+    _cambiosPorPedidoRapido(nro).then(cambios => {
       if (!cambios || !cambios.length) return;
       const el = document.getElementById('modal-cambios-detalle');
       if (!el) return;
