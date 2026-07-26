@@ -13511,7 +13511,7 @@ function renderInv(el){
       // en otras según el color de la prenda — se veía desordenado. Ahora TODOS van
       // sobre una cápsula clara: negro si es 0 o positivo, rojo si es negativo.
       // El color de la prenda se sigue viendo alrededor de la cápsula.
-      const _capsula=v=>`<span style="display:inline-block;min-width:24px;padding:0 6px;border-radius:3px;background:rgba(255,255,255,.92);color:${(v<0)?'#c81e1e':'#10101a'};font-weight:${(v<0)?'800':'700'};font-variant-numeric:tabular-nums">${v}</span>`;
+      const _capsula=v=>`<span style="display:inline-block;min-width:24px;padding:0 6px;border-radius:3px;background:rgba(255,255,255,.50);color:${(v<0)?'#c81e1e':'#10101a'};font-weight:${(v<0)?'800':'700'};font-variant-numeric:tabular-nums">${v}</span>`;
       const grpSt=`background:${GRPSEP};color:#10101a;vertical-align:middle;`;
       const _gc='text-align:center;white-space:normal;word-break:break-word;overflow:hidden;line-height:1.15;';
       let tr='<tr>';
@@ -16046,6 +16046,58 @@ async function loadCambios2(){
   // código no se rompe si algún día vuelve.
   const rb=document.getElementById('c2-ref'); if(rb) rb.onclick=loadCambios2;
 }
+// ══════════════════════════════════════════════════════════════════════════
+// ANCHO DE COLUMNA AJUSTADO AL TEXTO + COMENTARIO DESPLEGABLE (26-jul-2026)
+//
+// ANTES: los anchos estaban escritos a mano. Columnas cortas (Pedido, Fecha)
+// sobraban espacio y las largas (Cliente, Prenda) cortaban el texto con "…".
+// AHORA: se mide el contenido más largo de cada columna y se le da ese ancho,
+// con un mínimo y un máximo para que ninguna se desborde.
+//
+// EL COMENTARIO ES LA EXCEPCIÓN: puede tener un párrafo entero. Se muestra en
+// una línea con una flecha ▸ para desplegarlo. Así no estira todas las filas
+// por culpa de un comentario largo.
+//
+// Si la persona arrastró el borde de una columna a mano, se respeta lo suyo:
+// el ajuste automático solo decide los anchos que nadie tocó.
+// ══════════════════════════════════════════════════════════════════════════
+function _anchoSegunTexto(textos, titulo, min, max) {
+  var largo = String(titulo || '').length + 3;   // +3 por la flechita de ordenar
+  for (var i = 0; i < textos.length; i++) {
+    var t = String(textos[i] == null ? '' : textos[i]);
+    if (t.length > largo) largo = t.length;
+  }
+  var px = Math.round(largo * 7.15) + 20;        // 7,15px por letra a 12px + aire
+  return Math.max(min || 70, Math.min(max || 210, px));
+}
+
+// Celda de comentario: una línea, y si no entra, flecha para desplegar.
+function _celdaComentario(txt) {
+  var t = String(txt == null ? '' : txt).trim();
+  if (!t) return '<span style="color:var(--mu)">—</span>';
+  if (t.length <= 22) return esc(t);
+  return '<span class="com-exp" title="Clic para ver el comentario completo" '
+       + 'style="cursor:pointer;display:inline-flex;align-items:center;gap:4px;max-width:100%">'
+       + '<span class="com-txt" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t) + '</span>'
+       + '<span class="com-fl" style="flex-shrink:0;color:var(--ac);font-weight:700">▸</span></span>';
+}
+
+// Un solo manejador para toda la app: al hacer clic, la celda pasa a mostrar el
+// comentario completo en varias líneas; al volver a hacer clic, se recoge.
+if (!window._comExpBound) {
+  window._comExpBound = true;
+  document.addEventListener('click', function (e) {
+    var w = e.target.closest ? e.target.closest('.com-exp') : null;
+    if (!w) return;
+    var txt = w.querySelector('.com-txt'), fl = w.querySelector('.com-fl');
+    if (!txt) return;
+    var abierto = txt.style.whiteSpace === 'normal';
+    txt.style.whiteSpace = abierto ? 'nowrap' : 'normal';
+    txt.style.overflow   = abierto ? 'hidden' : 'visible';
+    if (fl) fl.textContent = abierto ? '▸' : '▾';
+  });
+}
+
 function renderCambios2(el, cambios){
   cambios = cambios||[];
   var COLS=[
@@ -16088,7 +16140,18 @@ function renderCambios2(el, cambios){
   tabsH+='</div>'
        + '<button class="btn bp" onclick="navegarA(\'cambios\')" style="font-size:12px;padding:4px 12px;white-space:nowrap">＋ Nuevo cambio</button>'
        + '</div>';
+  // Ancho medido contra el contenido real. El Comentario queda fijo: tiene su
+  // propia flecha para desplegarse y no debe estirar la tabla.
   var _c2W={nro:110,cli:150,ped:85,dev:170,nue:170,pago:75,emp:85,saldo:80,mot:115,est:135,fec:95,com:150,acc:160};
+  try{
+    var _vis=cambios.filter(tabFn());
+    COLS.forEach(function(col){
+      if(col.k==='com') return;                       // el comentario no se mide
+      var textos=_vis.map(function(c){ return col.g(c); });
+      _c2W[col.k]=_anchoSegunTexto(textos, col.t, 70, 210);
+    });
+  }catch(e){}
+  // Lo que la persona ajustó a mano manda sobre la medición.
   try{ var _sv=JSON.parse(localStorage.getItem('erp_c2_colw')||'{}'); Object.keys(_sv).forEach(function(k){ if(_sv[k]>20) _c2W[k]=_sv[k]; }); }catch(e){}
   var _colg='<colgroup>'+COLS.map(function(col){return '<col data-k="'+col.k+'" style="width:'+(_c2W[col.k]||110)+'px">';}).join('')+'<col data-k="acc" style="width:'+(_c2W.acc||160)+'px"></colgroup>';
   var thH='<tr>'+COLS.map(function(col){return '<th data-k="'+col.k+'" style="position:relative;text-align:center">'+esc(col.t)+'<div class="crs"></div></th>';}).join('')+'<th data-k="acc" style="position:relative;text-align:center">Acción<div class="crs"></div></th></tr>';
@@ -16146,7 +16209,7 @@ function renderCambios2(el, cambios){
           +'<td style="'+cs+'">'+(first?motivoCell:'')+'</td>'
           +'<td style="'+cs+'">'+(first?estadoBadge:'')+'</td>'
           +'<td style="'+cs+'color:var(--mu);white-space:nowrap">'+(first?_c2fmtFecha(c.FechaSolicitud):'')+'</td>'
-          +'<td style="'+cs+'color:var(--mu)">'+(first?esc(c.Comentario||'—'):'')+'</td>'
+          +'<td style="'+cs+'color:var(--mu);text-align:left">'+(first?_celdaComentario(c.Comentario):'')+'</td>'
           +'<td style="'+cs+'white-space:nowrap">'+(first?accion:'')+'</td>'
           +'</tr>';
       }
@@ -18911,6 +18974,33 @@ function renderDevoluciones(el, rows) {
 
   // K-5: Columnas en el orden solicitado por Pablo.
   // Saldo = Pago - Envío. Colores: >0 azul (a favor cliente), =0 blanco (pagado), <0 rojo (pendiente).
+  // 26-jul: los valores de cada columna se calculan ANTES de armar la tabla,
+  // porque ahora el ancho de cada columna se mide contra su contenido real.
+  const _hdGroupVals = (grp) => {
+    const f = grp[0];
+    const totP = grp.reduce((s,r)=>s+(parseFloat(r['Pago']||r['MontoPagadoCliente']||0)||0),0);
+    const totE = grp.reduce((s,r)=>s+(parseFloat(r['PrecioEnvio']||r['Envio']||0)||0),0);
+    const estD = f._estadoDer || derivarEstadoDev(f['FechaSolicitud'],f['FechaRecepcionPrenda'],f['FechaReembolso']);
+    const numDev = (String(f['NroDevolucion']||f['ID']||'').match(/(\d+)/)||[0,'0'])[1];
+    let fechaT=0; [f['FechaSolicitud'],f['FechaRetornoPrenda'],f['FechaRecepcionPrenda'],f['FechaReembolso']].forEach(v=>{const t=new Date(v).getTime(); if(!isNaN(t)&&t>fechaT)fechaT=t;});
+    const prendaT = grp.map(r=>String(r['PrendaDevuelta']||'')).join(' ');
+    return {
+      NroDev:{s:parseInt(numDev,10)||0, t:String(f['NroDevolucion']||f['ID']||'')},
+      Pedido:{s:parseInt(String(f['NroPedido']||'').replace(/\D/g,''),10)||0, t:String(f['NroPedido']||'')},
+      Nombre:{s:String(f['Nombre']||'').toLowerCase(), t:String(f['Nombre']||'')},
+      Prenda:{s:prendaT.toLowerCase(), t:prendaT},
+      Pago:{s:totP, t:'S/ '+fmt(totP)},
+      Envio:{s:totE, t:'S/ '+fmt(totE)},
+      Saldo:{s:totP-totE, t:fmt(totP-totE)},
+      Motivo:{s:String(f['Motivo']||'').toLowerCase(), t:String(f['Motivo']||'')},
+      Estado:{s:estD.toLowerCase(), t:estD},
+      Fecha:{s:fechaT, t:_hdFechaUltAvance(f)||''},
+      Comentario:{s:String(f['Comentario']||'').toLowerCase(), t:String(f['Comentario']||'')},
+      Accion:{s:0, t:''},
+    };
+  };
+  groups.forEach(g => { g._hdv = _hdGroupVals(g); });
+
   const HD_COLS = [
     { k:'NroDev',      l:'Nro. devolución',  w:130 },
     { k:'Pedido',      l:'Pedido',           w:80  },
@@ -18925,6 +19015,17 @@ function renderDevoluciones(el, rows) {
     { k:'Comentario',  l:'Comentario',       w:170 },
     { k:'Accion',      l:'Acción',           w:150 },
   ];
+  // Ancho medido contra el contenido de verdad, con mínimo y máximo. El
+  // Comentario y Acción quedan fijos: el primero tiene su flecha para desplegarse
+  // y el segundo son botones, no texto.
+  try {
+    HD_COLS.forEach(c => {
+      if (c.k === 'Comentario' || c.k === 'Accion') return;
+      const textos = groups.map(g => (g._hdv && g._hdv[c.k]) ? g._hdv[c.k].t : '');
+      c.w = _anchoSegunTexto(textos, c.l, 80, 230);
+    });
+  } catch(e) {}
+  // Lo que la persona ajustó a mano manda sobre la medición.
   const _hdW = c => (window._hdColW[c.k] || c.w);
 
   let _hdTotalW = 0;
@@ -18954,30 +19055,6 @@ function renderDevoluciones(el, rows) {
   // K-5/K-6: Filas con nuevas columnas. Saldo = Pago - Envío con colores.
   // K-10: agregar data-hd-nro al <tr> para poder iluminar la fila después de crear.
   // #1/#2 — Valores por grupo para orden y filtro por columna en tiempo real.
-  const _hdGroupVals = (grp) => {
-    const f = grp[0];
-    const totP = grp.reduce((s,r)=>s+(parseFloat(r['Pago']||r['MontoPagadoCliente']||0)||0),0);
-    const totE = grp.reduce((s,r)=>s+(parseFloat(r['PrecioEnvio']||r['Envio']||0)||0),0);
-    const estD = f._estadoDer || derivarEstadoDev(f['FechaSolicitud'],f['FechaRecepcionPrenda'],f['FechaReembolso']);
-    const numDev = (String(f['NroDevolucion']||f['ID']||'').match(/(\d+)/)||[0,'0'])[1];
-    let fechaT=0; [f['FechaSolicitud'],f['FechaRetornoPrenda'],f['FechaRecepcionPrenda'],f['FechaReembolso']].forEach(v=>{const t=new Date(v).getTime(); if(!isNaN(t)&&t>fechaT)fechaT=t;});
-    const prendaT = grp.map(r=>String(r['PrendaDevuelta']||'')).join(' ');
-    return {
-      NroDev:{s:parseInt(numDev,10)||0, t:String(f['NroDevolucion']||f['ID']||'')},
-      Pedido:{s:parseInt(String(f['NroPedido']||'').replace(/\D/g,''),10)||0, t:String(f['NroPedido']||'')},
-      Nombre:{s:String(f['Nombre']||'').toLowerCase(), t:String(f['Nombre']||'')},
-      Prenda:{s:prendaT.toLowerCase(), t:prendaT},
-      Pago:{s:totP, t:'S/ '+fmt(totP)},
-      Envio:{s:totE, t:'S/ '+fmt(totE)},
-      Saldo:{s:totP-totE, t:fmt(totP-totE)},
-      Motivo:{s:String(f['Motivo']||'').toLowerCase(), t:String(f['Motivo']||'')},
-      Estado:{s:estD.toLowerCase(), t:estD},
-      Fecha:{s:fechaT, t:_hdFechaUltAvance(f)||''},
-      Comentario:{s:String(f['Comentario']||'').toLowerCase(), t:String(f['Comentario']||'')},
-      Accion:{s:0, t:''},
-    };
-  };
-  groups.forEach(g => { g._hdv = _hdGroupVals(g); });
   const _activeFilts = Object.keys(_hdColFilt).filter(k => (_hdColFilt[k]||'').trim());
   let _groups = groups;
   if (_activeFilts.length) {
@@ -19052,7 +19129,7 @@ function renderDevoluciones(el, rows) {
           })()
         + '</td>'
         + '<td rowspan="'+span+'" style="vertical-align:middle;border-top:2px solid var(--bd2)">' + (_hdFechaUltAvance(first)||'—') + '</td>'
-        + '<td rowspan="'+span+'" class="hd-left" style="vertical-align:middle;border-top:2px solid var(--bd2);overflow:hidden;text-overflow:ellipsis" title="'+esc(first['Comentario']||'')+'">' + esc(first['Comentario']||'') + '</td>'
+        + '<td rowspan="'+span+'" class="hd-left" style="vertical-align:middle;border-top:2px solid var(--bd2);overflow:hidden">' + _celdaComentario(first['Comentario']) + '</td>'
         + '<td rowspan="'+span+'" style="vertical-align:middle;white-space:nowrap;border-top:2px solid var(--bd2)">'
         +   '<button class="btn bg bs" title="Ver timeline" style="font-size:11px;padding:4px 6px;margin-right:3px" onclick="hdTimelinePorId(\'' + esc(verKey) + '\')">📅</button>'
         +   '<button class="btn bg bs" title="Ver detalle" style="font-size:11px;padding:4px 8px;margin-right:3px" onclick="hdVerDetallePorId(\'' + esc(verKey) + '\')">Ver</button>'
