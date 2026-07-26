@@ -5009,6 +5009,9 @@ function _cliClaveDeFila(r) {
 // La lista la deja el espejo (clave 'archivo.nros'). Si no está, se asume que
 // NO hay nada archivado: es la respuesta segura — no bloquea ni avisa de más.
 let _archNrosCache = null, _archNrosTs = 0;
+// El resumen del archivo pesa 2,4 MB: se baja UNA vez por sesión, y solo si
+// hace falta. Cambia únicamente cuando se corre el archivador a mano.
+let _arcResumenMemo = null;
 async function _archivoNrosRapido() {
   if (_archNrosCache && (Date.now() - _archNrosTs) < 10 * 60 * 1000) return _archNrosCache;
   let d = null;
@@ -5034,24 +5037,36 @@ async function _cliHistorialRapido(body) {
     const tok = await _sbTokenVigente();
     if (!tok) return porApps();
 
-    // `order=id.asc` = el orden en que se escribieron en la hoja. Acá el orden
-    // importa menos que en un pedido suelto, pero se mantiene por coherencia.
+    // MEDIDO EN VIVO EL 26-JUL: las cuatro piezas tardan ~180 ms cada una. Una
+    // detrás de otra son 1.300 ms; saliendo a la vez, 200. Se piden juntas.
+    // `order=id.asc` = el orden en que se escribieron en la hoja.
     const url = SB_URL + '/rest/v1/pedidos?select=row_json&clave=eq.' +
                 encodeURIComponent(clave) + '&order=id.asc&limit=5000';
-    const r = await fetch(url, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    const [rp, camsT, devsT, arch] = await Promise.all([
+      fetch(url, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } })
+        .then(r => r.ok ? r.json() : null).catch(() => null),
+      _cambiosListarRapido().catch(() => null),
+      _sbFilasEspejo('devoluciones').catch(() => null),
+      _archivoNrosRapido().catch(() => new Set()),
+    ]);
     // Si la columna `clave` todavía no existe en la base (falta correr el SQL),
-    // esto devuelve 400. No se inventa nada: se va por Apps Script.
-    if (!r.ok) return porApps();
-    const j = await r.json();
-    if (!Array.isArray(j)) return porApps();
+    // el primer fetch devuelve 400 → rp queda null y se va por Apps Script.
+    if (!Array.isArray(rp)) return porApps();
+    // Media ficha es peor que ninguna: si faltan los cambios o las devoluciones,
+    // el saldo a favor de la clienta saldría MENOR del que le corresponde.
+    // Antes que mostrar de menos, se pregunta al servidor.
+    if (!Array.isArray(camsT) || !Array.isArray(devsT)) return porApps();
 
-    const arch = await _archivoNrosRapido();
     const esSi = v => String(v == null ? '' : v).trim().toUpperCase() === 'SI';
 
     // El servidor lee la hoja ACTIVA: no ve ni las filas borradas ni las
-    // archivadas. Acá se saca lo mismo para que los totales coincidan.
-    const filas = j.map(x => x.row_json).filter(f => f && !esSi(f['Eliminado']) &&
-                          !arch.has(String(f['NroPedido'] || '').trim()));
+    // archivadas. Acá se saca lo mismo para que los totales coincidan (si no,
+    // las compras viejas se contarían dos veces: en la lista y en el resumen).
+    let tieneArchivadas = false;
+    const filas = rp.map(x => x.row_json).filter(f => f && !esSi(f['Eliminado'])).filter(f => {
+      if (arch.has(String(f['NroPedido'] || '').trim())) { tieneArchivadas = true; return false; }
+      return true;
+    });
 
     const peds = filas.map(f => ({
       NroPedido:   String(f['NroPedido'] || ''),
@@ -5070,30 +5085,18 @@ async function _cliHistorialRapido(body) {
       Cambio:      String(f['Cambio'] || ''),
     })).sort((a, b) => new Date(b.FechaPedido || 0) - new Date(a.FechaPedido || 0));
 
-    // Cambios y devoluciones: sus listas completas ya están espejadas.
-    let cams = [];
-    try {
-      const todos = await _cambiosListarRapido();
-      if (Array.isArray(todos)) cams = todos.filter(x => _cliClaveDeFila(x) === clave);
-    } catch (e) { cams = []; }
+    const cams = camsT.filter(x => _cliClaveDeFila(x) === clave);
+    const devs = devsT.filter(x => _cliClaveDeFila(x) === clave)
+                      .sort((a, b) => new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0));
 
-    let devs = [];
-    try {
-      const todas = await _sbFilasEspejo('devoluciones');
-      if (Array.isArray(todas)) {
-        devs = todas.filter(x => _cliClaveDeFila(x) === clave)
-                    .sort((a, b) => new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0));
-      } else {
-        const r2 = await porApps(); devs = (r2 && r2.devoluciones) || [];
-      }
-    } catch (e) { devs = []; }
-
-    // Compras viejas ya mudadas al archivo (solo el resumen). Si no hay nada
-    // archivado, ni se pregunta.
+    // Compras viejas ya mudadas al archivo (solo el resumen).
+    // El resumen entero pesa 2,4 MB y tarda ~860 ms, así que NO se baja salvo
+    // que esta clienta tenga de verdad pedidos archivados — y una sola vez.
     let historico = null;
-    if (arch.size) {
+    if (tieneArchivadas) {
       try {
-        const res = await _sbCacheLeer('archivo.resumen', 24 * 60 * 60 * 1000);
+        if (!_arcResumenMemo) _arcResumenMemo = await _sbCacheLeer('archivo.resumen', 24 * 60 * 60 * 1000);
+        const res = _arcResumenMemo;
         const m = Array.isArray(res) ? res.find(hc =>
           _cliClaveDe(hc['Nombre'], hc['Celular'], hc['DNI'], '') === clave) : null;
         if (m) historico = {
@@ -5221,6 +5224,311 @@ function _cliSaldosDe(hist, body) {
     });
 
   return { pedidosConSaldo, devolucionesPendientes };
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// 26-jul · LO PEOR QUE LE QUEDABA AL ERP: "VER MOVIMIENTOS" DE UNA PRENDA
+//
+// MEDIDO EN VIVO HOY, con el ERP abierto y datos reales:
+//   · stock.kardex ......... 25.048 y 30.019 ms   (25 a 30 SEGUNDOS)
+//   · stock.noDispDetalle ...  3.466 ms
+// El kardex es, de lejos, la lectura más lenta que quedaba: ocho veces peor
+// que cualquier otra de las que ya se migraron.
+//
+// POR QUÉ TARDA TANTO: cada vez lee la hoja Confeccion ENTERA, la hoja Pedidos
+// ENTERA (45.000 filas) y encima rehace el cálculo completo de stock — todo
+// para mostrar los movimientos de UNA prenda.
+//
+// CÓMO SE ARREGLA: las tres piezas ya están en la base.
+//   · Confeccion y Fallas → tablas nuevas (ver supabase_stock_espejo.sql),
+//     consultadas por prenda+diseño+color: vuelven decenas de filas, no miles.
+//   · Ventas → tabla `pedidos`, buscando por el diseño con índice de trigramas.
+//   · Stock actual y anomalías → ya venían espejadas en 'stock.resumen'.
+//
+// COMPROBADO CONTRA EL SERVIDOR: para BLUSA ALMENDRA ROSA, las ventas que
+// encuentra la base son 69 y las que encuentra Apps Script son 69. Idéntico.
+//
+// REVERSA INMEDIATA: poner SB_LECTURA_STOCK = false y publicar. Además, si
+// falta cualquier pieza (la tabla no existe, el espejo no llegó, no hay
+// sesión), cada puerta se va sola por Apps Script.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LECTURA_STOCK = true;
+
+// ── El diccionario de nombres, igual que Vocabulario.gs ────────────────────
+// MAYÚSCULAS · sin tildes (la Ñ se conserva) · guión bajo = espacio · typos
+// conocidos corregidos. Es la única forma de que "BLÚSA_ALMENDRA" y
+// "BLUSA ALMENDRA" se reconozcan como la misma prenda.
+const VOC_TYPOS = {
+  'NEGO': 'NEGRO', 'TOFEE': 'TOFFEE', 'INTERIOIR': 'INTERIOR',
+  'STANDAR': 'ESTANDAR', 'EMAI': 'EMAIL',
+};
+// Las tallas raras que la hoja escribe de varias formas. Copia de Tallas.gs.
+const TMAP_STOCK = {
+  'S/M': 'M', 'M/L': 'L', 'L/XL': 'XL', 'C': 'M', 'G': 'XL', 'U': 'M',
+  'STD': 'M', 'ESTANDAR': 'M', 'ESTÁNDAR': 'M', 'XXL': '2XL', 'XXXL': '3XL',
+};
+const TSTD_STOCK = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+
+function _vocBaseJs(s) {
+  let t = String(s == null ? '' : s).trim().toUpperCase()
+    .replace(/Ñ/g, '')                      // proteger la Ñ
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')   // fuera tildes
+    .replace(//g, 'Ñ')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  if (!t) return t;
+  return t.split(' ').map(k => VOC_TYPOS[k] || k).join(' ');
+}
+
+// Las homologaciones ("PANTALON RECTO MIRELLA" es "PANTALON MIRELLA") las
+// escribe Pablo en una hoja. El espejo las deja en la base; acá se guardan una
+// vez por sesión. Si no llegan, se usa solo el canon básico.
+let _vocFrasesCache = null;
+async function _vocFrasesRapido() {
+  if (_vocFrasesCache) return _vocFrasesCache;
+  let d = null;
+  try { d = await _sbCacheLeer('vocabulario.homologaciones', 24 * 60 * 60 * 1000); } catch (e) {}
+  _vocFrasesCache = Array.isArray(d) ? d : [];
+  return _vocFrasesCache;
+}
+
+function _vocCanonCon(s, fr) {
+  let t = _vocBaseJs(s);
+  if (!t) return t;
+  if (fr && fr.length) {
+    for (let e = 0; e < fr.length; e++) { if (fr[e].ex && t === fr[e].aTxt) { t = fr[e].bTxt; break; } }
+    let pad = ' ' + t + ' ';
+    for (let i = 0; i < fr.length; i++) { if (!fr[i].ex && pad.indexOf(fr[i].a) >= 0) pad = pad.split(fr[i].a).join(fr[i].b); }
+    t = pad.replace(/\s+/g, ' ').trim();
+  }
+  // Colapsar palabras repetidas seguidas (RAYAS RAYAS → RAYAS), igual que el servidor.
+  return t.split(' ').filter((w, i, arr) => i === 0 || w !== arr[i - 1]).join(' ');
+}
+
+// ¿Está esta secuencia de palabras dentro de aquella? Mismo criterio que el
+// servidor: "BLUSA ALMENDRA ROSA M" contiene ["ALMENDRA"] y ["BLUSA"].
+function _tieneSecuencia(toks, sub) {
+  if (!sub.length || sub.length > toks.length) return false;
+  for (let i = 0; i + sub.length <= toks.length; i++) {
+    let ok = true;
+    for (let j = 0; j < sub.length; j++) { if (toks[i + j] !== sub[j]) { ok = false; break; } }
+    if (ok) return true;
+  }
+  return false;
+}
+
+// ── Traer filas de una tabla espejo, acotadas por el DISEÑO ────────────────
+// A propósito se filtra SOLO por el diseño, y "que contenga" en vez de "igual":
+// la hoja escribe el mismo diseño con mayúsculas distintas, con espacios de
+// más o con algún typo, y una igualdad estricta en la base dejaría movimientos
+// afuera sin avisar. Vienen unas pocas cientas de filas (todos los colores de
+// ese diseño) y el filtro fino —el mismo del servidor— se hace acá.
+async function _sbFilasSku(tabla, dis) {
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  const d = String(dis || '').trim();
+  if (!d) return null;
+  try {
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const q = 'diseno=ilike.' + encodeURIComponent('%' + d + '%');
+    const r = await fetch(SB_URL + '/rest/v1/' + tabla + '?select=row_json&' + q + '&order=id.asc&limit=20000',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j)) return null;
+    return j.map(x => x.row_json).filter(Boolean);
+  } catch (e) { try { _errLog('sb.sku.' + tabla, e); } catch (_) {} return null; }
+}
+
+// ── "NO DISPONIBLE": por qué motivo y cuántas ──────────────────────────────
+async function _stockNoDispRapido(p) {
+  p = p || {};
+  const porApps = () => api('stock.noDispDetalle', { prenda: p.prenda, dis: p.dis, col: p.col });
+  if (!SB_LECTURA_STOCK) return porApps();
+  if (window._sbSaltarEspejo) return porApps();
+  try {
+    const dis = String(p.dis || '').trim().toUpperCase();
+    const col = String(p.col || '').trim().toUpperCase();
+    const filas = await _sbFilasSku('fallas', p.dis);
+    if (!Array.isArray(filas)) return porApps();
+
+    // El corte del espejo: todo lo anterior ya está contado en el saldo inicial.
+    let cutDayMs = 0;
+    try {
+      const c = await _sbCacheLeer('stock.cutoff', 24 * 60 * 60 * 1000);
+      const raw = c && c.cutoff ? String(c.cutoff) : '';
+      if (raw) {
+        const d = new Date(/T/.test(raw) ? raw : (raw + 'T00:00:00-05:00'));
+        if (!isNaN(d.getTime())) cutDayMs = new Date(_diaLimaISO(d) + 'T00:00:00-05:00').getTime();
+      }
+    } catch (e) {}
+
+    const motivos = {};
+    filas.forEach(r => {
+      if (String(r['Eliminado'] || '').trim().toUpperCase() === 'SI') return;
+      if (String(r['Diseno'] || '').trim().toUpperCase() !== dis) return;
+      if (String(r['Color'] || '').trim().toUpperCase() !== col) return;
+      if (cutDayMs) {
+        const fd = Date.parse(r['Fecha'] || '') || 0;
+        if (fd && fd < cutDayMs) return;
+      }
+      const mot = String(r['Motivo'] || '').trim() || '(sin motivo)';
+      const cant = parseInt(r['Cantidad'], 10) || 1;
+      motivos[mot] = (motivos[mot] || 0) + cant;
+    });
+    return { motivos };
+  } catch (e) { try { _errLog('sb.noDisp', e); } catch (_) {} return porApps(); }
+}
+
+// La fecha de Lima en formato yyyy-MM-dd (el servidor usa Utilities.formatDate).
+function _diaLimaISO(d) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  } catch (e) { return d.toISOString().slice(0, 10); }
+}
+function _fechaCortaLima(ms) {
+  if (!ms) return '';
+  try {
+    const p = new Intl.DateTimeFormat('en-GB', { timeZone: 'America/Lima', day: '2-digit', month: '2-digit', year: '2-digit' })
+      .formatToParts(new Date(ms));
+    const g = t => (p.find(x => x.type === t) || {}).value || '';
+    return g('day') + '/' + g('month') + '/' + g('year');
+  } catch (e) { return ''; }
+}
+
+// ── EL KARDEX: todos los movimientos de UNA prenda ─────────────────────────
+async function _stockKardexRapido(p) {
+  p = p || {};
+  const prenda = String(p.prenda || '').trim();
+  const dis = String(p.dis || '').trim();
+  const col = String(p.col || '').trim();
+  const porApps = () => api('stock.kardex', { prenda: prenda, dis: dis, col: col });
+  if (!SB_LECTURA_STOCK) return porApps();
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
+  if (window._sbSaltarEspejo) return porApps();
+
+  try {
+    const tok = await _sbTokenVigente();
+    if (!tok) return porApps();
+    const H = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
+
+    // Las cinco piezas salen a la vez.
+    const urlVentas = SB_URL + '/rest/v1/pedidos?select=row_json&prenda=ilike.' +
+                      encodeURIComponent('%' + dis + '%') + '&limit=8000';
+    const [conf, fall, ventasRaw, fr, resumen, arch] = await Promise.all([
+      _sbFilasSku('confeccion', dis),
+      _sbFilasSku('fallas', dis),
+      fetch(urlVentas, { headers: H }).then(r => r.ok ? r.json() : null).catch(() => null),
+      _vocFrasesRapido().catch(() => []),
+      _stockResumenRapido().catch(() => null),
+      _archivoNrosRapido().catch(() => new Set()),
+    ]);
+    // Sin confección o sin ventas no se puede armar el kardex completo: antes
+    // que mostrarlo incompleto, se pregunta al servidor.
+    if (!Array.isArray(conf) || !Array.isArray(ventasRaw)) return porApps();
+
+    const nrm = s => _vocCanonCon(s, fr);
+    const nP = nrm(prenda), nD = nrm(dis), nC = nrm(col);
+    const NEG = ['DEVOLUCION', 'FALLA', 'CAMBIO', 'BAJA'];
+    const ev = [];
+
+    // El motivo de cada falla, para poder etiquetar las bajas.
+    const motPorId = {};
+    (Array.isArray(fall) ? fall : []).forEach(r => {
+      const fid = String(r['FallaID'] || '').trim();
+      if (fid) motPorId[fid] = String(r['Motivo'] || '').trim();
+    });
+
+    // ── Movimientos de Confección ──
+    conf.forEach(r => {
+      if (nrm(r['Eliminado']) === 'SI') return;
+      if (nrm(r['Prenda']) !== nP || nrm(r['Diseno']) !== nD || nrm(r['Color']) !== nC) return;
+      const tipo = nrm(r['Tipo']);
+      const rawCant = r['Cantidad'];
+      const cant = (rawCant === '' || rawCant == null)
+        ? (tipo === 'SALDO_INICIAL' ? 0 : 1)
+        : (parseInt(rawCant, 10) || 0);
+      const talRaw = String(r['Talla'] || '').trim();
+      const tal = TMAP_STOCK[talRaw] || talRaw;
+      const fm = Date.parse(r['Fecha'] || '') || 0;
+      const um = Date.parse(r['UltimaModif'] || '') || 0;
+      const fechaMs = Math.max(fm, um) || fm;
+      const origen = nrm(r['Origen']);
+      let etq = tipo, signo = '+', detalle = '';
+      if (tipo === 'SALDO_INICIAL') { etq = 'Saldo inicial'; detalle = 'Base del espejo'; }
+      else if (tipo === 'PRODUCCION' || tipo === 'DIGITAL') { etq = 'Producción'; if (r['Lote']) detalle = 'Lote ' + r['Lote']; }
+      else if (tipo === 'REINGRESO') { etq = 'Reingreso'; }
+      else if (tipo === 'RECUPERACION') { etq = 'Recuperación'; detalle = 'Vuelve a stock'; }
+      else if (tipo === 'BAJA') {
+        signo = '−';
+        if (origen === 'FALLA') { const m = motPorId[String(r['Referencia'] || '').trim()] || ''; etq = 'No disponible' + (m ? (' · ' + m) : ''); }
+        else etq = 'Baja';
+      }
+      else if (tipo === 'FALLA') { signo = '−'; etq = 'No disponible (ajuste)'; }
+      else if (tipo === 'DEVOLUCION') { signo = '−'; etq = 'Devolución'; }
+      else if (tipo === 'CAMBIO') { signo = '−'; etq = 'Cambio'; }
+      else if (tipo === 'AJUSTE') { etq = 'Ajuste de lote' + (r['Lote'] ? (' ' + r['Lote']) : ''); signo = (cant < 0 ? '−' : '+'); }
+      else { signo = (NEG.indexOf(tipo) >= 0 ? '−' : '+'); }
+      if (cant === 0 && tipo !== 'SALDO_INICIAL') return;
+      ev.push({ fechaMs: fechaMs, fecha: _fechaCortaLima(fechaMs), tipo: etq, signo: signo, talla: tal, cantidad: Math.abs(cant), detalle: detalle });
+    });
+
+    // ── Ventas ──
+    // La base trae todo lo que contenga el diseño en el texto; acá se aplica el
+    // MISMO criterio de palabras que el servidor. Las filas ya archivadas se
+    // descartan: el servidor lee solo la hoja activa y tampoco las ve.
+    const pT = nP.split(' ').filter(Boolean);
+    const dT = nD.split(' ').filter(Boolean);
+    const cT = nC.split(' ').filter(Boolean);
+    ventasRaw.map(x => x.row_json).forEach(f => {
+      if (!f) return;
+      if (nrm(f['Eliminado']) === 'SI') return;
+      if (arch.has(String(f['NroPedido'] || '').trim())) return;
+      const est = nrm(f['Estado']); if (est === 'CANCELADO' || est === 'DEVOLUCION') return;
+      const pr = nrm(f['Prenda']); if (!pr || pr === '_PAGO_') return;
+      const toks = pr.split(' ');
+      if (!(_tieneSecuencia(toks, pT) && _tieneSecuencia(toks, dT) && _tieneSecuencia(toks, cT))) return;
+      const ultima = toks[toks.length - 1];
+      const tal = TMAP_STOCK[ultima] || ultima;
+      const fm = Date.parse(f['Fecha Pedido'] || '') || 0;
+      ev.push({
+        fechaMs: fm, fecha: _fechaCortaLima(fm), tipo: 'Venta', signo: '−',
+        talla: (TSTD_STOCK.indexOf(tal) >= 0 ? tal : ''), cantidad: 1,
+        detalle: '#' + String(f['NroPedido'] || '') + ' ' + String(f['Nombres y Apellidos'] || '').split(' ')[0],
+      });
+    });
+
+    ev.sort((a, b) => b.fechaMs - a.fechaMs);
+    const eventos = ev.slice(0, 300);
+
+    // ── Stock actual y anomalías: del cálculo oficial, ya espejado ──
+    const anomalias = [], stockActual = {};
+    try {
+      const d = Array.isArray(resumen)
+        ? resumen.find(x => nrm(x.prenda) === nP && nrm(x.diseno) === nD && nrm(x.color) === nC)
+        : null;
+      if (d) {
+        TSTD_STOCK.forEach(t => {
+          const s = (d.stock || {})[t];
+          if (typeof s === 'number') {
+            stockActual[t] = s;
+            if (s < 0) anomalias.push('Stock NEGATIVO en talla ' + t + ' (' + s + ') — vendiste/bajaste más de lo que hay.');
+          }
+        });
+        TSTD_STOCK.forEach(t => {
+          const v = (d.vtas || {})[t] || 0;
+          const c = (d.conf || {})[t];
+          if (v > 0 && (c === undefined)) anomalias.push('Ventas en talla ' + t + ' sin confección registrada.');
+        });
+      }
+    } catch (e) {}
+
+    return { prenda: prenda, dis: dis, col: col, eventos: eventos, anomalias: anomalias, stockActual: stockActual, total: ev.length };
+  } catch (e) {
+    try { _errLog('sb.kardex', e); } catch (_) {}
+    return porApps();
+  }
 }
 
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
@@ -14679,7 +14987,7 @@ function renderInv(el){
 // Desglose de "No disponible" por motivo (Falla, Lavado, TikTok Live, Sesión…) al hacer clic en ⓘ.
 async function _invNoDispDetalle(pren, dis, col){
   try{
-    const r = await api('stock.noDispDetalle', { prenda:pren, dis:dis, col:col });
+    const r = await _stockNoDispRapido({ prenda:pren, dis:dis, col:col });
     const motivos = (r && r.motivos) || {};
     const keys = Object.keys(motivos).sort((a,b)=>motivos[b]-motivos[a]);
     const tot = keys.reduce((s,k)=>s+motivos[k],0);
@@ -14703,7 +15011,7 @@ async function _invNoDispDetalle(pren, dis, col){
 // Kardex de un SKU: línea de vida completa (movimientos) + anomalías.
 async function _invKardex(pren, dis, col){
   try{
-    const r = await api('stock.kardex', {prenda:pren, dis:dis, col:col});
+    const r = await _stockKardexRapido({prenda:pren, dis:dis, col:col});
     const ev=(r&&r.eventos)||[], anom=(r&&r.anomalias)||[], stk=(r&&r.stockActual)||{};
     const TS=['XS','S','M','L','XL','2XL','3XL'];
     const stkTxt = TS.filter(t=>stk[t]!==undefined).map(t=>t+':'+stk[t]).join('  ') || '—';
