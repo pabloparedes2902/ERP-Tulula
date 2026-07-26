@@ -2372,7 +2372,66 @@ document.querySelectorAll('.nb[data-pg]').forEach(btn => {
     _applyVpFix(pg);
   });
 });
-document.getElementById('btn-ref').addEventListener('click', () => loadPg(curPg));
+// ══════════════════════════════════════════════════════════════════════════
+// EL BOTÓN 🔄 — QUE DE VERDAD TRAIGA DATOS NUEVOS (26-jul-2026)
+//
+// EL DEFECTO: el 🔄 llamaba a loadPg(pantalla), y casi todas las pantallas
+// arrancan con "si ya tengo los datos en memoria, los pinto y listo". Resultado:
+// el botón repintaba lo mismo. En Clientes, Devoluciones y Stock no hacía
+// absolutamente nada. (Lo encontró Pablo: la lista de clientas seguía mostrando
+// una ficha vieja por más que le diera al botón.)
+//
+// AHORA: el 🔄 primero TIRA lo guardado —la memoria del navegador, el guardado
+// del navegador y, en las pantallas que leen de la base, también el espejo— y
+// recién ahí vuelve a pedir. Es lo que uno espera de un botón que dice
+// "Recargar datos del servidor".
+// ══════════════════════════════════════════════════════════════════════════
+
+// Mientras esto vale true, las pantallas que leen del espejo se saltan el espejo
+// y le preguntan a Apps Script. Se apaga solo al terminar la recarga.
+window._sbSaltarEspejo = false;
+
+async function _refrescarModulo(pg) {
+  const olvidar = fn => { try { fn(); } catch (e) {} };
+  window._sbSaltarEspejo = true;
+  try {
+    switch (pg) {
+      case 'clientes':
+        cliData = []; olvidar(_cliLsDel); _cliHistCache = {};
+        return await loadClis(true);
+      case 'devoluciones':
+        histDevData = null; olvidar(_hdLsDel);
+        return await loadDevoluciones(true);
+      case 'inventario':
+      case 'stock':
+        stData = null; olvidar(_stLsDel);
+        return await loadPg(pg);            // ya sin datos guardados, vuelve a pedir
+      case 'cambios2':
+        window._c2Data = null;
+        return await loadCambios2();
+      case 'envios':
+        // La cola se arma con los pedidos y los cambios: hay que soltar los dos.
+        pRaw = []; histCamData = null;
+        return await loadEnvios();
+      case 'dashboard':
+        olvidar(() => localStorage.removeItem('erp_' + DASH_LS_KEY));
+        return await loadDash();
+      case 'panel':
+        PANEL.dias = null;
+        return await loadPanel(true);
+      case 'pedidos':
+        // Pedidos ya tiene su propio recargado completo (limpia filtros y fechas).
+        pFlt = {}; window._pedFechaDesde = ''; window._pedFechaHasta = '';
+        return await loadPeds(pEst, true);
+      default:
+        return await loadPg(pg);
+    }
+  } finally {
+    window._sbSaltarEspejo = false;
+  }
+}
+
+document.getElementById('btn-ref').addEventListener('click', () => _refrescarModulo(curPg));
 // Cerrar modales — delegación global para cubrir botones inyectados dinámicamente
 document.addEventListener('click', e => {
   const btn = e.target.closest('[data-cls]');
@@ -4337,6 +4396,7 @@ function _sbFilasEspejo(tabla) {
 
 async function _sbFilasEspejoAhora(tabla) {
   if (!SB_LECTURA_CAMBIOS) return null;
+  if (window._sbSaltarEspejo) return null;   // el 🔄 quiere datos del servidor, no del espejo
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
   try {
     const tok = await _sbTokenVigente();
@@ -4471,6 +4531,7 @@ const SB_PESADOS_VENCE_MS = 30 * 60 * 1000;
 // Devuelve null si no se puede o si está vencido → quien llama usa Apps Script.
 async function _sbCacheLeer(clave) {
   if (!SB_LECTURA_PESADOS) return null;
+  if (window._sbSaltarEspejo) return null;   // el 🔄 quiere datos del servidor, no del espejo
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
   try {
     const tok = await _sbTokenVigente();
@@ -7432,7 +7493,7 @@ function pClick(e) {
   }
   const fb = e.target.closest('[data-fb]'); if (fb) { e.stopPropagation(); pOpenDrp(fb.getAttribute('data-fb'), fb); return; }
   const mas = e.target.closest('#btn-mas'); if (mas) { pMas(+mas.getAttribute('data-off'), +mas.getAttribute('data-tot')); return; }
-  const ref = e.target.closest('#btn-ref'); if (ref) { pFlt={}; window._pedFechaDesde=''; window._pedFechaHasta=''; loadPeds(pEst, true); return; }
+  // 26-jul: el 🔄 lo maneja _refrescarModulo (antes había DOS manejadores y se pisaban).
   const clf = e.target.closest('#btn-clf'); if (clf) { pClrFlt(); return; }
   const ftd = e.target.closest('#btn-filtrar-fecha');
   if (ftd) {
