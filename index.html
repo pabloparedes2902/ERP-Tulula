@@ -3022,6 +3022,18 @@ function _prodRowsHtml(rows) {
       + '</td></tr>';
   }).join('');
 }
+// Engancha el Reporte de fallas dentro de Catálogo (se vuelve a dibujar seguido).
+function _prodBindReporte() {
+  const b = document.getElementById('prod-repfallas');
+  if (b && !b._wired) {
+    b._wired = true;
+    b.addEventListener('click', () => {
+      try { _confAbrirReporteFallas(document.getElementById('prod-w') || document.body); }
+      catch (e) { try { toast('No se pudo abrir el reporte: ' + e.message, 'err'); } catch(_){} }
+    });
+  }
+}
+
 function _prodBindRowBtns(scope) {
   scope.querySelectorAll('.prod-edit').forEach(b=>b.addEventListener('click', ()=>{ const p=PROD.data.find(x=>x.SKU===b.dataset.sku); _prodForm(p); }));
   scope.querySelectorAll('.prod-toggle').forEach(b=>b.addEventListener('click', ()=>_prodEstado(b.dataset.sku, b.dataset.to)));
@@ -3043,6 +3055,9 @@ function _prodRender() {
   let h = (typeof _bcInv==='function'?_bcInv():'');
   h += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px">'
     + '<button class="btn bp" id="prod-nuevo">＋ Nuevo producto</button>'
+    // 26-jul: el Reporte de fallas y mermas se mudó acá desde Stock. El reporte
+    // habla de PRODUCTOS (qué modelo falla más), así que su lugar es Catálogo.
+    + '<button class="btn bg" id="prod-repfallas" title="Fallas y mermas por producto">📊 Reporte de fallas</button>'
     + '<input id="prod-q" placeholder="Buscar (SKU, producto, color...)" autocomplete="off" value="'+esc(PROD.q)+'" style="flex:1;min-width:200px;padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">'
     + '<select id="prod-fcat" style="padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px"><option value="">Todas las categorías</option>'
     + cats.map(c=>'<option value="'+esc(c)+'"'+(PROD.fcat===c?' selected':'')+'>'+esc(c)+'</option>').join('')+'</select>'
@@ -3061,6 +3076,7 @@ function _prodRender() {
   document.getElementById('prod-fcat').addEventListener('change', function(){ PROD.fcat=this.value; _prodRender(); });
   document.getElementById('prod-fest').addEventListener('change', function(){ PROD.fest=this.value; _prodRender(); });
   document.getElementById('prod-nuevo').addEventListener('click', ()=>_prodForm(null));
+  _prodBindReporte();
   _prodBindRowBtns(w);
   if (PROD.editing!==null) _prodForm(PROD.editing);
 }
@@ -13892,10 +13908,10 @@ function renderInv(el){
   // 26-jul: una sola fila — pestañas pegadas a la izquierda, botones a la derecha.
   let acc='<div class="sin-barra" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">';
   acc+='<button id="iv-catalogo" class="btn bp bs" style="font-size:12px" title="Ver / crear productos del catálogo">📖 Catálogo</button>';
-  acc+='<button id="iv-prod" class="btn bp bs" style="font-size:12px">＋ Ingresar Stock</button>';
-  acc+='<button id="iv-falla" class="btn bg bs" style="font-size:12px" title="Marcar unidades como no disponibles (falla, lavado, contenido…)">＋ No disponible</button>';
+  // 26-jul: un solo botón para mover stock (adentro se elige entra/sale) y el
+  // Reporte de fallas se mudó a Catálogo, que es donde vive el producto.
+  acc+='<button id="iv-prod" class="btn bp bs" style="font-size:12px" title="Ingresar producción o marcar unidades no disponibles">⇅ Movimiento de stock</button>';
   acc+='<button id="iv-recuperar" class="btn bg bs" style="font-size:12px" title="Unidades que vuelven a estar disponibles">♻ Recuperar</button>';
-  acc+='<button id="iv-repfallas" class="btn bg bs" style="font-size:12px">📊 Reporte</button>';
   acc+='<button id="iv-reposicion" class="btn bg bs" style="font-size:12px" title="Qué reponer y cuánto">📈 Reposición</button>';
   acc+='<button id="iv-lotes" class="btn bg bs" style="font-size:12px" title="Historial de lotes de producción">📦 Lotes</button>';
   acc+='</div>';
@@ -14066,7 +14082,7 @@ function renderInv(el){
   const _b=(id,fn)=>{ const b=document.getElementById(id); if(b) b.addEventListener('click',fn); };
   _b('iv-catalogo',()=>{ if(typeof navegarA==='function') navegarA('productos'); });
   _b('iv-prod',()=>_confAbrirIngresarStock(el));
-  _b('iv-falla',()=>_confAbrirIngresarFalla(el));
+
   _b('iv-recuperar',()=>_invAbrirRecuperarFalla());
   _b('iv-repfallas',()=>_confAbrirReporteFallas(el));
   _b('iv-reposicion',()=>{ if(typeof navegarA==='function') navegarA('reposicion'); });
@@ -14711,6 +14727,44 @@ function renderConf(el) {
 // ── FASE B — Formulario "Ingresar stock": arma un carrito de SKUs y crea el/los lote(s) ──
 let _stkCart = [];
 let _stkSkus = []; // catálogo de SKUs de Maestros (Prenda col L + componentes), cacheado en memoria
+// ══════════════════════════════════════════════════════════════════════════
+// UN SOLO BOTÓN PARA EL MOVIMIENTO DE STOCK (26-jul-2026)
+//
+// Antes eran dos botones separados: "Ingresar producción" y "No disponible".
+// Son la misma idea —mover unidades— en dos direcciones, así que ahora hay UN
+// botón y arriba del formulario se elige el sentido:
+//     · Entra stock ...... producción que ingresa (crea lote)
+//     · Sale stock ....... unidades que no se pueden vender (falla, lavado…)
+//
+// IMPORTANTE: NO se fusionaron los formularios por dentro. Cada lado sigue
+// siendo el mismo de siempre, con sus mismos campos: "Sale" conserva Motivo,
+// Lote y "Deshacer última", y "Entra" conserva su cantidad 0 para preventa.
+// Fusionarlos de verdad habría significado reescribir dos carritos con reglas
+// distintas — mucho riesgo para nada. Cambiar de lado cierra uno y abre el otro.
+// ══════════════════════════════════════════════════════════════════════════
+function _stkSelectorHtml(lado) {
+  const bt = (k, txt, activo, color) =>
+    '<button class="stk-lado" data-lado="' + k + '" style="flex:1;padding:8px 10px;font-family:inherit;font-size:13px;cursor:pointer;border:1px solid ' +
+    (activo ? color : 'var(--bd)') + ';background:' + (activo ? color + '22' : 'var(--bg3)') + ';color:' + (activo ? color : 'var(--mu)') +
+    ';font-weight:' + (activo ? '700' : '500') + ';border-radius:var(--r)">' + txt + '</button>';
+  return '<div style="display:flex;gap:8px;margin-bottom:12px">'
+    + bt('entra', '↓ Entra stock', lado === 'entra', 'var(--gn)')
+    + bt('sale',  '↑ Sale stock (no disponible)', lado === 'sale', 'var(--rd)')
+    + '</div>';
+}
+
+// Cambiar de lado: se cierra el formulario actual y se abre el otro.
+function _stkBindSelector(ov, lado, confEl) {
+  ov.querySelectorAll('.stk-lado').forEach(b => {
+    b.addEventListener('click', () => {
+      if (b.dataset.lado === lado) return;
+      ov.remove();
+      if (b.dataset.lado === 'entra') _confAbrirIngresarStock(confEl);
+      else _confAbrirIngresarFalla(confEl);
+    });
+  });
+}
+
 function _confAbrirIngresarStock(confEl) {
   _stkCart = [];
   const inpSt = 'width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
@@ -14718,7 +14772,9 @@ function _confAbrirIngresarStock(confEl) {
   ov.id = 'stk-modal-ov';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:600;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
   ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:680px;width:100%;padding:20px">'
-    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><span class="ct" style="margin:0;color:var(--ac)">＋ Ingresar stock</span><button id="stk-cls" class="btn bg bs" style="font-size:12px">Cerrar</button></div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><span class="ct" style="margin:0;color:var(--ac)">Movimiento de stock</span><button id="stk-cls" class="btn bg bs" style="font-size:12px">Cerrar</button></div>'
+    + _stkSelectorHtml('entra')
+    + '<div style="font-size:11px;color:var(--mu);margin-bottom:12px">Producción que ingresa. Se crea un lote. La cantidad puede ser 0 (preventa: la prenda existe y llega después).</div>'
     + '<div class="fr" style="align-items:flex-end">'
     + '<div class="fg" style="flex:2"><label>Prenda</label><div class="aw" style="position:relative"><input id="stk-prenda" type="text" autocomplete="off" placeholder="Escribe para buscar..." style="'+inpSt+'"><div id="stk-prenda-lst" class="acl" style="z-index:700"></div></div></div>'
     + '<div class="fg" style="max-width:120px"><label>Cantidad</label><input id="stk-cant" type="number" min="1" step="1" placeholder="0" style="'+inpSt+'"></div>'
@@ -14733,6 +14789,7 @@ function _confAbrirIngresarStock(confEl) {
   const _close = () => ov.remove();
   ov.addEventListener('click', e => { if (e.target === ov) _close(); });
   document.getElementById('stk-cls').addEventListener('click', _close);
+  _stkBindSelector(ov, 'entra', confEl);
 
   // Autocompletado de Prenda (igual que al agregar prenda a un pedido) desde Maestros col L "Prenda".
   // Lista deduplicada (Maestros trae la prenda repetida por cada fila/SKU). El backend resuelve los componentes.
@@ -14891,7 +14948,8 @@ function _confAbrirIngresarFalla(confEl) {
   ov.id = 'fal-modal-ov';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:600;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
   ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:720px;width:100%;padding:20px">'
-    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span class="ct" style="margin:0;color:var(--rd)">＋ Marcar No disponible</span><button id="fal-cls" class="btn bg bs" style="font-size:12px">Cerrar</button></div>'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><span class="ct" style="margin:0;color:var(--rd)">Movimiento de stock</span><button id="fal-cls" class="btn bg bs" style="font-size:12px">Cerrar</button></div>'
+    + _stkSelectorHtml('sale')
     + '<div style="font-size:11px;color:var(--mu);margin-bottom:12px">Unidades que existen pero NO se pueden vender ahora (falla, lavado, contenido…). Se descuentan del stock vendible y quedan con su motivo.</div>'
     + '<div class="fr" style="align-items:flex-end">'
     + '<div class="fg" style="flex:2"><label>Prenda</label><div class="aw" style="position:relative"><input id="fal-prenda" type="text" autocomplete="off" placeholder="Escribe para buscar..." style="'+inpSt+'"><div id="fal-prenda-lst" class="acl" style="z-index:700"></div></div></div>'
@@ -14909,6 +14967,7 @@ function _confAbrirIngresarFalla(confEl) {
   const _close = () => ov.remove();
   ov.addEventListener('click', e => { if (e.target === ov) _close(); });
   document.getElementById('fal-cls').addEventListener('click', _close);
+  _stkBindSelector(ov, 'sale', confEl);
 
   // Deshacer última falla registrada (la más reciente con FallaID) — restaura stock vendible.
   document.getElementById('fal-deshacer').addEventListener('click', async function() {
