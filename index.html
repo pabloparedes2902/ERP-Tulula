@@ -4257,6 +4257,40 @@ function _dibujar(img, max, q, tipo) {
   return { url: url, bytes: Math.round((url.length - url.indexOf(',') - 1) * 3 / 4) };
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// SUBIR VARIAS CONSTANCIAS A LA VEZ (26-jul-2026)
+//
+// Antes se subían de a una, esperando a cada una: 3 constancias = 3 viajes en
+// fila = ~9 segundos. Van a Drive con skipSheet, o sea que NO tocan la hoja y
+// NO toman el candado del servidor — se pueden mandar juntas sin pisarse.
+// (Comprobado en el backend: con skipSheet, voucherSubir devuelve ANTES de
+// entrar a _withPedLock_.)
+//
+// Devuelve las direcciones EN EL MISMO ORDEN en que se mandaron. Las que
+// fallen vuelven como null, para que quien llama decida qué hacer.
+async function _subirConstanciasJuntas(nro, imagenes) {
+  const lista = (imagenes || []).filter(Boolean);
+  if (!lista.length) return [];
+  const uno = async (img) => {
+    try {
+      const r = await apiPost('voucher.subir', {
+        NroPedido: String(nro || '0'),
+        imageBase64: img.base64, mimeType: img.mimeType || 'image/jpeg',
+        skipSheet: true,
+      });
+      return (r && r.url) || null;
+    } catch (e) { try { _errLog('voucher.subir', e); } catch (_) {} return null; }
+  };
+  return Promise.all(lista.map(uno));
+}
+
+// Parte un "data:image/jpeg;base64,AAA..." en las dos piezas que pide el servidor.
+function _partirDataUrl(dataUrl) {
+  const p = String(dataUrl || '').split(',');
+  const m = p[0].match(/data:([^;]+);/);
+  return { base64: p[1] || '', mimeType: m ? m[1] : 'image/jpeg' };
+}
+
 async function _comprimirConstancia(file) {
   const _raw = () => new Promise((res, rej) => {
     const fr = new FileReader();
@@ -13225,19 +13259,11 @@ async function _npExecuteSave(job) {
         // PagoId (jul-2026): pedidos.crear devuelve el ID de cada pago (alineado por índice)
         const _pid = (res && Array.isArray(res.pagosIds) && res.pagosIds[idx]) || '';
         (async () => {
-          const _urls = [];
-          for (const dataUrl of vouchers) {
-            try {
-              const parts = dataUrl.split(',');
-              const mimeMatch = parts[0].match(/data:([^;]+);/);
-              const up = await apiPost('voucher.subir', {
-                NroPedido: String(nuevoNro),
-                imageBase64: parts[1],
-                mimeType: mimeMatch ? mimeMatch[1] : 'image/jpeg',
-                skipSheet: true,
-              });
-              if (up && up.url) _urls.push(up.url);
-            } catch(e) { _errLog('voucher.subir', e, {toast:'Pedido #'+nuevoNro+' creado pero no se pudo subir la constancia'}); }
+          // 26-jul: todas las constancias de este pago, en un solo tirón.
+          const _res = await _subirConstanciasJuntas(String(nuevoNro), vouchers.map(_partirDataUrl));
+          const _urls = _res.filter(Boolean);
+          if (_urls.length < _res.length) {
+            try { toast('Pedido #'+nuevoNro+' creado, pero no se pudo subir ' + (_res.length - _urls.length) + ' constancia(s)', 'err'); } catch(_) {}
           }
           if (_urls.length) {
             _constanciaAsociar(String(nuevoNro), _pid, _key, _urls.join('\n'))
@@ -19771,22 +19797,17 @@ function hcAbrirEditor(r, containerEl) {
       const fpDif  = pagosCli.length ? pagosCli[0].forma : '';
 
       // Subir nuevas constancias a Drive (skipSheet) y consolidar URLs
+      // 26-jul: antes se subían de a una, esperando a cada una (~3 s cada una).
+      // Ahora van TODAS juntas: 3 constancias tardan lo que tarda la más lenta.
       const allUrls = [];
-      for (const pg of pagosCli) {
-        pg.existingUrls.forEach(u => allUrls.push(u));
-        for (const dataUrl of pg.newDataUrls) {
-          try {
-            const parts = dataUrl.split(',');
-            const mimeMatch = parts[0].match(/data:([^;]+);/);
-            const up = await apiPost('voucher.subir', {
-              NroPedido: editor.nro || '0',
-              imageBase64: parts[1],
-              mimeType: mimeMatch ? mimeMatch[1] : 'image/jpeg',
-              skipSheet: true,
-            });
-            if (up && up.url) allUrls.push(up.url);
-          } catch(ve) { console.warn('No se pudo subir constancia:', ve.message); }
-        }
+      pagosCli.forEach(pg => pg.existingUrls.forEach(u => allUrls.push(u)));
+      const _nuevas = [];
+      pagosCli.forEach(pg => (pg.newDataUrls || []).forEach(d => _nuevas.push(_partirDataUrl(d))));
+      if (_nuevas.length) {
+        const _urls = await _subirConstanciasJuntas(editor.nro || '0', _nuevas);
+        const _fallaron = _urls.filter(u => !u).length;
+        _urls.forEach(u => { if (u) allUrls.push(u); });
+        if (_fallaron) toast('No se pudieron subir ' + _fallaron + ' de ' + _nuevas.length + ' constancias — el cambio se guarda igual', 'err');
       }
       const constanciaStr = allUrls.join('\n');
 
@@ -21792,17 +21813,32 @@ document.getElementById('constancia-add').addEventListener('click', function() {
     btn.disabled=true; btn.textContent='Subiendo...';
     try {
       const cmp = await _comprimirConstancia(file);
-      // PERF 24-jul: subir + asociar al pago en UN solo viaje (urlsPrevias conserva las existentes)
+      // 26-jul · SE VE AL INSTANTE. La imagen ya está acá, comprimida: se muestra
+      // desde el propio navegador mientras viaja a Drive. Cuando llega, se cambia
+      // por la dirección definitiva sin que se note. Si falla, se saca y se avisa.
       const _previas = _constanciaUrlsDePago(dest.key, dest.id);
-      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, _pagoId:dest.id, _pagoKey:dest.key, urlsPrevias:_previas.join('\n')});
-      if (!res.url) throw new Error('No se obtuvo URL del servidor');
-      const nuevas = _previas.concat([res.url]);
-      _constanciaItems.push({url:res.url, pagoKey:dest.key, pagoId:dest.id});
-      _syncConstanciaPago(_constanciaNro, dest.key, nuevas.join('\n'), dest.id);
+      const _local = 'data:' + cmp.mimeType + ';base64,' + cmp.base64;
+      const _it = {url:_local, pagoKey:dest.key, pagoId:dest.id, _subiendo:true};
+      _constanciaItems.push(_it);
       _showConstanciaAt(_constanciaItems.length-1);
-      toast('Constancia agregada', 'ok');
+      btn.disabled=false; btn.textContent='➕ Agregar'; try{ document.body.removeChild(inp); }catch(_){}
+      toast('Constancia agregada — terminando de subirla', 'ok');
+      apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, _pagoId:dest.id, _pagoKey:dest.key, urlsPrevias:_previas.join('\n')})
+        .then(res => {
+          if (!res || !res.url) throw new Error('No se obtuvo URL del servidor');
+          _it.url = res.url; _it._subiendo = false;
+          _syncConstanciaPago(_constanciaNro, dest.key, _previas.concat([res.url]).join('\n'), dest.id);
+          const _i = _constanciaItems.indexOf(_it);
+          if (_i >= 0 && _constanciaIdx === _i) _showConstanciaAt(_i);
+        })
+        .catch(e => {
+          const _i = _constanciaItems.indexOf(_it);
+          if (_i >= 0) { _constanciaItems.splice(_i, 1); _showConstanciaAt(Math.max(0, _i - 1)); }
+          toast('No se pudo subir la constancia: '+esc(e.message)+' — vuelve a intentarlo', 'err');
+        });
+      return;
     } catch(e) { toast('Error: '+esc(e.message), 'err'); }
-    finally { btn.disabled=false; btn.textContent='➕ Agregar'; document.body.removeChild(inp); }
+    finally { btn.disabled=false; btn.textContent='➕ Agregar'; try{ document.body.removeChild(inp); }catch(_){} }
   });
 });
 
