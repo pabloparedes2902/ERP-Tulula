@@ -2048,7 +2048,169 @@ function _connMark(ok, msg){
   else { _connFallos++; if(_connFallos>=2) _pillConn(false, msg); }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// CRONÓMETRO QUE SOBREVIVE A LA RECARGA (27-jul-2026)
+//
+// EL PROBLEMA QUE RESUELVE: se sabe que guardar un cambio puede tardar cerca de
+// un minuto, pero el número nunca se pudo anotar. Si el ERP se recarga en medio
+// de la operación, lo que estaba contando en memoria se pierde y queda la
+// sensación, no el dato. En localStorage.erp_refetch_log hay 168 recargas
+// silenciosas anotadas: no es un caso raro, es lo normal.
+//
+// CÓMO SOBREVIVE, EN CRIOLLO: antes de empezar se anota en el disco del
+// navegador "arranqué esto a tal hora". Mientras dura, cada 2 segundos se
+// actualiza un "sigo vivo". Si termina bien, se guarda el tiempo exacto. Si el
+// ERP se recarga en el medio, al arrancar de nuevo encuentra la anotación
+// abierta y la cierra sola: "duró AL MENOS X, y quedó interrumpida". Con eso el
+// minuto perdido deja de ser una sospecha.
+//
+// QUÉ SE GUARDA: todo lo que pasa de 3 segundos, más TODO lo de cambios,
+// devoluciones y pagos aunque sea rápido (para tener con qué comparar).
+// Tope 400 anotaciones, se pisan las viejas. No sale de este navegador.
+//
+// PARA VER EL RESULTADO: consola del navegador →  verLentos()
+// PARA EMPEZAR DE CERO:  consola del navegador →  verLentos.borrar()
+// ══════════════════════════════════════════════════════════════════════════
+const _CRON_HECHAS = 'erp_cron_v1';        // lo que terminó
+const _CRON_ABIERTAS = 'erp_cron_abiertas_v1';  // lo que empezó y no se sabe si terminó
+const _CRON_LENTO_MS = 3000;               // el umbral que pidió Pablo
+const _CRON_TOPE = 400;
+// Estas se anotan SIEMPRE, rápidas o lentas: son las que están bajo la lupa.
+// OJO con el 'api.' de adelante: las llamadas se etiquetan 'api.cambios2.editarPrendas',
+// no 'cambios2.editarPrendas'. Sin contemplarlo, esta lista no atrapaba nada.
+const _CRON_SIEMPRE = /^(api\.)?(cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.)/;
+
+function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
+function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
+
+function _cronAnotar(reg) {
+  const l = _cronLeer(_CRON_HECHAS);
+  l.push(reg);
+  while (l.length > _CRON_TOPE) l.shift();
+  _cronGuardar(_CRON_HECHAS, l);
+}
+
+let _cronLatido = null;
+function _cronAbrir(etiqueta, detalle) {
+  try {
+    const id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const ab = _cronLeer(_CRON_ABIERTAS);
+    ab.push({ id: id, q: String(etiqueta || ''), det: detalle ? String(detalle).slice(0, 80) : '', t0: Date.now(), vivo: Date.now() });
+    _cronGuardar(_CRON_ABIERTAS, ab);
+    // El "sigo vivo": sin esto, una operación cortada por una recarga solo diría
+    // "empezó a tal hora" y no cuánto llegó a durar.
+    if (!_cronLatido) _cronLatido = setInterval(_cronLatir, 2000);
+    return id;
+  } catch (_) { return null; }
+}
+
+function _cronLatir() {
+  try {
+    const ab = _cronLeer(_CRON_ABIERTAS);
+    if (!ab.length) { clearInterval(_cronLatido); _cronLatido = null; return; }
+    const ahora = Date.now();
+    ab.forEach(function (x) { x.vivo = ahora; });
+    _cronGuardar(_CRON_ABIERTAS, ab);
+  } catch (_) {}
+}
+
+function _cronCerrar(id, ok) {
+  if (!id) return;
+  try {
+    const ab = _cronLeer(_CRON_ABIERTAS);
+    const i = ab.findIndex(function (x) { return x.id === id; });
+    if (i < 0) return;
+    const x = ab[i];
+    ab.splice(i, 1);
+    _cronGuardar(_CRON_ABIERTAS, ab);
+    const ms = Date.now() - x.t0;
+    if (ms >= _CRON_LENTO_MS || _CRON_SIEMPRE.test(x.q)) {
+      _cronAnotar({ q: x.q, det: x.det, ms: ms, ok: ok ? 1 : 0, cortada: 0, ts: x.t0 });
+    }
+  } catch (_) {}
+}
+
+// Al arrancar: cerrar lo que quedó colgando de la sesión anterior.
+// ESTA es la parte que antes no existía y por la que el minuto se perdía.
+function _cronRescatarAbiertas() {
+  try {
+    const ab = _cronLeer(_CRON_ABIERTAS);
+    if (!ab.length) return 0;
+    ab.forEach(function (x) {
+      // Duración MÍNIMA conocida: hasta el último "sigo vivo" (precisión 2 s).
+      const ms = Math.max(0, (x.vivo || x.t0) - x.t0);
+      _cronAnotar({ q: x.q, det: x.det, ms: ms, ok: 0, cortada: 1, ts: x.t0 });
+    });
+    _cronGuardar(_CRON_ABIERTAS, []);
+    return ab.length;
+  } catch (_) { return 0; }
+}
+try { _cronRescatarAbiertas(); } catch (_) {}
+
+// ── El informe, en castellano ────────────────────────────────────────────
+function verLentos(minMs) {
+  const tope = (minMs === undefined || minMs === null) ? 0 : Number(minMs);
+  const datos = _cronLeer(_CRON_HECHAS).filter(function (x) { return x.ms >= tope; });
+  if (!datos.length) {
+    console.log('Todavía no hay nada anotado' + (tope ? ' por encima de ' + tope + ' ms' : '') + '.');
+    console.log('Usá el ERP normalmente un rato (Pedidos, Cambios, Devoluciones) y volvé a correr verLentos().');
+    return [];
+  }
+  const por = {};
+  datos.forEach(function (x) {
+    const k = x.q;
+    if (!por[k]) por[k] = { veces: 0, total: 0, peor: 0, cortadas: 0 };
+    const d = por[k];
+    d.veces++; d.total += x.ms;
+    if (x.ms > d.peor) d.peor = x.ms;
+    d.cortadas += (x.cortada || 0);
+  });
+  const filas = Object.keys(por).map(function (k) {
+    const d = por[k];
+    return {
+      'qué': k,
+      'veces': d.veces,
+      'promedio (s)': +(d.total / d.veces / 1000).toFixed(1),
+      'el peor (s)': +(d.peor / 1000).toFixed(1),
+      'cortadas por recarga': d.cortadas,
+    };
+  }).sort(function (a, b) { return b['el peor (s)'] - a['el peor (s)']; });
+
+  console.log('%cLO QUE MÁS TARDA EN ESTE ERP', 'font-weight:bold;font-size:14px');
+  console.log('Anotaciones: ' + datos.length + ' · umbral de "lento": ' + (_CRON_LENTO_MS / 1000) + ' s');
+  console.table(filas);
+  const cortadas = datos.filter(function (x) { return x.cortada; });
+  if (cortadas.length) {
+    console.log('%c' + cortadas.length + ' operación(es) quedaron cortadas por una recarga del ERP.', 'color:#e8a33d');
+    console.log('Para esas, el tiempo mostrado es un MÍNIMO: duraron eso o más.');
+    console.table(cortadas.slice(-10).map(function (x) {
+      return { 'qué': x.q, 'detalle': x.det, 'duró al menos (s)': +(x.ms / 1000).toFixed(1), 'cuándo': new Date(x.ts).toLocaleString() };
+    }));
+  }
+  const peores = datos.slice().sort(function (a, b) { return b.ms - a.ms; }).slice(0, 10);
+  console.log('%cLas 10 peores, una por una', 'font-weight:bold');
+  console.table(peores.map(function (x) {
+    return { 'qué': x.q, 'detalle': x.det, 'segundos': +(x.ms / 1000).toFixed(1), 'terminó bien': x.ok ? 'sí' : 'no', 'cortada': x.cortada ? 'sí' : '', 'cuándo': new Date(x.ts).toLocaleString() };
+  }));
+  return filas;
+}
+verLentos.borrar = function () {
+  try { localStorage.removeItem(_CRON_HECHAS); localStorage.removeItem(_CRON_ABIERTAS); } catch (_) {}
+  console.log('Listo: cronómetro en cero.');
+};
+verLentos.crudo = function () { return _cronLeer(_CRON_HECHAS); };
+try { window.verLentos = verLentos; } catch (_) {}
+
+// Envoltorio del cronómetro. La función de verdad es _fetchJsonCrudo, acá abajo:
+// esto solo mide y deja pasar. Si el cronómetro falla, la llamada igual sale.
 async function _fetchJson(buildReq, action) {
+  const _c = _cronAbrir('api.' + String(action || '?'));
+  let _ok = false;
+  try { const r = await _fetchJsonCrudo(buildReq, action); _ok = true; return r; }
+  finally { _cronCerrar(_c, _ok); }
+}
+
+async function _fetchJsonCrudo(buildReq, action) {
   let ultimoError = null;
   for (let intento = 1; intento <= _API_REINTENTOS; intento++) {
     try {
@@ -4602,6 +4764,11 @@ function _c2Agrupar(filas) {
         // No era solo que no se veia: cada edicion BORRABA el detalle. Mismo arreglo
         // en Cambios2.gs -> cambios2Listar (las dos puertas tienen que dar lo mismo).
         MotivoDetalle: r.MotivoDetalle || '',
+        // 27-jul-2026 — mismo caso que MotivoDetalle, pero este además hacía
+        // retroceder el Estado de PRENDA ORIGINAL RECIBIDA a CLIENTE SOLICITA
+        // CAMBIO en cada edición. Va de la mano con el paso 3 de _c2EditarImpl_
+        // (Cambios2.gs), que evita volver a sumar el stock devuelto.
+        FechaRecepcionOriginal: r.FechaRecepcionOriginal || '',
         DiferenciaPrecio: parseFloat(r.DiferenciaPrecio) || 0,
         PrecioEnvio: parseFloat(r.PrecioEnvio) || 0,
         MontoPagadoCliente: parseFloat(r.MontoPagadoCliente) || 0,
@@ -17507,6 +17674,7 @@ async function _camProcessSaveQueue() {
   _camSaveActive = true;
   while (_camSaveQueue.length) {
     const job = _camSaveQueue[0];
+    const _cron = _cronAbrir('flujo.cambio.registrar');
     try {
       // UNA sola llamada: crea el cambio completo (multi-prenda / multi-pedido)
       var _r2 = await apiSend('cambios2.registrarYSync', job.payload);
@@ -17542,7 +17710,9 @@ async function _camProcessSaveQueue() {
       _camUpdateSaveIndicator();
       try { histCamData = null; _hcLsDel(); if (document.getElementById('pg-histcambios') && document.getElementById('pg-histcambios').classList.contains('on')) loadHistCambios(true); } catch (e) {}
       try { _pollPedsOnce(); } catch (e) {}
+      _cronCerrar(_cron, true);
     } catch (e) {
+      _cronCerrar(_cron, false);
       _camSaveActive = false;
       _camUpdateSaveIndicator();
       _camShowSaveError(job, e);
@@ -18074,8 +18244,9 @@ function editarCambios2(nc){
     // usuario guardó primero, el backend avisa en vez de pisar su trabajo.
     var body={ NroCambio:nc, _versionVista:(c&&c.Version)||'', Nombre:gv('c2e-nom'), Diferencia:gv('c2e-dif'), PrecioEnvio:gv('c2e-env'), MontoPagadoCliente:gv('c2e-pcli'), MontoAsumidoEmpresa:gv('c2e-pemp'), Motivo:gv('c2e-mot'), MotivoDetalle:gv('c2e-motd'), FechaSolicitud:gv('c2e-fsol'), FechaRecepcionOriginal:gv('c2e-frec'), FechaEnvioNueva:gv('c2e-fenv'), Comentario:gv('c2e-com'), devueltas:devs, nuevas:nues };
     this.disabled=true; this.textContent='Guardando...';
-    try{ await apiSend('cambios2.editarPrendas', body); toast('Cambio actualizado','ok'); refresca(); }
-    catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='Guardar'; }
+    var _cronEd = _cronAbrir('flujo.cambio.editar', nc);
+    try{ await apiSend('cambios2.editarPrendas', body); toast('Cambio actualizado','ok'); refresca(); _cronCerrar(_cronEd, true); }
+    catch(e){ _cronCerrar(_cronEd, false); toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='Guardar'; }
   });
   var del=ov.querySelector('[data-c2del]');
   if(del) del.addEventListener('click', async function(){
