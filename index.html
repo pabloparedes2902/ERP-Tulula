@@ -4202,10 +4202,61 @@ document.getElementById('ped-tabs').addEventListener('click', e => {
 })();
 
 // ── COMPRESIÓN DE CONSTANCIAS EN EL CLIENTE (jul-2026) ────────────────────
-// Comprime imágenes ANTES de subirlas (canvas ≤1200px lado mayor, JPEG 0.82).
-// Una foto de celular de 3-4MB queda en ~150-300KB → subida ~10x más rápida.
-// PDFs y no-imágenes pasan tal cual. Si la imagen no se puede decodificar,
-// cae al archivo original sin romper. Devuelve {base64, mimeType}.
+// ══════════════════════════════════════════════════════════════════════════
+// COMPRESIÓN DE CONSTANCIAS — POR OBJETIVO DE PESO (26-jul-2026)
+//
+// ANTES: una sola receta fija (1200 px, JPEG 0.82). Una captura de Yape pesaba
+// ~180 KB pudiendo pesar 20, y una foto difícil salía igual de pesada.
+//
+// AHORA: se apunta a un PESO. La receta de partida es WebP 900 px calidad 0.5
+// (elegida por Pablo comparando constancias reales). Si con eso la imagen todavía
+// pasa de 30 KB —típico de una FOTO de un voucher impreso, con ruido y sombras—
+// se baja de a poco hasta cumplir. Pero hay un PISO: nunca por debajo de 700 px
+// ni de calidad 0.35. Prefiero una constancia de 45 KB que se lee a una de 25 KB
+// donde no se distingue el número de operación.
+//
+// POR QUÉ WebP: pesa 30-40% menos que JPEG con la misma calidad a la vista, y en
+// texto sobre fondo plano —que es lo que son las capturas de Yape/Plin— la
+// diferencia es enorme. Si el navegador no supiera hacer WebP (muy raro hoy),
+// se detecta y se sigue con JPEG sin avisar a nadie.
+//
+// REVERSA: poner CONST_OBJETIVO_KB = 0 → vuelve a la receta única de antes.
+// ══════════════════════════════════════════════════════════════════════════
+const CONST_OBJETIVO_KB = 30;    // a lo que se apunta
+const CONST_RECETAS = [          // en orden: de mejor calidad a más liviana
+  { max: 900, q: 0.50 },
+  { max: 900, q: 0.42 },
+  { max: 800, q: 0.42 },
+  { max: 800, q: 0.35 },
+  { max: 700, q: 0.35 },         // PISO: de acá no se baja
+];
+
+// ¿Sabe este navegador escribir WebP? Se pregunta una sola vez.
+let _webpOk = null;
+function _soportaWebp() {
+  if (_webpOk !== null) return _webpOk;
+  try {
+    const cv = document.createElement('canvas'); cv.width = cv.height = 1;
+    _webpOk = cv.toDataURL('image/webp').indexOf('data:image/webp') === 0;
+  } catch (e) { _webpOk = false; }
+  return _webpOk;
+}
+
+function _dibujar(img, max, q, tipo) {
+  const k = Math.min(1, max / Math.max(img.width || 1, img.height || 1));
+  const w = Math.max(1, Math.round((img.width || 1) * k));
+  const h = Math.max(1, Math.round((img.height || 1) * k));
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d');
+  // Fondo blanco: un PNG con transparencia saldría con el fondo NEGRO en JPEG.
+  cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, h);
+  try { cx.imageSmoothingQuality = 'high'; } catch (e) {}
+  cx.drawImage(img, 0, 0, w, h);
+  const url = cv.toDataURL(tipo, q);
+  return { url: url, bytes: Math.round((url.length - url.indexOf(',') - 1) * 3 / 4) };
+}
+
 async function _comprimirConstancia(file) {
   const _raw = () => new Promise((res, rej) => {
     const fr = new FileReader();
@@ -4214,7 +4265,10 @@ async function _comprimirConstancia(file) {
     fr.readAsDataURL(file);
   });
   if (!/^image\//.test(file.type || '')) return _raw();
-  if (file.size < 250 * 1024) return _raw();   // ya es liviana, no vale la pena
+  // Ya está por debajo del objetivo: no se toca (recomprimir solo la empeoraría).
+  if (CONST_OBJETIVO_KB > 0 && file.size <= CONST_OBJETIVO_KB * 1024) return _raw();
+  if (CONST_OBJETIVO_KB === 0 && file.size < 250 * 1024) return _raw();
+
   try {
     const dataUrl = await new Promise((res, rej) => {
       const fr = new FileReader();
@@ -4228,20 +4282,30 @@ async function _comprimirConstancia(file) {
       im.onerror = () => rej(new Error('decode'));
       im.src = dataUrl;
     });
-    const MAX = 1200;
-    const k = Math.min(1, MAX / Math.max(img.width || 1, img.height || 1));
-    const w = Math.max(1, Math.round((img.width || 1) * k));
-    const hh = Math.max(1, Math.round((img.height || 1) * k));
-    const cv = document.createElement('canvas');
-    cv.width = w; cv.height = hh;
-    cv.getContext('2d').drawImage(img, 0, 0, w, hh);
-    const out = cv.toDataURL('image/jpeg', 0.82);
-    // Si la compresión no achicó (imagen ya optimizada), usar la original
-    if (out.length * 0.75 >= file.size) return _raw();
-    return { base64: out.split(',')[1], mimeType: 'image/jpeg' };
+
+    const tipo = _soportaWebp() ? 'image/webp' : 'image/jpeg';
+    // Sin objetivo → la receta única de siempre (reversa).
+    if (CONST_OBJETIVO_KB === 0) {
+      const uno = _dibujar(img, 1200, 0.82, 'image/jpeg');
+      if (uno.bytes >= file.size) return _raw();
+      return { base64: uno.url.split(',')[1], mimeType: 'image/jpeg' };
+    }
+
+    const tope = CONST_OBJETIVO_KB * 1024;
+    let ultima = null;
+    for (let i = 0; i < CONST_RECETAS.length; i++) {
+      const r = CONST_RECETAS[i];
+      // En JPEG hace falta un poco más de calidad para el mismo resultado a la vista.
+      ultima = _dibujar(img, r.max, tipo === 'image/jpeg' ? Math.min(0.85, r.q + 0.15) : r.q, tipo);
+      if (ultima.bytes <= tope) break;
+    }
+    // Si ni con el piso se llegó al objetivo, se queda con el piso: legible antes
+    // que liviana. Y si aun así pesa más que el original, se manda el original.
+    if (!ultima || ultima.bytes >= file.size) return _raw();
+    try { console.log('[constancia] ' + Math.round(file.size/1024) + ' KB → ' + Math.round(ultima.bytes/1024) + ' KB (' + tipo + ')'); } catch (e) {}
+    return { base64: ultima.url.split(',')[1], mimeType: tipo };
   } catch (e) { return _raw(); }
 }
-
 // ══ PILOTO MIGRACIÓN S1 (24-jul) — ESCRITURA DIRECTA DE COLORES ═════════════
 // Interruptor de reversa del piloto: false = todo vuelve por Apps Script.
 const SB_PILOTO_COLORES = true;
@@ -4957,6 +5021,91 @@ async function _cambiosPorPedidoRapido(nro) {
     return todos.filter(r => String(r['NroPedido'] || '').trim() === n)
                 .sort((a, b) => new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0));
   } catch (e) { try { _errLog('sb.cambiosPorPedido', e); } catch (_) {} return api('cambios.porPedido', { nro: n }); }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 26-jul-2026 — DOS BUCLES QUE COBRABAN 3 SEGUNDOS POR VUELTA
+//
+// LO QUE PASABA: el ERP mandaba una petición a Apps Script POR CADA elemento y
+// esperaba a que terminara antes de mandar la siguiente. Como cualquier viaje a
+// Apps Script cuesta ~3 s (medido: una llamada VACÍA tarda 3.066 ms), marcar 10
+// cambios a la vez tenía a la persona 35 segundos mirando "Guardando…".
+//
+// LO QUE SE HACE AHORA: UN solo viaje con la lista completa. El servidor recorre
+// la lista por dentro llamando a la MISMA función de siempre, una por una. No se
+// reescribió ni una regla de negocio: el reingreso a stock, el reemplazo de la
+// prenda en el pedido y los candados funcionan exactamente igual.
+//
+// POR QUÉ NO SE MANDAN EN PARALELO (que sería lo obvio): esas funciones toman un
+// candado de 30 segundos para no pisarse entre ellas. Diez peticiones a la vez
+// harían cola en ese candado y las últimas MORIRÍAN por tiempo de espera.
+//
+// REVERSA INMEDIATA: poner SB_MASIVO = false y publicar. Vuelve al bucle de antes.
+// Y si el servidor todavía no tiene la acción nueva, cada puerta se va sola por
+// el camino viejo — nunca se queda sin guardar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_MASIVO = true;
+
+// Actualiza un campo en VARIOS cambios de una sola vez.
+// Devuelve { actualizados, fallos:[{id,error}] } — el mismo formato venga por
+// donde venga, así quien llama no tiene que saber qué camino se usó.
+async function _cambiosActualizarMasivo(ids, campo, valor) {
+  const lista = (ids || []).map(x => String(x).trim()).filter(Boolean);
+  if (!lista.length) return { actualizados: 0, fallos: [] };
+
+  // El bucle de antes, uno por uno. Se usa si el servidor todavía no conoce la
+  // acción nueva (por ejemplo, si se publicó el ERP antes que el backend).
+  const unoPorUno = async () => {
+    let ok = 0; const fallos = [];
+    for (const id of lista) {
+      const body = { ID: id };
+      body[campo] = valor;
+      try { await apiSend('cambios.actualizar', body); ok++; }
+      catch (e) { fallos.push({ id: id, error: e.message }); }
+    }
+    return { actualizados: ok, fallos: fallos };
+  };
+
+  if (!SB_MASIVO) return unoPorUno();
+  try {
+    // apiPost y no apiSend: apiSend mete el paquete en la dirección web y con 60
+    // números eso se pasa de largo. Por POST no hay ese tope.
+    const r = await apiPost('cambios.actualizarMasivo', { ids: lista, campo: campo, valor: valor });
+    if (r && typeof r.actualizados === 'number') return { actualizados: r.actualizados, fallos: r.fallos || [] };
+    return unoPorUno();
+  } catch (e) {
+    // Si es un error de negocio del servidor (campo no permitido, demasiados),
+    // repetirlo uno por uno daría el MISMO error 10 veces. Se propaga.
+    if (e && /no permitido|Máximo/i.test(String(e.message || ''))) throw e;
+    try { _errLog('masivo.cambios', e); } catch (_) {}
+    return unoPorUno();
+  }
+}
+
+// Registra VARIOS pagos (en pedidos distintos) de una sola vez.
+async function _pagosAgregarMasivo(items) {
+  const lista = (items || []).filter(x => x && x.NroPedido && x.Monto);
+  if (!lista.length) return { agregados: 0, fallos: [] };
+
+  const unoPorUno = async () => {
+    let ok = 0; const fallos = [];
+    for (const it of lista) {
+      try { await apiSend('pago.agregar', it); ok++; }
+      catch (e) { fallos.push({ nro: String(it.NroPedido), error: e.message }); }
+    }
+    return { agregados: ok, fallos: fallos };
+  };
+
+  if (!SB_MASIVO) return unoPorUno();
+  try {
+    const r = await apiPost('pago.agregarMasivo', { items: lista });
+    if (r && typeof r.agregados === 'number') return { agregados: r.agregados, fallos: r.fallos || [] };
+    return unoPorUno();
+  } catch (e) {
+    if (e && /Máximo/i.test(String(e.message || ''))) throw e;
+    try { _errLog('masivo.pagos', e); } catch (_) {}
+    return unoPorUno();
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -13112,30 +13261,34 @@ async function _npExecuteSave(job) {
 //     saldarlo. El -X ya está como pago (negativo) del nuevo pedido.
 async function _npAplicarSaldosOrigen(job, targetNro, fechaPago) {
   const fecha = fechaPago || new Date().toISOString().split('T')[0];
-  if (job.saldosFavor && job.saldosFavor.length) {
-    for (const item of job.saldosFavor) {
-      try {
-        await apiSend('pago.agregar', {
-          NroPedido: item.nro, Monto: -Math.abs(item.monto),
-          FormaPago: 'Saldo aplicado a #'+targetNro, FechaPago: fecha,
-        });
-      } catch(e) {
-        console.warn('consumir saldo favor falló:', e.message);
-        try { toast('⚠ No se pudo descontar S/'+fmt(item.monto)+' del #'+item.nro+': '+e.message, 'err'); } catch(_) {}
-      }
-    }
-  }
-  if (job.saldosPendiente && job.saldosPendiente.length) {
-    for (const item of job.saldosPendiente) {
-      try {
-        await apiSend('pago.agregar', {
-          NroPedido: item.nro, Monto: Math.abs(item.monto),
-          FormaPago: 'Trasladado a #'+targetNro, FechaPago: fecha,
-        });
-      } catch(e) {
-        console.warn('trasladar deuda falló:', e.message);
-        try { toast('⚠ No se pudo trasladar la deuda del #'+item.nro+': '+e.message, 'err'); } catch(_) {}
-      }
+  // 26-jul: antes era un pago por peticion, esperando cada una (~3 s cada una).
+  // Ahora los saldos a favor y los pendientes van juntos en un solo viaje, y
+  // ademas entran bajo UN solo candado en el servidor: o se aplican todos los
+  // movimientos de esta operacion, o se sabe exactamente cual falto.
+  const _movs = [];
+  (job.saldosFavor || []).forEach(item => _movs.push({
+    NroPedido: item.nro, Monto: -Math.abs(item.monto),
+    FormaPago: 'Saldo aplicado a #'+targetNro, FechaPago: fecha, _que: 'favor', _monto: item.monto,
+  }));
+  (job.saldosPendiente || []).forEach(item => _movs.push({
+    NroPedido: item.nro, Monto: Math.abs(item.monto),
+    FormaPago: 'Trasladado a #'+targetNro, FechaPago: fecha, _que: 'pendiente', _monto: item.monto,
+  }));
+  if (_movs.length) {
+    try {
+      const r = await _pagosAgregarMasivo(_movs);
+      (r.fallos || []).forEach(f => {
+        const orig = _movs.find(m => String(m.NroPedido) === String(f.nro));
+        const plata = orig ? fmt(Math.abs(orig._monto)) : '?';
+        const que = (orig && orig._que === 'pendiente')
+          ? ('No se pudo trasladar la deuda del #' + f.nro)
+          : ('No se pudo descontar S/' + plata + ' del #' + f.nro);
+        console.warn('[saldos origen] ' + que + ': ' + f.error);
+        try { toast('⚠ ' + que + ': ' + f.error, 'err'); } catch(_) {}
+      });
+    } catch(e) {
+      console.warn('saldos en el pedido origen fallaron:', e.message);
+      try { toast('⚠ No se pudieron aplicar los saldos en los pedidos de origen: '+e.message, 'err'); } catch(_) {}
     }
   }
   // Devoluciones aplicadas como saldo: marcar consumo en la hoja Devoluciones.
@@ -18978,21 +19131,50 @@ async function _hcBulkEditar(el, rows) {
     const valor = document.getElementById('hcb-val').value;
     if (!valor) { toast('Elige un valor', 'err'); return; }
     document.getElementById('hcb-apply').disabled = true;
-    document.getElementById('hcb-apply').textContent = 'Guardando...';
+
+    // ── 26-jul · SE PINTA YA, SE GUARDA POR DETRÁS ────────────────────────
+    // Antes se mandaba UNA petición por cambio y se esperaba a cada una: 10
+    // cambios eran ~35 segundos mirando "Guardando…". Juntarlas en un solo
+    // viaje lo bajó a ~10 s, pero seguían siendo 10 s de espera para algo que
+    // ya se sabe cómo va a quedar. Ahora la pantalla se actualiza al instante
+    // y el guardado viaja solo — igual que en Pedidos, Estado y colores.
+    // Si algo no entra, salta el aviso rojo diciendo CUÁLES y la lista se
+    // recarga del servidor. Si falla entero, se deshace lo pintado.
+    const campoHoja = (campo === 'Courier') ? 'CourierEnvioNueva' : campo;
+    const _previos = [];
+    const _wEl = document.getElementById('histcam-w');
     try {
-      for (const id of ids) {
-        const body = { ID: id, [campo]: valor };
-        await apiSend('cambios.actualizar', body);
+      if (Array.isArray(histCamData)) {
+        const _set = new Set(ids.map(String));
+        histCamData.forEach(r => {
+          if (_set.has(String(r['ID']))) { _previos.push({ f: r, v: r[campoHoja] }); r[campoHoja] = valor; }
+        });
+        try { _hcLsSet(histCamData); } catch(e) {}
+        renderHistCambios(_wEl, histCamData);
       }
-      toast('✓ ' + ids.length + ' cambio(s) actualizados', 'ok');
-      ov.remove();
+    } catch(e) { try { _errLog('hc.masivo.pintar', e); } catch(_) {} }
+    ov.remove();
+    toast('✓ ' + ids.length + ' cambio(s) actualizados', 'ok');
+
+    _cambiosActualizarMasivo(ids, campo, valor).then(r => {
+      if (r.fallos && r.fallos.length) {
+        const _ver = r.fallos.slice(0, 3).map(f => '#' + f.id).join(', ');
+        toast('Se guardaron ' + r.actualizados + ' de ' + ids.length + '. NO entraron ' + r.fallos.length
+              + ' (' + _ver + (r.fallos.length > 3 ? '…' : '') + '): ' + esc(r.fallos[0].error), 'err');
+      }
+      // Se relee del servidor SIEMPRE, aunque haya salido todo bien: marcar
+      // "PRENDA ORIGINAL RECIBIDA" mueve stock y puede tocar otros campos que
+      // acá no se adivinaron. La pantalla queda con la verdad, no con mi copia.
       histCamData = null; _hcLsDel();
-      await loadHistCambios(true);
-    } catch(e) {
-      toast('Error: ' + esc(e.message), 'err');
-      document.getElementById('hcb-apply').disabled = false;
-      document.getElementById('hcb-apply').textContent = 'Aplicar';
-    }
+      loadHistCambios(true);
+    }).catch(e => {
+      try {
+        _previos.forEach(p => { p.f[campoHoja] = p.v; });
+        _hcLsSet(histCamData);
+        renderHistCambios(_wEl, histCamData);
+      } catch(_) {}
+      toast('No se pudo guardar: ' + esc(e.message) + '. Se deshizo el cambio en pantalla.', 'err');
+    });
   });
 }
 
@@ -21124,11 +21306,15 @@ function hdVerDetalle(r, containerEl) {
       const fecha = mini.querySelector('#mini-frecep').value;
       if (!fecha) { toast('Ingresa una fecha', 'err'); return; }
       mini.remove(); close();
+      // 26-jul · SE PINTA YA, SE GUARDA POR DETRÁS.
+      // Antes se esperaba a Apps Script (~3 s, más si va la foto) con la pantalla
+      // quieta, y recién después se pintaba. Ahora es al revés: se pinta al
+      // instante y el guardado viaja solo. Si falla, se avisa y se recarga la
+      // lista del servidor — que es lo que ya hacía el manejo de error de antes.
       try {
         const newEstado = derivarEstadoDev(r['FechaSolicitud'], fecha, r['FechaReembolso']);
         const payload = { ID: r['ID'], FechaRecepcionPrenda: fecha, Estado: newEstado };
         if (fotoBase64) payload.FotoRecepcion = fotoBase64;
-        await apiSend('devoluciones.actualizar', payload);
         if (Array.isArray(histDevData)) {
           histDevData.forEach(d => {
             if (String(d['NroDevolucion']||d['ID']) === String(r['NroDevolucion']||r['ID'])) {
@@ -21141,6 +21327,10 @@ function hdVerDetalle(r, containerEl) {
         toast('✓ Prenda recibida registrada', 'ok');
         const wEl = document.getElementById('histdev-w');
         if (wEl && typeof renderDevoluciones === 'function') renderDevoluciones(wEl, histDevData || []);
+        apiSend('devoluciones.actualizar', payload).catch(e => {
+          toast('No se pudo guardar la recepción: ' + esc(e.message) + '. Se recarga la lista.', 'err');
+          histDevData = null; _hdLsDel(); loadDevoluciones(true);
+        });
       } catch(e) {
         toast('Error: ' + esc(e.message), 'err');
         histDevData = null; _hdLsDel(); loadDevoluciones(true);
@@ -21226,12 +21416,17 @@ function hdVerDetalle(r, containerEl) {
         const detalleCash = cashPagos.length ? JSON.stringify(cashPagos.map(p=>({monto:parseFloat(p.monto)||0,forma:p.forma,constancia:p.ref}))) : '';
         const constancia = cashPagos.length===1 ? cashPagos[0].ref : '';
         mini.remove(); close();
+        // 26-jul · SE PINTA YA, SE GUARDA POR DETRÁS (igual que el paso 2).
         try {
           const newEstado = derivarEstadoDev(r['FechaSolicitud'],r['FechaRecepcionPrenda'],fecha);
-          await apiSend('devoluciones.actualizar',{
+          const _payload3 = {
             ID:r['ID'], FechaReembolso:fecha, FormaPagoReembolso:forma,
             MontoReembolsoCash:cashTotal2, DetalleReembolsoCash:detalleCash,
             ConstanciaReembolso:constancia, Estado:newEstado,
+          };
+          apiSend('devoluciones.actualizar', _payload3).catch(e => {
+            toast('No se pudo guardar el reembolso: '+esc(e.message)+'. Se recarga la lista.','err');
+            histDevData=null; _hdLsDel(); loadDevoluciones(true);
           });
           if (Array.isArray(histDevData)) {
             histDevData.forEach(d => {
