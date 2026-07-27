@@ -5046,6 +5046,44 @@ async function _pedPorNrosRapido(nros) {
   } catch (e) { try { _errLog('sb.porNros', e); } catch (_) {} return porApps(); }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// LA PAPELERA, DESDE LA BASE (26-jul-2026)
+//
+// MEDIDO EN VIVO HOY: abrir la papelera tardaba 21.773 ms — casi 22 segundos
+// mirando "Cargando papelera…". Es la pantalla más lenta que quedaba en todo
+// el ERP. El servidor tenía que leer las 23.000 filas de la hoja Pedidos
+// enteras solo para quedarse con las que dicen "SI" en la columna Eliminado.
+//
+// Esas mismas filas ya están espejadas en la base, con su columna `eliminado`.
+// Se piden solo esas y se arma el MISMO resultado (row_json = la fila tal cual
+// venía de la hoja, que es exactamente lo que devolvía el servidor).
+//
+// El filtro fino se hace acá y no en la consulta a propósito: la hoja podría
+// tener "Si", "si" o "SI ", y se compara con la MISMA regla que usa el
+// servidor (recortar espacios y pasar a mayúsculas). Son pocas filas.
+//
+// REVERSA: poner SB_LECTURA_PAPELERA = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LECTURA_PAPELERA = true;
+
+async function _papeleraListarRapido() {
+  const porApps = () => api('pedidos.papelera.listar');
+  if (!SB_LECTURA_PAPELERA) return porApps();
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
+  if (window._sbSaltarEspejo) return porApps();
+  try {
+    const tok = await _sbTokenVigente();
+    if (!tok) return porApps();
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=row_json&eliminado=not.is.null&order=id.asc&limit=8000',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return porApps();
+    const j = await r.json();
+    if (!Array.isArray(j)) return porApps();
+    return j.map(x => x.row_json)
+            .filter(f => f && String(f['Eliminado'] || '').trim().toUpperCase() === 'SI');
+  } catch (e) { try { _errLog('sb.papelera', e); } catch (_) {} return porApps(); }
+}
+
 async function _cambiosPorPedidoRapido(nro) {
   const n = String(nro == null ? '' : nro).trim();
   if (!n) return [];
@@ -22507,7 +22545,7 @@ async function loadPapelera() {
   if (_extraNow.length) _renderPapelera(w, _extraNow);          // ← se ve al instante
   else w.innerHTML = spin('Cargando papelera...');
   try {
-    const rows = await api('pedidos.papelera.listar') || [];
+    const rows = await _papeleraListarRapido() || [];
     // Al volver del servidor: soltar del overlay los nros ya confirmados y re-render con todo.
     let _pend = _papeleraPendGet(), _pendCh = false;
     const _nrosServidor = new Set(rows.map(r => String(r['NroPedido']||'').trim()));
