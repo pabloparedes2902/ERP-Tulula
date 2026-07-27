@@ -2078,7 +2078,7 @@ const _CRON_TOPE = 400;
 // Estas se anotan SIEMPRE, rápidas o lentas: son las que están bajo la lupa.
 // OJO con el 'api.' de adelante: las llamadas se etiquetan 'api.cambios2.editarPrendas',
 // no 'cambios2.editarPrendas'. Sin contemplarlo, esta lista no atrapaba nada.
-const _CRON_SIEMPRE = /^(api\.)?(cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.)/;
+const _CRON_SIEMPRE = /^(api\.)?(cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|srv\.)/;
 
 function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
 function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
@@ -2194,6 +2194,22 @@ function verLentos(minMs) {
   }));
   return filas;
 }
+// ── El desglose que manda el backend (27-jul-2026) ───────────────────────
+// El backend devuelve `ms` con cuánto duró cada paso por dentro. Sin esto solo
+// se sabe "tardó 61 s"; con esto se sabe cuál de los siete pasos se los llevó.
+// Se anotan como `srv.<flujo>.<paso>` para que aparezcan en verLentos().
+function _cronDesdeServidor(flujo, ms) {
+  try {
+    if (!ms || typeof ms !== 'object') return;
+    Object.keys(ms).forEach(function (paso) {
+      var v = Number(ms[paso]);
+      if (!isFinite(v)) return;
+      _cronAnotar({ q: 'srv.' + flujo + '.' + paso, det: '', ms: v, ok: 1, cortada: 0, ts: Date.now() });
+    });
+  } catch (_) {}
+}
+try { window._cronDesdeServidor = _cronDesdeServidor; } catch (_) {}
+
 verLentos.borrar = function () {
   try { localStorage.removeItem(_CRON_HECHAS); localStorage.removeItem(_CRON_ABIERTAS); } catch (_) {}
   console.log('Listo: cronómetro en cero.');
@@ -17678,6 +17694,7 @@ async function _camProcessSaveQueue() {
     try {
       // UNA sola llamada: crea el cambio completo (multi-prenda / multi-pedido)
       var _r2 = await apiSend('cambios2.registrarYSync', job.payload);
+      try { _cronDesdeServidor('cambio.registrar', _r2 && _r2.ms); } catch(_){}
       _c2Hist = null;  // forzar recarga del mapa v2 en Pedidos
       _c2List = null;  // F1 23-jul: también la lista (contador pestaña Cambio)
       // F1 23-jul: Cambios2 no pasa por el changelog → traer las filas nuevas del
@@ -18245,7 +18262,7 @@ function editarCambios2(nc){
     var body={ NroCambio:nc, _versionVista:(c&&c.Version)||'', Nombre:gv('c2e-nom'), Diferencia:gv('c2e-dif'), PrecioEnvio:gv('c2e-env'), MontoPagadoCliente:gv('c2e-pcli'), MontoAsumidoEmpresa:gv('c2e-pemp'), Motivo:gv('c2e-mot'), MotivoDetalle:gv('c2e-motd'), FechaSolicitud:gv('c2e-fsol'), FechaRecepcionOriginal:gv('c2e-frec'), FechaEnvioNueva:gv('c2e-fenv'), Comentario:gv('c2e-com'), devueltas:devs, nuevas:nues };
     this.disabled=true; this.textContent='Guardando...';
     var _cronEd = _cronAbrir('flujo.cambio.editar', nc);
-    try{ await apiSend('cambios2.editarPrendas', body); toast('Cambio actualizado','ok'); refresca(); _cronCerrar(_cronEd, true); }
+    try{ var _rEd = await apiSend('cambios2.editarPrendas', body); _cronDesdeServidor('cambio.editar', _rEd && _rEd.ms); toast('Cambio actualizado','ok'); refresca(); _cronCerrar(_cronEd, true); }
     catch(e){ _cronCerrar(_cronEd, false); toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='Guardar'; }
   });
   var del=ov.querySelector('[data-c2del]');
