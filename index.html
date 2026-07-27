@@ -5066,6 +5066,36 @@ async function _pedPorNrosRapido(nros) {
 // ══════════════════════════════════════════════════════════════════════════
 const SB_LECTURA_PAPELERA = true;
 
+// ══════════════════════════════════════════════════════════════════════════
+// PANTALLAS DE ADMINISTRACIÓN, YA CALCULADAS (26-jul-2026)
+//
+// MEDIDO EN VIVO HOY, una por una:
+//   archivo.simular 14.889 ms · auditoria.listar 5.058 ms · backup.listar
+//   4.953 ms · config.segmentos 4.538 ms · las tres chicas 3,2-3,5 s.
+// Abrir Configuración disparaba varias seguidas: ~20 segundos de espera.
+//
+// Ninguna recibe parámetros desde la pantalla, así que el espejo las deja
+// calculadas cada 30 minutos y acá se levantan de la base. Son datos de
+// administración —copias, auditoría, segmentos— que casi nunca cambian; se
+// aceptan con hasta 2 horas de antigüedad.
+//
+// El 🔄 Actualizar y cualquier consulta CON filtros se van a Apps Script, que
+// es donde está la respuesta fresca y completa.
+//
+// REVERSA: poner SB_LECTURA_ADMIN = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LECTURA_ADMIN = true;
+const SB_ADMIN_VENCE_MS = 2 * 60 * 60 * 1000;
+
+async function _adminRapido(clave, porApps) {
+  if (!SB_LECTURA_ADMIN) return porApps();
+  try {
+    const d = await _sbCacheLeer(clave, SB_ADMIN_VENCE_MS);
+    if (d !== null && d !== undefined) return d;
+  } catch (er) { try { _errLog('sb.admin.' + clave, er); } catch (_) {} }
+  return porApps();
+}
+
 async function _papeleraListarRapido() {
   const porApps = () => api('pedidos.papelera.listar');
   if (!SB_LECTURA_PAPELERA) return porApps();
@@ -6932,7 +6962,12 @@ async function _pollPedsOnce() {
     _pedsPollInFlight = false;
     // FASE 2 (Jul-2026) — cada ~20 polls (~5 min) reconciliar colores contra la hoja.
     // Repara en ≤5 min cualquier aviso de changelog perdido (desalojo de CacheService).
-    try { _pedsPollCount++; if (_pedsPollCount % 20 === 0) _reconcileColores(); } catch(_) {}
+    // 26-jul: de cada 20 sondeos (~5 min) a cada 60 (~15 min). Medido en vivo,
+    // pedidos.coloresSnapshot tarda 18.519 ms CADA VEZ: a 5 minutos eran ~3,5
+    // horas de cómputo al día gastadas en repasar colores que casi siempre ya
+    // están bien. La reparación sigue llegando sola, ahora en ≤15 minutos.
+    // NO se tocó nada del circuito de colores: solo cada cuánto se repasa.
+    try { _pedsPollCount++; if (_pedsPollCount % 60 === 0) _reconcileColores(); } catch(_) {}
   }
 }
 
@@ -22056,7 +22091,7 @@ async function loadConfig() {
         bSim.disabled = true; bAp.style.display = 'none';
         msg.style.color = 'var(--mu)'; msg.textContent = 'Analizando la hoja (puede tomar ~30s)...'; out.innerHTML = '';
         try {
-          const r = await api('archivo.simular');
+          const r = await _adminRapido('archivo.simular', () => api('archivo.simular'));
           if (!r.pedidosArchivables) {
             msg.style.color = 'var(--gn)'; msg.textContent = '✓ Nada para archivar: todo lo anterior a ' + r.corteFecha + ' ya está archivado.';
           } else {
@@ -22172,7 +22207,7 @@ async function loadCfgSegmentos() {
   const tbody=document.querySelector('#cfg-seg-tbl tbody');
   tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--mu)"><div class="sp" style="display:inline-block;margin-right:8px"></div>Cargando...</td></tr>';
   try {
-    const res=await api('config.segmentos.obtener',{});
+    const res=await _adminRapido('config.segmentos.obtener', () => api('config.segmentos.obtener',{}));
     _cfgSegData=(res.segmentos||[]).slice();
     cfgSegRender();
     document.getElementById('cfg-seg-msg').textContent='Segmentos cargados. Los cambios se aplican al guardar.';
@@ -22258,7 +22293,7 @@ async function cfgBkCargarFolder() {
   const st = document.getElementById('bk-folder-status');
   st.innerHTML = '<span style="color:var(--mu)">Cargando...</span>';
   try {
-    const r = await api('backup.config.obtener', {});
+    const r = await _adminRapido('backup.config.obtener', () => api('backup.config.obtener', {}));
     document.getElementById('bk-folder-input').value = r.folderId || '';
     if (r.valido) {
       st.innerHTML = '<span style="color:var(--gn)">✓ Carpeta activa: <a href="'+esc(r.folderUrl)+'" target="_blank" style="color:var(--ac)">'+esc(r.folderName)+'</a> — Se conservarán las últimas '+r.retenerSemanas+' semanas.</span>';
@@ -22297,7 +22332,7 @@ async function cfgBkTriggerEstado() {
   const st = document.getElementById('bk-trigger-status');
   st.textContent = 'Verificando estado...';
   try {
-    const r = await api('backup.trigger.estado', {});
+    const r = await _adminRapido('backup.trigger.estado', () => api('backup.trigger.estado', {}));
     if (r.instalado) {
       st.innerHTML = '<span style="color:var(--gn)">✓ Trigger activo — se ejecuta lunes 6am</span>';
     } else {
@@ -22349,7 +22384,7 @@ async function cfgAuCargarSS() {
   const st = document.getElementById('au-ss-status');
   st.innerHTML = '<span style="color:var(--mu)">Cargando...</span>';
   try {
-    const r = await api('auditoria.config.obtener', {});
+    const r = await _adminRapido('auditoria.config.obtener', () => api('auditoria.config.obtener', {}));
     document.getElementById('au-ss-input').value = r.ssId || '';
     if (r.valido) {
       st.innerHTML = '<span style="color:var(--gn)">✓ Spreadsheet activo: <a href="'+esc(r.url)+'" target="_blank" style="color:var(--ac)">'+esc(r.nombre)+'</a> — '+(r.filas||0)+' registros</span>';
@@ -22428,7 +22463,12 @@ async function cfgAuListar(keepPage) {
   cont.innerHTML = '<div style="color:var(--mu);padding:10px"><span class="sp" style="display:inline-block;margin-right:6px"></span>Cargando...</div>';
   try {
     const sBusca = (document.getElementById('au-buscar')?.value||'').trim();
-    const r = await apiSend('auditoria.listar', { limite: lim, buscar: sBusca });
+    // Solo la primera pantalla (sin búsqueda, hasta 100) sale del espejo.
+    // Cualquier búsqueda o un límite mayor va a Apps Script: ahí está todo.
+    const _porDefecto = !sBusca && lim <= 100;
+    const r = _porDefecto
+      ? await _adminRapido('auditoria.listar', () => apiSend('auditoria.listar', { limite: lim, buscar: sBusca }))
+      : await apiSend('auditoria.listar', { limite: lim, buscar: sBusca });
     if (!r.configurado) {
       cont.innerHTML = '<div style="color:var(--mu);padding:10px">Configura primero un spreadsheet de auditoría arriba.</div>';
       return;
@@ -22501,7 +22541,7 @@ async function cfgBkListar() {
   const cont = document.getElementById('bk-list');
   cont.innerHTML = '<div style="color:var(--mu);padding:10px"><span class="sp" style="display:inline-block;margin-right:6px"></span>Cargando...</div>';
   try {
-    const r = await api('backup.listar', {});
+    const r = await _adminRapido('backup.listar', () => api('backup.listar', {}));
     if (!r.folderId) {
       cont.innerHTML = '<div style="color:var(--mu);padding:10px">Configura primero una carpeta Drive.</div>';
       return;
