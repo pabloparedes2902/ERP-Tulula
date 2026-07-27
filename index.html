@@ -2078,7 +2078,7 @@ const _CRON_TOPE = 400;
 // Estas se anotan SIEMPRE, rápidas o lentas: son las que están bajo la lupa.
 // OJO con el 'api.' de adelante: las llamadas se etiquetan 'api.cambios2.editarPrendas',
 // no 'cambios2.editarPrendas'. Sin contemplarlo, esta lista no atrapaba nada.
-const _CRON_SIEMPRE = /^(api\.)?(cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|srv\.)/;
+const _CRON_SIEMPRE = /^(api\.)?(cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.)/;
 
 function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
 function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
@@ -13382,6 +13382,15 @@ window.addEventListener('beforeunload', function (ev) {
     ev.returnValue = 'Hay pedidos guardándose todavía.';
     return ev.returnValue;
   }
+  // 27-jul: las ediciones de cambio también van en segundo plano. Si se cierra
+  // el navegador con una en vuelo, se pierde lo escrito sin que nadie se entere.
+  try {
+    if ((typeof _c2EditQueue !== 'undefined' && _c2EditQueue.length) || (typeof _c2EditActive !== 'undefined' && _c2EditActive)) {
+      ev.preventDefault();
+      ev.returnValue = 'Hay cambios guardándose todavía.';
+      return ev.returnValue;
+    }
+  } catch (_) {}
 });
 
 function _npEnqueueSave(job) {
@@ -18144,6 +18153,129 @@ function renderCambios2(el, cambios){
   }
   paintTabs(); paint();
 }
+// ══════════════════════════════════════════════════════════════════════════
+// EDITAR UN CAMBIO EN SEGUNDO PLANO (27-jul-2026)
+//
+// EL PROBLEMA: guardar un cambio son ~38 operaciones sobre la hoja de Google.
+// Medido, eso da ~26 segundos y no baja más por más que se optimice el código
+// (ver el desglose por tramos en verLentos). La persona se quedaba mirando un
+// botón que decía "Guardando..." durante casi medio minuto.
+//
+// LA IDEA: no hacerla esperar por algo que ya está decidido. El clic encola el
+// guardado, la pantalla se libera al instante y el trabajo sigue por detrás.
+// Es EXACTAMENTE el mismo patrón que ya usa registrar un cambio nuevo
+// (_camEnqueueSave), que lleva meses funcionando.
+//
+// LO QUE ESTO NO ARREGLA: el guardado sigue tardando 26 s por dentro, y durante
+// ese rato el candado de Google sigue bloqueando al resto del equipo. Eso se
+// resuelve moviendo la escritura a Supabase. Esto es alivio, no cura.
+//
+// LAS TRES GARANTÍAS (sin esto, "rápido" sería "perdí lo que escribí"):
+//   1. Se ve un cartel "Guardando N cambio(s)…" mientras haya algo en vuelo.
+//   2. Si falla, sale el mismo cartel de siempre con Reintentar / Descartar.
+//   3. Si se intenta cerrar el navegador con algo en cola, el navegador avisa.
+// ══════════════════════════════════════════════════════════════════════════
+let _c2EditQueue = [], _c2EditActive = false;
+
+function _c2EditEnCola(nc) {
+  return _c2EditQueue.some(function (j) { return j.nc === nc; });
+}
+
+function _c2EditEncolar(job) {
+  _c2EditQueue.push(job);
+  _c2EditIndicador();
+  _c2EditProcesar();
+}
+
+async function _c2EditProcesar() {
+  if (_c2EditActive) return;
+  _c2EditActive = true;
+  while (_c2EditQueue.length) {
+    const job = _c2EditQueue[0];
+    // Este cronómetro mide el trabajo REAL, no lo que espera la persona.
+    const cron = _cronAbrir('fondo.cambio.editar', job.nc);
+    try {
+      const r = await apiSend('cambios2.editarPrendas', job.body);
+      try { _cronDesdeServidor('cambio.editar', r && r.ms); } catch (_) {}
+      _cronCerrar(cron, true);
+      _c2EditQueue.shift();
+      _c2EditIndicador();
+      // Ahora sí: traer la verdad del servidor y repintar.
+      try { job.alTerminar && job.alTerminar(); } catch (_) {}
+    } catch (e) {
+      _cronCerrar(cron, false);
+      _c2EditActive = false;
+      _c2EditIndicador();
+      _c2EditError(job, e);
+      return;   // la cola queda parada hasta que la persona decida
+    }
+  }
+  _c2EditActive = false;
+  _c2EditIndicador();
+}
+
+function _c2EditIndicador() {
+  let el = document.getElementById('c2-edit-indicator');
+  const n = _c2EditQueue.length;
+  if (n === 0) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'c2-edit-indicator';
+    el.style.cssText = 'position:fixed;bottom:54px;right:16px;z-index:700;background:var(--bg2);border:1px solid var(--bd);border-radius:20px;padding:8px 16px;font-size:12px;color:var(--tx);box-shadow:0 4px 16px rgba(0,0,0,.4);display:flex;align-items:center;gap:8px';
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '<span class="sp" style="width:13px;height:13px;border-width:2px"></span>Guardando ' + n + ' cambio' + (n > 1 ? 's' : '') + '...';
+}
+
+// Mismo cartel que usa registrar un cambio nuevo: Reintentar o Descartar.
+function _c2EditError(job, err) {
+  const o = document.createElement('div');
+  o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:800;display:flex;align-items:center;justify-content:center;padding:20px';
+  o.innerHTML = '<div style="background:var(--bg2);border:2px solid var(--rd);border-radius:var(--r2);padding:28px 24px;max-width:420px;width:100%;text-align:center">'
+    + '<div style="font-size:34px;margin-bottom:10px">⚠️</div>'
+    + '<div style="font-size:15px;font-weight:700;color:var(--rd);margin-bottom:6px">No se pudo guardar el cambio</div>'
+    + '<div style="font-size:13px;color:var(--tx);margin-bottom:4px">' + esc(job.label || job.nc || '') + '</div>'
+    + '<div style="font-size:11px;color:var(--mu);margin-bottom:18px">' + esc(err && err.message ? err.message : 'Error de conexión') + '</div>'
+    + '<div style="display:flex;gap:10px;justify-content:center">'
+    + '<button id="c2-err-descartar" style="padding:9px 18px;border-radius:var(--r);background:var(--bg3);color:var(--mu);font-size:13px;border:1px solid var(--bd);cursor:pointer;font-family:inherit">Descartar</button>'
+    + '<button id="c2-err-reintentar" style="padding:9px 24px;border-radius:var(--r);background:var(--ac2);color:#fff;font-weight:700;font-size:13px;border:none;cursor:pointer;font-family:inherit">Reintentar</button>'
+    + '</div></div>';
+  document.body.appendChild(o);
+  o.querySelector('#c2-err-reintentar').addEventListener('click', function () { o.remove(); _c2EditProcesar(); });
+  o.querySelector('#c2-err-descartar').addEventListener('click', function () {
+    o.remove();
+    _c2EditQueue.shift(); _c2EditIndicador();
+    // Lo descartado nunca se guardó: hay que volver a la verdad del servidor.
+    try { job.alTerminar && job.alTerminar(); } catch (_) {}
+    _c2EditProcesar();
+  });
+}
+
+// Pinta en la lista que ya tenemos en memoria lo que la persona acaba de escribir,
+// para que no vea datos viejos mientras el guardado va por detrás.
+// SOLO lo que ella escribió. Nada derivado (el Estado lo decide el backend y
+// llega con el refresco real): duplicar esa regla acá es pedir que se separen.
+function _c2PintarOptimista(nc, body) {
+  try {
+    const c = (window._c2Data || []).filter(function (x) { return x.NroCambio === nc; })[0];
+    if (!c) return;
+    c.Nombre = body.Nombre;
+    c.Motivo = body.Motivo;
+    c.MotivoDetalle = body.MotivoDetalle;
+    c.Comentario = body.Comentario;
+    c.FechaSolicitud = body.FechaSolicitud;
+    c.FechaRecepcionOriginal = body.FechaRecepcionOriginal;
+    c.FechaEnvioNueva = body.FechaEnvioNueva;
+    c.DiferenciaPrecio = parseFloat(body.Diferencia) || 0;
+    c.PrecioEnvio = parseFloat(body.PrecioEnvio) || 0;
+    c.MontoPagadoCliente = parseFloat(body.MontoPagadoCliente) || 0;
+    c.MontoAsumidoEmpresa = parseFloat(body.MontoAsumidoEmpresa) || 0;
+    c.devueltas = (body.devueltas || []).map(function (d) { return { Prenda: d.Prenda, NroPedido: d.NroPedido, Precio: d.Precio, CondicionPrenda: '', ID: '' }; });
+    c.nuevas = (body.nuevas || []).map(function (n) { return { Prenda: n.Prenda, NroPedido: '', Cant: n.Cant, Precio: 0, ID: '' }; });
+    if (typeof renderCambios2 === 'function') renderCambios2();
+  } catch (_) {}
+}
+
 function _c2Buscar(nc){ return (window._c2Data||[]).filter(function(x){return x.NroCambio===nc;})[0]; }
 function _c2Modal(html){
   const ov=document.createElement('div');
@@ -18181,6 +18313,12 @@ function verCambios2(nc){
 }
 function editarCambios2(nc){
   var c=_c2Buscar(nc); if(!c){ toast('No encontrado','err'); return; }
+  // 27-jul: con el guardado en segundo plano, este cambio puede estar aún en vuelo.
+  // Abrirlo ahora mostraría datos que el servidor todavía no confirmó, y al guardar
+  // el backend rechazaría por versión vieja. Mejor decirlo claro.
+  if (typeof _c2EditEnCola === 'function' && _c2EditEnCola(nc)) {
+    toast('Este cambio se está guardando. Espera a que termine.','info'); return;
+  }
   if(String(c.Estado||'').toUpperCase()==='CANCELADO'){ toast('Cambio anulado, no editable','info'); return; }
   function dInput(v){ if(!v) return ''; try{var d=(v instanceof Date)?v:new Date(v); if(!isNaN(d.getTime())) return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}catch(e){} var s=String(v); return /^\d{4}-\d{2}-\d{2}/.test(s)?s.slice(0,10):''; }
   var motivos=['TALLA INCORRECTA','NO LE GUSTO','PRENDA DEFECTUOSA','ERROR DEL OPERADOR','CLIENTE CAMBIO DE OPINION','OTRO'];
@@ -18261,9 +18399,23 @@ function editarCambios2(nc){
     // usuario guardó primero, el backend avisa en vez de pisar su trabajo.
     var body={ NroCambio:nc, _versionVista:(c&&c.Version)||'', Nombre:gv('c2e-nom'), Diferencia:gv('c2e-dif'), PrecioEnvio:gv('c2e-env'), MontoPagadoCliente:gv('c2e-pcli'), MontoAsumidoEmpresa:gv('c2e-pemp'), Motivo:gv('c2e-mot'), MotivoDetalle:gv('c2e-motd'), FechaSolicitud:gv('c2e-fsol'), FechaRecepcionOriginal:gv('c2e-frec'), FechaEnvioNueva:gv('c2e-fenv'), Comentario:gv('c2e-com'), devueltas:devs, nuevas:nues };
     this.disabled=true; this.textContent='Guardando...';
-    var _cronEd = _cronAbrir('flujo.cambio.editar', nc);
-    try{ var _rEd = await apiSend('cambios2.editarPrendas', body); _cronDesdeServidor('cambio.editar', _rEd && _rEd.ms); toast('Cambio actualizado','ok'); refresca(); _cronCerrar(_cronEd, true); }
-    catch(e){ _cronCerrar(_cronEd, false); toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='Guardar'; }
+    // 27-jul: ya no se espera al servidor. Se encola y se libera la pantalla.
+    // Este cronómetro mide lo que espera LA PERSONA (debería dar casi cero).
+    // El trabajo real se mide aparte, como 'fondo.cambio.editar'.
+    var _cronEsp = _cronAbrir('flujo.cambio.editar', nc);
+    _c2PintarOptimista(nc, body);
+    _c2EditEncolar({ nc: nc, body: body, label: (c && c.Nombre) || nc, alTerminar: function () {
+      // Traer la verdad del servidor: Estado, totales y lo que el backend derive.
+      try { _c2Hist = null; _c2List = null; histCamData = null; _hcLsDel(); } catch (_) {}
+      try {
+        var _nrosC2 = (c && c.pedidos ? [].concat(c.pedidos) : []).map(String);
+        if (typeof _pedsRefrescarNros === 'function' && _nrosC2.length) _pedsRefrescarNros(_nrosC2);
+      } catch (_) {}
+      try { loadCambios2(); } catch (_) {}
+    } });
+    _cronCerrar(_cronEsp, true);
+    toast('Cambio guardado — se está aplicando','ok');
+    ov.remove();
   });
   var del=ov.querySelector('[data-c2del]');
   if(del) del.addEventListener('click', async function(){
