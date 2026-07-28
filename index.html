@@ -18200,7 +18200,11 @@ async function _c2EditProcesar() {
       _cronCerrar(cron, true);
       _c2EditQueue.shift();
       _c2EditIndicador();
-      // Ahora sí: traer la verdad del servidor y repintar.
+      // 27-jul — NO se recarga la lista. Recargarla pedía todo de nuevo al servidor
+      // y la pantalla parpadeaba al terminar. Lo único que faltaba confirmar era el
+      // Estado (que lo decide el backend) y la versión: los dos vienen en la
+      // respuesta, así que se actualiza la fila donde está y listo.
+      try { _c2CerrarEdicion(job.nc, r); } catch (_) {}
       try { job.alTerminar && job.alTerminar(); } catch (_) {}
     } catch (e) {
       _cronCerrar(cron, false);
@@ -18245,10 +18249,30 @@ function _c2EditError(job, err) {
   o.querySelector('#c2-err-descartar').addEventListener('click', function () {
     o.remove();
     _c2EditQueue.shift(); _c2EditIndicador();
-    // Lo descartado nunca se guardó: hay que volver a la verdad del servidor.
-    try { job.alTerminar && job.alTerminar(); } catch (_) {}
+    // Lo descartado NUNCA se guardó, pero en pantalla quedó pintado como si sí.
+    // Acá no alcanza con invalidar cachés: hay que recargar de verdad, o la persona
+    // seguiría viendo un texto que no existe en ninguna parte.
+    try { _c2Hist = null; _c2List = null; histCamData = null; _hcLsDel(); } catch (_) {}
+    try { loadCambios2(); } catch (_) {}
     _c2EditProcesar();
   });
+}
+
+// Cierra la edición con lo que SÍ decide el backend: el Estado y la versión.
+// Se actualiza el objeto que ya está en memoria y se repinta la tabla — sin pedirle
+// nada al servidor. Por eso no parpadea.
+//
+// La versión es obligatoria: el backend rechaza una edición que venga con una
+// versión vieja ("otro usuario guardó primero"). Si no se actualizara acá, la
+// segunda edición seguida del mismo cambio fallaría sola.
+function _c2CerrarEdicion(nc, r) {
+  try {
+    const c = (window._c2Data || []).filter(function (x) { return x.NroCambio === nc; })[0];
+    if (!c || !r) return;
+    if (r.estado) c.Estado = r.estado;
+    if (r.version) c.Version = String(r.version);
+    if (typeof renderCambios2 === 'function') renderCambios2();
+  } catch (_) {}
 }
 
 // Pinta en la lista que ya tenemos en memoria lo que la persona acaba de escribir,
@@ -18405,13 +18429,15 @@ function editarCambios2(nc){
     var _cronEsp = _cronAbrir('flujo.cambio.editar', nc);
     _c2PintarOptimista(nc, body);
     _c2EditEncolar({ nc: nc, body: body, label: (c && c.Nombre) || nc, alTerminar: function () {
-      // Traer la verdad del servidor: Estado, totales y lo que el backend derive.
+      // La pantalla de Cambios ya quedó al día en _c2CerrarEdicion, sin pedir nada.
+      // Acá solo se invalidan las cachés de las OTRAS pantallas (Pedidos, historial),
+      // que se rearmarán solas la próxima vez que se entre. Nada de esto repinta
+      // Cambios, así que no hay parpadeo.
       try { _c2Hist = null; _c2List = null; histCamData = null; _hcLsDel(); } catch (_) {}
       try {
         var _nrosC2 = (c && c.pedidos ? [].concat(c.pedidos) : []).map(String);
         if (typeof _pedsRefrescarNros === 'function' && _nrosC2.length) _pedsRefrescarNros(_nrosC2);
       } catch (_) {}
-      try { loadCambios2(); } catch (_) {}
     } });
     _cronCerrar(_cronEsp, true);
     toast('Cambio guardado — se está aplicando','ok');
