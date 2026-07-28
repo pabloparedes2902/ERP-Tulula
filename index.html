@@ -4654,6 +4654,32 @@ const SB_PILOTO_CREAR = true;
 // ══════════════════════════════════════════════════════════════════════════
 const SB_ESCRITURA_CAMBIOS = true;   // ← reversa: poner en false y publicar
 
+// Anular un cambio: misma regla que guardar. Si la base no contesta con un ok
+// explícito, se anula por Apps Script. Anular deshace stock y dinero, así que
+// esto NO puede quedar a medias — por eso la receta lo hace en una transacción.
+async function _sbRpcCambioCancelar(nc) {
+  try {
+    if (!SB_ESCRITURA_CAMBIOS) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_cancelar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_nro: String(nc || '') }),
+    });
+    if (!r.ok) {
+      try { console.warn('[cambio] RPC cambio_cancelar HTTP ' + r.status + ' → vía Apps Script'); } catch (_) {}
+      return null;
+    }
+    const d = await r.json();
+    return (d && d.ok === true) ? d : null;
+  } catch (e) {
+    try { console.warn('[cambio] RPC cambio_cancelar falló → vía Apps Script'); } catch (_) {}
+    return null;
+  }
+}
+
 async function _sbRpcCambioEditar(body) {
   try {
     if (!SB_ESCRITURA_CAMBIOS) return null;
@@ -18550,7 +18576,12 @@ function editarCambios2(nc){
     }
     this.dataset.armado='';
     this.disabled=true; this.textContent='...';
-    try{ await api('cambios2.cancelar',{nc:nc}); toast('Cambio anulado','ok'); refresca(); }
+    try{
+      // Primero la base; si no contesta con un ok explícito, la vía de siempre.
+      const _sb = await _sbRpcCambioCancelar(nc);
+      if (_sb) { try { _sbEspejarYa(nc); } catch(_){} }
+      else { await api('cambios2.cancelar',{nc:nc}); }
+      toast('Cambio anulado','ok'); refresca(); }
     catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑 Anular cambio'; }
   });
 }
