@@ -4629,6 +4629,55 @@ async function _sbRpcPago(fn, params) {
 const SB_PILOTO_CREAR = true;
 
 // ══════════════════════════════════════════════════════════════════════════
+// PASO 2 (28-jul) — GUARDAR UN CAMBIO EN LA BASE
+//
+// Antes: "Guardar" en un cambio tardaba ~25 s. De esos, el servidor usaba 4,7 —
+// el resto era el piso de Apps Script (arranque en frío + espera del candado),
+// que no se puede bajar optimizando. Medido con verLentos().
+//
+// Ahora la receta `cambio_editar` hace TODO adentro de la base en una sola
+// transacción: revierte, reescribe, sincroniza Pedidos, mueve stock. Y de yapa
+// resuelve algo que hoy es un riesgo real: por Apps Script son 7 escrituras
+// seguidas contra tres hojas, y si Google corta la ejecución en el medio el
+// stock ya se movió pero Pedidos no. Acá o entra todo, o no entra nada.
+//
+// La hoja se pone al día por detrás: la receta deja una nota en `cola_espejo` y
+// el Aplicador la baja (cambio + pedidos + movimientos de stock).
+//
+// REVERSA INMEDIATA: SB_ESCRITURA_CAMBIOS = false y publicar. El ERP vuelve a
+// guardar por Apps Script exactamente como antes; no hay que deshacer nada.
+//
+// RED: si la base no responde, no hay sesión, o la respuesta no trae un ok
+// explícito, se guarda por la vía de siempre. Un cambio NUNCA se pierde por
+// culpa de este atajo — y si el error es de negocio (versión vieja, cambio
+// anulado, pedido inexistente), Apps Script lo vuelve a detectar y lo explica.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_ESCRITURA_CAMBIOS = true;   // ← reversa: poner en false y publicar
+
+async function _sbRpcCambioEditar(body) {
+  try {
+    if (!SB_ESCRITURA_CAMBIOS) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_editar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_body: body }),
+    });
+    if (!r.ok) {
+      try { console.warn('[cambio] RPC cambio_editar HTTP ' + r.status + ' → vía Apps Script'); } catch (_) {}
+      return null;
+    }
+    const d = await r.json();
+    return (d && d.ok === true) ? d : null;
+  } catch (e) {
+    try { console.warn('[cambio] RPC cambio_editar falló → vía Apps Script'); } catch (_) {}
+    return null;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // FIX 25-jul — EL LOTE DE LA PRENDA AGREGADA
 //
 // Al agregar una prenda, el ERP la pinta al instante sin esperar al servidor.
@@ -18234,7 +18283,16 @@ async function _c2EditProcesar() {
     // Este cronómetro mide el trabajo REAL, no lo que espera la persona.
     const cron = _cronAbrir('fondo.cambio.editar', job.nc);
     try {
-      const r = await apiSend('cambios2.editarPrendas', job.body);
+      // Primero la base. Si no contesta con un ok explícito, la vía de siempre.
+      let r = await _sbRpcCambioEditar(job.body);
+      if (r) {
+        // La base ya guardó. Se le avisa al Aplicador para que baje el cambio a
+        // la hoja ahora y no en el próximo minuto. La nota de la cola está
+        // guardada bajo el NroCambio, no bajo el número de pedido.
+        try { _sbEspejarYa(job.nc); } catch (_) {}
+      } else {
+        r = await apiSend('cambios2.editarPrendas', job.body);
+      }
       try { _cronDesdeServidor('cambio.editar', r && r.ms); } catch (_) {}
       _cronCerrar(cron, true);
       _c2EditQueue.shift();
