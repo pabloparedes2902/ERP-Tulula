@@ -2364,6 +2364,14 @@ async function _sbAuthConCredencial(cred){
     else { _sbGuardarTok(null); console.warn('[SB] login directo rechazado:', j.error_description||j.msg||r.status); }
   } catch(e){ console.warn('[SB] login directo falló:', e); }
 }
+// Marca el pase como vencido SIN tirar el refresh_token. Un 401 de PostgREST
+// quiere decir "este pase caducó", no "esta sesión ya no vale": borrarla dejaba
+// al ERP sin vía rápida para siempre, y nadie se enteraba.
+function _sbVencerTok(){
+  try { if (_sbTok) { _sbTok.expires_at = 0;
+        localStorage.setItem('erp_sb_sess', JSON.stringify(_sbTok)); } } catch(_){}
+}
+
 async function _sbTokenVigente(){
   if (!SB_ANON || !_sbTok) return null;
   if (Date.now() < (_sbTok.expires_at||0)) return _sbTok.access_token;
@@ -2374,9 +2382,109 @@ async function _sbTokenVigente(){
     });
     const j = await r.json().catch(()=>({}));
     if (r.ok && j.access_token) { _sbGuardarTok(j); return j.access_token; }
+    // Sólo se tira la sesión si Supabase dice que el refresh_token ya no sirve.
+    // Un 500, un 429 o un corte de red NO son eso, y borrarla costaba la vía
+    // rápida hasta el próximo cierre de sesión manual.
+    var _mot = String((j && (j.error || j.error_code || j.msg)) || '');
+    if (r.status === 400 || /invalid[_ ]grant|refresh[_ ]token/i.test(_mot)) _sbGuardarTok(null);
   } catch(e){}
-  _sbGuardarTok(null); return null;
+  return null;
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// EL PASE DE SUPABASE SE VUELVE A PEDIR SOLO  (29-jul-2026)
+//
+// Antes: el pase se creaba UNA sola vez, en el login con Google. Si al abrir el
+// ERP ya había sesión guardada, no se creaba nunca; y si se perdía, no volvía.
+// El ERP seguía funcionando —cayendo por Apps Script— así que el síntoma no era
+// un error sino "todo tarda 3 segundos". Medido así en vivo el 29-jul.
+//
+// Ahora: cuando una vía rápida no encuentra pase, se lo pide a Google en
+// silencio (el mismo pase del login del ERP, sin ventanas ni preguntas) y
+// reabre la sesión. Un intento por minuto como mucho, y uno solo aunque diez
+// pantallas pregunten a la vez.
+//
+// REVERSA: poner SB_REAUTH_SILENCIOSO = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_REAUTH_SILENCIOSO = true;
+const SB_REAUTH_ESPERA = 60000;    // no insistir más de una vez por minuto
+let _sbReauthEnCurso = null;
+let _sbReauthUltimo  = 0;
+let _sbReauthAvisado = false;
+
+// Le pide a Google el pase sin molestar al usuario. Deja el callback global
+// como estaba: si no se restaura, el botón "Iniciar sesión" deja de funcionar.
+function _googleCredSilenciosa(){
+  return new Promise(function(res){
+    if (!(window.google && google.accounts && google.accounts.id)) return res(null);
+    let listo = false;
+    const fin = function(c){
+      if (listo) return;
+      listo = true;
+      // Devolver el callback global a su dueño (el login normal).
+      try {
+        google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID,
+          callback: _onGoogleCredential, use_fedcm_for_prompt: true,
+          itp_support: true, auto_select: false });
+      } catch(_){}
+      res(c || null);
+    };
+    try {
+      google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID,
+        callback: function(r){ fin(r && r.credential); },
+        use_fedcm_for_prompt: true, itp_support: true,
+        auto_select: true });          // reusa la cuenta ya elegida, sin preguntar
+      google.accounts.id.prompt(function(){});
+      setTimeout(function(){ fin(null); }, 8000);
+    } catch(e){ fin(null); }
+  });
+}
+
+// EL punto por el que pasan todas las vías rápidas.
+async function _sbSesionAsegurar(){
+  const v = await _sbTokenVigente();
+  if (v) return v;
+  if (!SB_REAUTH_SILENCIOSO || !SB_ANON) return null;
+  // Sin sesión de ERP no hay a quién renovarle nada, y si el login clásico ya
+  // está pidiendo un pase, no se le pisa.
+  try { if (!SESSION_TOKEN || _sessRenovando) return null; } catch(_){ return null; }
+  if (_sbReauthEnCurso) return _sbReauthEnCurso;
+  if (Date.now() - _sbReauthUltimo < SB_REAUTH_ESPERA) return null;
+  _sbReauthUltimo = Date.now();
+  _sbReauthEnCurso = (async function(){
+    try {
+      const cred = await _googleCredSilenciosa();
+      if (!cred) {
+        if (!_sbReauthAvisado) { _sbReauthAvisado = true;
+          console.warn('[SB] vía rápida APAGADA: Google no entregó pase en silencio. Todo va por Apps Script (≈3 s por acción).'); }
+        return null;
+      }
+      await _sbAuthConCredencial(cred);
+      const t = await _sbTokenVigente();
+      if (t) { _sbReauthAvisado = false; console.log('[SB] vía rápida REACTIVADA sola'); }
+      return t;
+    } catch(e){ return null; }
+    finally { _sbReauthEnCurso = null; }
+  })();
+  return _sbReauthEnCurso;
+}
+
+// Diagnóstico de consola: ¿está encendida la vía rápida, y si no, por qué?
+function viaRapida(){
+  const hay = !!_sbTok;
+  const vence = hay ? new Date(_sbTok.expires_at||0).toLocaleString('es-PE') : '—';
+  const o = { encendida: hay && Date.now() < (_sbTok.expires_at||0),
+              haySesionSupabase: hay, venceEl: vence,
+              haySesionErp: !!SESSION_TOKEN,
+              reintentoSilencioso: SB_REAUTH_SILENCIOSO };
+  console.log('── VÍA RÁPIDA A LA BASE ──');
+  console.log(o.encendida ? '✅ ENCENDIDA — las lecturas y escrituras van directo a la base (~200-500 ms).'
+                          : '❌ APAGADA — todo está yendo por Apps Script (~3 s por acción).');
+  if (!hay) console.log('   No hay sesión de Supabase. Se pedirá sola en el próximo uso.');
+  console.log(o);
+  return o;
+}
+try { window.viaRapida = viaRapida; } catch(_){}
 // Una página de pedidos DIRECTO de la base. Mismo contrato que pedidos.listar.
 // FIX 25-jul-2026 — CONTEO UNA SOLA VEZ (medido: ~1.060 ms por pedido).
 // Antes TODA petición mandaba 'Prefer: count=exact', y eso obliga a Postgres a contar las
@@ -2410,7 +2518,7 @@ const SB_PEDIDOS_POR_PAGINA = 50;
 async function _sbPaginaDirecto(pagina, orden, asc){
   try {
     if (!SB_LECTURA_PAGINADA) return null;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_pagina', {
       method: 'POST',
@@ -2418,7 +2526,7 @@ async function _sbPaginaDirecto(pagina, orden, asc){
       body: JSON.stringify({ p_filtros: {}, p_orden: orden || 'fecha_efectiva',
                              p_asc: !!asc, p_pagina: pagina || 0, p_tam: SB_PEDIDOS_POR_PAGINA }),
     });
-    if (!r.ok) { if (r.status === 401 || r.status === 403) _sbGuardarTok(null);
+    if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok();
                  try { console.warn('[lectura] página HTTP ' + r.status + ' → vía de siempre'); } catch(_){}
                  return null; }
     const d = await r.json();
@@ -2435,7 +2543,7 @@ async function _sbPaginaDirecto(pagina, orden, asc){
 }
 
 async function _sbListarDirecto(offset, limit, orden, wantCount){
-  const tok = await _sbTokenVigente();
+  const tok = await _sbSesionAsegurar();
   if (!tok) return null;
   const _off = offset || 0, _lim = limit || 1000;
   const q = SB_URL + '/rest/v1/pedidos?select=id,row_json&eliminado=is.null'
@@ -2444,7 +2552,7 @@ async function _sbListarDirecto(offset, limit, orden, wantCount){
   const heads = { 'apikey': SB_ANON, 'Authorization': 'Bearer '+tok };
   if (wantCount) heads['Prefer'] = 'count=exact';
   const r = await fetch(q, { headers: heads });
-  if (!r.ok) { if (r.status === 401 || r.status === 403) _sbGuardarTok(null); return null; }
+  if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
   const arr = await r.json();
   // _sbId = id de la fila en la base = ORDEN REAL DE CARGA (el de la hoja). La consulta
   // pide id.desc para que los pedidos nuevos salgan arriba, pero eso invierte las filas
@@ -2473,7 +2581,7 @@ async function _sbFilasDePedidos(nros){
   try {
     const lista = [...new Set((nros || []).map(x => String(x || '').trim()).filter(Boolean))];
     if (!lista.length) return {};
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const out = {};
     for (let i = 0; i < lista.length; i += 80) {
@@ -2482,7 +2590,7 @@ async function _sbFilasDePedidos(nros){
       const q = SB_URL + '/rest/v1/pedidos?select=id,row_json&eliminado=is.null'
               + '&nro_pedido=in.(' + encodeURIComponent(inClause) + ')&order=id.asc&limit=5000';
       const r = await fetch(q, { headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok } });
-      if (!r.ok) { if (r.status === 401 || r.status === 403) _sbGuardarTok(null); return null; }
+      if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
       const arr = await r.json();
       arr.forEach(x => {
         const o = x.row_json || {};
@@ -4548,7 +4656,7 @@ async function _sbRpcColorPintar(nro, prenda, occ, color, filaId) {
   try {
     if (!SB_PILOTO_COLORES) return false;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return false;
     const _porId = (filaId !== undefined && filaId !== null && String(filaId) !== '');
     const r = await fetch(SB_URL + '/rest/v1/rpc/' + (_porId ? 'color_pintar_id' : 'color_pintar'), {
@@ -4597,7 +4705,7 @@ async function _sbRpcPago(fn, params) {
   try {
     if (!SB_PILOTO_PAGOS) return null;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, {
       method: 'POST',
@@ -4666,7 +4774,7 @@ async function _sbRpcCambioRegistrar(payload) {
   try {
     if (!SB_ESCRITURA_CAMBIOS) return null;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_registrar', {
       method: 'POST',
@@ -4689,7 +4797,7 @@ async function _sbRpcCambioCancelar(nc) {
   try {
     if (!SB_ESCRITURA_CAMBIOS) return null;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_cancelar', {
       method: 'POST',
@@ -4712,7 +4820,7 @@ async function _sbRpcCambioEditar(body) {
   try {
     if (!SB_ESCRITURA_CAMBIOS) return null;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_editar', {
       method: 'POST',
@@ -4782,7 +4890,7 @@ async function _crearPedidoRapido(body) {
     if (!SB_PILOTO_CREAR) return null;
     if (!String(body && body.FechaPedido || '').trim()) return null;   // reserva → via clasica
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_crear', {
       method: 'POST',
@@ -4867,7 +4975,7 @@ async function _sbFilasEspejoAhora(tabla) {
   if (window._sbSaltarEspejo) return null;   // el 🔄 quiere datos del servidor, no del espejo
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
   try {
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/' + tabla + '?select=id,row_json&order=id.asc&limit=20000', {
       headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok }
@@ -5018,7 +5126,7 @@ async function _sbCacheLeer(clave, venceMs) {
   if (window._sbSaltarEspejo) return null;   // el 🔄 quiere datos del servidor, no del espejo
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
   try {
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/espejo_cache?clave=eq.' + encodeURIComponent(clave) +
                           '&select=datos,filas,generado&limit=1',
@@ -5273,7 +5381,7 @@ async function _pedDatosRapido(p) {
   else                                     { if (!nom) return unoSolo ? null : []; filtro = 'nombres=ilike.' + encodeURIComponent('%' + nom + '%'); }
 
   try {
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return porApps();
     // ⚠️ EL `order=id.asc` NO ES OPCIONAL. Sin él, la base devuelve las filas en
     // el orden que se le antoje, y acá el orden ES el dato: la PRIMERA fila
@@ -5339,7 +5447,7 @@ async function _pedPorNrosRapido(nros) {
   if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
   if (window._sbSaltarEspejo) return porApps();
   try {
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return porApps();
     // in.(...) admite varios números de una vez. Las comillas evitan que un
     // número con espacios o comas rompa la consulta.
@@ -5410,7 +5518,7 @@ async function _papeleraListarRapido() {
   if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
   if (window._sbSaltarEspejo) return porApps();
   try {
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return porApps();
     const r = await fetch(SB_URL + '/rest/v1/pedidos?select=row_json&eliminado=not.is.null&order=id.asc&limit=8000',
       { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
@@ -5593,7 +5701,7 @@ async function _cliHistorialRapido(body) {
   if (!clave) return porApps();
 
   try {
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return porApps();
 
     // MEDIDO EN VIVO EL 26-JUL: las cuatro piezas tardan ~180 ms cada una. Una
@@ -5888,7 +5996,7 @@ async function _sbFilasSku(tabla, dis) {
   const d = String(dis || '').trim();
   if (!d) return null;
   try {
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const q = 'diseno=ilike.' + encodeURIComponent('%' + d + '%');
     const r = await fetch(SB_URL + '/rest/v1/' + tabla + '?select=row_json&' + q + '&order=id.asc&limit=20000',
@@ -5968,7 +6076,7 @@ async function _stockKardexRapido(p) {
   if (window._sbSaltarEspejo) return porApps();
 
   try {
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return porApps();
     const H = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
 
@@ -6120,7 +6228,7 @@ async function _sbRpcEliminar(fn, params) {
   try {
     if (!SB_PILOTO_ELIMINAR) return null;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, {
       method: 'POST',
@@ -6150,7 +6258,7 @@ async function _sbRpcConstanciaSet(nro, pagoId, urls) {
     if (!SB_PILOTO_CONSTANCIAS) return false;
     if (!pagoId) return false;   // sin ID exacto de pago → vía clásica (tiene fallback por clave)
     if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return false;
     const r = await fetch(SB_URL + '/rest/v1/rpc/constancia_set', {
       method: 'POST',
@@ -6188,7 +6296,7 @@ async function _sbRpcCampoMasivo(nros, campo, valor) {
     if (!SB_PILOTO_CAMPOS) return false;
     if (SB_CAMPOS_MASIVOS.indexOf(campo) < 0) return false;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return false;
     const r = await fetch(SB_URL + '/rest/v1/rpc/campo_masivo', {
       method: 'POST',
@@ -6210,7 +6318,7 @@ async function _sbRpcCampoMasivo(nros, campo, valor) {
 async function _subirConstanciaRapida(nro, cmp) {
   try {
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const ext = (cmp.mimeType || '').includes('pdf') ? 'pdf' : 'jpg';
     const nombre = 'constancia_' + String(nro||'0') + '_' + Date.now() + '_' + Math.floor(Math.random()*46656).toString(36) + '.' + ext;
@@ -9922,7 +10030,7 @@ async function _rtAplicar() {
       && !(window._selfPaint && window._selfPaint[n] && (_now - window._selfPaint[n]) < 90000));
     _rtNrosPend.clear();
     if (!lista.length) return;
-    const tok = await _sbTokenVigente(); if (!tok) return;
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
     const inList = lista.map(n => '"' + n + '"').join(',');
     // COLOR SOLO-ERP (25-jul): pedir también el id y pegarlo como _sbId — sin esto,
     // cada aviso de tiempo real reemplazaba las filas SIN id y el siguiente pintado
@@ -9981,7 +10089,7 @@ async function _rtConectar() {
     if (!SB_REALTIME || _rtCanal) return;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return;
     if (typeof supabase === 'undefined' || !supabase.createClient) { setTimeout(_rtConectar, 10000); return; }   // CDN aún cargando
-    const tok = await _sbTokenVigente();
+    const tok = await _sbSesionAsegurar();
     if (!tok) { setTimeout(_rtConectar, 15000); return; }   // aún sin sesión SB → reintentar
     _rtCliente = supabase.createClient(SB_URL, SB_ANON, { auth: { persistSession: false } });
     _rtCliente.realtime.setAuth(tok); _rtUltTok = tok;
@@ -9991,7 +10099,7 @@ async function _rtConectar() {
       .subscribe(st => { try { console.log('[RT] canal pedidos:', st); } catch (_) {} });
     // El token del websocket vence (~1h): renovarlo con el vigente cada 5 min
     setInterval(async () => {
-      try { const t = await _sbTokenVigente(); if (t && t !== _rtUltTok && _rtCliente) { _rtCliente.realtime.setAuth(t); _rtUltTok = t; } } catch (_) {}
+      try { const t = await _sbSesionAsegurar(); if (t && t !== _rtUltTok && _rtCliente) { _rtCliente.realtime.setAuth(t); _rtUltTok = t; } } catch (_) {}
     }, 5 * 60 * 1000);
   } catch (e) { try { console.warn('[RT] no disponible:', e && e.message); } catch (_) {} }
 }
