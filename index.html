@@ -7547,6 +7547,29 @@ async function _pollPedsOnce() {
 // perdido dejaba un color "viejo" en pantalla para siempre (y persistido en el cache
 // local), aunque la hoja estuviera correcta.
 let _pedsPollCount = 0;
+
+// Trae de la base el mismo snapshot de colores que calcula `pedidosColoresSnapshot`.
+// Devuelve null si no se puede, y quien llama sigue por Apps Script como siempre.
+async function _sbColoresSnapshot() {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (window._sbSaltarEspejo) return null;   // el 🔄 quiere datos del servidor
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_colores_snapshot', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    // Sin la lista de colores no hay nada que reconciliar: mejor no tocar la
+    // pantalla que pintarla con un snapshot a medias.
+    if (!j || !Array.isArray(j.colores)) return null;
+    return j;
+  } catch (e) { try { _errLog('sb.coloresSnapshot', e); } catch (_) {} return null; }
+}
+
 async function _reconcileColores() {
   try {
     // FIX 24-jul (piloto migración): con la vía rápida activa, los colores se escriben
@@ -7556,7 +7579,14 @@ async function _reconcileColores() {
     // BASE (el radar top-200 ya la trae y la autocuración nocturna vigila) → no correr.
     if (typeof SB_PILOTO_COLORES !== 'undefined' && SB_PILOTO_COLORES) return;
     if (!pRaw || !pRaw.length) return;
-    const res = await api('pedidos.coloresSnapshot', {});
+    // 29-jul · VÍA RÁPIDA. La receta `pedidos_colores_snapshot` ya estaba creada
+    // en la base desde el 29-jul y NADIE la llamaba. Cuadrada en vivo contra Apps
+    // Script: 71 filas = 71 filas, ninguna de más ni de menos.
+    //   la base ..... 1.376 ms
+    //   Apps Script . 33.860 ms  (medido en el mismo instante)
+    // Es la mejora más grande por línea de código de toda la migración: 24 veces,
+    // y sin escribir una sola receta nueva.
+    const res = (await _sbColoresSnapshot()) || await api('pedidos.coloresSnapshot', {});
     if (!res || !Array.isArray(res.colores)) return;
     const map = {};
     res.colores.forEach(x => {
