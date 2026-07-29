@@ -7421,13 +7421,31 @@ function _saludBanner(msg) {
 // Medido: `pedidos.cambiosDesde` era la acción más llamada del ERP —57 veces en
 // 2 horas en UNA pestaña— y cada una costaba 3.438 ms de Apps Script.
 //
-// Acá se le pregunta a la base (~200 ms). Los borrados y los interruptores de
-// emergencia se le siguen preguntando a Apps Script, 1 de cada 4 vueltas.
+// Acá se le pregunta a la base (~200 ms).
 //
-// REVERSA: SB_LECTURA_POLL = false y publicar.
+// v2 · 29-jul-2026 — LOS BORRADOS TAMBIÉN SALEN DE LA BASE.
+// Medido ese día con el ERP abierto y andando: en dos minutos, TODO lo que el
+// ERP le pidió a Apps Script fueron 3 latidos y 1 globito. Nada más — el resto
+// ya salía de la base. Y de esos 3 latidos, la única razón de ir a Apps Script
+// eran los borrados (`_tombstonesDesde_`, Code.js:697).
+//
+// Pero la base siempre supo quién se borró: la hoja no borra la fila, la marca
+// `Eliminado = SI`, y el sync la copia con su fecha. Ahora `pedidos_cambios_desde`
+// devuelve también `eliminados`, así que la vuelta a Apps Script queda sólo para
+// dos avisos de fondo que no corren prisa: el banner de salud del espejo
+// (`saludSync`) y el freno de emergencia (`pilotoOff`).
+//
+// Por eso pasa de 1 de cada 4 vueltas a 1 de cada 12: de ~4 s cada minuto a
+// ~4 s cada tres minutos. Es el 87% de lo que le quedaba al ERP contra Apps
+// Script.
+//
+// ⚠️ SI LA BASE NO CONTESTA, se le pregunta a Apps Script TODAS las vueltas,
+// igual que antes. La frescura nunca se degrada en silencio.
+//
+// REVERSA: SB_LECTURA_POLL = false y publicar. O POLL_APPS_CADA = 4.
 // ══════════════════════════════════════════════════════════════════════════
 const SB_LECTURA_POLL = true;
-const POLL_APPS_CADA  = 4;      // 1 de cada 4 vueltas (≈60 s) va a Apps Script
+const POLL_APPS_CADA  = 12;     // 1 de cada 12 vueltas (≈3 min) va a Apps Script
 let _pollVuelta = 0;
 let _sbPollTs   = 0;            // marca de agua en el reloj de Postgres
 
@@ -7456,9 +7474,12 @@ async function _sbPedidosCambiosDesde() {
     _sbPollTs = d.serverTs;
     // La primera vuelta sólo fija la marca de agua. Lo anterior ya está en
     // pantalla: traerlo de nuevo sería repetir la carga inicial entera.
-    if (primeraVuelta) return { editados: [] };
+    if (primeraVuelta) return { editados: [], eliminados: [] };
     if (d.refetch) return { refetch: true };
-    return { editados: (d.editados || []).map(_sbFilaNativa) };
+    return { editados: (d.editados || []).map(_sbFilaNativa),
+             // v2: números de pedido que ya no tienen NINGUNA fila viva.
+             // La receta se encarga de no avisar por una prenda suelta borrada.
+             eliminados: Array.isArray(d.eliminados) ? d.eliminados.map(String) : [] };
   } catch (e) { try { _errLog('sb.poll.pedidos', e); } catch (_) {} return null; }
 }
 
@@ -7479,8 +7500,12 @@ async function _pollPedsOnce() {
       if (sb) {
         baseOk = true;
         if (sb.refetch) { _recargaSilenciosa(); return; }
-        if ((sb.editados || []).length) {
-          _mergePedsDelta(sb.editados, []);
+        // v2: los borrados llegan por acá. Antes iba `[]` fijo y había que
+        // esperar a la vuelta de Apps Script para que un pedido eliminado
+        // desapareciera de la pantalla.
+        const _ed = sb.editados || [], _el = sb.eliminados || [];
+        if (_ed.length || _el.length) {
+          _mergePedsDelta(_ed, _el);
           try { lsSetPeds(pRaw, pLastSyncTs); } catch (_) {}
         }
       }
