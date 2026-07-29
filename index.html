@@ -3829,7 +3829,10 @@ async function loadDash() {
   const cached = lsGetDash();
   const prefetchPedidos = () => {
     if (!lsGetPeds()) {
-      api('pedidos.listar', {limit:2000, offset:0}).then(res => {
+      // 29-jul · Esto corre al abrir el ERP, antes de que nadie toque nada:
+      // es lo primero que el usuario "paga" sin saberlo. Sólo limit/offset,
+      // así que la base contesta directo.
+      _pedListarPagina({limit:2000, offset:0}).then(res => {
         const rows = Array.isArray(res) ? res : (res.rows||[]);
         lsSetPeds(rows);
       }).catch(e => _errLog('prefetch.pedidos.listar-dash', e));
@@ -9656,7 +9659,9 @@ document.addEventListener('visibilitychange', function(){
 async function pMas(off, tot) {
   const btn = document.getElementById('btn-mas'); if (btn) { btn.disabled=true; btn.textContent='Cargando...'; }
   const p = {limit:2000, offset:off}; if (pEst) p.estado=pEst; pFltParams(p);
-  const res = await api('pedidos.listar', p);
+  // 29-jul · `_pedListarPagina` decide sola: si sólo hay limit/offset va directo
+  // a la base (~300 ms); si hay filtros o estado, cae a Apps Script como siempre.
+  const res = await _pedListarPagina(p);
   const nuevos = Array.isArray(res)?res:(res.rows||[]);
   pRaw = pRaw.concat(nuevos);
   pEnrichPagos(pRaw);
@@ -10382,6 +10387,11 @@ function _pedsRescateServidor() {
     if (_pRescInFlight) return;
     _pRescInFlight = true;
     try {
+      // 29-jul · ESTE SE QUEDA EN APPS SCRIPT A PROPÓSITO. Más abajo se le
+      // agregan los filtros de columna (f_*/ft_*) y sale por `if (!alguno)
+      // return` si no hay ninguno: o sea que SIEMPRE lleva filtros, y la
+      // lectura directa de la base sólo sabe paginar. Mandarlo por
+      // `_pedListarPagina` no ganaría nada y escondería el motivo.
       const params = { limit: 2000, offset: 0 };   // trae TODAS las coincidencias del histórico
       let alguno = false;
       Object.entries(pFlt).forEach(([col, f]) => {
@@ -19793,7 +19803,8 @@ function _hcDashCargarPedidos() {
       return Promise.resolve(_hcDashPedRows);
     }
   } catch(_) {}
-  _hcDashPedPromise = api('pedidos.listar', { limit:5000, offset:0 })
+  // 29-jul · sólo limit/offset → la base contesta directo (~300 ms contra ~4 s).
+  _hcDashPedPromise = _pedListarPagina({ limit:5000, offset:0 })
     .then(res => { _hcDashPedRows = Array.isArray(res) ? res : (res.rows || []); return _hcDashPedRows; })
     .catch(e => { _errLog && _errLog('hcdash.pedidos.listar', e); _hcDashPedRows = _hcDashPedRows || []; return _hcDashPedRows; })
     .finally(() => { _hcDashPedPromise = null; });
@@ -23797,8 +23808,18 @@ async function _pollMetaCapiBadge(){
     const r = await api('metacapi.badge');
     _updateMetaCapiBadge((r && r.errores) || 0);
   }catch(e){
-    try{ const p = await api('metacapi.panel'); _updateMetaCapiBadge((p.errores&&p.errores.count)||0); }catch(_){}
+    try{ const p = await _metaCapiPanelRapido(); _updateMetaCapiBadge((p.errores&&p.errores.count)||0); }catch(_){}
   }
+}
+// 29-jul · El panel de Meta al espejo. Se abre de vez en cuando, pero cuando
+// se abre hay que esperarlo entero. Su cuenta ya estaba cacheada 120 s del
+// lado de Apps Script: lo único que sobraba era el viaje.
+async function _metaCapiPanelRapido(){
+  try {
+    const d = await _sbCacheLeer('metacapi.panel', SB_ADMIN_VENCE_MS);
+    if (d && typeof d === 'object' && d.errores) return d;
+  } catch(_) {}
+  return api('metacapi.panel');
 }
 async function metaCapiPanelAbrir(){
   const m = document.getElementById('modal-metacapi');
@@ -23807,7 +23828,7 @@ async function metaCapiPanelAbrir(){
   m.classList.add('on');
   body.innerHTML = '<div class="ld"><div class="sp"></div>Cargando envíos a Meta...</div>';
   let r;
-  try{ r = await api('metacapi.panel'); }
+  try{ r = await _metaCapiPanelRapido(); }
   catch(e){ body.innerHTML = '<div style="padding:20px;color:var(--rd)">Error: '+esc(e.message)+'</div>'; return; }
   _updateMetaCapiBadge((r.errores&&r.errores.count)||0);
   const S = v => 'S/ '+fmt(v||0);
