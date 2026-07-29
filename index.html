@@ -7389,6 +7389,53 @@ function _saludBanner(msg) {
   });
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// EL LATIDO DE PEDIDOS, DIRECTO DE LA BASE (29-jul-2026)
+//
+// Medido: `pedidos.cambiosDesde` era la acción más llamada del ERP —57 veces en
+// 2 horas en UNA pestaña— y cada una costaba 3.438 ms de Apps Script.
+//
+// Acá se le pregunta a la base (~200 ms). Los borrados y los interruptores de
+// emergencia se le siguen preguntando a Apps Script, 1 de cada 4 vueltas.
+//
+// REVERSA: SB_LECTURA_POLL = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LECTURA_POLL = true;
+const POLL_APPS_CADA  = 4;      // 1 de cada 4 vueltas (≈60 s) va a Apps Script
+let _pollVuelta = 0;
+let _sbPollTs   = 0;            // marca de agua en el reloj de Postgres
+
+// Devuelve {editados} o {refetch:true}, o null si no se pudo (y entonces quien
+// llama se va por Apps Script, como siempre).
+async function _sbPedidosCambiosDesde() {
+  if (!SB_LECTURA_POLL) return null;
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  if (window._sbSaltarEspejo) return null;      // el 🔄 quiere datos del servidor
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const p = _pedsScopeParams();
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_cambios_desde', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok,
+                 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_desde: _sbPollTs,
+                             p_activos: (p.activos === '1'),
+                             p_dias: parseInt(p.diasRecientes || 3) || 3 })
+    });
+    if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
+    const d = await r.json();
+    if (!d || typeof d.serverTs !== 'number') return null;
+    const primeraVuelta = !_sbPollTs;
+    _sbPollTs = d.serverTs;
+    // La primera vuelta sólo fija la marca de agua. Lo anterior ya está en
+    // pantalla: traerlo de nuevo sería repetir la carga inicial entera.
+    if (primeraVuelta) return { editados: [] };
+    if (d.refetch) return { refetch: true };
+    return { editados: (d.editados || []).map(_sbFilaNativa) };
+  } catch (e) { try { _errLog('sb.poll.pedidos', e); } catch (_) {} return null; }
+}
+
 async function _pollPedsOnce() {
   if (_pedsPollInFlight) return;          // ya hay una en curso → no disparar otra
   if (!_pedsPollVisible) return;          // pestaña oculta → no pollear
@@ -7399,6 +7446,26 @@ async function _pollPedsOnce() {
   _pedsPollInFlight = true;
   try { _sbReconciliarTope(); } catch(_){}   // en paralelo: fusionar pedidos creados fuera del ERP (web/importadores)
   try {
+    // ── 1) LOS CAMBIOS: a la base, cada vuelta (~200 ms) ──────────────────
+    let baseOk = false;
+    try {
+      const sb = await _sbPedidosCambiosDesde();
+      if (sb) {
+        baseOk = true;
+        if (sb.refetch) { _recargaSilenciosa(); return; }
+        if ((sb.editados || []).length) {
+          _mergePedsDelta(sb.editados, []);
+          try { lsSetPeds(pRaw, pLastSyncTs); } catch (_) {}
+        }
+      }
+    } catch (_) { baseOk = false; }
+
+    // ── 2) LOS BORRADOS Y EL FRENO: a Apps Script, 1 de cada 4 vueltas ────
+    // Si la base no contestó, se le pregunta a Apps Script TODAS las vueltas,
+    // igual que antes de este cambio. Nunca se degrada la frescura en silencio.
+    _pollVuelta++;
+    if (baseOk && (_pollVuelta % POLL_APPS_CADA) !== 0) return;
+
     const params = Object.assign({ desde: pLastSyncTs }, _pedsScopeParams());
     delete params.limit; delete params.offset;
     const res = await api('pedidos.cambiosDesde', params);
