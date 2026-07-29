@@ -2375,6 +2375,9 @@ function _sbVencerTok(){
 async function _sbTokenVigente(){
   if (!SB_ANON || !_sbTok) return null;
   if (Date.now() < (_sbTok.expires_at||0)) return _sbTok.access_token;
+  // Un pase emitido por el backend del ERP no se refresca: se vuelve a pedir.
+  // Intentar refrescarlo sería una llamada condenada a fallar en cada lectura.
+  if (!_sbTok.refresh_token) return null;
   try {
     const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
       method: 'POST', headers: {'Content-Type':'application/json','apikey':SB_ANON},
@@ -2440,6 +2443,32 @@ function _googleCredSilenciosa(){
   });
 }
 
+// ── EL PASE EMITIDO POR EL BACKEND DEL ERP ────────────────────────────────
+// Google no siempre entrega un pase en silencio: después de varios pedidos en
+// la misma hora contesta `skipped` y no hay forma de insistir. Comprobado en
+// vivo el 29-jul. El backend del ERP, en cambio, siempre puede: ya sabe quién
+// sos —tenés sesión con él— y firma el pase él mismo.
+// Si el backend no tiene puesto su secreto de firma contesta que no, y no se
+// le vuelve a preguntar en toda la sesión: no tiene sentido gastar 3 s por vez.
+let _sbPaseBackendHay = null;      // null = no sé todavía · false = no está configurado
+
+async function _sbPaseDelBackend(){
+  if (_sbPaseBackendHay === false) return null;
+  try {
+    const d = await api('auth.sbPase');
+    if (!d || d.ok !== true || !d.access_token) {
+      if (d && d.motivo === 'sin_secreto') _sbPaseBackendHay = false;
+      return null;
+    }
+    _sbPaseBackendHay = true;
+    // Sin refresh_token: este pase no se renueva, se vuelve a pedir al vencer.
+    _sbTok = { access_token: d.access_token, refresh_token: '',
+               expires_at: Date.now() + Math.max(60, (d.expires_in||3300) - 60)*1000 };
+    try { localStorage.setItem('erp_sb_sess', JSON.stringify(_sbTok)); } catch(_){}
+    return _sbTok.access_token;
+  } catch(e){ return null; }
+}
+
 // EL punto por el que pasan todas las vías rápidas.
 async function _sbSesionAsegurar(){
   const v = await _sbTokenVigente();
@@ -2453,10 +2482,14 @@ async function _sbSesionAsegurar(){
   _sbReauthUltimo = Date.now();
   _sbReauthEnCurso = (async function(){
     try {
+      // 1) El backend del ERP. Es el que siempre puede.
+      const propio = await _sbPaseDelBackend();
+      if (propio) { _sbReauthAvisado = false; console.log('[SB] vía rápida REACTIVADA (pase del ERP)'); return propio; }
+      // 2) Google, de respaldo. Gratis y sin viaje al servidor cuando funciona.
       const cred = await _googleCredSilenciosa();
       if (!cred) {
         if (!_sbReauthAvisado) { _sbReauthAvisado = true;
-          console.warn('[SB] vía rápida APAGADA: Google no entregó pase en silencio. Todo va por Apps Script (≈3 s por acción).'); }
+          console.warn('[SB] vía rápida APAGADA: ni el backend ni Google entregaron pase. Todo va por Apps Script (≈3 s por acción). Corré sbPaseDiag() en Apps Script para ver por qué.'); }
         return null;
       }
       await _sbAuthConCredencial(cred);
@@ -2476,6 +2509,8 @@ function viaRapida(){
   const o = { encendida: hay && Date.now() < (_sbTok.expires_at||0),
               haySesionSupabase: hay, venceEl: vence,
               haySesionErp: !!SESSION_TOKEN,
+              fuente: hay ? (_sbTok.refresh_token ? 'Google' : 'backend del ERP') : '—',
+              paseDelBackend: (_sbPaseBackendHay === false ? 'no configurado — correr sbPaseDiag() en Apps Script' : 'disponible'),
               reintentoSilencioso: SB_REAUTH_SILENCIOSO };
   console.log('── VÍA RÁPIDA A LA BASE ──');
   console.log(o.encendida ? '✅ ENCENDIDA — las lecturas y escrituras van directo a la base (~200-500 ms).'
