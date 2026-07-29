@@ -11978,10 +11978,38 @@ async function npCargarIndice() {
   }
 }
 
+// 29-jul · VÍA RÁPIDA (receta `pedidos_pendientes` en la base).
+// Esto se pide al elegir una clienta que ya compró, para poder ofrecerle
+// "agregar a su pedido pendiente". Medido el 29-jul, tres llamadas de cada uno:
+//   la base ..... 2.809 / 2.635 / 2.599 ms  (755 KB de respuesta)
+//   Apps Script . 3.605 / 4.632 / 3.000 ms  (con su caché de 120 s caliente;
+//                 con la caché fría fueron 15.361 ms)
+// La ganancia de tiempo es modesta —el peso de la respuesta manda, no la cuenta—
+// pero lo que se gana SIEMPRE es que Apps Script deje de leer la hoja Pedidos
+// entera acá, que es tiempo y candado que le sacamos a todo el equipo.
+async function _sbPedidosPendientes() {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (window._sbSaltarEspejo) return null;   // el 🔄 quiere datos del servidor
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_pendientes', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    // Un mapa vacío NO se acepta: sería decirle a la asesora que ninguna clienta
+    // tiene pedidos pendientes, y crearía pedidos nuevos en vez de agregar.
+    if (!j || typeof j !== 'object' || Array.isArray(j) || !Object.keys(j).length) return null;
+    return j;
+  } catch (e) { try { _errLog('sb.pedidosPendientes', e); } catch (_) {} return null; }
+}
 async function npCargarPendientes() {
   if (NP.pendData) return;
   try {
-    NP.pendData = await api('pedidos.pendientes', {});
+    NP.pendData = (await _sbPedidosPendientes()) || await api('pedidos.pendientes', {});
   } catch(e) {
     NP.pendData = {};
     console.error('Error cargando pedidos pendientes:', e.message);
