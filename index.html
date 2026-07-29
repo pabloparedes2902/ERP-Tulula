@@ -1514,6 +1514,48 @@ function setHTMLKeepScroll(container, html) {
   });
 })();
 let _searchTok = 0;
+// ══════════════════════════════════════════════════════════════════════════
+// LA LUPA, DIRECTO DE LA BASE (29-jul-2026)
+//
+// MEDIDO EN VIVO: `pedidos.buscar` tardaba 5.963 ms para devolver 3 KB. El
+// tiempo no era buscar: era el viaje. Y la lupa se dispara con cada tecla.
+//
+// Cuadrado contra Apps Script en 12 búsquedas seguidas — las 12 IDÉNTICAS,
+// incluidas "garcía" (acento), "20619" (número exacto), "a_b" y "50%" (los
+// comodines del LIKE) y "ñ" (una sola letra):
+//     la base ..... 144-199 ms
+//     Apps Script . 2.589-4.790 ms
+//
+// La receta `pedidos_buscar` copia las siete reglas de `pedidosBuscar`
+// (Code.js:4797) al detalle, incluido el defecto de que devuelve los 30 más
+// VIEJOS. Está documentado en supabase_pedidos_buscar.sql.
+//
+// REVERSA: SB_LECTURA_BUSCAR = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LECTURA_BUSCAR = true;
+
+async function _buscarRapido(q) {
+  const porApps = () => api('pedidos.buscar', { q });
+  if (!SB_LECTURA_BUSCAR) return porApps();
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
+  if (window._sbSaltarEspejo) return porApps();   // el 🔄 quiere datos del servidor
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return porApps();
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_buscar', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_q: String(q || '') })
+    });
+    if (!r.ok) return porApps();
+    const j = await r.json();
+    // Sin `rows` no se puede distinguir "no encontré nada" de "algo falló":
+    // ante la duda, preguntarle a Apps Script. Un array VACÍO sí es válido.
+    if (!j || !Array.isArray(j.rows)) return porApps();
+    return j;
+  } catch (e) { try { _errLog('sb.buscar', e); } catch (_) {} return porApps(); }
+}
+
 function _runSearch(q) {
   const res = document.getElementById('search-results');
   q = (q || '').toString().toLowerCase().trim();
@@ -1524,7 +1566,7 @@ function _runSearch(q) {
   _pintarSearch(locales, res, true);
   // 2) BACKEND: busca en TODO el historial (aunque el pedido no esté cargado)
   if (q.length >= 2) {
-    api('pedidos.buscar', { q }).then(bk => {
+    _buscarRapido(q).then(bk => {
       if (myTok !== _searchTok) return;            // el usuario ya escribió otra cosa
       const rows = (bk && bk.rows) || [];
       const map = {};
@@ -12025,7 +12067,15 @@ async function npCargarIndice() {
   if (NP.idxReady) return;
   // Directo al backend — no hay clientes.json estático
   try {
-    NP.idxData = await api('clientes.index', {});
+    // 29-jul · VÍA RÁPIDA. Medido: 15.617 ms y 2,7 MB para abrir "Nuevo pedido".
+    // No se reescribió la cuenta —tiene varias trampas propias— sino que el
+    // espejo guarda el resultado de la MISMA función cada 30 minutos. Bajarlo
+    // de la base cuesta ~1,4 s (medido: 1,3 MB en 693 ms).
+    // Se acepta hasta 45 min de antigüedad: una clienta creada hace un rato
+    // podría no estar en el índice, pero la lupa la encuentra igual porque va
+    // a la tabla en vivo.
+    NP.idxData = (await _sbCacheLeer('clientes.index', 45 * 60 * 1000))
+              || await api('clientes.index', {});
     NP.idxReady = true;
     document.getElementById('np-bcargando').style.display = 'none';
   } catch(e) {
