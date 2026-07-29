@@ -4657,6 +4657,34 @@ const SB_ESCRITURA_CAMBIOS = true;   // ← reversa: poner en false y publicar
 // Anular un cambio: misma regla que guardar. Si la base no contesta con un ok
 // explícito, se anula por Apps Script. Anular deshace stock y dinero, así que
 // esto NO puede quedar a medias — por eso la receta lo hace en una transacción.
+// Crear un cambio en la base. Misma regla que las otras dos: si no hay un ok
+// explícito, se registra por Apps Script.
+// El número CAM-#### lo reparte la base bajo su propio candado de transacción,
+// así que dos asesoras registrando a la vez no pueden recibir el mismo — que es
+// justo el problema que ya ocurrió una vez con las devoluciones (DEV-).
+async function _sbRpcCambioRegistrar(payload) {
+  try {
+    if (!SB_ESCRITURA_CAMBIOS) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbTokenVigente();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_registrar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_body: payload }),
+    });
+    if (!r.ok) {
+      try { console.warn('[cambio] RPC cambio_registrar HTTP ' + r.status + ' → vía Apps Script'); } catch (_) {}
+      return null;
+    }
+    const d = await r.json();
+    return (d && d.ok === true) ? d : null;
+  } catch (e) {
+    try { console.warn('[cambio] RPC cambio_registrar falló → vía Apps Script'); } catch (_) {}
+    return null;
+  }
+}
+
 async function _sbRpcCambioCancelar(nc) {
   try {
     if (!SB_ESCRITURA_CAMBIOS) return null;
@@ -17793,7 +17821,10 @@ async function _camProcessSaveQueue() {
     const _cron = _cronAbrir('flujo.cambio.registrar');
     try {
       // UNA sola llamada: crea el cambio completo (multi-prenda / multi-pedido)
-      var _r2 = await apiSend('cambios2.registrarYSync', job.payload);
+      // Primero la base; si no contesta con un ok explícito, la vía de siempre.
+      var _r2 = await _sbRpcCambioRegistrar(job.payload);
+      if (_r2) { try { _sbEspejarYa(_r2.NroCambio); } catch(_){} }
+      else { _r2 = await apiSend('cambios2.registrarYSync', job.payload); }
       try { _cronDesdeServidor('cambio.registrar', _r2 && _r2.ms); } catch(_){}
       _c2Hist = null;  // forzar recarga del mapa v2 en Pedidos
       _c2List = null;  // F1 23-jul: también la lista (contador pestaña Cambio)
