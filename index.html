@@ -5303,7 +5303,33 @@ async function _maestrosListarRapido() {
 // pide al abrir la pantalla. Si la persona elige otro mes u otro rango, se le
 // pregunta a Apps Script como siempre: mejor esperar unos segundos que mostrar
 // el período equivocado.
+// 29-jul · VÍA RÁPIDA PARA CUALQUIER MES (receta `dashboard_serie_diaria` en la base).
+// El espejo de arriba guarda SÓLO el mes vigente. En cuanto Pablo elige otro mes del
+// desplegable no hay nada guardado y volvían los 13 segundos enteros (medido hoy:
+// 2026-07 13.360 ms · 2026-06 13.295 ms · 2026-05 9.886 ms). La base contesta cualquiera.
+// ORDEN: base directa → espejo (sólo mes vigente) → Apps Script. Cada escalón es un
+// respaldo del anterior: si la base no contesta, la pantalla sigue funcionando igual.
+async function _sbSerieDiaria(mes) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (window._sbSaltarEspejo) return null;   // el 🔄 quiere datos del servidor, no de la base
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/dashboard_serie_diaria', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify(mes ? { p_mes: String(mes) } : {})
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    // Sin días no hay gráfico: se trata como "no vino" y cae al respaldo.
+    if (!j || !Array.isArray(j.dias) || !j.dias.length) return null;
+    return j;
+  } catch (e) { try { _errLog('sb.serieDiaria', e); } catch (_) {} return null; }
+}
 async function _serieDiariaRapido(mes) {
+  const directo = await _sbSerieDiaria(mes);
+  if (directo) return directo;
   if (!mes) {
     const d = await _sbCacheLeer('dashboard.serieDiaria');
     if (d && typeof d === 'object') return d;
