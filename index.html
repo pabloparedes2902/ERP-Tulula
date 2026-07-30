@@ -14207,7 +14207,11 @@ function _npBuildProvisional(job, provNro) {
     'CANAL': c.Canal || '',
     'ORIGEN': c.Origen || '',
     'Asesora': c.Asesora || '',
-    'Prenda': p.dis || '',
+    // 30-jul — la fila provisional también muestra el prefijo. Sin esto el pedido
+    // aparecía como prenda normal y recién al confirmarse el guardado le salía la
+    // cápsula YAYITA: parecía que no se había registrado como Yayita.
+    'Prenda': (p.esYayita ? ('YAYITA - ' + (p.dis || '')) : (p.dis || '')),
+    'EsYayita': (p.esYayita ? 'SI' : ''),
     'Cambio': '',
     'Precio': parseFloat(p.prec) || 0,
     'Envio': job.env || 0,
@@ -15871,26 +15875,27 @@ function _stCrsMousedown(e){
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// STOCK - YAYITAS (30-jul-2026)
+// STOCK - YAYITAS (30-jul-2026, replanteo)
 //
-// NO es una copia del módulo Stock: es EL MISMO. `renderStock` pinta lo que haya en
-// `stData`, así que alcanza con cambiarle la fuente de datos y esconder las pestañas.
-// Hacer una copia habría significado mantener dos tablas en paralelo para siempre —
-// cada ajuste de ancho, color o columna habría que hacerlo dos veces, y tarde o temprano
-// se separan.
+// LA PRIMERA VERSIÓN PISABA `stData`, la variable global del stock — la leen 51 lugares,
+// incluido el badge de stock del formulario de pedido. Entrabas a Yayitas, ibas a
+// Pedidos, y el badge mostraba los números del montón ("Stock: 1 — Última unidad" con 4
+// en existencia). También dejaba `_stYayMode` pegado: volvías a Stock y decía Yayitas.
 //
-// El backend (`yayitas.stock`) devuelve las filas con la MISMA forma que `stock.resumen`.
-// La analogía es 1 a 1:
-//   Confección → cuántas entraron al montón de Yayitas
-//   Ventas     → cuántas se vendieron como Yayita
-//   Stock      → lo que queda
+// Ahora Yayitas vive en SU PROPIA variable y `stData` no se toca nunca.
+// `_stFuente()` decide qué se pinta; el resto del ERP sigue viendo el stock real.
+//
+// Y se arma EN EL NAVEGADOR con datos que ya están cerca: la tabla `fallas` del espejo de
+// Supabase (decenas de filas) + los Pedidos en memoria. Sin viaje a Apps Script.
 // ══════════════════════════════════════════════════════════════════════════
-let _stYayMode = false;      // ¿estamos viendo el montón de Yayitas?
-let _stDataNormal = null;    // el stock real, guardado mientras miramos Yayitas
+let _stYayMode = false;
+let _stDataYay = null;      // el montón — NUNCA se mezcla con stData
 
-// Hay DOS pantallas que muestran stock: `renderInv` (la que se usa todo el día, con
-// Conf. Real · Ventas · Stock) y `renderStock` (la vieja). El botón vive en las dos, así
-// que el toggle detecta cuál está en pantalla en vez de asumir.
+// Qué filas tiene que pintar la tabla de stock. Único punto de decisión.
+function _stFuente() { return _stYayMode ? (_stDataYay || []) : stData; }
+
+// Hay DOS pantallas que muestran stock: `renderInv` (la que se usa todo el día) y
+// `renderStock` (la vieja). El botón vive en las dos.
 function _stCtxYay() {
   const inv = document.getElementById('inv-w');
   if (inv) return { el: inv, pintar: renderInv };
@@ -15899,38 +15904,48 @@ function _stCtxYay() {
   return null;
 }
 
+// El montón, armado en el navegador. Devuelve filas con la MISMA forma que stock.resumen
+// para que la tabla de stock las pinte sin cambiar una línea de estilo.
+async function _yayStockRapido() {
+  const map = await _yayMapaCrudo();          // {DIS|COL|TAL: {entradas, ventas}}
+  if (!map) return null;
+  const TSTD = ['XS','S','M','L','XL','2XL','3XL'];
+  const filas = {};
+  Object.keys(map).forEach(k => {
+    const p = k.split('|'); const dis = p[0], col = p[1], tal = p[2];
+    const o = map[k];
+    const fk = dis + '|' + col;
+    if (!filas[fk]) filas[fk] = { dis, col, cat:'', prenda:'', conf:{}, vtas:{}, stock:{}, total:{}, fechaMs:0 };
+    const f = filas[fk];
+    f.conf[tal] = o.entradas; f.vtas[tal] = o.ventas;
+    f.stock[tal] = o.entradas - o.ventas; f.total[tal] = o.entradas;
+    if (!f.cat) f.cat = o.cat || ''; if (!f.prenda) f.prenda = o.prenda || '';
+    if ((o.fechaMs||0) > f.fechaMs) f.fechaMs = o.fechaMs||0;
+  });
+  return Object.keys(filas).map(k => {
+    const f = filas[k];
+    return { diseno:f.dis, color:f.col, prenda:f.prenda, cat:f.cat, tallas:TSTD,
+             conf:f.conf, fallas:{}, total:f.total, vtas:f.vtas, stock:f.stock, fechaMs:f.fechaMs };
+  }).sort((a,b) => b.fechaMs - a.fechaMs);
+}
+
 async function stockYayitasToggle() {
   const ctx = _stCtxYay();
   if (!ctx) return;
-  if (_stYayMode) {
-    // Volver al stock de siempre, sin recalcular nada.
-    _stYayMode = false;
-    stData = _stDataNormal; _stDataNormal = null;
-    ctx.pintar(ctx.el);
-    return;
-  }
-  _stDataNormal = stData;
+  if (_stYayMode) { _stYayMode = false; ctx.pintar(ctx.el); return; }   // stData nunca se tocó
   _stYayMode = true;
+  _yayOlvidar();                       // que muestre lo de AHORA, no lo de hace 5 min
   ctx.el.innerHTML = spin('Cargando Yayitas...');
   const cron = _cronAbrir('yayitas.stock');
   try {
-    stData = await api('yayitas.stock', {});
+    _stDataYay = await _yayStockRapido();
+    if (!_stDataYay) _stDataYay = await api('yayitas.stock', {});   // respaldo
     _cronCerrar(cron, true);
   } catch (e) {
     _cronCerrar(cron, false);
-    _stYayMode = false; stData = _stDataNormal; _stDataNormal = null;
+    _stYayMode = false;
     ctx.el.innerHTML = '<div class="empty">No se pudo cargar Yayitas: ' + esc(e.message) + '</div>';
     setTimeout(() => ctx.pintar(ctx.el), 1500);
-    return;
-  }
-  if (!stData || !stData.length) {
-    // Mensaje propio: el "Sin datos" genérico no dice qué hacer.
-    ctx.el.innerHTML = '<div class="empty" style="padding:28px;text-align:center">'
-      + '<div style="font-size:15px;font-weight:600;margin-bottom:6px">Todavía no hay Yayitas</div>'
-      + '<div style="font-size:13px;color:var(--mu);max-width:460px;margin:0 auto 14px">Para que una prenda aparezca acá, marcala en <b>⇅ Movimiento de stock → Sale stock (no disponible)</b> y elegí <b>Destino: Yayitas</b>.</div>'
-      + '<button id="st-yay-volver" class="btn bg bs" style="font-size:12px">← Volver al Stock</button></div>';
-    const v = document.getElementById('st-yay-volver');
-    if (v) v.addEventListener('click', () => stockYayitasToggle());
     return;
   }
   ctx.pintar(ctx.el);
@@ -15939,12 +15954,13 @@ async function stockYayitasToggle() {
 function renderStock(el) {
   // Datos invalidados (p.ej. tras cambiar un color): mostrar "Actualizando…" y recargar solos,
   // en vez del antiguo "Sin datos" que se quedaba pegado hasta salir y volver a entrar.
-  if(!stData){
+  const _fuente=_stFuente();
+  if(!_fuente){
     el.innerHTML='<div class="empty">Actualizando…</div>';
     if(!window._stReloading){ window._stReloading=true; Promise.resolve().then(()=>loadStock()).catch(()=>{}).finally(()=>{ window._stReloading=false; }); }
     return;
   }
-  if(!stData.length){el.innerHTML='<div class="empty">Sin datos</div>';return;}
+  if(!_fuente.length){el.innerHTML='<div class="empty">Sin datos</div>';return;}
   // Conserva el foco y la posición del cursor del buscador a través del re-render.
   const _pi=document.getElementById('st-txt');
   const _hadFocus=!!(_pi&&document.activeElement===_pi);
@@ -15953,7 +15969,7 @@ function renderStock(el) {
   // Pestañas categoría
   // Pestañas = categorías de Maestros (col K). Si Maestros no cargó aún, cae a las de los datos. Siempre "Todos".
   const _mcats = (typeof mOpts==='function') ? mOpts('Categoria') : [];
-  const _catSrc = (_mcats && _mcats.length) ? _mcats : stData.map(d=>d.cat);
+  const _catSrc = (_mcats && _mcats.length) ? _mcats : _fuente.map(d=>d.cat);
   // Orden fijo deseado de pestañas (match por la 1ª palabra → robusto al orden de las demás).
   // Pantalones · Blusas... · Blazers... · Faldas... · Correas · Ropa interior · Bisutería · Swimwear.
   const ORD_FIRST = ['PANTALONES','BLUSAS','BLAZERS','FALDAS','CORREAS','ROPA','BISUTERIA','SWIMWEAR'];
@@ -16008,7 +16024,7 @@ function renderStock(el) {
   ctrl+='</div>';
 
   // Filtrar
-  let rows=[...stData];
+  let rows=[..._fuente];
   if(stCatActiva) rows=rows.filter(d=>d.cat===stCatActiva);
   rows=_stFiltrarRows(rows);
   // Ocultar colores sin stock (>0 en alguna talla). Si todos los colores de un diseño quedan ocultos, el diseño desaparece;
@@ -16228,19 +16244,25 @@ async function loadInv(){
 }
 
 function renderInv(el){
-  if(!stData){
+  // 30-jul — se pinta lo que diga _stFuente(): stData en Stock, el montón en Yayitas.
+  const _fuente=_stFuente();
+  if(!_fuente){
     el.innerHTML='<div class="empty">Actualizando…</div>';
     if(!window._ivReloading){ window._ivReloading=true; Promise.resolve().then(()=>loadInv()).catch(()=>{}).finally(()=>{ window._ivReloading=false; }); }
     return;
   }
-  if(!stData.length){ el.innerHTML='<div class="empty">Sin datos</div>'; return; }
+  if(!_fuente.length){ el.innerHTML = _stYayMode
+    ? '<div class="empty" style="padding:28px;text-align:center"><div style="font-size:15px;font-weight:600;margin-bottom:6px">Todavía no hay Yayitas</div><div style="font-size:13px;color:var(--mu);max-width:460px;margin:0 auto 14px">Para que una prenda aparezca acá, marcala en <b>⇅ Movimiento de stock → Sale stock (no disponible)</b> y elegí <b>Destino: Yayitas</b>.</div><button id="st-yay-volver" class="btn bg bs" style="font-size:12px">← Volver al Stock</button></div>'
+    : '<div class="empty">Sin datos</div>';
+    const _v=document.getElementById('st-yay-volver'); if(_v) _v.addEventListener('click',()=>stockYayitasToggle());
+    return; }
   // Conserva el foco y el cursor del buscador a través del re-render.
   const _pi=document.getElementById('iv-txt');
   const _hadFocus=!!(_pi&&document.activeElement===_pi);
   const _selS=_hadFocus?_pi.selectionStart:null, _selE=_hadFocus?_pi.selectionEnd:null;
 
   // Pestañas categoría = categorías REALES presentes en el stock (no de Maestros cacheado → sin basura).
-  const _catSrc=stData.map(d=>d.cat);
+  const _catSrc=_fuente.map(d=>d.cat);
   const ORD_FIRST=['PANTALONES','BLUSAS','BLAZERS','FALDAS','CORREAS','ROPA','BISUTERIA','SWIMWEAR'];
   const _normCat=s=>String(s||'').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
   const _catIdx=c=>{ const w=_normCat(c).split(' ')[0]; const i=ORD_FIRST.indexOf(w); return i<0?999:i; };
@@ -16301,7 +16323,7 @@ function renderInv(el){
   ctrl+='</div>';
 
   // Filtrar
-  let rows=[...stData];
+  let rows=[..._fuente];
   if(stCatActiva) rows=rows.filter(d=>d.cat===stCatActiva);
   rows=_stFiltrarRows(rows);
   if(stHideNoStock) rows=rows.filter(d=>TALLAS_STD.some(t=>(d.stock&&d.stock[t]>0)));
@@ -17369,7 +17391,7 @@ function _yayOlvidar() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; }
 // Apps Script queda como respaldo: si Supabase no contesta, se pregunta como antes.
 // El backend valida igual al guardar, así que este mapa solo decide si se OFRECE la
 // Yayita — nunca puede vender una que no existe.
-async function _yayMapaRapido() {
+async function _yayMapaCrudo() {
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
   try {
     const tok = await _sbSesionAsegurar();
@@ -17385,31 +17407,52 @@ async function _yayMapaRapido() {
     const TM = {'S/M':'M','M/L':'L','L/XL':'XL','C':'M','G':'XL','STD':'M','ESTANDAR':'M','U':'M','XXL':'2XL','XXXL':'3XL'};
     const TSTD = ['XS','S','M','L','XL','2XL','3XL'];
     const mapa = {};
-    const add = (dis, col, tal, n) => {
+    const toca = (dis, col, tal) => {
       const t = TM[String(tal||'').toUpperCase()] || String(tal||'').toUpperCase();
-      if (TSTD.indexOf(t) < 0) return;
+      if (TSTD.indexOf(t) < 0) return null;
       const k = (String(dis||'').trim()+'|'+String(col||'').trim()+'|'+t).toUpperCase();
-      mapa[k] = (mapa[k] || 0) + n;
+      if (!mapa[k]) mapa[k] = { entradas:0, ventas:0, cat:'', prenda:'', fechaMs:0 };
+      return mapa[k];
     };
+
+    // ENTRADAS
     j.forEach(x => {
       const f = x.row_json; if (!f) return;
       if (String(f['Eliminado']||'').trim().toUpperCase() === 'SI') return;
-      add(f['Diseno'], f['Color'], f['Talla'], parseInt(f['Cantidad'],10) || 1);
+      const o = toca(f['Diseno'], f['Color'], f['Talla']); if (!o) return;
+      o.entradas += parseInt(f['Cantidad'],10) || 1;
+      if (!o.cat) o.cat = String(f['Categoria']||'').trim();
+      if (!o.prenda) o.prenda = String(f['Prenda']||'').trim();
+      const fm = Date.parse(f['Fecha']||'') || 0;
+      if (fm > o.fechaMs) o.fechaMs = fm;
     });
 
-    // Restar las ya vendidas, con lo que el navegador ya tiene cargado.
+    // VENTAS — de los Pedidos que YA están en memoria. Las eliminadas no cuentan: por eso
+    // anular un pedido devuelve la unidad al montón sin escribir nada.
     try {
       (pRaw || []).forEach(p => {
-        if (String(p['EsYayita']||'').trim().toUpperCase() !== 'SI') return;
         if (String(p['Eliminado']||'').trim().toUpperCase() === 'SI') return;
-        const k = _yayClaveDe(String(p['Prenda']||'').replace(/^\s*YAYITA\s*[-–—]?\s+/i,''));
-        if (k && mapa[k] !== undefined) mapa[k] -= 1;
+        const esYay = String(p['EsYayita']||'').trim().toUpperCase() === 'SI'
+                   || /^\s*YAYITA\s*[-\u2013\u2014]?\s+/i.test(String(p['Prenda']||''));
+        if (!esYay) return;
+        const k = _yayClaveDe(String(p['Prenda']||'').replace(/^\s*YAYITA\s*[-\u2013\u2014]?\s+/i,''));
+        if (!k) return;
+        if (!mapa[k]) mapa[k] = { entradas:0, ventas:0, cat:'', prenda:'', fechaMs:0 };
+        mapa[k].ventas += 1;
       });
     } catch (e) {}
 
-    Object.keys(mapa).forEach(k => { if (mapa[k] <= 0) delete mapa[k]; });
     return mapa;
-  } catch (e) { try { _errLog('yay.mapa.rapido', e); } catch (_) {} return null; }
+  } catch (e) { try { _errLog('yay.mapa.crudo', e); } catch (_) {} return null; }
+}
+
+// Solo los disponibles (entradas − ventas), para el aviso del formulario.
+async function _yayMapaRapido() {
+  const m = await _yayMapaCrudo();
+  if (!m) return null;
+  const out = {};
+  Object.keys(m).forEach(k => { const n = m[k].entradas - m[k].ventas; if (n > 0) out[k] = n; });
+  return out;
 }
 
 async function _yayCargarMapa() {
