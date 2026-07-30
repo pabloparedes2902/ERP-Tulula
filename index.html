@@ -13498,6 +13498,15 @@ function npAddPrenda() {
       await npMostrarStock(v, pInp, stockEl);
       // ...y si además hay unidades con falla listas para vender, ofrecerlas.
       await npMostrarYayitas(v);
+      // 30-jul-2026 — EL PRE-CHEQUEO DE DUPLICADOS TENÍA UN AGUJERO.
+      // Se dispara con el evento 'input' de #np-prendas, y su caché se llava con
+      // DNI+teléfonos+PRENDAS. Pero elegir del desplegable asigna `pInp.value` POR CÓDIGO,
+      // y una asignación programática NO dispara 'input'. Resultado: la clave de la caché
+      // nunca coincidía al guardar y `pedidos.detectarDuplicados` corría BLOQUEANTE en
+      // cada pedido — medido en vivo: mediana 5,6 s, peor 16,7 s, con la asesora esperando.
+      // Con esta línea el chequeo sale en segundo plano mientras se termina de cargar y al
+      // guardar ya está listo, que es exactamente para lo que se había hecho.
+      _npPrecheckDuplicados();
     });
   }
   pInp.addEventListener('input', showPrendas);
@@ -17472,7 +17481,14 @@ function _confAbrirIngresarStock(confEl) {
       let res = { lotes:[], filas:0, unidades:0 };
       // Primero el montón: si falla, no queda un lote creado a medias sin sus fallas.
       let resFal = null;
-      if (falladas.length) resFal = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: falladas }));
+      if (falladas.length) {
+      // 30-jul — EL ORDEN IMPORTA. `_yayOlvidar()` pone la copia de la base en duda;
+      // `_yayEspejoConfirmar` se la devuelve si el backend avisó que la dejó al día.
+      // Al revés, el olvido pisa la confirmación y la pantalla se queda desconfiando para
+      // siempre: cada apertura de Yayitas se iría por Apps Script aunque no haga falta.
+        _yayOlvidar();
+        resFal = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: falladas }));
+      }
       if (buenas.length)   res    = await apiSend('stock.crearLote', { items: buenas });
 
       const lotes = (res && res.lotes && res.lotes.length) ? res.lotes.join(', ') : '';
@@ -17492,9 +17508,6 @@ function _confAbrirIngresarStock(confEl) {
       }
       _stkCart = [];
       _close();
-      // El montón cambió: el aviso de Yayitas y la pantalla de Yayitas no pueden
-      // seguir mostrando lo de antes de este ingreso.
-      if (falladas.length) { try { _yayOlvidar(); } catch(e) {} }
       // refrescar confección con datos frescos (limpia caché local; el backend ya invalidó el suyo)
       confData = null;
       try { _confLsDel(); } catch(e) {}
@@ -17858,6 +17871,11 @@ function _confAbrirIngresarFalla(confEl) {
     if (!ok) return;
     this.disabled = true; this.textContent = 'Deshaciendo...';
     try {
+      // 30-jul — EL ORDEN IMPORTA. `_yayOlvidar()` pone la copia de la base en duda;
+      // `_yayEspejoConfirmar` se la devuelve si el backend avisó que la dejó al día.
+      // Al revés, el olvido pisa la confirmación y la pantalla se queda desconfiando para
+      // siempre: cada apertura de Yayitas se iría por Apps Script aunque no haga falta.
+      _yayOlvidar();
       const res = _yayEspejoConfirmar(await apiSend('fallas.deshacer', {}));
       const u = res && res.undone;
       toast(u ? ('✓ Deshecha: '+esc(u.prenda+' '+u.dis+' '+u.col+' '+u.talla)+' (x'+u.cantidad+(u.motivo?', '+esc(u.motivo):'')+')') : '✓ Falla deshecha', 'ok');
@@ -17934,9 +17952,12 @@ function _confAbrirIngresarFalla(confEl) {
     if (!_falCart.length) { toast('Agrega al menos una falla','err'); return; }
     this.disabled = true; this.textContent = 'Registrando...';
     try {
+      // 30-jul — EL ORDEN IMPORTA. `_yayOlvidar()` pone la copia de la base en duda;
+      // `_yayEspejoConfirmar` se la devuelve si el backend avisó que la dejó al día.
+      // Al revés, el olvido pisa la confirmación y la pantalla se queda desconfiando para
+      // siempre: cada apertura de Yayitas se iría por Apps Script aunque no haga falta.
+      _yayOlvidar();
       const res = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: _falCart }));
-      // El montón cambió: el aviso de Yayitas tiene que verlo YA, no en 5 minutos.
-      try { _yayOlvidar(); } catch(e) {}
       toast('✓ '+(res.filas||0)+' falla(s) · '+(res.unidades||0)+' und descontadas del stock', 'ok');
       _falCart = [];
       _close();
