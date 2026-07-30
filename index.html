@@ -436,6 +436,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
   <div class="topbar">
     <div id="ptit">Dashboard</div>
     <div style="display:flex;gap:8px;align-items:center">
+      <button id="btn-limpiar-filtros" title="Quitar todos los filtros de columna de esta pantalla" style="background:var(--bg3);border:1px solid var(--bd);color:var(--mu);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;display:none;align-items:center;gap:6px;white-space:nowrap">✕ Limpiar</button>
       <button id="btn-search-open" title="Buscar (Ctrl+K)" style="background:var(--bg3);border:1px solid var(--bd);color:var(--tx);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px">🔍 <span style="color:var(--mu);font-size:11px">Ctrl+K</span></button>
       <!-- CABECERA COMPACTA (25-jul): el contador de pedidos y el botón de recargar
            viven acá arriba. Antes ocupaban una fila entera dentro de la grilla. -->
@@ -1473,6 +1474,137 @@ function setHTMLKeepScroll(container, html) {
   } catch(e) {}
 })();
 
+// ══════════════════════════════════════════════════════════════════════════
+// setValor — ASIGNAR UN CAMPO POR CÓDIGO SIN QUE SE PIERDA SU LÓGICA
+// 30-jul-2026
+//
+// EL MALENTENDIDO QUE COSTÓ CINCO BUGS EN UN DÍA:
+//   `elemento.value = algo` NO dispara 'input' ni 'change'.
+// El navegador sólo emite esos eventos cuando escribe una PERSONA. Si el campo tenía
+// lógica colgada —recalcular, precargar, validar, reconstruir un desplegable dependiente—
+// esa lógica simplemente no corre. Sin error, sin aviso, sin nada en la consola.
+//
+// Los cinco que aparecieron hoy, todos por esto:
+//   · elegir una prenda no disparaba el pre-chequeo de duplicados → guardar el pedido
+//     pagaba una llamada bloqueante de 5 a 16 segundos, en CADA pedido
+//   · rellenar con una clienta existente tampoco → el mismo costo, por otra puerta
+//   · cambiar el canal no reconstruía el desplegable Origen → se podía guardar una
+//     atribución imposible, que es la que define el bono de la asesora
+//   · los teléfonos precargados esquivaban el saneador → el ERP llenaba un campo y
+//     después él mismo lo rechazaba al validar
+//   · el rótulo del buscador de Cambios se quedaba con el tipo anterior
+//
+// USARLO ASÍ:  setValor('np-canal', 'INSTAGRAM')   ó   setValor(elemento, valor)
+// Asigna y dispara 'input' y 'change' con bubbles:true, así que también despiertan los
+// listeners DELEGADOS en un contenedor padre (que es como escuchan #np-tels y #np-prendas).
+//
+// CUÁNDO NO USARLO: cuando el listener hace algo que NO querés en este camino — el caso
+// típico es un handler que además LIMPIA el campo que acabás de llenar. Ahí la salida no
+// es evitar el evento, es partir el listener en dos: la parte que sirve siempre y la que
+// sólo aplica cuando lo cambió una persona. Ver `_camSincronizarRotulo` como ejemplo.
+//
+// NO se migraron a la fuerza las 180 asignaciones del ERP: la mayoría son campos sin
+// lógica colgada, y tocarlas sería mucho riesgo a cambio de nada. Esto está para lo que
+// venga, y para que el próximo caso se resuelva en una línea en vez de en una tarde.
+// ══════════════════════════════════════════════════════════════════════════
+function setValor(elOId, valor, opts) {
+  const el = (typeof elOId === 'string') ? document.getElementById(elOId) : elOId;
+  if (!el) return null;
+  const o = opts || {};
+  if (el.type === 'checkbox' || el.type === 'radio') el.checked = !!valor;
+  else el.value = (valor == null ? '' : valor);
+  // Si el valor no cambió, no hay nada que avisar: emitir igual dispararía recálculos
+  // y consultas al servidor por nada.
+  if (o.siempre !== true && el.dataset && el.dataset._sv === String(valor)) return el;
+  if (el.dataset) el.dataset._sv = String(valor);
+  try {
+    if (o.input  !== false) el.dispatchEvent(new Event('input',  { bubbles: true }));
+    if (o.change !== false) el.dispatchEvent(new Event('change', { bubbles: true }));
+  } catch (e) { try { _errLog('setValor', e); } catch (_) {} }
+  return el;
+}
+
+// Elegir una opción de un <select> por su TEXTO o por su value, y avisar igual que
+// setValor. Varias pantallas hacían este bucle a mano y ninguna disparaba el evento.
+function setOpcion(elOId, texto, opts) {
+  const el = (typeof elOId === 'string') ? document.getElementById(elOId) : elOId;
+  if (!el || !el.options) return null;
+  const v = String(texto == null ? '' : texto);
+  for (let i = 0; i < el.options.length; i++) {
+    if (el.options[i].text === v || el.options[i].value === v) {
+      if (el.selectedIndex === i && !(opts && opts.siempre)) return el;
+      el.selectedIndex = i;
+      try {
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      } catch (e) {}
+      return el;
+    }
+  }
+  return el;   // no estaba en la lista: se deja como estaba
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ✕ LIMPIAR — QUITAR TODOS LOS FILTROS DE COLUMNA DE LA PANTALLA ACTUAL
+// 30-jul-2026
+//
+// Vive en la barra de arriba, al lado de Ctrl+K, así que aparece en cualquier módulo.
+// Pedidos ya tenía su "✕ Filtros" adentro de la grilla, pero sólo salía cuando había
+// filtros puestos —y no existía en Cambios ni en Devoluciones—. Con tres columnas
+// filtradas y la tabla scrolleada, encontrar cuál era el filtro que sobraba costaba más
+// que volver a filtrar de cero.
+//
+// QUÉ LIMPIA: sólo los filtros por COLUMNA. NO toca la pestaña abierta, ni el rango de
+// fechas, ni el orden. Esos son navegación, no filtro: si los borrara, "Limpiar" te
+// sacaría de donde estás y sería más destructivo de lo que la palabra promete.
+//
+// Cada módulo declara acá cómo se limpia. Agregar uno nuevo es agregar una entrada.
+// ══════════════════════════════════════════════════════════════════════════
+const _LIMPIABLES = {
+  pedidos: {
+    hay:     () => Object.keys(typeof pFlt !== 'undefined' ? pFlt : {}).length > 0,
+    limpiar: () => pClrFlt(),
+  },
+  histcambios: {
+    hay:     () => Object.values(typeof _hcColFilt !== 'undefined' ? _hcColFilt : {}).some(v => String(v || '').trim()),
+    limpiar: () => {
+      _hcColFilt = {};
+      const el = document.getElementById('histcam-w');
+      if (el && typeof renderHistCambios === 'function') renderHistCambios(el, histCamData || []);
+    },
+  },
+  devoluciones: {
+    hay:     () => Object.values(typeof _hdColFilt !== 'undefined' ? _hdColFilt : {}).some(v => String(v || '').trim()),
+    limpiar: () => {
+      _hdColFilt = {};
+      const el = document.getElementById('histdev-w');
+      if (el && typeof renderDevoluciones === 'function') renderDevoluciones(el, histDevData || []);
+    },
+  },
+};
+
+// Se muestra sólo donde hay algo que limpiar. Un botón que no hace nada enseña a
+// ignorarlo, y después no se usa cuando sí serviría.
+function _limpiarFiltrosSync() {
+  const b = document.getElementById('btn-limpiar-filtros');
+  if (!b) return;
+  let mostrar = false;
+  try { const m = _LIMPIABLES[curPg]; mostrar = !!(m && m.hay()); } catch (e) { mostrar = false; }
+  b.style.display = mostrar ? 'flex' : 'none';
+}
+
+function limpiarFiltrosPantalla() {
+  const m = _LIMPIABLES[curPg];
+  if (!m) return;
+  try { m.limpiar(); } catch (e) { try { _errLog('limpiarFiltros', e); } catch (_) {} }
+  _limpiarFiltrosSync();
+  try { toast('Filtros de columna quitados', 'ok'); } catch (e) {}
+}
+
+// Se revisa después de cada pintada. Es barato (contar llaves de un objeto chico) y
+// evita tener que acordarse de llamarlo desde cada render de cada módulo.
+setInterval(_limpiarFiltrosSync, 600);
+
 // I-13 — Buscador global (Ctrl+K + botón lupa).
 // Busca en pRaw + histCamData + histDevData por NroPedido, cliente, DNI o teléfono.
 (function _initSearch(){
@@ -1492,6 +1624,8 @@ function setHTMLKeepScroll(container, html) {
   setTimeout(() => {
     const btn = document.getElementById('btn-search-open');
     if (btn) btn.addEventListener('click', open);
+    const bLimp = document.getElementById('btn-limpiar-filtros');
+    if (bLimp) bLimp.addEventListener('click', limpiarFiltrosPantalla);
     const modal = document.getElementById('modal-search');
     if (modal) modal.addEventListener('click', e => { if (e.target === modal) close(); });
     const inp = document.getElementById('search-input');
@@ -18221,16 +18355,42 @@ function _camPopulateSelects() {
 
 function _camBindEvents() {
   // Cambiar tipo de búsqueda
-  document.getElementById('cam-tipo-busq').addEventListener('change', function() {
-    const t = this.value;
+  // ══════════════════════════════════════════════════════════════════════
+  // 30-jul-2026 — LA ETIQUETA DEL BUSCADOR MENTÍA.
+  //
+  // El rótulo y el placeholder los ponía SÓLO el `change` de cam-tipo-busq. Al elegir
+  // una sugerencia, el código cambia el tipo a 'nombre' POR CÓDIGO — y una asignación
+  // programática no dispara change. Buscabas por "Teléfono", clickeabas una sugerencia,
+  // y el combo pasaba a "Nombre cliente" mientras la etiqueta seguía diciendo "Teléfono"
+  // y el placeholder "Ej: 999888777". Si después borrabas y escribías otro celular, el
+  // filtro leía tipo='nombre' y no encontraba nada. Se sentía como "la búsqueda por
+  // teléfono no funciona".
+  //
+  // No alcanza con disparar el change: ese listener también BORRA el campo, y acá el
+  // campo se acaba de llenar con el nombre elegido. Por eso se parte en dos:
+  //   · _camSincronizarRotulo() → sólo rótulo y placeholder. Sirve siempre.
+  //   · borrar el campo         → sólo cuando el tipo lo cambia una PERSONA.
+  // ══════════════════════════════════════════════════════════════════════
+  function _camSincronizarRotulo() {
+    const t = (document.getElementById('cam-tipo-busq') || {}).value || '';
     const cfg = {
       'nro':     { lbl:'Nro Pedido',     ph:'Ej: 90123' },
       'nombre':  { lbl:'Nombre cliente', ph:'Ej: Ana García' },
       'dni':     { lbl:'DNI / RUC / CE', ph:'Ej: 70123456' },
       'celular': { lbl:'Teléfono',       ph:'Ej: 999888777' },
     }[t] || { lbl:'Buscar', ph:'' };
-    document.getElementById('cam-lbl-busq').textContent   = cfg.lbl;
-    document.getElementById('cam-input-busq').placeholder = cfg.ph;
+    const lbl = document.getElementById('cam-lbl-busq');
+    const inp = document.getElementById('cam-input-busq');
+    if (lbl) lbl.textContent = cfg.lbl;
+    if (inp) inp.placeholder = cfg.ph;
+  }
+  window._camSincronizarRotulo = _camSincronizarRotulo;
+
+  document.getElementById('cam-tipo-busq').addEventListener('change', function() {
+    _camSincronizarRotulo();
+    // Cambiar el TIPO a mano invalida lo escrito: un DNI no se busca por nombre.
+    // (Esto es lo único que no puede correr cuando el tipo lo cambia el código —
+    //  ver _camSincronizarRotulo.)
     document.getElementById('cam-input-busq').value = '';
     document.getElementById('cam-sugerencias').style.display = 'none';
     document.getElementById('cam-hint').textContent = '';
@@ -18820,6 +18980,9 @@ function camFiltrarSugerencias(tipo, q) {
       // Al elegir, buscamos por nombre del cliente seleccionado (el cliente queda fijado)
       document.getElementById('cam-input-busq').value = c.n;
       document.getElementById('cam-tipo-busq').value = 'nombre';
+      // El tipo lo cambió el CÓDIGO: hay que sincronizar el rótulo a mano, pero sin
+      // borrar el campo que se acaba de llenar. Ver _camSincronizarRotulo.
+      try { _camSincronizarRotulo(); } catch (e) {}
       sugEl.style.display = 'none';
       camBuscarPorNombre(c.n);
     });
