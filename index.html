@@ -12351,7 +12351,29 @@ async function npCargarPendientes() {
 }
 
 // ── MODO ──────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// EL TOKEN DEL FORMULARIO — lo que impide que dos clics hagan dos pedidos.
+//
+// El backend ya sabía no duplicar: pedidosCrear guarda el resultado por
+// requestId y lo devuelve tal cual si le llega repetido. Lo que fallaba es que
+// el token nacía en cada apretón de Confirmar, así que dos clics mandaban dos
+// tokens distintos y el backend no tenía cómo saber que eran el mismo pedido.
+//
+// Ahora vive mientras viva lo que la persona cargó. Se renueva sólo cuando el
+// formulario se limpia o cambia de modo: a partir de ahí sí es un pedido nuevo.
+// ══════════════════════════════════════════════════════════════════════════
+let _npTokenActual = null;
+function _npTokenFormulario() {
+  if (!_npTokenActual) _npNuevoToken();
+  return _npTokenActual;
+}
+function _npNuevoToken() {
+  _npTokenActual = 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+  return _npTokenActual;
+}
+
 function npSetModo(modo) {
+  _npNuevoToken();   // cambiar de modo limpia el formulario: pedido nuevo, token nuevo
   NP.modo = modo;
 
   // Actualizar estilos de botones
@@ -13994,9 +14016,14 @@ async function npGuardar() {
       saldosPendiente: (_npSaldos.applyPendiente || []).slice(),
       label: cliBase.NombreApellido || 'pedido',
       intentos: 0,
-      // #9 Idempotencia: token único por job. Si el guardado se reintenta (red/timeout),
-      // el backend reconoce el requestId y no duplica el pedido.
-      requestId: 'r_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,10),
+      // #9 Idempotencia: token del FORMULARIO, no del intento.
+      // 30-jul · REPRODUCIDO EN VIVO: se crearon los pedidos 21194 y 21195, iguales,
+      // con 35 s de diferencia, apretando Confirmar dos veces. Cada apretón fabricaba
+      // su propio requestId, así que para el backend eran dos pedidos distintos y los
+      // escribió los dos. El chequeo de duplicados tampoco frena: los dos corren ANTES
+      // de que exista el primero. Ahora el token se emite UNA vez por formulario y se
+      // renueva recién cuando el formulario se limpia (ver _npNuevoToken).
+      requestId: _npTokenFormulario(),
     };
 
     // Actualizar índice local de clientes para búsquedas inmediatas en esta sesión
@@ -14491,6 +14518,13 @@ function npValidar() {
 }
 
 function npLimpiar() {
+  // 🔴 EL OTRO LADO DEL ARREGLO DEL requestId, y es tan importante como el primero.
+  // El token dura lo que dura el formulario. Si NO se renovara acá, el segundo
+  // pedido de la sesión reusaría el token del primero y el backend —que guarda el
+  // resultado por requestId— devolvería el pedido viejo sin crear el nuevo: un
+  // pedido perdido en silencio, peor que el duplicado que esto vino a evitar.
+  // Acá el formulario se vacía: de acá en adelante es un pedido distinto.
+  _npNuevoToken();
   // RECOJO: reset (desmarca y reactiva los campos de dirección).
   const _rc = document.getElementById('np-recojo'); if (_rc) { _rc.checked = false; _npRecojoToggle(); }
   const adEl=document.getElementById('np-autodetect'); if(adEl){adEl.style.display='none';adEl.innerHTML='';}
