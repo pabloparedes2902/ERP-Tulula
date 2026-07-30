@@ -13325,6 +13325,48 @@ function npAddPrenda() {
   stockEl.style.cssText = 'display:none;margin-top:6px;font-size:12px;font-weight:600;padding:6px 10px;border-radius:var(--r);background:var(--bg3);border:1px solid var(--bd)';
   div.appendChild(stockEl);
 
+  // ── YAYITAS (30-jul-2026) ────────────────────────────────────────────────
+  // Aviso que aparece SOLO si hay unidades con falla marcadas para vender de este SKU.
+  // La unidad sale del montón de fallas, no del stock vendible: por eso el precio queda
+  // libre y el nombre se guarda como "YAYITA - <prenda>".
+  const yayEl = document.createElement('div');
+  yayEl.style.cssText = 'display:none;margin-top:6px;font-size:12px;padding:7px 10px;border-radius:var(--r);background:#78350f22;border:1px solid #f59e0b55';
+  const yayChk = document.createElement('input');
+  yayChk.type = 'checkbox'; yayChk.className = 'np-yayita';
+  yayChk.style.cssText = 'margin-right:7px;vertical-align:middle';
+  const yayTxt = document.createElement('span');
+  yayEl.append(yayChk, yayTxt);
+  div.appendChild(yayEl);
+
+  yayChk.addEventListener('change', () => {
+    // Al marcarla, el precio de lista deja de tener sentido: se vende con falla.
+    if (yayChk.checked) {
+      preInp.focus(); preInp.select();
+      sugEl.textContent = 'precio libre';
+      sugEl.style.color = 'var(--am, #f59e0b)';
+      div.style.borderLeft = '3px solid #f59e0b';
+    } else {
+      div.style.borderLeft = '';
+      const ps2 = CAT && CAT.precio_por_dis ? CAT.precio_por_dis[pInp.value] : null;
+      sugEl.textContent = ps2 ? 'S/ ' + fmt(ps2) + ' (hist.)' : '—';
+      sugEl.style.color = ps2 ? 'var(--gn)' : 'var(--mu)';
+    }
+    npCalc();
+  });
+
+  // Pregunta al backend cuántas Yayitas hay del SKU elegido. Si no hay, no molesta.
+  async function npMostrarYayitas(nombre) {
+    yayEl.style.display = 'none'; yayChk.checked = false; div.style.borderLeft = '';
+    if (!nombre) return;
+    let n = 0;
+    try { const r = await api('yayitas.disponibles', { prenda: nombre }); n = (r && r.disponibles) || 0; }
+    catch (e) { return; }   // si falla, simplemente no se ofrece: nunca bloquea la venta normal
+    if (n <= 0) return;
+    yayTxt.innerHTML = '<b>Hay ' + n + ' con falla</b> de esta prenda listas para vender como Yayita. '
+      + 'Marcá la casilla para vender una de esas — sale del montón de fallas, no del stock, y el precio lo ponés vos.';
+    yayEl.style.display = 'block';
+  }
+
   // ── Lógica autocomplete ──
   // Actualizar placeholder según estado de MAESTROS
   function updatePrendaPlaceholder() {
@@ -13365,6 +13407,8 @@ function npAddPrenda() {
       npCalc();
       // Verificar stock al seleccionar prenda
       await npMostrarStock(v, pInp, stockEl);
+      // ...y si además hay unidades con falla listas para vender, ofrecerlas.
+      await npMostrarYayitas(v);
     });
   }
   pInp.addEventListener('input', showPrendas);
@@ -13955,6 +13999,8 @@ async function npGuardar() {
       cat:  '', col: '', tal: '',
       cant: parseFloat(d.querySelector('.np-cant').value) || 1,
       prec: parseFloat(d.querySelector('.np-prec').value) || 0,
+      // 30-jul-2026 — la unidad sale del montón de fallas, no del stock vendible.
+      esYayita: !!(d.querySelector('.np-yayita') && d.querySelector('.np-yayita').checked),
     })).filter(p => p.dis); // ignorar filas con prenda vacía
     // Cada .pbox de pagos tiene sus propias constancias (np-vcard) — recolectar por pago
     const pagosData = [...document.querySelectorAll('#np-pagos .pbox')].map(d => {
@@ -14297,7 +14343,9 @@ async function _npExecuteSave(job) {
       FechaPago:   cliBase.FechaPago,
       Estado:      cliBase.Estado,
       cliente: { Nombre:cliBase.NombreApellido, DNI:cliBase.DNI, Celular:cliBase.Celular, Direccion:cliBase.Direccion, Distrito:cliBase.Distrito, Provincia:cliBase.Provincia, Region:cliBase.Region, Referencia:cliBase.Referencia, Canal:cliBase.Canal, Origen:cliBase.Origen, Asesora:cliBase.Asesora, Email:cliBase.Email },
-      prendas: job.prendasData.map(p => ({ prenda:p.dis, precio:p.prec, envio:job.env, subtotal:p.prec*p.cant+job.env-job.dsc, pago:job.pag, formaPago:cliBase.FormaPago, categoria:'', modelo:p.dis, color:'', talla:'', comentarios:cliBase.ComentariosEnvio })),
+      prendas: job.prendasData.map(p => ({ prenda:p.dis, precio:p.prec, envio:job.env, subtotal:p.prec*p.cant+job.env-job.dsc, pago:job.pag, formaPago:cliBase.FormaPago, categoria:'', modelo:p.dis, color:'', talla:'', comentarios:cliBase.ComentariosEnvio,
+        // Si va marcada, el backend la saca del montón de fallas y le pone "YAYITA - " al nombre.
+        esYayita: !!p.esYayita })),
       requestId: job.requestId, // #9 idempotencia
     });
     // v15 — consumir saldo del pedido origen también en modo "agregar"
