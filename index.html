@@ -17285,24 +17285,70 @@ function _stkBindSelector(ov, lado, confEl) {
   });
 }
 
+// La lista de motivos es la MISMA que la de "Sale stock (no disponible)": si divergieran,
+// una prenda con falla de tela significaría una cosa al entrar y otra al salir.
+// Manda la columna "Motivo Falla" de Maestros; esto es sólo el respaldo.
+function _stkMotivos() {
+  return mOpts('Motivo Falla', [
+    'Falla de tela', 'Falla de costura', 'Falla de corte', 'Mancha',
+    'Tintorería / lavado', 'Robada', 'Prestada (TikTok Live)',
+    'Prestada (Sesión de fotos)', 'Otro',
+  ]);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ENTRA STOCK — 30-jul-2026: PRODUCCIÓN QUE LLEGA YA FALLADA
+//
+// Antes este formulario asumía que todo lo que entra está bueno. Pero del taller llegan
+// lotes mezclados, y marcarlos después —ingresarlos como buenos y darlos de baja acto
+// seguido— deja el número de producción inflado y obliga a hacer dos veces el trabajo.
+//
+// Ahora cada línea del carrito lleva un ESTADO:
+//   · NUEVO ............ entra a producción normal (lo de siempre, y es el default)
+//   · cualquier falla .. NO entra a producción normal; va derecho al montón
+//
+// Regla de Pablo, textual: "si tiene algún tipo de falla no puede ingresar a la
+// producción normal, las yayitas son un stock separado".
+//
+// Y "una línea por estado": 10 unidades de las que 3 tienen falla de tela son DOS
+// líneas —7 NUEVO y 3 FALLA DE TELA—, no una con una nota al margen. Cada línea viaja
+// por su propio camino al guardar.
+// ══════════════════════════════════════════════════════════════════════════
 function _confAbrirIngresarStock(confEl) {
   _stkCart = [];
+  const MOTIVOS = _stkMotivos();
   const inpSt = 'width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
   const ov = document.createElement('div');
   ov.id = 'stk-modal-ov';
   ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:600;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
-  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:680px;width:100%;padding:20px">'
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:760px;width:100%;padding:20px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><span class="ct" style="margin:0;color:var(--ac)">Movimiento de stock</span><button id="stk-cls" class="btn bg bs" style="font-size:12px">Cerrar</button></div>'
     + _stkSelectorHtml('entra')
-    + '<div style="font-size:11px;color:var(--mu);margin-bottom:12px">Producción que ingresa. Se crea un lote. La cantidad puede ser 0 (preventa: la prenda existe y llega después).</div>'
+    + '<div style="font-size:11px;color:var(--mu);margin-bottom:12px">Producción que ingresa. Se crea un lote. La cantidad puede ser 0 (preventa: la prenda existe y llega después).<br>'
+      + '<b>Estado</b>: si la prenda llega con alguna falla, elegilo acá — <b>no entra a la producción normal</b>, va derecho al montón de no disponibles con su motivo y su destino.<br>'
+      + 'Si el lote viene mezclado, agregá una línea por estado: p. ej. 7 NUEVO y 3 Falla de tela.</div>'
     + '<div class="fr" style="align-items:flex-end">'
     + '<div class="fg" style="flex:2"><label>Prenda</label><div class="aw" style="position:relative"><input id="stk-prenda" type="text" autocomplete="off" placeholder="Escribe para buscar..." style="'+inpSt+'"><div id="stk-prenda-lst" class="acl" style="z-index:700"></div></div></div>'
-    + '<div class="fg" style="max-width:120px"><label>Cantidad</label><input id="stk-cant" type="number" min="1" step="1" placeholder="0" style="'+inpSt+'"></div>'
+    + '<div class="fg" style="max-width:100px"><label>Cantidad</label><input id="stk-cant" type="number" min="0" step="1" placeholder="0" style="'+inpSt+'"></div>'
+    + '<div class="fg" style="max-width:180px"><label>Estado</label><select id="stk-estado" style="'+inpSt+'">'
+      + '<option value="">NUEVO (sin falla)</option>'
+      + MOTIVOS.map(m=>'<option value="'+esc(m)+'">'+esc(m)+'</option>').join('')
+      + '</select></div>'
+    + '<div class="fg" id="stk-destino-wrap" style="max-width:190px;display:none"><label>Destino</label><select id="stk-destino" style="'+inpSt+'">'
+      + '<option value="">Sugerido por el motivo</option>'
+      + '<option value="REPARAR">Reparar y devolver al stock</option>'
+      + '<option value="YAYITAS">Yayitas (se vende con falla)</option>'
+      + '<option value="VUELVE">Prestada — vuelve sola</option>'
+      + '<option value="DESCARTAR">Descartar</option>'
+      + '<option value="PERDIDA">Perdida / robada</option>'
+      + '</select></div>'
     + '<button id="stk-add" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end">＋ Agregar SKU</button></div>'
     + '<div style="border:1px solid var(--bd);border-radius:var(--r);overflow:hidden;margin:12px 0 14px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--bg3)">'
-    + '<th style="padding:6px 10px;text-align:left;color:var(--mu)">Prenda</th><th style="padding:6px 10px;text-align:center;color:var(--mu)">Cant.</th><th style="padding:6px 10px"></th></tr></thead><tbody id="stk-cart-body"></tbody></table></div>'
+    + '<th style="padding:6px 10px;text-align:left;color:var(--mu)">Prenda</th><th style="padding:6px 10px;text-align:center;color:var(--mu)">Cant.</th>'
+    + '<th style="padding:6px 10px;text-align:left;color:var(--mu)">Estado</th><th style="padding:6px 10px;text-align:left;color:var(--mu)">Destino</th>'
+    + '<th style="padding:6px 10px"></th></tr></thead><tbody id="stk-cart-body"></tbody></table></div>'
     + '<div style="display:flex;justify-content:space-between;align-items:center"><span id="stk-tot" style="font-size:12px;color:var(--mu)"></span>'
-    + '<div style="display:flex;gap:8px"><button id="stk-limpiar" class="btn bg bs" style="font-size:12px">Limpiar</button><button id="stk-crear" class="btn bp bs" style="font-size:12px">Crear lote</button></div></div>'
+    + '<div style="display:flex;gap:8px"><button id="stk-limpiar" class="btn bg bs" style="font-size:12px">Limpiar</button><button id="stk-crear" class="btn bp bs" style="font-size:12px">Registrar ingreso</button></div></div>'
     + '</div>';
   document.body.appendChild(ov);
 
@@ -17310,6 +17356,19 @@ function _confAbrirIngresarStock(confEl) {
   ov.addEventListener('click', e => { if (e.target === ov) _close(); });
   document.getElementById('stk-cls').addEventListener('click', _close);
   _stkBindSelector(ov, 'entra', confEl);
+
+  // El destino sólo tiene sentido si hay falla: con NUEVO se esconde y se limpia, para
+  // que no quede un destino colgado de una línea que va a producción normal.
+  const selEst = document.getElementById('stk-estado');
+  const selDst = document.getElementById('stk-destino');
+  const wrapDst = document.getElementById('stk-destino-wrap');
+  const _syncDestino = () => {
+    const hayFalla = !!(selEst.value||'').trim();
+    wrapDst.style.display = hayFalla ? '' : 'none';
+    if (!hayFalla) selDst.value = '';
+  };
+  selEst.addEventListener('change', _syncDestino);
+  _syncDestino();
 
   // Autocompletado de Prenda (igual que al agregar prenda a un pedido) desde Maestros col L "Prenda".
   // Lista deduplicada (Maestros trae la prenda repetida por cada fila/SKU). El backend resuelve los componentes.
@@ -17331,13 +17390,25 @@ function _confAbrirIngresarStock(confEl) {
 
   const renderCart = () => {
     const tb = document.getElementById('stk-cart-body');
-    if (!_stkCart.length) { tb.innerHTML = '<tr><td colspan="3" style="padding:10px;text-align:center;color:var(--mu)">Sin SKUs aún. Agrega arriba.</td></tr>'; }
-    else tb.innerHTML = _stkCart.map((it,i)=>'<tr style="border-top:1px solid var(--bd)">'
+    if (!_stkCart.length) { tb.innerHTML = '<tr><td colspan="5" style="padding:10px;text-align:center;color:var(--mu)">Sin SKUs aún. Agrega arriba.</td></tr>'; }
+    else tb.innerHTML = _stkCart.map((it,i)=>{
+      const conFalla = !!(it.motivo||'').trim();
+      return '<tr style="border-top:1px solid var(--bd)">'
       + '<td style="padding:6px 10px">'+esc(it._full||it.prenda)+'</td>'
       + '<td style="padding:6px 10px;text-align:center;font-family:monospace">'+it.cantidad+'</td>'
-      + '<td style="padding:6px 10px;text-align:center"><button class="btn bg bs stk-del" data-i="'+i+'" style="font-size:11px;color:var(--rd)">✕</button></td></tr>').join('');
+      + '<td style="padding:6px 10px">'+(conFalla
+          ? '<span style="color:#f59e0b">'+esc(it.motivo)+'</span>'
+          : '<span style="color:var(--mu)">NUEVO</span>')+'</td>'
+      + '<td style="padding:6px 10px;color:var(--mu)">'+(conFalla
+          ? esc(_falDestinoTxt(it.destino || _falDestinoSugerido(it.motivo)))
+          : '—')+'</td>'
+      + '<td style="padding:6px 10px;text-align:center"><button class="btn bg bs stk-del" data-i="'+i+'" style="font-size:11px;color:var(--rd)">✕</button></td></tr>';
+    }).join('');
     const u = _stkCart.reduce((s,it)=>s+it.cantidad,0);
-    document.getElementById('stk-tot').textContent = _stkCart.length ? (_stkCart.length+' SKU · '+u+' unidades') : '';
+    const uF = _stkCart.filter(it=>(it.motivo||'').trim()).reduce((s,it)=>s+it.cantidad,0);
+    document.getElementById('stk-tot').textContent = _stkCart.length
+      ? (_stkCart.length+' línea'+(_stkCart.length!==1?'s':'')+' · '+u+' unidades'+(uF ? ' ('+uF+' con falla, fuera de producción)' : ''))
+      : '';
     tb.querySelectorAll('.stk-del').forEach(b=>b.addEventListener('click',()=>{ _stkCart.splice(parseInt(b.dataset.i),1); renderCart(); }));
   };
   renderCart();
@@ -17346,26 +17417,54 @@ function _confAbrirIngresarStock(confEl) {
     const pren = (inp.value||'').trim();
     const cantRaw = String(document.getElementById('stk-cant').value||'').trim();
     const cant = parseInt(cantRaw,10);
+    const motivo = String(selEst.value||'').trim();
+    const destino = String(selDst.value||'').trim().toUpperCase();
     if (!pren) { toast('Escribe/elige la Prenda','err'); return; }
     if (!_prendaList.some(p => p.toLowerCase() === pren.toLowerCase())) { toast('Elige una prenda de la lista (tal cual aparece)','err'); return; }
     // Cantidad 0 PERMITIDA (pre-venta: la prenda existe y llega más adelante).
     // Solo se rechaza campo vacío o negativo. Fallas NO permite 0 (allá sí es error).
     if (cantRaw === '' || isNaN(cant) || cant < 0) { toast('Pon una cantidad válida (0 o más)','err'); return; }
-    _stkCart.push({ prenda:pren, cantidad:cant, _full:pren });
+    // Una prenda que llega fallada existe físicamente: 0 no significa nada acá.
+    if (motivo && cant < 1) { toast('Con falla la cantidad tiene que ser 1 o más (0 es sólo para preventa)','err'); return; }
+    // "Una línea por estado": la misma prenda con el MISMO estado y destino se suma;
+    // con estado distinto abre una línea nueva. Así el lote mezclado queda partido.
+    const ya = _stkCart.find(x => x.prenda.toLowerCase() === pren.toLowerCase()
+      && String(x.motivo||'') === motivo && String(x.destino||'') === destino);
+    if (ya) ya.cantidad += cant;
+    else _stkCart.push({ prenda:pren, cantidad:cant, _full:pren, motivo:motivo, destino:destino });
     renderCart();
     inp.value=''; document.getElementById('stk-cant').value=''; inp.focus();
   });
 
   // Limpiar: solo limpia los campos de ingreso; CONSERVA los SKUs ya agregados.
-  document.getElementById('stk-limpiar').addEventListener('click', () => { inp.value=''; document.getElementById('stk-cant').value=''; lst.classList.remove('on'); inp.focus(); });
+  document.getElementById('stk-limpiar').addEventListener('click', () => { inp.value=''; document.getElementById('stk-cant').value=''; selEst.value=''; _syncDestino(); lst.classList.remove('on'); inp.focus(); });
 
   document.getElementById('stk-crear').addEventListener('click', async function() {
     if (!_stkCart.length) { toast('Agrega al menos un SKU','err'); return; }
-    this.disabled = true; this.textContent = 'Creando...';
+    this.disabled = true; this.textContent = 'Registrando...';
+    // Cada línea por su camino. `nueva:true` le dice al backend que NO escriba la baja
+    // de Confección: esta prenda nunca estuvo en el stock vendible, así que restarla lo
+    // dejaría en negativo.
+    // Las buenas van tal cual iban antes de todo esto: sólo prenda y cantidad. No se les
+    // cuelgan campos de falla vacíos, para que este formulario le siga entregando a
+    // `stock.crearLote` exactamente lo mismo de siempre.
+    const buenas = _stkCart.filter(it => !(it.motivo||'').trim())
+      .map(it => ({ prenda:it.prenda, cantidad:it.cantidad, _full:it._full }));
+    const falladas = _stkCart.filter(it => (it.motivo||'').trim())
+      .map(it => ({ prenda:it.prenda, cantidad:it.cantidad, motivo:it.motivo, destino:it.destino||'', nueva:true }));
     try {
-      const res = await apiSend('stock.crearLote', { items: _stkCart });
+      let res = { lotes:[], filas:0, unidades:0 };
+      // Primero el montón: si falla, no queda un lote creado a medias sin sus fallas.
+      let resFal = null;
+      if (falladas.length) resFal = await apiSend('fallas.ingresar', { items: falladas });
+      if (buenas.length)   res    = await apiSend('stock.crearLote', { items: buenas });
+
       const lotes = (res && res.lotes && res.lotes.length) ? res.lotes.join(', ') : '';
-      toast('✓ Lote'+((res.lotes||[]).length>1?'s':'')+' '+lotes+' — '+(res.filas||0)+' SKU / '+(res.unidades||0)+' und', 'ok');
+      const partes = [];
+      if (buenas.length)   partes.push('Lote'+((res.lotes||[]).length>1?'s':'')+' '+lotes+' — '+(res.filas||0)+' SKU / '+(res.unidades||0)+' und');
+      if (falladas.length) partes.push((resFal && resFal.unidades || 0)+' und con falla → montón (fuera de producción)');
+      toast('✓ '+partes.join(' · '), 'ok');
+
       // LOTES F3 — AVISO: prendas vendidas en PREVENTA que YA tienen stock con este ingreso
       if (res && Array.isArray(res.preventaListas) && res.preventaListas.length) {
         const pl = res.preventaListas;
@@ -17377,13 +17476,16 @@ function _confAbrirIngresarStock(confEl) {
       }
       _stkCart = [];
       _close();
+      // El montón cambió: el aviso de Yayitas y la pantalla de Yayitas no pueden
+      // seguir mostrando lo de antes de este ingreso.
+      if (falladas.length) { try { _yayOlvidar(); } catch(e) {} }
       // refrescar confección con datos frescos (limpia caché local; el backend ya invalidó el suyo)
       confData = null;
       try { _confLsDel(); } catch(e) {}
       _refrescarInv();
     } catch(e) {
-      toast('Error al crear lote: '+esc(e.message),'err');
-      this.disabled = false; this.textContent = 'Crear lote';
+      toast('Error al registrar el ingreso: '+esc(e.message),'err');
+      this.disabled = false; this.textContent = 'Registrar ingreso';
     }
   });
 }
