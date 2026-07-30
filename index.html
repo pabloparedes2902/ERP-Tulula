@@ -24042,17 +24042,35 @@ function _updateMetaCapiBadge(n){
   if(!b) return;
   if(n>0){ b.textContent=n; b.style.display=''; } else { b.style.display='none'; }
 }
+// El número de errores puede venir en dos formas segun la puerta: `errores`
+// suelto (la accion del badge) o `errores.count` (el panel). Devuelve null
+// cuando NO SE PUDO SABER, que no es lo mismo que cero.
+function _mcErrores(o){
+  if (!o || typeof o !== 'object') return null;
+  const e = o.errores;
+  if (typeof e === 'number') return e;
+  if (e && typeof e === 'object' && typeof e.count === 'number') return e.count;
+  if (typeof e === 'string' && e.trim() !== '' && !isNaN(+e)) return +e;
+  return null;
+}
+
 async function _pollMetaCapiBadge(){
-  // 29-jul: antes esto pedía `metacapi.panel` — la hoja MetaCapiCola ENTERA,
-  // cada 10 minutos, para mostrar un número en un globito. Medía 39 s de
-  // promedio y una vez tardó 1.120 s. Ahora hay una acción que lee una sola
-  // columna. Si el backend todavía no la tiene, cae al panel de siempre.
-  try{
-    const r = await api('metacapi.badge');
-    _updateMetaCapiBadge((r && r.errores) || 0);
-  }catch(e){
-    try{ const p = await _metaCapiPanelRapido(); _updateMetaCapiBadge((p.errores&&p.errores.count)||0); }catch(_){}
-  }
+  // 30-jul · ESTABAN AL REVÉS. El orden anterior preguntaba primero a Apps
+  // Script y sólo caía al panel si fallaba. Medido en vivo:
+  //     api('metacapi.badge') ..... 4.270 ms, devuelve {errores: 0}
+  //     _metaCapiPanelRapido() ....   340 ms, ya trae `errores` adentro
+  // O sea: 4 segundos del arranque del ERP —que paga todo el que lo abre— para
+  // traer un número que YA viajaba en la otra llamada. Ahora se pide primero
+  // por la vía rápida y Apps Script queda de respaldo.
+  //
+  // 🔴 Y EL CERO NO SE INVENTA. Este globito avisa ventas que no llegaron a
+  // Meta. Si ninguna de las dos puertas contesta, se deja como estaba: mostrar
+  // 0 diría "está todo bien" cuando en realidad no se pudo preguntar, que es
+  // justo el error que costaría dinero no ver.
+  let n = null;
+  try { n = _mcErrores(await _metaCapiPanelRapido()); } catch(_) {}
+  if (n === null) { try { n = _mcErrores(await api('metacapi.badge')); } catch(_) {} }
+  if (n !== null) _updateMetaCapiBadge(n);
 }
 // 29-jul · El panel de Meta al espejo. Se abre de vez en cuando, pero cuando
 // se abre hay que esperarlo entero. Su cuenta ya estaba cacheada 120 s del
