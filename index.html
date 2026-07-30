@@ -15842,6 +15842,51 @@ function _stCrsMousedown(e){
   document.addEventListener('mouseup',up);
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// STOCK - YAYITAS (30-jul-2026)
+//
+// NO es una copia del módulo Stock: es EL MISMO. `renderStock` pinta lo que haya en
+// `stData`, así que alcanza con cambiarle la fuente de datos y esconder las pestañas.
+// Hacer una copia habría significado mantener dos tablas en paralelo para siempre —
+// cada ajuste de ancho, color o columna habría que hacerlo dos veces, y tarde o temprano
+// se separan.
+//
+// El backend (`yayitas.stock`) devuelve las filas con la MISMA forma que `stock.resumen`.
+// La analogía es 1 a 1:
+//   Confección → cuántas entraron al montón de Yayitas
+//   Ventas     → cuántas se vendieron como Yayita
+//   Stock      → lo que queda
+// ══════════════════════════════════════════════════════════════════════════
+let _stYayMode = false;      // ¿estamos viendo el montón de Yayitas?
+let _stDataNormal = null;    // el stock real, guardado mientras miramos Yayitas
+
+async function stockYayitasToggle() {
+  const el = document.getElementById('st-w');
+  if (!el) return;
+  if (_stYayMode) {
+    // Volver al Stock de siempre, sin recalcular nada.
+    _stYayMode = false;
+    stData = _stDataNormal; _stDataNormal = null;
+    renderStock(el);
+    return;
+  }
+  _stDataNormal = stData;
+  _stYayMode = true;
+  el.innerHTML = spin('Cargando Yayitas...');
+  const cron = _cronAbrir('yayitas.stock');
+  try {
+    stData = await api('yayitas.stock', {});
+    _cronCerrar(cron, true);
+  } catch (e) {
+    _cronCerrar(cron, false);
+    _stYayMode = false; stData = _stDataNormal; _stDataNormal = null;
+    el.innerHTML = '<div class="empty">No se pudo cargar Yayitas: ' + esc(e.message) + '</div>';
+    setTimeout(() => renderStock(el), 1500);
+    return;
+  }
+  renderStock(el);
+}
+
 function renderStock(el) {
   // Datos invalidados (p.ej. tras cambiar un color): mostrar "Actualizando…" y recargar solos,
   // en vez del antiguo "Sin datos" que se quedaba pegado hasta salir y volver a entrar.
@@ -15876,6 +15921,22 @@ function renderStock(el) {
   });
   tabs+='</div>';
 
+  // 30-jul — en Yayitas no hay pestañas de categoría: el montón es chico y partirlo por
+  // categoría deja pantallas vacías. Todo va en una sola vista, como pidió Pablo.
+  if (_stYayMode) {
+    tabs = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:10px;flex-wrap:wrap">'
+      + '<div style="display:flex;align-items:center;gap:9px">'
+      +   '<span style="display:inline-block;background:#f59e0b;color:#1c1917;font-size:10px;font-weight:800;letter-spacing:.5px;padding:2px 7px;border-radius:3px">YAYITAS</span>'
+      +   '<span class="ct" style="margin:0">Stock - Yayitas</span>'
+      + '</div>'
+      + '<button id="st-yay-volver" class="btn bg bs" style="font-size:12px">← Volver al Stock</button>'
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--mu);margin:-4px 0 12px">'
+      +   'Prendas con falla marcadas para vender. <b>Confección</b> = cuántas entraron al montón · '
+      +   '<b>Ventas</b> = cuántas ya se vendieron · <b>Stock</b> = lo que queda.'
+      + '</div>';
+  }
+
   // Barra filtros
   let ctrl='<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">';
   ctrl+='<input id="st-txt" type="text" placeholder="Buscar: categoría, prenda, diseño y/o color…" autocomplete="off" value="'+esc(stFiltroTxt)+'" style="flex:1;min-width:180px;padding:7px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">';
@@ -15892,6 +15953,9 @@ function renderStock(el) {
   ctrl+='<button id="st-ordenar" class="btn bg bs" style="font-size:12px;flex-shrink:0" title="Crear/editar un orden manual arrastrando diseños">↕ Ordenar vista</button>';
   ctrl+='<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mu);cursor:pointer;white-space:nowrap"><input id="st-hide" type="checkbox"'+(stHideNoStock?' checked':'')+' style="accent-color:var(--ac);width:14px;height:14px;cursor:pointer"> Ocultar sin stock</label>';
   if(stFiltroTxt||stCatActiva) ctrl+='<button id="st-clr" class="btn bg bs" style="font-size:12px;flex-shrink:0">✕ Limpiar</button>';
+  // 30-jul — la puerta a "Stock - Yayitas". Va acá y no en el menú lateral porque es
+  // donde ya estás mirando el inventario cuando te preguntás qué hay para rematar.
+  if (!_stYayMode) ctrl+='<button id="st-yay" class="btn bg bs" style="font-size:12px;flex-shrink:0;border-color:#f59e0b55;color:#f59e0b" title="Ver solo las prendas con falla marcadas para vender">🟠 Yayitas</button>';
   ctrl+='</div>';
 
   // Filtrar
@@ -16081,6 +16145,10 @@ function renderStock(el) {
   if(ordBtn) ordBtn.addEventListener('click',()=>_stAbrirOrdenar(el, groups));
   const clrBtn=document.getElementById('st-clr');
   if(clrBtn) clrBtn.addEventListener('click',()=>{stFiltroTxt='';stCatActiva='';renderStock(el);}); // mantiene el orden/vista elegido
+  const yayBtn=document.getElementById('st-yay');
+  if(yayBtn) yayBtn.addEventListener('click',()=>stockYayitasToggle());
+  const yayVol=document.getElementById('st-yay-volver');
+  if(yayVol) yayVol.addEventListener('click',()=>stockYayitasToggle());
 }
 
 // ════════════════════════════════════════════════════════════════════════
