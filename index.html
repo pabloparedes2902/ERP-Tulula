@@ -19162,7 +19162,11 @@ function _c2PintarOptimista(nc, body) {
     c.PrecioEnvio = parseFloat(body.PrecioEnvio) || 0;
     c.MontoPagadoCliente = parseFloat(body.MontoPagadoCliente) || 0;
     c.MontoAsumidoEmpresa = parseFloat(body.MontoAsumidoEmpresa) || 0;
-    c.devueltas = (body.devueltas || []).map(function (d) { return { Prenda: d.Prenda, NroPedido: d.NroPedido, Precio: d.Precio, CondicionPrenda: '', ID: '' }; });
+    // 30-jul-2026 — acá estaba escrito `CondicionPrenda: ''` fijo. Es la pintada
+    // optimista (lo que se ve antes de que conteste el servidor), así que borraba en
+    // pantalla la condición que la asesora acababa de elegir. Ahora se respeta lo que
+    // vino en el body.
+    c.devueltas = (body.devueltas || []).map(function (d) { return { Prenda: d.Prenda, NroPedido: d.NroPedido, Precio: d.Precio, CondicionPrenda: d.CondicionPrenda || '', ReingresaStock: d.ReingresaStock || '', ID: '' }; });
     c.nuevas = (body.nuevas || []).map(function (n) { return { Prenda: n.Prenda, NroPedido: '', Cant: n.Cant, Precio: 0, ID: '' }; });
     if (typeof renderCambios2 === 'function') renderCambios2();
   } catch (_) {}
@@ -19248,14 +19252,65 @@ function editarCambios2(nc){
   var ov=_c2Modal(html);
   var devList=ov.querySelector('#c2e-dev-list'), nueList=ov.querySelector('#c2e-nue-list');
   function _bindAc(inpEl,lstEl){ var sel=function(v){ inpEl.value=v; lstEl.classList.remove('on'); }; inpEl.addEventListener('input',function(){ camPrendaAcShow(inpEl,lstEl,sel); }); inpEl.addEventListener('focus',function(){ camPrendaAcShow(inpEl,lstEl,sel); }); inpEl.addEventListener('blur',function(){ setTimeout(function(){ lstEl.classList.remove('on'); },200); }); }
-  function addDevRow(d){ d=d||{}; var row=document.createElement('div'); row.className='c2e-dev-row'; row.style.cssText='display:flex;gap:6px;align-items:center;margin-bottom:6px';
-    row.innerHTML='<div class="aw" style="flex:2;position:relative"><input class="c2e-dev-pr" placeholder="Prenda devuelta" autocomplete="off" style="'+inp+'" value="'+esc(d.Prenda||'')+'"><div class="acl"></div></div>'
+  // ══════════════════════════════════════════════════════════════════════════
+  // CONDICIÓN Y DESTINO POR PRENDA DEVUELTA (30-jul-2026)
+  //
+  // POR QUÉ APARECIÓ: hasta hoy Cambios2 mandaba `CondicionPrenda: ''` fijo y nunca
+  // preguntaba nada. Medido sobre la hoja real: 186 prendas devueltas, 0 con condición
+  // (0%). Todas volvían al stock VENDIBLE por omisión, sin que nadie mirara cómo
+  // llegaron. Arreglar el backend no servía de nada mientras el front no preguntara.
+  //
+  // CUÁNDO SE PREGUNTA: al poner la Fecha de recepción original. Ese es el momento en
+  // que la prenda está físicamente en la mano — antes no se puede saber — y es el
+  // mismo instante en que el backend reingresa el stock.
+  //
+  // POR PRENDA, no una para todo el cambio: un cambio puede devolver una prenda sana
+  // y una manchada. Con un solo campo, una de las dos queda mal clasificada.
+  var C2_COND  = ['', 'EXCELENTE', 'DAÑADA', 'SUCIA', 'ROBADA'];
+  var C2_REING = ['', 'NORMAL', 'OUTLET', 'REVISION', 'NO'];
+  function _c2Opts(lista, sel){
+    return lista.map(function(v){
+      var txt = v || '—';
+      return '<option value="'+esc(v)+'"'+(String(sel||'').toUpperCase()===v?' selected':'')+'>'+esc(txt)+'</option>';
+    }).join('');
+  }
+  // ¿Ya llegó la prenda? Si no hay fecha de recepción, los campos se ven apagados:
+  // no tiene sentido pedir la condición de algo que todavía no está en el local.
+  function _c2HayRecepcion(){ var x=ov.querySelector('#c2e-frec'); return !!(x && String(x.value||'').trim()); }
+  function _c2RefrescarCondiciones(){
+    var hay = _c2HayRecepcion();
+    [].slice.call(ov.querySelectorAll('.c2e-dev-cond, .c2e-dev-reing')).forEach(function(el){
+      el.disabled = !hay;
+      el.style.opacity = hay ? '1' : '.45';
+      el.title = hay ? '' : 'Se completa cuando pongas la fecha de recepción original';
+    });
+    var aviso = ov.querySelector('#c2e-cond-aviso');
+    if (aviso) aviso.style.display = hay ? 'block' : 'none';
+  }
+
+  function addDevRow(d){ d=d||{}; var row=document.createElement('div'); row.className='c2e-dev-row'; row.style.cssText='display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap';
+    row.innerHTML='<div class="aw" style="flex:2 1 180px;position:relative"><input class="c2e-dev-pr" placeholder="Prenda devuelta" autocomplete="off" style="'+inp+'" value="'+esc(d.Prenda||'')+'"><div class="acl"></div></div>'
       +'<input class="c2e-dev-ped" placeholder="Pedido" style="'+inp+';flex:0 0 80px" value="'+esc(d.NroPedido||'')+'">'
       +'<input class="c2e-dev-prec" type="number" step="0.01" placeholder="Precio" style="'+inp+';flex:0 0 80px" value="'+(d.Precio||'')+'">'
+      +'<select class="c2e-dev-cond" title="¿Cómo llegó?" style="'+inp+';flex:0 0 110px">'+_c2Opts(C2_COND, d.CondicionPrenda)+'</select>'
+      +'<select class="c2e-dev-reing" title="¿A dónde va?" style="'+inp+';flex:0 0 110px">'+_c2Opts(C2_REING, d.ReingresaStock)+'</select>'
       +'<button class="btn bg bs c2e-rm" type="button" style="font-size:11px;color:var(--rd)">✕</button>';
     devList.appendChild(row);
     _bindAc(row.querySelector('.c2e-dev-pr'), row.querySelector('.acl'));
     row.querySelector('.c2e-rm').addEventListener('click',function(){ row.remove(); });
+
+    // Misma ayuda que en el editor de devoluciones: la condición sugiere el destino,
+    // pero ROBADA lo FUERZA — una prenda robada no se repara ni se vende en Yayitas.
+    var selC = row.querySelector('.c2e-dev-cond'), selR = row.querySelector('.c2e-dev-reing');
+    selC.addEventListener('change', function(){
+      if (this.value === 'EXCELENTE') { selR.value = 'NORMAL'; selR.disabled = false; }
+      else if (this.value === 'ROBADA') { selR.value = 'NO'; selR.disabled = true; }
+      else if (this.value === 'DAÑADA' || this.value === 'SUCIA') {
+        if (!selR.value || selR.value === 'NORMAL') selR.value = 'OUTLET';
+        selR.disabled = false;
+      } else { selR.disabled = false; }
+    });
+    _c2RefrescarCondiciones();
   }
   function addNueRow(n){ n=n||{}; var row=document.createElement('div'); row.className='c2e-nue-row'; row.style.cssText='display:flex;gap:6px;align-items:center;margin-bottom:6px';
     row.innerHTML='<div class="aw" style="flex:2;position:relative"><input class="c2e-nue-pr" placeholder="Prenda nueva" autocomplete="off" style="'+inp+'" value="'+esc(n.Prenda||'')+'"><div class="acl"></div></div>'
@@ -19269,6 +19324,21 @@ function editarCambios2(nc){
   (c.nuevas||[]).forEach(function(n){ addNueRow(n); }); if(!(c.nuevas||[]).length) addNueRow();
   ov.querySelector('#c2e-add-dev').addEventListener('click',function(){ addDevRow(); });
   ov.querySelector('#c2e-add-nue').addEventListener('click',function(){ addNueRow(); });
+  // Al poner (o quitar) la fecha de recepción se habilitan los campos de condición.
+  (function(){
+    var frec = ov.querySelector('#c2e-frec');
+    if (frec) frec.addEventListener('change', _c2RefrescarCondiciones);
+    var lista = ov.querySelector('#c2e-dev-list');
+    if (lista && !ov.querySelector('#c2e-cond-aviso')) {
+      var av = document.createElement('div');
+      av.id = 'c2e-cond-aviso';
+      av.style.cssText = 'font-size:11px;color:var(--mu);margin:2px 0 8px;display:none';
+      av.textContent = 'Condición → cómo llegó la prenda. Reingresa como → a dónde va: '
+        + 'NORMAL vuelve al stock que se vende · OUTLET va a Yayitas · REVISION se repara y vuelve · NO no reingresa.';
+      lista.parentNode.insertBefore(av, lista.nextSibling);
+    }
+    _c2RefrescarCondiciones();
+  })();
   function refresca(){
     _c2Hist=null; _c2List=null; histCamData=null; try{_hcLsDel();}catch(e){}
     // F1 23-jul: refrescar en el grid de Pedidos los pedidos tocados por este cambio
@@ -19283,10 +19353,29 @@ function editarCambios2(nc){
   }
   ov.querySelector('[data-c2save]').addEventListener('click', async function(){
     var gv=function(id){var x=ov.querySelector('#'+id);return x?x.value:'';};
-    var devs=[].slice.call(ov.querySelectorAll('.c2e-dev-row')).map(function(r){ return { Prenda:(r.querySelector('.c2e-dev-pr').value||'').trim(), NroPedido:(r.querySelector('.c2e-dev-ped').value||'').trim(), Precio:parseFloat(r.querySelector('.c2e-dev-prec').value)||0 }; }).filter(function(d){return d.Prenda;});
+    var devs=[].slice.call(ov.querySelectorAll('.c2e-dev-row')).map(function(r){
+      var sc=r.querySelector('.c2e-dev-cond'), sr=r.querySelector('.c2e-dev-reing');
+      return {
+        Prenda:(r.querySelector('.c2e-dev-pr').value||'').trim(),
+        NroPedido:(r.querySelector('.c2e-dev-ped').value||'').trim(),
+        Precio:parseFloat(r.querySelector('.c2e-dev-prec').value)||0,
+        // 30-jul-2026 — antes esto no se mandaba y el backend recibía siempre vacío.
+        CondicionPrenda: sc ? (sc.value||'').trim() : '',
+        ReingresaStock:  sr ? (sr.value||'').trim() : '',
+      };
+    }).filter(function(d){return d.Prenda;});
     var nues=[].slice.call(ov.querySelectorAll('.c2e-nue-row')).map(function(r){ return { Prenda:(r.querySelector('.c2e-nue-pr').value||'').trim(), Cant:parseInt(r.querySelector('.c2e-nue-cant').value)||1 }; }).filter(function(n){return n.Prenda;});
     if(!devs.length){ toast('Agrega al menos una prenda a devolver','err'); return; }
     if(!nues.length){ toast('Agrega al menos una prenda nueva','err'); return; }
+    // Si la prenda ya llegó, la condición deja de ser opcional: de ella depende que el
+    // stock se ensucie o no. Sin este freno el campo quedaría en 0% como hasta hoy.
+    if (_c2HayRecepcion()) {
+      var sinCond = devs.filter(function(d){ return !d.CondicionPrenda; });
+      if (sinCond.length) {
+        toast('Falta la condición de: ' + sinCond.map(function(d){return d.Prenda;}).join(', '), 'err');
+        return;
+      }
+    }
     // F3 (24-jul): mandar la versión que este editor tenía en pantalla — si otro
     // usuario guardó primero, el backend avisa en vez de pisar su trabajo.
     var body={ NroCambio:nc, _versionVista:(c&&c.Version)||'', Nombre:gv('c2e-nom'), Diferencia:gv('c2e-dif'), PrecioEnvio:gv('c2e-env'), MontoPagadoCliente:gv('c2e-pcli'), MontoAsumidoEmpresa:gv('c2e-pemp'), Motivo:gv('c2e-mot'), MotivoDetalle:gv('c2e-motd'), FechaSolicitud:gv('c2e-fsol'), FechaRecepcionOriginal:gv('c2e-frec'), FechaEnvioNueva:gv('c2e-fenv'), Comentario:gv('c2e-com'), devueltas:devs, nuevas:nues };
