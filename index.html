@@ -2172,7 +2172,12 @@ const _CRON_TOPE = 400;
 // Estas se anotan SIEMPRE, rápidas o lentas: son las que están bajo la lupa.
 // OJO con el 'api.' de adelante: las llamadas se etiquetan 'api.cambios2.editarPrendas',
 // no 'cambios2.editarPrendas'. Sin contemplarlo, esta lista no atrapaba nada.
-const _CRON_SIEMPRE = /^(api\.)?(cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.)/;
+// 30-jul · `rapido.` va SIEMPRE, pase lo que pase con el umbral.
+// Instrumentar las vías rápidas no alcanzaba: _cronCerrar sólo anota lo que
+// pasa los 3 s, y las vías rápidas tardan 176-470 ms. Se registraban sólo las
+// llamadas lentas a Apps Script — justo el sesgo que esto viene a corregir.
+// Sin esta línea, verLentos() seguiría mostrando una sola columna.
+const _CRON_SIEMPRE = /^(rapido\.|(api\.)?(cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
 
 function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
 function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
@@ -2240,6 +2245,43 @@ function _cronRescatarAbiertas() {
   } catch (_) { return 0; }
 }
 try { _cronRescatarAbiertas(); } catch (_) {}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// 30-jul · EL CRONÓMETRO TENÍA EL MISMO PUNTO CIEGO QUE YO
+//
+// _cronAbrir sólo envolvía api(), o sea SÓLO el respaldo de Apps Script. Las
+// vías rápidas —que son las que la pantalla usa de verdad— corrían sin medirse.
+// Consecuencia: verLentos() mostraba una lista de cosas lentas que casi nadie
+// paga, y sobre esa lista se priorizó cuatro veces mal. Medido el 30-jul:
+//   cambios2.listar ...... api 8.475 ms  ·  vía rápida 470 ms
+//   cambios.porPedido .... api 5.156 ms  ·  vía rápida 176 ms
+// Los dos números de la izquierda no los paga nadie.
+//
+// Esto envuelve cada vía rápida SIN tocar su cuerpo. Dos etiquetas separadas
+// a propósito: `rapido.*` y `api.*`. Mezclarlas contaminaría el promedio de la
+// puerta buena con los reintentos lentos del respaldo — el mismo engaño otra vez.
+//
+// Y de paso cuenta los CAÍDAS A RESPALDO: si una `rapido.*` dispara una `api.*`
+// dentro, la base falló y hoy nadie se enteraría. Eso se ve como las dos
+// etiquetas juntas en verLentos().
+// ══════════════════════════════════════════════════════════════════════════
+(function () {
+  var PUERTAS = ['_adminRapido', '_alertasListarRapido', '_archivoNrosRapido', '_buscarRapido', '_c2HistMapRapido', '_c2ListarRapido', '_cambiosListarRapido', '_cambiosPorPedidoRapido', '_catalogoPrendasRapido', '_catalogoStockRapido', '_cliHistorialRapido', '_cliSaldosRapido', '_clientesListarRapido', '_coloresListarRapido', '_confeccionListarRapido', '_crearPedidoRapido', '_dashboardTodoRapido', '_devListarRapido', '_fallasResumenRapido', '_lotesRapido', '_maestrosListarRapido', '_maestrosSkusRapido', '_metaCapiPanelRapido', '_panelRoasRapido', '_papeleraListarRapido', '_pedDatosRapido', '_pedPorNrosRapido', '_productosListarRapido', '_reposicionRapido', '_serieDiariaRapido', '_stockKardexRapido', '_stockNoDispRapido', '_stockResumenRapido', '_vistasStockRapido', '_vocFrasesRapido'];
+  PUERTAS.forEach(function (nombre) {
+    var orig = (typeof globalThis[nombre] === 'function') ? globalThis[nombre] : null;
+    if (!orig || orig.__cronoPuesto) return;
+    var etiqueta = 'rapido.' + nombre.replace(/^_/, '').replace(/Rapido$/, '');
+    var env = async function () {
+      var c = _cronAbrir(etiqueta);
+      var ok = false;
+      try { var r = await orig.apply(this, arguments); ok = true; return r; }
+      finally { _cronCerrar(c, ok); }
+    };
+    env.__cronoPuesto = true;
+    try { globalThis[nombre] = env; } catch (_) {}
+  });
+})();
 
 // ── El informe, en castellano ────────────────────────────────────────────
 function verLentos(minMs) {
