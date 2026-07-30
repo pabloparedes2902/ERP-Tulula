@@ -6234,7 +6234,7 @@ async function _stockNoDispRapido(p) {
       }
     } catch (e) {}
 
-    const motivos = {};
+    const motivos = {}, destinos = {};
     filas.forEach(r => {
       if (String(r['Eliminado'] || '').trim().toUpperCase() === 'SI') return;
       if (String(r['Diseno'] || '').trim().toUpperCase() !== dis) return;
@@ -6246,8 +6246,11 @@ async function _stockNoDispRapido(p) {
       const mot = String(r['Motivo'] || '').trim() || '(sin motivo)';
       const cant = parseInt(r['Cantidad'], 10) || 1;
       motivos[mot] = (motivos[mot] || 0) + cant;
+      // 30-jul: el DESTINO es lo que dice si esa unidad se puede vender como Yayita.
+      const dst = String(r['Destino'] || '').trim().toUpperCase() || '(sin decidir)';
+      destinos[dst] = (destinos[dst] || 0) + cant;
     });
-    return { motivos };
+    return { motivos, destinos };
   } catch (e) { try { _errLog('sb.noDisp', e); } catch (_) {} return porApps(); }
 }
 
@@ -9165,7 +9168,22 @@ function mkTBody(rows) {
           : _htmlAll;
         tds += '<td'+TC+' style="max-width:0;white-space:normal;vertical-align:top" title="'+_full+'">'+_cellInner+'</td>';
       } else if (c.k==='Prenda') {
-        const t = esc(String(v||''));
+        // ── YAYITA (30-jul-2026) ──────────────────────────────────────────
+        // En la primera prueba real, un pedido normal y uno de Yayita se veían
+        // EXACTAMENTE igual en la grilla. Logística no tenía forma de distinguirlos y
+        // podía despachar una prenda con falla como si fuera nueva.
+        // La cápsula va ADELANTE del nombre y en ámbar: se ve de un vistazo al escanear
+        // la columna. Se detecta por la columna EsYayita y, como respaldo, por el
+        // prefijo del nombre (las filas viejas no tienen la columna).
+        const _esYayFila = String(p['EsYayita']||'').trim().toUpperCase() === 'SI'
+                        || /^\s*YAYITA\s*[-–—]?\s+/i.test(String(v||''));
+        const _yayChip = _esYayFila
+          ? '<span title="Prenda con falla vendida como Yayita — NO es una prenda nueva" style="display:inline-block;background:#f59e0b;color:#1c1917;font-size:9px;font-weight:800;letter-spacing:.4px;padding:1px 5px;border-radius:3px;margin-right:6px;vertical-align:middle">YAYITA</span>'
+          : '';
+        // El nombre se muestra SIN el prefijo: la cápsula ya lo dice, y repetirlo hace
+        // la columna ilegible.
+        const _vLimpio = _esYayFila ? String(v||'').replace(/^\s*YAYITA\s*[-–—]?\s+/i, '') : String(v||'');
+        const t = _yayChip + esc(_vLimpio);
         // Resaltar SOLO la prenda que está realmente en cambio/devolución.
         // Formato del campo Cambio:
         //   Cambios:     'CAM CAM-XXXX: PRENDA_ORIG → PRENDA_NUEVA (FECHA)'
@@ -13354,12 +13372,13 @@ function npAddPrenda() {
     npCalc();
   });
 
-  // Pregunta al backend cuántas Yayitas hay del SKU elegido. Si no hay, no molesta.
+  // Cuántas Yayitas hay del SKU elegido. Contesta de MEMORIA (ver _yayMapa): la primera
+  // versión preguntaba al servidor por cada prenda y el aviso tardaba 3-4 s en aparecer.
   async function npMostrarYayitas(nombre) {
     yayEl.style.display = 'none'; yayChk.checked = false; div.style.borderLeft = '';
     if (!nombre) return;
     let n = 0;
-    try { const r = await api('yayitas.disponibles', { prenda: nombre }); n = (r && r.disponibles) || 0; }
+    try { n = await _yayDisponibles(nombre); }
     catch (e) { return; }   // si falla, simplemente no se ofrece: nunca bloquea la venta normal
     if (n <= 0) return;
     yayTxt.innerHTML = '<b>Hay ' + n + ' con falla</b> de esta prenda listas para vender como Yayita. '
@@ -14367,7 +14386,19 @@ async function _npExecuteSave(job) {
     requestId: job.requestId, // #9 idempotencia: retry no duplica el pedido
   };
   // PASO 5b — primero la base (decimas de segundo). Si no se puede, Apps Script.
-  const res = (await _crearPedidoRapido(_bodyCrear)) || (await apiPost('pedidos.crear', _bodyCrear));
+  //
+  // 30-jul-2026 — EXCEPCIÓN: si el pedido lleva alguna YAYITA, se salta la vía rápida.
+  // La receta `pedido_crear` de Supabase no sabe nada del montón de fallas: crearía el
+  // pedido sin ponerle "YAYITA - " al nombre y sin sacar la unidad del montón. Eso ya
+  // pasó en la primera venta de prueba (pedido 21210): quedó registrada como prenda
+  // normal y el reporte no la encontró.
+  // Las Yayitas son una fracción chica de las ventas, así que pagar 3-4 s por Apps Script
+  // en esos casos es preferible a enseñarle Yayitas a la receta de la base.
+  const _hayYayita = (job.prendasData || []).some(p => p && p.esYayita);
+  if (_hayYayita) { try { _yayOlvidar(); } catch(e) {} }   // se consumió una: el mapa quedó viejo
+  const res = _hayYayita
+    ? (await apiPost('pedidos.crear', _bodyCrear))
+    : ((await _crearPedidoRapido(_bodyCrear)) || (await apiPost('pedidos.crear', _bodyCrear)));
   const nuevoNro = res.NroPedido;
   _pendOlvidar();   // recién creado: si la buscan de nuevo, YA tiene pendiente
   // Disparar la subida de vouchers en BACKGROUND (no esperar) — fire-and-forget.
@@ -16315,6 +16346,31 @@ function renderInv(el){
 }
 
 // Desglose de "No disponible" por motivo (Falla, Lavado, TikTok Live, Sesión…) al hacer clic en ⓘ.
+// ── QUÉ SE HACE CON CADA UNA (30-jul-2026) ────────────────────────────────
+// El desglose por motivo dice POR QUÉ salió del stock. Este dice QUÉ SE HACE con ella —
+// y es la única forma de ver desde el ERP cuántas están listas para vender como Yayita.
+// Antes había que correr `yayitasReporte` en Apps Script para saberlo.
+function _ndDestinosHtml(r){
+  const dst = (r && r.destinos) || {};
+  const ks = Object.keys(dst).sort((a,b)=>dst[b]-dst[a]);
+  if (!ks.length) return '';
+  const ETIQ = {
+    YAYITAS:'Yayitas — se venden con falla', REPARAR:'Reparar y vuelven al stock',
+    VUELVE:'Prestadas — vuelven solas', DESCARTAR:'Descartadas', PERDIDA:'Perdidas / robadas',
+    '(SIN DECIDIR)':'Sin decidir todavía',
+  };
+  return '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--mu);margin:12px 0 2px">Qué se hace con ellas</div>'
+    + ks.map(k=>{
+        const esYay = k === 'YAYITAS';
+        // Las terminales se pintan apagadas: esas unidades ya no existen para vender.
+        const esTerm = (k === 'PERDIDA' || k === 'DESCARTAR');
+        const col = esYay ? '#f59e0b' : (esTerm ? 'var(--mu)' : 'var(--tx)');
+        return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--bd);color:'+col+'">'
+          + '<span>'+(esYay?'<b>':'')+esc(ETIQ[k]||k)+(esYay?'</b>':'')+'</span>'
+          + '<span style="font-weight:700">'+dst[k]+'</span></div>';
+      }).join('');
+}
+
 async function _invNoDispDetalle(pren, dis, col){
   try{
     const r = await _stockNoDispRapido({ prenda:pren, dis:dis, col:col });
@@ -16330,7 +16386,9 @@ async function _invNoDispDetalle(pren, dis, col){
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-weight:700;color:#f87171">No disponible</span><button id="nd-x" class="btn bg bs" style="font-size:12px">✕</button></div>'
       +'<div style="font-size:13px;font-weight:600;margin-bottom:2px">'+esc(pren+' '+dis+' '+col)+'</div>'
       +'<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Total: <b style="color:var(--tx)">'+tot+'</b> unidad(es)</div>'
-      +filas+'</div>';
+      +'<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--mu);margin:4px 0 2px">Por qué salieron</div>'
+      +filas
+      +_ndDestinosHtml(r)+'</div>';
     document.body.appendChild(ov);
     const close=()=>ov.remove();
     ov.addEventListener('click',e=>{ if(e.target===ov) close(); });
@@ -17136,6 +17194,64 @@ function _invAbrirRecuperarFalla(){
 
 // ── Formulario "Ingresar falla": carrito de prendas con falla + motivo ──
 // Cada falla suma a la hoja Fallas (con Motivo) y descuenta del stock vendible (fila BAJA en Confección).
+// ══════════════════════════════════════════════════════════════════════════
+// EL MAPA DE YAYITAS, EN MEMORIA (30-jul-2026)
+//
+// POR QUÉ: la primera versión preguntaba al servidor UNA VEZ POR PRENDA elegida. Cada
+// consulta es un viaje a Apps Script (3-4 s), así que el aviso ámbar aparecía tardísimo
+// — la asesora ya había puesto el precio y seguido de largo.
+//
+// Ahora se trae el mapa entero UNA vez y se contesta de memoria, instantáneo. Es chico
+// por definición: solo las prendas con falla marcadas para vender.
+//
+// Se refresca solo cada 5 min, y a mano cuando se registra una falla o se vende una
+// Yayita (`_yayOlvidar`), porque esos dos son los únicos que lo mueven.
+// ══════════════════════════════════════════════════════════════════════════
+let _yayMapa = null, _yayMapaTs = 0, _yayMapaProm = null;
+const _YAY_VENCE_MS = 5 * 60 * 1000;
+
+function _yayOlvidar() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; }
+
+async function _yayCargarMapa() {
+  const fresco = _yayMapa && (Date.now() - _yayMapaTs) < _YAY_VENCE_MS;
+  if (fresco) return _yayMapa;
+  if (_yayMapaProm) return _yayMapaProm;          // una sola consulta aunque pregunten 5 filas a la vez
+  const cron = _cronAbrir('yayitas.mapa');
+  _yayMapaProm = api('yayitas.mapa', {})
+    .then(m => { _yayMapa = m || {}; _yayMapaTs = Date.now(); _cronCerrar(cron, true); return _yayMapa; })
+    .catch(e => { _cronCerrar(cron, false); _yayMapa = {}; _yayMapaTs = Date.now(); return _yayMapa; })
+    .then(m => { _yayMapaProm = null; return m; });
+  return _yayMapaProm;
+}
+
+// Resuelve DIS|COL|TALLA del nombre usando el catálogo que el ERP ya tiene en memoria.
+// Si no lo puede resolver, devuelve 0: preferimos no ofrecer una Yayita antes que
+// ofrecer una que no existe.
+function _yayClaveDe(nombreCompleto) {
+  const full = String(nombreCompleto || '').trim().toUpperCase();
+  if (!full) return '';
+  try {
+    const M = MAESTROS || {};
+    const kP = Object.keys(M).find(k => k.toLowerCase() === 'prenda');
+    const kD = Object.keys(M).find(k => k.toLowerCase() === 'diseño' || k.toLowerCase() === 'diseno');
+    const kC = Object.keys(M).find(k => k.toLowerCase() === 'color');
+    const kT = Object.keys(M).find(k => k.toLowerCase() === 'talla');
+    if (!kP || !kD || !kC || !kT) return '';
+    const i = (M[kP] || []).findIndex(v => String(v || '').trim().toUpperCase() === full);
+    if (i < 0) return '';
+    const TM = {'S/M':'M','M/L':'L','L/XL':'XL','C':'M','G':'XL','STD':'M','ESTANDAR':'M','U':'M','XXL':'2XL','XXXL':'3XL'};
+    const tal = String((M[kT] || [])[i] || '').trim().toUpperCase();
+    return (String((M[kD]||[])[i]||'').trim() + '|' + String((M[kC]||[])[i]||'').trim() + '|' + (TM[tal] || tal)).toUpperCase();
+  } catch (e) { return ''; }
+}
+
+async function _yayDisponibles(nombreCompleto) {
+  const k = _yayClaveDe(nombreCompleto);
+  if (!k) return 0;
+  const m = await _yayCargarMapa();
+  return (m && m[k]) || 0;
+}
+
 let _falCart = [];
 
 // Espejo EXACTO de `_destinoPorMotivoFalla_` (Code.js). Solo sirve para mostrar en
@@ -17301,6 +17417,8 @@ function _confAbrirIngresarFalla(confEl) {
     this.disabled = true; this.textContent = 'Registrando...';
     try {
       const res = await apiSend('fallas.ingresar', { items: _falCart });
+      // El montón cambió: el aviso de Yayitas tiene que verlo YA, no en 5 minutos.
+      try { _yayOlvidar(); } catch(e) {}
       toast('✓ '+(res.filas||0)+' falla(s) · '+(res.unidades||0)+' und descontadas del stock', 'ok');
       _falCart = [];
       _close();
