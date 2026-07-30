@@ -15968,6 +15968,10 @@ function _stCrsMousedown(e){
 let _stYayMode = false;
 let _stDataYay = null;      // el montón — NUNCA se mezcla con stData
 let _stYayVieja = false;    // la foto quedó atrás (se vendió / se marcó una falla)
+// ¿Se puede confiar en la copia de la base? Arranca en true (al abrir el ERP la copia
+// está al día). Un movimiento del montón la pone en false hasta que el backend confirme
+// que re-copió la hoja. Ver _yayCargarStock.
+let _stYayEspejoOk = true;
 
 // Qué filas tiene que pintar la tabla de stock. Único punto de decisión.
 function _stFuente() { return _stYayMode ? (_stDataYay || []) : stData; }
@@ -16012,6 +16016,18 @@ async function _yayStockRapido() {
 async function _yayCargarStock() {
   _yayOlvidar();
   let d = null;
+  // 30-jul, tercera vuelta — LA VÍA RÁPIDA NO SIEMPRE SE PUEDE USAR.
+  // Lee la tabla `fallas` de la base, que es una COPIA de la hoja. Esa copia viajaba
+  // cada 30 minutos: marcabas una falla y la pantalla seguía mostrando el montón de
+  // media hora atrás, sin nada que lo delatara. Ahora el backend re-copia la hoja
+  // después de cada movimiento y contesta `espejo:true` cuando quedó al día.
+  // Si NO lo confirmó, acá se pregunta por Apps Script, que lee la hoja: tarda unos
+  // segundos, pero es la verdad. Un número viejo que no se distingue de uno bueno es
+  // peor que esperar.
+  if (!_stYayEspejoOk) {
+    try { _stDataYay = await api('yayitas.stock', {}); _stYayEspejoOk = true; return; }
+    catch (e) { /* si Apps Script tampoco contesta, se intenta la vía rápida abajo */ }
+  }
   try { d = await _yayStockRapido(); } catch (e) { d = null; }
   if (!d) d = await api('yayitas.stock', {});     // respaldo por Apps Script
   _stDataYay = d || [];
@@ -17456,7 +17472,7 @@ function _confAbrirIngresarStock(confEl) {
       let res = { lotes:[], filas:0, unidades:0 };
       // Primero el montón: si falla, no queda un lote creado a medias sin sus fallas.
       let resFal = null;
-      if (falladas.length) resFal = await apiSend('fallas.ingresar', { items: falladas });
+      if (falladas.length) resFal = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: falladas }));
       if (buenas.length)   res    = await apiSend('stock.crearLote', { items: buenas });
 
       const lotes = (res && res.lotes && res.lotes.length) ? res.lotes.join(', ') : '';
@@ -17584,7 +17600,14 @@ const _YAY_VENCE_MS = 5 * 60 * 1000;
 // Olvidar el montón. Marca TAMBIÉN como vieja la foto del Stock de Yayitas: sale del mismo
 // cálculo, así que si una queda vieja la otra también. No la borra — borrarla dejaría la
 // pantalla en blanco si alguien repinta antes de recargar; la marca la usa _yayEntrarStock.
-function _yayOlvidar() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; _stYayVieja = true; }
+function _yayOlvidar() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; _stYayVieja = true; _stYayEspejoOk = false; }
+
+// El backend contesta `espejo:true` cuando dejó la copia de la base al día después de un
+// movimiento. Sólo entonces se vuelve a confiar en la vía rápida.
+function _yayEspejoConfirmar(res) {
+  try { if (res && res.espejo === true) _stYayEspejoOk = true; } catch (e) {}
+  return res;
+}
 
 // ── LA VÍA RÁPIDA (30-jul-2026, segunda vuelta) ───────────────────────────
 // La PRIMERA versión traía el mapa de Apps Script. Seguía tardando ~15 s, y el motivo
@@ -17835,7 +17858,7 @@ function _confAbrirIngresarFalla(confEl) {
     if (!ok) return;
     this.disabled = true; this.textContent = 'Deshaciendo...';
     try {
-      const res = await apiSend('fallas.deshacer', {});
+      const res = _yayEspejoConfirmar(await apiSend('fallas.deshacer', {}));
       const u = res && res.undone;
       toast(u ? ('✓ Deshecha: '+esc(u.prenda+' '+u.dis+' '+u.col+' '+u.talla)+' (x'+u.cantidad+(u.motivo?', '+esc(u.motivo):'')+')') : '✓ Falla deshecha', 'ok');
       confData = null; try { _confLsDel(); } catch(e) {}
@@ -17911,7 +17934,7 @@ function _confAbrirIngresarFalla(confEl) {
     if (!_falCart.length) { toast('Agrega al menos una falla','err'); return; }
     this.disabled = true; this.textContent = 'Registrando...';
     try {
-      const res = await apiSend('fallas.ingresar', { items: _falCart });
+      const res = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: _falCart }));
       // El montón cambió: el aviso de Yayitas tiene que verlo YA, no en 5 minutos.
       try { _yayOlvidar(); } catch(e) {}
       toast('✓ '+(res.filas||0)+' falla(s) · '+(res.unidades||0)+' und descontadas del stock', 'ok');
