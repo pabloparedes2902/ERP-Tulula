@@ -12748,6 +12748,13 @@ function npRellenar(c, resEl) {
     document.getElementById('np-dtp').value  = 'DNI';
     document.getElementById('np-dnum').value = dni;
     document.getElementById('np-dhint').textContent = 'DNI: 8 dígitos';
+  } else {
+    // 30-jul-2026 — SIN ESTE `else` EL DOCUMENTO DE LA CLIENTA ANTERIOR SE QUEDABA.
+    // Elegís a la clienta A (DNI 12345678), cambiás de idea, elegís a la clienta B (sin
+    // DNI o con RUC/CE) → el pedido de B se guardaba CON EL DNI DE A. Silencioso:
+    // npValidar no lo ve, porque el DNI es formalmente válido. Entre selecciones nadie
+    // limpia el formulario, así que el campo sobrevive.
+    document.getElementById('np-dnum').value = '';
   }
   // Dirección
   document.getElementById('np-dir').value  = c.dir || '';
@@ -12762,9 +12769,23 @@ function npRellenar(c, resEl) {
     for (let i = 0; i < sel.options.length; i++) {
       if (sel.options[i].text === c.can || sel.options[i].value === c.can) { sel.selectedIndex = i; break; }
     }
+    // 30-jul-2026 — ORIGEN ES UN DESPLEGABLE DEPENDIENTE DEL CANAL.
+    // Lo reconstruye `_fillNpOrigen`, y lo único que lo disparaba era el `onchange` de
+    // np-canal. Acá el canal se cambia POR CÓDIGO, y una asignación programática NO
+    // dispara change: Origen se quedaba con las opciones del canal ANTERIOR. Elegías una
+    // clienta de INSTAGRAM y el desplegable seguía ofreciendo los orígenes de SHOWROOM.
+    // O quedaba vacío (npValidar lo rechaza) o se guardaba una combinación imposible
+    // —y esa atribución es la que define el bono de la asesora—.
+    // Diez líneas más abajo, el bloque de "agregar a pedido" ya lo hacía bien: acá faltaba.
+    if (typeof _fillNpOrigen === 'function') _fillNpOrigen(sel.value || '', '');
   }
   // Teléfonos
-  const tels = String(c.t || '').split('/').map(t => t.trim().replace('.0','')).filter(Boolean);
+  // El saneador de celulares vive en los listeners de 'input'; una asignación por código
+  // no los dispara, así que se limpia acá igual que ellos: sólo dígitos, máximo 9. Sin
+  // esto, una ficha vieja guardada como "987 654 321" entraba tal cual y npValidar la
+  // rechazaba — sobre un campo que el ERP acababa de llenar solo.
+  const _telLimpio = t => String(t).replace(/\D/g, '').slice(0, 9);
+  const tels = String(c.t || '').split('/').map(t => _telLimpio(t)).filter(Boolean);
   document.getElementById('np-tels').innerHTML = '';
   tels.forEach((t, i) => {
     npAddTel(i === 0);
@@ -12807,6 +12828,13 @@ function npRellenar(c, resEl) {
   // código, el cuadro de saldo nunca aparecía. Reseteamos lastKey para forzar refetch.
   if (typeof _npSaldos !== 'undefined') _npSaldos.lastKey = '';
   if (typeof npLookupSaldos === 'function') npLookupSaldos();
+  // 30-jul-2026 — MISMO AGUJERO QUE EN npAddPrenda, POR OTRA PUERTA.
+  // Acá se llenan DNI y teléfonos POR CÓDIGO, y la llave de la caché del pre-chequeo es
+  // DNI+teléfonos+prendas. Al tocar "Usar estos datos", la llave cambiaba y nadie
+  // recalculaba: al guardar no coincidía y `pedidos.detectarDuplicados` corría BLOQUEANTE
+  // —medido: mediana 5,6 s, peor 16,7 s— con la asesora esperando.
+  // La línea de arriba ya replicaba npLookupSaldos; faltaba esta.
+  if (typeof _npPrecheckDuplicados === 'function') _npPrecheckDuplicados();
 
   // Confirmación y ocultar buscador
   resEl.innerHTML = '<div style="background:#14532d20;border:1px solid #4ade8044;border-radius:var(--r);padding:10px 12px;font-size:12px;color:var(--gn)">✓ <strong>'+esc(c.n)+'</strong> seleccionada — puedes editar los campos si es necesario</div>';
@@ -16023,7 +16051,7 @@ async function _yayStockRapido() {
 // Trae el montón AL DÍA. Tira la caché primero: un número viejo acá es peor que esperar
 // dos décimas, porque no se distingue de uno bueno.
 async function _yayCargarStock() {
-  _yayOlvidar();
+  _yayOlvidarCache();   // leer de nuevo, sí; desconfiar de la copia, NO (ver _yayOlvidar)
   let d = null;
   // 30-jul, tercera vuelta — LA VÍA RÁPIDA NO SIEMPRE SE PUEDE USAR.
   // Lee la tabla `fallas` de la base, que es una COPIA de la hoja. Esa copia viajaba
@@ -17613,7 +17641,17 @@ const _YAY_VENCE_MS = 5 * 60 * 1000;
 // Olvidar el montón. Marca TAMBIÉN como vieja la foto del Stock de Yayitas: sale del mismo
 // cálculo, así que si una queda vieja la otra también. No la borra — borrarla dejaría la
 // pantalla en blanco si alguien repinta antes de recargar; la marca la usa _yayEntrarStock.
-function _yayOlvidar() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; _stYayVieja = true; _stYayEspejoOk = false; }
+// 30-jul, medido en vivo — ESTAS SON DOS COSAS DISTINTAS Y ESTABAN JUNTAS.
+//   · Tirar la caché del navegador → se hace SIEMPRE antes de recargar.
+//   · Desconfiar de la copia de la base → sólo después de ESCRIBIR algo.
+// Estaban en la misma función, así que `_yayCargarStock` —que la llama para no leer de
+// su propia caché— apagaba también la confianza en la copia. Efecto: la pantalla se iba
+// por Apps Script SIEMPRE. Medido: 12,2 s cuando podía tardar menos de 1.
+function _yayOlvidarCache() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; }
+
+// Se movió el montón: además de la caché, la copia de la base queda en duda hasta que el
+// backend confirme que la dejó al día.
+function _yayOlvidar() { _yayOlvidarCache(); _stYayVieja = true; _stYayEspejoOk = false; }
 
 // El backend contesta `espejo:true` cuando dejó la copia de la base al día después de un
 // movimiento. Sólo entonces se vuelve a confiar en la vía rápida.
