@@ -5048,22 +5048,28 @@ function _corregirLoteAgregada(nro, prenda, loteAdivinado, loteReal) {
 }
 
 async function _crearPedidoRapido(body) {
+  // 30-jul — medido: sin cronómetro acá no se podía saber si el pedido se guardó por la
+  // base (décimas) o se cayó a Apps Script (3-4 s) sin decir nada. Sale en verLentos()
+  // como `pedido.crear.base`; si NO aparece y sí aparece `api.pedidos.crear`, es que se
+  // está cayendo por el camino lento todos los días y nadie lo estaba viendo.
+  const _c = _cronAbrir('pedido.crear.base');
   try {
-    if (!SB_PILOTO_CREAR) return null;
-    if (!String(body && body.FechaPedido || '').trim()) return null;   // reserva → via clasica
-    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (!SB_PILOTO_CREAR) { _cronCerrar(_c, false); return null; }
+    if (!String(body && body.FechaPedido || '').trim()) { _cronCerrar(_c, false); return null; }   // reserva → via clasica
+    if (typeof SB_URL === 'undefined' || !SB_ANON) { _cronCerrar(_c, false); return null; }
     const tok = await _sbSesionAsegurar();
-    if (!tok) return null;
+    if (!tok) { _cronCerrar(_c, false); return null; }
     const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_crear', {
       method: 'POST',
       headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
       body: JSON.stringify({ p_payload: body }),
     });
-    if (!r.ok) { try { console.warn('[crear] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+    if (!r.ok) { _cronCerrar(_c, false); try { console.warn('[crear] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
     const d = await r.json();
-    if (!(d && d.ok === true && d.NroPedido)) return null;
+    if (!(d && d.ok === true && d.NroPedido)) { _cronCerrar(_c, false); return null; }
+    _cronCerrar(_c, true);
     return { ok: true, NroPedido: String(d.NroPedido), filas: d.filas, pagos: d.pagos, pagosIds: d.pagosIds || [], via: 'base' };
-  } catch (e) { try { console.warn('[crear] RPC fallo → via Apps Script'); } catch(_){} return null; }
+  } catch (e) { _cronCerrar(_c, false); try { console.warn('[crear] RPC fallo → via Apps Script'); } catch(_){} return null; }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -8089,92 +8095,124 @@ function _pColW(k) { return window._pColWidths[k] || _pColDefaultW(k); }
 
 // J-10 — handler de resize de columnas (event delegation; siempre activo aunque la tabla se re-renderice)
 // Ajusta col, th y tabla TOTAL para que table-layout:fixed respete el nuevo ancho.
+// ── Medir texto sin tocar el DOM ──────────────────────────────────────────
+// Un canvas 2d mide una cadena en microsegundos y no provoca reflow. Es la pieza que
+// faltaba: la versión anterior medía reflotando la tabla entera, y en Pedidos eso NO
+// podía funcionar porque cada <th> contiene el input de filtro, cuyo ancho intrínseco
+// (~175px) tapaba el ancho real del texto. Todas las columnas daban casi lo mismo y el
+// doble clic parecía no hacer nada.
+function _txtMedidor(fontCss) {
+  window._crsCanvas = window._crsCanvas || document.createElement('canvas');
+  const ctx = window._crsCanvas.getContext('2d');
+  ctx.font = fontCss;
+  return s => ctx.measureText(String(s == null ? '' : s)).width;
+}
+function _fontDe(el) {
+  const cs = getComputedStyle(el);
+  return (cs.fontStyle || 'normal') + ' ' + (cs.fontWeight || '400') + ' ' +
+         (cs.fontSize || '12px') + ' ' + (cs.fontFamily || 'sans-serif');
+}
+
+// Encuentra el <col> de la colgroup que corresponde a este <th>.
+// Primero por atributo (cada grilla usa el suyo), y si no, por POSICIÓN — que es lo único
+// que siempre existe. La grilla de Pedidos pinta el handle SIN ningún data-*: por eso el
+// doble clic no encontraba la columna y no tenía efecto alguno.
+function _crsColDe(table, th, rs) {
+  const cols = table.querySelectorAll('colgroup col');
+  if (!cols.length) return null;
+  const ATTRS = ['data-k', 'data-hckey', 'data-hdkey', 'data-fikey'];
+  for (const a of ATTRS) {
+    const k = rs.getAttribute(a) || th.getAttribute(a) ||
+              (a === 'data-k' ? rs.getAttribute('data-c2key') : null);
+    if (!k) continue;
+    const esc2 = (window.CSS && CSS.escape) ? CSS.escape(k) : k;
+    const c = table.querySelector('colgroup col[' + a + '="' + esc2 + '"]');
+    if (c) return c;
+  }
+  let i = 0;
+  for (const cel of th.parentNode.children) { if (cel === th) return cols[i] || null; i += (cel.colSpan || 1); }
+  return null;
+}
+
 // Auto-fit en doble clic sobre el handle .crs — ajusta el ancho de la columna al contenido
-// más largo (header + celdas). Funciona en Pedidos/Cambios/Devoluciones (mismo patrón .crs).
-//
-// Bugs corregidos:
-//   • Antes usaba scrollWidth, que con `table-layout:fixed` está topeado al ancho actual
-//     de la columna → no medía el contenido oculto detrás del ellipsis.
-//   • Antes sumaba +16px de padding arbitrario → cada doble-click ensanchaba indefinidamente.
-//
-// Estrategia correcta: liberar momentáneamente el width del <col> y del <th>, pasar la tabla
-// a `table-layout:auto`, leer el ancho natural con getBoundingClientRect, restaurar layout
-// fijo y aplicar el nuevo ancho. Todo dentro de una misma función sincrónica → el browser
-// no pinta entre los pasos, así que el usuario no ve flicker.
+// más largo (encabezado + celdas). Anda en Pedidos, Cambios, Devoluciones, la ficha de
+// clienta y la hoja de clientes: todas usan el mismo gesto.
 function _crsAutoFit(rs) {
   const th = rs.closest('th'); if (!th) return;
   const table = th.closest('table'); if (!table) return;
+  const colEl = _crsColDe(table, th, rs);
+  if (!colEl) return;
 
-  // Localizar el <col> de la colgroup para esta columna (Pedidos/Cambios/Devoluciones)
-  let key = '', dataAttr = '';
-  if (rs.dataset.k)          { key = rs.dataset.k;     dataAttr = 'data-k'; }
-  else if (rs.dataset.hckey) { key = rs.dataset.hckey; dataAttr = 'data-hckey'; }
-  else if (rs.dataset.hdkey) { key = rs.dataset.hdkey; dataAttr = 'data-hdkey'; }
-  else if (rs.dataset.c2key)  { key = rs.dataset.c2key;  dataAttr = 'data-k'; }      // Cambios
-  else if (rs.dataset.fikey)  { key = rs.dataset.fikey;  dataAttr = 'data-fikey'; }  // ficha de clienta
-  const colEl = (dataAttr && key) ? table.querySelector('colgroup col['+dataAttr+'="'+key+'"]') : null;
+  // Índice real de la columna, contando colspans.
+  let colIdx = -1, acum = 0;
+  for (const cel of th.parentNode.children) { if (cel === th) { colIdx = acum; break; } acum += (cel.colSpan || 1); }
+  if (colIdx < 0) return;
 
-  // 1. Snapshot del layout actual (para revertir si algo falla)
-  const oldColW    = colEl ? colEl.style.width : null;
-  const oldThW     = th.style.width;
-  const oldLayout  = table.style.tableLayout;
-  const oldTableW  = table.style.width;
+  // ── 1. Piso: el encabezado ──────────────────────────────────────────────
+  // Sólo el TEXTO del título; el input de filtro no cuenta (se estira solo al 100%).
+  const rotulo = th.querySelector('.thi span') || th.querySelector('.thi') || th;
+  const medH = _txtMedidor(_fontDe(rotulo));
+  let ancho = medH((rotulo.textContent || '').trim());
+  if (th.querySelector('.si')) ancho += 16;   // la flechita de orden ⇅
+  if (th.querySelector('.fb')) ancho += 22;   // el botón de filtro ▾
 
-  // 2. Soltar las restricciones de ancho para que el browser calcule el ancho NATURAL
-  if (colEl) colEl.style.width = 'auto';
-  th.style.width = 'auto';
-  table.style.tableLayout = 'auto';
-  table.style.width = 'auto';
-
-  // 3. Forzar layout y medir el ancho natural del header y del body en esta columna
-  let naturalW = th.getBoundingClientRect().width;
-  // En tablas con muchas filas, scrollWidth del TH ya cubre el body al estar en auto.
-  // Pero hacemos una pasada por las celdas del body para asegurarnos del peor caso.
-  const thRow = th.parentNode;
-  let colIdx = -1;
-  for (let i=0;i<thRow.children.length;i++){ if (thRow.children[i] === th) { colIdx = i; break; } }
-  if (colIdx >= 0) {
-    const bodyTrs = table.querySelectorAll('tbody tr');
-    // Para no recorrer 5000 filas: muestreo del header + primeras 200 filas (suficiente
-    // en la práctica; el body suele ser homogéneo y el header marca el piso).
-    const N = Math.min(bodyTrs.length, 200);
-    for (let i = 0; i < N; i++) {
-      const c = bodyTrs[i].cells && bodyTrs[i].cells[colIdx];
-      if (!c) continue;
-      const w = c.getBoundingClientRect().width;
-      if (w > naturalW) naturalW = w;
+  // ── 2. Las celdas del cuerpo ────────────────────────────────────────────
+  const trs = table.querySelectorAll('tbody tr');
+  const muestra = Math.min(trs.length, 400);   // el body es homogéneo; 400 alcanza y sobra
+  let medB = null, padB = 0;
+  for (let i = 0; i < muestra; i++) {
+    const c = trs[i].cells && trs[i].cells[colIdx];
+    if (!c) continue;
+    if (!medB) {
+      medB = _txtMedidor(_fontDe(c));
+      const cs = getComputedStyle(c);
+      padB = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0)
+           + (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
     }
+    const w = medB((c.textContent || '').trim());
+    if (w > ancho) ancho = w;
+  }
+  if (!medB) {   // tabla vacía: al menos el padding del propio encabezado
+    const cs = getComputedStyle(th);
+    padB = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
   }
 
-  // 4. Restaurar table-layout fijo (es el modo de la app)
-  table.style.tableLayout = oldLayout || 'fixed';
-  table.style.width = oldTableW || '';
-
-  // 5. Aplicar el nuevo ancho — Math.ceil para no truncar por subpixeles. Mínimo 60px,
-  //    máximo 600px. NO sumamos padding extra: el padding ya está incluido en la medición
-  //    porque getBoundingClientRect mide la caja completa de la celda (incluye padding/border).
-  const finalW = Math.min(Math.max(Math.ceil(naturalW), 60), 600);
-  if (colEl) colEl.style.width = finalW + 'px';
+  // ── 3. Aplicar ──────────────────────────────────────────────────────────
+  // +6px de respiro para que la última letra no quede pegada al borde y no vuelva a
+  // aparecer el "…". Techo de 600px: una celda con un párrafo no puede comerse la pantalla.
+  const finalW = Math.min(Math.max(Math.ceil(ancho + padB + 6), 60), 600);
+  colEl.style.width = finalW + 'px';
   th.style.width = finalW + 'px';
 
-  // 6. Recalcular el width total de la tabla (suma de todos los <col>) — necesario
-  //    para que table-layout:fixed siga respetando el contenido y el contenedor con scroll
-  //    horizontal mida bien el viewport interno.
+  // Ancho total = suma de los <col>. Con table-layout:fixed es lo que hace que el scroll
+  // horizontal del contenedor mida bien.
   let totalW = 0;
-  table.querySelectorAll('colgroup col').forEach(c => {
-    const w = parseFloat(c.style.width) || 0;
-    totalW += w || 100;
-  });
+  table.querySelectorAll('colgroup col').forEach(c => { totalW += parseFloat(c.style.width) || 0; });
   if (totalW > 0) table.style.width = totalW + 'px';
 
-  // 7. Persistir en el estado del módulo correspondiente para que sobreviva re-renders
-  if (rs.dataset.k     && window._pColWidths) window._pColWidths[rs.dataset.k] = finalW;
-  if (rs.dataset.hckey && window._hcColW)     window._hcColW[rs.dataset.hckey] = finalW;
-  if (rs.dataset.hdkey && window._hdColW)     window._hdColW[rs.dataset.hdkey] = finalW;
-  // Cambios guarda sus anchos en el navegador, igual que al arrastrar el borde.
-  if (rs.dataset.c2key) { try { var _sv=JSON.parse(localStorage.getItem('erp_c2_colw')||'{}'); _sv[rs.dataset.c2key]=finalW; localStorage.setItem('erp_c2_colw',JSON.stringify(_sv)); } catch(e){} }
-  if (rs.dataset.fikey) { window._fiColW = window._fiColW || {}; window._fiColW[rs.dataset.fikey] = finalW;
-    try { var _sf=JSON.parse(localStorage.getItem('erp_fi_colw')||'{}'); _sf[rs.dataset.fikey]=finalW; localStorage.setItem('erp_fi_colw',JSON.stringify(_sf)); } catch(e){} }
+  // ── 4. Persistir, para que sobreviva al próximo render ──────────────────
+  const key = colEl.getAttribute('data-k') || colEl.getAttribute('data-hckey')
+           || colEl.getAttribute('data-hdkey') || colEl.getAttribute('data-fikey') || '';
+  if (!key) return;
+  const pedW = document.getElementById('ped-w');
+  const enCambios = !!rs.getAttribute('data-c2key');
+  const enPedidos = !enCambios && !!pedW && pedW.contains(th);
+
+  if (enPedidos) {
+    window._pColWidths = window._pColWidths || {}; window._pColWidths[key] = finalW;
+    if (totalW > 0) window._pedTotalW = totalW;
+  } else if (enCambios) {
+    try { const sv = JSON.parse(localStorage.getItem('erp_c2_colw') || '{}');
+          sv[key] = finalW; localStorage.setItem('erp_c2_colw', JSON.stringify(sv)); } catch (e) {}
+  } else if (colEl.hasAttribute('data-hckey')) {
+    window._hcColW = window._hcColW || {}; window._hcColW[key] = finalW;
+  } else if (colEl.hasAttribute('data-hdkey')) {
+    window._hdColW = window._hdColW || {}; window._hdColW[key] = finalW;
+  } else if (colEl.hasAttribute('data-fikey')) {
+    window._fiColW = window._fiColW || {}; window._fiColW[key] = finalW;
+    try { const sf = JSON.parse(localStorage.getItem('erp_fi_colw') || '{}');
+          sf[key] = finalW; localStorage.setItem('erp_fi_colw', JSON.stringify(sf)); } catch (e) {}
+  }
 }
 // Arrastrar el borde de una columna en la ficha de clienta. Mismo gesto que en
 // Pedidos y Cambios; se registra una sola vez para toda la app.
@@ -14310,8 +14348,13 @@ async function _npProcessSaveQueue() {
   _npSaveActive = true;
   while (_npSaveQueue.length) {
     const job = _npSaveQueue[0];
+    // 30-jul — el reloj de punta a punta. Sin esto sólo se medían los tramos sueltos
+    // (`api.pedidos.crear`) y no se veía en qué se iba el tiempo que sufre la asesora.
+    // Sale en verLentos() como `pedido.guardar`, con los tramos internos al lado.
+    const _cronTot = _cronAbrir('pedido.guardar', job.modo === 'agregar' ? 'agregar' : 'nuevo');
     try {
       const nroReal = await _npExecuteSave(job);
+      _cronCerrar(_cronTot, true);
       _npSaveQueue.shift(); // éxito → quitar de la cola
       _npQueuePersist();
       _npUpdateSaveIndicator();
@@ -14355,6 +14398,7 @@ async function _npProcessSaveQueue() {
         }
       } catch(e) {}
     } catch(e) {
+      _cronCerrar(_cronTot, false);
       job.intentos = (job.intentos || 0) + 1;
       // FIX jul-2026 (post prueba de carga): REINTENTO AUTOMÁTICO ante choque de
       // candado. Bajo muchos guardados simultáneos, algunos reciben "El sistema está
@@ -14423,18 +14467,36 @@ async function _npExecuteSave(job) {
   };
   // PASO 5b — primero la base (decimas de segundo). Si no se puede, Apps Script.
   //
-  // 30-jul-2026 — EXCEPCIÓN: si el pedido lleva alguna YAYITA, se salta la vía rápida.
-  // La receta `pedido_crear` de Supabase no sabe nada del montón de fallas: crearía el
-  // pedido sin ponerle "YAYITA - " al nombre y sin sacar la unidad del montón. Eso ya
-  // pasó en la primera venta de prueba (pedido 21210): quedó registrada como prenda
-  // normal y el reporte no la encontró.
-  // Las Yayitas son una fracción chica de las ventas, así que pagar 3-4 s por Apps Script
-  // en esos casos es preferible a enseñarle Yayitas a la receta de la base.
+  // 30-jul-2026, PRIMERA VUELTA — las Yayitas se saltaban la vía rápida y pagaban 3-4 s
+  // de Apps Script, porque vender una ESCRIBÍA una fila de consumo en el montón y la
+  // receta `pedido_crear` de la base no sabe hacer eso.
+  //
+  // 30-jul, SEGUNDA VUELTA (replanteo) — ya no hace falta. El montón es `entradas −
+  // ventas`, y la venta ES la fila del pedido: no se escribe nada aparte. Lo único que
+  // tiene que quedar garantizado es que la fila se reconozca como Yayita, y para eso
+  // alcanza el prefijo en el nombre — que es DATO, no lógica, así que viaja igual por
+  // las dos vías. (`_yayitasCalc_` reconoce por la columna EsYayita O por el prefijo;
+  // esta es exactamente la razón por la que hay dos señales.)
+  //
+  // El único resguardo que se perdería es `yayitasPreparar`, que valida disponibilidad
+  // en el servidor. Por eso: si el mapa que ya está en memoria dice que alcanza, va por
+  // la base; si dice que NO o no lo pudo leer, se va por Apps Script, que tiene la
+  // validación autoritativa. Rápido cuando está claro, seguro cuando hay duda.
   const _hayYayita = (job.prendasData || []).some(p => p && p.esYayita);
-  if (_hayYayita) { try { _yayOlvidar(); } catch(e) {} }   // se consumió una: el mapa quedó viejo
-  const res = _hayYayita
-    ? (await apiPost('pedidos.crear', _bodyCrear))
-    : ((await _crearPedidoRapido(_bodyCrear)) || (await apiPost('pedidos.crear', _bodyCrear)));
+  let _bodyRapido = _bodyCrear;
+  if (_hayYayita) {
+    const _alcanza = await _yayAlcanzaParaTodas(job.prendasData);
+    try { _yayOlvidar(); } catch(e) {}          // se consumió una: el mapa quedó viejo
+    if (!_alcanza) _bodyRapido = null;          // → Apps Script, con su validación
+    else _bodyRapido = Object.assign({}, _bodyCrear, {
+      prendas: (job.prendasData || []).map(p => (p && p.esYayita)
+        ? Object.assign({}, p, { dis: _yayPrefijar(p.dis) }) : p),
+    });
+  }
+  const _cronG = _cronAbrir('pedido.crear', _hayYayita ? 'con yayita' : '');
+  const res = (_bodyRapido && await _crearPedidoRapido(_bodyRapido))
+           || (await apiPost('pedidos.crear', _bodyCrear));
+  _cronCerrar(_cronG, true);
   const nuevoNro = res.NroPedido;
   _pendOlvidar();   // recién creado: si la buscan de nuevo, YA tiene pendiente
   // Disparar la subida de vouchers en BACKGROUND (no esperar) — fire-and-forget.
@@ -14478,6 +14540,19 @@ async function _npExecuteSave(job) {
 //   • Saldo pendiente: postea +X en el origen ("Trasladado a #destino") para
 //     saldarlo. El -X ya está como pago (negativo) del nuevo pedido.
 async function _npAplicarSaldosOrigen(job, targetNro, fechaPago) {
+  // Sin saldos ni devoluciones no hay nada que hacer: salir ANTES de tocar nada.
+  // (Antes igual entraba y recorría las tres listas vacías en cada guardado.)
+  if (!(job.saldosFavor || []).length && !(job.saldosPendiente || []).length
+      && !(job.saldosDevs || []).length) return;
+  // 30-jul — este tramo se cobra DESPUÉS de crear el pedido y la asesora lo espera igual:
+  // cada devolución aplicada es un viaje a Apps Script (~3 s) y van de a una. Medirlo es
+  // el paso previo a decidir si vale la pena juntarlas en un solo viaje.
+  const _c = _cronAbrir('pedido.saldos', String((job.saldosDevs || []).length) + ' dev');
+  try { await _npAplicarSaldosOrigenImpl(job, targetNro, fechaPago); _cronCerrar(_c, true); }
+  catch (e) { _cronCerrar(_c, false); throw e; }
+}
+
+async function _npAplicarSaldosOrigenImpl(job, targetNro, fechaPago) {
   const fecha = fechaPago || new Date().toISOString().split('T')[0];
   // 26-jul: antes era un pago por peticion, esperando cada una (~3 s cada una).
   // Ahora los saldos a favor y los pendientes van juntos en un solo viaje, y
@@ -15836,6 +15911,8 @@ async function loadStock() {
         const _el=document.getElementById('st-w'); if(_el) renderStock(_el); }
     }).catch(()=>{}); }catch(e){}
   }
+  // Si quedó abierto Yayitas, se recalcula al entrar. Ver _yayEntrarStock.
+  if(_stYayMode){ return _yayEntrarStock(el, renderStock); }
   if(stData){renderStock(el);return;}
   const cached = _stLsGet();
   if(cached){ stData = cached; renderStock(el); cargarVistasStock().then(()=>renderStock(el)); return; }
@@ -15890,6 +15967,7 @@ function _stCrsMousedown(e){
 // ══════════════════════════════════════════════════════════════════════════
 let _stYayMode = false;
 let _stDataYay = null;      // el montón — NUNCA se mezcla con stData
+let _stYayVieja = false;    // la foto quedó atrás (se vendió / se marcó una falla)
 
 // Qué filas tiene que pintar la tabla de stock. Único punto de decisión.
 function _stFuente() { return _stYayMode ? (_stDataYay || []) : stData; }
@@ -15929,19 +16007,44 @@ async function _yayStockRapido() {
   }).sort((a,b) => b.fechaMs - a.fechaMs);
 }
 
+// Trae el montón AL DÍA. Tira la caché primero: un número viejo acá es peor que esperar
+// dos décimas, porque no se distingue de uno bueno.
+async function _yayCargarStock() {
+  _yayOlvidar();
+  let d = null;
+  try { d = await _yayStockRapido(); } catch (e) { d = null; }
+  if (!d) d = await api('yayitas.stock', {});     // respaldo por Apps Script
+  _stDataYay = d || [];
+}
+
+// 30-jul — Entrar al módulo de stock con Yayitas abierto.
+// El bug que reportó Pablo: vendía una yayita en Pedidos, volvía a Stock y seguía viendo
+// el montón de ANTES de la venta. Tenía que hacer "Volver al Stock" y entrar de nuevo.
+// La pantalla no tenía forma de avisar que estaba mostrando algo viejo, así que la única
+// salida correcta es recalcular SIEMPRE al entrar. Cuesta una consulta al espejo (~0.2 s).
+async function _yayEntrarStock(el, pintar) {
+  el.innerHTML = spin('Actualizando Yayitas...');
+  const cron = _cronAbrir('yayitas.stock');
+  try { await _yayCargarStock(); _stYayVieja = false; _cronCerrar(cron, true); }
+  catch (e) { _cronCerrar(cron, false); _stYayMode = false; _stDataYay = null; }
+  pintar(el);
+  // El stock normal se precarga en segundo plano: así "Volver al Stock" es instantáneo.
+  if (!stData && !window._ivWarm) {
+    window._ivWarm = true;
+    _stockResumenRapido().then(d => { stData = d; try { _stLsSet(d); } catch (_) {} })
+      .catch(() => {}).finally(() => { window._ivWarm = false; });
+  }
+}
+
 async function stockYayitasToggle() {
   const ctx = _stCtxYay();
   if (!ctx) return;
   if (_stYayMode) { _stYayMode = false; ctx.pintar(ctx.el); return; }   // stData nunca se tocó
   _stYayMode = true;
-  _yayOlvidar();                       // que muestre lo de AHORA, no lo de hace 5 min
   ctx.el.innerHTML = spin('Cargando Yayitas...');
   const cron = _cronAbrir('yayitas.stock');
-  try {
-    _stDataYay = await _yayStockRapido();
-    if (!_stDataYay) _stDataYay = await api('yayitas.stock', {});   // respaldo
-    _cronCerrar(cron, true);
-  } catch (e) {
+  try { await _yayCargarStock(); _cronCerrar(cron, true); }
+  catch (e) {
     _cronCerrar(cron, false);
     _stYayMode = false;
     ctx.el.innerHTML = '<div class="empty">No se pudo cargar Yayitas: ' + esc(e.message) + '</div>';
@@ -16235,6 +16338,8 @@ function _refrescarInv(){
 let invShowAll=(function(){ try{ return localStorage.getItem('erp_inv_showall')==='1'; }catch(e){ return false; } })();
 async function loadInv(){
   const el=document.getElementById('inv-w');
+  // Si quedó abierto Yayitas, se recalcula al entrar. Ver _yayEntrarStock.
+  if(_stYayMode){ return _yayEntrarStock(el, renderInv); }
   if(stData){ renderInv(el); return; }
   const cached=_stLsGet();
   if(cached){ stData=cached; renderInv(el); cargarVistasStock().then(()=>renderInv(el)); return; }
@@ -17374,7 +17479,10 @@ function _invAbrirRecuperarFalla(){
 let _yayMapa = null, _yayMapaTs = 0, _yayMapaProm = null;
 const _YAY_VENCE_MS = 5 * 60 * 1000;
 
-function _yayOlvidar() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; }
+// Olvidar el montón. Marca TAMBIÉN como vieja la foto del Stock de Yayitas: sale del mismo
+// cálculo, así que si una queda vieja la otra también. No la borra — borrarla dejaría la
+// pantalla en blanco si alguien repinta antes de recargar; la marca la usa _yayEntrarStock.
+function _yayOlvidar() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; _stYayVieja = true; }
 
 // ── LA VÍA RÁPIDA (30-jul-2026, segunda vuelta) ───────────────────────────
 // La PRIMERA versión traía el mapa de Apps Script. Seguía tardando ~15 s, y el motivo
@@ -17502,6 +17610,35 @@ async function _yayDisponibles(nombreCompleto) {
   if (!k) return 0;
   const m = await _yayCargarMapa();
   return (m && m[k]) || 0;
+}
+
+// El nombre tal como queda guardado en Pedidos. Espejo exacto de `_yayitaNombre_`
+// (Yayitas.gs) — y como aquél, es idempotente: aplicarlo dos veces no duplica el prefijo.
+function _yayPrefijar(prenda) {
+  const p = String(prenda || '').trim();
+  if (!p) return '';
+  return /^\s*YAYITA\s*[-–—]?\s+/i.test(p) ? p : ('YAYITA - ' + p);
+}
+
+// ¿Alcanza el montón para TODAS las Yayitas de este pedido? Se responde con el mapa que
+// ya está en memoria, así que no cuesta un viaje.
+// Cuenta las repetidas: dos unidades del mismo SKU en un pedido necesitan 2, no 1.
+// Devuelve false ante cualquier duda (mapa vacío, SKU que no resuelve) — y esa duda
+// manda el pedido por Apps Script, que valida de verdad. Nunca al revés.
+async function _yayAlcanzaParaTodas(prendas) {
+  try {
+    const need = {};
+    (prendas || []).forEach(p => {
+      if (!p || !p.esYayita) return;
+      const k = _yayClaveDe(String(p.dis || '').replace(/^\s*YAYITA\s*[-–—]?\s+/i, ''));
+      if (!k) { need['?'] = (need['?'] || 0) + 1; return; }
+      need[k] = (need[k] || 0) + 1;
+    });
+    if (need['?']) return false;
+    const m = await _yayCargarMapa();
+    if (!m) return false;
+    return Object.keys(need).every(k => (m[k] || 0) >= need[k]);
+  } catch (e) { return false; }
 }
 
 let _falCart = [];
