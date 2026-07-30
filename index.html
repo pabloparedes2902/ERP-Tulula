@@ -12133,6 +12133,154 @@ async function _sbPedidosPendientes() {
     return j;
   } catch (e) { try { _errLog('sb.pedidosPendientes', e); } catch (_) {} return null; }
 }
+// 29-jul (2) · DE 745 KB A ~1 KB — SE PIDE UNA CLIENTA, NO LAS 1.406
+//
+// Medido: el mapa completo son 745 KB y tarda 3.078-3.293 ms. La consulta ya es
+// rápida; lo que tarda es MOVER los datos. Así que se dejó de traer todo por
+// adelantado: ahora se pregunta por la clienta que la asesora eligió.
+//
+// ⚠️ EL PELIGRO DE ESTE CAMBIO, Y CÓMO SE FRENA:
+// si la consulta falla, el código de la pantalla cae en "Sin pedidos
+// pendientes" y la asesora CREA UN PEDIDO NUEVO en vez de agregar al que ya
+// existe → pedido duplicado, en silencio, sin ningún error visible.
+// Por eso `_pendDe` devuelve TRES cosas distintas y no dos:
+//     {hay:true,  entry}  → tiene un pendiente
+//     {hay:false}         → NO tiene (respuesta buena, se puede crear nuevo)
+//     null                → NO PUDE PREGUNTAR (nunca ofrecer crear nuevo)
+// Quien llama tiene que distinguir el tercero. Hay pruebas que lo vigilan.
+// ⚠️ LA CACHÉ ES EL PELIGRO MÁS FINO DE TODO ESTE CAMBIO.
+// Guardar {hay:false} para siempre es exactamente el bug que se quiere evitar:
+// la asesora busca a MARIA (no tiene pendiente), le crea un pedido, y minutos
+// después vuelve a buscarla para agregarle una prenda → la caché contesta
+// "no tiene" → crea un SEGUNDO pedido. Por eso:
+//   1. la respuesta caduca a los 30 s (absorbe el tecleo, no la sesión)
+//   2. crear o agregar un pedido BORRA la caché entera
+const _pendCache = new Map();   // clave → {v:{hay,entry}, ts}
+const _PEND_TTL  = 30 * 1000;
+
+// Se llama después de CADA pedido guardado (creado o agregado). Sin esto, la
+// caché miente y el pedido se duplica.
+function _pendOlvidar() {
+  try { _pendCache.clear(); } catch (_) {}
+  try { NP.pendData = null; } catch (_) {}   // el camino viejo cacheaba igual
+}
+
+async function _pendDe(clave) {
+  const k = String(clave || '').trim();
+  if (!k) return { hay: false };
+  const c = _pendCache.get(k);
+  if (c && (Date.now() - c.ts) < _PEND_TTL) return c.v;
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_pendiente_de', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_clave: k })
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || typeof j.hay !== 'boolean') return null;   // forma inesperada = no sé
+    _pendCache.set(k, { v: j, ts: Date.now() });
+    return j;
+  } catch (e) { try { _errLog('sb.pendienteDe', e); } catch (_) {} return null; }
+}
+
+// Por NÚMERO de pedido: la pantalla también deja buscar así, y eso antes
+// recorría el mapa completo (`Object.values(...).find`).
+async function _pendPorNro(nro) {
+  const n = String(nro || '').trim();
+  if (!n) return { hay: false };
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_pendiente_de', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_nro: n })
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || typeof j.hay !== 'boolean') return null;
+    return j;
+  } catch (e) { try { _errLog('sb.pendientePorNro', e); } catch (_) {} return null; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// EL INTERRUPTOR DEL CAMBIO. En false, la pantalla vuelve exactamente a como
+// estaba: baja el mapa completo de 745 KB. Es la reversa de una línea.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_PEND_POR_CLIENTA = true;
+
+// Las claves con las que preguntar, EN ORDEN de preferencia. La base compara
+//     lower(btrim("Nombres y Apellidos")) = clave   ó   btrim(Celular) = clave
+// así que el nombre va en minúsculas y el celular TAL CUAL está escrito.
+//
+// ⚠️ MEDIDO EN LA BASE, 30-jul (y por poco me equivoco al revés): hay una
+// clienta guardada con dos celulares en la misma celda, "69560076/995747771".
+// La clave de la base es esa cadena COMPLETA: preguntar por cada parte suelta
+// devuelve `false` en las dos. Así que va primero la cadena entera —que es lo
+// que acierta— y después las partes, por si algún día se guardan separadas.
+// Partir y NO mandar la entera habría perdido ese caso.
+function _pendClaves(candidatos) {
+  const out = [], vistas = new Set();
+  // Una clave sin ninguna letra ni número no puede acertar nada: un celular
+  // vacío escrito como " / " dejaba pasar la clave "/" y gastaba una consulta.
+  const meter = (k) => {
+    const kk = String(k || '').trim();
+    if (!kk || !/[0-9a-záéíóúüñ]/i.test(kk)) return;
+    if (vistas.has(kk)) return;
+    vistas.add(kk); out.push(kk);
+  };
+  (candidatos || []).slice(0, 8).forEach(c => {
+    meter(String(c.n || '').toLowerCase());
+    meter(c.t);                                        // la celda completa
+    if (String(c.t || '').indexOf('/') >= 0) String(c.t).split('/').forEach(meter);
+  });
+  return out;
+}
+
+// Pregunta por todas las claves EN PARALELO y devuelve la del primer índice que
+// tenga pedido pendiente. Ocho consultas en paralelo tardan lo mismo que una.
+//
+// 🔴 LOS TRES RESULTADOS, y por qué importan tanto:
+//   {hay:true, entry}  → tiene pendiente → ofrecer agregar
+//   {hay:false}        → NO tiene → se puede crear uno nuevo
+//   null               → NO PUDE PREGUNTAR → NO ofrecer crear nada
+// Confundir el tercero con el segundo = la asesora crea un pedido nuevo cuando
+// ya existía uno, sin ningún error en pantalla. Se entera días después.
+//
+// Detalle fino: si una clave dice "no sé" pero OTRA encuentra un pedido, se
+// devuelve el pedido. Encontrar algo es información positiva y segura. Sólo se
+// devuelve null cuando NINGUNA encontró Y al menos una falló.
+async function _pendPrimero(claves) {
+  const res = await Promise.all((claves || []).map(k => _pendDe(k)));
+  let noSe = false;
+  for (let i = 0; i < res.length; i++) {
+    if (res[i] === null) { noSe = true; continue; }
+    if (res[i].hay) return res[i];
+  }
+  return noSe ? null : { hay: false };
+}
+
+// El cartel de "no pude preguntar". Es a propósito distinto del de "sin pedidos
+// pendientes": uno invita a crear, éste pide reintentar.
+function _pendNoSePudo(resEl) {
+  resEl.innerHTML = '<div style="background:#45030320;border:1px solid var(--rd);border-radius:var(--r);padding:12px;font-size:12px">'
+    + '<strong style="color:var(--rd)">No pude comprobar si tiene un pedido pendiente</strong><br>'
+    + '<span style="color:var(--mu)">Volvé a escribir el nombre en unos segundos. '
+    + '<b>No crees un pedido nuevo todavía</b>: si la clienta ya tenía uno abierto, quedaría duplicado.</span></div>';
+}
+
+// Se deja el camino viejo COMO RESPALDO. Si la consulta por clienta no está
+// disponible (receta sin crear, base caída), la pantalla vuelve a bajar el mapa
+// completo y sigue funcionando como antes: lento, pero sin riesgo de duplicar.
+// Contador de carrera: la asesora escribe rápido y las respuestas llegan
+// desordenadas. Sin esto, un resultado viejo puede pisar al nuevo.
+NP._pendTok = 0;
+
 async function npCargarPendientes() {
   if (NP.pendData) return;
   try {
@@ -12183,7 +12331,10 @@ function npSetModo(modo) {
     if (!NP.idxReady) cargando.style.display = 'block';
 
     // Si modo agregar, cargar pedidos pendientes también
-    if (modo === 'agregar') npCargarPendientes();
+    // 30-jul · Con la consulta por clienta ya NO se baja el mapa de 745 KB al
+  // entrar al modo "agregar": se pregunta por la clienta que la asesora elija.
+  // Con el interruptor en false, vuelve a bajarlo como antes.
+  if (modo === 'agregar' && !SB_PEND_POR_CLIENTA) npCargarPendientes();
 
     document.getElementById('np-bq').focus();
   }
@@ -12230,7 +12381,19 @@ function npBqFiltrar(q) {
 
   } else if (NP.modo === 'agregar') {
     if (tipo === 'nropedido') {
-      // Buscar por número exacto de pedido en pendientes
+      // 30-jul · Antes esto recorría el mapa COMPLETO con Object.values().find().
+      // Ahora se le pregunta a la base por ese número.
+      if (SB_PEND_POR_CLIENTA) {
+        const _tk = ++NP._pendTok;
+        _pendPorNro(q.trim()).then(r => {
+          if (_tk !== NP._pendTok) return;          // ya escribió otra cosa
+          if (r === null) { _pendNoSePudo(resEl); return; }
+          if (r.hay) { npRenderPedido(r.entry, resEl); return; }
+          if (q.length >= 4) resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontró el pedido #'+esc(q)+'</div>';
+        });
+        return;
+      }
+      // Camino viejo (interruptor apagado)
       if (!NP.pendData) {
         resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">Cargando pedidos pendientes...</div>';
         return;
@@ -12244,7 +12407,20 @@ function npBqFiltrar(q) {
     // Buscar candidatos en JSON local
     const candidatos = npBuscarLocal(q, tipo);
 
-    // Cruzar con pedidos pendientes
+    // 30-jul · Antes se cruzaba contra el mapa completo (745 KB). Ahora se le
+    // pregunta a la base por las claves de esos candidatos, en un solo tirón.
+    if (SB_PEND_POR_CLIENTA && candidatos.length) {
+      const _tk = ++NP._pendTok;
+      _pendPrimero(_pendClaves(candidatos)).then(r => {
+        if (_tk !== NP._pendTok) return;            // ya escribió otra cosa
+        if (r === null) { _pendNoSePudo(resEl); return; }   // 🔴 no inventar
+        if (r.hay) { npRenderPedido(r.entry, resEl); return; }
+        _npAgregarSinPendiente(candidatos, q, tipo, resEl);
+      });
+      return;
+    }
+
+    // Camino viejo (interruptor apagado o sin candidatos locales)
     if (NP.pendData) {
       let encontrado = null;
       for (const c of candidatos) {
@@ -12255,6 +12431,14 @@ function npBqFiltrar(q) {
       if (encontrado) { npRenderPedido(encontrado, resEl); return; }
     }
 
+    _npAgregarSinPendiente(candidatos, q, tipo, resEl);
+  }
+}
+
+// Lo que se muestra cuando la clienta NO tiene pedido pendiente. Estaba metido
+// dentro de npBqFiltrar; se sacó acá para poder llamarlo también desde la
+// respuesta de la base, que llega después.
+function _npAgregarSinPendiente(candidatos, q, tipo, resEl) {
     if (candidatos.length > 0) {
       // Encontró al cliente pero no tiene pedidos pendientes
       resEl.innerHTML = '<div style="background:#451a0320;border:1px solid var(--am);border-radius:var(--r);padding:12px;font-size:12px">'
@@ -12266,7 +12450,6 @@ function npBqFiltrar(q) {
       clearTimeout(NP_bqBackendTimer);
       NP_bqBackendTimer = setTimeout(() => npBqBackendAgregar(q, tipo, resEl), 300);
     }
-  }
 }
 
 // Búsqueda local en el índice JSON
@@ -12302,7 +12485,7 @@ function npBqBackend(q, tipo, resEl) {
 }
 
 // Búsqueda LOCAL para pedidos pendientes (modo agregar, cliente nuevo) — sin llamada al backend
-function npBqBackendAgregar(q, tipo, resEl) {
+async function npBqBackendAgregar(q, tipo, resEl) {
   if (!NP.idxReady || !NP.idxData) {
     resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">⏳ Cargando índice...</div>';
     return;
@@ -12312,18 +12495,17 @@ function npBqBackendAgregar(q, tipo, resEl) {
     resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontraron clientes.</div>';
     return;
   }
-  // Cruzar con pendientes
-  if (NP.pendData) {
-    for (const c of filtrados) {
-      const key = (c.Nombre||'').toLowerCase();
-      const tel  = c.Telefono||'';
-      if (NP.pendData[key])  { npRenderPedido(NP.pendData[key], resEl); return; }
-      if (NP.pendData[tel])  { npRenderPedido(NP.pendData[tel], resEl); return; }
-    }
-  }
+  // 30-jul · ESTO NO CRUZABA NADA. Leía c.Nombre y c.Telefono, pero
+  // npBuscarLocal devuelve {n, t}: las dos claves salían siempre vacías y la
+  // pantalla decía "Sin pedidos pendientes" pasara lo que pasara — el mismo
+  // molde de bug que el validador que leía p.Prenda en vez de p.prenda.
+  // Ahora usa las MISMAS claves y la MISMA consulta que npBqFiltrar.
+  const r = await _pendPrimero(_pendClaves(filtrados));
+  if (r === null) { _pendNoSePudo(resEl); return; }   // 🔴 no ofrecer crear
+  if (r.hay) { npRenderPedido(r.entry, resEl); return; }
   resEl.innerHTML = '<div style="background:#451a0320;border:1px solid var(--am);border-radius:var(--r);padding:12px;font-size:12px">'
     + '<strong style="color:var(--am)">Sin pedidos pendientes</strong><br>'
-    + '<span style="color:var(--mu)">'+esc(filtrados[0].Nombre||'—')+' no tiene pedidos activos.</span></div>';
+    + '<span style="color:var(--mu)">'+esc(filtrados[0].n||'—')+' no tiene pedidos activos.</span></div>';
 }
 
 
@@ -14034,6 +14216,7 @@ async function _npExecuteSave(job) {
     });
     // v15 — consumir saldo del pedido origen también en modo "agregar"
     await _npAplicarSaldosOrigen(job, job.nroPedBase, cliBase.FechaPago);
+    _pendOlvidar();   // el pedido cambió: lo cacheado ya no vale
     return job.nroPedBase;
   }
   // PERF v13 — VOUCHERS DIFERIDOS: el pedido se crea SIN constancias primero (~1-2s).
@@ -14052,6 +14235,7 @@ async function _npExecuteSave(job) {
   // PASO 5b — primero la base (decimas de segundo). Si no se puede, Apps Script.
   const res = (await _crearPedidoRapido(_bodyCrear)) || (await apiPost('pedidos.crear', _bodyCrear));
   const nuevoNro = res.NroPedido;
+  _pendOlvidar();   // recién creado: si la buscan de nuevo, YA tiene pendiente
   // Disparar la subida de vouchers en BACKGROUND (no esperar) — fire-and-forget.
   // Reforma jul-2026: skipSheet (solo Drive) + constancia.setPago asocia las URLs
   // al PAGO correspondiente (antes voucher.subir las pegaba en TODAS las filas).
