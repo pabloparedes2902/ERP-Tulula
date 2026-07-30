@@ -1585,17 +1585,34 @@ const _LIMPIABLES = {
 
 // Se muestra sólo donde hay algo que limpiar. Un botón que no hace nada enseña a
 // ignorarlo, y después no se usa cuando sí serviría.
+// 30-jul, segunda vuelta — ANTES SE ESCONDÍA CUANDO NO HABÍA NADA QUE LIMPIAR.
+// Sonaba prolijo y estuvo mal: Pablo publicó, fue a buscarlo y no lo encontró — porque
+// no había filtros puestos. Desde afuera, "oculto porque no hace falta" y "no se publicó"
+// se ven exactamente igual. Un control que aparece y desaparece no se aprende nunca.
+// Ahora está SIEMPRE, apagado cuando no hay nada que limpiar y encendido cuando sí.
+// El estado se ve, y el botón se puede buscar donde siempre estuvo.
 function _limpiarFiltrosSync() {
   const b = document.getElementById('btn-limpiar-filtros');
   if (!b) return;
-  let mostrar = false;
-  try { const m = _LIMPIABLES[curPg]; mostrar = !!(m && m.hay()); } catch (e) { mostrar = false; }
-  b.style.display = mostrar ? 'flex' : 'none';
+  const m = _LIMPIABLES[curPg];
+  if (!m) { b.style.display = 'none'; return; }   // módulo sin filtros por columna
+  let hay = false;
+  try { hay = !!m.hay(); } catch (e) { hay = false; }
+  b.style.display = 'flex';
+  b.disabled = !hay;
+  b.style.opacity = hay ? '1' : '.45';
+  b.style.cursor = hay ? 'pointer' : 'default';
+  b.style.color = hay ? 'var(--ac2, #f59e0b)' : 'var(--mu)';
+  b.style.borderColor = hay ? 'var(--ac2, #f59e0b)' : 'var(--bd)';
+  b.title = hay ? 'Quitar todos los filtros de columna de esta pantalla'
+                : 'No hay filtros de columna puestos en esta pantalla';
 }
 
 function limpiarFiltrosPantalla() {
   const m = _LIMPIABLES[curPg];
   if (!m) return;
+  let hay = false; try { hay = !!m.hay(); } catch (e) {}
+  if (!hay) return;   // apagado: no hay nada que quitar
   try { m.limpiar(); } catch (e) { try { _errLog('limpiarFiltros', e); } catch (_) {} }
   _limpiarFiltrosSync();
   try { toast('Filtros de columna quitados', 'ok'); } catch (e) {}
@@ -2313,7 +2330,7 @@ const _CRON_TOPE = 400;
 // pasa los 3 s, y las vías rápidas tardan 176-470 ms. Se registraban sólo las
 // llamadas lentas a Apps Script — justo el sesgo que esto viene a corregir.
 // Sin esta línea, verLentos() seguiría mostrando una sola columna.
-const _CRON_SIEMPRE = /^(rapido\.|(api\.)?(cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
+const _CRON_SIEMPRE = /^(rapido\.|pedido\.|(api\.)?(pedidos\.crear|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
 
 function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
 function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
@@ -2346,6 +2363,21 @@ function _cronLatir() {
     const ahora = Date.now();
     ab.forEach(function (x) { x.vivo = ahora; });
     _cronGuardar(_CRON_ABIERTAS, ab);
+  } catch (_) {}
+}
+
+// Anotar una duración que se midió EN OTRO LADO — el servidor. `_cronCerrar` mide contra
+// el reloj del navegador, que acá no sirve: el tramo pasó dentro de Apps Script.
+function _cronForzar(id, ms) {
+  if (!id) return;
+  try {
+    const ab = _cronLeer(_CRON_ABIERTAS);
+    const i = ab.findIndex(function (x) { return x.id === id; });
+    if (i < 0) return;
+    const x = ab[i];
+    ab.splice(i, 1);
+    _cronGuardar(_CRON_ABIERTAS, ab);
+    _cronAnotar({ q: x.q, det: x.det, ms: Math.max(0, parseInt(ms, 10) || 0), ok: 1, cortada: 0, ts: x.t0 });
   } catch (_) {}
 }
 
@@ -14668,6 +14700,20 @@ async function _npExecuteSave(job) {
   const res = (_bodyRapido && await _crearPedidoRapido(_bodyRapido))
            || (await apiPost('pedidos.crear', _bodyCrear));
   _cronCerrar(_cronG, true);
+  // 30-jul — cuando el pedido se crea por Apps Script, el backend devuelve el reparto
+  // por fases (ver `_fases` en pedidosCrear). Se anota cada fase por separado para que
+  // salga en verLentos(): así se ve QUÉ tramo se come los segundos, no sólo el total.
+  // Sin esto, "19 segundos" es un número sin destino: no dice dónde hay que trabajar.
+  try {
+    if (res && res._fases) {
+      Object.keys(res._fases).forEach(f => {
+        const c = _cronAbrir('pedido.dentro.' + f);
+        _cronForzar(c, res._fases[f]);
+      });
+      console.log('[pedido.crear] ' + res._ms + ' ms adentro de Apps Script:',
+                  JSON.stringify(res._fases));
+    }
+  } catch (e) {}
   const nuevoNro = res.NroPedido;
   _pendOlvidar();   // recién creado: si la buscan de nuevo, YA tiene pendiente
   // Disparar la subida de vouchers en BACKGROUND (no esperar) — fire-and-forget.
