@@ -13296,6 +13296,10 @@ function npAddTel(primero) {
 
 // ── PRENDAS ───────────────────────────────────────────────
 function npAddPrenda() {
+  // El mapa de Yayitas se pide APENAS se abre una fila de prenda, no cuando la asesora
+  // termina de elegir. Para cuando haya escrito el nombre, ya está en memoria y el aviso
+  // sale instantáneo. Es fire-and-forget: no frena nada si tarda o falla.
+  _yayPrecargar();
   NP.pc++;
   const div = document.createElement('div'); div.className = 'pbox';
 
@@ -17057,7 +17061,11 @@ function _confAbrirIngresarStock(confEl) {
     npAc(inp, lst, opts, v => { inp.value = v; lst.classList.remove('on'); document.getElementById('stk-cant').focus(); });
   };
   inp.addEventListener('input', showAc);
-  inp.addEventListener('focus', showAc);
+  // 30-jul-2026 — antes era 'focus'. Después de agregar un SKU el código hace
+  // `inp.focus()` para dejar el cursor listo, y eso disparaba el desplegable SOLO,
+  // tapando la tabla del carrito. Con 'click' se abre únicamente cuando la persona
+  // toca el campo: el foco programático no dispara click.
+  inp.addEventListener('click', showAc);
   inp.addEventListener('blur', () => setTimeout(()=>lst.classList.remove('on'), 200));
 
   const renderCart = () => {
@@ -17212,17 +17220,84 @@ const _YAY_VENCE_MS = 5 * 60 * 1000;
 
 function _yayOlvidar() { _yayMapa = null; _yayMapaTs = 0; _yayMapaProm = null; }
 
+// ── LA VÍA RÁPIDA (30-jul-2026, segunda vuelta) ───────────────────────────
+// La PRIMERA versión traía el mapa de Apps Script. Seguía tardando ~15 s, y el motivo
+// es que `_yayitasDispMap_` recorre la hoja Confección ENTERA — 51.120 filas — para
+// restar las ya vendidas. Ninguna caché arregla eso: la primera consulta igual la paga
+// la asesora, y es justo la que importa.
+//
+// Ahora se arma en el navegador con datos que ya están cerca:
+//   · el MONTÓN  → tabla `fallas` del espejo de Supabase, filtrando por Destino en el
+//                  servidor (vuelven decenas de filas, no la hoja entera)
+//   · las VENDIDAS → las filas de Pedidos que YA están en memoria (EsYayita = SI).
+//                    Cero viajes.
+//
+// Apps Script queda como respaldo: si Supabase no contesta, se pregunta como antes.
+// El backend valida igual al guardar, así que este mapa solo decide si se OFRECE la
+// Yayita — nunca puede vender una que no existe.
+async function _yayMapaRapido() {
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    // Filtro en el SERVIDOR por destino: no traemos el montón entero.
+    const q = 'select=row_json&' + encodeURIComponent('row_json->>Destino') + '=eq.YAYITAS&limit=5000';
+    const r = await fetch(SB_URL + '/rest/v1/fallas?' + q,
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j)) return null;
+
+    const TM = {'S/M':'M','M/L':'L','L/XL':'XL','C':'M','G':'XL','STD':'M','ESTANDAR':'M','U':'M','XXL':'2XL','XXXL':'3XL'};
+    const TSTD = ['XS','S','M','L','XL','2XL','3XL'];
+    const mapa = {};
+    const add = (dis, col, tal, n) => {
+      const t = TM[String(tal||'').toUpperCase()] || String(tal||'').toUpperCase();
+      if (TSTD.indexOf(t) < 0) return;
+      const k = (String(dis||'').trim()+'|'+String(col||'').trim()+'|'+t).toUpperCase();
+      mapa[k] = (mapa[k] || 0) + n;
+    };
+    j.forEach(x => {
+      const f = x.row_json; if (!f) return;
+      if (String(f['Eliminado']||'').trim().toUpperCase() === 'SI') return;
+      add(f['Diseno'], f['Color'], f['Talla'], parseInt(f['Cantidad'],10) || 1);
+    });
+
+    // Restar las ya vendidas, con lo que el navegador ya tiene cargado.
+    try {
+      (pRaw || []).forEach(p => {
+        if (String(p['EsYayita']||'').trim().toUpperCase() !== 'SI') return;
+        if (String(p['Eliminado']||'').trim().toUpperCase() === 'SI') return;
+        const k = _yayClaveDe(String(p['Prenda']||'').replace(/^\s*YAYITA\s*[-–—]?\s+/i,''));
+        if (k && mapa[k] !== undefined) mapa[k] -= 1;
+      });
+    } catch (e) {}
+
+    Object.keys(mapa).forEach(k => { if (mapa[k] <= 0) delete mapa[k]; });
+    return mapa;
+  } catch (e) { try { _errLog('yay.mapa.rapido', e); } catch (_) {} return null; }
+}
+
 async function _yayCargarMapa() {
   const fresco = _yayMapa && (Date.now() - _yayMapaTs) < _YAY_VENCE_MS;
   if (fresco) return _yayMapa;
   if (_yayMapaProm) return _yayMapaProm;          // una sola consulta aunque pregunten 5 filas a la vez
   const cron = _cronAbrir('yayitas.mapa');
-  _yayMapaProm = api('yayitas.mapa', {})
-    .then(m => { _yayMapa = m || {}; _yayMapaTs = Date.now(); _cronCerrar(cron, true); return _yayMapa; })
-    .catch(e => { _cronCerrar(cron, false); _yayMapa = {}; _yayMapaTs = Date.now(); return _yayMapa; })
-    .then(m => { _yayMapaProm = null; return m; });
+  _yayMapaProm = (async () => {
+    // Primero la base (centésimas). Si no se puede, Apps Script (segundos).
+    let m = await _yayMapaRapido();
+    if (!m) { try { m = await api('yayitas.mapa', {}); } catch (e) { m = {}; } }
+    _yayMapa = m || {}; _yayMapaTs = Date.now();
+    return _yayMapa;
+  })()
+    .then(m => { _cronCerrar(cron, true); _yayMapaProm = null; return m; })
+    .catch(e => { _cronCerrar(cron, false); _yayMapa = {}; _yayMapaTs = Date.now(); _yayMapaProm = null; return _yayMapa; });
   return _yayMapaProm;
 }
+
+// Se precarga al abrir el formulario de pedido: cuando la asesora elija la prenda, el
+// mapa ya está. Sin esto, la primera prenda del día seguiría esperando.
+function _yayPrecargar() { try { _yayCargarMapa(); } catch (e) {} }
 
 // Resuelve DIS|COL|TALLA del nombre usando el catálogo que el ERP ya tiene en memoria.
 // Si no lo puede resolver, devuelve 0: preferimos no ofrecer una Yayita antes que
@@ -17371,7 +17446,11 @@ function _confAbrirIngresarFalla(confEl) {
     npAc(inp, lst, opts, v => { inp.value = v; lst.classList.remove('on'); _falCargarLotes(v); document.getElementById('fal-cant').focus(); });
   };
   inp.addEventListener('input', showAc);
-  inp.addEventListener('focus', showAc);
+  // 30-jul-2026 — antes era 'focus'. Después de agregar un SKU el código hace
+  // `inp.focus()` para dejar el cursor listo, y eso disparaba el desplegable SOLO,
+  // tapando la tabla del carrito. Con 'click' se abre únicamente cuando la persona
+  // toca el campo: el foco programático no dispara click.
+  inp.addEventListener('click', showAc);
   inp.addEventListener('blur', () => setTimeout(()=>lst.classList.remove('on'), 200));
 
   const renderCart = () => {
