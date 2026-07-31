@@ -296,7 +296,7 @@ function barra(cumpl, alto, color, tiers, conMarcas) {
              'background:var(--bd2);opacity:' + (esNivel ? '.9' : '.4') + '"></div>' +
         '<div style="position:absolute;left:' + x + '%;top:100%;transform:translateX(-50%);' +
              'margin-top:3px;font-size:9px;color:var(--mu);' +
-             (esNivel ? 'font-weight:600' : '') + '">' + p + '</div>';
+             (esNivel ? 'font-weight:600' : '') + '">' + p + '%</div>';
     }
   }
 
@@ -522,13 +522,13 @@ function pintarHome() {
     filtrosPeriodo() +
     '<div id="com-perf"></div>' +
     '<div id="com-hist"></div>' +
-    tarjetaAnomalias(COM.historico) +
     tarjetaEquipo(R, P, qTxt, meses, d.year) +
     tarjetaRanking(R, qTxt) +
     '<div class="ct">Asesoras · ' + esc(qTxt) + '</div>' +
     '<div class="com-grid">' +
       R.rows.map(function (r, i) { return tarjetaAsesora(r, P.rows[i], R, meses, i); }).join('') +
     '</div>' +
+    tarjetaAnomalias(COM.historico) +
     tarjetaCobertura(d) +
     tarjetaReglas(cfg, R);
 
@@ -1480,7 +1480,8 @@ function pintarAsesoras() {
       '<div style="font-size:13px;margin-top:12px;line-height:1.7">' +
         'Marcá los meses en que cada asesora estuvo activa. Los meses inactivos ' +
         'no suman meta ni arrastran el cumplimiento del equipo.<br>' +
-        'Si dejás el <b>sueldo</b> vacío se usa el prorrateo por días trabajados. ' +
+        'Si dejás el <b>sueldo del mes</b> vacío se usa el sueldo base prorrateado ' +
+        'por días trabajados. Solo hay que llenarlo cuando ese mes cobró distinto.<br>' +
         'La <b>meta</b> se calcula sola: ' + x + '× el sueldo del mes.' +
       '</div>' +
     '</div>' +
@@ -2368,8 +2369,10 @@ function pintarConfig() {
 
     '<div class="card">' +
       '<div class="ct">Asesoras</div>' +
-      '<div style="font-size:13px;margin-bottom:14px">' +
-        'Quién entra al cálculo de comisiones. El correo es con el que inicia sesión en Tulula Comisiones.' +
+      '<div style="font-size:13px;margin-bottom:14px;line-height:1.6">' +
+        'Quién entra al cálculo de comisiones. El correo es con el que inicia sesión en Tulula Comisiones.<br>' +
+        '<b>El sueldo base y la fecha de ingreso se definen acá.</b> ' +
+        'En la pestaña Asesoras se ajusta el detalle mes a mes cuando alguna cobró distinto.' +
       '</div>' +
       '<div id="cfg-vend">' + filasVend + '</div>' +
       '<button class="btn bg bs" onclick="comCfgAgregar()" style="margin-top:10px">Agregar asesora</button>' +
@@ -3018,15 +3021,26 @@ window.comCfgGuardar = function () {
     gm_pct: Number(document.getElementById('cfg-gm').value) || 62,
   };
 
-  if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = 'Guardando...'; }
+  // Feedback visible: el guardado puede tardar varios segundos
+  var btn = document.querySelector('button[onclick="comCfgGuardar()"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; btn.style.opacity = '.6'; }
+  if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = 'Puede tardar unos segundos…'; }
+
   comApi('saveCfg', { patch: patch })
     .then(function () {
       COM.data = null; ASE.data = null;
       cacheBorrar();
-      if (msg) { msg.style.color = 'var(--gn)'; msg.textContent = 'Guardado'; }
-      setTimeout(function () { cargar(true); setTimeout(pintarConfig, 900); }, 400);
+      if (msg) { msg.style.color = 'var(--gn)'; msg.textContent = 'Guardado. Recalculando…'; }
+      return traer(COM.year || new Date().getFullYear(),
+                   COM.q || Math.ceil((new Date().getMonth() + 1) / 3));
+    })
+    .then(function () {
+      if (COM.vista === 'config') pintarConfig();
+      var m2 = document.getElementById('cfg-msg');
+      if (m2) { m2.style.color = 'var(--gn)'; m2.textContent = 'Guardado'; }
     })
     .catch(function (e) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Guardar configuración'; btn.style.opacity = '1'; }
       if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
     });
 };
