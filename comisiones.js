@@ -1,3 +1,29 @@
+function filtrosPeriodo() { return ''; }   // el período ya vive en la barra de arriba
+
+/** Sub-selector dentro del resumen: todo el trimestre o un mes suelto. */
+function selectorMesResumen() {
+  var hoy = new Date();
+  var year = COM.year || hoy.getFullYear();
+  var q = COM.q || Math.ceil((hoy.getMonth() + 1) / 3);
+  var m0 = (q - 1) * 3 + 1;
+  var tope = (year === hoy.getFullYear()) ? hoy.getMonth() + 1 : 12;
+
+  var estilo = 'background:var(--bg2);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:5px 8px;border-radius:var(--r);font-size:12px;font-family:inherit;cursor:pointer';
+
+  var todos = [];
+  for (var k = 0; k < 3; k++) if (m0 + k <= tope) todos.push(m0 + k);
+  var esTodo = !PER.meses || PER.meses.length !== 1;
+
+  var opts = '<option value="0"' + (esTodo ? ' selected' : '') + '>Todo el trimestre</option>';
+  todos.forEach(function (m) {
+    var sel = (!esTodo && PER.meses[0] === m) ? ' selected' : '';
+    opts += '<option value="' + m + '"' + sel + '>' + MESES_LARGO[m - 1] + '</option>';
+  });
+
+  return '<select style="' + estilo + '" onchange="comMesResumen(this.value)">' + opts + '</select>';
+}
+
 /* ══════════════════════════════════════════════════════════════════════
    TULULA ERP — MÓDULO COMISIONES
    Archivo: comisiones.js   ·   Parte 1: motor + vista principal
@@ -339,16 +365,28 @@ function cargar(forzar) {
 }
 
 /** Consulta al servidor y actualiza estado + caché. */
+/**
+ * Trae todo el módulo en UNA sola llamada.
+ * Cada ida y vuelta a Apps Script cuesta ~3 segundos (redirect incluido),
+ * así que pedir cinco cosas por separado son 15 segundos de espera.
+ */
 function traer(year, q) {
   var t0 = Date.now();
-  return comApi('admin', { year: year, q: q }).then(function (d) {
-    COM.data = d;
+  return comApi('bootstrap', { year: year, q: q }).then(function (b) {
+    COM.data = b.admin;
     COM.traidoEn = Date.now();
     COM.ms = Date.now() - t0;
-    cacheGuardar(year, q, d);
-    // Con el panel ya resuelto, traemos el resto sin que se note
-    setTimeout(precargarPestanas, 1500);
-    return d;
+    cacheGuardar(year, q, b.admin);
+
+    // Las otras pestañas ya vienen resueltas
+    if (b.asesoras) { ASE.data = b.asesoras; ASE.year = year; }
+    if (b.cierresTrim || b.cierresMes || b.reglasLog) {
+      CIERRE.cerradosTrim = b.cierresTrim || [];
+      CIERRE.cerradosMes  = b.cierresMes  || [];
+      CIERRE.log          = b.reglasLog   || [];
+      CIERRE.cargado = true;
+    }
+    return b.admin;
   });
 }
 
@@ -459,7 +497,7 @@ function pintarHome() {
         '<div style="font-size:13px;margin-bottom:12px">' +
           'Ventas, margen, pedidos y ticket, comparados con el período anterior.' +
         '</div>' +
-        '<button class="btn bg bs" onclick="comPeriodo(\'' + PER.modo + '\')">Cargar resumen</button>' +
+        '<button class="btn bg bs" onclick="comCargarResumen()">Cargar resumen</button>' +
       '</div>';
   }
 }
@@ -487,50 +525,27 @@ function pestañas(activa) {
 
 function barraHerramientas(d, qTxt) {
   var hoy = new Date();
-  var yActual = hoy.getFullYear();
-  var años = [yActual - 1, yActual];
-
-  var optY = años.map(function (y) {
-    return '<option value="' + y + '"' + (y === d.year ? ' selected' : '') + '>' + y + '</option>';
-  }).join('');
-
-  var optQ = [1,2,3,4].map(function (k) {
-    return '<option value="' + k + '"' + (k === d.q ? ' selected' : '') + '>' + etiquetaTrim(k, d.year) + '</option>';
-  }).join('');
-
   var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
-               'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
+               'padding:8px 11px;border-radius:var(--r);font-size:13px;font-family:inherit;cursor:pointer';
+
+  // Un solo desplegable con los trimestres, del más reciente al más viejo
+  var opts = '', yActual = hoy.getFullYear(), qActual = Math.ceil((hoy.getMonth() + 1) / 3);
+  for (var k = 0; k < 8; k++) {
+    var qq = qActual - k, yy = yActual;
+    while (qq < 1) { qq += 4; yy--; }
+    var sel = (yy === d.year && qq === d.q) ? ' selected' : '';
+    var etq = etiquetaTrim(qq, yy);
+    if (k === 0) etq += '  ·  actual';
+    opts += '<option value="' + yy + '-' + qq + '"' + sel + '>' + etq + '</option>';
+  }
 
   return '<div class="com-toolbar">' +
-    '<span class="com-mut" style="font-size:12px">Período</span>' +
-    '<select id="com-year" style="' + estilo + '" onchange="comCambiarPeriodo()">' + optY + '</select>' +
-    '<select id="com-q" style="' + estilo + '" onchange="comCambiarPeriodo()">' + optQ + '</select>' +
-    '<button class="btn bg bs" onclick="loadComisiones(true)">Actualizar</button>' +
+    '<select id="com-periodo" style="' + estilo + ';font-weight:500" onchange="comCambiarPeriodo()">' +
+      opts + '</select>' +
     selectorVerComo(d.cfgFull) +
+    '<button class="btn bg bs" onclick="loadComisiones(true)">Actualizar</button>' +
     '<span id="com-estado" style="font-size:12px;color:var(--mu)"></span>' +
   '</div>';
-}
-
-/**
- * Qué fracción del trimestre ya pasó.
- * Sin esto, ver "63%" el 31 de julio parece que van perdiendo, cuando
- * en realidad recién arrancó el trimestre y julio cerró por encima.
- */
-function avanceTrimestre(year, q) {
-  var ini = new Date(year, (q - 1) * 3, 1);
-  var fin = new Date(year, (q - 1) * 3 + 3, 0, 23, 59, 59);
-  var hoy = new Date();
-
-  if (hoy > fin) return { frac: 1, dias: 0, cerrado: true };
-  if (hoy < ini) return { frac: 0, dias: Math.round((fin - ini) / 864e5) + 1, cerrado: false };
-
-  var total = (fin - ini) / 864e5 + 1;
-  var pasado = (hoy - ini) / 864e5;
-  return {
-    frac: Math.max(0, Math.min(1, pasado / total)),
-    dias: Math.max(0, Math.round((fin - hoy) / 864e5)),
-    cerrado: false,
-  };
 }
 
 function tarjetaEquipo(R, P, qTxt, meses, year) {
@@ -1378,7 +1393,21 @@ function cargarPeriodo(modo, desde, hasta) {
   PER.modo = modo;
   var seq = ++PER.seq;
 
-  var r = rangoDeMeses(PER.meses, COM.year || new Date().getFullYear());
+  var hoy = new Date();
+  var year = COM.year || hoy.getFullYear();
+  var q = COM.q || Math.ceil((hoy.getMonth() + 1) / 3);
+
+  // Sin selección explícita, el resumen cubre el trimestre entero
+  var meses = PER.meses;
+  if (!meses || !meses.length) {
+    var m0 = (q - 1) * 3 + 1;
+    var tope = (year === hoy.getFullYear()) ? hoy.getMonth() + 1 : 12;
+    meses = [];
+    for (var k = 0; k < 3; k++) if (m0 + k <= tope) meses.push(m0 + k);
+    if (!meses.length) meses = [m0];
+  }
+
+  var r = rangoDeMeses(meses, year);
   if (!r) return;
   PER.rango = r;
   PER.cargando = true;
@@ -1413,58 +1442,12 @@ function cargarPeriodo(modo, desde, hasta) {
       if (z) z.innerHTML = '<div class="card">' +
         '<div class="ct">Histórico de margen</div>' +
         '<div class="ml">No se pudo cargar: ' + esc((e && e.message) || e) + '</div>' +
-        '<button class="btn bg bs" style="margin-top:10px" onclick="comPeriodo(\'' + PER.modo + '\')">Reintentar</button>' +
+        '<button class="btn bg bs" style="margin-top:10px" onclick="comCargarResumen()">Reintentar</button>' +
       '</div>';
     });
 }
 
-/**
- * Un solo control de período: los 12 meses del año, y se eligen los que
- * se quieran. Sin botones de Mes/Trimestre/Año por separado.
- */
-function filtrosPeriodo() {
-  var hoy = new Date();
-  var year = COM.year || hoy.getFullYear();
-  var mesTope = (year === hoy.getFullYear()) ? hoy.getMonth() + 1 : 12;
-
-  if (!PER.meses || !PER.meses.length) PER.meses = [mesTope];   // arranca en el mes actual
-
-  var chips = '';
-  for (var m = 1; m <= 12; m++) {
-    var on = PER.meses.indexOf(m) >= 0;
-    var futuro = m > mesTope;
-    chips += '<button onclick="comMes(' + m + ')"' + (futuro ? ' disabled' : '') +
-      ' style="background:' + (on ? 'var(--ac)' : 'var(--bg3)') + ';' +
-      'border:1px solid ' + (on ? 'var(--ac)' : 'var(--bd)') + ';' +
-      'color:' + (on ? '#fff' : (futuro ? 'var(--bd)' : 'var(--mu)')) + ';' +
-      'padding:6px 11px;border-radius:var(--r);font-size:12px;font-weight:' + (on ? '600' : '400') + ';' +
-      'font-family:inherit;cursor:' + (futuro ? 'default' : 'pointer') + '">' +
-      MESES_CORTO[m - 1] + '</button>';
-  }
-
-  var atajo = function (etq, ms) {
-    return '<button onclick="comMesesSet(' + JSON.stringify(ms).replace(/"/g, '&quot;') + ')" ' +
-           'style="background:transparent;border:none;color:var(--ac);font-size:12px;' +
-           'font-family:inherit;cursor:pointer;padding:6px 4px;text-decoration:underline">' + etq + '</button>';
-  };
-
-  var q = Math.ceil(mesTope / 3);
-  var mesesQ = [(q - 1) * 3 + 1, (q - 1) * 3 + 2, (q - 1) * 3 + 3].filter(function (m) { return m <= mesTope; });
-  var mesesAnio = [];
-  for (var k = 1; k <= mesTope; k++) mesesAnio.push(k);
-
-  var sel = PER.meses.slice().sort(function (a, b) { return a - b; })
-              .map(function (m) { return MESES_CORTO[m - 1]; }).join(', ');
-
-  return '<div id="com-filtros" style="margin-bottom:16px">' +
-    '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">' + chips + '</div>' +
-    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">' +
-      '<span class="com-mut" style="font-size:12px">Mostrando: <b style="color:var(--tx)">' +
-        (sel || 'ninguno') + '</b></span>' +
-      atajo('Este mes', [mesTope]) + atajo('Trimestre', mesesQ) + atajo('Año', mesesAnio) +
-    '</div>' +
-  '</div>';
-}
+function filtrosPeriodo() { return ''; }   // el período vive en la barra de arriba
 
 /** Flecha comparativa contra el período anterior. */
 function delta(actual, previo) {
@@ -1510,7 +1493,10 @@ function pintarPerf() {
               .map(function (m) { return MESES_CORTO[m - 1]; }).join(', ');
 
   z.innerHTML = '<div class="card">' +
-    '<div class="ct">Resumen del período · ' + esc(etq) + '</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">' +
+      '<div class="ct" style="margin:0">Resumen del período</div>' +
+      selectorMesResumen() +
+    '</div>' +
     '<div class="ml" style="margin-bottom:6px">' + esc(r.desde) + ' a ' + esc(r.hasta) + ' · hasta el cierre de ayer</div>' +
     comparativa +
     '<div class="com-mts">' +
@@ -2130,6 +2116,7 @@ window.comIr = function (vista) {
 function precargarPestanas() {
   if (precargarPestanas._hecho) return;
   precargarPestanas._hecho = true;
+  if (ASE.data && CIERRE.cargado) return;   // bootstrap ya trajo todo
 
   var year = COM.year || new Date().getFullYear();
 
@@ -2245,10 +2232,12 @@ window.comCerrarMes = function () {
 window._comPrecargar = precargar;
 
 window.comCambiarPeriodo = function () {
-  var y = document.getElementById('com-year'), q = document.getElementById('com-q');
-  if (!y || !q) return;
-  COM.year = Number(y.value);
-  COM.q    = Number(q.value);
+  var el = document.getElementById('com-periodo');
+  if (!el) return;
+  var p = String(el.value).split('-');
+  COM.year = Number(p[0]);
+  COM.q    = Number(p[1]);
+  PER.meses = null;    // el resumen vuelve al trimestre completo
   COM.data = null;
   COM.traidoEn = null;
   // Asesoras depende del año: si cambió, hay que releerla
@@ -2439,26 +2428,18 @@ window.comAseReset = function (idx) {
 
 /* ── Filtro de período del resumen ── */
 
-/** Prende o apaga un mes. Nunca deja la selección vacía. */
-window.comMes = function (m) {
-  var i = PER.meses.indexOf(m);
-  if (i >= 0) { if (PER.meses.length > 1) PER.meses.splice(i, 1); }
-  else PER.meses.push(m);
-  comRepintarPeriodo();
-};
-
-window.comMesesSet = function (ms) {
-  if (!ms || !ms.length) return;
-  PER.meses = ms.slice();
-  comRepintarPeriodo();
-};
-
-function comRepintarPeriodo() {
+/** Cambia el resumen entre todo el trimestre y un mes suelto. */
+window.comMesResumen = function (v) {
+  var m = Number(v) || 0;
+  PER.meses = m ? [m] : null;
   PER.perf = null; PER.perfPrev = null; PER.hist = null;
-  var f = document.getElementById('com-filtros');
-  if (f) f.outerHTML = filtrosPeriodo();
   cargarPeriodo('meses');
-}
+};
+
+window.comCargarResumen = function () {
+  PER.perf = null; PER.perfPrev = null; PER.hist = null;
+  cargarPeriodo('meses');
+};
 
 window.comPeriodo = function (modo) {
   if (modo === 'custom') { pintarCustom(); return; }
