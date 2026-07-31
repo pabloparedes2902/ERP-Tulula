@@ -310,7 +310,7 @@ function inyectarEstilos() {
 '.com-mts{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;align-items:stretch}',
     '@media(min-width:700px){.com-mts{grid-template-columns:repeat(3,1fr)}}',
     '@media(min-width:1000px){.com-mts{grid-template-columns:repeat(5,1fr)}}',
-    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(4,1fr)}}',
+    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(6,1fr)}}',
     '.com-met{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:14px;min-width:0;text-align:center}',
     '.com-met .ml{margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}',
     '.com-met .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;text-align:center}',
@@ -515,14 +515,9 @@ function pintarHome() {
   if (PER.perf) { pintarPerf(); pintarHist(); }
   else {
     var z = document.getElementById('com-perf');
-    if (z) z.innerHTML =
-      '<div class="card">' +
-        '<div class="ct">Resumen del período</div>' +
-        '<div style="font-size:13px;margin-bottom:12px">' +
-          'Ventas, margen, pedidos y ticket, comparados con el período anterior.' +
-        '</div>' +
-        '<button class="btn bg bs" onclick="comCargarResumen()">Cargar resumen</button>' +
-      '</div>';
+    if (z) z.innerHTML = '<div class="card"><div class="ct">Resumen del período</div>' +
+                         '<div class="ml">Cargando…</div></div>';
+    cargarPeriodo('meses');
   }
 }
 
@@ -602,13 +597,18 @@ function avanceTrimestre(year, q) {
 function barraAvance(year, q, cumpl, tiers) {
   var av = avanceTrimestre(year, q);
   var pct = Math.round(av.frac * 100);
-  var col = NIVEL_COLOR[nivelDe(cumpl, tiers)];
 
-  return '<div style="display:flex;align-items:center;gap:10px;margin-top:10px">' +
-    '<div style="flex:1;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">' +
+  // El color NO sale del avance temporal sino del RITMO: cuánto se lleva
+  // de la meta comparado con cuánto tiempo pasó. Si va el 10% del trimestre
+  // y lleva el 15% de la meta, el ritmo es 150% y la barra va celeste.
+  var ritmo = av.frac > 0.01 ? (cumpl / (av.frac * 100)) * 100 : 0;
+  var col = NIVEL_COLOR[nivelDe(ritmo, tiers)];
+
+  return '<div style="margin-top:10px">' +
+    '<div style="width:100%;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">' +
       '<div style="width:' + pct + '%;height:100%;background:' + col + ';border-radius:3px"></div>' +
     '</div>' +
-    '<span class="ml" style="white-space:nowrap">' + pct + '% del trimestre</span>' +
+    '<div class="ml" style="text-align:right;margin-top:4px">Progreso del trimestre = ' + pct + '%</div>' +
   '</div>';
 }
 
@@ -757,15 +757,6 @@ function tarjetaReglas(cfg, R) {
     return (i + 1) + '° nivel: desde ' + t.from + '% → paga ' + t.rate + '% del margen';
   }).join(' &nbsp;·&nbsp; ');
 
-  var quien = '';
-  if (cfg.rules_at) {
-    try {
-      var f = new Date(cfg.rules_at);
-      quien = ' · aplicado por ' + esc(cfg.rules_by || 'admin') + ' el ' +
-              f.toLocaleDateString('es-PE', {day:'2-digit', month:'2-digit', year:'numeric'});
-    } catch (e) {}
-  }
-
   var punto = function (color, txt) {
     return '<span style="display:inline-flex;align-items:center;gap:5px">' +
              '<span style="width:9px;height:9px;border-radius:50%;background:' + color + ';' +
@@ -776,7 +767,7 @@ function tarjetaReglas(cfg, R) {
   return '<div class="card">' +
     '<div class="ct">Reglas vigentes</div>' +
     '<div style="font-size:13px;line-height:2.1">' +
-      '<b>Meta</b> = Venta promedio mensual × Margen bruto × Factor nivel × 3 (meses)' + quien + '<br>' +
+      '<b>Meta</b> = Venta promedio mensual × Margen bruto × Factor nivel × 3 (meses)<br>' +
       '<b>Factor nivel:</b> ' +
         punto('var(--rd)', 'Nivel 0 = no llega') + ' &nbsp;·&nbsp; ' +
         punto('var(--am)', '1° nivel = 1x') + ' &nbsp;·&nbsp; ' +
@@ -1797,20 +1788,14 @@ function pintarPerf() {
               .map(function (m) { return MESES_CORTO[m - 1]; }).join(', ');
 
   z.innerHTML = '<div class="card">' +
-    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">' +
-      '<div class="ct" style="margin:0">Resumen del período</div>' +
-      selectorMesResumen() +
-    '</div>' +
-    '<div class="ml" style="margin-bottom:6px">' + esc(r.desde) + ' a ' + esc(r.hasta) + ' · hasta el cierre de ayer</div>' +
-    comparativa +
+    '<div class="ct">Resumen del período</div>' +
+
     '<div class="com-mts com-mts-6">' +
       cel('Ventas', fmt(d.totalVentas), prev ? delta(d.totalVentas, prev.totalVentas) : '') +
       cel('Margen', fmt(d.totalMargen), prev ? delta(d.totalMargen, prev.totalMargen) : '', 'var(--gn)') +
       cel('Margen real', mr.toFixed(2) + '%', mrP != null ? delta(mr, mrP) : '', 'var(--gn)') +
       cel('Margen por día', fmt(porDia),
           (prev && prevDias) ? delta(porDia, prev.totalMargen / prevDias) : '', 'var(--gn)') +
-      cel('Pedidos', (Number(d.totalOrders) || 0).toLocaleString('es-PE'), prev ? delta(d.totalOrders, prev.totalOrders) : '') +
-      cel('Ticket promedio', fmt(d.ticket), prev ? delta(d.ticket, prev.ticket) : '') +
       celBono('Bono acumulado', 'bono') +
       celBono('Bono proyectado', 'bonoProy', 'si cierra así') +
     '</div>' +
@@ -1842,34 +1827,44 @@ function pintarHist() {
  */
 function graficoBarras(filas, niveles, titulo) {
   titulo = titulo || 'Margen del equipo';
-  var W = 1400, H = 260;
-  var mIzq = 58, mDer = 78, mArr = 22, mAba = 34;
+  var W = 2400, H = 380;
+  var mIzq = 96, mDer = 128, mArr = 34, mAba = 58;
   var ancho = W - mIzq - mDer, alto = H - mArr - mAba;
 
   // Monto abreviado con dos decimales: 1.40K
   var kk = function (v) {
     v = Number(v) || 0;
-    if (Math.abs(v) >= 1000) return (v / 1000).toFixed(2) + 'K';
-    return String(Math.round(v));
+    if (Math.abs(v) < 1000) return String(Math.round(v));
+    var k = v / 1000;
+    // Sin decimales si es redondo (2K), con dos si no (2.77K)
+    return (k === Math.round(k) ? String(k) : k.toFixed(2)) + 'K';
   };
 
   var maxDato = Math.max.apply(null, filas.map(function (r) { return r.margen || 0; }));
   var maxNivel = niveles.length ? Math.max.apply(null, niveles.map(function (n) { return n.ref || 0; })) : 0;
-  var max = Math.max(maxDato, maxNivel) * 1.12 || 1;
+  var bruto = Math.max(maxDato, maxNivel) * 1.12 || 1;
+
+  // Escala en múltiplos redondos: S/2K, S/4K, S/6K… en vez de S/2.26K
+  var salto = bruto <= 14000 ? 2000
+            : bruto <= 35000 ? 5000
+            : bruto <= 80000 ? 10000
+            : Math.ceil(bruto / 6 / 10000) * 10000;
+  var max = Math.ceil(bruto / salto) * salto;
+  var pasos = Math.round(max / salto);
 
   var y = function (v) { return mArr + alto - (v / max * alto); };
   var paso = ancho / filas.length;
-  var wBarra = Math.max(3, Math.min(38, paso * 0.62));
+  var wBarra = Math.max(6, Math.min(62, paso * 0.6));
 
   // Grilla horizontal + escala
-  var lineas = '', pasos = 4;
+  var lineas = '';
   for (var i = 0; i <= pasos; i++) {
-    var val = max / pasos * i, yy = y(val);
+    var val = salto * i, yy = y(val);
     lineas +=
       '<line x1="' + mIzq + '" y1="' + yy + '" x2="' + (W - mDer) + '" y2="' + yy + '" ' +
-        'stroke="var(--bd)" stroke-width="1"/>' +
-      '<text x="' + (mIzq - 7) + '" y="' + (yy + 3) + '" text-anchor="end" ' +
-        'font-size="9" fill="var(--mu)">S/' + kk(val) + '</text>';
+        'stroke="var(--bd)" stroke-width="1.5" opacity=".5"/>' +
+      '<text x="' + (mIzq - 12) + '" y="' + (yy + 5) + '" text-anchor="end" ' +
+        'font-size="15" fill="var(--mu)">S/' + kk(val) + '</text>';
   }
 
   // Barras + etiquetas del eje X
@@ -1886,17 +1881,17 @@ function graficoBarras(filas, niveles, titulo) {
 
     // Monto sobre cada barra
     if (v > 0 && paso > 22) {
-      barras += '<text x="' + cx.toFixed(1) + '" y="' + (y(v) - 4).toFixed(1) + '" ' +
-                  'text-anchor="middle" font-size="8" font-weight="600" fill="var(--tx)">' +
+      barras += '<text x="' + cx.toFixed(1) + '" y="' + (y(v) - 7).toFixed(1) + '" ' +
+                  'text-anchor="middle" font-size="14" font-weight="600" fill="var(--tx)">' +
                   kk(v) + '</text>';
     }
 
     if (i % saltar === 0) {
-      etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 14) + '" ' +
-                     'text-anchor="middle" font-size="9" fill="var(--mu)">' + esc(r.label) + '</text>';
+      etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 24) + '" ' +
+                     'text-anchor="middle" font-size="15" fill="var(--mu)">' + esc(r.label) + '</text>';
       if (r.sub) {
-        etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 25) + '" ' +
-                       'text-anchor="middle" font-size="8" fill="var(--mu)">' + esc(r.sub) + '</text>';
+        etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 43) + '" ' +
+                       'text-anchor="middle" font-size="13" fill="var(--mu)">' + esc(r.sub) + '</text>';
       }
     }
   });
@@ -1910,8 +1905,8 @@ function graficoBarras(filas, niveles, titulo) {
     var col = colores[i] || 'var(--mu)';
     refs +=
       '<line x1="' + mIzq + '" y1="' + yy + '" x2="' + (W - mDer) + '" y2="' + yy + '" ' +
-        'stroke="' + col + '" stroke-width="1.5"/>' +
-      '<text x="' + (W - mDer + 5) + '" y="' + (yy + 3) + '" font-size="9" ' +
+        'stroke="' + col + '" stroke-width="2.5"/>' +
+      '<text x="' + (W - mDer + 8) + '" y="' + (yy + 5) + '" font-size="15" ' +
         'font-weight="600" fill="' + col + '">S/' + kk(n.ref || 0) + '</text>';
 
     leyenda += '<span style="display:inline-flex;align-items:center;gap:6px;margin-right:16px">' +
@@ -1920,8 +1915,8 @@ function graficoBarras(filas, niveles, titulo) {
                '</span>';
   });
 
-  return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" ' +
-              'style="width:100%;height:230px;display:block" ' +
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" ' +
+              'style="width:100%;height:auto;max-height:300px;display:block" ' +
               'role="img" aria-label="' + esc(titulo) + '">' +
       lineas + barras + refs + etiquetas +
     '</svg>' +
