@@ -1699,17 +1699,38 @@ async function _detectarDuplicadosRapido(p) {
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
 
-    // El filtro por fecha va EN EL SERVIDOR: es lo que convierte "toda la hoja" en
-    // "las últimas 48 horas". Un día de margen para no perder nada por husos/formato.
+    // ── POR QUÉ SE PIDE POR `id` Y NO POR FECHA ────────────────────────────
+    // La primera versión filtraba con `row_json->>'Fecha Pedido' >= …`. Suena mejor
+    // —trae 74 filas en vez de 1200— y medido daba 0,6 s… casi siempre. Casi:
+    // MEDIDO EN VIVO, tres corridas seguidas dieron 3,5 s · 1,0 s · 26,6 s.
+    // Ese filtro es una expresión sobre JSON y NO tiene índice: Postgres evalúa la
+    // extracción fila por fila sobre la tabla entera, y cuando la caché no ayuda se
+    // dispara. Un pico de 26 s en algo que la asesora puede terminar esperando es peor
+    // que un promedio un poco más alto.
+    //
+    // `id` es la clave primaria: siempre indexada. Traer las últimas N por id da
+    // 0,65-0,95 s de forma ESTABLE, y la fecha se filtra acá, que es gratis.
+    // Medido hoy: 72 horas de pedidos son 222 filas. 1200 deja 5 veces de margen.
     const ventana = parseFloat(p.ventanaHoras) || 48;
-    const desde = new Date(Date.now() - (ventana + 24) * 3600 * 1000).toISOString().slice(0, 10);
-    const q = 'select=row_json&eliminado=is.null&limit=4000&order=id.desc&'
-            + encodeURIComponent('row_json->>Fecha Pedido') + '=gte.' + desde;
+    const q = 'select=row_json&eliminado=is.null&order=id.desc&limit=1200';
     const r = await fetch(SB_URL + '/rest/v1/pedidos?' + q,
       { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
     if (!r.ok) return null;
     const j = await r.json();
     if (!Array.isArray(j)) return null;
+
+    // GUARDIÁN: si la fila MÁS VIEJA que llegó todavía cae dentro de la ventana, el
+    // límite recortó justo lo que había que mirar y podría faltar un duplicado. En ese
+    // caso NO se contesta a medias: se va por Apps Script, que ve la hoja entera.
+    // Un "no hay duplicados" que en realidad significa "no llegué a mirar" es
+    // exactamente el tipo de respuesta que no se puede distinguir de una buena.
+    if (j.length >= 1200) {
+      const masVieja = Date.parse((j[j.length - 1].row_json || {})['Fecha Pedido'] || '') || 0;
+      if (masVieja && (Date.now() - masVieja) < ventana * 3600 * 1000) {
+        try { console.warn('[dup] el límite de 1200 no cubrió la ventana → Apps Script'); } catch (e) {}
+        return null;
+      }
+    }
 
     const ahora = Date.now(), corte = ventana * 3600 * 1000;
     const prendasNuevas = (p.prendas || []).map(x => String(x || '').trim().toUpperCase()).filter(Boolean);
@@ -2468,7 +2489,7 @@ const _CRON_TOPE = 400;
 // pasa los 3 s, y las vías rápidas tardan 176-470 ms. Se registraban sólo las
 // llamadas lentas a Apps Script — justo el sesgo que esto viene a corregir.
 // Sin esta línea, verLentos() seguiría mostrando una sola columna.
-const _CRON_SIEMPRE = /^(rapido\.|pedido\.|(api\.)?(pedidos\.crear|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
+const _CRON_SIEMPRE = /^(rapido\.|pedido\.|dup\.|(api\.)?(pedidos\.crear|pedidos\.detectarDuplicados|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
 
 function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
 function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
@@ -2779,6 +2800,7 @@ function _sbGuardarTok(t){
 }
 // Con el "pase" de Google (el mismo del login del ERP) abrimos sesión en Supabase.
 async function _sbAuthConCredencial(cred){
+  if (SB_APAGADO) return null;   // ver SB_APAGADO
   if (!SB_ANON || !cred) return;
   try {
     const r = await fetch(SB_URL + '/auth/v1/token?grant_type=id_token', {
@@ -2799,6 +2821,7 @@ function _sbVencerTok(){
 }
 
 async function _sbTokenVigente(){
+  if (SB_APAGADO) return null;   // ver SB_APAGADO
   if (!SB_ANON || !_sbTok) return null;
   if (Date.now() < (_sbTok.expires_at||0)) return _sbTok.access_token;
   // Un pase emitido por el backend del ERP no se refresca: se vuelve a pedir.
@@ -2896,7 +2919,33 @@ async function _sbPaseDelBackend(){
 }
 
 // EL punto por el que pasan todas las vías rápidas.
+// ══════════════════════════════════════════════════════════════════════════
+// SB_APAGADO — EL INTERRUPTOR MAESTRO DEL SIMULACRO DE REVERSA
+// 30-jul-2026
+//
+// POR QUÉ EXISTE. El simulacro apaga 7 interruptores (SB_PILOTO_*, SB_LECTURA_CAMBIOS)
+// y da por hecho que con eso el ERP queda corriendo 100% contra la hoja. Eso era cierto
+// el 28-jul. HOY NO: contando hoy, hay 33 lugares que le hablan a Supabase y sólo 8
+// miran alguno de esos interruptores. Los otros 25 seguirían usando la base igual.
+//
+// El simulacro habría dado un FALSO APROBADO — la peor forma de fallar: te deja creyendo
+// que tenés una salida de emergencia probada cuando no la probaste. Dos de esas rutas
+// las agregué yo hoy (Yayitas y detectar duplicados) sin darles interruptor.
+//
+// LA SALIDA NO ES 25 INTERRUPTORES MÁS. Sería lo mismo dentro de un mes con la ruta 34.
+// La salida es que haya UN cuello de botella: los 23 de esos 25 caminos piden el token
+// por acá antes de hablar con la base. Sin token, se van solos por Apps Script — que es
+// exactamente lo que el simulacro quiere probar.
+//
+// Lo cuida `regresion_reversa.js`: cuenta los fetch a Supabase y exige que cada uno pase
+// por acá o tenga interruptor propio. Una ruta nueva sin salida de emergencia no publica.
+//
+// PARA EL SIMULACRO: poner true, publicar. Para volver: false, publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_APAGADO = false;
+
 async function _sbSesionAsegurar(){
+  if (SB_APAGADO) return null;   // simulacro: sin token, todo se va por Apps Script
   const v = await _sbTokenVigente();
   if (v) { _pillViaRapida(true); return v; }
   if (!SB_REAUTH_SILENCIOSO || !SB_ANON) return null;
@@ -18021,6 +18070,10 @@ async function _yayMapaCrudo() {
     j.forEach(x => {
       const f = x.row_json; if (!f) return;
       if (String(f['Eliminado']||'').trim().toUpperCase() === 'SI') return;
+      // Recuperada = se reparó y volvió al stock vendible: ya no está en el montón.
+      // Espejo exacto de `_yayitasCalc_`. Si esta línea faltara, la pantalla ofrecería
+      // para vender una unidad que ya está en el stock normal — la misma, contada dos veces.
+      if (String(f['Recuperado']||'').trim().toUpperCase() === 'SI') return;
       const o = toca(f['Diseno'], f['Color'], f['Talla']); if (!o) return;
       o.entradas += parseInt(f['Cantidad'],10) || 1;
       if (!o.cat) o.cat = String(f['Categoria']||'').trim();
