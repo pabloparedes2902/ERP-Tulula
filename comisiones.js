@@ -53,6 +53,8 @@ var COM = {
   traidoEn: null,  // timestamp de los datos que se están mostrando
   ms: null,        // cuánto tardó la última consulta al servidor
   comoEmail: '',   // si no está vacío, se está viendo el panel de una asesora
+  desglose: null,  // índice de la asesora con el desglose abierto
+  historico: null, // margen mensual, para detectar desviaciones
 };
 
 /* ── Caché de sesión ────────────────────────────────────────────────
@@ -245,27 +247,66 @@ function proyectarMargen(marginM, meses, year) {
 // se vea, y el tope se estira si alguien supera el nivel máximo.
 var BARRA_TOPE = 200;   // escala fija 0% → 200%, igual en todas las barras
 
-function escalaBarra() { return BARRA_TOPE; }
-
 function posBarra(v) { return Math.max(0, Math.min(100, (v || 0) / BARRA_TOPE * 100)); }
 
-function marcasTiers(tiers) {
-  return (tiers || []).map(function (t) {
-    return '<div class="com-mk" style="left:' + posBarra(t.from) + '%">' +
-             '<span>' + t.from + '%</span>' +
-           '</div>';
-  }).join('');
+/**
+ * Zonas de color del fondo. Salen de los tramos configurados, así que si
+ * cambian los niveles, las zonas se mueven con ellos.
+ * Rojo bajo el piso · ámbar 1° nivel · verde 2° · violeta 3°.
+ */
+function zonasBarra(tiers) {
+  var t = (tiers && tiers.length) ? tiers : TIERS_FALLBACK;
+  var piso = t[0] ? t[0].from : 75;
+  var medio = t[1] ? t[1].from : 100;
+  var alto = t[2] ? t[2].from : 125;
+
+  return [
+    { desde: 0,     hasta: piso,        color: 'var(--rd)' },
+    { desde: piso,  hasta: medio,       color: 'var(--am)' },
+    { desde: medio, hasta: alto,        color: 'var(--gn)' },
+    { desde: alto,  hasta: BARRA_TOPE,  color: 'var(--ac)' },
+  ];
 }
 
+/**
+ * Barra de cumplimiento.
+ * Fondo dividido en zonas tenues (dónde estaría cada nivel), progreso sólido
+ * encima, y una marca cada 25% para ubicarse.
+ */
 function barra(cumpl, alto, color, tiers, conMarcas) {
-  return '<div class="com-bar" style="height:' + alto + 'px">' +
-           '<div class="com-bar-bg">' +
-             '<div class="com-bar-fill" style="width:' + posBarra(cumpl) + '%;background:' + color + '"></div>' +
-           '</div>' +
-           (conMarcas ? '<div class="com-bar-mks">' + marcasTiers(tiers) + '</div>' : '') +
-         '</div>';
-}
+  var t = (tiers && tiers.length) ? tiers : TIERS_FALLBACK;
 
+  // Fondo por zonas
+  var fondo = zonasBarra(t).map(function (z) {
+    var izq = z.desde / BARRA_TOPE * 100;
+    var ancho = (z.hasta - z.desde) / BARRA_TOPE * 100;
+    return '<div style="position:absolute;left:' + izq + '%;width:' + ancho + '%;' +
+           'top:0;bottom:0;background:' + z.color + ';opacity:.13"></div>';
+  }).join('');
+
+  // Marcas cada 25%
+  var marcas = '';
+  if (conMarcas) {
+    for (var p = 25; p < BARRA_TOPE; p += 25) {
+      var x = p / BARRA_TOPE * 100;
+      var esNivel = t.some(function (tt) { return tt.from === p; });
+      marcas +=
+        '<div style="position:absolute;left:' + x + '%;top:0;bottom:0;width:1px;' +
+             'background:var(--bd2);opacity:' + (esNivel ? '.9' : '.4') + '"></div>' +
+        '<div style="position:absolute;left:' + x + '%;top:100%;transform:translateX(-50%);' +
+             'margin-top:3px;font-size:9px;color:var(--mu);' +
+             (esNivel ? 'font-weight:600' : '') + '">' + p + '</div>';
+    }
+  }
+
+  return '<div class="com-bar" style="height:' + alto + 'px;' +
+              (conMarcas ? 'margin-bottom:16px' : '') + '">' +
+    '<div class="com-bar-bg">' + fondo +
+      '<div class="com-bar-fill" style="width:' + posBarra(cumpl) + '%;background:' + color + '"></div>' +
+    '</div>' +
+    (conMarcas ? '<div class="com-bar-mks">' + marcas + '</div>' : '') +
+  '</div>';
+}
 
 /* ══════════════════════════════════════════════════════════════════════
    ESTILOS PROPIOS — solo lo que el ERP no tiene ya
@@ -278,7 +319,8 @@ function inyectarEstilos() {
   s.textContent = [
     '.com-bar{position:relative}',
     '.com-bar-bg{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);overflow:hidden}',
-    '.com-bar-fill{position:absolute;left:0;top:0;bottom:0;border-radius:var(--r);transition:width .5s ease}',
+    '.com-bar-fill{position:absolute;left:0;top:0;bottom:0;border-radius:var(--r);transition:width .5s ease;z-index:2}',
+    '.com-bar-mks{position:absolute;inset:0;pointer-events:none;z-index:3}',
     '.com-bar-mks{position:absolute;inset:0;pointer-events:none}',
     '.com-mk{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--bd2)}',
     '.com-mk span{position:absolute;top:-15px;left:-10px;font-size:10px;color:var(--mu)}',
@@ -380,6 +422,7 @@ function traer(year, q) {
 
     // Las otras pestañas ya vienen resueltas
     if (b.asesoras) { ASE.data = b.asesoras; ASE.year = year; }
+    if (b.historico) COM.historico = b.historico;
     if (b.cierresTrim || b.cierresMes || b.reglasLog) {
       CIERRE.cerradosTrim = b.cierresTrim || [];
       CIERRE.cerradosMes  = b.cierresMes  || [];
@@ -476,11 +519,12 @@ function pintarHome() {
     filtrosPeriodo() +
     '<div id="com-perf"></div>' +
     '<div id="com-hist"></div>' +
+    tarjetaAnomalias(COM.historico) +
     tarjetaEquipo(R, P, qTxt, meses, d.year) +
     tarjetaRanking(R, qTxt) +
     '<div class="ct">Asesoras · ' + esc(qTxt) + '</div>' +
     '<div class="com-grid">' +
-      R.rows.map(function (r, i) { return tarjetaAsesora(r, P.rows[i], R, meses); }).join('') +
+      R.rows.map(function (r, i) { return tarjetaAsesora(r, P.rows[i], R, meses, i); }).join('') +
     '</div>' +
     tarjetaCobertura(d) +
     tarjetaReglas(cfg, R);
@@ -629,7 +673,7 @@ function tarjetaRanking(R, qTxt) {
   '</div>';
 }
 
-function tarjetaAsesora(r, proy, R, meses) {
+function tarjetaAsesora(r, proy, R, meses, idxAsesora) {
   var lv  = nivelDe(r.cumpl, R.tiers);
   var col = NIVEL_COLOR[lv];
 
@@ -680,7 +724,10 @@ function tarjetaAsesora(r, proy, R, meses) {
     '<div style="margin-top:18px;border-top:1px solid var(--bd);padding-top:4px">' +
       '<div class="com-row"><span class="com-mut">Margen del trimestre</span>' +
         '<span style="font-weight:600;font-size:16px">' + fmt(r.sumMar) + '</span></div>' +
-      '<div class="com-row"><span class="com-mut">Bono acumulado</span>' +
+      '<div class="com-row" onclick="comDesglose(' + idxAsesora + ')" ' +
+           'style="cursor:pointer" title="Ver de dónde sale este número">' +
+        '<span class="com-mut">Bono acumulado ' +
+          '<span style="color:var(--ac);font-size:11px">ver cálculo</span></span>' +
         '<span style="font-weight:700;font-size:18px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(r.bono) + '</span></div>' +
       '<div class="com-row"><span class="com-mut">Proyección al cierre</span>' +
         '<span style="font-weight:600;color:' + (proy.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(proy.bono) +
@@ -690,6 +737,7 @@ function tarjetaAsesora(r, proy, R, meses) {
     '<div class="ct" style="margin:16px 0 4px">Detalle por mes</div>' +
     filasMes +
     '<div class="ml" style="margin-top:12px;line-height:1.5">' + falta + '</div>' +
+    (COM.desglose === idxAsesora ? desgloseHTML(r, R, meses) : '') +
   '</div>';
 }
 
@@ -1112,6 +1160,202 @@ function bloqueBitacora() {
     '</div>' + filas +
   '</div>';
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   DESGLOSE DEL CÁLCULO  ·  solo vista admin
+   ──────────────────────────────────────────────────────────────────────
+   Clic en el bono y se ve de dónde sale cada número: sueldo → meta →
+   margen → cumplimiento → tramo → tasa → monto.
+   Es lo que contesta un reclamo antes de que exista.
+   ══════════════════════════════════════════════════════════════════════ */
+
+function desgloseHTML(r, R, meses) {
+  var paso = function (n, titulo, valor, detalle) {
+    return '<div style="display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--bd)">' +
+      '<span style="width:22px;height:22px;border-radius:50%;background:var(--bg2);' +
+            'color:var(--mu);font-size:11px;font-weight:600;display:flex;' +
+            'align-items:center;justify-content:center;flex-shrink:0">' + n + '</span>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">' +
+          '<span style="font-size:13px">' + titulo + '</span>' +
+          '<b style="font-size:14px;white-space:nowrap">' + valor + '</b>' +
+        '</div>' +
+        (detalle ? '<div class="ml" style="margin-top:3px">' + detalle + '</div>' : '') +
+      '</div>' +
+    '</div>';
+  };
+
+  // 1 · Sueldos mes a mes
+  var sueldos = (r.sueldoM && r.sueldoM.length)
+    ? meses.map(function (m, i) {
+        return MESES_CORTO[m - 1] + ' ' + fmt(r.sueldoM[i] || 0);
+      }).join(' · ')
+    : fmt(r.base) + ' × 3 meses';
+
+  // 2 · Meses no trabajados
+  var inactivos = [];
+  meses.forEach(function (m, i) {
+    if (r.factorM[i] <= 0) inactivos.push(MESES_CORTO[m - 1]);
+    else if (r.factorM[i] < 1) inactivos.push(MESES_CORTO[m - 1] + ' (' + Math.round(r.factorM[i] * 100) + '%)');
+  });
+
+  // 4 · De dónde sale el margen
+  var detMargen = meses.map(function (m, i) {
+    if (r.factorM[i] <= 0) return null;
+    return MESES_CORTO[m - 1] + ' ' + fmt(r.marM[i]);
+  }).filter(Boolean).join(' + ');
+
+  // 6 · Tramo alcanzado
+  var idxTramo = -1;
+  R.tiers.forEach(function (t, i) { if (r.cumpl >= t.from) idxTramo = i; });
+  var tramoTxt = idxTramo >= 0
+    ? (idxTramo + 1) + '° nivel · paga ' + R.tiers[idxTramo].rate + '% del margen'
+    : 'No alcanza el 1° nivel (' + R.gate + '%)';
+
+  var escala = R.tiers.map(function (t, i) {
+    var on = i === idxTramo;
+    return '<span style="' + (on ? 'color:var(--tx);font-weight:600' : 'color:var(--mu)') + '">' +
+           (i + 1) + '°: ' + t.from + '%→' + t.rate + '%</span>';
+  }).join(' &nbsp;·&nbsp; ');
+
+  // 7 · Requisito de equipo
+  var equipoOk = R.teamGate;
+
+  return '<div style="background:var(--bg3);border:1px solid var(--bd);' +
+              'border-radius:var(--r2);padding:16px;margin-top:14px">' +
+    '<div class="ct" style="margin:0 0 10px">Cómo se llegó a este número</div>' +
+
+    paso(1, 'Sueldo del trimestre', fmt(r.sumMeta / R.x), sueldos) +
+
+    paso(2, 'Meta de margen', fmt(r.sumMeta),
+         R.x + '× el sueldo' +
+         (inactivos.length ? ' · sin contar ' + inactivos.join(', ') : '')) +
+
+    paso(3, 'Margen generado', fmt(r.sumMar), detMargen || 'sin ventas registradas') +
+
+    paso(4, 'Cumplimiento',
+         '<span style="color:' + NIVEL_COLOR[nivelDe(r.cumpl, R.tiers)] + '">' + p2(r.cumpl) + '</span>',
+         fmt(r.sumMar) + ' ÷ ' + fmt(r.sumMeta)) +
+
+    paso(5, 'Nivel alcanzado', r.rate > 0 ? r.rate + '%' : '—', tramoTxt + '<br>' + escala) +
+
+    paso(6, 'Requisito de equipo',
+         equipoOk ? '<span style="color:var(--gn)">cumplido</span>'
+                  : '<span style="color:var(--rd)">no cumplido</span>',
+         'El equipo va ' + p2(R.teamCumpl) + ' y necesita ' + R.gate + '%' +
+         (equipoOk ? '' : ' — sin esto nadie cobra')) +
+
+    '<div style="display:flex;justify-content:space-between;align-items:center;' +
+         'gap:10px;padding-top:14px;flex-wrap:wrap">' +
+      '<b style="font-size:14px">Bono</b>' +
+      '<b style="font-size:20px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' +
+        f2(r.bono) + '</b>' +
+    '</div>' +
+    '<div class="ml" style="margin-top:4px">' +
+      (r.bono > 0
+        ? r.rate + '% de ' + fmt(r.sumMar)
+        : (!equipoOk ? 'Bloqueado por el requisito de equipo'
+                     : 'No alcanza el 1° nivel')) +
+    '</div>' +
+  '</div>';
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   ALERTA DE ANOMALÍA
+   ──────────────────────────────────────────────────────────────────────
+   Compara el mes en curso contra el ritmo propio de cada asesora.
+   No compara entre personas: cada una contra sí misma.
+   ══════════════════════════════════════════════════════════════════════ */
+
+var ANOM_CAIDA = 30;    // % de caída que dispara aviso
+var ANOM_SUBIDA = 60;   // % de subida que también conviene mirar
+var ANOM_MIN_MESES = 3; // menos historia que esto, no alcanza para comparar
+
+/**
+ * Devuelve las desviaciones del último mes cerrado contra el promedio previo.
+ * @return [{nombre, mes, margen, promedio, desvio, tipo}]
+ */
+function detectarAnomalias(historico) {
+  if (!historico || !historico.porAsesora) return [];
+
+  var hoy = new Date();
+  var mesActual = hoy.getMonth() + 1;
+  // El mes en curso está incompleto: miramos el último cerrado
+  var mesMirar = mesActual - 1;
+  if (mesMirar < 1) return [];
+
+  var salida = [];
+
+  Object.keys(historico.porAsesora).forEach(function (nombre) {
+    var datos = historico.porAsesora[nombre];
+    var actual = datos[mesMirar];
+    if (!actual || !actual.margen) return;
+
+    // Promedio de los meses anteriores con actividad
+    var previos = [];
+    for (var m = 1; m < mesMirar; m++) {
+      if (datos[m] && datos[m].margen > 0) previos.push(datos[m].margen);
+    }
+    if (previos.length < ANOM_MIN_MESES) return;
+
+    var promedio = previos.reduce(function (a, b) { return a + b; }, 0) / previos.length;
+    if (promedio <= 0) return;
+
+    var desvio = (actual.margen - promedio) / promedio * 100;
+
+    if (desvio <= -ANOM_CAIDA) {
+      salida.push({ nombre: nombre, mes: mesMirar, margen: actual.margen,
+                    promedio: Math.round(promedio), desvio: desvio, tipo: 'caida' });
+    } else if (desvio >= ANOM_SUBIDA) {
+      salida.push({ nombre: nombre, mes: mesMirar, margen: actual.margen,
+                    promedio: Math.round(promedio), desvio: desvio, tipo: 'subida' });
+    }
+  });
+
+  return salida.sort(function (a, b) { return a.desvio - b.desvio; });
+}
+
+function tarjetaAnomalias(historico) {
+  var an = detectarAnomalias(historico);
+  if (!an.length) return '';
+
+  var filas = an.map(function (a) {
+    var caida = a.tipo === 'caida';
+    var col = caida ? 'var(--rd)' : 'var(--gn)';
+    var flecha = caida ? '▼' : '▲';
+
+    return '<div style="display:flex;justify-content:space-between;align-items:center;' +
+                'gap:12px;padding:11px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">' +
+      '<div>' +
+        '<b style="font-size:14px">' + esc(a.nombre) + '</b>' +
+        '<div class="ml" style="margin-top:3px">' +
+          MESES_LARGO[a.mes - 1] + ': ' + fmt(a.margen) +
+          ' · su promedio venía siendo ' + fmt(a.promedio) +
+        '</div>' +
+      '</div>' +
+      '<b style="color:' + col + ';font-size:16px;white-space:nowrap">' +
+        flecha + ' ' + Math.abs(a.desvio).toFixed(0) + '%</b>' +
+    '</div>';
+  }).join('');
+
+  var hayCaida = an.some(function (a) { return a.tipo === 'caida'; });
+
+  return '<div class="card" style="border-color:' + (hayCaida ? 'var(--am)' : 'var(--bd)') + '">' +
+    '<div class="ct"' + (hayCaida ? ' style="color:var(--am)"' : '') + '>' +
+      'Desviaciones del mes' +
+    '</div>' +
+    '<div style="font-size:13px;margin-bottom:12px">' +
+      'Cada asesora comparada con su propio promedio, no con las demás.' +
+    '</div>' + filas +
+    '<div class="ml" style="margin-top:12px;line-height:1.6">' +
+      'Se avisa cuando cae más de ' + ANOM_CAIDA + '% o sube más de ' + ANOM_SUBIDA + '%. ' +
+      'Una caída puede ser desempeño, pero también un error de atribución de pedidos.' +
+    '</div>' +
+  '</div>';
+}
+
 
 /* ══════════════════════════════════════════════════════════════════════
    VISTA ASESORAS — quién estuvo activa, con qué sueldo, y qué meta le tocó
@@ -2121,6 +2365,12 @@ function filaVendedora(email, v, i, estilo) {
 /* ══════════════════════════════════════════════════════════════════════
    API PÚBLICA — lo único que sale del módulo
    ══════════════════════════════════════════════════════════════════════ */
+
+/** Abre o cierra el desglose del cálculo de una asesora. */
+window.comDesglose = function (i) {
+  COM.desglose = (COM.desglose === i) ? null : i;
+  pintarHome();
+};
 
 window.loadComisiones = cargar;
 
