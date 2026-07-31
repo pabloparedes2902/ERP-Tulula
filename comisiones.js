@@ -310,7 +310,7 @@ function inyectarEstilos() {
 '.com-mts{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;align-items:stretch}',
     '@media(min-width:700px){.com-mts{grid-template-columns:repeat(3,1fr)}}',
     '@media(min-width:1000px){.com-mts{grid-template-columns:repeat(5,1fr)}}',
-    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(6,1fr)}}',
+    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(4,1fr)}}',
     '.com-met{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:14px;min-width:0;text-align:center}',
     '.com-met .ml{margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}',
     '.com-met .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;text-align:center}',
@@ -594,45 +594,37 @@ function avanceTrimestre(year, q) {
   };
 }
 
+/**
+ * Barra delgada, hasta 100%: qué parte del trimestre ya pasó.
+ * El color lo da el nivel en el que están las ventas, así se ve de un
+ * vistazo si el ritmo alcanza para el tiempo que queda.
+ */
+function barraAvance(year, q, cumpl, tiers) {
+  var av = avanceTrimestre(year, q);
+  var pct = Math.round(av.frac * 100);
+  var col = NIVEL_COLOR[nivelDe(cumpl, tiers)];
+
+  return '<div style="display:flex;align-items:center;gap:10px;margin-top:10px">' +
+    '<div style="flex:1;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">' +
+      '<div style="width:' + pct + '%;height:100%;background:' + col + ';border-radius:3px"></div>' +
+    '</div>' +
+    '<span class="ml" style="white-space:nowrap">' + pct + '% del trimestre</span>' +
+  '</div>';
+}
+
 function tarjetaEquipo(R, P, qTxt, meses, year) {
-  var totalBase  = R.rows.reduce(function (s, r) { return s + r.base; }, 0);
-  var bonoActual = R.rows.reduce(function (s, r) { return s + r.bono; }, 0);
-  var bonoProy   = P.rows.reduce(function (s, r) { return s + r.bono; }, 0);
-  var payroll    = totalBase * 3 + bonoProy;
+  // Los bonos suben al resumen del período
+  COM.bonos = {
+    bono:     R.rows.reduce(function (s2, r) { return s2 + r.bono; }, 0),
+    bonoProy: P.rows.reduce(function (s2, r) { return s2 + r.bono; }, 0),
+  };
 
   var av = avanceTrimestre(year, COM.q || 1);
-  var esperado = av.frac * 100;   // % de la meta que deberían llevar a hoy
-  var ritmo = esperado > 0 ? R.teamCumpl / esperado * 100 : 0;
-
-  // Contexto: sin esto el número acumulado engaña a mitad de trimestre
-  var contexto = '';
-  if (!av.cerrado && av.frac > 0.02) {
-    var colorRitmo = ritmo >= 100 ? 'var(--gn)' : ritmo >= 85 ? 'var(--am)' : 'var(--rd)';
-    contexto =
-      '<div class="ml" style="margin-top:8px;line-height:1.7">' +
-        'Transcurrió el <b>' + Math.round(av.frac * 100) + '%</b> del trimestre · ' +
-        'quedan <b>' + av.dias + ' días</b>.<br>' +
-        'A este punto deberían llevar ~' + esperado.toFixed(0) + '%. ' +
-        'Van al <b style="color:' + colorRitmo + '">' + ritmo.toFixed(0) + '% del ritmo</b> necesario.' +
-      '</div>';
-  }
-
   var aviso = R.teamGate ? '' :
     '<div style="color:var(--rd);font-size:13px;margin-top:12px;font-weight:500">' +
       'Bono inactivo: el equipo está por debajo del ' + R.gate + '% combinado del trimestre.' +
       (!av.cerrado ? ' <span class="com-mut" style="font-weight:400">(el trimestre sigue abierto)</span>' : '') +
     '</div>';
-
-  var mt = function (label, valor, sub, color) {
-    return '<div class="com-met">' +
-             '<div class="ml">' + label + '</div>' +
-             '<div class="com-big"' + (color ? ' style="color:' + color + '"' : '') + '>' + valor + '</div>' +
-             (sub ? '<div class="com-sub2">' + sub + '</div>' : '') +
-           '</div>';
-  };
-
-  var ratio = totalBase > 0 ? bonoProy / (totalBase * 3) * 100 : 0;
-  var colorRatio = ratio > 100 ? 'var(--am)' : null;
 
   return '<div class="card">' +
     '<div class="ct">Cumplimiento del equipo · ' + esc(qTxt) + '</div>' +
@@ -640,18 +632,8 @@ function tarjetaEquipo(R, P, qTxt, meses, year) {
       p2(R.teamCumpl) + ' · ' + NIVEL_NOMBRE[R.level] +
     '</div>' +
     '<div style="margin-top:26px">' + barra(R.teamCumpl, 24, NIVEL_COLOR[R.level], R.tiers, true) + '</div>' +
-    contexto +
-    '<div class="ml" style="margin-top:8px">Proyección al cierre: ' +
-      '<b style="color:' + NIVEL_COLOR[P.level] + '">' + p2(P.teamCumpl) + ' · ' + NIVEL_NOMBRE[P.level] + '</b>' +
-    '</div>' +
+    barraAvance(year, COM.q || 1, R.teamCumpl, R.tiers) +
     aviso +
-    '<div class="com-mts" style="margin-top:20px">' +
-      mt('Margen del equipo', fmt(R.tMar), p2(R.teamCumpl) + ' de ' + fmt(R.tMeta)) +
-      mt('Bono acumulado', f2(bonoActual), null, 'var(--gn)') +
-      mt('Bono proyectado', f2(bonoProy), 'si cierra así', 'var(--gn)') +
-      mt('Payroll del trimestre', fmt(payroll), 'sueldos × 3 + bono') +
-      mt('Bono vs sueldos', p2(ratio), 'del costo fijo', colorRatio) +
-    '</div>' +
   '</div>';
 }
 
@@ -712,34 +694,40 @@ function tarjetaAsesora(r, proy, R, meses, idxAsesora) {
 
   var parcial = r.mesesAct < 3 ? ' · activa ' + r.mesesAct + '/3 meses' : '';
 
+  var abierto = COM.desglose === idxAsesora;
+
   return '<div class="card" style="margin-bottom:0">' +
-    '<div class="com-nom">' + esc(r.nombre) + '</div>' +
+    // Nombre y cumplimiento en la misma línea, mismo tamaño
+    '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">' +
+      '<span class="com-nom">' + esc(r.nombre) + '</span>' +
+      '<span class="com-nom" style="color:' + col + '">' + p2(r.cumpl) + '</span>' +
+    '</div>' +
     '<div class="com-sub">Básico ' + fmt(r.base) + '/mes · margen real ' +
       (Number(r.mPct) || 0).toFixed(2) + '%' + parcial + '</div>' +
 
-    '<div class="com-row" style="border:none;padding:14px 0 6px;font-size:12px">' +
-      '<span class="com-mut">Cumplimiento del trimestre</span>' +
-      '<b style="color:' + col + '">' + p2(r.cumpl) + '</b>' +
-    '</div>' +
-    '<div style="margin-top:18px">' + barra(r.cumpl, 16, col, R.tiers, true) + '</div>' +
+    '<div style="margin-top:22px">' + barra(r.cumpl, 16, col, R.tiers, true) + '</div>' +
+    barraAvance(COM.year || new Date().getFullYear(), COM.q || 1, r.cumpl, R.tiers) +
 
     '<div style="margin-top:18px;border-top:1px solid var(--bd);padding-top:4px">' +
       '<div class="com-row"><span class="com-mut">Margen del trimestre</span>' +
         '<span style="font-weight:600;font-size:16px">' + fmt(r.sumMar) + '</span></div>' +
-      '<div class="com-row" onclick="comDesglose(' + idxAsesora + ')" ' +
-           'style="cursor:pointer" title="Ver de dónde sale este número">' +
-        '<span class="com-mut">Bono acumulado ' +
-          '<span style="color:var(--ac);font-size:11px">ver cálculo</span></span>' +
-        '<span style="font-weight:700;font-size:18px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(r.bono) + '</span></div>' +
+      '<div class="com-row"><span class="com-mut">Bono acumulado</span>' +
+        '<span style="font-weight:700;font-size:18px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' +
+          f2(r.bono) + '</span></div>' +
       '<div class="com-row"><span class="com-mut">Proyección al cierre</span>' +
         '<span style="font-weight:600;color:' + (proy.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(proy.bono) +
         ' <span class="com-mut" style="font-weight:400;font-size:12px">(' + p2(proy.cumpl) + ')</span></span></div>' +
     '</div>' +
 
+    '<button class="btn ' + (abierto ? 'bp' : 'bg') + ' bs" style="width:100%;margin-top:12px" ' +
+            'onclick="comDesglose(' + idxAsesora + ')">' +
+      (abierto ? '▲  Ocultar el cálculo' : '▼  Ver cómo se calcula este bono') +
+    '</button>' +
+    (abierto ? desgloseHTML(r, R, meses) : '') +
+
     '<div class="ct" style="margin:16px 0 4px">Detalle por mes</div>' +
     filasMes +
     '<div class="ml" style="margin-top:12px;line-height:1.5">' + falta + '</div>' +
-    (COM.desglose === idxAsesora ? desgloseHTML(r, R, meses) : '') +
   '</div>';
 }
 
@@ -779,21 +767,22 @@ function tarjetaReglas(cfg, R) {
   }
 
   var punto = function (color, txt) {
-    return '<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px">' +
-             '<span style="width:9px;height:9px;border-radius:50%;background:' + color + '"></span>' + txt +
+    return '<span style="display:inline-flex;align-items:center;gap:5px">' +
+             '<span style="width:9px;height:9px;border-radius:50%;background:' + color + ';' +
+                   'flex-shrink:0"></span>' + txt +
            '</span>';
   };
 
   return '<div class="card">' +
     '<div class="ct">Reglas vigentes</div>' +
-    '<div style="font-size:13px;line-height:1.9">' +
-      'Meta = <b>' + (cfg.xMeta || 12) + '×</b> el sueldo, medida en margen. Pago <b>trimestral</b>.' + quien + '<br>' +
-      tramos + '<br>' +
-      'El bono se activa solo si el equipo completo supera el ' + R.gate + '%.' +
-    '</div>' +
-    '<div class="ml" style="margin-top:12px">' +
-      punto('var(--rd)', 'no llega') + punto('var(--am)', '1° nivel') +
-      punto('var(--gn)', '2° nivel') + punto(COM_CELESTE, '3° nivel') +
+    '<div style="font-size:13px;line-height:2.1">' +
+      '<b>Meta</b> = Venta promedio mensual × Margen bruto × Factor nivel × 3 (meses)' + quien + '<br>' +
+      '<b>Factor nivel:</b> ' +
+        punto('var(--rd)', 'Nivel 0 = no llega') + ' &nbsp;·&nbsp; ' +
+        punto('var(--am)', '1° nivel = 1x') + ' &nbsp;·&nbsp; ' +
+        punto('var(--gn)', '2° nivel = 2x') + ' &nbsp;·&nbsp; ' +
+        punto(COM_CELESTE, '3° nivel = 3x') + '<br>' +
+      'El bono se activa siempre y cuando el equipo llegue al menos al <b>1° nivel</b>.' +
     '</div>' +
   '</div>';
 }
@@ -1388,15 +1377,8 @@ function tarjetaAnomalias(historico) {
 
   return '<div class="card" style="border-color:' + (hayCaida ? 'var(--am)' : 'var(--bd)') + '">' +
     '<div class="ct"' + (hayCaida ? ' style="color:var(--am)"' : '') + '>' +
-      'Desviaciones del mes' +
-    '</div>' +
-    '<div style="font-size:13px;margin-bottom:12px">' +
-      'Cada asesora comparada con su propio promedio, no con las demás.' +
+      'Desviaciones del mes (cae más de ' + ANOM_CAIDA + '% o sube más de ' + ANOM_SUBIDA + '%)' +
     '</div>' + filas +
-    '<div class="ml" style="margin-top:12px;line-height:1.6">' +
-      'Se avisa cuando cae más de ' + ANOM_CAIDA + '% o sube más de ' + ANOM_SUBIDA + '%. ' +
-      'Una caída puede ser desempeño, pero también un error de atribución de pedidos.' +
-    '</div>' +
   '</div>';
 }
 
@@ -1789,6 +1771,16 @@ function pintarPerf() {
     prevDias = Math.max(1, Math.round((new Date(prev.hasta) - new Date(prev.desde)) / 864e5) + 1);
   }
 
+  // El bono lo calcula el panel, no el resumen: se toma de COM.bonos
+  var celBono = function (label, cual, sub) {
+    var v = (COM.bonos && COM.bonos[cual] != null) ? f2(COM.bonos[cual]) : '—';
+    return '<div class="com-met">' +
+             '<div class="ml">' + label + '</div>' +
+             '<div class="com-big" style="color:var(--gn)">' + v + '</div>' +
+             '<div class="com-sub2">' + (sub || '&nbsp;') + '</div>' +
+           '</div>';
+  };
+
   var cel = function (label, valor, dt, color) {
     return '<div class="com-met">' +
              '<div class="ml">' + label + '</div>' +
@@ -1819,6 +1811,8 @@ function pintarPerf() {
           (prev && prevDias) ? delta(porDia, prev.totalMargen / prevDias) : '', 'var(--gn)') +
       cel('Pedidos', (Number(d.totalOrders) || 0).toLocaleString('es-PE'), prev ? delta(d.totalOrders, prev.totalOrders) : '') +
       cel('Ticket promedio', fmt(d.ticket), prev ? delta(d.ticket, prev.ticket) : '') +
+      celBono('Bono acumulado', 'bono') +
+      celBono('Bono proyectado', 'bonoProy', 'si cierra así') +
     '</div>' +
   '</div>';
 }
@@ -1848,9 +1842,16 @@ function pintarHist() {
  */
 function graficoBarras(filas, niveles, titulo) {
   titulo = titulo || 'Margen del equipo';
-  var W = 900, H = 300;
-  var mIzq = 52, mDer = 46, mArr = 14, mAba = 34;
+  var W = 1400, H = 260;
+  var mIzq = 58, mDer = 78, mArr = 22, mAba = 34;
   var ancho = W - mIzq - mDer, alto = H - mArr - mAba;
+
+  // Monto abreviado con dos decimales: 1.40K
+  var kk = function (v) {
+    v = Number(v) || 0;
+    if (Math.abs(v) >= 1000) return (v / 1000).toFixed(2) + 'K';
+    return String(Math.round(v));
+  };
 
   var maxDato = Math.max.apply(null, filas.map(function (r) { return r.margen || 0; }));
   var maxNivel = niveles.length ? Math.max.apply(null, niveles.map(function (n) { return n.ref || 0; })) : 0;
@@ -1858,7 +1859,7 @@ function graficoBarras(filas, niveles, titulo) {
 
   var y = function (v) { return mArr + alto - (v / max * alto); };
   var paso = ancho / filas.length;
-  var wBarra = Math.max(2, Math.min(46, paso * 0.66));
+  var wBarra = Math.max(3, Math.min(38, paso * 0.62));
 
   // Grilla horizontal + escala
   var lineas = '', pasos = 4;
@@ -1867,28 +1868,35 @@ function graficoBarras(filas, niveles, titulo) {
     lineas +=
       '<line x1="' + mIzq + '" y1="' + yy + '" x2="' + (W - mDer) + '" y2="' + yy + '" ' +
         'stroke="var(--bd)" stroke-width="1"/>' +
-      '<text x="' + (mIzq - 8) + '" y="' + (yy + 4) + '" text-anchor="end" ' +
-        'font-size="11" fill="var(--mu)">S/' + Math.round(val / 1000) + 'k</text>';
+      '<text x="' + (mIzq - 7) + '" y="' + (yy + 3) + '" text-anchor="end" ' +
+        'font-size="9" fill="var(--mu)">S/' + kk(val) + '</text>';
   }
 
   // Barras + etiquetas del eje X
   var barras = '', etiquetas = '';
-  var saltar = Math.ceil(filas.length / 22);   // no amontonar etiquetas
+  var saltar = Math.ceil(filas.length / 32);
   filas.forEach(function (r, i) {
     var v = r.margen || 0;
     var x = mIzq + paso * i + (paso - wBarra) / 2;
+    var cx = mIzq + paso * i + paso / 2;
     var h = Math.max(1, alto - (y(v) - mArr));
     barras += '<rect x="' + x.toFixed(1) + '" y="' + y(v).toFixed(1) + '" ' +
                 'width="' + wBarra.toFixed(1) + '" height="' + h.toFixed(1) + '" ' +
-                'rx="3" fill="var(--gn)"><title>' + esc(r.label) + ': ' + fmt(v) + '</title></rect>';
+                'rx="2" fill="var(--gn)"><title>' + esc(r.label) + ': ' + fmt(v) + '</title></rect>';
+
+    // Monto sobre cada barra
+    if (v > 0 && paso > 22) {
+      barras += '<text x="' + cx.toFixed(1) + '" y="' + (y(v) - 4).toFixed(1) + '" ' +
+                  'text-anchor="middle" font-size="8" font-weight="600" fill="var(--tx)">' +
+                  kk(v) + '</text>';
+    }
 
     if (i % saltar === 0) {
-      var cx = mIzq + paso * i + paso / 2;
-      etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 16) + '" ' +
-                     'text-anchor="middle" font-size="10" fill="var(--mu)">' + esc(r.label) + '</text>';
+      etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 14) + '" ' +
+                     'text-anchor="middle" font-size="9" fill="var(--mu)">' + esc(r.label) + '</text>';
       if (r.sub) {
-        etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 28) + '" ' +
-                       'text-anchor="middle" font-size="9" fill="var(--mu)">' + esc(r.sub) + '</text>';
+        etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 25) + '" ' +
+                       'text-anchor="middle" font-size="8" fill="var(--mu)">' + esc(r.sub) + '</text>';
       }
     }
   });
@@ -1902,9 +1910,9 @@ function graficoBarras(filas, niveles, titulo) {
     var col = colores[i] || 'var(--mu)';
     refs +=
       '<line x1="' + mIzq + '" y1="' + yy + '" x2="' + (W - mDer) + '" y2="' + yy + '" ' +
-        'stroke="' + col + '" stroke-width="2" stroke-dasharray="6 4"/>' +
-      '<text x="' + (W - mDer + 5) + '" y="' + (yy + 4) + '" font-size="11" ' +
-        'font-weight="600" fill="' + col + '">S/' + Math.round((n.ref || 0) / 1000) + 'k</text>';
+        'stroke="' + col + '" stroke-width="1.5"/>' +
+      '<text x="' + (W - mDer + 5) + '" y="' + (yy + 3) + '" font-size="9" ' +
+        'font-weight="600" fill="' + col + '">S/' + kk(n.ref || 0) + '</text>';
 
     leyenda += '<span style="display:inline-flex;align-items:center;gap:6px;margin-right:16px">' +
                  '<span style="width:14px;height:2px;background:' + col + '"></span>' +
@@ -1912,9 +1920,9 @@ function graficoBarras(filas, niveles, titulo) {
                '</span>';
   });
 
-  return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" ' +
-              'style="width:100%;height:auto;display:block;overflow:visible" ' +
-              'role="img" aria-label="' + titulo + '">' +
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" ' +
+              'style="width:100%;height:230px;display:block" ' +
+              'role="img" aria-label="' + esc(titulo) + '">' +
       lineas + barras + refs + etiquetas +
     '</svg>' +
     (leyenda ? '<div style="margin-top:12px">' + leyenda + '</div>' : '');
