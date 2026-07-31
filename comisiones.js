@@ -409,6 +409,9 @@ function pintarHome() {
   c.innerHTML =
     pestañas('home') +
     barraHerramientas(d, qTxt) +
+    filtrosPeriodo() +
+    '<div id="com-perf"></div>' +
+    '<div id="com-hist"></div>' +
     tarjetaEquipo(R, P, qTxt, meses, d.year) +
     tarjetaRanking(R, qTxt) +
     '<div class="ct">Asesoras · ' + esc(qTxt) + '</div>' +
@@ -417,13 +420,30 @@ function pintarHome() {
     '</div>' +
     tarjetaCobertura(d) +
     tarjetaReglas(cfg, R);
+
+  // El resumen y el histórico son 3 peticiones más. Con el ERP en cola eso
+  // multiplica la espera, así que solo se cargan si ya se pidieron antes o
+  // si el usuario toca un filtro. La primera vez muestra un botón.
+  if (PER.perf) { pintarPerf(); pintarHist(); }
+  else {
+    var z = document.getElementById('com-perf');
+    if (z) z.innerHTML =
+      '<div class="card">' +
+        '<div class="ct">Resumen del período</div>' +
+        '<div style="font-size:13px;margin-bottom:12px">' +
+          'Ventas, margen, pedidos y ticket, comparados con el período anterior.' +
+        '</div>' +
+        '<button class="btn bg bs" onclick="comPeriodo(\'' + PER.modo + '\')">Cargar resumen</button>' +
+      '</div>';
+  }
 }
 
 /* ── Navegación interna del módulo ─────────────────────────────────── */
 
 var PESTAÑAS = [
-  { id: 'home',   txt: 'Panel' },
-  { id: 'cierre', txt: 'Cierre' },
+  { id: 'home',     txt: 'Panel' },
+  { id: 'cierre',   txt: 'Cierre' },
+  { id: 'asesoras', txt: 'Asesoras' },
 ];
 
 function pestañas(activa) {
@@ -494,7 +514,7 @@ function tarjetaEquipo(R, P, qTxt, meses, year) {
   var bonoProy   = P.rows.reduce(function (s, r) { return s + r.bono; }, 0);
   var payroll    = totalBase * 3 + bonoProy;
 
-  var av = avanceTrimestre(year, R.qNum || (COM.q || 1));
+  var av = avanceTrimestre(year, COM.q || 1);
   var esperado = av.frac * 100;   // % de la meta que deberían llevar a hoy
   var ritmo = esperado > 0 ? R.teamCumpl / esperado * 100 : 0;
 
@@ -1053,11 +1073,457 @@ function bloqueBitacora() {
   '</div>';
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   VISTA ASESORAS — quién estuvo activa, con qué sueldo, y qué meta le tocó
+   ──────────────────────────────────────────────────────────────────────
+   Acá se corrige el caso típico: una asesora entra a mitad de año y el
+   sistema le calcula meta de meses en que no trabajó. Eso arrastra el
+   cumplimiento del equipo hacia abajo y castiga a las demás.
+   ══════════════════════════════════════════════════════════════════════ */
+
+var ASE = {
+  data: null,
+  year: null,
+  abiertas: {},     // qué tarjetas están expandidas
+  avanzado: {},     // qué asesoras muestran los campos de ajuste manual
+  cargando: false,
+};
+
+var MESES_LARGO = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+                   'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+function pintarAsesoras() {
+  COM.vista = 'asesoras';
+  var c = cont();
+  if (!c) return;
+
+  ASE.year = ASE.year || COM.year || new Date().getFullYear();
+
+  if (!ASE.data) {
+    if (ASE.cargando) return;
+    ASE.cargando = true;
+    c.innerHTML = pestañas('asesoras') + '<div class="ld"><div class="sp"></div>Cargando asesoras...</div>';
+    comApi('asesoraMes', { year: ASE.year })
+      .then(function (d) { ASE.cargando = false; ASE.data = d; pintarAsesoras(); })
+      .catch(function (e) { ASE.cargando = false; pintarError(e); });
+    return;
+  }
+
+  var d = ASE.data;
+  var x = d.xMeta || 12;
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
+
+  var optY = [d.year - 1, d.year, d.year + 1].map(function (y) {
+    return '<option value="' + y + '"' + (y === d.year ? ' selected' : '') + '>' + y + '</option>';
+  }).join('');
+
+  c.innerHTML = pestañas('asesoras') +
+    '<div class="card">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">' +
+        '<div class="ct" style="margin:0">Asesoras · mes a mes</div>' +
+        '<div>' +
+          '<span class="com-mut" style="font-size:12px">Año </span>' +
+          '<select onchange="comAseAno(this.value)" style="' + estilo + '">' + optY + '</select>' +
+        '</div>' +
+      '</div>' +
+      '<div style="font-size:13px;margin-top:12px;line-height:1.7">' +
+        'Marcá los meses en que cada asesora estuvo activa. Los meses inactivos ' +
+        'no suman meta ni arrastran el cumplimiento del equipo.<br>' +
+        'Si dejás el <b>sueldo</b> vacío se usa el prorrateo por días trabajados. ' +
+        'La <b>meta</b> se calcula sola: ' + x + '× el sueldo del mes.' +
+      '</div>' +
+    '</div>' +
+    (d.asesoras || []).map(function (a) { return tarjetaAsesoraAdmin(a, d, x); }).join('');
+}
+
+function tarjetaAsesoraAdmin(a, d, x) {
+  var abierta = !!ASE.abiertas[a.email];
+  var activa = a.estado !== 'inactiva';
+  var hoy = new Date();
+  var mesActual = hoy.getMonth() + 1;
+  var esteAno = d.year === hoy.getFullYear();
+
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 9px;border-radius:var(--r);font-size:13px;font-family:inherit';
+
+  var mesesActivos = (a.meses || []).filter(function (m) { return m.activo; }).length;
+
+  var resumen =
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;' +
+         'flex-wrap:wrap;cursor:pointer" onclick="comAseToggle(\'' + a.email + '\')">' +
+      '<div>' +
+        '<span style="font-size:16px;font-weight:600">' + esc(a.nombre) + '</span>' +
+        '<span class="com-mut" style="font-size:12px;margin-left:10px">' +
+          'base ' + fmt(a.base) + ' · ingreso ' + esc(a.desde || 'sin fecha') + ' · ' +
+          mesesActivos + '/12 meses activos' +
+          (activa ? '' : ' · <span style="color:var(--rd)">inactiva</span>') +
+        '</span>' +
+      '</div>' +
+      '<span class="com-mut" style="font-size:18px">' + (abierta ? '−' : '+') + '</span>' +
+    '</div>';
+
+  if (!abierta) return '<div class="card">' + resumen + '</div>';
+
+  var general =
+    '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
+         'margin:16px 0;padding-bottom:16px;border-bottom:1px solid var(--bd)">' +
+      '<span class="com-mut" style="font-size:12px">Fecha de ingreso</span>' +
+      '<input type="date" id="as-desde-' + a.email + '" value="' + (a.desde || '') + '" style="' + estilo + '">' +
+      '<span class="com-mut" style="font-size:12px">Sueldo base</span>' +
+      '<input type="number" id="as-base-' + a.email + '" value="' + a.base + '" style="' + estilo + ';width:100px">' +
+      '<span class="com-mut" style="font-size:12px">Estado</span>' +
+      '<button type="button" id="as-est-' + a.email + '" data-on="' + (activa ? 1 : 0) + '" ' +
+              'onclick="comAseEstado(\'' + a.email + '\')" ' +
+              'style="cursor:pointer;border-radius:99px;padding:6px 16px;font-size:12px;font-weight:600;' +
+              'font-family:inherit;color:#fff;border:1px solid ' + (activa ? 'var(--gn)' : 'var(--rd)') + ';' +
+              'background:' + (activa ? 'var(--gn)' : 'var(--rd)') + '">' +
+        (activa ? 'Activa' : 'Inactiva') + '</button>' +
+      '<button class="btn bg bs" onclick="comAseAvanzado(\'' + a.email + '\')">' +
+        (ASE.avanzado[a.email] ? 'Ocultar ajustes' : 'Ajustes manuales') + '</button>' +
+    '</div>';
+
+  var filas = (a.meses || []).map(function (m) {
+    var id = a.email + '-' + m.mes;
+    var on = !!m.activo;
+    var vigente = esteAno && m.mes === mesActual;
+
+    var pill =
+      '<button type="button" id="as-act-' + id + '" data-on="' + (on ? 1 : 0) + '" ' +
+              'onclick="comAseMes(\'' + id + '\')" ' +
+              'style="cursor:pointer;border-radius:99px;padding:4px 13px;font-size:11px;font-weight:600;' +
+              'font-family:inherit;border:1px solid ' + (on ? 'var(--gn)' : 'var(--bd)') + ';' +
+              'background:' + (on ? 'var(--gn)' : 'transparent') + ';' +
+              'color:' + (on ? '#fff' : 'var(--mu)') + '">' +
+        (on ? 'Activo' : 'Inactivo') + '</button>';
+
+    var avanzado = ASE.avanzado[a.email]
+      ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-top:10px">' +
+          campoOv('Venta',  'as-vov-' + id, m.ventaOv,  estilo) +
+          campoOv('Margen', 'as-mov-' + id, m.margenOv, estilo) +
+          campoOv('Bono',   'as-bov-' + id, m.bonoOv,   estilo) +
+          '<div><div class="ml" style="margin-bottom:3px">Nota</div>' +
+            '<input type="text" id="as-nota-' + id + '" value="' + esc(m.nota || '') + '" ' +
+                   'style="' + estilo + ';width:100%"></div>' +
+        '</div>'
+      : '';
+
+    return '<div id="as-box-' + id + '" style="' + estiloMes(on) + '">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<b style="font-size:13px">' + MESES_LARGO[m.mes - 1] +
+          (vigente ? ' <span style="color:var(--ac);font-size:11px">en curso</span>' : '') + '</b>' +
+        pill +
+      '</div>' +
+      '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-top:10px">' +
+        '<div>' +
+          '<div class="ml" style="margin-bottom:3px">Sueldo del mes</div>' +
+          '<input type="number" id="as-suel-' + id + '" ' +
+                 'value="' + (m.sueldo != null ? m.sueldo : '') + '" ' +
+                 'data-sug="' + (m.sueldoSugerido || 0) + '" ' +
+                 'placeholder="' + (m.sueldoSugerido || 0) + ' (prorrateo)" ' +
+                 'oninput="comAseMeta(\'' + id + '\')" style="' + estilo + ';width:145px">' +
+        '</div>' +
+        '<div>' +
+          '<div class="ml" style="margin-bottom:3px">Meta de margen</div>' +
+          '<div id="as-meta-' + id + '" style="font-weight:600;padding:7px 0">' + fmt(m.meta) + '</div>' +
+        '</div>' +
+      '</div>' + avanzado +
+    '</div>';
+  }).join('');
+
+  var acciones =
+    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:16px;' +
+         'padding-top:16px;border-top:1px solid var(--bd)">' +
+      '<button class="btn bp" onclick="comAseGuardar(\'' + a.email + '\')">Guardar cambios</button>' +
+      '<button class="btn bg" id="as-reset-' + a.email + '" ' +
+              'onclick="comAseReset(\'' + a.email + '\')">Restablecer el año</button>' +
+      '<span id="as-msg-' + a.email + '" style="font-size:13px"></span>' +
+    '</div>';
+
+  return '<div class="card">' + resumen + general +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:10px">' +
+      filas +
+    '</div>' + acciones +
+  '</div>';
+}
+
+function campoOv(label, id, valor, estilo) {
+  return '<div>' +
+    '<div class="ml" style="margin-bottom:3px">' + label + '</div>' +
+    '<input type="number" id="' + id + '" value="' + (valor != null ? valor : '') + '" ' +
+           'placeholder="auto" style="' + estilo + ';width:100%">' +
+  '</div>';
+}
+
+function estiloMes(activo) {
+  return activo
+    ? 'border:1px solid var(--ac);border-radius:var(--r2);padding:12px;background:var(--bg3)'
+    : 'border:1px solid var(--bd);border-radius:var(--r2);padding:12px;opacity:.5';
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   RESUMEN DEL PERÍODO + HISTÓRICO
+   Lo de arriba del panel: ventas, margen, pedidos, ticket — comparado
+   contra el mismo período anterior — y el gráfico de margen en el tiempo.
+   El gráfico es SVG puro: sin librerías y hereda el tema claro/oscuro.
+   ══════════════════════════════════════════════════════════════════════ */
+
+var PER = {
+  modo: 'trim',      // mes | trim | anio | custom
+  perf: null,
+  perfPrev: null,
+  hist: null,
+  rango: null,
+  cargando: false,
+  seq: 0,            // descarta respuestas de una selección ya abandonada
+};
+
+var PER_NOMBRE = { mes: 'Este mes', trim: 'Este trimestre', anio: 'Este año', custom: 'Personalizado' };
+
+function iso(d) {
+  return d.getFullYear() + '-' +
+         String(d.getMonth() + 1).padStart(2, '0') + '-' +
+         String(d.getDate()).padStart(2, '0');
+}
+
+/**
+ * Rango del período elegido + el mismo tramo del período anterior.
+ * Corta en AYER: el día en curso está incompleto y ensucia la comparación.
+ */
+function rangoComparable(modo) {
+  var hoy = new Date();
+  var ayer = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - 1);
+  var ini;
+
+  if (modo === 'trim')      ini = new Date(hoy.getFullYear(), Math.floor(hoy.getMonth() / 3) * 3, 1);
+  else if (modo === 'anio') ini = new Date(hoy.getFullYear(), 0, 1);
+  else                      ini = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+
+  // Si hoy es día 1, no hay días cerrados: tomamos el período anterior
+  if (ayer < ini) ini = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+
+  var dias = Math.max(1, Math.round((ayer - ini) / 864e5) + 1);
+
+  var iniPrev;
+  if (modo === 'anio')      iniPrev = new Date(ini.getFullYear() - 1, 0, 1);
+  else if (modo === 'trim') iniPrev = new Date(ini.getFullYear(), ini.getMonth() - 3, 1);
+  else                      iniPrev = new Date(ini.getFullYear(), ini.getMonth() - 1, 1);
+
+  var finPrev = new Date(iniPrev.getFullYear(), iniPrev.getMonth(), iniPrev.getDate() + dias - 1);
+
+  return {
+    desde: iso(ini), hasta: iso(ayer),
+    pDesde: iso(iniPrev), pHasta: iso(finPrev),
+    dias: dias,
+  };
+}
+
+function cargarPeriodo(modo, desde, hasta) {
+  PER.modo = modo;
+  var seq = ++PER.seq;
+
+  var r = (modo === 'custom')
+        ? { desde: desde, hasta: hasta, pDesde: null, pHasta: null, dias: 1 }
+        : rangoComparable(modo);
+  PER.rango = r;
+  PER.cargando = true;
+
+  var zonaPerf = document.getElementById('com-perf');
+  var zonaHist = document.getElementById('com-hist');
+  if (zonaPerf) zonaPerf.innerHTML = '<div class="card"><div class="ml">Cargando resumen…</div></div>';
+  if (zonaHist) zonaHist.innerHTML = '';
+
+  // Período actual
+  comApi('perf', { desde: r.desde, hasta: r.hasta })
+    .then(function (d) {
+      if (seq !== PER.seq) return;   // el usuario ya cambió de selección
+      PER.perf = d;
+      if (!r.pDesde) { PER.perfPrev = null; PER.cargando = false; pintarPerf(); return; }
+      return comApi('perf', { desde: r.pDesde, hasta: r.pHasta })
+        .then(function (p) { if (seq === PER.seq) { PER.perfPrev = p; pintarPerf(); } })
+        .catch(function () { if (seq === PER.seq) { PER.perfPrev = null; pintarPerf(); } });
+    })
+    .catch(function (e) {
+      if (seq !== PER.seq) return;
+      if (zonaPerf) zonaPerf.innerHTML = '<div class="card" style="border-color:var(--rd)">' +
+        '<div class="ml" style="color:var(--rd)">' + esc((e && e.message) || e) + '</div></div>';
+    });
+
+  // Histórico
+  comApi('hist', { desde: r.desde, hasta: r.hasta })
+    .then(function (d) { if (seq === PER.seq) { PER.hist = d; pintarHist(); } })
+    .catch(function () {});
+}
+
+function filtrosPeriodo() {
+  var opts = [['mes','Mes'], ['trim','Trimestre'], ['anio','Año'], ['custom','Personalizado']];
+  return '<div id="com-filtros" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">' +
+    opts.map(function (o) {
+      var on = PER.modo === o[0];
+      return '<button class="btn ' + (on ? 'bp' : 'bg') + ' bs" ' +
+             'onclick="comPeriodo(\'' + o[0] + '\')">' + o[1] + '</button>';
+    }).join('') +
+  '</div>';
+}
+
+/** Flecha comparativa contra el período anterior. */
+function delta(actual, previo) {
+  if (previo == null || isNaN(previo)) return '';
+  var a = Number(actual) || 0, p = Number(previo) || 0;
+  if (p === 0 && a === 0) return '<span class="ml">sin cambio</span>';
+  if (p === 0) return '<span style="color:var(--gn);font-size:11px">nuevo</span>';
+
+  var pct = (a - p) / Math.abs(p) * 100;
+  var col = pct > 0.05 ? 'var(--gn)' : pct < -0.05 ? 'var(--rd)' : 'var(--mu)';
+  var flecha = pct > 0.05 ? '▲' : pct < -0.05 ? '▼' : '=';
+  return '<span style="color:' + col + ';font-size:11px;font-weight:600">' +
+         flecha + ' ' + Math.abs(pct).toFixed(1) + '%</span>';
+}
+
+function pintarPerf() {
+  var z = document.getElementById('com-perf');
+  if (!z || !PER.perf) return;
+
+  var d = PER.perf, prev = PER.perfPrev, r = PER.rango;
+  var mr  = d.totalVentas > 0 ? d.totalMargen / d.totalVentas * 100 : 0;
+  var mrP = (prev && prev.totalVentas > 0) ? prev.totalMargen / prev.totalVentas * 100 : null;
+  var porDia = d.totalMargen / Math.max(1, r.dias);
+
+  var cel = function (label, valor, dt, color) {
+    return '<div class="mt">' +
+             '<div class="ml">' + label + '</div>' +
+             '<div class="com-big"' + (color ? ' style="color:' + color + '"' : '') + '>' + valor + '</div>' +
+             '<div class="ml" style="margin:5px 0 0">' + (dt || '') + '</div>' +
+           '</div>';
+  };
+
+  var comparativa = prev
+    ? '<div class="ml" style="margin-bottom:12px">Comparado con ' + esc(prev.desde) + ' a ' + esc(prev.hasta) + '</div>'
+    : '';
+
+  z.innerHTML = '<div class="card">' +
+    '<div class="ct">Resumen del período · ' + (PER_NOMBRE[PER.modo] || '') + '</div>' +
+    '<div class="ml" style="margin-bottom:6px">' + esc(r.desde) + ' a ' + esc(r.hasta) + ' · hasta el cierre de ayer</div>' +
+    comparativa +
+    '<div class="mts" style="margin-bottom:0">' +
+      cel('Ventas', fmt(d.totalVentas), prev ? delta(d.totalVentas, prev.totalVentas) : '') +
+      cel('Margen', fmt(d.totalMargen), prev ? delta(d.totalMargen, prev.totalMargen) : '', 'var(--gn)') +
+      cel('Margen real', mr.toFixed(2) + '%', mrP != null ? delta(mr, mrP) : '', 'var(--gn)') +
+      cel('Margen por día', fmt(porDia), '', 'var(--gn)') +
+      cel('Pedidos', (Number(d.totalOrders) || 0).toLocaleString('es-PE'), prev ? delta(d.totalOrders, prev.totalOrders) : '') +
+      cel('Ticket promedio', fmt(d.ticket), prev ? delta(d.ticket, prev.ticket) : '') +
+    '</div>' +
+  '</div>';
+}
+
+/* ── Gráfico histórico en SVG ──────────────────────────────────────── */
+
+function pintarHist() {
+  var z = document.getElementById('com-hist');
+  if (!z || !PER.hist) return;
+
+  var d = PER.hist;
+  var filas = d.rows || [];
+  if (!filas.length) { z.innerHTML = ''; return; }
+
+  var niveles = (d.niveles && d.niveles.length) ? d.niveles : [];
+  var titulo = 'Margen del equipo · ' + (d.gran === 'day' ? 'por día' : 'por mes');
+
+  z.innerHTML = '<div class="card">' +
+    '<div class="ct">' + titulo + '</div>' +
+    graficoBarras(filas, niveles) +
+  '</div>';
+}
+
+/**
+ * Barras verticales con líneas de referencia.
+ * viewBox fijo + preserveAspectRatio: escala solo al ancho del contenedor.
+ */
+function graficoBarras(filas, niveles) {
+  var W = 900, H = 300;
+  var mIzq = 52, mDer = 46, mArr = 14, mAba = 34;
+  var ancho = W - mIzq - mDer, alto = H - mArr - mAba;
+
+  var maxDato = Math.max.apply(null, filas.map(function (r) { return r.margen || 0; }));
+  var maxNivel = niveles.length ? Math.max.apply(null, niveles.map(function (n) { return n.ref || 0; })) : 0;
+  var max = Math.max(maxDato, maxNivel) * 1.12 || 1;
+
+  var y = function (v) { return mArr + alto - (v / max * alto); };
+  var paso = ancho / filas.length;
+  var wBarra = Math.max(2, Math.min(46, paso * 0.66));
+
+  // Grilla horizontal + escala
+  var lineas = '', pasos = 4;
+  for (var i = 0; i <= pasos; i++) {
+    var val = max / pasos * i, yy = y(val);
+    lineas +=
+      '<line x1="' + mIzq + '" y1="' + yy + '" x2="' + (W - mDer) + '" y2="' + yy + '" ' +
+        'stroke="var(--bd)" stroke-width="1"/>' +
+      '<text x="' + (mIzq - 8) + '" y="' + (yy + 4) + '" text-anchor="end" ' +
+        'font-size="11" fill="var(--mu)">S/' + Math.round(val / 1000) + 'k</text>';
+  }
+
+  // Barras + etiquetas del eje X
+  var barras = '', etiquetas = '';
+  var saltar = Math.ceil(filas.length / 22);   // no amontonar etiquetas
+  filas.forEach(function (r, i) {
+    var v = r.margen || 0;
+    var x = mIzq + paso * i + (paso - wBarra) / 2;
+    var h = Math.max(1, alto - (y(v) - mArr));
+    barras += '<rect x="' + x.toFixed(1) + '" y="' + y(v).toFixed(1) + '" ' +
+                'width="' + wBarra.toFixed(1) + '" height="' + h.toFixed(1) + '" ' +
+                'rx="3" fill="var(--gn)"><title>' + esc(r.label) + ': ' + fmt(v) + '</title></rect>';
+
+    if (i % saltar === 0) {
+      var cx = mIzq + paso * i + paso / 2;
+      etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 16) + '" ' +
+                     'text-anchor="middle" font-size="10" fill="var(--mu)">' + esc(r.label) + '</text>';
+      if (r.sub) {
+        etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 28) + '" ' +
+                       'text-anchor="middle" font-size="9" fill="var(--mu)">' + esc(r.sub) + '</text>';
+      }
+    }
+  });
+
+  // Líneas de nivel con su monto a la derecha
+  var colores = ['var(--am)', 'var(--gn)', 'var(--ac)'];
+  var refs = '', leyenda = '';
+  niveles.forEach(function (n, i) {
+    var yy = y(n.ref || 0);
+    if (isNaN(yy) || yy < mArr) return;
+    var col = colores[i] || 'var(--mu)';
+    refs +=
+      '<line x1="' + mIzq + '" y1="' + yy + '" x2="' + (W - mDer) + '" y2="' + yy + '" ' +
+        'stroke="' + col + '" stroke-width="2" stroke-dasharray="6 4"/>' +
+      '<text x="' + (W - mDer + 5) + '" y="' + (yy + 4) + '" font-size="11" ' +
+        'font-weight="600" fill="' + col + '">S/' + Math.round((n.ref || 0) / 1000) + 'k</text>';
+
+    leyenda += '<span style="display:inline-flex;align-items:center;gap:6px;margin-right:16px">' +
+                 '<span style="width:14px;height:2px;background:' + col + '"></span>' +
+                 '<span class="ml">' + esc(n.label) + '</span>' +
+               '</span>';
+  });
+
+  return '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet" ' +
+              'style="width:100%;height:auto;display:block;overflow:visible" ' +
+              'role="img" aria-label="' + titulo + '">' +
+      lineas + barras + refs + etiquetas +
+    '</svg>' +
+    (leyenda ? '<div style="margin-top:12px">' + leyenda + '</div>' : '');
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   API PÚBLICA — lo único que sale del módulo
+   ══════════════════════════════════════════════════════════════════════ */
+
 window.loadComisiones = cargar;
 
 /* ── Navegación interna ── */
 window.comIr = function (vista) {
   if (vista === 'cierre') pintarCierre();
+  else if (vista === 'asesoras') pintarAsesoras();
   else cargar();
 };
 window.comCierreSub = function (sub) { CIERRE.sub = sub; pintarCierre(); };
@@ -1157,14 +1623,228 @@ window.comCambiarPeriodo = function () {
   COM.q    = Number(q.value);
   COM.data = null;
   COM.traidoEn = null;
+  // Asesoras depende del año: si cambió, hay que releerla
+  if (ASE.year !== COM.year) { ASE.data = null; ASE.year = COM.year; }
   cargar();   // usa caché si ya vio ese período antes
 };
 
-// Lo llama el botón 🔄 del ERP: tira todo lo guardado y vuelve a pedir
+// Lo llama el botón de recarga del ERP: tira todo lo guardado y vuelve a pedir
 window._comReset = function () {
   COM.data = null;
   COM.traidoEn = null;
+  ASE.data = null;
+  CIERRE.cargado = false;
+  PER.perf = null; PER.perfPrev = null; PER.hist = null;
   cacheBorrar();
 };
 
+// Engancharse al botón de recarga del ERP sin tocar su código:
+// si _refrescarModulo existe, lo envolvemos para que también limpie lo nuestro.
+(function engancharRefrescar() {
+  if (typeof window._refrescarModulo !== 'function' || window._refrescarModulo._comHook) return;
+  var original = window._refrescarModulo;
+  var envuelto = function (pg) {
+    if (pg === 'comisiones') {
+      window._comReset();
+      if (COM.vista === 'cierre') { pintarCierre(); return; }
+      if (COM.vista === 'asesoras') { pintarAsesoras(); return; }
+      cargar(true);
+      return;
+    }
+    return original.apply(this, arguments);
+  };
+  envuelto._comHook = true;
+  window._refrescarModulo = envuelto;
 })();
+
+})();
+
+/* ── Asesoras ── */
+
+window.comAseAno = function (y) {
+  ASE.year = Number(y);
+  ASE.data = null;
+  pintarAsesoras();
+};
+
+window.comAseToggle = function (email) {
+  if (ASE.abiertas[email]) delete ASE.abiertas[email];
+  else ASE.abiertas[email] = true;
+  pintarAsesoras();
+};
+
+window.comAseAvanzado = function (email) {
+  if (ASE.avanzado[email]) delete ASE.avanzado[email];
+  else ASE.avanzado[email] = true;
+  pintarAsesoras();
+};
+
+/** Enciende o apaga un mes. Sin recargar: solo cambia el aspecto. */
+window.comAseMes = function (id) {
+  var b = document.getElementById('as-act-' + id);
+  if (!b) return;
+  var on = b.getAttribute('data-on') !== '1';
+  b.setAttribute('data-on', on ? '1' : '0');
+  b.textContent = on ? 'Activo' : 'Inactivo';
+  b.style.background  = on ? 'var(--gn)' : 'transparent';
+  b.style.color       = on ? '#fff' : 'var(--mu)';
+  b.style.borderColor = on ? 'var(--gn)' : 'var(--bd)';
+  var box = document.getElementById('as-box-' + id);
+  if (box) box.setAttribute('style', estiloMes(on));
+};
+
+window.comAseEstado = function (email) {
+  var b = document.getElementById('as-est-' + email);
+  if (!b) return;
+  var on = b.getAttribute('data-on') !== '1';
+  b.setAttribute('data-on', on ? '1' : '0');
+  b.textContent = on ? 'Activa' : 'Inactiva';
+  b.style.background  = on ? 'var(--gn)' : 'var(--rd)';
+  b.style.borderColor = on ? 'var(--gn)' : 'var(--rd)';
+};
+
+/** Recalcula la meta al vuelo mientras se escribe el sueldo. */
+window.comAseMeta = function (id) {
+  var el = document.getElementById('as-suel-' + id);
+  if (!el) return;
+  var sug = Number(el.getAttribute('data-sug')) || 0;
+  var v = el.value !== '' ? Number(el.value) : sug;
+  var x = (ASE.data && ASE.data.xMeta) || 12;
+  var out = document.getElementById('as-meta-' + id);
+  if (out) out.textContent = fmt(Math.round(x * v));
+};
+
+window.comAseGuardar = function (email) {
+  var a = (ASE.data.asesoras || []).find(function (z) { return z.email === email; });
+  if (!a) return;
+
+  var val = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
+  var num = function (id) { var v = val(id); return v === '' ? null : Number(v); };
+
+  var master = {
+    desde:  val('as-desde-' + email),
+    base:   Number(val('as-base-' + email)) || 0,
+    estado: document.getElementById('as-est-' + email).getAttribute('data-on') === '1'
+            ? 'activa' : 'inactiva',
+  };
+
+  var meses = (a.meses || []).map(function (m) {
+    var id = email + '-' + m.mes;
+    return {
+      mes:      m.mes,
+      sueldo:   num('as-suel-' + id),
+      activo:   document.getElementById('as-act-' + id).getAttribute('data-on') === '1',
+      ventaOv:  num('as-vov-' + id),
+      margenOv: num('as-mov-' + id),
+      bonoOv:   num('as-bov-' + id),
+      nota:     val('as-nota-' + id),
+    };
+  });
+
+  var msg = document.getElementById('as-msg-' + email);
+  if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = 'Guardando...'; }
+
+  comApi('saveAsesoraFull', { email: email, year: ASE.year, master: master, meses: meses })
+    .then(function (d) {
+      ASE.data = d;
+      COM.data = null;      // el panel cambió: hay que recalcularlo
+      cacheBorrar();
+      pintarAsesoras();
+      var m2 = document.getElementById('as-msg-' + email);
+      if (m2) { m2.style.color = 'var(--gn)'; m2.textContent = 'Guardado'; }
+    })
+    .catch(function (e) {
+      if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
+    });
+};
+
+/** Borra los ajustes del año y vuelve a los valores automáticos. */
+window.comAseReset = function (email) {
+  var b = document.getElementById('as-reset-' + email);
+  if (!b) return;
+
+  // Confirmación en dos pasos: el primer clic arma, el segundo ejecuta
+  if (b.getAttribute('data-armed') !== '1') {
+    b.setAttribute('data-armed', '1');
+    b.textContent = 'Confirmar: borra todo el año';
+    b.style.color = 'var(--rd)';
+    b.style.borderColor = 'var(--rd)';
+    clearTimeout(b._t);
+    b._t = setTimeout(function () {
+      b.setAttribute('data-armed', '0');
+      b.textContent = 'Restablecer el año';
+      b.style.color = '';
+      b.style.borderColor = '';
+    }, 4000);
+    return;
+  }
+
+  clearTimeout(b._t);
+  b.textContent = 'Restableciendo...';
+  b.disabled = true;
+
+  comApi('delAsesoraAnio', { email: email, year: ASE.year })
+    .then(function (d) {
+      ASE.data = d;
+      COM.data = null;
+      cacheBorrar();
+      pintarAsesoras();
+    })
+    .catch(function (e) {
+      b.disabled = false;
+      b.setAttribute('data-armed', '0');
+      b.textContent = 'Restablecer el año';
+      var msg = document.getElementById('as-msg-' + email);
+      if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
+    });
+};
+
+/* ── Filtro de período del resumen ── */
+
+window.comPeriodo = function (modo) {
+  if (modo === 'custom') { pintarCustom(); return; }
+  PER.perf = null; PER.perfPrev = null; PER.hist = null;
+  PER.modo = modo;
+  var f = document.getElementById('com-filtros');
+  if (f) f.outerHTML = filtrosPeriodo();
+  cargarPeriodo(modo);
+};
+
+function pintarCustom() {
+  PER.modo = 'custom';
+  var hoy = new Date();
+  var ini = iso(new Date(hoy.getFullYear(), hoy.getMonth(), 1));
+  var fin = iso(hoy);
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
+
+  var z = document.getElementById('com-perf');
+  if (!z) return;
+  var f = document.getElementById('com-filtros');
+  if (f) f.outerHTML = filtrosPeriodo();
+
+  document.getElementById('com-hist').innerHTML = '';
+  document.getElementById('com-perf').innerHTML =
+    '<div class="card">' +
+      '<div class="ct">Rango personalizado</div>' +
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<input type="date" id="com-d1" value="' + ini + '" style="' + estilo + '">' +
+        '<span class="com-mut">a</span>' +
+        '<input type="date" id="com-d2" value="' + fin + '" style="' + estilo + '">' +
+        '<button class="btn bp bs" onclick="comAplicarCustom()">Aplicar</button>' +
+      '</div>' +
+    '</div>';
+}
+
+window.comAplicarCustom = function () {
+  var a = document.getElementById('com-d1').value;
+  var b = document.getElementById('com-d2').value;
+  if (!a || !b) return;
+  if (a > b) {
+    document.getElementById('com-perf').innerHTML +=
+      '<div class="ml" style="color:var(--rd);margin-top:8px">La fecha inicial es posterior a la final.</div>';
+    return;
+  }
+  PER.perf = null; PER.perfPrev = null; PER.hist = null;
+  cargarPeriodo('custom', a, b);
+};
