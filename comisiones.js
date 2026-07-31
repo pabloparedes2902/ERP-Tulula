@@ -592,6 +592,28 @@ function barraHerramientas(d, qTxt) {
   '</div>';
 }
 
+/**
+ * Qué fracción del trimestre ya pasó.
+ * Sin esto, ver "63%" el 31 de julio parece que van perdiendo, cuando
+ * en realidad recién arrancó el trimestre.
+ */
+function avanceTrimestre(year, q) {
+  var ini = new Date(year, (q - 1) * 3, 1);
+  var fin = new Date(year, (q - 1) * 3 + 3, 0, 23, 59, 59);
+  var hoy = new Date();
+
+  if (hoy > fin) return { frac: 1, dias: 0, cerrado: true };
+  if (hoy < ini) return { frac: 0, dias: Math.round((fin - ini) / 864e5) + 1, cerrado: false };
+
+  var total = (fin - ini) / 864e5 + 1;
+  var pasado = (hoy - ini) / 864e5;
+  return {
+    frac: Math.max(0, Math.min(1, pasado / total)),
+    dias: Math.max(0, Math.round((fin - hoy) / 864e5)),
+    cerrado: false,
+  };
+}
+
 function tarjetaEquipo(R, P, qTxt, meses, year) {
   var totalBase  = R.rows.reduce(function (s, r) { return s + r.base; }, 0);
   var bonoActual = R.rows.reduce(function (s, r) { return s + r.bono; }, 0);
@@ -1282,8 +1304,15 @@ function detectarAnomalias(historico) {
 
   var hoy = new Date();
   var mesActual = hoy.getMonth() + 1;
-  // El mes en curso está incompleto: miramos el último cerrado
-  var mesMirar = mesActual - 1;
+  var diasDelMes = new Date(hoy.getFullYear(), mesActual, 0).getDate();
+  var diaHoy = hoy.getDate();
+  var fraccion = diaHoy / diasDelMes;
+
+  // El mes en curso solo sirve si ya está casi completo. Antes de eso,
+  // cualquiera parecería en caída solo porque el mes no terminó.
+  var mesMirar, parcial = false;
+  if (fraccion >= 0.85) { mesMirar = mesActual; parcial = fraccion < 1; }
+  else { mesMirar = mesActual - 1; }
   if (mesMirar < 1) return [];
 
   var salida = [];
@@ -1303,14 +1332,18 @@ function detectarAnomalias(historico) {
     var promedio = previos.reduce(function (a, b) { return a + b; }, 0) / previos.length;
     if (promedio <= 0) return;
 
-    var desvio = (actual.margen - promedio) / promedio * 100;
+    // Si el mes está a medias, comparamos contra la parte proporcional
+    var referencia = parcial ? promedio * fraccion : promedio;
+    var desvio = (actual.margen - referencia) / referencia * 100;
 
     if (desvio <= -ANOM_CAIDA) {
       salida.push({ nombre: nombre, mes: mesMirar, margen: actual.margen,
-                    promedio: Math.round(promedio), desvio: desvio, tipo: 'caida' });
+                    promedio: Math.round(promedio), desvio: desvio,
+                    tipo: 'caida', parcial: parcial });
     } else if (desvio >= ANOM_SUBIDA) {
       salida.push({ nombre: nombre, mes: mesMirar, margen: actual.margen,
-                    promedio: Math.round(promedio), desvio: desvio, tipo: 'subida' });
+                    promedio: Math.round(promedio), desvio: desvio,
+                    tipo: 'subida', parcial: parcial });
     }
   });
 
@@ -1331,7 +1364,7 @@ function tarjetaAnomalias(historico) {
       '<div>' +
         '<b style="font-size:14px">' + esc(a.nombre) + '</b>' +
         '<div class="ml" style="margin-top:3px">' +
-          MESES_LARGO[a.mes - 1] + ': ' + fmt(a.margen) +
+          MESES_LARGO[a.mes - 1] + (a.parcial ? ' (en curso)' : '') + ': ' + fmt(a.margen) +
           ' · su promedio venía siendo ' + fmt(a.promedio) +
         '</div>' +
       '</div>' +
