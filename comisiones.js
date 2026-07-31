@@ -23,7 +23,50 @@ var COM = {
   q: null,
   vista: 'home',
   cargando: false,
+  refrescando: false,
+  traidoEn: null,  // timestamp de los datos que se están mostrando
+  ms: null,        // cuánto tardó la última consulta al servidor
 };
+
+/* ── Caché de sesión ────────────────────────────────────────────────
+   Guarda la respuesta en sessionStorage para que volver al módulo sea
+   instantáneo. Se borra al cerrar la pestaña, así que nunca queda data
+   salarial en el disco del navegador.
+   Estrategia: pintar lo guardado al instante y refrescar por detrás.  */
+
+function claveCache(year, q) { return 'com_' + year + '_q' + q; }
+
+function cacheLeer(year, q) {
+  try {
+    var raw = sessionStorage.getItem(claveCache(year, q));
+    if (!raw) return null;
+    var o = JSON.parse(raw);
+    return (o && o.data) ? o : null;
+  } catch (e) { return null; }
+}
+
+function cacheGuardar(year, q, data) {
+  try {
+    sessionStorage.setItem(claveCache(year, q),
+      JSON.stringify({ data: data, t: Date.now() }));
+  } catch (e) {}   // cuota llena o modo privado: seguimos sin caché
+}
+
+function cacheBorrar() {
+  try {
+    Object.keys(sessionStorage)
+      .filter(function (k) { return k.indexOf('com_') === 0; })
+      .forEach(function (k) { sessionStorage.removeItem(k); });
+  } catch (e) {}
+}
+
+function haceCuanto(ts) {
+  if (!ts) return '';
+  var s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60)   return 'hace ' + s + 's';
+  if (s < 3600) return 'hace ' + Math.round(s / 60) + ' min';
+  return 'hace ' + Math.round(s / 3600) + ' h';
+}
 
 /* ── Puente con el backend ─────────────────────────────────────────── */
 // apiSend manda el body como JSON y agrega _reqId (anti-duplicado).
@@ -225,31 +268,101 @@ function pintarError(e) {
     '</div>';
 }
 
-/** Punto de entrada. Lo llama loadPg(). */
+/**
+ * Punto de entrada. Lo llama loadPg().
+ *
+ * Orden de prioridad para que se vea algo cuanto antes:
+ *   1. Datos en memoria      → instantáneo
+ *   2. Datos en sessionStorage → instantáneo, y refresca por detrás
+ *   3. Nada                  → spinner mientras consulta
+ */
 function cargar(forzar) {
-  if (COM.cargando) return;
   inyectarEstilos();
-
-  // Si ya hay datos y no se fuerza, repinta sin ir al servidor.
-  if (COM.data && !forzar) { pintarHome(); return; }
 
   var hoy = new Date();
   COM.year = COM.year || hoy.getFullYear();
   COM.q    = COM.q    || Math.ceil((hoy.getMonth() + 1) / 3);
 
+  // 1) En memoria
+  if (COM.data && !forzar) { pintarHome(); refrescarDetras(); return; }
+
+  // 2) En caché de sesión
+  if (!forzar) {
+    var c = cacheLeer(COM.year, COM.q);
+    if (c) {
+      COM.data = c.data;
+      COM.traidoEn = c.t;
+      pintarHome();
+      refrescarDetras();
+      return;
+    }
+  }
+
+  // 3) Sin nada guardado: spinner
+  if (COM.cargando) return;
   COM.cargando = true;
   pintarCargando();
 
-  comApi('admin', { year: COM.year, q: COM.q })
-    .then(function (d) {
-      COM.cargando = false;
-      COM.data = d;
-      pintarHome();
+  traer(COM.year, COM.q)
+    .then(function () { COM.cargando = false; pintarHome(); })
+    .catch(function (e) { COM.cargando = false; pintarError(e); });
+}
+
+/** Consulta al servidor y actualiza estado + caché. */
+function traer(year, q) {
+  var t0 = Date.now();
+  return comApi('admin', { year: year, q: q }).then(function (d) {
+    COM.data = d;
+    COM.traidoEn = Date.now();
+    COM.ms = Date.now() - t0;
+    cacheGuardar(year, q, d);
+    return d;
+  });
+}
+
+/**
+ * Refresca los datos sin bloquear la vista.
+ * El usuario ya está viendo algo; esto solo lo actualiza cuando llega.
+ */
+function refrescarDetras() {
+  if (COM.refrescando) return;
+  COM.refrescando = true;
+  marcarRefrescando(true);
+
+  var year = COM.year, q = COM.q;
+
+  traer(year, q)
+    .then(function () {
+      COM.refrescando = false;
+      // Si el usuario cambió de período mientras tanto, no pisar la vista
+      if (COM.year === year && COM.q === q && COM.vista === 'home') pintarHome();
+      else marcarRefrescando(false);
     })
-    .catch(function (e) {
-      COM.cargando = false;
-      pintarError(e);
+    .catch(function () {
+      COM.refrescando = false;
+      marcarRefrescando(false);
+      // Falló el refresco silencioso: no molestamos, ya hay datos en pantalla.
     });
+}
+
+function marcarRefrescando(activo) {
+  var e = document.getElementById('com-estado');
+  if (!e) return;
+  e.textContent = activo ? 'Actualizando…'
+                         : (COM.traidoEn ? 'Datos ' + haceCuanto(COM.traidoEn) : '');
+  e.style.color = activo ? 'var(--ac)' : 'var(--mu)';
+}
+
+/**
+ * Precarga silenciosa. La llama el ERP al arrancar, si el rol es admin.
+ * No pinta nada: solo deja los datos listos en caché.
+ */
+function precargar() {
+  var hoy = new Date();
+  var year = hoy.getFullYear();
+  var q = Math.ceil((hoy.getMonth() + 1) / 3);
+  if (cacheLeer(year, q)) return;      // ya está
+  traer(year, q).catch(function () {}); // si falla, no pasa nada
 }
 
 function pintarHome() {
@@ -283,8 +396,9 @@ function pintarHome() {
   }), cfg);
 
   c.innerHTML =
+    pestañas('home') +
     barraHerramientas(d, qTxt) +
-    tarjetaEquipo(R, P, qTxt) +
+    tarjetaEquipo(R, P, qTxt, meses, d.year) +
     tarjetaRanking(R, qTxt) +
     '<div class="ct">Asesoras · ' + esc(qTxt) + '</div>' +
     '<div class="com-grid">' +
@@ -292,6 +406,24 @@ function pintarHome() {
     '</div>' +
     tarjetaCobertura(d) +
     tarjetaReglas(cfg, R);
+}
+
+/* ── Navegación interna del módulo ─────────────────────────────────── */
+
+var PESTAÑAS = [
+  { id: 'home',   txt: 'Panel' },
+  { id: 'cierre', txt: 'Cierre' },
+];
+
+function pestañas(activa) {
+  return '<div class="tabs">' +
+    PESTAÑAS.map(function (p) {
+      var on = p.id === activa;
+      return '<button class="tab" onclick="comIr(\'' + p.id + '\')" style="' +
+             (on ? 'color:var(--ac);border-bottom-color:var(--ac);font-weight:500' : '') + '">' +
+             p.txt + '</button>';
+    }).join('') +
+  '</div>';
 }
 
 function barraHerramientas(d, qTxt) {
@@ -310,23 +442,68 @@ function barraHerramientas(d, qTxt) {
   var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
                'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
 
+  var estado = COM.refrescando ? 'Actualizando…'
+             : (COM.traidoEn ? 'Datos ' + haceCuanto(COM.traidoEn) : '');
+  var colorEstado = COM.refrescando ? 'var(--ac)' : 'var(--mu)';
+
   return '<div class="com-toolbar">' +
     '<span class="com-mut" style="font-size:12px">Período</span>' +
     '<select id="com-year" style="' + estilo + '" onchange="comCambiarPeriodo()">' + optY + '</select>' +
     '<select id="com-q" style="' + estilo + '" onchange="comCambiarPeriodo()">' + optQ + '</select>' +
     '<button class="btn bg bs" onclick="loadComisiones(true)">Actualizar datos</button>' +
+    '<span id="com-estado" style="font-size:12px;color:' + colorEstado + '">' + estado + '</span>' +
   '</div>';
 }
 
-function tarjetaEquipo(R, P, qTxt) {
+/**
+ * Qué fracción del trimestre ya pasó.
+ * Sin esto, ver "63%" el 31 de julio parece que van perdiendo, cuando
+ * en realidad recién arrancó el trimestre y julio cerró por encima.
+ */
+function avanceTrimestre(year, q) {
+  var ini = new Date(year, (q - 1) * 3, 1);
+  var fin = new Date(year, (q - 1) * 3 + 3, 0, 23, 59, 59);
+  var hoy = new Date();
+
+  if (hoy > fin) return { frac: 1, dias: 0, cerrado: true };
+  if (hoy < ini) return { frac: 0, dias: Math.round((fin - ini) / 864e5) + 1, cerrado: false };
+
+  var total = (fin - ini) / 864e5 + 1;
+  var pasado = (hoy - ini) / 864e5;
+  return {
+    frac: Math.max(0, Math.min(1, pasado / total)),
+    dias: Math.max(0, Math.round((fin - hoy) / 864e5)),
+    cerrado: false,
+  };
+}
+
+function tarjetaEquipo(R, P, qTxt, meses, year) {
   var totalBase  = R.rows.reduce(function (s, r) { return s + r.base; }, 0);
   var bonoActual = R.rows.reduce(function (s, r) { return s + r.bono; }, 0);
   var bonoProy   = P.rows.reduce(function (s, r) { return s + r.bono; }, 0);
   var payroll    = totalBase * 3 + bonoProy;
 
+  var av = avanceTrimestre(year, R.qNum || (COM.q || 1));
+  var esperado = av.frac * 100;   // % de la meta que deberían llevar a hoy
+  var ritmo = esperado > 0 ? R.teamCumpl / esperado * 100 : 0;
+
+  // Contexto: sin esto el número acumulado engaña a mitad de trimestre
+  var contexto = '';
+  if (!av.cerrado && av.frac > 0.02) {
+    var colorRitmo = ritmo >= 100 ? 'var(--gn)' : ritmo >= 85 ? 'var(--am)' : 'var(--rd)';
+    contexto =
+      '<div class="ml" style="margin-top:8px;line-height:1.7">' +
+        'Transcurrió el <b>' + Math.round(av.frac * 100) + '%</b> del trimestre · ' +
+        'quedan <b>' + av.dias + ' días</b>.<br>' +
+        'A este punto deberían llevar ~' + esperado.toFixed(0) + '%. ' +
+        'Van al <b style="color:' + colorRitmo + '">' + ritmo.toFixed(0) + '% del ritmo</b> necesario.' +
+      '</div>';
+  }
+
   var aviso = R.teamGate ? '' :
     '<div style="color:var(--rd);font-size:13px;margin-top:12px;font-weight:500">' +
       'Bono inactivo: el equipo está por debajo del ' + R.gate + '% combinado del trimestre.' +
+      (!av.cerrado ? ' <span class="com-mut" style="font-weight:400">(el trimestre sigue abierto)</span>' : '') +
     '</div>';
 
   var mt = function (label, valor, sub, color) {
@@ -337,13 +514,17 @@ function tarjetaEquipo(R, P, qTxt) {
            '</div>';
   };
 
+  var ratio = totalBase > 0 ? bonoProy / (totalBase * 3) * 100 : 0;
+  var colorRatio = ratio > 100 ? 'var(--am)' : null;
+
   return '<div class="card">' +
     '<div class="ct">Cumplimiento del equipo · ' + esc(qTxt) + '</div>' +
     '<div style="font-size:22px;font-weight:700;color:' + NIVEL_COLOR[R.level] + '">' +
       p2(R.teamCumpl) + ' · ' + NIVEL_NOMBRE[R.level] +
     '</div>' +
     '<div style="margin-top:26px">' + barra(R.teamCumpl, 24, NIVEL_COLOR[R.level], R.tiers, true) + '</div>' +
-    '<div class="ml" style="margin-top:10px">Proyección al cierre: ' +
+    contexto +
+    '<div class="ml" style="margin-top:8px">Proyección al cierre: ' +
       '<b style="color:' + NIVEL_COLOR[P.level] + '">' + p2(P.teamCumpl) + ' · ' + NIVEL_NOMBRE[P.level] + '</b>' +
     '</div>' +
     aviso +
@@ -352,7 +533,7 @@ function tarjetaEquipo(R, P, qTxt) {
       mt('Bono acumulado', f2(bonoActual), null, 'var(--gn)') +
       mt('Bono proyectado', f2(bonoProy), 'si cierra así', 'var(--gn)') +
       mt('Payroll del trimestre', fmt(payroll), 'sueldos × 3 + bono') +
-      mt('Bono ÷ sueldos', totalBase > 0 ? p2(bonoProy / (totalBase * 3) * 100) : '0.00%', 'proyectado') +
+      mt('Bono ÷ sueldos', p2(ratio), 'proyectado', colorRatio) +
     '</div>' +
   '</div>';
 }
@@ -498,10 +679,465 @@ function tarjetaReglas(cfg, R) {
 
 
 /* ══════════════════════════════════════════════════════════════════════
-   API PÚBLICA — lo único que sale del módulo
+   VISTA CIERRE — donde se paga
    ══════════════════════════════════════════════════════════════════════ */
 
+var CIERRE = {
+  sub: 'trim',        // 'trim' | 'mes' | 'log'
+  previewTrim: null,
+  previewMes: null,
+  cerradosTrim: [],
+  cerradosMes: [],
+  log: [],
+  cargado: false,
+};
+
+function pintarCierre() {
+  COM.vista = 'cierre';
+  var c = cont();
+  if (!c) return;
+
+  if (!CIERRE.cargado) {
+    c.innerHTML = pestañas('cierre') + '<div class="ld"><div class="sp"></div>Cargando cierres...</div>';
+    Promise.all([
+      comApi('cierresTrim', { limite: 8 }).catch(function () { return []; }),
+      comApi('cierres',     { limite: 12 }).catch(function () { return []; }),
+      comApi('reglasLog',   { limite: 10 }).catch(function () { return []; }),
+    ]).then(function (r) {
+      CIERRE.cerradosTrim = r[0] || [];
+      CIERRE.cerradosMes  = r[1] || [];
+      CIERRE.log          = r[2] || [];
+      CIERRE.cargado = true;
+      pintarCierre();
+    }).catch(function (e) { pintarError(e); });
+    return;
+  }
+
+  var sub = [
+    { id: 'trim', txt: 'Trimestral · el que paga' },
+    { id: 'mes',  txt: 'Mensual · informativo' },
+    { id: 'log',  txt: 'Bitácora de reglas' },
+  ].map(function (s) {
+    var on = s.id === CIERRE.sub;
+    return '<button class="btn ' + (on ? 'bp' : 'bg') + ' bs" ' +
+           'onclick="comCierreSub(\'' + s.id + '\')">' + s.txt + '</button>';
+  }).join(' ');
+
+  var cuerpo = CIERRE.sub === 'trim' ? bloqueTrimestral()
+             : CIERRE.sub === 'mes'  ? bloqueMensual()
+             :                          bloqueBitacora();
+
+  c.innerHTML = pestañas('cierre') +
+    '<div class="com-toolbar">' + sub + '</div>' + cuerpo;
+}
+
+/* ── Trimestral ────────────────────────────────────────────────────── */
+
+function bloqueTrimestral() {
+  var hoy = new Date();
+  var yDef = COM.year || hoy.getFullYear();
+  var qDef = COM.q    || Math.ceil((hoy.getMonth() + 1) / 3);
+
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
+
+  var optY = [yDef - 1, yDef].map(function (y) {
+    return '<option value="' + y + '">' + y + '</option>';
+  }).join('');
+  var optQ = [1,2,3,4].map(function (k) {
+    return '<option value="' + k + '"' + (k === qDef ? ' selected' : '') + '>' + etiquetaTrim(k, yDef) + '</option>';
+  }).join('');
+
+  return '<div class="card">' +
+      '<div class="ct">Cerrar trimestre</div>' +
+      '<div style="font-size:13px;margin-bottom:16px;line-height:1.6">' +
+        'Calcula el bono definitivo con los sueldos, meses activos y ajustes vigentes. ' +
+        'Podés modificar el bono de cada asesora antes de confirmar. ' +
+        'Al cerrar, el resultado queda guardado como el pago de ese trimestre.' +
+      '</div>' +
+      '<div class="com-toolbar">' +
+        '<span class="com-mut" style="font-size:12px">Año</span>' +
+        '<select id="ct-year" style="' + estilo + '">' + optY + '</select>' +
+        '<span class="com-mut" style="font-size:12px">Trimestre</span>' +
+        '<select id="ct-q" style="' + estilo + '">' + optQ + '</select>' +
+        '<button class="btn bp bs" onclick="comVerTrim()">Ver cálculo</button>' +
+      '</div>' +
+      '<div id="ct-preview"></div>' +
+    '</div>' +
+    listaTrimestresCerrados();
+}
+
+function comVerTrimImpl() {
+  var y = Number(document.getElementById('ct-year').value);
+  var q = Number(document.getElementById('ct-q').value);
+  var box = document.getElementById('ct-preview');
+  box.innerHTML = '<div class="ld" style="padding:24px"><div class="sp"></div>Calculando...</div>';
+
+  comApi('previewTrim', { year: y, q: q, overrides: {} })
+    .then(function (d) {
+      CIERRE.previewTrim = { d: d, year: y, q: q };
+      box.innerHTML = renderPreviewTrim(d, y, q);
+    })
+    .catch(function (e) {
+      box.innerHTML = '<div style="color:var(--rd);font-size:13px;margin-top:12px">' +
+                      esc((e && e.message) || e) + '</div>';
+    });
+}
+
+function renderPreviewTrim(d, year, q) {
+  var tiers = d.tiers || TIERS_FALLBACK;
+
+  var filas = (d.rows || []).map(function (r) {
+    var lv = nivelDe(r.cumpl, tiers);
+    return '<div style="padding:12px 0;border-bottom:1px solid var(--bd)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">' +
+        '<div>' +
+          '<b style="font-size:15px">' + esc(r.nombre) + '</b> ' +
+          '<span style="color:' + NIVEL_COLOR[lv] + ';font-weight:600">' + r.cumpl + '%</span>' +
+          '<div class="ml" style="margin-top:4px">margen ' + fmt(r.margen) + ' · tasa ' + r.rate + '%</div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">' +
+          '<span class="ml">Calculado: <b style="color:var(--tx)">' + f2(r.bonoCalc) + '</b></span>' +
+          '<span class="ml">Ajustar a S/</span>' +
+          '<input type="number" class="ct-ov" data-nom="' + esc(r.nombre) + '" ' +
+                 'data-calc="' + r.bonoCalc + '" ' +
+                 'value="' + (r.bonoOverride != null ? r.bonoOverride : '') + '" ' +
+                 'placeholder="' + Number(r.bonoCalc).toFixed(2) + '" ' +
+                 'oninput="comTotalTrim()" ' +
+                 'style="background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+                 'padding:6px 9px;border-radius:var(--r);font-size:13px;width:110px;text-align:right;font-family:inherit">' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+
+  var estadoEquipo = d.teamGate
+    ? '<span style="color:var(--gn)">Bono activo · equipo ' + d.teamCumpl + '%</span>'
+    : '<span style="color:var(--rd)">Bono bloqueado · equipo ' + d.teamCumpl + '% (no llega al piso)</span>';
+
+  return '<div style="margin-top:18px;background:var(--bg3);border:1px solid var(--bd);' +
+              'border-radius:var(--r2);padding:16px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;' +
+         'flex-wrap:wrap;gap:8px;margin-bottom:6px;font-weight:600">' +
+      '<span>' + estadoEquipo + '</span>' +
+      '<span>Total a pagar: <span style="color:var(--gn);font-size:18px" id="ct-total">' +
+        f2(d.total) + '</span></span>' +
+    '</div>' +
+    filas +
+    bloqueConfirmacion(year, q) +
+  '</div>';
+}
+
+function bloqueConfirmacion(year, q) {
+  var codigo = year + '-Q' + q;
+  return '<div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--bd)">' +
+    '<div style="font-size:13px;margin-bottom:10px;line-height:1.6">' +
+      'Para confirmar, escribí <b style="color:var(--ac)">' + codigo + '</b> abajo. ' +
+      'Esto guarda el pago del trimestre; si lo volvés a cerrar, se sobrescribe.' +
+    '</div>' +
+    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+      '<input id="ct-confirm" placeholder="' + codigo + '" oninput="comChequearConfirm()" ' +
+             'style="background:var(--bg2);border:1px solid var(--bd);color:var(--tx);' +
+             'padding:8px 12px;border-radius:var(--r);font-size:14px;width:140px;font-family:inherit">' +
+      '<button id="ct-btn" class="btn bp" disabled onclick="comCerrarTrim()" ' +
+              'style="opacity:.4;cursor:not-allowed">Cerrar trimestre</button>' +
+      '<span id="ct-msg" style="font-size:13px"></span>' +
+    '</div>' +
+  '</div>';
+}
+
+function listaTrimestresCerrados() {
+  if (!CIERRE.cerradosTrim.length) {
+    return '<div class="card"><div class="ct">Trimestres cerrados</div>' +
+           '<div class="ml">Todavía no cerraste ningún trimestre.</div></div>';
+  }
+
+  var items = CIERRE.cerradosTrim.map(function (c) {
+    var filas = (c.filas || []).map(function (f) {
+      var ajustado = (f.bonoOverride !== '' && f.bonoOverride != null)
+                   ? ' <span style="color:var(--am);font-size:11px">ajustado</span>' : '';
+      return '<div class="com-row" style="font-size:13px">' +
+               '<span>' + esc(f.asesora) + ' <span class="com-mut">(' + f.cumpl + '%)</span>' + ajustado + '</span>' +
+               '<span style="color:var(--gn);font-weight:600">' + f2(f.bonoPagar) + '</span>' +
+             '</div>';
+    }).join('');
+
+    return '<details style="border:1px solid var(--bd);border-radius:var(--r2);' +
+                'padding:14px 16px;margin-bottom:10px;background:var(--bg3)">' +
+      '<summary style="cursor:pointer;display:flex;justify-content:space-between;' +
+               'align-items:center;gap:10px;font-weight:600;flex-wrap:wrap">' +
+        '<span>' + esc(c.yq) + ' · equipo ' + c.teamCumpl + '% ' +
+          (c.teamGate === 'SI' ? '<span style="color:var(--gn)">activo</span>'
+                               : '<span style="color:var(--rd)">bloqueado</span>') + '</span>' +
+        '<span style="color:var(--gn)">' + f2(c.total) + '</span>' +
+      '</summary>' +
+      '<div style="margin-top:12px">' + filas +
+        '<div class="ml" style="margin-top:10px">Cerrado el ' + esc(c.fecha) + ' por ' + esc(c.por) + '</div>' +
+      '</div>' +
+    '</details>';
+  }).join('');
+
+  return '<div class="card"><div class="ct">Trimestres cerrados</div>' + items + '</div>';
+}
+
+/* ── Mensual (informativo) ─────────────────────────────────────────── */
+
+function bloqueMensual() {
+  var hoy = new Date();
+  var prev = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+  var defMes = prev.getFullYear() + '-' + String(prev.getMonth() + 1).padStart(2, '0');
+
+  var cfg = (COM.data && COM.data.cfgFull) || {};
+  var tiers = (cfg.tiers && cfg.tiers.length) ? cfg.tiers : TIERS_FALLBACK;
+
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
+
+  var inputsTiers = tiers.map(function (t, k) {
+    return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">' +
+      '<span class="com-mut" style="font-size:12px;min-width:64px">' + (k + 1) + '° nivel</span>' +
+      '<span class="com-mut" style="font-size:12px">desde</span>' +
+      '<input class="cm-from" type="number" value="' + t.from + '" style="' + estilo + ';width:72px">' +
+      '<span class="com-mut" style="font-size:12px">% de meta → paga</span>' +
+      '<input class="cm-rate" type="number" step="0.1" value="' + t.rate + '" style="' + estilo + ';width:72px">' +
+      '<span class="com-mut" style="font-size:12px">% del margen</span>' +
+    '</div>';
+  }).join('');
+
+  return '<div class="card">' +
+      '<div class="ct">Cerrar mes</div>' +
+      '<div style="font-size:13px;margin-bottom:16px;line-height:1.6">' +
+        'El cierre mensual es informativo: sirve para dejar registro del avance. ' +
+        'El pago real sale del <b>cierre trimestral</b>. ' +
+        'Podés probar otros parámetros antes de cerrar; por defecto usa los vigentes.' +
+      '</div>' +
+      '<div class="com-toolbar">' +
+        '<span class="com-mut" style="font-size:12px">Mes</span>' +
+        '<input type="month" id="cm-mes" value="' + defMes + '" style="' + estilo + '">' +
+        '<span class="com-mut" style="font-size:12px">Meta (×  sueldo)</span>' +
+        '<input type="number" step="0.5" id="cm-x" value="' + (cfg.xMeta || 12) + '" style="' + estilo + ';width:76px">' +
+      '</div>' +
+      inputsTiers +
+      '<div class="com-toolbar" style="margin-top:14px">' +
+        '<button class="btn bp bs" onclick="comVerMes()">Ver cálculo</button>' +
+      '</div>' +
+      '<div id="cm-preview"></div>' +
+    '</div>' +
+    listaMesesCerrados();
+}
+
+function comVerMesImpl() {
+  var v = document.getElementById('cm-mes').value;
+  var box = document.getElementById('cm-preview');
+  if (!v) { box.innerHTML = '<div class="ml">Elegí un mes.</div>'; return; }
+
+  var p = v.split('-');
+  var reglas = leerReglasMes();
+  box.innerHTML = '<div class="ld" style="padding:24px"><div class="sp"></div>Calculando...</div>';
+
+  comApi('previewMes', { year: Number(p[0]), mes: Number(p[1]), reglas: reglas })
+    .then(function (d) {
+      CIERRE.previewMes = { d: d, ym: v, reglas: reglas };
+      box.innerHTML = renderPreviewMes(d, v);
+    })
+    .catch(function (e) {
+      box.innerHTML = '<div style="color:var(--rd);font-size:13px;margin-top:12px">' +
+                      esc((e && e.message) || e) + '</div>';
+    });
+}
+
+function leerReglasMes() {
+  var x = Number(document.getElementById('cm-x').value) || 12;
+  var froms = document.querySelectorAll('.cm-from');
+  var rates = document.querySelectorAll('.cm-rate');
+  var tiers = [];
+  for (var i = 0; i < froms.length; i++) {
+    tiers.push({ from: Number(froms[i].value) || 0, rate: Number(rates[i].value) || 0 });
+  }
+  return { xMeta: x, tiers: tiers };
+}
+
+function renderPreviewMes(d, ym) {
+  var tiers = d.tiers || TIERS_FALLBACK;
+
+  var filas = (d.rows || []).map(function (f) {
+    var lv = nivelDe(f.att, tiers);
+    return '<div class="com-row" style="font-size:13px">' +
+             '<span>' + esc(f.nombre) + ' <span style="color:' + NIVEL_COLOR[lv] + '">(' + f.att + '%)</span> ' +
+               '<span class="com-mut">· básico ' + fmt(f.base) + ' · margen ' + fmt(f.margen) + '</span></span>' +
+             '<span style="color:' + (f.com > 0 ? 'var(--gn)' : 'var(--mu)') + ';font-weight:600">' + f2(f.com) + '</span>' +
+           '</div>';
+  }).join('');
+
+  return '<div style="margin-top:18px;background:var(--bg3);border:1px solid var(--bd);' +
+              'border-radius:var(--r2);padding:16px">' +
+    '<div style="display:flex;justify-content:space-between;font-weight:600;margin-bottom:8px;flex-wrap:wrap;gap:8px">' +
+      '<span>Equipo ' + d.teamAtt + '% ' +
+        (d.teamGate ? '<span style="color:var(--gn)">activo</span>' : '<span style="color:var(--rd)">bloqueado</span>') +
+      '</span>' +
+      '<span style="color:var(--gn)">' + f2(d.total) + '</span>' +
+    '</div>' + filas +
+    '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bd);' +
+         'display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+      '<button class="btn bp bs" onclick="comCerrarMes()">Guardar cierre de ' + esc(ym) + '</button>' +
+      '<span id="cm-msg" style="font-size:13px"></span>' +
+    '</div>' +
+  '</div>';
+}
+
+function listaMesesCerrados() {
+  if (!CIERRE.cerradosMes.length) {
+    return '<div class="card"><div class="ct">Meses cerrados</div>' +
+           '<div class="ml">Todavía no cerraste ningún mes.</div></div>';
+  }
+
+  var items = CIERRE.cerradosMes.map(function (c) {
+    var filas = (c.filas || []).map(function (f) {
+      return '<div class="com-row" style="font-size:13px">' +
+               '<span>' + esc(f.asesora) + ' <span class="com-mut">· básico ' + fmt(f.base) + ' (' + f.cumpl + '%)</span></span>' +
+               '<span style="color:var(--gn);font-weight:600">' + f2(f.com) + '</span>' +
+             '</div>';
+    }).join('');
+
+    return '<details style="border:1px solid var(--bd);border-radius:var(--r2);' +
+                'padding:14px 16px;margin-bottom:10px;background:var(--bg3)">' +
+      '<summary style="cursor:pointer;display:flex;justify-content:space-between;' +
+               'align-items:center;gap:10px;font-weight:600;flex-wrap:wrap">' +
+        '<span>' + esc(c.ym) + ' · equipo ' + c.teamAtt + '% ' +
+          (c.teamGate === 'SI' ? '<span style="color:var(--gn)">activo</span>'
+                               : '<span style="color:var(--rd)">bloqueado</span>') + '</span>' +
+        '<span style="color:var(--gn)">' + f2(c.total) + '</span>' +
+      '</summary>' +
+      '<div style="margin-top:12px">' +
+        '<div class="ml" style="margin-bottom:8px">Meta: ' + esc(c.reglasX || '?') + '× · tramos ' + esc(c.reglasTramos || '—') + '</div>' +
+        filas +
+        '<div class="ml" style="margin-top:10px">Cerrado el ' + esc(c.fecha) + ' por ' + esc(c.por) + '</div>' +
+      '</div>' +
+    '</details>';
+  }).join('');
+
+  return '<div class="card"><div class="ct">Meses cerrados</div>' + items + '</div>';
+}
+
+/* ── Bitácora ──────────────────────────────────────────────────────── */
+
+function bloqueBitacora() {
+  if (!CIERRE.log.length) {
+    return '<div class="card"><div class="ct">Bitácora de reglas</div>' +
+           '<div class="ml">No hay cambios de reglas registrados.</div></div>';
+  }
+
+  var filas = CIERRE.log.map(function (l) {
+    return '<div class="com-row" style="font-size:13px">' +
+             '<span>Meta ' + esc(l.xMeta) + '× · ' + esc(l.tramos) + '</span>' +
+             '<span class="com-mut">' + esc(l.fecha) + ' · ' + esc(l.por) + '</span>' +
+           '</div>';
+  }).join('');
+
+  return '<div class="card">' +
+    '<div class="ct">Bitácora de reglas</div>' +
+    '<div style="font-size:13px;margin-bottom:14px">' +
+      'Cada vez que alguien cambia la meta o los tramos, queda registrado acá.' +
+    '</div>' + filas +
+  '</div>';
+}
+
 window.loadComisiones = cargar;
+
+/* ── Navegación interna ── */
+window.comIr = function (vista) {
+  if (vista === 'cierre') pintarCierre();
+  else cargar();
+};
+window.comCierreSub = function (sub) { CIERRE.sub = sub; pintarCierre(); };
+window.comVerTrim = comVerTrimImpl;
+window.comVerMes  = comVerMesImpl;
+
+/* ── Cierre trimestral ── */
+
+/** Suma los ajustes en vivo mientras el admin los escribe. */
+window.comTotalTrim = function () {
+  var total = 0;
+  Array.prototype.forEach.call(document.querySelectorAll('.ct-ov'), function (el) {
+    var calc = Number(el.getAttribute('data-calc')) || 0;
+    total += el.value !== '' ? Number(el.value) : calc;
+  });
+  var t = document.getElementById('ct-total');
+  if (t) t.textContent = f2(total);
+};
+
+/** Habilita el botón de cierre solo cuando el código escrito coincide. */
+window.comChequearConfirm = function () {
+  var p = CIERRE.previewTrim;
+  if (!p) return;
+  var esperado = p.year + '-Q' + p.q;
+  var inp = document.getElementById('ct-confirm');
+  var btn = document.getElementById('ct-btn');
+  if (!inp || !btn) return;
+
+  var ok = inp.value.trim().toUpperCase() === esperado;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? '1' : '.4';
+  btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+};
+
+window.comCerrarTrim = function () {
+  var p = CIERRE.previewTrim;
+  if (!p) return;
+
+  var btn = document.getElementById('ct-btn');
+  var msg = document.getElementById('ct-msg');
+
+  // Recoger los ajustes manuales
+  var bono = {};
+  Array.prototype.forEach.call(document.querySelectorAll('.ct-ov'), function (el) {
+    var n = el.getAttribute('data-nom');
+    if (n && el.value !== '') bono[n] = Number(el.value);
+  });
+
+  btn.disabled = true;
+  btn.textContent = 'Cerrando...';
+  btn.style.opacity = '.6';
+  if (msg) { msg.textContent = ''; msg.style.color = ''; }
+
+  comApi('cerrarTrim', { year: p.year, q: p.q, overrides: { bono: bono } })
+    .then(function () {
+      CIERRE.cargado = false;      // recargar la lista de cerrados
+      CIERRE.previewTrim = null;
+      COM.data = null;             // los números del panel cambiaron
+      cacheBorrar();
+      pintarCierre();
+    })
+    .catch(function (e) {
+      btn.disabled = false;
+      btn.textContent = 'Cerrar trimestre';
+      btn.style.opacity = '1';
+      if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
+    });
+};
+
+/* ── Cierre mensual ── */
+window.comCerrarMes = function () {
+  var p = CIERRE.previewMes;
+  if (!p) return;
+  var ym = p.ym.split('-');
+  var msg = document.getElementById('cm-msg');
+  if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = 'Guardando...'; }
+
+  comApi('cerrarMes', { year: Number(ym[0]), mes: Number(ym[1]), reglas: p.reglas })
+    .then(function () {
+      CIERRE.cargado = false;
+      CIERRE.previewMes = null;
+      cacheBorrar();
+      pintarCierre();
+    })
+    .catch(function (e) {
+      if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
+    });
+};
+
+// Precarga silenciosa — la dispara el ERP al arrancar si el rol es admin
+window._comPrecargar = precargar;
 
 window.comCambiarPeriodo = function () {
   var y = document.getElementById('com-year'), q = document.getElementById('com-q');
@@ -509,9 +1145,15 @@ window.comCambiarPeriodo = function () {
   COM.year = Number(y.value);
   COM.q    = Number(q.value);
   COM.data = null;
-  cargar(true);
+  COM.traidoEn = null;
+  cargar();   // usa caché si ya vio ese período antes
 };
 
-window._comReset = function () { COM.data = null; };
+// Lo llama el botón 🔄 del ERP: tira todo lo guardado y vuelve a pedir
+window._comReset = function () {
+  COM.data = null;
+  COM.traidoEn = null;
+  cacheBorrar();
+};
 
 })();
