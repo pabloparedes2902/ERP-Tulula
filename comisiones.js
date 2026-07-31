@@ -26,6 +26,7 @@ var COM = {
   refrescando: false,
   traidoEn: null,  // timestamp de los datos que se están mostrando
   ms: null,        // cuánto tardó la última consulta al servidor
+  comoEmail: '',   // si no está vacío, se está viendo el panel de una asesora
 };
 
 /* ── Caché de sesión ────────────────────────────────────────────────
@@ -444,6 +445,8 @@ var PESTAÑAS = [
   { id: 'home',     txt: 'Panel' },
   { id: 'cierre',   txt: 'Cierre' },
   { id: 'asesoras', txt: 'Asesoras' },
+  { id: 'sim',      txt: 'Simulador' },
+  { id: 'config',   txt: 'Configuración' },
 ];
 
 function pestañas(activa) {
@@ -482,6 +485,7 @@ function barraHerramientas(d, qTxt) {
     '<select id="com-year" style="' + estilo + '" onchange="comCambiarPeriodo()">' + optY + '</select>' +
     '<select id="com-q" style="' + estilo + '" onchange="comCambiarPeriodo()">' + optQ + '</select>' +
     '<button class="btn bg bs" onclick="loadComisiones(true)">Actualizar datos</button>' +
+    selectorVerComo(d.cfgFull) +
     '<span id="com-estado" style="font-size:12px;color:' + colorEstado + '">' + estado + '</span>' +
   '</div>';
 }
@@ -1514,6 +1518,478 @@ function graficoBarras(filas, niveles) {
 }
 
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   VER COMO ASESORA
+   Un switch en la barra del Panel. Muestra exactamente lo que ve ella
+   al entrar a Tulula Comisiones: su bono, su progreso, el ranking.
+   Nunca ve sueldos ajenos ni el payroll.
+   ══════════════════════════════════════════════════════════════════════ */
+
+function selectorVerComo(cfg) {
+  var vend = (cfg && cfg.vendedoras) || {};
+  var emails = Object.keys(vend);
+  if (!emails.length) return '';
+
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
+
+  var opts = '<option value="">Mi vista (admin)</option>' +
+    emails.map(function (e) {
+      return '<option value="' + esc(e) + '"' + (COM.comoEmail === e ? ' selected' : '') + '>' +
+             'Vista de ' + esc(vend[e].nombre) + '</option>';
+    }).join('');
+
+  return '<select onchange="comVerComo(this.value)" style="' + estilo + '">' + opts + '</select>';
+}
+
+function pintarVerComo(d) {
+  var c = cont();
+  if (!c) return;
+
+  var cfg = d.cfg || {};
+  var meses = d.meses || [];
+  var qTxt = etiquetaTrim(d.q, d.year);
+
+  var rows = (d.teamRows || []).map(function (r) {
+    return {
+      nombre: r.nombre, base: r.base_m || 0,
+      mPct: (r.gmPct && r.gmPct > 0) ? r.gmPct : (cfg.gm_pct || 62),
+      marginM: r.marginM || [0,0,0], ventasM: r.ventasM || [0,0,0],
+      factorM: r.factorM || [1,1,1], sueldoM: r.sueldoM,
+    };
+  });
+
+  var R = bonoTrim(rows, cfg);
+  var P = bonoTrim(rows.map(function (r) {
+    return Object.assign({}, r, { marginM: proyectarMargen(r.marginM, meses, d.year) });
+  }), cfg);
+
+  var yo   = R.rows.find(function (x) { return x.nombre === d.nombre; }) || R.rows[0];
+  var yoP  = P.rows.find(function (x) { return x.nombre === d.nombre; }) || { bono: 0, cumpl: 0 };
+  if (!yo) { c.innerHTML = pestañas('home') + '<div class="card"><div class="ml">Sin datos para esta asesora.</div></div>'; return; }
+
+  var col = NIVEL_COLOR[nivelDe(yo.cumpl, R.tiers)];
+
+  // Detalle por mes — solo los meses en que estuvo activa
+  var filasMes = meses.map(function (m, j) {
+    if (yo.factorM[j] <= 0) return '';
+    var cumplMes = yo.metaM[j] > 0 ? yo.marM[j] / yo.metaM[j] * 100 : 0;
+    var lv = nivelDe(cumplMes, R.tiers);
+    return '<div class="com-row" style="font-size:13px">' +
+             '<span>' + MESES_LARGO[m - 1] + '</span>' +
+             '<span>' + fmt(yo.marM[j]) + ' · <b style="color:' + NIVEL_COLOR[lv] + '">' + p2(cumplMes) + '</b></span>' +
+           '</div>';
+  }).join('');
+
+  // Ranking — nombre y porcentaje, sin montos
+  var rank = R.rows.map(function (r) { return { nombre: r.nombre, cumpl: r.cumpl }; })
+    .sort(function (a, b) { return b.cumpl - a.cumpl; })
+    .map(function (r, i) {
+      var yoMismo = r.nombre === d.nombre;
+      return '<div class="com-row">' +
+               '<span style="font-weight:' + (yoMismo ? '700' : '400') + ';' +
+                     (yoMismo ? 'color:var(--ac)' : '') + '">' +
+                 (i + 1) + '. ' + esc(r.nombre) + (yoMismo ? ' (vos)' : '') + '</span>' +
+               '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(r.cumpl, R.tiers)] + '">' +
+                 p2(r.cumpl) + '</span>' +
+             '</div>';
+    }).join('');
+
+  var sig = R.tiers.find(function (t) { return t.from > yo.cumpl; });
+  var falta = sig
+    ? 'Te faltan <b>' + fmt(Math.max(0, (sig.from / 100 * yo.sumMeta) - yo.sumMar)) +
+      '</b> de margen para subir al ' + (R.tiers.indexOf(sig) + 1) + '° nivel (' + sig.rate + '%).'
+    : 'Estás en el nivel máximo.';
+
+  c.innerHTML = pestañas('home') +
+    '<div class="card" style="border-color:var(--ac);background:var(--bg3)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">' +
+        '<div style="font-size:13px">' +
+          '<b style="color:var(--ac)">Vista previa</b> — así ve el panel ' + esc(d.nombre) + '. ' +
+          'No ve sueldos ajenos ni el costo total.' +
+        '</div>' +
+        '<button class="btn bg bs" onclick="comVerComo(\'\')">Volver a mi vista</button>' +
+      '</div>' +
+    '</div>' +
+
+    '<div style="max-width:620px;margin:0 auto">' +
+      '<div class="card">' +
+        '<div class="com-nom">' + esc(d.nombre) + '</div>' +
+        '<div class="com-sub">' + esc(qTxt) + '</div>' +
+        '<div style="text-align:center;margin:20px 0 8px">' +
+          '<div class="ml">Tu bono del trimestre</div>' +
+          '<div style="font-size:36px;font-weight:700;letter-spacing:-1px;' +
+               'color:' + (yo.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(yo.bono) + '</div>' +
+          '<div class="ml">proyectado al cierre: <b style="color:' +
+            (yoP.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(yoP.bono) + '</b></div>' +
+        '</div>' +
+        '<div class="com-row" style="border:none;font-size:12px;padding:16px 0 6px">' +
+          '<span class="com-mut">Cumplimiento del trimestre</span>' +
+          '<b style="color:' + col + '">' + p2(yo.cumpl) + '</b>' +
+        '</div>' +
+        '<div style="margin-top:18px">' + barra(yo.cumpl, 20, col, R.tiers, true) + '</div>' +
+        '<div style="font-size:13px;margin-top:18px">' + falta + '</div>' +
+        '<div style="font-size:13px;margin-top:10px;font-weight:500;color:' +
+             (R.teamGate ? 'var(--gn)' : 'var(--rd)') + '">' +
+          (R.teamGate
+            ? 'El equipo llegó al mínimo: tu bono está activo.'
+            : 'El bono se activa cuando el equipo completo supere el ' + R.gate + '%. Van ' + p2(R.teamCumpl) + '.') +
+        '</div>' +
+      '</div>' +
+
+      '<div class="card"><div class="ct">Tu margen mes a mes</div>' + filasMes + '</div>' +
+      '<div class="card"><div class="ct">Ranking del trimestre</div>' + rank + '</div>' +
+
+      '<div class="card">' +
+        '<div class="ct">Cómo se calcula</div>' +
+        '<div style="font-size:13px;line-height:1.9">' +
+          'Tu meta es <b>' + (R.x) + '×</b> tu sueldo, medida en margen.<br>' +
+          R.tiers.map(function (t, i) {
+            return (i + 1) + '° nivel: desde ' + t.from + '% → paga ' + t.rate + '% del margen';
+          }).join('<br>') + '<br>' +
+          'El bono se paga al cerrar el trimestre.' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   SIMULADOR
+   Arranca del trimestre real y pregunta en soles, no en porcentajes.
+   Tres modos: mover ventas, calcular cuánto falta, y ver el techo de costo.
+   ══════════════════════════════════════════════════════════════════════ */
+
+var SIM = { filas: null, xMeta: null, tiers: null, objetivo: {} };
+
+function pintarSim() {
+  COM.vista = 'sim';
+  var c = cont();
+  if (!c) return;
+
+  if (!COM.data) {
+    c.innerHTML = pestañas('sim') + '<div class="ld"><div class="sp"></div>Cargando datos reales...</div>';
+    cargar();
+    setTimeout(function () { if (COM.vista === 'sim') pintarSim(); }, 1200);
+    return;
+  }
+
+  var d = COM.data;
+  var cfg = d.cfgFull || {};
+  var meses = d.meses || [];
+
+  if (!SIM.filas) {
+    SIM.xMeta = cfg.xMeta || 12;
+    SIM.tiers = JSON.parse(JSON.stringify((cfg.tiers && cfg.tiers.length) ? cfg.tiers : TIERS_FALLBACK));
+    SIM.filas = (d.results || []).map(function (r) {
+      var base = r.base_m || 0;
+      var marginM = r.marginM || [0,0,0];
+      var factorM = r.factorM || [1,1,1];
+      var real = marginM.reduce(function (a, b) { return a + (b || 0); }, 0);
+      var proy = proyectarMargen(marginM, meses, d.year).reduce(function (a, b) { return a + (b || 0); }, 0);
+      return {
+        nombre: r.nombre, base: base,
+        mPct: (r.gmPct && r.gmPct > 0) ? r.gmPct : (cfg.gm_pct || 62),
+        factorM: factorM, sueldoM: r.sueldoM,
+        margenReal: real,           // lo que llevan hoy
+        margenSim: Math.round(proy), // punto de partida: la proyección
+      };
+    });
+  }
+
+  c.innerHTML = pestañas('sim') +
+    tarjetaReglasSim() +
+    tarjetaEscenario() +
+    tarjetaObjetivos();
+}
+
+/** Calcula con los valores simulados, usando el mismo motor que el Panel. */
+function calcSim() {
+  var filas = SIM.filas.map(function (f) {
+    // Repartimos el margen simulado entre los meses activos, respetando el prorrateo
+    var activos = f.factorM.filter(function (x) { return x > 0; }).length || 1;
+    var porMes = f.margenSim / activos;
+    return {
+      nombre: f.nombre, base: f.base, mPct: f.mPct,
+      factorM: f.factorM, sueldoM: f.sueldoM,
+      marginM: f.factorM.map(function (x) { return x > 0 ? porMes : 0; }),
+    };
+  });
+  return bonoTrim(filas, { xMeta: SIM.xMeta, tiers: SIM.tiers });
+}
+
+function tarjetaReglasSim() {
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:6px 9px;border-radius:var(--r);font-size:13px;font-family:inherit';
+
+  var tramos = SIM.tiers.map(function (t, k) {
+    return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+      '<span class="com-mut" style="font-size:12px;min-width:60px">' + (k + 1) + '° nivel</span>' +
+      '<span class="com-mut" style="font-size:12px">desde</span>' +
+      '<input type="number" value="' + t.from + '" oninput="comSimTier(' + k + ',\'from\',this.value)" ' +
+             'style="' + estilo + ';width:64px">' +
+      '<span class="com-mut" style="font-size:12px">% → paga</span>' +
+      '<input type="number" step="0.1" value="' + t.rate + '" oninput="comSimTier(' + k + ',\'rate\',this.value)" ' +
+             'style="' + estilo + ';width:64px">' +
+      '<span class="com-mut" style="font-size:12px">% del margen</span>' +
+    '</div>';
+  }).join('');
+
+  return '<div class="card">' +
+    '<div class="ct">Reglas a simular</div>' +
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">' +
+      '<span class="com-mut" style="font-size:12px">Meta = </span>' +
+      '<input type="number" step="0.5" value="' + SIM.xMeta + '" oninput="comSimX(this.value)" ' +
+             'style="' + estilo + ';width:72px">' +
+      '<span class="com-mut" style="font-size:12px">× el sueldo, medida en margen</span>' +
+    '</div>' +
+    '<div style="display:grid;gap:8px">' + tramos + '</div>' +
+    '<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">' +
+      '<button class="btn bg bs" onclick="comSimReset()">Volver a las reglas vigentes</button>' +
+      '<button class="btn bp bs" onclick="comSimAplicar()">Aplicar estas reglas de verdad</button>' +
+      '<span id="sim-msg" style="font-size:13px"></span>' +
+    '</div>' +
+    '<div class="ml" style="margin-top:8px">' +
+      '"Aplicar" cambia las reglas reales del sistema y queda registrado en la bitácora.' +
+    '</div>' +
+  '</div>';
+}
+
+function tarjetaEscenario() {
+  var R = calcSim();
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 9px;border-radius:var(--r);font-size:13px;font-family:inherit;text-align:right';
+
+  var filas = SIM.filas.map(function (f, i) {
+    var r = R.rows[i];
+    var lv = nivelDe(r.cumpl, R.tiers);
+    var dif = f.margenSim - f.margenReal;
+    var difTxt = dif === 0 ? '' :
+      '<span style="color:' + (dif > 0 ? 'var(--gn)' : 'var(--rd)') + ';font-size:11px">' +
+        (dif > 0 ? '+' : '') + fmt(dif) + ' vs hoy</span>';
+
+    return '<div style="padding:14px 0;border-bottom:1px solid var(--bd)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">' +
+        '<b style="font-size:15px">' + esc(f.nombre) + '</b>' +
+        '<span style="font-weight:700;font-size:17px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' +
+          f2(r.bono) + '</span>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">' +
+        '<span class="ml">Margen del trimestre S/</span>' +
+        '<input type="number" value="' + Math.round(f.margenSim) + '" ' +
+               'oninput="comSimMargen(' + i + ',this.value)" style="' + estilo + ';width:120px">' +
+        '<span class="ml">→ <b style="color:' + NIVEL_COLOR[lv] + '">' + p2(r.cumpl) + '</b> · tasa ' + r.rate + '%</span>' +
+        difTxt +
+      '</div>' +
+      '<div style="margin-top:10px">' + barra(r.cumpl, 12, NIVEL_COLOR[lv], R.tiers, false) + '</div>' +
+    '</div>';
+  }).join('');
+
+  var totalBono = R.rows.reduce(function (s, r) { return s + r.bono; }, 0);
+  var totalBase = SIM.filas.reduce(function (s, f) { return s + f.base; }, 0);
+  var ratio = totalBase > 0 ? totalBono / (totalBase * 3) * 100 : 0;
+
+  return '<div class="card">' +
+    '<div class="ct">Escenario</div>' +
+    '<div style="font-size:13px;margin-bottom:6px">' +
+      'Arranca en la proyección real del trimestre. Cambiá el margen de cada una y mirá qué pasa.' +
+    '</div>' + filas +
+    '<div class="mts" style="margin-top:16px;margin-bottom:0">' +
+      '<div class="mt"><div class="ml">Equipo</div>' +
+        '<div class="com-big" style="color:' + NIVEL_COLOR[R.level] + '">' + p2(R.teamCumpl) + '</div>' +
+        '<div class="ml" style="margin:5px 0 0">' + NIVEL_NOMBRE[R.level] + '</div></div>' +
+      '<div class="mt"><div class="ml">Bono total</div>' +
+        '<div class="com-big" style="color:var(--gn)">' + f2(totalBono) + '</div></div>' +
+      '<div class="mt"><div class="ml">Costo total</div>' +
+        '<div class="com-big">' + fmt(totalBase * 3 + totalBono) + '</div>' +
+        '<div class="ml" style="margin:5px 0 0">sueldos × 3 + bono</div></div>' +
+      '<div class="mt"><div class="ml">Bono ÷ sueldos</div>' +
+        '<div class="com-big"' + (ratio > 100 ? ' style="color:var(--am)"' : '') + '>' + p2(ratio) + '</div></div>' +
+    '</div>' +
+  '</div>';
+}
+
+/** Cálculo inverso: cuánto margen hace falta para un bono dado. */
+function margenParaBono(objetivo, sumMeta, tiers) {
+  for (var k = tiers.length - 1; k >= 0; k--) {
+    var t = tiers[k];
+    if (!(t.rate > 0)) continue;
+    var mar = objetivo / (t.rate / 100);
+    var cumpl = sumMeta > 0 ? mar / sumMeta * 100 : 0;
+    if (cumpl >= t.from) return { margen: mar, cumpl: cumpl, rate: t.rate, nivel: k + 1 };
+  }
+  return null;
+}
+
+function tarjetaObjetivos() {
+  var R = calcSim();
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 9px;border-radius:var(--r);font-size:13px;font-family:inherit;text-align:right';
+
+  var filas = SIM.filas.map(function (f, i) {
+    var r = R.rows[i];
+
+    // Cuánto falta para cada nivel que todavía no alcanzó
+    var pasos = R.tiers.filter(function (t) { return t.from > r.cumpl; }).map(function (t) {
+      var necesario = t.from / 100 * r.sumMeta;
+      var faltaMargen = Math.max(0, necesario - r.sumMar);
+      var faltaVenta = f.mPct > 0 ? faltaMargen / (f.mPct / 100) : 0;
+      var bonoAhi = t.rate / 100 * necesario;
+      return '<div class="com-row" style="font-size:12px">' +
+               '<span class="com-mut">Para el ' + (R.tiers.indexOf(t) + 1) + '° nivel (' + t.rate + '%)</span>' +
+               '<span>+' + fmt(faltaMargen) + ' de margen · ≈' + fmt(faltaVenta) + ' de venta → ' +
+                 '<b style="color:var(--gn)">' + f2(bonoAhi) + '</b></span>' +
+             '</div>';
+    }).join('');
+
+    var obj = SIM.objetivo[f.nombre];
+    var resObj = '';
+    if (obj) {
+      var m = margenParaBono(obj, r.sumMeta, R.tiers);
+      resObj = m
+        ? '<div class="ml" style="margin-top:8px;line-height:1.6">Para ganar <b>' + f2(obj) + '</b> ' +
+          'necesita <b style="color:var(--tx)">' + fmt(m.margen) + '</b> de margen (' + p2(m.cumpl) + ', ' +
+          m.nivel + '° nivel). Le faltan <b style="color:var(--gn)">' +
+          fmt(Math.max(0, m.margen - r.sumMar)) + '</b>.</div>'
+        : '<div class="ml" style="margin-top:8px;color:var(--am)">Ese monto queda debajo del primer nivel: ' +
+          'no se alcanza con los tramos actuales.</div>';
+    }
+
+    return '<div style="padding:14px 0;border-bottom:1px solid var(--bd)">' +
+      '<b style="font-size:14px">' + esc(f.nombre) + '</b>' +
+      (pasos || '<div class="ml" style="margin-top:6px">Está en el nivel máximo.</div>') +
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px">' +
+        '<span class="ml">¿Cuánto para ganar S/</span>' +
+        '<input type="number" value="' + (obj || '') + '" placeholder="3000" ' +
+               'oninput="comSimObjetivo(\'' + esc(f.nombre) + '\',this.value)" style="' + estilo + ';width:100px">' +
+        '<span class="ml">?</span>' +
+      '</div>' + resObj +
+    '</div>';
+  }).join('');
+
+  // Techo: todas en el nivel máximo
+  var tope = R.tiers[R.tiers.length - 1];
+  var costoTope = R.rows.reduce(function (s, r) {
+    return s + (tope.rate / 100) * (tope.from / 100 * r.sumMeta);
+  }, 0);
+  var baseTot = SIM.filas.reduce(function (s, f) { return s + f.base; }, 0);
+
+  return '<div class="card">' +
+    '<div class="ct">Cuánto falta y cuánto cuesta</div>' + filas +
+    '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bd);font-size:13px;line-height:1.8">' +
+      'Si <b>todas</b> llegaran justo al ' + tope.from + '% (nivel máximo), el bono del trimestre sería ' +
+      '<b style="color:var(--gn)">' + f2(costoTope) + '</b> contra ' + fmt(baseTot * 3) + ' de sueldos: ' +
+      '<b>' + p2(baseTot > 0 ? costoTope / (baseTot * 3) * 100 : 0) + '</b> de la planilla.<br>' +
+      '<span class="com-mut">Ese es el techo de costo con las reglas simuladas.</span>' +
+    '</div>' +
+  '</div>';
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   CONFIGURACIÓN
+   ══════════════════════════════════════════════════════════════════════ */
+
+function pintarConfig() {
+  COM.vista = 'config';
+  var c = cont();
+  if (!c) return;
+
+  if (!COM.data) {
+    c.innerHTML = pestañas('config') + '<div class="ld"><div class="sp"></div>Cargando configuración...</div>';
+    cargar();
+    setTimeout(function () { if (COM.vista === 'config') pintarConfig(); }, 1200);
+    return;
+  }
+
+  var cfg = COM.data.cfgFull || {};
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
+
+  var vend = cfg.vendedoras || {};
+  var filasVend = Object.keys(vend).map(function (email, i) {
+    return filaVendedora(email, vend[email], i, estilo);
+  }).join('');
+
+  var tramos = (cfg.tiers || TIERS_FALLBACK).map(function (t, k) {
+    return (k + 1) + '° nivel: desde ' + t.from + '% → paga ' + t.rate + '% del margen';
+  }).join('<br>');
+
+  c.innerHTML = pestañas('config') +
+    '<div class="card">' +
+      '<div class="ct">Reglas de comisión</div>' +
+      '<div style="font-size:13px;line-height:1.9;background:var(--bg3);border:1px solid var(--bd);' +
+           'border-radius:var(--r);padding:12px 14px">' +
+        'Meta = <b>' + (cfg.xMeta || 12) + '×</b> el sueldo, medida en margen<br>' + tramos +
+      '</div>' +
+      '<div class="ml" style="margin-top:10px">' +
+        'Las reglas se cambian desde el <b>Simulador</b>, donde podés ver el efecto antes de aplicarlas.' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<div class="ct">Asesoras</div>' +
+      '<div style="font-size:13px;margin-bottom:14px">' +
+        'Quién entra al cálculo de comisiones. El correo es con el que inicia sesión en Tulula Comisiones.' +
+      '</div>' +
+      '<div id="cfg-vend">' + filasVend + '</div>' +
+      '<button class="btn bg bs" onclick="comCfgAgregar()" style="margin-top:10px">Agregar asesora</button>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<div class="ct">Administradores</div>' +
+      '<div style="font-size:13px;margin-bottom:10px">' +
+        'Correos que pueden ver y cerrar comisiones. Separados por coma.<br>' +
+        '<span class="com-mut">Además necesitan rol Administrador en la hoja Usuarios del ERP.</span>' +
+      '</div>' +
+      '<input id="cfg-admin" type="text" value="' + esc((cfg.admin || []).join(', ')) + '" ' +
+             'style="' + estilo + ';width:100%;max-width:520px">' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<div class="ct">Cálculo del margen</div>' +
+      '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">' +
+        '<select id="cfg-gmmode" style="' + estilo + '">' +
+          '<option value="real"' + (cfg.gm_mode === 'real' ? ' selected' : '') + '>Costo real (hoja Cost)</option>' +
+          '<option value="fijo"' + (cfg.gm_mode === 'fijo' ? ' selected' : '') + '>Porcentaje fijo</option>' +
+        '</select>' +
+        '<span class="com-mut" style="font-size:12px">Margen % para prendas sin costo cargado</span>' +
+        '<input id="cfg-gm" type="number" step="0.1" value="' + (cfg.gm_pct || 62) + '" style="' + estilo + ';width:80px">' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card">' +
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<button class="btn bp" onclick="comCfgGuardar()">Guardar configuración</button>' +
+        '<button class="btn bg" id="cfg-reset" onclick="comCfgReset()">Restaurar valores de fábrica</button>' +
+        '<span id="cfg-msg" style="font-size:13px"></span>' +
+      '</div>' +
+    '</div>';
+}
+
+function filaVendedora(email, v, i, estilo) {
+  v = v || { nombre: '', b: 0, desde: '' };
+  return '<div class="cfg-v" style="border:1px solid var(--bd);border-radius:var(--r2);' +
+              'padding:14px;margin-bottom:10px;position:relative">' +
+    '<button onclick="this.parentNode.remove()" title="Quitar" ' +
+            'style="position:absolute;top:10px;right:12px;background:none;border:none;' +
+            'color:var(--mu);cursor:pointer;font-size:18px;line-height:1">×</button>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">' +
+      '<div><div class="ml" style="margin-bottom:3px">Nombre</div>' +
+        '<input class="cv-nombre" value="' + esc(v.nombre || '') + '" style="' + estilo + ';width:100%"></div>' +
+      '<div><div class="ml" style="margin-bottom:3px">Correo</div>' +
+        '<input class="cv-email" value="' + esc(email || '') + '" placeholder="correo@gmail.com" ' +
+               'style="' + estilo + ';width:100%"></div>' +
+      '<div><div class="ml" style="margin-bottom:3px">Sueldo base</div>' +
+        '<input class="cv-base" type="number" value="' + (v.b || 0) + '" style="' + estilo + ';width:100%"></div>' +
+      '<div><div class="ml" style="margin-bottom:3px">Fecha de ingreso</div>' +
+        '<input class="cv-desde" type="date" value="' + esc(v.desde || '') + '" style="' + estilo + ';width:100%"></div>' +
+    '</div>' +
+  '</div>';
+}
+
+
 /* ══════════════════════════════════════════════════════════════════════
    API PÚBLICA — lo único que sale del módulo
    ══════════════════════════════════════════════════════════════════════ */
@@ -1524,7 +2000,9 @@ window.loadComisiones = cargar;
 window.comIr = function (vista) {
   if (vista === 'cierre') pintarCierre();
   else if (vista === 'asesoras') pintarAsesoras();
-  else cargar();
+  else if (vista === 'sim') pintarSim();
+  else if (vista === 'config') pintarConfig();
+  else { COM.comoEmail = ''; cargar(); }
 };
 window.comCierreSub = function (sub) { CIERRE.sub = sub; pintarCierre(); };
 window.comVerTrim = comVerTrimImpl;
@@ -1847,4 +2325,187 @@ window.comAplicarCustom = function () {
   }
   PER.perf = null; PER.perfPrev = null; PER.hist = null;
   cargarPeriodo('custom', a, b);
+};
+
+/* ── Ver como asesora ── */
+
+window.comVerComo = function (email) {
+  COM.comoEmail = email || '';
+  if (!email) { cargar(); return; }
+  var c = cont();
+  if (c) c.innerHTML = pestañas('home') + '<div class="ld"><div class="sp"></div>Cargando su vista...</div>';
+  comApi('vendedora', { year: COM.year, q: COM.q, asesora: email })
+    .then(function (d) {
+      if (COM.comoEmail !== email) return;   // ya cambió de selección
+      if (d && d.isAdmin) { pintarError(new Error('Ese correo es de un administrador, no de una asesora.')); return; }
+      pintarVerComo(d);
+    })
+    .catch(pintarError);
+};
+
+/* ── Simulador ── */
+
+window.comSimX = function (v) {
+  SIM.xMeta = Number(v) || 1;
+  pintarSim();
+};
+
+window.comSimTier = function (i, campo, v) {
+  SIM.tiers[i][campo] = Number(v) || 0;
+  pintarSim();
+};
+
+window.comSimMargen = function (i, v) {
+  SIM.filas[i].margenSim = Number(v) || 0;
+  pintarSim();
+};
+
+window.comSimObjetivo = function (nombre, v) {
+  if (v === '') delete SIM.objetivo[nombre];
+  else SIM.objetivo[nombre] = Number(v) || 0;
+  pintarSim();
+};
+
+window.comSimReset = function () {
+  SIM.filas = null;
+  SIM.objetivo = {};
+  pintarSim();
+};
+
+window.comSimAplicar = function () {
+  var msg = document.getElementById('sim-msg');
+
+  // Confirmación en dos pasos: cambia las reglas de pago reales
+  var btn = document.querySelector('button[onclick="comSimAplicar()"]');
+  if (btn && btn.getAttribute('data-armed') !== '1') {
+    btn.setAttribute('data-armed', '1');
+    btn.textContent = 'Confirmar: cambia el pago real';
+    btn.classList.remove('bp');
+    btn.style.background = 'var(--rd)';
+    btn.style.color = '#fff';
+    setTimeout(function () {
+      if (!btn) return;
+      btn.setAttribute('data-armed', '0');
+      btn.textContent = 'Aplicar estas reglas de verdad';
+      btn.classList.add('bp');
+      btn.style.background = '';
+    }, 4000);
+    return;
+  }
+
+  if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = 'Guardando...'; }
+  comApi('saveCfg', { patch: { xMeta: SIM.xMeta, tiers: SIM.tiers } })
+    .then(function () {
+      COM.data = null;
+      cacheBorrar();
+      if (msg) { msg.style.color = 'var(--gn)'; msg.textContent = 'Reglas aplicadas'; }
+      setTimeout(function () { SIM.filas = null; cargar(true); }, 600);
+    })
+    .catch(function (e) {
+      if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
+    });
+};
+
+/* ── Configuración ── */
+
+window.comCfgAgregar = function () {
+  var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
+  var w = document.createElement('div');
+  w.innerHTML = filaVendedora('', null, Date.now(), estilo);
+  document.getElementById('cfg-vend').appendChild(w.firstChild);
+};
+
+window.comCfgGuardar = function () {
+  var msg = document.getElementById('cfg-msg');
+  var vend = {};
+  var errores = [];
+
+  Array.prototype.forEach.call(document.querySelectorAll('#cfg-vend .cfg-v'), function (row) {
+    var email  = (row.querySelector('.cv-email').value || '').trim().toLowerCase();
+    var nombre = (row.querySelector('.cv-nombre').value || '').trim();
+    if (!email && !nombre) return;                       // fila vacía: se ignora
+    if (!email || !nombre) { errores.push('Falta nombre o correo en una fila.'); return; }
+    if (email.indexOf('@') < 0) { errores.push('Correo inválido: ' + email); return; }
+    if (vend[email]) { errores.push('Correo repetido: ' + email); return; }
+    vend[email] = {
+      nombre: nombre,
+      b: Number(row.querySelector('.cv-base').value) || 0,
+      t: 0, tp: 'planilla',
+      desde: (row.querySelector('.cv-desde').value || '').trim(),
+    };
+  });
+
+  if (errores.length) {
+    if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = errores[0]; }
+    return;
+  }
+  if (!Object.keys(vend).length) {
+    if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = 'Tiene que haber al menos una asesora.'; }
+    return;
+  }
+
+  var admins = document.getElementById('cfg-admin').value
+                 .split(',').map(function (s) { return s.trim().toLowerCase(); })
+                 .filter(Boolean);
+  if (!admins.length) {
+    if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = 'Tiene que haber al menos un administrador.'; }
+    return;
+  }
+
+  var patch = {
+    vendedoras: vend,
+    admin: admins,
+    gm_mode: document.getElementById('cfg-gmmode').value,
+    gm_pct: Number(document.getElementById('cfg-gm').value) || 62,
+  };
+
+  if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = 'Guardando...'; }
+  comApi('saveCfg', { patch: patch })
+    .then(function () {
+      COM.data = null; ASE.data = null;
+      cacheBorrar();
+      if (msg) { msg.style.color = 'var(--gn)'; msg.textContent = 'Guardado'; }
+      setTimeout(function () { cargar(true); setTimeout(pintarConfig, 900); }, 400);
+    })
+    .catch(function (e) {
+      if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
+    });
+};
+
+window.comCfgReset = function () {
+  var b = document.getElementById('cfg-reset');
+  var msg = document.getElementById('cfg-msg');
+  if (!b) return;
+
+  if (b.getAttribute('data-armed') !== '1') {
+    b.setAttribute('data-armed', '1');
+    b.textContent = 'Confirmar: borra toda la configuración';
+    b.style.color = 'var(--rd)';
+    b.style.borderColor = 'var(--rd)';
+    clearTimeout(b._t);
+    b._t = setTimeout(function () {
+      b.setAttribute('data-armed', '0');
+      b.textContent = 'Restaurar valores de fábrica';
+      b.style.color = ''; b.style.borderColor = '';
+    }, 4000);
+    return;
+  }
+
+  clearTimeout(b._t);
+  b.disabled = true;
+  b.textContent = 'Restaurando...';
+  comApi('resetCfg', {})
+    .then(function () {
+      COM.data = null; ASE.data = null; SIM.filas = null;
+      cacheBorrar();
+      cargar(true);
+      setTimeout(pintarConfig, 900);
+    })
+    .catch(function (e) {
+      b.disabled = false;
+      b.setAttribute('data-armed', '0');
+      b.textContent = 'Restaurar valores de fábrica';
+      if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
+    });
 };
