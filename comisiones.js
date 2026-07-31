@@ -3021,27 +3021,37 @@ window.comCfgGuardar = function () {
     gm_pct: Number(document.getElementById('cfg-gm').value) || 62,
   };
 
-  // Feedback visible: el guardado puede tardar varios segundos
   var btn = document.querySelector('button[onclick="comCfgGuardar()"]');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; btn.style.opacity = '.6'; }
-  if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = 'Puede tardar unos segundos…'; }
+  if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = ''; }
+
+  // La pantalla se actualiza YA con los valores nuevos. El margen de cada
+  // asesora no cambia por editar una regla: lo que cambia es cómo se aplica,
+  // y ese cálculo corre acá mismo. Guardar en el servidor va en paralelo.
+  if (COM.data) {
+    COM.data.cfgFull = Object.assign({}, COM.data.cfgFull || {}, patch);
+    cacheGuardar(COM.year, COM.q, COM.data);
+  }
+  ASE.data = null;      // el prorrateo depende de la meta
+  SIM.filas = null;     // el simulador arranca de nuevo
+  pintarConfig();
+
+  var msg2 = document.getElementById('cfg-msg');
+  if (msg2) { msg2.style.color = 'var(--mu)'; msg2.textContent = 'Guardando en el servidor…'; }
 
   comApi('saveCfg', { patch: patch })
     .then(function () {
-      COM.data = null; ASE.data = null;
       cacheBorrar();
-      if (msg) { msg.style.color = 'var(--gn)'; msg.textContent = 'Guardado. Recalculando…'; }
-      return traer(COM.year || new Date().getFullYear(),
-                   COM.q || Math.ceil((new Date().getMonth() + 1) / 3));
-    })
-    .then(function () {
-      if (COM.vista === 'config') pintarConfig();
-      var m2 = document.getElementById('cfg-msg');
-      if (m2) { m2.style.color = 'var(--gn)'; m2.textContent = 'Guardado'; }
+      var m = document.getElementById('cfg-msg');
+      if (m) { m.style.color = 'var(--gn)'; m.textContent = 'Guardado'; }
     })
     .catch(function (e) {
-      if (btn) { btn.disabled = false; btn.textContent = 'Guardar configuración'; btn.style.opacity = '1'; }
-      if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
+      var m = document.getElementById('cfg-msg');
+      if (m) {
+        m.style.color = 'var(--rd)';
+        m.textContent = 'No se pudo guardar: ' + ((e && e.message) || e) +
+                        ' — recargá antes de seguir editando.';
+      }
     });
 };
 
