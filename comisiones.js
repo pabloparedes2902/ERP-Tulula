@@ -282,7 +282,7 @@ function barra(cumpl, alto, color, tiers, conMarcas) {
     var izq = z.desde / BARRA_TOPE * 100;
     var ancho = (z.hasta - z.desde) / BARRA_TOPE * 100;
     return '<div style="position:absolute;left:' + izq + '%;width:' + ancho + '%;' +
-           'top:0;bottom:0;background:' + z.color + ';opacity:.11"></div>';
+           'top:0;bottom:0;background:' + z.color + ';opacity:.16"></div>';
   }).join('');
 
   // Marcas cada 25%
@@ -1354,8 +1354,39 @@ function detectarAnomalias(historico) {
 }
 
 function tarjetaAnomalias(historico) {
+  // Todavía cargando: avisamos, no desaparecemos
+  if (!historico && !COM.historicoError) {
+    return '<div class="card">' +
+      '<div class="ct">Desviaciones del mes</div>' +
+      '<div class="ml">Revisando el ritmo de cada asesora…</div>' +
+    '</div>';
+  }
+
+  if (COM.historicoError) {
+    return '<div class="card" style="border-color:var(--am)">' +
+      '<div class="ct" style="color:var(--am)">Desviaciones del mes</div>' +
+      '<div style="font-size:13px">No se pudo calcular: ' + esc(COM.historicoError) + '</div>' +
+      '<button class="btn bg bs" style="margin-top:10px" onclick="comReintentarHistorico()">Reintentar</button>' +
+    '</div>';
+  }
+
   var an = detectarAnomalias(historico);
-  if (!an.length) return '';
+
+  // Sin desvíos: lo decimos, así se sabe que el control corrió
+  if (!an.length) {
+    var cuantas = historico && historico.porAsesora ? Object.keys(historico.porAsesora).length : 0;
+    return '<div class="card">' +
+      '<div class="ct">Desviaciones del mes</div>' +
+      '<div style="font-size:13px;color:var(--gn)">' +
+        'Ninguna asesora se desvió de su ritmo habitual' +
+        (cuantas ? ' (' + cuantas + ' revisadas)' : '') + '.' +
+      '</div>' +
+      '<div class="ml" style="margin-top:8px">' +
+        'Se avisa cuando alguien cae más de ' + ANOM_CAIDA + '% o sube más de ' +
+        ANOM_SUBIDA + '% contra su propio promedio.' +
+      '</div>' +
+    '</div>';
+  }
 
   var filas = an.map(function (a) {
     var caida = a.tipo === 'caida';
@@ -1391,7 +1422,6 @@ function tarjetaAnomalias(historico) {
     '</div>' +
   '</div>';
 }
-
 
 /* ══════════════════════════════════════════════════════════════════════
    VISTA ASESORAS — quién estuvo activa, con qué sueldo, y qué meta le tocó
@@ -2408,6 +2438,14 @@ window.comDesglose = function (i) {
   pintarHome();
 };
 
+window.comReintentarHistorico = function () {
+  COM.historico = null;
+  COM.historicoError = null;
+  precargarPestanas._hecho = false;
+  pintarHome();
+  precargarPestanas();
+};
+
 window.loadComisiones = cargar;
 
 /* ── Navegación interna ── */
@@ -2433,10 +2471,16 @@ function precargarPestanas() {
   if (!COM.historico) {
     comApi('historico', { year: COM.year || new Date().getFullYear() })
       .then(function (h) {
-        COM.historico = h;
+        COM.historico = h || {};
+        COM.historicoError = null;
         if (COM.vista === 'home' && !COM.comoEmail) pintarHome();
       })
-      .catch(function () {});
+      .catch(function (e) {
+        // Antes se callaba y la alerta no aparecía nunca sin explicación
+        COM.historicoError = (e && e.message) || String(e);
+        COM.historico = {};
+        if (COM.vista === 'home' && !COM.comoEmail) pintarHome();
+      });
   }
 
   if (ASE.data && CIERRE.cargado) return;   // bootstrap ya trajo el resto
