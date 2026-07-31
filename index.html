@@ -1641,6 +1641,125 @@ function limpiarFiltrosPantalla() {
 // evita tener que acordarse de llamarlo desde cada render de cada módulo.
 setInterval(_limpiarFiltrosSync, 600);
 
+// ══════════════════════════════════════════════════════════════════════════
+// DETECTAR PEDIDOS DUPLICADOS — DESDE LA BASE, NO DESDE LA HOJA
+// 30-jul-2026
+//
+// MEDIDO EN VIVO HOY: `pedidos.detectarDuplicados` tarda 11 a 12,7 SEGUNDOS, y se dispara
+// TRES VECES por pedido (al escribir el DNI, al escribir el teléfono, al elegir la
+// prenda). Son ~35 s de servidor por cada pedido cargado.
+//
+// El pre-chequeo corre en segundo plano, así que en teoría no molesta. En la práctica sí:
+// si la asesora llena el formulario en menos de 12 segundos —que pasa seguido— llega a
+// "Guardar" antes de que el chequeo termine, y entonces LO ESPERA. El arreglo de esta
+// mañana (que el pre-chequeo se dispare al elegir la prenda) sólo funciona si la consulta
+// es rápida. No lo era.
+//
+// POR QUÉ TARDA: Apps Script lee la hoja Pedidos ENTERA para buscar coincidencias de las
+// últimas 48 horas. Decenas de miles de filas para mirar unas pocas decenas.
+//
+// QUÉ HACE ESTO: le pide a la base sólo los pedidos de la ventana —filtrando por fecha EN
+// EL SERVIDOR— y compara en el navegador con las MISMAS reglas que Apps Script:
+// DNI exacto, teléfono contenido, o nombre igual/parecido (≥0,82 por bigramas).
+//
+// POR QUÉ LA BASE ESTÁ AL DÍA: los pedidos nuevos se crean DIRECTO en la base (la vía
+// rápida). O sea que para lo recién creado la base no va atrasada respecto de la hoja:
+// va adelante. Y un duplicado, por definición, es algo recién creado.
+//
+// SI ALGO FALLA, se vuelve solo por Apps Script. La detección nunca se pierde: a lo sumo
+// vuelve a tardar lo que tardaba.
+// ══════════════════════════════════════════════════════════════════════════
+
+// Espejos EXACTOS de _dupNormTxt_ y _dupSimTxt_ (Code.js). Si estas dos se separan de las
+// de allá, el pre-chequeo y el chequeo del guardado dirían cosas distintas sobre el mismo
+// pedido — y la asesora vería aparecer y desaparecer el aviso sin motivo.
+function _dupNorm(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function _dupSim(a, b) {
+  if (!a || !b) return 0; if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const bg = s => { const m = {}; for (let i = 0; i < s.length - 1; i++) { const g = s.substr(i, 2); m[g] = (m[g] || 0) + 1; } return m; };
+  const A = bg(a), B = bg(b); let inter = 0, ta = 0, tb = 0;
+  Object.keys(A).forEach(g => { ta += A[g]; if (B[g]) inter += Math.min(A[g], B[g]); });
+  Object.keys(B).forEach(g => { tb += B[g]; });
+  return (ta + tb) ? (2 * inter) / (ta + tb) : 0;
+}
+
+async function _detectarDuplicadosRapido(p) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (window._sbSaltarEspejo) return null;          // el 🔄 quiere datos del servidor
+    const dni = String(p.dni || '').trim();
+    const tels = (p.tels || []).map(t => String(t || '').trim()).filter(Boolean);
+    const nombreN = _dupNorm(p.nombre || '');
+    if (!dni && !tels.length && !nombreN) return { candidatos: [] };
+
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+
+    // El filtro por fecha va EN EL SERVIDOR: es lo que convierte "toda la hoja" en
+    // "las últimas 48 horas". Un día de margen para no perder nada por husos/formato.
+    const ventana = parseFloat(p.ventanaHoras) || 48;
+    const desde = new Date(Date.now() - (ventana + 24) * 3600 * 1000).toISOString().slice(0, 10);
+    const q = 'select=row_json&eliminado=is.null&limit=4000&order=id.desc&'
+            + encodeURIComponent('row_json->>Fecha Pedido') + '=gte.' + desde;
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?' + q,
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j)) return null;
+
+    const ahora = Date.now(), corte = ventana * 3600 * 1000;
+    const prendasNuevas = (p.prendas || []).map(x => String(x || '').trim().toUpperCase()).filter(Boolean);
+    const mapa = {};
+    j.forEach(x => {
+      const f = x.row_json; if (!f) return;
+      const nro = String(f['NroPedido'] || '').trim(); if (!nro) return;
+      const telFila = String(f['Celular'] || '').trim();
+      const dniFila = String(f['DNI'] || '').trim();
+      const matchDNI = !!(dni && dniFila && dniFila === dni);
+      const matchTel = tels.some(t => t && telFila && telFila.indexOf(t) >= 0);
+      let matchNom = false;
+      if (nombreN) {
+        const nf = _dupNorm(f['Nombres y Apellidos'] || f['Nombre'] || '');
+        matchNom = !!nf && (nf === nombreN || _dupSim(nf, nombreN) >= 0.82);
+      }
+      if (!matchDNI && !matchTel && !matchNom) return;
+      const ms = Date.parse(f['Fecha Pedido'] || '') || 0;
+      if (!ms || (ahora - ms) > corte) return;
+      if (!mapa[nro]) mapa[nro] = {
+        NroPedido: nro, FechaMs: ms, FechaISO: new Date(ms).toISOString(),
+        Cliente: String(f['Nombres y Apellidos'] || f['Nombre'] || ''),
+        DNI: dniFila, Tel: telFila, Prendas: [], Total: 0,
+        MotivoMatch: (matchDNI && matchTel) ? 'DNI+TEL' : (matchDNI ? 'DNI' : (matchTel ? 'TEL' : 'NOMBRE')),
+      };
+      const prenda = String(f['Prenda'] || '').trim();
+      if (prenda && prenda !== '_PAGO_') {
+        mapa[nro].Prendas.push(prenda);
+        mapa[nro].Total += parseFloat(f['Precio']) || 0;
+      }
+    });
+    const cand = Object.values(mapa);
+    cand.forEach(c => {
+      c.ComparteprenDA = prendasNuevas.length
+        ? c.Prendas.some(x => prendasNuevas.indexOf(String(x).toUpperCase()) >= 0) : false;
+    });
+    cand.sort((a, b) => b.FechaMs - a.FechaMs);
+    return { candidatos: cand.slice(0, 10), ventanaHoras: ventana, via: 'base' };
+  } catch (e) { try { _errLog('dup.rapido', e); } catch (_) {} return null; }
+}
+
+// Un solo punto de entrada: base primero, Apps Script si no se puede.
+async function _detectarDuplicados(p) {
+  const c = _cronAbrir('dup.rapido');
+  const r = await _detectarDuplicadosRapido(p);
+  if (r) { _cronCerrar(c, true); return r; }
+  _cronCerrar(c, false);
+  return await apiSend('pedidos.detectarDuplicados', p);
+}
+
 // I-13 — Buscador global (Ctrl+K + botón lupa).
 // Busca en pRaw + histCamData + histDevData por NroPedido, cliente, DNI o teléfono.
 (function _initSearch(){
@@ -12312,7 +12431,7 @@ function _npPrecheckDuplicados() {
     const key = dni + '|' + tels.join(',') + '|' + prendas.join(',');
     if (NP.dupCheck.key === key && (Date.now() - NP.dupCheck.ts) < 120000) return; // ya chequeado
     try {
-      const res = await apiSend('pedidos.detectarDuplicados', {dni:dni, tels:tels, ventanaHoras:48, prendas:prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
+      const res = await _detectarDuplicados({dni:dni, tels:tels, ventanaHoras:48, prendas:prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
       NP.dupCheck = { key: key, candidatos: (res && Array.isArray(res.candidatos)) ? res.candidatos : [], ts: Date.now() };
     } catch(e) { /* silencioso — si falla, npGuardar hará el chequeo bloqueante como fallback */ }
   }, 700);
@@ -14231,7 +14350,7 @@ async function npGuardar() {
         if (NP.dupCheck && NP.dupCheck.key === _dupKey && (Date.now() - NP.dupCheck.ts) < 120000) {
           cand = NP.dupCheck.candidatos || [];
         } else {
-          const res = await apiSend('pedidos.detectarDuplicados', {dni:_dni, tels:_tels, ventanaHoras:48, prendas:_prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
+          const res = await _detectarDuplicados({dni:_dni, tels:_tels, ventanaHoras:48, prendas:_prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
           cand = (res && Array.isArray(res.candidatos)) ? res.candidatos : [];
         }
         if (cand.length) {
