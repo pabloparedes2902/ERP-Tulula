@@ -2391,7 +2391,19 @@ window.comIr = function (vista) {
 function precargarPestanas() {
   if (precargarPestanas._hecho) return;
   precargarPestanas._hecho = true;
-  if (ASE.data && CIERRE.cargado) return;   // bootstrap ya trajo todo
+
+  // El histórico alimenta la alerta de desviaciones. Recorre todo el año,
+  // así que va aparte y sin bloquear: cuando llega, se repinta.
+  if (!COM.historico) {
+    comApi('historico', { year: COM.year || new Date().getFullYear() })
+      .then(function (h) {
+        COM.historico = h;
+        if (COM.vista === 'home' && !COM.comoEmail) pintarHome();
+      })
+      .catch(function () {});
+  }
+
+  if (ASE.data && CIERRE.cargado) return;   // bootstrap ya trajo el resto
 
   var year = COM.year || new Date().getFullYear();
 
