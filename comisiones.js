@@ -89,6 +89,24 @@ var MESES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','
 var NIVEL_COLOR  = ['var(--rd)', 'var(--am)', 'var(--gn)', 'var(--ac)'];
 var NIVEL_NOMBRE = ['No llega al mínimo', 'Llega al mínimo', 'Nivel intermedio', 'Nivel alto'];
 
+/** Medalla de oro, plata o bronce. Del 4° en adelante, solo el número. */
+function medalla(i) {
+  var M = [
+    { fill: '#fbbf24', borde: '#d97706' },   // oro
+    { fill: '#cbd5e1', borde: '#94a3b8' },   // plata
+    { fill: '#d97757', borde: '#b45309' },   // bronce
+  ];
+  if (i > 2) {
+    return '<span class="com-mut" style="width:24px;text-align:center;font-size:12px">' + (i + 1) + '</span>';
+  }
+  var m = M[i];
+  return '<svg width="24" height="24" viewBox="0 0 24 24" style="flex-shrink:0" aria-label="Puesto ' + (i + 1) + '">' +
+    '<circle cx="12" cy="14" r="7" fill="' + m.fill + '" stroke="' + m.borde + '" stroke-width="1.5"/>' +
+    '<path d="M8 2l2 5M16 2l-2 5" stroke="' + m.borde + '" stroke-width="1.5" fill="none"/>' +
+    '<text x="12" y="17.5" text-anchor="middle" font-size="8" font-weight="700" fill="' + m.borde + '">' +
+      (i + 1) + '</text></svg>';
+}
+
 function etiquetaTrim(q, year) {
   var T = [['Ene','Mar'], ['Abr','Jun'], ['Jul','Sep'], ['Oct','Dic']];
   var t = T[(q || 1) - 1] || T[0];
@@ -199,15 +217,9 @@ function proyectarMargen(marginM, meses, year) {
 
 // Escala de la barra. Arranca en 0 para que un cumplimiento bajo también
 // se vea, y el tope se estira si alguien supera el nivel máximo.
-var BARRA_TOPE = 150;
+var BARRA_TOPE = 200;   // escala fija 0% → 200%, igual en todas las barras
 
-function escalaBarra(tiers, valores) {
-  var maxTier = (tiers && tiers.length) ? tiers[tiers.length - 1].from : 125;
-  var maxDato = 0;
-  (valores || []).forEach(function (v) { if (v > maxDato) maxDato = v; });
-  BARRA_TOPE = Math.max(maxTier * 1.2, maxDato * 1.1, 100);
-  return BARRA_TOPE;
-}
+function escalaBarra() { return BARRA_TOPE; }
 
 function posBarra(v) { return Math.max(0, Math.min(100, (v || 0) / BARRA_TOPE * 100)); }
 
@@ -220,7 +232,6 @@ function marcasTiers(tiers) {
 }
 
 function barra(cumpl, alto, color, tiers, conMarcas) {
-  escalaBarra(tiers, [cumpl]);
   return '<div class="com-bar" style="height:' + alto + 'px">' +
            '<div class="com-bar-bg">' +
              '<div class="com-bar-fill" style="width:' + posBarra(cumpl) + '%;background:' + color + '"></div>' +
@@ -254,10 +265,10 @@ function inyectarEstilos() {
     '.com-mut{color:var(--mu)}',
     '.com-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}',
 '.com-mts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:stretch}',
-    '.com-met{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:14px;min-width:0}',
-    '.com-met .ml{margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-    '.com-met .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}',
-    '.com-met .com-sub2{font-size:11px;color:var(--mu);margin-top:5px;line-height:1.4}',
+    '.com-met{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:14px;min-width:0;text-align:center}',
+    '.com-met .ml{margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}',
+    '.com-met .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;text-align:center}',
+    '.com-met .com-sub2{font-size:11px;color:var(--mu);margin-top:5px;line-height:1.4;text-align:center}',
     '@media(max-width:640px){.com-grid{grid-template-columns:1fr}}',
   ].join('\n');
   document.head.appendChild(s);
@@ -369,20 +380,14 @@ function refrescarDetras() {
 function marcarRefrescando(activo) {
   var e = document.getElementById('com-estado');
   if (!e) return;
-  if (activo) {
-    e.textContent = 'Actualizando…';
-    e.style.color = 'var(--ac)';
-    return;
+  if (activo) { e.textContent = 'Actualizando…'; e.style.color = 'var(--ac)'; return; }
+  // En silencio salvo que el ERP esté lento: ahí sí conviene saberlo
+  if (COM.ms != null && COM.ms > 8000) {
+    e.textContent = 'El ERP está ocupado (' + (COM.ms / 1000).toFixed(0) + 's)';
+    e.style.color = 'var(--am)';
+  } else {
+    e.textContent = '';
   }
-  var txt = COM.traidoEn ? 'Datos ' + haceCuanto(COM.traidoEn) : '';
-  // Si tardó mucho, avisamos: casi siempre es cola del ERP, no el cálculo
-  if (COM.ms != null) {
-    var s = (COM.ms / 1000).toFixed(1);
-    txt += ' · ' + s + 's';
-    if (COM.ms > 10000) txt += ' (el ERP está ocupado)';
-  }
-  e.textContent = txt;
-  e.style.color = (COM.ms > 10000) ? 'var(--am)' : 'var(--mu)';
 }
 
 /**
@@ -496,17 +501,13 @@ function barraHerramientas(d, qTxt) {
   var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
                'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
 
-  var estado = COM.refrescando ? 'Actualizando…'
-             : (COM.traidoEn ? 'Datos ' + haceCuanto(COM.traidoEn) : '');
-  var colorEstado = COM.refrescando ? 'var(--ac)' : 'var(--mu)';
-
   return '<div class="com-toolbar">' +
     '<span class="com-mut" style="font-size:12px">Período</span>' +
     '<select id="com-year" style="' + estilo + '" onchange="comCambiarPeriodo()">' + optY + '</select>' +
     '<select id="com-q" style="' + estilo + '" onchange="comCambiarPeriodo()">' + optQ + '</select>' +
-    '<button class="btn bg bs" onclick="loadComisiones(true)">Actualizar datos</button>' +
+    '<button class="btn bg bs" onclick="loadComisiones(true)">Actualizar</button>' +
     selectorVerComo(d.cfgFull) +
-    '<span id="com-estado" style="font-size:12px;color:' + colorEstado + '">' + estado + '</span>' +
+    '<span id="com-estado" style="font-size:12px;color:var(--mu)"></span>' +
   '</div>';
 }
 
@@ -601,7 +602,7 @@ function tarjetaRanking(R, qTxt) {
     var lv = nivelDe(o.cumpl, R.tiers);
     return '<div class="com-row">' +
              '<div style="display:flex;align-items:center;gap:12px">' +
-               '<span class="com-mut" style="width:22px;text-align:center;font-size:12px">' + (i + 1) + '</span>' +
+               medalla(i) +
                '<span style="font-weight:500;font-size:15px">' + esc(o.nombre) + '</span>' +
              '</div>' +
              '<span style="font-weight:700;font-size:18px;color:' + NIVEL_COLOR[lv] + '">' + p2(o.cumpl) + '</span>' +
@@ -1295,7 +1296,8 @@ function estiloMes(activo) {
    ══════════════════════════════════════════════════════════════════════ */
 
 var PER = {
-  modo: 'trim',      // mes | trim | anio | custom
+  modo: 'meses',     // los meses elegidos mandan
+  meses: null,       // [7] o [4,5,6] o los que sean
   perf: null,
   perfPrev: null,
   hist: null,
@@ -1344,13 +1346,40 @@ function rangoComparable(modo) {
   };
 }
 
+/** Rango de fechas a partir de los meses seleccionados. */
+function rangoDeMeses(meses, year) {
+  var ms = (meses || []).slice().sort(function (a, b) { return a - b; });
+  if (!ms.length) return null;
+
+  var hoy = new Date();
+  var pad = function (n) { return String(n).padStart(2, '0'); };
+  var ini = new Date(year, ms[0] - 1, 1);
+  var ultimoDia = new Date(year, ms[ms.length - 1], 0);
+  // No pasar de ayer: el día en curso está incompleto
+  var ayer = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - 1);
+  var fin = ultimoDia > ayer ? ayer : ultimoDia;
+  if (fin < ini) fin = ultimoDia;
+
+  var dias = Math.max(1, Math.round((fin - ini) / 864e5) + 1);
+
+  // Mismo número de meses, inmediatamente antes
+  var iniPrev = new Date(year, ms[0] - 1 - ms.length, 1);
+  var finPrev = new Date(iniPrev.getFullYear(), iniPrev.getMonth() + ms.length, 0);
+
+  var iso2 = function (d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
+  return {
+    desde: iso2(ini), hasta: iso2(fin),
+    pDesde: iso2(iniPrev), pHasta: iso2(finPrev),
+    dias: dias,
+  };
+}
+
 function cargarPeriodo(modo, desde, hasta) {
   PER.modo = modo;
   var seq = ++PER.seq;
 
-  var r = (modo === 'custom')
-        ? { desde: desde, hasta: hasta, pDesde: null, pHasta: null, dias: 1 }
-        : rangoComparable(modo);
+  var r = rangoDeMeses(PER.meses, COM.year || new Date().getFullYear());
+  if (!r) return;
   PER.rango = r;
   PER.cargando = true;
 
@@ -1389,14 +1418,51 @@ function cargarPeriodo(modo, desde, hasta) {
     });
 }
 
+/**
+ * Un solo control de período: los 12 meses del año, y se eligen los que
+ * se quieran. Sin botones de Mes/Trimestre/Año por separado.
+ */
 function filtrosPeriodo() {
-  var opts = [['mes','Mes'], ['trim','Trimestre'], ['anio','Año'], ['custom','Personalizado']];
-  return '<div id="com-filtros" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">' +
-    opts.map(function (o) {
-      var on = PER.modo === o[0];
-      return '<button class="btn ' + (on ? 'bp' : 'bg') + ' bs" ' +
-             'onclick="comPeriodo(\'' + o[0] + '\')">' + o[1] + '</button>';
-    }).join('') +
+  var hoy = new Date();
+  var year = COM.year || hoy.getFullYear();
+  var mesTope = (year === hoy.getFullYear()) ? hoy.getMonth() + 1 : 12;
+
+  if (!PER.meses || !PER.meses.length) PER.meses = [mesTope];   // arranca en el mes actual
+
+  var chips = '';
+  for (var m = 1; m <= 12; m++) {
+    var on = PER.meses.indexOf(m) >= 0;
+    var futuro = m > mesTope;
+    chips += '<button onclick="comMes(' + m + ')"' + (futuro ? ' disabled' : '') +
+      ' style="background:' + (on ? 'var(--ac)' : 'var(--bg3)') + ';' +
+      'border:1px solid ' + (on ? 'var(--ac)' : 'var(--bd)') + ';' +
+      'color:' + (on ? '#fff' : (futuro ? 'var(--bd)' : 'var(--mu)')) + ';' +
+      'padding:6px 11px;border-radius:var(--r);font-size:12px;font-weight:' + (on ? '600' : '400') + ';' +
+      'font-family:inherit;cursor:' + (futuro ? 'default' : 'pointer') + '">' +
+      MESES_CORTO[m - 1] + '</button>';
+  }
+
+  var atajo = function (etq, ms) {
+    return '<button onclick="comMesesSet(' + JSON.stringify(ms).replace(/"/g, '&quot;') + ')" ' +
+           'style="background:transparent;border:none;color:var(--ac);font-size:12px;' +
+           'font-family:inherit;cursor:pointer;padding:6px 4px;text-decoration:underline">' + etq + '</button>';
+  };
+
+  var q = Math.ceil(mesTope / 3);
+  var mesesQ = [(q - 1) * 3 + 1, (q - 1) * 3 + 2, (q - 1) * 3 + 3].filter(function (m) { return m <= mesTope; });
+  var mesesAnio = [];
+  for (var k = 1; k <= mesTope; k++) mesesAnio.push(k);
+
+  var sel = PER.meses.slice().sort(function (a, b) { return a - b; })
+              .map(function (m) { return MESES_CORTO[m - 1]; }).join(', ');
+
+  return '<div id="com-filtros" style="margin-bottom:16px">' +
+    '<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">' + chips + '</div>' +
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">' +
+      '<span class="com-mut" style="font-size:12px">Mostrando: <b style="color:var(--tx)">' +
+        (sel || 'ninguno') + '</b></span>' +
+      atajo('Este mes', [mesTope]) + atajo('Trimestre', mesesQ) + atajo('Año', mesesAnio) +
+    '</div>' +
   '</div>';
 }
 
@@ -1440,8 +1506,11 @@ function pintarPerf() {
     ? '<div class="ml" style="margin-bottom:12px">Comparado con ' + esc(prev.desde) + ' a ' + esc(prev.hasta) + '</div>'
     : '';
 
+  var etq = (PER.meses || []).slice().sort(function (a, b) { return a - b; })
+              .map(function (m) { return MESES_CORTO[m - 1]; }).join(', ');
+
   z.innerHTML = '<div class="card">' +
-    '<div class="ct">Resumen del período · ' + (PER_NOMBRE[PER.modo] || '') + '</div>' +
+    '<div class="ct">Resumen del período · ' + esc(etq) + '</div>' +
     '<div class="ml" style="margin-bottom:6px">' + esc(r.desde) + ' a ' + esc(r.hasta) + ' · hasta el cierre de ayer</div>' +
     comparativa +
     '<div class="com-mts">' +
@@ -1569,13 +1638,23 @@ function selectorVerComo(cfg) {
   var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
                'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
 
-  var opts = '<option value="">Ver como…  (mi vista admin)</option>' +
+  var opts = '<option value="">Admin</option>' +
     emails.map(function (e) {
       return '<option value="' + esc(e) + '"' + (COM.comoEmail === e ? ' selected' : '') + '>' +
-             'Vista de ' + esc(vend[e].nombre) + '</option>';
+             esc(vend[e].nombre) + '</option>';
     }).join('');
 
-  return '<select onchange="comVerComo(this.value)" style="' + estilo + '">' + opts + '</select>';
+  var activo = !!COM.comoEmail;
+  return '<span style="display:inline-flex;align-items:center;gap:6px;' +
+              'background:var(--bg3);border:1px solid ' + (activo ? 'var(--ac)' : 'var(--bd)') + ';' +
+              'border-radius:var(--r);padding:0 4px 0 9px">' +
+    '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="' +
+      (activo ? 'var(--ac)' : 'var(--mu)') + '" stroke-width="2" style="flex-shrink:0">' +
+      '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>' +
+    '<select onchange="comVerComo(this.value)" style="background:transparent;border:none;' +
+            'color:' + (activo ? 'var(--ac)' : 'var(--tx)') + ';font-size:13px;font-family:inherit;' +
+            'padding:7px 4px;cursor:pointer;outline:none">' + opts + '</select>' +
+  '</span>';
 }
 
 function pintarVerComo(d) {
@@ -1677,13 +1756,14 @@ function pintarVerComo(d) {
       '<div class="card"><div class="ct">Ranking del trimestre</div>' + rank + '</div>' +
 
       '<div class="card">' +
-        '<div class="ct">Cómo se calcula</div>' +
         '<div style="font-size:13px;line-height:1.9">' +
-          'Tu meta es <b>' + (R.x) + '×</b> tu sueldo, medida en margen.<br>' +
+          '<b>Bono trimestral</b> = Margen del trimestre × % del nivel alcanzado<br>' +
+          'El bono se activa siempre y cuando el equipo llegue al menos al <b>1° nivel</b>.<br>' +
+          '<b>% por nivel:</b> ' +
           R.tiers.map(function (t, i) {
-            return (i + 1) + '° nivel: desde ' + t.from + '% → paga ' + t.rate + '% del margen';
-          }).join('<br>') + '<br>' +
-          'El bono se paga al cerrar el trimestre.' +
+            return (i + 1) + '° nivel = ' + t.rate + '%';
+          }).join(' · ') + '<br>' +
+          'Tu meta de margen es <b>' + R.x + '×</b> tu sueldo.' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -2358,6 +2438,27 @@ window.comAseReset = function (idx) {
 };
 
 /* ── Filtro de período del resumen ── */
+
+/** Prende o apaga un mes. Nunca deja la selección vacía. */
+window.comMes = function (m) {
+  var i = PER.meses.indexOf(m);
+  if (i >= 0) { if (PER.meses.length > 1) PER.meses.splice(i, 1); }
+  else PER.meses.push(m);
+  comRepintarPeriodo();
+};
+
+window.comMesesSet = function (ms) {
+  if (!ms || !ms.length) return;
+  PER.meses = ms.slice();
+  comRepintarPeriodo();
+};
+
+function comRepintarPeriodo() {
+  PER.perf = null; PER.perfPrev = null; PER.hist = null;
+  var f = document.getElementById('com-filtros');
+  if (f) f.outerHTML = filtrosPeriodo();
+  cargarPeriodo('meses');
+}
 
 window.comPeriodo = function (modo) {
   if (modo === 'custom') { pintarCustom(); return; }
