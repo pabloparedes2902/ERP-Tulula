@@ -1538,7 +1538,7 @@ function selectorVerComo(cfg) {
   var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
                'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
 
-  var opts = '<option value="">Mi vista (admin)</option>' +
+  var opts = '<option value="">Ver como…  (mi vista admin)</option>' +
     emails.map(function (e) {
       return '<option value="' + esc(e) + '"' + (COM.comoEmail === e ? ' selected' : '') + '>' +
              'Vista de ' + esc(vend[e].nombre) + '</option>';
@@ -2139,7 +2139,7 @@ window._comReset = function () {
   window._refrescarModulo = envuelto;
 })();
 
-})();
+
 
 /* ── Asesoras ── */
 
@@ -2523,3 +2523,6 @@ window.comCfgReset = function () {
       if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
     });
 };
+
+
+})();
