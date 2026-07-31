@@ -197,10 +197,22 @@ function proyectarMargen(marginM, meses, year) {
    para que todas las barras sean comparables entre sí.
    ══════════════════════════════════════════════════════════════════════ */
 
-function posBarra(v) { return Math.max(0, Math.min(100, (v - 60) / 120 * 100)); }
+// Escala de la barra. Arranca en 0 para que un cumplimiento bajo también
+// se vea, y el tope se estira si alguien supera el nivel máximo.
+var BARRA_TOPE = 150;
+
+function escalaBarra(tiers, valores) {
+  var maxTier = (tiers && tiers.length) ? tiers[tiers.length - 1].from : 125;
+  var maxDato = 0;
+  (valores || []).forEach(function (v) { if (v > maxDato) maxDato = v; });
+  BARRA_TOPE = Math.max(maxTier * 1.2, maxDato * 1.1, 100);
+  return BARRA_TOPE;
+}
+
+function posBarra(v) { return Math.max(0, Math.min(100, (v || 0) / BARRA_TOPE * 100)); }
 
 function marcasTiers(tiers) {
-  return tiers.map(function (t) {
+  return (tiers || []).map(function (t) {
     return '<div class="com-mk" style="left:' + posBarra(t.from) + '%">' +
              '<span>' + t.from + '%</span>' +
            '</div>';
@@ -208,6 +220,7 @@ function marcasTiers(tiers) {
 }
 
 function barra(cumpl, alto, color, tiers, conMarcas) {
+  escalaBarra(tiers, [cumpl]);
   return '<div class="com-bar" style="height:' + alto + 'px">' +
            '<div class="com-bar-bg">' +
              '<div class="com-bar-fill" style="width:' + posBarra(cumpl) + '%;background:' + color + '"></div>' +
@@ -240,9 +253,11 @@ function inyectarEstilos() {
     '.com-big{font-size:26px;font-weight:700;letter-spacing:-.5px}',
     '.com-mut{color:var(--mu)}',
     '.com-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}',
-    '.com-mts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}',
-    '.com-mts .mt{min-width:0;overflow:hidden}',
-    '.com-mts .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+'.com-mts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:stretch}',
+    '.com-met{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:14px;min-width:0}',
+    '.com-met .ml{margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.com-met .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}',
+    '.com-met .com-sub2{font-size:11px;color:var(--mu);margin-top:5px;line-height:1.4}',
     '@media(max-width:640px){.com-grid{grid-template-columns:1fr}}',
   ].join('\n');
   document.head.appendChild(s);
@@ -320,6 +335,8 @@ function traer(year, q) {
     COM.traidoEn = Date.now();
     COM.ms = Date.now() - t0;
     cacheGuardar(year, q, d);
+    // Con el panel ya resuelto, traemos el resto sin que se note
+    setTimeout(precargarPestanas, 1500);
     return d;
   });
 }
@@ -545,10 +562,10 @@ function tarjetaEquipo(R, P, qTxt, meses, year) {
     '</div>';
 
   var mt = function (label, valor, sub, color) {
-    return '<div class="mt">' +
+    return '<div class="com-met">' +
              '<div class="ml">' + label + '</div>' +
              '<div class="com-big"' + (color ? ' style="color:' + color + '"' : '') + '>' + valor + '</div>' +
-             (sub ? '<div class="ml" style="margin:5px 0 0">' + sub + '</div>' : '') +
+             (sub ? '<div class="com-sub2">' + sub + '</div>' : '') +
            '</div>';
   };
 
@@ -780,7 +797,7 @@ function bloqueTrimestral() {
                'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
 
   var optY = [yDef - 1, yDef].map(function (y) {
-    return '<option value="' + y + '">' + y + '</option>';
+    return '<option value="' + y + '"' + (y === yDef ? ' selected' : '') + '>' + y + '</option>';
   }).join('');
   var optQ = [1,2,3,4].map(function (k) {
     return '<option value="' + k + '"' + (k === qDef ? ' selected' : '') + '>' + etiquetaTrim(k, yDef) + '</option>';
@@ -1361,7 +1378,15 @@ function cargarPeriodo(modo, desde, hasta) {
   // Histórico
   comApi('hist', { desde: r.desde, hasta: r.hasta })
     .then(function (d) { if (seq === PER.seq) { PER.hist = d; pintarHist(); } })
-    .catch(function () {});
+    .catch(function (e) {
+      if (seq !== PER.seq) return;
+      var z = document.getElementById('com-hist');
+      if (z) z.innerHTML = '<div class="card">' +
+        '<div class="ct">Histórico de margen</div>' +
+        '<div class="ml">No se pudo cargar: ' + esc((e && e.message) || e) + '</div>' +
+        '<button class="btn bg bs" style="margin-top:10px" onclick="comPeriodo(\'' + PER.modo + '\')">Reintentar</button>' +
+      '</div>';
+    });
 }
 
 function filtrosPeriodo() {
@@ -1397,12 +1422,17 @@ function pintarPerf() {
   var mr  = d.totalVentas > 0 ? d.totalMargen / d.totalVentas * 100 : 0;
   var mrP = (prev && prev.totalVentas > 0) ? prev.totalMargen / prev.totalVentas * 100 : null;
   var porDia = d.totalMargen / Math.max(1, r.dias);
+  // Días del período anterior, para comparar margen diario contra diario
+  var prevDias = 0;
+  if (prev && prev.desde && prev.hasta) {
+    prevDias = Math.max(1, Math.round((new Date(prev.hasta) - new Date(prev.desde)) / 864e5) + 1);
+  }
 
   var cel = function (label, valor, dt, color) {
-    return '<div class="mt">' +
+    return '<div class="com-met">' +
              '<div class="ml">' + label + '</div>' +
              '<div class="com-big"' + (color ? ' style="color:' + color + '"' : '') + '>' + valor + '</div>' +
-             '<div class="ml" style="margin:5px 0 0">' + (dt || '') + '</div>' +
+             '<div class="com-sub2">' + (dt || '&nbsp;') + '</div>' +
            '</div>';
   };
 
@@ -1414,11 +1444,12 @@ function pintarPerf() {
     '<div class="ct">Resumen del período · ' + (PER_NOMBRE[PER.modo] || '') + '</div>' +
     '<div class="ml" style="margin-bottom:6px">' + esc(r.desde) + ' a ' + esc(r.hasta) + ' · hasta el cierre de ayer</div>' +
     comparativa +
-    '<div class="mts" style="margin-bottom:0">' +
+    '<div class="com-mts">' +
       cel('Ventas', fmt(d.totalVentas), prev ? delta(d.totalVentas, prev.totalVentas) : '') +
       cel('Margen', fmt(d.totalMargen), prev ? delta(d.totalMargen, prev.totalMargen) : '', 'var(--gn)') +
       cel('Margen real', mr.toFixed(2) + '%', mrP != null ? delta(mr, mrP) : '', 'var(--gn)') +
-      cel('Margen por día', fmt(porDia), '', 'var(--gn)') +
+      cel('Margen por día', fmt(porDia),
+          (prev && prevDias) ? delta(porDia, prev.totalMargen / prevDias) : '', 'var(--gn)') +
       cel('Pedidos', (Number(d.totalOrders) || 0).toLocaleString('es-PE'), prev ? delta(d.totalOrders, prev.totalOrders) : '') +
       cel('Ticket promedio', fmt(d.ticket), prev ? delta(d.ticket, prev.ticket) : '') +
     '</div>' +
@@ -1674,8 +1705,9 @@ function pintarSim() {
 
   if (!COM.data) {
     c.innerHTML = pestañas('sim') + '<div class="ld"><div class="sp"></div>Cargando datos reales...</div>';
-    cargar();
-    setTimeout(function () { if (COM.vista === 'sim') pintarSim(); }, 1200);
+    traer(COM.year || new Date().getFullYear(), COM.q || Math.ceil((new Date().getMonth() + 1) / 3))
+      .then(function () { if (COM.vista === 'sim') pintarSim(); })
+      .catch(pintarError);
     return;
   }
 
@@ -1902,8 +1934,9 @@ function pintarConfig() {
 
   if (!COM.data) {
     c.innerHTML = pestañas('config') + '<div class="ld"><div class="sp"></div>Cargando configuración...</div>';
-    cargar();
-    setTimeout(function () { if (COM.vista === 'config') pintarConfig(); }, 1200);
+    traer(COM.year || new Date().getFullYear(), COM.q || Math.ceil((new Date().getMonth() + 1) / 3))
+      .then(function () { if (COM.vista === 'config') pintarConfig(); })
+      .catch(pintarError);
     return;
   }
 
@@ -2008,6 +2041,39 @@ window.comIr = function (vista) {
   else if (vista === 'config') pintarConfig();
   else { COM.comoEmail = ''; cargar(); }
 };
+
+/**
+ * Precarga las otras pestañas en segundo plano.
+ * Se dispara cuando el Panel ya terminó de cargar: para cuando el usuario
+ * toca una pestaña, los datos ya están.
+ */
+function precargarPestanas() {
+  if (precargarPestanas._hecho) return;
+  precargarPestanas._hecho = true;
+
+  var year = COM.year || new Date().getFullYear();
+
+  // Asesoras
+  if (!ASE.data) {
+    comApi('asesoraMes', { year: year })
+      .then(function (d) { ASE.data = d; ASE.year = year; })
+      .catch(function () {});
+  }
+
+  // Cierre: las tres listas de una
+  if (!CIERRE.cargado) {
+    Promise.all([
+      comApi('cierresTrim', { limite: 8 }).catch(function () { return []; }),
+      comApi('cierres',     { limite: 12 }).catch(function () { return []; }),
+      comApi('reglasLog',   { limite: 10 }).catch(function () { return []; }),
+    ]).then(function (r) {
+      CIERRE.cerradosTrim = r[0] || [];
+      CIERRE.cerradosMes  = r[1] || [];
+      CIERRE.log          = r[2] || [];
+      CIERRE.cargado = true;
+    }).catch(function () {});
+  }
+}
 window.comCierreSub = function (sub) { CIERRE.sub = sub; pintarCierre(); };
 window.comVerTrim = comVerTrimImpl;
 window.comVerMes  = comVerMesImpl;
