@@ -114,7 +114,8 @@ function esc(s)  { return String(s == null ? '' : s).replace(/[&<>"']/g, functio
 var MESES_CORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 
 // Colores por nivel — mismas variables que el resto del ERP
-var NIVEL_COLOR  = ['var(--rd)', 'var(--am)', 'var(--gn)', 'var(--ac)'];
+var COM_CELESTE = '#38bdf8';   // 3er nivel: celeste, se distingue mejor del morado del ERP
+var NIVEL_COLOR  = ['var(--rd)', 'var(--am)', 'var(--gn)', COM_CELESTE];
 var NIVEL_NOMBRE = ['No llega al mínimo', 'Llega al mínimo', 'Nivel intermedio', 'Nivel alto'];
 
 /** Medalla de oro, plata o bronce. Del 4° en adelante, solo el número. */
@@ -264,7 +265,7 @@ function zonasBarra(tiers) {
     { desde: 0,     hasta: piso,        color: 'var(--rd)' },
     { desde: piso,  hasta: medio,       color: 'var(--am)' },
     { desde: medio, hasta: alto,        color: 'var(--gn)' },
-    { desde: alto,  hasta: BARRA_TOPE,  color: 'var(--ac)' },
+    { desde: alto,  hasta: BARRA_TOPE,  color: COM_CELESTE },
   ];
 }
 
@@ -281,7 +282,7 @@ function barra(cumpl, alto, color, tiers, conMarcas) {
     var izq = z.desde / BARRA_TOPE * 100;
     var ancho = (z.hasta - z.desde) / BARRA_TOPE * 100;
     return '<div style="position:absolute;left:' + izq + '%;width:' + ancho + '%;' +
-           'top:0;bottom:0;background:' + z.color + ';opacity:.13"></div>';
+           'top:0;bottom:0;background:' + z.color + ';opacity:.11"></div>';
   }).join('');
 
   // Marcas cada 25%
@@ -429,6 +430,8 @@ function traer(year, q) {
       CIERRE.log          = b.reglasLog   || [];
       CIERRE.cargado = true;
     }
+    // El histórico va aparte: alimenta la alerta de desviaciones
+    setTimeout(precargarPestanas, 1200);
     return b.admin;
   });
 }
@@ -813,7 +816,7 @@ function tarjetaReglas(cfg, R) {
     '</div>' +
     '<div class="ml" style="margin-top:12px">' +
       punto('var(--rd)', 'no llega') + punto('var(--am)', '1° nivel') +
-      punto('var(--gn)', '2° nivel') + punto('var(--ac)', '3° nivel') +
+      punto('var(--gn)', '2° nivel') + punto(COM_CELESTE, '3° nivel') +
     '</div>' +
   '</div>';
 }
@@ -1858,7 +1861,7 @@ function graficoBarras(filas, niveles) {
   });
 
   // Líneas de nivel con su monto a la derecha
-  var colores = ['var(--am)', 'var(--gn)', 'var(--ac)'];
+  var colores = ['var(--am)', 'var(--gn)', COM_CELESTE];
   var refs = '', leyenda = '';
   niveles.forEach(function (n, i) {
     var yy = y(n.ref || 0);
