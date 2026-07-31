@@ -333,7 +333,10 @@ function inyectarEstilos() {
     '.com-big{font-size:26px;font-weight:700;letter-spacing:-.5px}',
     '.com-mut{color:var(--mu)}',
     '.com-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}',
-'.com-mts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:stretch}',
+'.com-mts{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;align-items:stretch}',
+    '@media(min-width:700px){.com-mts{grid-template-columns:repeat(3,1fr)}}',
+    '@media(min-width:1000px){.com-mts{grid-template-columns:repeat(5,1fr)}}',
+    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(6,1fr)}}',
     '.com-met{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:14px;min-width:0;text-align:center}',
     '.com-met .ml{margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}',
     '.com-met .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;text-align:center}',
@@ -1810,7 +1813,7 @@ function pintarPerf() {
     '</div>' +
     '<div class="ml" style="margin-bottom:6px">' + esc(r.desde) + ' a ' + esc(r.hasta) + ' · hasta el cierre de ayer</div>' +
     comparativa +
-    '<div class="com-mts">' +
+    '<div class="com-mts com-mts-6">' +
       cel('Ventas', fmt(d.totalVentas), prev ? delta(d.totalVentas, prev.totalVentas) : '') +
       cel('Margen', fmt(d.totalMargen), prev ? delta(d.totalMargen, prev.totalMargen) : '', 'var(--gn)') +
       cel('Margen real', mr.toFixed(2) + '%', mrP != null ? delta(mr, mrP) : '', 'var(--gn)') +
@@ -1837,7 +1840,7 @@ function pintarHist() {
 
   z.innerHTML = '<div class="card">' +
     '<div class="ct">' + titulo + '</div>' +
-    graficoBarras(filas, niveles) +
+    graficoBarras(filas, niveles, titulo) +
   '</div>';
 }
 
@@ -1845,7 +1848,8 @@ function pintarHist() {
  * Barras verticales con líneas de referencia.
  * viewBox fijo + preserveAspectRatio: escala solo al ancho del contenedor.
  */
-function graficoBarras(filas, niveles) {
+function graficoBarras(filas, niveles, titulo) {
+  titulo = titulo || 'Margen del equipo';
   var W = 900, H = 300;
   var mIzq = 52, mDer = 46, mArr = 14, mAba = 34;
   var ancho = W - mIzq - mDer, alto = H - mArr - mAba;
@@ -2645,7 +2649,6 @@ window._comReset = function () {
 })();
 
 
-
 /* ── Asesoras ── */
 
 window.comAseAno = function (y) {
@@ -3091,6 +3094,7 @@ window.comCfgReset = function () {
       if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
     });
 };
+
 
 
 })();
