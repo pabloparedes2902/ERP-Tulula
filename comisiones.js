@@ -1,29 +1,3 @@
-function filtrosPeriodo() { return ''; }   // el período ya vive en la barra de arriba
-
-/** Sub-selector dentro del resumen: todo el trimestre o un mes suelto. */
-function selectorMesResumen() {
-  var hoy = new Date();
-  var year = COM.year || hoy.getFullYear();
-  var q = COM.q || Math.ceil((hoy.getMonth() + 1) / 3);
-  var m0 = (q - 1) * 3 + 1;
-  var tope = (year === hoy.getFullYear()) ? hoy.getMonth() + 1 : 12;
-
-  var estilo = 'background:var(--bg2);border:1px solid var(--bd);color:var(--tx);' +
-               'padding:5px 8px;border-radius:var(--r);font-size:12px;font-family:inherit;cursor:pointer';
-
-  var todos = [];
-  for (var k = 0; k < 3; k++) if (m0 + k <= tope) todos.push(m0 + k);
-  var esTodo = !PER.meses || PER.meses.length !== 1;
-
-  var opts = '<option value="0"' + (esTodo ? ' selected' : '') + '>Todo el trimestre</option>';
-  todos.forEach(function (m) {
-    var sel = (!esTodo && PER.meses[0] === m) ? ' selected' : '';
-    opts += '<option value="' + m + '"' + sel + '>' + MESES_LARGO[m - 1] + '</option>';
-  });
-
-  return '<select style="' + estilo + '" onchange="comMesResumen(this.value)">' + opts + '</select>';
-}
-
 /* ══════════════════════════════════════════════════════════════════════
    TULULA ERP — MÓDULO COMISIONES
    Archivo: comisiones.js   ·   Parte 1: motor + vista principal
@@ -1775,6 +1749,30 @@ function delta(actual, previo) {
   var flecha = pct > 0.05 ? '▲' : pct < -0.05 ? '▼' : '=';
   return '<span style="color:' + col + ';font-size:11px;font-weight:600">' +
          flecha + ' ' + Math.abs(pct).toFixed(1) + '%</span>';
+}
+
+/** Sub-selector dentro del resumen: todo el trimestre o un mes suelto. */
+function selectorMesResumen() {
+  var hoy = new Date();
+  var year = COM.year || hoy.getFullYear();
+  var q = COM.q || Math.ceil((hoy.getMonth() + 1) / 3);
+  var m0 = (q - 1) * 3 + 1;
+  var tope = (year === hoy.getFullYear()) ? hoy.getMonth() + 1 : 12;
+
+  var estilo = 'background:var(--bg2);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:5px 8px;border-radius:var(--r);font-size:12px;font-family:inherit;cursor:pointer';
+
+  var todos = [];
+  for (var k = 0; k < 3; k++) if (m0 + k <= tope) todos.push(m0 + k);
+  var esTodo = !PER.meses || PER.meses.length !== 1;
+
+  var opts = '<option value="0"' + (esTodo ? ' selected' : '') + '>Todo el trimestre</option>';
+  todos.forEach(function (m) {
+    var sel = (!esTodo && PER.meses[0] === m) ? ' selected' : '';
+    opts += '<option value="' + m + '"' + sel + '>' + MESES_LARGO[m - 1] + '</option>';
+  });
+
+  return '<select style="' + estilo + '" onchange="comMesResumen(this.value)">' + opts + '</select>';
 }
 
 function pintarPerf() {
