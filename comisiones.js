@@ -2022,12 +2022,37 @@ function pintarConfig() {
   c.innerHTML = pestañas('config') +
     '<div class="card">' +
       '<div class="ct">Reglas de comisión</div>' +
-      '<div style="font-size:13px;line-height:1.9;background:var(--bg3);border:1px solid var(--bd);' +
-           'border-radius:var(--r);padding:12px 14px">' +
-        'Meta = <b>' + (cfg.xMeta || 12) + '×</b> el sueldo, medida en margen<br>' + tramos +
+      '<div style="font-size:13px;margin-bottom:16px;line-height:1.6">' +
+        'Definen cuánto se paga. Un cambio acá afecta el bono de todas ' +
+        'y queda registrado en la bitácora.' +
       '</div>' +
-      '<div class="ml" style="margin-top:10px">' +
-        'Las reglas se cambian desde el <b>Simulador</b>, donde podés ver el efecto antes de aplicarlas.' +
+
+      '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">' +
+        '<span class="com-mut" style="font-size:12px">Meta de margen =</span>' +
+        '<input id="cfg-x" type="number" step="0.5" value="' + (cfg.xMeta || 12) + '" ' +
+               'style="' + estilo + ';width:80px;text-align:center;font-weight:600">' +
+        '<span class="com-mut" style="font-size:12px">× el sueldo del mes</span>' +
+      '</div>' +
+
+      '<div style="display:grid;gap:9px">' +
+        (cfg.tiers || TIERS_FALLBACK).map(function (t, k) {
+          return '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">' +
+            '<span class="com-mut" style="font-size:12px;min-width:62px">' + (k + 1) + '° nivel</span>' +
+            '<span class="com-mut" style="font-size:12px">desde</span>' +
+            '<input class="cfg-from" type="number" value="' + t.from + '" ' +
+                   'style="' + estilo + ';width:70px;text-align:center">' +
+            '<span class="com-mut" style="font-size:12px">% de la meta → paga</span>' +
+            '<input class="cfg-rate" type="number" step="0.1" value="' + t.rate + '" ' +
+                   'style="' + estilo + ';width:70px;text-align:center">' +
+            '<span class="com-mut" style="font-size:12px">% del margen</span>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+
+      '<div class="ml" style="margin-top:12px;line-height:1.6">' +
+        'El bono se activa solo si el equipo completo supera el ' +
+        ((cfg.tiers || TIERS_FALLBACK)[0] || {}).from + '%.<br>' +
+        'Para ver el efecto antes de guardar, probalo en el <b>Simulador</b>.' +
       '</div>' +
     '</div>' +
 
@@ -2615,7 +2640,36 @@ window.comCfgGuardar = function () {
     return;
   }
 
+  // Reglas de comisión
+  var x = Number(document.getElementById('cfg-x').value) || 0;
+  if (x <= 0) {
+    if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = 'La meta tiene que ser mayor que cero.'; }
+    return;
+  }
+
+  var froms = document.querySelectorAll('.cfg-from');
+  var rates = document.querySelectorAll('.cfg-rate');
+  var tiers = [];
+  for (var i = 0; i < froms.length; i++) {
+    tiers.push({ from: Number(froms[i].value) || 0, rate: Number(rates[i].value) || 0 });
+  }
+  // Los niveles tienen que ir de menor a mayor, o el cálculo se rompe
+  for (var j = 1; j < tiers.length; j++) {
+    if (tiers[j].from <= tiers[j - 1].from) {
+      if (msg) { msg.style.color = 'var(--rd)';
+                 msg.textContent = 'Cada nivel tiene que empezar más arriba que el anterior.'; }
+      return;
+    }
+    if (tiers[j].rate < tiers[j - 1].rate) {
+      if (msg) { msg.style.color = 'var(--rd)';
+                 msg.textContent = 'Un nivel más alto no puede pagar menos que el anterior.'; }
+      return;
+    }
+  }
+
   var patch = {
+    xMeta: x,
+    tiers: tiers,
     vendedoras: vend,
     admin: admins,
     gm_mode: document.getElementById('cfg-gmmode').value,
