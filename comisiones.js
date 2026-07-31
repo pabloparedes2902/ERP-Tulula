@@ -348,9 +348,20 @@ function refrescarDetras() {
 function marcarRefrescando(activo) {
   var e = document.getElementById('com-estado');
   if (!e) return;
-  e.textContent = activo ? 'Actualizando…'
-                         : (COM.traidoEn ? 'Datos ' + haceCuanto(COM.traidoEn) : '');
-  e.style.color = activo ? 'var(--ac)' : 'var(--mu)';
+  if (activo) {
+    e.textContent = 'Actualizando…';
+    e.style.color = 'var(--ac)';
+    return;
+  }
+  var txt = COM.traidoEn ? 'Datos ' + haceCuanto(COM.traidoEn) : '';
+  // Si tardó mucho, avisamos: casi siempre es cola del ERP, no el cálculo
+  if (COM.ms != null) {
+    var s = (COM.ms / 1000).toFixed(1);
+    txt += ' · ' + s + 's';
+    if (COM.ms > 10000) txt += ' (el ERP está ocupado)';
+  }
+  e.textContent = txt;
+  e.style.color = (COM.ms > 10000) ? 'var(--am)' : 'var(--mu)';
 }
 
 /**
