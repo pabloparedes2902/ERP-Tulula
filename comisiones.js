@@ -240,6 +240,9 @@ function inyectarEstilos() {
     '.com-big{font-size:26px;font-weight:700;letter-spacing:-.5px}',
     '.com-mut{color:var(--mu)}',
     '.com-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}',
+    '.com-mts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}',
+    '.com-mts .mt{min-width:0;overflow:hidden}',
+    '.com-mts .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '@media(max-width:640px){.com-grid{grid-template-columns:1fr}}',
   ].join('\n');
   document.head.appendChild(s);
@@ -563,12 +566,12 @@ function tarjetaEquipo(R, P, qTxt, meses, year) {
       '<b style="color:' + NIVEL_COLOR[P.level] + '">' + p2(P.teamCumpl) + ' · ' + NIVEL_NOMBRE[P.level] + '</b>' +
     '</div>' +
     aviso +
-    '<div class="mts" style="margin-top:20px;margin-bottom:0">' +
+    '<div class="com-mts" style="margin-top:20px">' +
       mt('Margen del equipo', fmt(R.tMar), p2(R.teamCumpl) + ' de ' + fmt(R.tMeta)) +
       mt('Bono acumulado', f2(bonoActual), null, 'var(--gn)') +
       mt('Bono proyectado', f2(bonoProy), 'si cierra así', 'var(--gn)') +
       mt('Payroll del trimestre', fmt(payroll), 'sueldos × 3 + bono') +
-      mt('Bono ÷ sueldos', p2(ratio), 'proyectado', colorRatio) +
+      mt('Bono vs sueldos', p2(ratio), 'del costo fijo', colorRatio) +
     '</div>' +
   '</div>';
 }
@@ -1138,12 +1141,13 @@ function pintarAsesoras() {
         'La <b>meta</b> se calcula sola: ' + x + '× el sueldo del mes.' +
       '</div>' +
     '</div>' +
-    (d.asesoras || []).map(function (a) { return tarjetaAsesoraAdmin(a, d, x); }).join('');
+    (d.asesoras || []).map(function (a, i) { return tarjetaAsesoraAdmin(a, d, x, i); }).join('');
 }
 
-function tarjetaAsesoraAdmin(a, d, x) {
-  var abierta = !!ASE.abiertas[a.email];
+function tarjetaAsesoraAdmin(a, d, x, idx) {
+  var abierta = !!ASE.abiertas[idx];
   var activa = a.estado !== 'inactiva';
+  var K = 'a' + idx;                       // clave estable para IDs del DOM
   var hoy = new Date();
   var mesActual = hoy.getMonth() + 1;
   var esteAno = d.year === hoy.getFullYear();
@@ -1155,7 +1159,7 @@ function tarjetaAsesoraAdmin(a, d, x) {
 
   var resumen =
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;' +
-         'flex-wrap:wrap;cursor:pointer" onclick="comAseToggle(\'' + a.email + '\')">' +
+         'flex-wrap:wrap;cursor:pointer" onclick="comAseToggle(' + idx + ')">' +
       '<div>' +
         '<span style="font-size:16px;font-weight:600">' + esc(a.nombre) + '</span>' +
         '<span class="com-mut" style="font-size:12px;margin-left:10px">' +
@@ -1178,17 +1182,17 @@ function tarjetaAsesoraAdmin(a, d, x) {
       '<input type="number" id="as-base-' + a.email + '" value="' + a.base + '" style="' + estilo + ';width:100px">' +
       '<span class="com-mut" style="font-size:12px">Estado</span>' +
       '<button type="button" id="as-est-' + a.email + '" data-on="' + (activa ? 1 : 0) + '" ' +
-              'onclick="comAseEstado(\'' + a.email + '\')" ' +
+              'onclick="comAseEstado(' + idx + ')" ' +
               'style="cursor:pointer;border-radius:99px;padding:6px 16px;font-size:12px;font-weight:600;' +
               'font-family:inherit;color:#fff;border:1px solid ' + (activa ? 'var(--gn)' : 'var(--rd)') + ';' +
               'background:' + (activa ? 'var(--gn)' : 'var(--rd)') + '">' +
         (activa ? 'Activa' : 'Inactiva') + '</button>' +
-      '<button class="btn bg bs" onclick="comAseAvanzado(\'' + a.email + '\')">' +
-        (ASE.avanzado[a.email] ? 'Ocultar ajustes' : 'Ajustes manuales') + '</button>' +
+      '<button class="btn bg bs" onclick="comAseAvanzado(' + idx + ')">' +
+        (ASE.avanzado[idx] ? 'Ocultar ajustes' : 'Ajustes manuales') + '</button>' +
     '</div>';
 
   var filas = (a.meses || []).map(function (m) {
-    var id = a.email + '-' + m.mes;
+    var id = K + '-' + m.mes;
     var on = !!m.activo;
     var vigente = esteAno && m.mes === mesActual;
 
@@ -1201,7 +1205,7 @@ function tarjetaAsesoraAdmin(a, d, x) {
               'color:' + (on ? '#fff' : 'var(--mu)') + '">' +
         (on ? 'Activo' : 'Inactivo') + '</button>';
 
-    var avanzado = ASE.avanzado[a.email]
+    var avanzado = ASE.avanzado[idx]
       ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-top:10px">' +
           campoOv('Venta',  'as-vov-' + id, m.ventaOv,  estilo) +
           campoOv('Margen', 'as-mov-' + id, m.margenOv, estilo) +
@@ -1238,9 +1242,9 @@ function tarjetaAsesoraAdmin(a, d, x) {
   var acciones =
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:16px;' +
          'padding-top:16px;border-top:1px solid var(--bd)">' +
-      '<button class="btn bp" onclick="comAseGuardar(\'' + a.email + '\')">Guardar cambios</button>' +
+      '<button class="btn bp" onclick="comAseGuardar(' + idx + ')">Guardar cambios</button>' +
       '<button class="btn bg" id="as-reset-' + a.email + '" ' +
-              'onclick="comAseReset(\'' + a.email + '\')">Restablecer el año</button>' +
+              'onclick="comAseReset(' + idx + ')">Restablecer el año</button>' +
       '<span id="as-msg-' + a.email + '" style="font-size:13px"></span>' +
     '</div>';
 
@@ -1804,7 +1808,7 @@ function tarjetaEscenario() {
       '<div class="mt"><div class="ml">Costo total</div>' +
         '<div class="com-big">' + fmt(totalBase * 3 + totalBono) + '</div>' +
         '<div class="ml" style="margin:5px 0 0">sueldos × 3 + bono</div></div>' +
-      '<div class="mt"><div class="ml">Bono ÷ sueldos</div>' +
+      '<div class="mt"><div class="ml">Bono vs sueldos</div>' +
         '<div class="com-big"' + (ratio > 100 ? ' style="color:var(--am)"' : '') + '>' + p2(ratio) + '</div></div>' +
     '</div>' +
   '</div>';
@@ -2145,17 +2149,22 @@ window.comAseAno = function (y) {
   pintarAsesoras();
 };
 
-window.comAseToggle = function (email) {
-  if (ASE.abiertas[email]) delete ASE.abiertas[email];
-  else ASE.abiertas[email] = true;
+window.comAseToggle = function (idx) {
+  if (ASE.abiertas[idx]) delete ASE.abiertas[idx];
+  else ASE.abiertas[idx] = true;
   pintarAsesoras();
 };
 
-window.comAseAvanzado = function (email) {
-  if (ASE.avanzado[email]) delete ASE.avanzado[email];
-  else ASE.avanzado[email] = true;
+window.comAseAvanzado = function (idx) {
+  if (ASE.avanzado[idx]) delete ASE.avanzado[idx];
+  else ASE.avanzado[idx] = true;
   pintarAsesoras();
 };
+
+/** Devuelve la asesora por índice, o null. */
+function aseDe(idx) {
+  return (ASE.data && ASE.data.asesoras && ASE.data.asesoras[idx]) || null;
+}
 
 /** Enciende o apaga un mes. Sin recargar: solo cambia el aspecto. */
 window.comAseMes = function (id) {
@@ -2171,8 +2180,8 @@ window.comAseMes = function (id) {
   if (box) box.setAttribute('style', estiloMes(on));
 };
 
-window.comAseEstado = function (email) {
-  var b = document.getElementById('as-est-' + email);
+window.comAseEstado = function (idx) {
+  var b = document.getElementById('as-est-a' + idx);
   if (!b) return;
   var on = b.getAttribute('data-on') !== '1';
   b.setAttribute('data-on', on ? '1' : '0');
@@ -2192,22 +2201,24 @@ window.comAseMeta = function (id) {
   if (out) out.textContent = fmt(Math.round(x * v));
 };
 
-window.comAseGuardar = function (email) {
-  var a = (ASE.data.asesoras || []).find(function (z) { return z.email === email; });
+window.comAseGuardar = function (idx) {
+  var a = aseDe(idx);
   if (!a) return;
+  var K = 'a' + idx;
+  var email = a.email;
 
   var val = function (id) { var e = document.getElementById(id); return e ? e.value : ''; };
   var num = function (id) { var v = val(id); return v === '' ? null : Number(v); };
 
   var master = {
-    desde:  val('as-desde-' + email),
-    base:   Number(val('as-base-' + email)) || 0,
-    estado: document.getElementById('as-est-' + email).getAttribute('data-on') === '1'
+    desde:  val('as-desde-' + K),
+    base:   Number(val('as-base-' + K)) || 0,
+    estado: document.getElementById('as-est-' + K).getAttribute('data-on') === '1'
             ? 'activa' : 'inactiva',
   };
 
   var meses = (a.meses || []).map(function (m) {
-    var id = email + '-' + m.mes;
+    var id = K + '-' + m.mes;
     return {
       mes:      m.mes,
       sueldo:   num('as-suel-' + id),
@@ -2219,7 +2230,7 @@ window.comAseGuardar = function (email) {
     };
   });
 
-  var msg = document.getElementById('as-msg-' + email);
+  var msg = document.getElementById('as-msg-' + K);
   if (msg) { msg.style.color = 'var(--mu)'; msg.textContent = 'Guardando...'; }
 
   comApi('saveAsesoraFull', { email: email, year: ASE.year, master: master, meses: meses })
@@ -2228,7 +2239,7 @@ window.comAseGuardar = function (email) {
       COM.data = null;      // el panel cambió: hay que recalcularlo
       cacheBorrar();
       pintarAsesoras();
-      var m2 = document.getElementById('as-msg-' + email);
+      var m2 = document.getElementById('as-msg-' + K);
       if (m2) { m2.style.color = 'var(--gn)'; m2.textContent = 'Guardado'; }
     })
     .catch(function (e) {
@@ -2237,8 +2248,11 @@ window.comAseGuardar = function (email) {
 };
 
 /** Borra los ajustes del año y vuelve a los valores automáticos. */
-window.comAseReset = function (email) {
-  var b = document.getElementById('as-reset-' + email);
+window.comAseReset = function (idx) {
+  var a = aseDe(idx);
+  if (!a) return;
+  var K = 'a' + idx, email = a.email;
+  var b = document.getElementById('as-reset-' + K);
   if (!b) return;
 
   // Confirmación en dos pasos: el primer clic arma, el segundo ejecuta
@@ -2272,7 +2286,7 @@ window.comAseReset = function (email) {
       b.disabled = false;
       b.setAttribute('data-armed', '0');
       b.textContent = 'Restablecer el año';
-      var msg = document.getElementById('as-msg-' + email);
+      var msg = document.getElementById('as-msg-' + K);
       if (msg) { msg.style.color = 'var(--rd)'; msg.textContent = (e && e.message) || e; }
     });
 };
