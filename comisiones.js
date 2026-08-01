@@ -604,11 +604,16 @@ function barraAvance(year, q, cumpl, tiers) {
   var ritmo = av.frac > 0.01 ? (cumpl / (av.frac * 100)) * 100 : 0;
   var col = NIVEL_COLOR[nivelDe(ritmo, tiers)];
 
-  return '<div style="margin-top:10px">' +
-    '<div style="width:100%;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">' +
+  // La barra grande va de 0 a BARRA_TOPE (200%), así que el 100% cae a la
+  // mitad del ancho. Esta barra solo cubre ese tramo; el texto ocupa el resto.
+  var anchoUtil = 100 / BARRA_TOPE * 100;   // 50% cuando el tope es 200
+
+  return '<div style="display:flex;align-items:center;gap:12px;margin-top:8px">' +
+    '<div style="width:' + anchoUtil.toFixed(1) + '%;height:5px;background:var(--bg3);' +
+         'border-radius:3px;overflow:hidden;flex-shrink:0">' +
       '<div style="width:' + pct + '%;height:100%;background:' + col + ';border-radius:3px"></div>' +
     '</div>' +
-    '<div class="ml" style="text-align:right;margin-top:4px">Progreso del trimestre = ' + pct + '%</div>' +
+    '<span class="ml" style="white-space:nowrap">Progreso del trimestre = ' + pct + '%</span>' +
   '</div>';
 }
 
@@ -1631,9 +1636,8 @@ function rangoDeMeses(meses, year) {
   var pad = function (n) { return String(n).padStart(2, '0'); };
   var ini = new Date(year, ms[0] - 1, 1);
   var ultimoDia = new Date(year, ms[ms.length - 1], 0);
-  // No pasar de ayer: el día en curso está incompleto
-  var ayer = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - 1);
-  var fin = ultimoDia > ayer ? ayer : ultimoDia;
+  // Incluye HOY: el día en curso se muestra con lo que va vendido
+  var fin = ultimoDia > hoy ? hoy : ultimoDia;
   if (fin < ini) fin = ultimoDia;
 
   var dias = Math.max(1, Math.round((fin - ini) / 864e5) + 1);
@@ -1809,7 +1813,7 @@ function pintarHist() {
   if (!z || !PER.hist) return;
 
   var d = PER.hist;
-  var filas = d.rows || [];
+  var filas = completarDias(d.rows || [], d.gran);
   if (!filas.length) { z.innerHTML = ''; return; }
 
   var niveles = (d.niveles && d.niveles.length) ? d.niveles : [];
@@ -1820,6 +1824,41 @@ function pintarHist() {
     graficoBarras(filas, niveles, titulo) +
   '</div>';
 }
+
+/**
+ * Rellena los días del mes que todavía no llegaron, para que el eje muestre
+ * el mes completo. Los días futuros quedan sin barra.
+ */
+function completarDias(filas, gran) {
+  if (gran !== 'day' || !filas.length) return filas;
+
+  var hoy = new Date();
+  var mes = (PER.meses && PER.meses.length === 1) ? PER.meses[0] : null;
+  if (!mes) return filas;                    // solo tiene sentido con un mes
+
+  var year = COM.year || hoy.getFullYear();
+  var ultimo = new Date(year, mes, 0).getDate();
+  var LETRA = ['D','L','M','X','J','V','S'];
+
+  // Lo que ya vino, indexado por número de día
+  var porDia = {};
+  filas.forEach(function (r) {
+    var n = parseInt(String(r.label).replace(/\D/g, ''), 10);
+    if (n) porDia[n] = r;
+  });
+
+  var out = [];
+  for (var dia = 1; dia <= ultimo; dia++) {
+    if (porDia[dia]) { out.push(porDia[dia]); continue; }
+    out.push({
+      label: String(dia),
+      sub: LETRA[new Date(year, mes - 1, dia).getDay()],
+      margen: 0,
+    });
+  }
+  return out;
+}
+
 
 /**
  * Barras verticales con líneas de referencia.
