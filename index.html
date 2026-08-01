@@ -12007,7 +12007,11 @@ function verPed(p) {
     qId('pago-f-monto').value = monto || '';
     qId('pago-f-forma').value = forma || '';
     qId('pago-f-fecha').value = fecha ? String(fecha).split('T')[0] : new Date().toISOString().split('T')[0];
-    const _paSel = qId('pago-f-asesora'); if (_paSel) _paSel.value = (state && state.asesora) || '';
+    // Fix raíz (2-ago): en un pago NUEVO el selector arranca con la asesora
+    // logueada (puede cambiarla); en edición muestra la que ya tiene.
+    const _paSel = qId('pago-f-asesora');
+    if (_paSel) _paSel.value = (state && state.asesora) ||
+      (state && state.esNuevo && typeof MY_ASESORA !== 'undefined' ? MY_ASESORA : '') || '';
     _resetConstanciaField();
     const delBtn = qId('pago-f-delete');
     if (delBtn) delBtn.style.display = state.esNuevo ? 'none' : '';
@@ -12209,7 +12213,10 @@ function verPed(p) {
     const monto = parseFloat(qId('pago-f-monto').value);
     const forma = qId('pago-f-forma').value.trim();
     const fecha = qId('pago-f-fecha').value;
-    const asesoraPago = qId('pago-f-asesora') ? qId('pago-f-asesora').value.trim() : '';
+    // Fix raíz (2-ago): si nadie eligió en el selector, el pago queda a nombre
+    // de la asesora logueada — nunca más pagos huérfanos por vacío.
+    const asesoraPago = (qId('pago-f-asesora') ? qId('pago-f-asesora').value.trim() : '') ||
+      (typeof MY_ASESORA !== 'undefined' ? MY_ASESORA : '');
     if (!monto || monto <= 0) { toast('Ingresa un monto válido', 'err'); return; }
     this.disabled = true; this.textContent = 'Guardando...';
 
@@ -14852,7 +14859,12 @@ async function _npExecuteSave(job) {
     ...cliBase,
     Descuento: job.dsc,
     prendas: job.prendasData,
-    pagos: _pagosSinVouchers,
+    // Fix raíz (2-ago): cada pago sin asesora elegida sale a nombre de la
+    // asesora logueada — aplica al anticipo y a los adicionales, por las DOS
+    // vías (RPC de la base y Apps Script).
+    pagos: (_pagosSinVouchers || []).map(p =>
+      (p && !(String(p.asesora || '').trim()) && typeof MY_ASESORA !== 'undefined' && MY_ASESORA)
+        ? Object.assign({}, p, { asesora: MY_ASESORA }) : p),
     requestId: job.requestId, // #9 idempotencia: retry no duplica el pedido
   };
   // PASO 5b — primero la base (decimas de segundo). Si no se puede, Apps Script.
@@ -25472,6 +25484,9 @@ const GOOGLE_CLIENT_ID = '312051002386-57gkd14n358moecspr2kcd7v4d3s45vj.apps.goo
 let SESSION_TOKEN = localStorage.getItem('erp_sess')  || '';
 let MY_ROLE       = localStorage.getItem('erp_rol')   || '';
 let MY_EMAIL      = localStorage.getItem('erp_email') || '';
+// Fix raíz AsesoraPago (2-ago): nombre canónico de la asesora logueada ('' si
+// no comisiona: Pablo/Roxana). Se usa como valor por defecto al registrar pagos.
+let MY_ASESORA    = localStorage.getItem('erp_asesora') || '';
 
 function _showLogin(msg){
   const ov = document.getElementById('authOverlay');
@@ -25532,9 +25547,11 @@ async function _onGoogleCredential(resp){
     // Con el mismo pase de Google, abrir también la sesión de LECTURA DIRECTA Supabase
     try { _sbAuthConCredencial(resp.credential); } catch(_){}
     SESSION_TOKEN = data.sessionToken; MY_ROLE = data.rol; MY_EMAIL = data.email;
+    MY_ASESORA = data.asesora || '';
     localStorage.setItem('erp_sess', SESSION_TOKEN);
     localStorage.setItem('erp_rol', MY_ROLE);
     localStorage.setItem('erp_email', MY_EMAIL);
+    localStorage.setItem('erp_asesora', MY_ASESORA);
     _hideLogin();
     _sessRenovando = false;
     _pillConn(true);
