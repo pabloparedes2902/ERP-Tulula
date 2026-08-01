@@ -356,6 +356,12 @@ function pintarError(e) {
 function cargar(forzar) {
   inyectarEstilos();
 
+  // FASE 1 asesoras (2-ago): si quien entra es una asesora (el login del ERP
+  // la reconoció y guardó su nombre en MY_ASESORA), ve SU vista, no la admin.
+  if (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA) {
+    return vendCargar(forzar);
+  }
+
   var hoy = new Date();
   COM.year = COM.year || hoy.getFullYear();
   COM.q    = COM.q    || Math.ceil((hoy.getMonth() + 1) / 3);
@@ -2085,7 +2091,141 @@ function selectorVerComo(cfg) {
   '</span>';
 }
 
-function pintarVerComo(d) {
+/* ══════════════════════════════════════════════════════════════════════
+   MODO ASESORA (Fase 1, 2-ago-2026)
+   La asesora entra al módulo con su propio login y ve su vista real:
+   período navegable, su historial y su tarjeta de motivación personal.
+   ══════════════════════════════════════════════════════════════════════ */
+
+var VEND = { modo: false, data: null, hist: null, year: null, q: null, cargando: false };
+
+function vendCargar(forzar) {
+  VEND.modo = true;
+  var hoy = new Date();
+  VEND.year = VEND.year || hoy.getFullYear();
+  VEND.q    = VEND.q    || Math.ceil((hoy.getMonth() + 1) / 3);
+
+  if (VEND.cargando) return;
+  VEND.cargando = true;
+  var c = cont();
+  if (c && (!VEND.data || forzar)) {
+    c.innerHTML = '<div class="ld"><div class="sp"></div>Cargando tus comisiones...</div>';
+  }
+
+  Promise.all([
+    comApi('vendedora', { year: VEND.year, q: VEND.q }),
+    (VEND.hist && !forzar) ? Promise.resolve(VEND.hist)
+      : comApi('miHistorial', { year: hoy.getFullYear() }).catch(function () { return null; }),
+  ]).then(function (rs) {
+    VEND.cargando = false;
+    VEND.data = rs[0];
+    VEND.hist = rs[1];
+    pintarVerComo(VEND.data, true);
+  }).catch(function (e) { VEND.cargando = false; pintarError(e); });
+}
+
+window.comVendPeriodo = function (val) {
+  var p = String(val || '').split('-');
+  if (p.length !== 2) return;
+  VEND.year = parseInt(p[0], 10);
+  VEND.q = parseInt(p[1], 10);
+  VEND.data = null;
+  vendCargar(true);
+};
+
+/** Selector de trimestres con datos (del historial) + el actual. */
+function vendSelector() {
+  var hoy = new Date();
+  var ops = {};
+  ops[hoy.getFullYear() + '-' + Math.ceil((hoy.getMonth() + 1) / 3)] = 1;
+  if (VEND.hist && VEND.hist.series) {
+    Object.keys(VEND.hist.series).forEach(function (y) {
+      Object.keys(VEND.hist.series[y]).forEach(function (m) {
+        ops[y + '-' + Math.ceil(parseInt(m, 10) / 3)] = 1;
+      });
+    });
+  }
+  var sel = VEND.year + '-' + VEND.q;
+  var estilo = 'background:var(--bg2);border:1px solid var(--bd);color:var(--tx);' +
+               'padding:6px 10px;border-radius:var(--r);font-size:13px;font-family:inherit;cursor:pointer';
+  return '<select style="' + estilo + '" onchange="comVendPeriodo(this.value)">' +
+    Object.keys(ops).sort().reverse().map(function (o) {
+      var p = o.split('-');
+      return '<option value="' + o + '"' + (o === sel ? ' selected' : '') + '>' +
+             esc(etiquetaTrim(parseInt(p[1], 10), parseInt(p[0], 10))) + '</option>';
+    }).join('') + '</select>';
+}
+
+/** Tarjeta de motivación personal: mejor mes, promedio y mes en curso. */
+function tarjetaCamino() {
+  var h = VEND.hist;
+  if (!h || !h.series) return '';
+  var hoy = new Date(), y = hoy.getFullYear(), m = hoy.getMonth() + 1;
+  var val = function (yy, mm) {
+    var s = h.series[yy];
+    return (s && s[mm]) ? s[mm].margen : null;
+  };
+
+  var actual = val(y, m) || 0;
+
+  // Promedio de los últimos 3 meses cerrados con datos
+  var prev = [], yy = y, mm = m;
+  for (var i = 0; i < 18 && prev.length < 3; i++) {
+    mm--; if (mm < 1) { mm = 12; yy--; }
+    var v = val(yy, mm);
+    if (v != null && v > 0) prev.push(v);
+  }
+  var prom = prev.length ? prev.reduce(function (a, b) { return a + b; }, 0) / prev.length : 0;
+
+  // Mejor mes histórico (sin contar el mes en curso)
+  var mejor = null;
+  Object.keys(h.series).forEach(function (y2) {
+    Object.keys(h.series[y2]).forEach(function (m2) {
+      if (parseInt(y2, 10) === y && parseInt(m2, 10) === m) return;
+      var v2 = h.series[y2][m2].margen;
+      if (v2 > 0 && (!mejor || v2 > mejor.v)) mejor = { v: v2, y: parseInt(y2, 10), m: parseInt(m2, 10) };
+    });
+  });
+
+  var filas = '';
+  if (mejor) {
+    var record = actual > mejor.v;
+    filas += '<div class="com-row"><span class="com-mut">Tu mejor mes</span>' +
+      '<span style="font-weight:600">' + fmt(mejor.v) +
+      ' <span class="com-mut" style="font-weight:400;font-size:12px">(' +
+      MESES_LARGO[mejor.m - 1] + ' ' + mejor.y + ')</span>' +
+      (record ? ' <span style="color:var(--gn);font-size:12px">🔥 ¡vas rumbo a récord!</span>' : '') +
+      '</span></div>';
+  }
+  if (prom > 0) {
+    var dif = (actual - prom) / prom * 100;
+    var col = dif >= 0 ? 'var(--gn)' : 'var(--rd)';
+    filas += '<div class="com-row"><span class="com-mut">Tu promedio (últimos ' + prev.length + ' meses)</span>' +
+      '<span style="font-weight:600">' + fmt(prom) + '</span></div>';
+    filas += '<div class="com-row"><span class="com-mut">Este mes vas en</span>' +
+      '<span style="font-weight:600">' + fmt(actual) +
+      ' <span style="color:' + col + ';font-size:12px;font-weight:600">' +
+      (dif >= 0 ? '▲' : '▼') + ' ' + Math.abs(dif).toFixed(0) + '% vs tu promedio</span></span></div>';
+  }
+  if (!filas) return '';
+  return '<div class="card"><div class="ct">Tu camino</div>' + filas + '</div>';
+}
+
+/** Cierres anteriores de la asesora, desde SU historial (sin montos ajenos). */
+function tarjetaCierresVend() {
+  var h = VEND.hist;
+  var filas = ((h && h.cierres) || []).map(function (c) {
+    return '<div class="com-row" style="font-size:13px">' +
+      '<span>' + esc(c.yq) + ' <span class="com-mut">(' + c.cumpl + '%' +
+        (c.equipo ? '' : ' · equipo no llegó') + ')</span></span>' +
+      '<span style="color:var(--gn);font-weight:600">' + f2(c.bono) + '</span>' +
+    '</div>';
+  }).join('');
+  return '<div class="card"><div class="ct">Tus cierres anteriores</div>' +
+    (filas || '<div class="ml">Todavía no hay trimestres cerrados.</div>') + '</div>';
+}
+
+function pintarVerComo(d, real) {
   var c = cont();
   if (!c) return;
 
@@ -2149,11 +2289,21 @@ function pintarVerComo(d) {
             (R.tiers.indexOf(sig) + 1) + '° nivel (' + sig.rate + '%).';
   }
 
-  c.innerHTML = pestañas('home') +
-    '<div style="display:flex;justify-content:flex-end;margin-bottom:10px">' +
-      '<button class="btn bg bs" onclick="comVerComo(\'\')">Volver a mi vista</button>' +
-    '</div>' +
+  // Modo REAL (asesora logueada): sin pestañas de admin ni botón de vista
+  // previa; título propio + selector de período. Modo preview (admin): igual
+  // que siempre.
+  var cabecera = real
+    ? '<div style="display:flex;justify-content:space-between;align-items:center;' +
+        'gap:10px;margin-bottom:14px;max-width:620px;margin-left:auto;margin-right:auto">' +
+        '<div style="font-size:17px;font-weight:600">Mis comisiones</div>' +
+        vendSelector() +
+      '</div>'
+    : pestañas('home') +
+      '<div style="display:flex;justify-content:flex-end;margin-bottom:10px">' +
+        '<button class="btn bg bs" onclick="comVerComo(\'\')">Volver a mi vista</button>' +
+      '</div>';
 
+  c.innerHTML = cabecera +
     '<div style="max-width:620px;margin:0 auto">' +
       '<div class="card">' +
         // Nombre y cumplimiento en la misma línea, mismo tamaño (como las
@@ -2182,8 +2332,9 @@ function pintarVerComo(d) {
       '</div>' +
 
       '<div class="card"><div class="ct">Tu margen mes a mes</div>' + filasMes + '</div>' +
+      (real ? tarjetaCamino() : '') +
       '<div class="card"><div class="ct">Ranking del trimestre</div>' + rank + '</div>' +
-      cierresDeAsesora(d.nombre) +
+      (real ? tarjetaCierresVend() : cierresDeAsesora(d.nombre)) +
       tarjetaReglas(cfg, R, 'Leyenda') +
     '</div>';
 }
@@ -2770,6 +2921,7 @@ window._comReset = function () {
   ASE.data = null;
   CIERRE.cargado = false;
   PER.perf = null; PER.perfPrev = null; PER.hist = null;
+  VEND.data = null; VEND.hist = null;   // modo asesora: refrescar también
   cacheBorrar();
 };
 
