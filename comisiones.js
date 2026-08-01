@@ -38,6 +38,7 @@ var COM = {
    Estrategia: pintar lo guardado al instante y refrescar por detrás.  */
 
 function claveCache(year, q) { return 'com_' + year + '_q' + q; }
+function claveCacheResumen(year, q) { return 'comres_' + year + '_q' + q; }
 
 function cacheLeer(year, q) {
   try {
@@ -58,7 +59,7 @@ function cacheGuardar(year, q, data) {
 function cacheBorrar() {
   try {
     Object.keys(sessionStorage)
-      .filter(function (k) { return k.indexOf('com_') === 0; })
+      .filter(function (k) { return k.indexOf('com_') === 0 || k.indexOf('comres_') === 0; })
       .forEach(function (k) { sessionStorage.removeItem(k); });
   } catch (e) {}
 }
@@ -1685,6 +1686,21 @@ function cargarPeriodo(modo, desde, hasta) {
   // Trimestre completo: una sola llamada trae todo el resumen
   var esTrimestreCompleto = !PER.meses || !PER.meses.length;
   if (esTrimestreCompleto) {
+    // Si ya se vio en esta sesión, se pinta al instante y se refresca detrás
+    try {
+      var guardado = sessionStorage.getItem(claveCacheResumen(year, q));
+      if (guardado) {
+        var g = JSON.parse(guardado);
+        if (g && g.perf) {
+          PER.perf = g.perf; PER.perfPrev = g.perfPrev || null;
+          PER.hist = g.histRango || null;
+          if (g.rango) PER.rango = g.rango;
+          PER.cargando = false;
+          pintarPerf(); pintarHist();
+        }
+      }
+    } catch (e) {}
+
     comApi('resumen', { year: year, q: q })
       .then(function (d) {
         if (seq !== PER.seq) return;
@@ -1693,6 +1709,7 @@ function cargarPeriodo(modo, desde, hasta) {
         PER.hist = d.histRango || null;
         if (d.rango) PER.rango = d.rango;
         PER.cargando = false;
+        try { sessionStorage.setItem(claveCacheResumen(year, q), JSON.stringify(d)); } catch (e) {}
         pintarPerf();
         pintarHist();
       })
