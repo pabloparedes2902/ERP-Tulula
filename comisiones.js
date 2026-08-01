@@ -434,8 +434,10 @@ function refrescarDetras() {
   traer(year, q)
     .then(function () {
       COM.refrescando = false;
-      // Si el usuario cambió de período mientras tanto, no pisar la vista
-      if (COM.year === year && COM.q === q && COM.vista === 'home') pintarHome();
+      // Si el usuario cambió de período —o entró a "Ver como" una asesora—
+      // mientras tanto, NO pisar la vista. (2-ago: sin el chequeo de comoEmail
+      // este refresco silencioso repintaba la vista Admin encima del preview.)
+      if (COM.year === year && COM.q === q && COM.vista === 'home' && !COM.comoEmail) pintarHome();
       else marcarRefrescando(false);
     })
     .catch(function () {
@@ -471,6 +473,10 @@ function precargar() {
 }
 
 function pintarHome() {
+  // Cinturón de seguridad (2-ago): si el admin está mirando "Ver como" una
+  // asesora, NADIE puede repintar la vista Admin encima. Salir del preview
+  // (comVerComo('')) limpia comoEmail antes de volver a llamar acá.
+  if (COM.comoEmail) return;
   var d = COM.data;
   if (!d) return;
   var c = cont();
@@ -2119,25 +2125,21 @@ function vendCargar(forzar) {
     c.innerHTML = '<div class="ld"><div class="sp"></div>Cargando tus comisiones...</div>';
   }
 
-  // En modo vista previa (admin), las ops llevan a quién mirar
+  // En modo vista previa (admin), las ops llevan a quién mirar.
+  // VELOCIDAD (2-ago): las 3 cosas (trimestre + historial + día) vienen en UN
+  // solo viaje al servidor ('vendedoraFull'). Antes eran 3 llamadas y cada una
+  // releía la hoja de Pedidos → ~60s. Ahora la hoja se lee una vez.
   var pv = VEND.preview;
-  var argsVend = { year: VEND.year, q: VEND.q };
-  if (pv) argsVend.asesora = pv.email;
-  var argsMios = pv ? { nombre: pv.nombre } : {};
+  var argsFull = { year: VEND.year, q: VEND.q,
+                   histYear: hoy.getFullYear(),
+                   conDia: vendEsActual() };
+  if (pv) { argsFull.asesora = pv.email; argsFull.nombre = pv.nombre; }
 
-  Promise.all([
-    comApi('vendedora', argsVend),
-    (VEND.hist && !forzar) ? Promise.resolve(VEND.hist)
-      : comApi('miHistorial', Object.assign({ year: hoy.getFullYear() }, argsMios))
-          .catch(function () { return null; }),
-    vendEsActual()
-      ? comApi('miDia', argsMios).catch(function () { return null; })
-      : Promise.resolve(null),
-  ]).then(function (rs) {
+  comApi('vendedoraFull', argsFull).then(function (r) {
     VEND.cargando = false;
-    VEND.data = rs[0];
-    VEND.hist = rs[1];
-    VEND.dia  = rs[2];
+    VEND.data = r.vend;
+    VEND.hist = r.hist || VEND.hist;
+    VEND.dia  = r.dia;
     pintarVerComo(VEND.data, true);
   }).catch(function (e) { VEND.cargando = false; pintarError(e); });
 }
@@ -3288,25 +3290,28 @@ window.comVerComo = function (email) {
   }
   var c = cont();
   if (c) c.innerHTML = pestañas('home') + '<div class="ld"><div class="sp"></div>Cargando su vista...</div>';
-  comApi('vendedora', { year: COM.year, q: COM.q, asesora: email })
-    .then(function (d) {
+  // VELOCIDAD (2-ago): UNA sola llamada trae trimestre + historial + día.
+  // Antes eran 2 viajes en fila (y 3 lecturas de la hoja) → ~60s de espera.
+  // OJO: acá VEND.year/q aún no están seteados (se setean con la respuesta),
+  // así que "¿es el trimestre actual?" se decide con el período del panel.
+  var hoyV = new Date();
+  var esActualV = COM.year === hoyV.getFullYear() &&
+                  COM.q === Math.ceil((hoyV.getMonth() + 1) / 3);
+  comApi('vendedoraFull', { year: COM.year, q: COM.q, asesora: email,
+                            histYear: hoyV.getFullYear(),
+                            conDia: esActualV })
+    .then(function (r) {
       if (COM.comoEmail !== email) return;   // ya cambió de selección
+      var d = r.vend;
       if (d && d.isAdmin) { pintarError(new Error('Ese correo es de un administrador, no de una asesora.')); return; }
       // 2-ago: la vista previa del admin ahora es la EXPERIENCIA REAL de la
       // asesora (selector de período, Tu camino, meta del día, cierres).
       VEND.preview = { email: email, nombre: d.nombre };
       VEND.year = COM.year; VEND.q = COM.q;
       VEND.data = d;
-      Promise.all([
-        comApi('miHistorial', { nombre: d.nombre, year: new Date().getFullYear() })
-          .catch(function () { return null; }),
-        vendEsActual() ? comApi('miDia', { nombre: d.nombre }).catch(function () { return null; })
-                       : Promise.resolve(null),
-      ]).then(function (rs) {
-        if (COM.comoEmail !== email) return;
-        VEND.hist = rs[0]; VEND.dia = rs[1];
-        pintarVerComo(d, true);
-      });
+      VEND.hist = r.hist;
+      VEND.dia  = r.dia;
+      pintarVerComo(d, true);
     })
     .catch(pintarError);
 };
