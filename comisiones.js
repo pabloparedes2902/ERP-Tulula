@@ -760,9 +760,9 @@ function tarjetaCobertura(d) {
 }
 
 function tarjetaReglas(cfg, R, titulo) {
-  var tramos = (cfg.tiers || TIERS_FALLBACK).map(function (t, i) {
-    return (i + 1) + '° nivel: desde ' + t.from + '% → paga ' + t.rate + '% del margen';
-  }).join(' &nbsp;·&nbsp; ');
+  var tiers = (cfg.tiers && cfg.tiers.length) ? cfg.tiers : TIERS_FALLBACK;
+  var x = (R && R.x) || cfg.xMeta || 12;
+  var gate = (R && R.gate) || (tiers[0] ? tiers[0].from : 75);
 
   var punto = function (color, txt) {
     return '<span style="display:inline-flex;align-items:center;gap:5px">' +
@@ -771,16 +771,23 @@ function tarjetaReglas(cfg, R, titulo) {
            '</span>';
   };
 
+  var COLORES = ['var(--am)', 'var(--gn)', COM_CELESTE];
+  var niveles = tiers.map(function (t, i) {
+    return punto(COLORES[i] || 'var(--gn)',
+                 (i + 1) + '° desde ' + t.from + '% → ' + t.rate + '%');
+  }).join(' &nbsp;·&nbsp; ');
+
   return '<div class="card">' +
     '<div class="ct">' + esc(titulo || 'Reglas vigentes') + '</div>' +
     '<div style="font-size:13px;line-height:2.1">' +
-      '<b>Meta</b> = Venta promedio mensual × Margen bruto × Factor nivel × 3 (meses)<br>' +
-      '<b>Factor nivel:</b> ' +
-        punto('var(--rd)', 'Nivel 0 = no llega') + ' &nbsp;·&nbsp; ' +
-        punto('var(--am)', '1° nivel = 1x') + ' &nbsp;·&nbsp; ' +
-        punto('var(--gn)', '2° nivel = 2x') + ' &nbsp;·&nbsp; ' +
-        punto(COM_CELESTE, '3° nivel = 3x') + '<br>' +
-      'El bono se activa siempre y cuando el equipo llegue al menos al <b>1° nivel</b>.' +
+      '<b>Meta</b> = ' + x + '× tu sueldo del mes, medida en margen.<br>' +
+      '<b>Comisiona quien cobra:</b> cada pago se acredita a la asesora que lo registró, ' +
+      'y el margen del pedido se reparte proporcional a lo que cobró cada una.<br>' +
+      'Un pedido comisiona cuando queda <b>pagado al 100%</b>, y cuenta en el mes ' +
+      'en que se terminó de cobrar.<br>' +
+      '<b>Niveles</b> (% del margen del trimestre): ' +
+        punto('var(--rd)', 'no llega') + ' &nbsp;·&nbsp; ' + niveles + '<br>' +
+      'El bono se activa cuando el equipo completo supera el <b>' + gate + '%</b>.' +
     '</div>' +
   '</div>';
 }
