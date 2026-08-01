@@ -759,7 +759,7 @@ function tarjetaCobertura(d) {
   '</div>';
 }
 
-function tarjetaReglas(cfg, R) {
+function tarjetaReglas(cfg, R, titulo) {
   var tramos = (cfg.tiers || TIERS_FALLBACK).map(function (t, i) {
     return (i + 1) + '° nivel: desde ' + t.from + '% → paga ' + t.rate + '% del margen';
   }).join(' &nbsp;·&nbsp; ');
@@ -772,7 +772,7 @@ function tarjetaReglas(cfg, R) {
   };
 
   return '<div class="card">' +
-    '<div class="ct">Reglas vigentes</div>' +
+    '<div class="ct">' + esc(titulo || 'Reglas vigentes') + '</div>' +
     '<div style="font-size:13px;line-height:2.1">' +
       '<b>Meta</b> = Venta promedio mensual × Margen bruto × Factor nivel × 3 (meses)<br>' +
       '<b>Factor nivel:</b> ' +
@@ -1849,12 +1849,10 @@ function pintarPerf() {
   // Lo que realmente entra al bono: suma de las asesoras, ya filtrado
   var celComisionable = function () {
     var v = (COM.bonos && COM.bonos.margen != null) ? fmt(COM.bonos.margen) : '—';
-    var pct = (COM.bonos && COM.bonos.margen != null && d.totalMargen > 0)
-            ? (COM.bonos.margen / d.totalMargen * 100).toFixed(0) + '% del total' : '';
     return '<div class="com-met" style="border-color:var(--ac)">' +
              '<div class="ml">Margen comisionable</div>' +
              '<div class="com-big" style="color:var(--ac)">' + v + '</div>' +
-             '<div class="com-sub2">' + (pct || '&nbsp;') + '</div>' +
+             '<div class="com-sub2">&nbsp;</div>' +
            '</div>';
   };
 
@@ -1875,22 +1873,15 @@ function pintarPerf() {
 
   z.innerHTML = '<div class="card">' +
     '<div class="ct">Resumen del período</div>' +
-    '<div class="ml" style="margin-bottom:10px">' +
-      'Las <b>ventas</b> y el <b>margen comisionable</b> son solo de pedidos con asesora, ' +
-      'y con el filtro de pagos activo cuentan únicamente lo cobrado. ' +
-      'El <b>margen real</b> sí es del negocio completo (incluye showroom y web).' +
-    '</div>' +
 
     '<div class="com-mts com-mts-6">' +
-      cel('Ventas asesoras',
-          vAse != null ? fmt(vAse) : '—',
-          vAse != null ? 'pedidos con asesora · cobrado' : 'actualiza para ver el dato') +
+      cel('Ventas asesoras', vAse != null ? fmt(vAse) : '—', '') +
       celComisionable() +
       cel('Margen real', mr.toFixed(2) + '%', mrP != null ? delta(mr, mrP) : '', 'var(--gn)') +
       cel('Margen por día', fmt(porDia),
           (prev && prevDias) ? delta(porDia, prev.totalMargen / prevDias) : '', 'var(--gn)') +
       celBono('Bono acumulado', 'bono') +
-      celBono('Bono proyectado', 'bonoProy', 'si cierra así') +
+      celBono('Bono proyectado', 'bonoProy') +
     '</div>' +
   '</div>';
 }
@@ -2134,32 +2125,36 @@ function pintarVerComo(d) {
       return '<div class="com-row">' +
                '<span style="font-weight:' + (yoMismo ? '700' : '400') + ';' +
                      (yoMismo ? 'color:var(--ac)' : '') + '">' +
-                 (i + 1) + '. ' + esc(r.nombre) + (yoMismo ? ' (vos)' : '') + '</span>' +
+                 (i + 1) + '. ' + esc(r.nombre) + (yoMismo ? ' (tú)' : '') + '</span>' +
                '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(r.cumpl, R.tiers)] + '">' +
                  p2(r.cumpl) + '</span>' +
              '</div>';
     }).join('');
 
+  // Cuánto le falta, expresado en VENTAS aproximadas (margen ÷ % de margen real)
   var sig = R.tiers.find(function (t) { return t.from > yo.cumpl; });
-  var falta = sig
-    ? 'Te faltan <b>' + fmt(Math.max(0, (sig.from / 100 * yo.sumMeta) - yo.sumMar)) +
-      '</b> de margen para subir al ' + (R.tiers.indexOf(sig) + 1) + '° nivel (' + sig.rate + '%).'
-    : 'Estás en el nivel máximo.';
+  var falta = 'Estás en el nivel máximo.';
+  if (sig) {
+    var faltaMargen = Math.max(0, (sig.from / 100 * yo.sumMeta) - yo.sumMar);
+    var pctMargen = (Number(yo.mPct) || 62) / 100;
+    var faltaVentas = pctMargen > 0 ? faltaMargen / pctMargen : faltaMargen;
+    falta = 'Te faltan <b>' + fmt(faltaVentas) + '</b> de ventas aproximadas para subir al ' +
+            (R.tiers.indexOf(sig) + 1) + '° nivel (' + sig.rate + '%).';
+  }
 
   c.innerHTML = pestañas('home') +
-    '<div class="card" style="border-color:var(--ac);background:var(--bg3)">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">' +
-        '<div style="font-size:13px">' +
-          '<b style="color:var(--ac)">Vista previa</b> — así ve el panel ' + esc(d.nombre) + '. ' +
-          'No ve sueldos ajenos ni el costo total.' +
-        '</div>' +
-        '<button class="btn bg bs" onclick="comVerComo(\'\')">Volver a mi vista</button>' +
-      '</div>' +
+    '<div style="display:flex;justify-content:flex-end;margin-bottom:10px">' +
+      '<button class="btn bg bs" onclick="comVerComo(\'\')">Volver a mi vista</button>' +
     '</div>' +
 
     '<div style="max-width:620px;margin:0 auto">' +
       '<div class="card">' +
-        '<div class="com-nom">' + esc(d.nombre) + '</div>' +
+        // Nombre y cumplimiento en la misma línea, mismo tamaño (como las
+        // tarjetas de asesora de la vista general)
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">' +
+          '<span class="com-nom">' + esc(d.nombre) + '</span>' +
+          '<span class="com-nom" style="color:' + col + '">' + p2(yo.cumpl) + '</span>' +
+        '</div>' +
         '<div class="com-sub">' + esc(qTxt) + '</div>' +
         '<div style="text-align:center;margin:20px 0 8px">' +
           '<div class="ml">Tu bono del trimestre</div>' +
@@ -2168,11 +2163,8 @@ function pintarVerComo(d) {
           '<div class="ml">proyectado al cierre: <b style="color:' +
             (yoP.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(yoP.bono) + '</b></div>' +
         '</div>' +
-        '<div class="com-row" style="border:none;font-size:12px;padding:16px 0 6px">' +
-          '<span class="com-mut">Cumplimiento del trimestre</span>' +
-          '<b style="color:' + col + '">' + p2(yo.cumpl) + '</b>' +
-        '</div>' +
         '<div style="margin-top:18px">' + barra(yo.cumpl, 20, col, R.tiers, true) + '</div>' +
+        barraAvance(d.year, d.q, yo.cumpl, R.tiers) +
         '<div style="font-size:13px;margin-top:18px">' + falta + '</div>' +
         '<div style="font-size:13px;margin-top:10px;font-weight:500;color:' +
              (R.teamGate ? 'var(--gn)' : 'var(--rd)') + '">' +
@@ -2184,19 +2176,35 @@ function pintarVerComo(d) {
 
       '<div class="card"><div class="ct">Tu margen mes a mes</div>' + filasMes + '</div>' +
       '<div class="card"><div class="ct">Ranking del trimestre</div>' + rank + '</div>' +
-
-      '<div class="card">' +
-        '<div style="font-size:13px;line-height:1.9">' +
-          '<b>Bono trimestral</b> = Margen del trimestre × % del nivel alcanzado<br>' +
-          'El bono se activa siempre y cuando el equipo llegue al menos al <b>1° nivel</b>.<br>' +
-          '<b>% por nivel:</b> ' +
-          R.tiers.map(function (t, i) {
-            return (i + 1) + '° nivel = ' + t.rate + '%';
-          }).join(' · ') + '<br>' +
-          'Tu meta de margen es <b>' + R.x + '×</b> tu sueldo.' +
-        '</div>' +
-      '</div>' +
+      cierresDeAsesora(d.nombre) +
+      tarjetaReglas(cfg, R, 'Leyenda') +
     '</div>';
+}
+
+/**
+ * Cierres trimestrales anteriores de UNA asesora: solo su fila de cada
+ * cierre, sin montos ajenos. Sale de CIERRE.cerradosTrim (bootstrap).
+ */
+function cierresDeAsesora(nombre) {
+  var buscado = String(nombre || '').trim().toLowerCase();
+  var filas = (CIERRE.cerradosTrim || []).map(function (c) {
+    var f = (c.filas || []).find(function (x) {
+      return String(x.asesora || '').trim().toLowerCase() === buscado;
+    });
+    if (!f) return '';
+    var ajustado = (f.bonoOverride !== '' && f.bonoOverride != null)
+                 ? ' <span style="color:var(--am);font-size:11px">ajustado</span>' : '';
+    return '<div class="com-row" style="font-size:13px">' +
+             '<span>' + esc(c.yq) +
+               ' <span class="com-mut">(' + f.cumpl + '%' +
+                 (c.teamGate === 'SI' ? '' : ' · equipo no llegó') + ')</span>' + ajustado + '</span>' +
+             '<span style="color:var(--gn);font-weight:600">' + f2(f.bonoPagar) + '</span>' +
+           '</div>';
+  }).join('');
+
+  return '<div class="card"><div class="ct">Tus cierres anteriores</div>' +
+    (filas || '<div class="ml">Todavía no hay trimestres cerrados.</div>') +
+  '</div>';
 }
 
 
