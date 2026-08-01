@@ -532,6 +532,10 @@ function pintarHome() {
                          '<div class="ml">Cargando…</div></div>';
     cargarPeriodo('meses');
   }
+
+  // PRECARGA "Ver como" (2-ago): con el panel ya pintado, traer en segundo
+  // plano la vista de cada asesora para que el switch abra al instante.
+  setTimeout(vcPrecache, 2500);
 }
 
 /* ── Navegación interna del módulo ─────────────────────────────────── */
@@ -2324,13 +2328,35 @@ function bannerCelebracion(d, nivel) {
 }
 
 /** Cierres anteriores de la asesora, desde SU historial (sin montos ajenos). */
+/** Meses del trimestre cerrado en que la asesora tuvo actividad (según su
+ *  propia serie del historial). Ej: Angie entró en mayo → "Mayo – Junio 2026". */
+function mesesDeCierre(c) {
+  var h = VEND.hist;
+  if (!h || !h.series) return '';
+  var p = String(c.yq || '').match(/^(\d{4})-Q(\d)$/);
+  if (!p) return '';
+  var y = parseInt(p[1], 10), q = parseInt(p[2], 10);
+  var serie = h.series[y];
+  if (!serie) return '';
+  var noms = [];
+  for (var m = (q - 1) * 3 + 1; m <= q * 3; m++) {
+    var v = serie[m];
+    if (v && ((v.margen || 0) > 0 || (v.ventas || 0) > 0)) noms.push(MESES_LARGO[m - 1]);
+  }
+  return noms.length ? 'Meses: ' + noms.join(' – ') + ' ' + y : '';
+}
+
 function tarjetaCierresVend() {
   var h = VEND.hist;
   var filas = ((h && h.cierres) || []).map(function (c) {
-    return '<div class="com-row" style="font-size:13px">' +
-      '<span>' + esc(c.yq) + ' <span class="com-mut">(' + c.cumpl + '%' +
-        (c.equipo ? '' : ' · equipo no llegó') + ')</span></span>' +
-      '<span style="color:var(--gn);font-weight:600">' + f2(c.bono) + '</span>' +
+    var mesesTxt = mesesDeCierre(c);
+    return '<div style="padding:4px 0">' +
+      '<div class="com-row" style="font-size:13px">' +
+        '<span>' + esc(c.yq) + ' <span class="com-mut">(' + c.cumpl + '%' +
+          (c.equipo ? '' : ' · equipo no llegó') + ')</span></span>' +
+        '<span style="color:var(--gn);font-weight:600">' + f2(c.bono) + '</span>' +
+      '</div>' +
+      (mesesTxt ? '<div class="com-mut" style="font-size:12px;margin-top:1px">' + esc(mesesTxt) + '</div>' : '') +
     '</div>';
   }).join('');
   return '<div class="card"><div class="ct">Tus cierres anteriores</div>' +
@@ -3279,6 +3305,43 @@ window.comAplicarCustom = function () {
 
 /* ── Ver como asesora ── */
 
+// PRECARGA (2-ago): apenas el panel Admin queda pintado, se traen en segundo
+// plano las vistas de las asesoras. Así "Ver como" abre AL INSTANTE desde
+// caché (y se refresca por detrás). En fila, no en paralelo: no satura el ERP.
+var VC_CACHE = {};                 // "email|year-q" → { t, r }
+var VC_TTL = 10 * 60 * 1000;       // 10 minutos
+var vcPrecargando = false;
+
+function vcKey(email) { return email + '|' + COM.year + '-' + COM.q; }
+
+function vcArgs(email) {
+  var hoy = new Date();
+  var esActual = COM.year === hoy.getFullYear() &&
+                 COM.q === Math.ceil((hoy.getMonth() + 1) / 3);
+  return { year: COM.year, q: COM.q, asesora: email,
+           histYear: hoy.getFullYear(), conDia: esActual };
+}
+
+function vcPrecache() {
+  if (vcPrecargando) return;
+  if (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA) return;
+  var vend = COM.data && COM.data.cfg && COM.data.cfg.vendedoras;
+  if (!vend) return;
+  var emails = Object.keys(vend).filter(function (e) {
+    var c = VC_CACHE[vcKey(e)];
+    return !(c && Date.now() - c.t < VC_TTL);
+  });
+  if (!emails.length) return;
+  vcPrecargando = true;
+  (function uno(i) {
+    if (i >= emails.length) { vcPrecargando = false; return; }
+    comApi('vendedoraFull', vcArgs(emails[i]))
+      .then(function (r) { VC_CACHE[vcKey(emails[i])] = { t: Date.now(), r: r }; })
+      .catch(function () {})
+      .then(function () { uno(i + 1); });
+  })(0);
+}
+
 window.comVerComo = function (email) {
   COM.comoEmail = email || '';
   if (!email) {
@@ -3288,32 +3351,39 @@ window.comVerComo = function (email) {
     cargar();
     return;
   }
-  var c = cont();
-  if (c) c.innerHTML = pestañas('home') + '<div class="ld"><div class="sp"></div>Cargando su vista...</div>';
-  // VELOCIDAD (2-ago): UNA sola llamada trae trimestre + historial + día.
-  // Antes eran 2 viajes en fila (y 3 lecturas de la hoja) → ~60s de espera.
-  // OJO: acá VEND.year/q aún no están seteados (se setean con la respuesta),
-  // así que "¿es el trimestre actual?" se decide con el período del panel.
-  var hoyV = new Date();
-  var esActualV = COM.year === hoyV.getFullYear() &&
-                  COM.q === Math.ceil((hoyV.getMonth() + 1) / 3);
-  comApi('vendedoraFull', { year: COM.year, q: COM.q, asesora: email,
-                            histYear: hoyV.getFullYear(),
-                            conDia: esActualV })
+  // Montar la experiencia REAL de la asesora con una respuesta del servidor
+  function vcMontar(r) {
+    var d = r.vend;
+    if (d && d.isAdmin) { pintarError(new Error('Ese correo es de un administrador, no de una asesora.')); return; }
+    VEND.preview = { email: email, nombre: d.nombre };
+    VEND.year = COM.year; VEND.q = COM.q;
+    VEND.data = d;
+    VEND.hist = r.hist;
+    VEND.dia  = r.dia;
+    pintarVerComo(d, true);
+  }
+
+  // 1) Si la precarga ya la trajo, pinta AL INSTANTE (y refresca por detrás)
+  var hit = VC_CACHE[vcKey(email)];
+  if (hit && Date.now() - hit.t < VC_TTL) {
+    vcMontar(hit.r);
+  } else {
+    var c = cont();
+    if (c) c.innerHTML = pestañas('home') + '<div class="ld"><div class="sp"></div>Cargando su vista...</div>';
+  }
+
+  // 2) Siempre pedir datos frescos: UNA sola llamada trae trimestre +
+  //    historial + día (antes eran 3 viajes en fila → ~60s de espera).
+  comApi('vendedoraFull', vcArgs(email))
     .then(function (r) {
+      VC_CACHE[vcKey(email)] = { t: Date.now(), r: r };
       if (COM.comoEmail !== email) return;   // ya cambió de selección
-      var d = r.vend;
-      if (d && d.isAdmin) { pintarError(new Error('Ese correo es de un administrador, no de una asesora.')); return; }
-      // 2-ago: la vista previa del admin ahora es la EXPERIENCIA REAL de la
-      // asesora (selector de período, Tu camino, meta del día, cierres).
-      VEND.preview = { email: email, nombre: d.nombre };
-      VEND.year = COM.year; VEND.q = COM.q;
-      VEND.data = d;
-      VEND.hist = r.hist;
-      VEND.dia  = r.dia;
-      pintarVerComo(d, true);
+      vcMontar(r);
     })
-    .catch(pintarError);
+    .catch(function (e) {
+      // Si ya se pintó desde caché, no ensuciar la pantalla con el error
+      if (!(hit && Date.now() - hit.t < VC_TTL)) pintarError(e);
+    });
 };
 
 /* ── Simulador ── */
