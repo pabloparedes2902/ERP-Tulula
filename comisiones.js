@@ -401,15 +401,6 @@ function traer(year, q) {
     // Las otras pestañas ya vienen resueltas
     if (b.asesoras) { ASE.data = b.asesoras; ASE.year = year; }
     if (b.historico) COM.historico = b.historico;
-
-    // El resumen del período ya viene resuelto: no hay que ir a buscarlo
-    if (b.perf && b.rango) {
-      PER.perf = b.perf;
-      PER.perfPrev = b.perfPrev || null;
-      PER.hist = b.histRango || null;
-      PER.rango = b.rango;
-      PER.meses = null;
-    }
     if (b.cierresTrim || b.cierresMes || b.reglasLog) {
       CIERRE.cerradosTrim = b.cierresTrim || [];
       CIERRE.cerradosMes  = b.cierresMes  || [];
@@ -1691,7 +1682,33 @@ function cargarPeriodo(modo, desde, hasta) {
   if (zonaPerf) zonaPerf.innerHTML = '<div class="card"><div class="ml">Cargando resumen…</div></div>';
   if (zonaHist) zonaHist.innerHTML = '';
 
-  // Período actual
+  // Trimestre completo: una sola llamada trae todo el resumen
+  var esTrimestreCompleto = !PER.meses || !PER.meses.length;
+  if (esTrimestreCompleto) {
+    comApi('resumen', { year: year, q: q })
+      .then(function (d) {
+        if (seq !== PER.seq) return;
+        PER.perf = d.perf;
+        PER.perfPrev = d.perfPrev || null;
+        PER.hist = d.histRango || null;
+        if (d.rango) PER.rango = d.rango;
+        PER.cargando = false;
+        pintarPerf();
+        pintarHist();
+      })
+      .catch(function (e) {
+        if (seq !== PER.seq) return;
+        PER.cargando = false;
+        if (zonaPerf) zonaPerf.innerHTML = '<div class="card" style="border-color:var(--rd)">' +
+          '<div class="ct" style="color:var(--rd)">Resumen del período</div>' +
+          '<div style="font-size:13px">' + esc((e && e.message) || e) + '</div>' +
+          '<button class="btn bg bs" style="margin-top:10px" onclick="comCargarResumen()">Reintentar</button>' +
+        '</div>';
+      });
+    return;
+  }
+
+  // Un mes suelto: se piden los rangos por separado
   comApi('perf', { desde: r.desde, hasta: r.hasta })
     .then(function (d) {
       if (seq !== PER.seq) return;   // el usuario ya cambió de selección
