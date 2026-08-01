@@ -311,7 +311,7 @@ function inyectarEstilos() {
 '.com-mts{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;align-items:stretch}',
     '@media(min-width:700px){.com-mts{grid-template-columns:repeat(3,1fr)}}',
     '@media(min-width:1000px){.com-mts{grid-template-columns:repeat(5,1fr)}}',
-    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(7,1fr)}}',
+    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(6,1fr)}}',
     '.com-met{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:14px;min-width:0;text-align:center}',
     '.com-met .ml{margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}',
     '.com-met .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;text-align:center}',
@@ -1796,11 +1796,37 @@ function selectorMesResumen() {
   return '<select style="' + estilo + '" onchange="comMesResumen(this.value)">' + opts + '</select>';
 }
 
+/**
+ * Ventas de las asesoras en el período seleccionado.
+ * Sale del bootstrap (r.ventas por mes), que ya viene con el filtro de
+ * pagos aplicado: mismo universo que el margen comisionable.
+ * Devuelve null si el dato no está (caché viejo): la tarjeta muestra —.
+ */
+function ventasAsesorasPeriodo() {
+  var d = COM.data;
+  if (!d || !d.results || !d.results.length) return null;
+
+  var mesesQ = d.meses || [];
+  var sel = (PER.meses && PER.meses.length) ? PER.meses : mesesQ;
+
+  var total = 0, hay = false;
+  d.results.forEach(function (r) {
+    var v = r.ventas;
+    if (!v || !v.length) return;
+    sel.forEach(function (m) {
+      var i = mesesQ.indexOf(m);
+      if (i >= 0 && v[i] != null) { total += Number(v[i]) || 0; hay = true; }
+    });
+  });
+  return hay ? total : null;
+}
+
 function pintarPerf() {
   var z = document.getElementById('com-perf');
   if (!z || !PER.perf) return;
 
   var d = PER.perf, prev = PER.perfPrev, r = PER.rango;
+  var vAse = ventasAsesorasPeriodo();
   var mr  = d.totalVentas > 0 ? d.totalMargen / d.totalVentas * 100 : 0;
   var mrP = (prev && prev.totalVentas > 0) ? prev.totalMargen / prev.totalVentas * 100 : null;
   var porDia = d.totalMargen / Math.max(1, r.dias);
@@ -1850,13 +1876,15 @@ function pintarPerf() {
   z.innerHTML = '<div class="card">' +
     '<div class="ct">Resumen del período</div>' +
     '<div class="ml" style="margin-bottom:10px">' +
-      'El negocio incluye showroom y web. El <b>margen comisionable</b> es solo ' +
-      'el de las asesoras, y con el filtro de pagos activo cuenta únicamente lo cobrado.' +
+      'Las <b>ventas</b> y el <b>margen comisionable</b> son solo de pedidos con asesora, ' +
+      'y con el filtro de pagos activo cuentan únicamente lo cobrado. ' +
+      'El <b>margen real</b> sí es del negocio completo (incluye showroom y web).' +
     '</div>' +
 
     '<div class="com-mts com-mts-6">' +
-      cel('Ventas del negocio', fmt(d.totalVentas), prev ? delta(d.totalVentas, prev.totalVentas) : '') +
-      cel('Margen del negocio', fmt(d.totalMargen), prev ? delta(d.totalMargen, prev.totalMargen) : '', 'var(--gn)') +
+      cel('Ventas asesoras',
+          vAse != null ? fmt(vAse) : '—',
+          vAse != null ? 'pedidos con asesora · cobrado' : 'actualiza para ver el dato') +
       celComisionable() +
       cel('Margen real', mr.toFixed(2) + '%', mrP != null ? delta(mr, mrP) : '', 'var(--gn)') +
       cel('Margen por día', fmt(porDia),
