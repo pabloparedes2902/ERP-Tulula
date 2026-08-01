@@ -401,6 +401,15 @@ function traer(year, q) {
     // Las otras pestañas ya vienen resueltas
     if (b.asesoras) { ASE.data = b.asesoras; ASE.year = year; }
     if (b.historico) COM.historico = b.historico;
+
+    // El resumen del período ya viene resuelto: no hay que ir a buscarlo
+    if (b.perf && b.rango) {
+      PER.perf = b.perf;
+      PER.perfPrev = b.perfPrev || null;
+      PER.hist = b.histRango || null;
+      PER.rango = b.rango;
+      PER.meses = null;
+    }
     if (b.cierresTrim || b.cierresMes || b.reglasLog) {
       CIERRE.cerradosTrim = b.cierresTrim || [];
       CIERRE.cerradosMes  = b.cierresMes  || [];
