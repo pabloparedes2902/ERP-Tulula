@@ -311,7 +311,7 @@ function inyectarEstilos() {
 '.com-mts{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;align-items:stretch}',
     '@media(min-width:700px){.com-mts{grid-template-columns:repeat(3,1fr)}}',
     '@media(min-width:1000px){.com-mts{grid-template-columns:repeat(5,1fr)}}',
-    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(6,1fr)}}',
+    '@media(min-width:1000px){.com-mts.com-mts-6{grid-template-columns:repeat(7,1fr)}}',
     '.com-met{background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:14px;min-width:0;text-align:center}',
     '.com-met .ml{margin:0 0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}',
     '.com-met .com-big{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;text-align:center}',
@@ -623,6 +623,7 @@ function tarjetaEquipo(R, P, qTxt, meses, year) {
   COM.bonos = {
     bono:     R.rows.reduce(function (s2, r) { return s2 + r.bono; }, 0),
     bonoProy: P.rows.reduce(function (s2, r) { return s2 + r.bono; }, 0),
+    margen:   R.tMar,      // lo que suman las asesoras: es lo que comisiona
   };
 
   var av = avanceTrimestre(year, COM.q || 1);
@@ -1819,6 +1820,18 @@ function pintarPerf() {
            '</div>';
   };
 
+  // Lo que realmente entra al bono: suma de las asesoras, ya filtrado
+  var celComisionable = function () {
+    var v = (COM.bonos && COM.bonos.margen != null) ? fmt(COM.bonos.margen) : '—';
+    var pct = (COM.bonos && COM.bonos.margen != null && d.totalMargen > 0)
+            ? (COM.bonos.margen / d.totalMargen * 100).toFixed(0) + '% del total' : '';
+    return '<div class="com-met" style="border-color:var(--ac)">' +
+             '<div class="ml">Margen comisionable</div>' +
+             '<div class="com-big" style="color:var(--ac)">' + v + '</div>' +
+             '<div class="com-sub2">' + (pct || '&nbsp;') + '</div>' +
+           '</div>';
+  };
+
   var cel = function (label, valor, dt, color) {
     return '<div class="com-met">' +
              '<div class="ml">' + label + '</div>' +
@@ -1836,10 +1849,15 @@ function pintarPerf() {
 
   z.innerHTML = '<div class="card">' +
     '<div class="ct">Resumen del período</div>' +
+    '<div class="ml" style="margin-bottom:10px">' +
+      'El negocio incluye showroom y web. El <b>margen comisionable</b> es solo ' +
+      'el de las asesoras, y con el filtro de pagos activo cuenta únicamente lo cobrado.' +
+    '</div>' +
 
     '<div class="com-mts com-mts-6">' +
-      cel('Ventas', fmt(d.totalVentas), prev ? delta(d.totalVentas, prev.totalVentas) : '') +
-      cel('Margen', fmt(d.totalMargen), prev ? delta(d.totalMargen, prev.totalMargen) : '', 'var(--gn)') +
+      cel('Ventas del negocio', fmt(d.totalVentas), prev ? delta(d.totalVentas, prev.totalVentas) : '') +
+      cel('Margen del negocio', fmt(d.totalMargen), prev ? delta(d.totalMargen, prev.totalMargen) : '', 'var(--gn)') +
+      celComisionable() +
       cel('Margen real', mr.toFixed(2) + '%', mrP != null ? delta(mr, mrP) : '', 'var(--gn)') +
       cel('Margen por día', fmt(porDia),
           (prev && prevDias) ? delta(porDia, prev.totalMargen / prevDias) : '', 'var(--gn)') +
