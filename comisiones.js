@@ -2097,7 +2097,14 @@ function selectorVerComo(cfg) {
    período navegable, su historial y su tarjeta de motivación personal.
    ══════════════════════════════════════════════════════════════════════ */
 
-var VEND = { modo: false, data: null, hist: null, year: null, q: null, cargando: false };
+var VEND = { modo: false, data: null, hist: null, dia: null, year: null, q: null,
+             cargando: false, preview: null };
+
+/** ¿El período seleccionado es el trimestre en curso? */
+function vendEsActual() {
+  var hoy = new Date();
+  return VEND.year === hoy.getFullYear() && VEND.q === Math.ceil((hoy.getMonth() + 1) / 3);
+}
 
 function vendCargar(forzar) {
   VEND.modo = true;
@@ -2112,14 +2119,25 @@ function vendCargar(forzar) {
     c.innerHTML = '<div class="ld"><div class="sp"></div>Cargando tus comisiones...</div>';
   }
 
+  // En modo vista previa (admin), las ops llevan a quién mirar
+  var pv = VEND.preview;
+  var argsVend = { year: VEND.year, q: VEND.q };
+  if (pv) argsVend.asesora = pv.email;
+  var argsMios = pv ? { nombre: pv.nombre } : {};
+
   Promise.all([
-    comApi('vendedora', { year: VEND.year, q: VEND.q }),
+    comApi('vendedora', argsVend),
     (VEND.hist && !forzar) ? Promise.resolve(VEND.hist)
-      : comApi('miHistorial', { year: hoy.getFullYear() }).catch(function () { return null; }),
+      : comApi('miHistorial', Object.assign({ year: hoy.getFullYear() }, argsMios))
+          .catch(function () { return null; }),
+    vendEsActual()
+      ? comApi('miDia', argsMios).catch(function () { return null; })
+      : Promise.resolve(null),
   ]).then(function (rs) {
     VEND.cargando = false;
     VEND.data = rs[0];
     VEND.hist = rs[1];
+    VEND.dia  = rs[2];
     pintarVerComo(VEND.data, true);
   }).catch(function (e) { VEND.cargando = false; pintarError(e); });
 }
@@ -2211,6 +2229,98 @@ function tarjetaCamino() {
   return '<div class="card"><div class="ct">Tu camino</div>' + filas + '</div>';
 }
 
+/**
+ * FASE 2 — META DEL DÍA (idea de Pablo): doble objetivo diario, en soles
+ * cobrados Y en cantidad de pedidos. Se calcula solo: lo que falta del mes
+ * ÷ los días que quedan. Incluye la racha 🔥 de días cumpliendo.
+ */
+function tarjetaMetaDia(d) {
+  if (!vendEsActual() || !VEND.dia || !VEND.dia.dias) return '';
+
+  var hoy = new Date();
+  var diaHoy = hoy.getDate();
+  var diasMes = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0).getDate();
+  var idxMes = (d.meses || []).indexOf(hoy.getMonth() + 1);
+
+  var gm = ((Number(d.gmPct) || 62) / 100);
+  var metaMesMargen = Number(d.metaM) || 0;                    // meta de margen del mes
+  var margenMes = idxMes >= 0 ? (Number((d.marginM || [])[idxMes]) || 0) : 0;
+  var faltaMargen = Math.max(0, metaMesMargen - margenMes);
+  var diasRestantes = Math.max(1, diasMes - diaHoy + 1);
+
+  var metaDiaVentas = gm > 0 ? (faltaMargen / diasRestantes) / gm : 0;
+  var ticket = Number(d.ticketOwn) || Number(d.ticket) || 0;
+  var metaDiaPedidos = (metaDiaVentas > 0 && ticket > 0) ? Math.ceil(metaDiaVentas / ticket) : 0;
+
+  var hoyDat = VEND.dia.dias[diaHoy] || { cobrado: 0, pedidos: 0 };
+
+  // Racha: días seguidos cumpliendo la meta diaria FIJA del mes (meta mensual
+  // en ventas ÷ días del mes), contando hacia atrás desde ayer; si hoy ya
+  // cumplió, hoy también suma.
+  var metaFija = gm > 0 ? (metaMesMargen / gm) / diasMes : 0;
+  var racha = 0;
+  if (metaFija > 0) {
+    if ((hoyDat.cobrado || 0) >= metaFija) racha++;
+    for (var dd = diaHoy - 1; dd >= 1; dd--) {
+      var v = VEND.dia.dias[dd];
+      if (v && v.cobrado >= metaFija) racha++;
+      else break;
+    }
+  }
+
+  var barrita = function (valor, meta, color) {
+    var pct = meta > 0 ? Math.max(0, Math.min(100, valor / meta * 100)) : 0;
+    var lleno = meta > 0 && valor >= meta;
+    return '<div style="height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;margin-top:6px">' +
+      '<div style="width:' + pct.toFixed(0) + '%;height:100%;border-radius:4px;background:' +
+      (lleno ? 'var(--gn)' : color) + '"></div></div>';
+  };
+
+  var metaCumplida = metaDiaVentas <= 0;   // ya no le falta nada del mes
+  var cuerpo;
+  if (metaCumplida) {
+    cuerpo = '<div style="font-size:14px;color:var(--gn);font-weight:600">' +
+             '🏁 ¡Meta del mes completa! Todo lo que cobres ahora es pura ganancia de bono.</div>';
+  } else {
+    cuerpo =
+      '<div class="com-row" style="border:none;padding-bottom:0">' +
+        '<span class="com-mut">Cobrar hoy</span>' +
+        '<span style="font-weight:600">' + fmt(hoyDat.cobrado) +
+          ' <span class="com-mut" style="font-weight:400">de ' + fmt(metaDiaVentas) + '</span></span>' +
+      '</div>' + barrita(hoyDat.cobrado, metaDiaVentas, 'var(--ac)') +
+      '<div class="com-row" style="border:none;padding-bottom:0;margin-top:12px">' +
+        '<span class="com-mut">Pedidos hoy</span>' +
+        '<span style="font-weight:600">' + (hoyDat.pedidos || 0) +
+          ' <span class="com-mut" style="font-weight:400">de ' + metaDiaPedidos + '</span></span>' +
+      '</div>' + barrita(hoyDat.pedidos || 0, metaDiaPedidos, 'var(--am)');
+  }
+
+  return '<div class="card">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center">' +
+      '<div class="ct" style="margin:0">Tu meta de hoy</div>' +
+      (racha > 0 ? '<span style="font-size:13px;font-weight:600">🔥 ' + racha +
+        (racha === 1 ? ' día' : ' días seguidos') + '</span>' : '') +
+    '</div>' +
+    '<div style="margin-top:10px">' + cuerpo + '</div>' +
+    '<div class="ml" style="margin-top:10px">Se recalcula cada día con lo que te falta del mes.</div>' +
+  '</div>';
+}
+
+/** FASE 2 — Celebración: si subió de nivel desde su última visita. */
+function bannerCelebracion(d, nivel) {
+  if (!vendEsActual()) return '';
+  var clave = 'com_nivel_' + String(d.nombre || '').toLowerCase();
+  var previo = -1;
+  try { previo = parseInt(localStorage.getItem(clave), 10); } catch (e) {}
+  try { localStorage.setItem(clave, String(nivel)); } catch (e) {}
+  if (isNaN(previo) || previo < 0 || nivel <= previo) return '';
+  return '<div class="card" style="border-color:var(--gn);text-align:center">' +
+    '<div style="font-size:20px">🎉</div>' +
+    '<div style="font-weight:700;color:var(--gn)">¡Subiste al ' + nivel + '° nivel!</div>' +
+    '<div class="ml">Tu bono creció. Sigue así.</div>' +
+  '</div>';
+}
+
 /** Cierres anteriores de la asesora, desde SU historial (sin montos ajenos). */
 function tarjetaCierresVend() {
   var h = VEND.hist;
@@ -2295,16 +2405,23 @@ function pintarVerComo(d, real) {
   var cabecera = real
     ? '<div style="display:flex;justify-content:space-between;align-items:center;' +
         'gap:10px;margin-bottom:14px;max-width:620px;margin-left:auto;margin-right:auto">' +
-        '<div style="font-size:17px;font-weight:600">Mis comisiones</div>' +
-        vendSelector() +
+        '<div style="font-size:17px;font-weight:600">' +
+          (VEND.preview ? 'Así lo ve ' + esc(VEND.preview.nombre) : 'Mis comisiones') + '</div>' +
+        '<div style="display:flex;gap:8px;align-items:center">' +
+          vendSelector() +
+          (VEND.preview ? '<button class="btn bg bs" onclick="comVerComo(\'\')">← Mi vista</button>' : '') +
+        '</div>' +
       '</div>'
     : pestañas('home') +
       '<div style="display:flex;justify-content:flex-end;margin-bottom:10px">' +
         '<button class="btn bg bs" onclick="comVerComo(\'\')">Volver a mi vista</button>' +
       '</div>';
 
+  var lvActual = nivelDe(yo.cumpl, R.tiers);
   c.innerHTML = cabecera +
     '<div style="max-width:620px;margin:0 auto">' +
+      (real ? bannerCelebracion(d, lvActual) : '') +
+      (real ? tarjetaMetaDia(d) : '') +
       '<div class="card">' +
         // Nombre y cumplimiento en la misma línea, mismo tamaño (como las
         // tarjetas de asesora de la vista general)
@@ -3162,14 +3279,34 @@ window.comAplicarCustom = function () {
 
 window.comVerComo = function (email) {
   COM.comoEmail = email || '';
-  if (!email) { cargar(); return; }
+  if (!email) {
+    // salir de la vista previa: limpiar el estado de asesora y volver al panel
+    VEND.preview = null; VEND.data = null; VEND.hist = null; VEND.dia = null;
+    VEND.year = null; VEND.q = null;
+    cargar();
+    return;
+  }
   var c = cont();
   if (c) c.innerHTML = pestañas('home') + '<div class="ld"><div class="sp"></div>Cargando su vista...</div>';
   comApi('vendedora', { year: COM.year, q: COM.q, asesora: email })
     .then(function (d) {
       if (COM.comoEmail !== email) return;   // ya cambió de selección
       if (d && d.isAdmin) { pintarError(new Error('Ese correo es de un administrador, no de una asesora.')); return; }
-      pintarVerComo(d);
+      // 2-ago: la vista previa del admin ahora es la EXPERIENCIA REAL de la
+      // asesora (selector de período, Tu camino, meta del día, cierres).
+      VEND.preview = { email: email, nombre: d.nombre };
+      VEND.year = COM.year; VEND.q = COM.q;
+      VEND.data = d;
+      Promise.all([
+        comApi('miHistorial', { nombre: d.nombre, year: new Date().getFullYear() })
+          .catch(function () { return null; }),
+        vendEsActual() ? comApi('miDia', { nombre: d.nombre }).catch(function () { return null; })
+                       : Promise.resolve(null),
+      ]).then(function (rs) {
+        if (COM.comoEmail !== email) return;
+        VEND.hist = rs[0]; VEND.dia = rs[1];
+        pintarVerComo(d, true);
+      });
     })
     .catch(pintarError);
 };
