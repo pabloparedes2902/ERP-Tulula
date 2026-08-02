@@ -3419,8 +3419,12 @@ var EXTRA = { cfgFull: null };   // respaldo de config (tiers/sueldos) desde el 
 var SBC_TTL = 5 * 60 * 1000;   // 5 min: el espejo se refresca cada minuto
 
 function sbDisponible() {
-  return typeof window.SB_URL !== 'undefined' &&
-         typeof window._sbSesionAsegurar === 'function';
+  // OJO: SB_URL es un `const` del index.html — NO cuelga de window. Hay que
+  // mirarlo como identificador suelto (los scripts comparten el ámbito global).
+  try {
+    return typeof SB_URL !== 'undefined' && !!SB_URL &&
+           typeof _sbSesionAsegurar === 'function';
+  } catch (e) { return false; }
 }
 
 /** UNA llamada trae TODO lo numérico (2 años por asesora/mes + día a día). */
@@ -3429,11 +3433,11 @@ function sbVistaFull(forzar) {
   if (SBC.full && !forzar && Date.now() - SBC.t < SBC_TTL) return Promise.resolve(SBC.full);
   if (SBC.cargando) return SBC.cargando;
   var hoy = new Date();
-  SBC.cargando = window._sbSesionAsegurar().then(function (tok) {
+  SBC.cargando = _sbSesionAsegurar().then(function (tok) {
     if (!tok) return null;
-    return fetch(window.SB_URL + '/rest/v1/rpc/comisiones_vista_full', {
+    return fetch(SB_URL + '/rest/v1/rpc/comisiones_vista_full', {
       method: 'POST',
-      headers: { 'apikey': window.SB_ANON, 'Authorization': 'Bearer ' + tok,
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok,
                  'Content-Type': 'application/json' },
       body: JSON.stringify({ p_year: hoy.getFullYear(),
                              p_dia_year: hoy.getFullYear(),
