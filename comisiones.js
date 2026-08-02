@@ -451,6 +451,13 @@ function traer(year, q) {
           cierresTrim: b.cierresTrim || [], cierresMes: b.cierresMes || [] }));
       }
     } catch (e) {}
+    // Si el admin está en "Ver como" y la vista salió antes de que llegaran
+    // los cierres (primer arranque), repintarla ahora que ya están completos.
+    try {
+      if (VEND.preview && COM.comoEmail) {
+        sbMontarVerComo(VEND.preview.email, VEND.preview.nombre, VEND.year, VEND.q);
+      }
+    } catch (e) {}
     // El histórico va aparte: alimenta la alerta de desviaciones
     setTimeout(precargarPestanas, 1200);
     return b.admin;
