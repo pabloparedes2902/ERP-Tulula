@@ -2345,7 +2345,7 @@ function tarjetaMetaDia(d) {
   var cuerpo;
   if (metaCumplida) {
     cuerpo = '<div style="font-size:14px;color:var(--gn);font-weight:600">' +
-             '🏁 ¡Meta del mes completa! Todo lo que cobres ahora es pura ganancia de bono.</div>';
+             '🏁 ¡Meta del mes completa! Todo lo que cobres ahora es pura ganancia de comisión.</div>';
   } else {
     cuerpo =
       '<div class="com-row" style="border:none;padding-bottom:0">' +
@@ -2382,7 +2382,7 @@ function bannerCelebracion(d, nivel) {
   return '<div class="card" style="border-color:var(--gn);text-align:center">' +
     '<div style="font-size:20px">🎉</div>' +
     '<div style="font-weight:700;color:var(--gn)">¡Subiste al ' + nivel + '° nivel!</div>' +
-    '<div class="ml">Tu bono creció. Sigue así.</div>' +
+    '<div class="ml">Tu comisión creció. Sigue así.</div>' +
   '</div>';
 }
 
@@ -2555,7 +2555,7 @@ function pintarVerComo(d, real) {
         '<div class="com-sub">' + esc(qTxt) +
           (cerrado ? ' · <b style="color:var(--gn)">Trimestre cerrado ✓</b>' : '') + '</div>' +
         '<div style="text-align:center;margin:20px 0 8px">' +
-          '<div class="ml">' + (cerrado ? 'Tu comisión' : 'Tu bono del trimestre') + '</div>' +
+          '<div class="ml">' + (cerrado ? 'Tu comisión' : 'Tu comisión del trimestre') + '</div>' +
           '<div style="font-size:36px;font-weight:700;letter-spacing:-1px;' +
                'color:' + (bonoVer > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(bonoVer) + '</div>' +
           (cerrado
@@ -2573,8 +2573,9 @@ function pintarVerComo(d, real) {
                 ? 'El equipo llegó al nivel 1° en promedio. Comisión pagada.'
                 : 'El equipo no llegó al mínimo en este trimestre.')
             : (R.teamGate
-                ? 'El equipo llegó al mínimo: tu bono está activo.'
-                : 'El bono se activa cuando el equipo completo supere el ' + R.gate + '%. Van ' + p2(R.teamCumpl) + '.')) +
+                ? 'El equipo llegó al nivel 1° en promedio. Tu comisión está activa.'
+                : 'La comisión se activa cuando el equipo llegue al menos al 1° nivel en promedio (' +
+                  R.gate + '%). Van ' + p2(R.teamCumpl) + '.')) +
         '</div>' +
       '</div>';
 
