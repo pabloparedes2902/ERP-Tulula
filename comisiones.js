@@ -829,31 +829,26 @@ function tarjetaCobertura(d) {
 }
 
 function tarjetaReglas(cfg, R, titulo) {
-  var tiers = (cfg.tiers && cfg.tiers.length) ? cfg.tiers : TIERS_FALLBACK;
-  var x = (R && R.x) || cfg.xMeta || 12;
-  var gate = (R && R.gate) || (tiers[0] ? tiers[0].from : 75);
-
+  // 3-ago (pedido Pablo): texto FIJO e INAMOVIBLE, igual en todas las vistas.
+  // No se deriva de la config ni se toca sin pedido explícito de Pablo.
   var punto = function (color, txt) {
-    return '<span style="display:inline-flex;align-items:center;gap:5px">' +
+    return '<span style="display:inline-flex;align-items:center;gap:6px">' +
              '<span style="width:9px;height:9px;border-radius:50%;background:' + color + ';' +
                    'flex-shrink:0"></span>' + txt +
            '</span>';
   };
 
-  var COLORES = ['var(--am)', 'var(--gn)', COM_CELESTE];
-  var niveles = tiers.map(function (t, i) {
-    return punto(COLORES[i] || 'var(--gn)',
-                 (i + 1) + '° desde ' + t.from + '% → ' + t.rate + '%');
-  }).join(' &nbsp;·&nbsp; ');
-
-  // 3-ago (pedido Pablo): versión de 3 líneas de siempre, y NUNCA mostrar el
-  // multiplicador del sueldo (dato interno).
   return '<div class="card">' +
     '<div class="ct">' + esc(titulo || 'Reglas vigentes') + '</div>' +
     '<div style="font-size:13px;line-height:2.1">' +
-      'La meta se calcula según tu sueldo del mes, medida en margen. Pago <b>trimestral</b>.<br>' +
-      '<b>Niveles</b>: ' + punto('var(--rd)', 'no llega') + ' &nbsp;·&nbsp; ' + niveles + '<br>' +
-      'El bono se activa cuando el equipo completo supera el <b>' + gate + '%</b>.' +
+      'Meta = Ventas (pedidos con pago completo) x Margen bruto x Factor nivel x 3 (meses)<br>' +
+      '<b>Niveles de comisión:</b><br>' +
+      punto('var(--rd)',  'Nivel 0° = Menos de 75%') + '<br>' +
+      punto('var(--am)',  '1° Nivel = 75% - 100%') + '<br>' +
+      punto('var(--gn)',  '2° Nivel = 100% - 125%') + '<br>' +
+      punto(COM_CELESTE,  '3° Nivel = Más de 125%') + '<br>' +
+      '<b>Activación:</b> La comisión se activa siempre y cuando el equipo ' +
+      'llegue al menos al 1° nivel en promedio.' +
     '</div>' +
   '</div>';
 }
@@ -2490,9 +2485,12 @@ function pintarVerComo(d, real) {
         var yoMismo0 = String(f0.asesora || '').trim().toUpperCase() ===
                        String(d.nombre || '').trim().toUpperCase();
         return '<div class="com-row">' +
-                 '<span style="font-weight:' + (yoMismo0 ? '700' : '400') + ';' +
-                       (yoMismo0 ? 'color:var(--ac)' : '') + '">' +
-                   (i + 1) + '. ' + esc(f0.asesora) + (yoMismo0 ? ' (tú)' : '') + '</span>' +
+                 '<div style="display:flex;align-items:center;gap:10px">' +
+                   medalla(i) +
+                   '<span style="font-weight:' + (yoMismo0 ? '700' : '400') + ';' +
+                         (yoMismo0 ? 'color:var(--ac)' : '') + '">' +
+                     esc(f0.asesora) + (yoMismo0 ? ' (tú)' : '') + '</span>' +
+                 '</div>' +
                '</div>';
       }).join('');
   } else {
@@ -2501,9 +2499,12 @@ function pintarVerComo(d, real) {
       .map(function (r, i) {
         var yoMismo = r.nombre === d.nombre;
         return '<div class="com-row">' +
-                 '<span style="font-weight:' + (yoMismo ? '700' : '400') + ';' +
-                       (yoMismo ? 'color:var(--ac)' : '') + '">' +
-                   (i + 1) + '. ' + esc(r.nombre) + (yoMismo ? ' (tú)' : '') + '</span>' +
+                 '<div style="display:flex;align-items:center;gap:10px">' +
+                   medalla(i) +
+                   '<span style="font-weight:' + (yoMismo ? '700' : '400') + ';' +
+                         (yoMismo ? 'color:var(--ac)' : '') + '">' +
+                     esc(r.nombre) + (yoMismo ? ' (tú)' : '') + '</span>' +
+                 '</div>' +
                  '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(r.cumpl, R.tiers)] + '">' +
                    p2(r.cumpl) + '</span>' +
                '</div>';
@@ -2554,7 +2555,7 @@ function pintarVerComo(d, real) {
         '<div class="com-sub">' + esc(qTxt) +
           (cerrado ? ' · <b style="color:var(--gn)">Trimestre cerrado ✓</b>' : '') + '</div>' +
         '<div style="text-align:center;margin:20px 0 8px">' +
-          '<div class="ml">' + (cerrado ? 'Tu bono pagado' : 'Tu bono del trimestre') + '</div>' +
+          '<div class="ml">' + (cerrado ? 'Tu comisión' : 'Tu bono del trimestre') + '</div>' +
           '<div style="font-size:36px;font-weight:700;letter-spacing:-1px;' +
                'color:' + (bonoVer > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(bonoVer) + '</div>' +
           (cerrado
@@ -2569,7 +2570,7 @@ function pintarVerComo(d, real) {
              ((cerrado ? cierreOf.teamGate === 'SI' : R.teamGate) ? 'var(--gn)' : 'var(--rd)') + '">' +
           (cerrado
             ? (cierreOf.teamGate === 'SI'
-                ? 'El equipo llegó al mínimo: bono pagado.'
+                ? 'El equipo llegó al nivel 1° en promedio. Comisión pagada.'
                 : 'El equipo no llegó al mínimo en este trimestre.')
             : (R.teamGate
                 ? 'El equipo llegó al mínimo: tu bono está activo.'
