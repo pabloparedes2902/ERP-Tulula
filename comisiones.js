@@ -42,25 +42,52 @@ function claveCacheResumen(year, q) { return 'comres_' + year + '_q' + q; }
 
 function cacheLeer(year, q) {
   try {
-    var raw = sessionStorage.getItem(claveCache(year, q));
+    // 1º la pestaña actual; 2º el disco (2-ago: para que el panel abra al
+    // instante también tras reiniciar el navegador; solo laptop del admin).
+    var raw = sessionStorage.getItem(claveCache(year, q)) ||
+              ((typeof MY_ROLE === 'undefined' || MY_ROLE === 'Administrador')
+                ? localStorage.getItem(claveCache(year, q)) : null);
     if (!raw) return null;
     var o = JSON.parse(raw);
-    return (o && o.data) ? o : null;
+    if (!o || !o.data) return null;
+    if (o.t && Date.now() - o.t > 24 * 60 * 60 * 1000) return null;  // >24h: viejo
+    return o;
   } catch (e) { return null; }
 }
 
 function cacheGuardar(year, q, data) {
   try {
-    sessionStorage.setItem(claveCache(year, q),
-      JSON.stringify({ data: data, t: Date.now() }));
+    var pack = JSON.stringify({ data: data, t: Date.now() });
+    sessionStorage.setItem(claveCache(year, q), pack);
+    if (typeof MY_ROLE === 'undefined' || MY_ROLE === 'Administrador') {
+      localStorage.setItem(claveCache(year, q), pack);
+    }
   } catch (e) {}   // cuota llena o modo privado: seguimos sin caché
+}
+
+/** Restaura esquema (sueldos/factores) y cierres desde el disco del admin,
+ *  para que "Ver como" y las tarjetas de cierres funcionen sin esperar al
+ *  bootstrap de Apps Script. */
+function extrasRestaurar(year) {
+  try {
+    if (ASE.data && CIERRE.cerradosTrim.length) return;
+    var raw = localStorage.getItem('com_extra_' + year);
+    if (!raw) return;
+    var o = JSON.parse(raw);
+    if (!o || !o.t || Date.now() - o.t > 24 * 60 * 60 * 1000) return;
+    if (o.ase && !ASE.data) { ASE.data = o.ase; ASE.year = year; }
+    if (o.cierresTrim && !CIERRE.cerradosTrim.length) CIERRE.cerradosTrim = o.cierresTrim;
+    if (o.cierresMes && !CIERRE.cerradosMes.length)  CIERRE.cerradosMes  = o.cierresMes;
+  } catch (e) {}
 }
 
 function cacheBorrar() {
   try {
-    Object.keys(sessionStorage)
-      .filter(function (k) { return k.indexOf('com_') === 0 || k.indexOf('comres_') === 0; })
-      .forEach(function (k) { sessionStorage.removeItem(k); });
+    [sessionStorage, localStorage].forEach(function (st) {
+      Object.keys(st)
+        .filter(function (k) { return k.indexOf('com_') === 0 || k.indexOf('comres_') === 0; })
+        .forEach(function (k) { st.removeItem(k); });
+    });
   } catch (e) {}
 }
 
@@ -369,12 +396,13 @@ function cargar(forzar) {
   // 1) En memoria
   if (COM.data && !forzar) { pintarHome(); refrescarDetras(); return; }
 
-  // 2) En caché de sesión
+  // 2) En caché de sesión (o del disco, tras reiniciar el navegador)
   if (!forzar) {
     var c = cacheLeer(COM.year, COM.q);
     if (c) {
       COM.data = c.data;
       COM.traidoEn = c.t;
+      extrasRestaurar(COM.year);
       pintarHome();
       refrescarDetras();
       return;
@@ -414,6 +442,15 @@ function traer(year, q) {
       CIERRE.log          = b.reglasLog   || [];
       CIERRE.cargado = true;
     }
+    // 2-ago: guardar esquema y cierres en el disco del admin para que la
+    // vista abra completa al instante incluso tras reiniciar el navegador.
+    try {
+      if (typeof MY_ROLE === 'undefined' || MY_ROLE === 'Administrador') {
+        localStorage.setItem('com_extra_' + year, JSON.stringify({
+          t: Date.now(), ase: b.asesoras || null,
+          cierresTrim: b.cierresTrim || [], cierresMes: b.cierresMes || [] }));
+      }
+    } catch (e) {}
     // El histórico va aparte: alimenta la alerta de desviaciones
     setTimeout(precargarPestanas, 1200);
     return b.admin;
@@ -535,7 +572,9 @@ function pintarHome() {
 
   // PRECARGA "Ver como" (2-ago): con el panel ya pintado, traer en segundo
   // plano la vista de cada asesora para que el switch abra al instante.
-  setTimeout(vcPrecache, 2500);
+  setTimeout(vcPrecache, 1500);
+  // Números frescos de la base espejo (~2 s), en silencio.
+  setTimeout(sbRefrescarPanel, 300);
 }
 
 /* ── Navegación interna del módulo ─────────────────────────────────── */
@@ -2122,6 +2161,15 @@ function vendCargar(forzar) {
   VEND.year = VEND.year || hoy.getFullYear();
   VEND.q    = VEND.q    || Math.ceil((hoy.getMonth() + 1) / 3);
 
+  // ── VÍA RÁPIDA (solo vista previa del admin): el cambio de trimestre se
+  //    arma desde los datos ya traídos de la base espejo, sin ir al servidor.
+  var pv0 = VEND.preview;
+  if (pv0 && sbDisponible() && SBC.full &&
+      VEND.year === new Date().getFullYear() &&
+      sbMontarVerComo(pv0.email, pv0.nombre, VEND.year, VEND.q)) {
+    return;
+  }
+
   if (VEND.cargando) return;
   VEND.cargando = true;
   var c = cont();
@@ -3052,6 +3100,9 @@ window.comCambiarPeriodo = function () {
 };
 
 // Lo llama el botón de recarga del ERP: tira todo lo guardado y vuelve a pedir
+// Gancho para el banco de pruebas: limpiar la caché de la vía rápida
+window.__sbcReset = function () { SBC.full = null; SBC.t = 0; SBC.cargando = null; };
+
 window._comReset = function () {
   COM.data = null;
   COM.traidoEn = null;
@@ -3059,6 +3110,7 @@ window._comReset = function () {
   CIERRE.cargado = false;
   PER.perf = null; PER.perfPrev = null; PER.hist = null;
   VEND.data = null; VEND.hist = null;   // modo asesora: refrescar también
+  SBC.full = null; SBC.t = 0;            // vía rápida: pedir datos frescos
   cacheBorrar();
 };
 
@@ -3295,6 +3347,189 @@ window.comAplicarCustom = function () {
   cargarPeriodo('custom', a, b);
 };
 
+/* ── VÍA RÁPIDA SUPABASE (2-ago noche) ──────────────────────────────
+   El servidor de Apps Script está saturado: un ping vacío tarda 9-18 s
+   (medido en vivo). La base espejo contesta lo mismo en ~2 s, así que
+   los NÚMEROS del módulo se leen de ahí (RPC comisiones_vista_full,
+   mismo motor validado al centavo) y Apps Script queda solo como
+   respaldo y para lo que no está en la base (config, cierres).       */
+
+var SBC = { full: null, t: 0, cargando: null };
+var SBC_TTL = 5 * 60 * 1000;   // 5 min: el espejo se refresca cada minuto
+
+function sbDisponible() {
+  return typeof window.SB_URL !== 'undefined' &&
+         typeof window._sbSesionAsegurar === 'function';
+}
+
+/** UNA llamada trae TODO lo numérico (2 años por asesora/mes + día a día). */
+function sbVistaFull(forzar) {
+  if (!sbDisponible()) return Promise.resolve(null);
+  if (SBC.full && !forzar && Date.now() - SBC.t < SBC_TTL) return Promise.resolve(SBC.full);
+  if (SBC.cargando) return SBC.cargando;
+  var hoy = new Date();
+  SBC.cargando = window._sbSesionAsegurar().then(function (tok) {
+    if (!tok) return null;
+    return fetch(window.SB_URL + '/rest/v1/rpc/comisiones_vista_full', {
+      method: 'POST',
+      headers: { 'apikey': window.SB_ANON, 'Authorization': 'Bearer ' + tok,
+                 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_year: hoy.getFullYear(),
+                             p_dia_year: hoy.getFullYear(),
+                             p_dia_mes: hoy.getMonth() + 1 }),
+    }).then(function (r) { return r.ok ? r.json() : null; });
+  }).then(function (d) {
+    SBC.cargando = null;
+    if (d && d.anual) { SBC.full = d; SBC.t = Date.now(); }
+    return SBC.full;
+  }).catch(function () { SBC.cargando = null; return null; });
+  return SBC.cargando;
+}
+
+function sbAsesoraEsquema(nombre) {
+  var lista = (ASE.data && ASE.data.asesoras) || [];
+  for (var i = 0; i < lista.length; i++) {
+    if (String(lista[i].nombre || '').trim().toUpperCase() === nombre) return lista[i];
+  }
+  return null;
+}
+
+/** Arma {vend, hist, dia} para una asesora SIN tocar Apps Script:
+ *  números del RPC + sueldos/factores del esquema + cierres del bootstrap.
+ *  Devuelve null si falta alguna pieza (el caller cae a la vía de siempre). */
+function sbArmarVista(nombre, year, q) {
+  var full = SBC.full;
+  var hoy = new Date();
+  if (!full || !full.anual) return null;
+  if (!COM.data || !COM.data.cfgFull) return null;
+  if (!ASE.data || !(ASE.data.asesoras || []).length) return null;
+  if (year !== hoy.getFullYear()) return null;   // el RPC cubre year-1..year; el esquema, el año actual
+  nombre = String(nombre || '').trim().toUpperCase();
+
+  var cfgFull = COM.data.cfgFull;
+  var xMeta = Number(cfgFull.xMeta) || 12;
+  var meses = [(q - 1) * 3 + 1, (q - 1) * 3 + 2, (q - 1) * 3 + 3];
+
+  var idx = {};
+  full.anual.forEach(function (a) {
+    idx[String(a.asesora).toUpperCase() + '|' + a.y + '|' + a.mes] = a;
+  });
+
+  var teamRows = [], propio = null;
+  (ASE.data.asesoras || []).forEach(function (e) {
+    var nomE = String(e.nombre || '').trim().toUpperCase();
+    var marginM = [], ventasM = [], factorM = [], sueldoM = [];
+    var vQ = 0, mQ = 0, pedQ = 0;
+    meses.forEach(function (m) {
+      var reg = (e.meses || [])[m - 1] || {};
+      var activo = reg.activo ? 1 : 0;
+      var a = idx[nomE + '|' + year + '|' + m];
+      var v  = (reg.ventaOv  != null) ? Number(reg.ventaOv)  : (a ? Number(a.ventas) : 0);
+      var mg = (reg.margenOv != null) ? Number(reg.margenOv) : (a ? Number(a.margen) : 0);
+      marginM.push(activo ? Math.round(mg) : 0);
+      ventasM.push(activo ? Math.round(v) : 0);
+      factorM.push(activo);
+      sueldoM.push(activo ? Math.round(Number(reg.sueldoEfectivo) || 0) : 0);
+      if (activo) { vQ += v; mQ += mg; pedQ += a ? (Number(a.pedidos) || 0) : 0; }
+    });
+    var fila = { nombre: e.nombre, base_m: Number(e.base) || 0,
+                 gmPct: vQ > 0 ? Math.round(mQ / vQ * 1000) / 10 : (Number(cfgFull.gm_pct) || 62),
+                 marginM: marginM, ventasM: ventasM, factorM: factorM, sueldoM: sueldoM };
+    teamRows.push(fila);
+    if (nomE === nombre) propio = { fila: fila, vQ: vQ, pedQ: pedQ, esq: e };
+  });
+  if (!propio) return null;
+
+  var hoyMes = hoy.getMonth() + 1;
+  var jMes = meses.indexOf(hoyMes);
+  var vend = {
+    isAdmin: false, nombre: propio.fila.nombre, year: year, q: q, meses: meses,
+    cfg: { tiers: cfgFull.tiers, xMeta: xMeta, gm_pct: cfgFull.gm_pct },
+    teamRows: teamRows,
+    marginM: propio.fila.marginM,
+    gmPct: propio.fila.gmPct,
+    metaM: jMes >= 0 ? xMeta * (propio.fila.sueldoM[jMes] || 0) : 0,
+    ticketOwn: propio.pedQ > 0 ? Math.round(propio.vQ / propio.pedQ) : 0,
+  };
+
+  var series = {};
+  full.anual.forEach(function (a) {
+    if (String(a.asesora).toUpperCase() !== nombre) return;
+    if (!series[a.y]) series[a.y] = {};
+    series[a.y][a.mes] = { margen: Math.round(Number(a.margen)), ventas: Math.round(Number(a.ventas)) };
+  });
+
+  var cierres = [];
+  (CIERRE.cerradosTrim || []).forEach(function (c) {
+    var f = (c.filas || []).find(function (x) {
+      return String(x.asesora || '').trim().toUpperCase() === nombre;
+    });
+    if (!f) return;
+    var ci = { yq: c.yq, cumpl: f.cumpl, bono: f.bonoPagar, equipo: c.teamGate === 'SI' };
+    var p = String(c.yq || '').match(/^(\d{4})-Q(\d)$/);
+    if (p && parseInt(p[1], 10) === (ASE.year || year)) {
+      var ms = [];
+      for (var m2 = (parseInt(p[2], 10) - 1) * 3 + 1; m2 <= parseInt(p[2], 10) * 3; m2++) {
+        var r2 = (propio.esq.meses || [])[m2 - 1] || {};
+        if (r2.activo && (Number(r2.sueldoEfectivo) || 0) > 0) ms.push(m2);
+      }
+      if (ms.length) ci.meses = ms;
+    }
+    cierres.push(ci);
+  });
+  var hist = { nombre: propio.fila.nombre, year: year, series: series, cierres: cierres };
+
+  var dias = {};
+  (full.dia || []).forEach(function (d) {
+    if (String(d.asesora).toUpperCase() !== nombre) return;
+    dias[d.dia] = { cobrado: Number(d.cobrado) || 0, pedidos: Number(d.pedidos) || 0 };
+  });
+  var dia = { nombre: propio.fila.nombre, year: hoy.getFullYear(), mes: hoyMes, dias: dias };
+
+  return { vend: vend, hist: hist, dia: dia };
+}
+
+/** Monta la vista de la asesora desde la vía rápida. true si pudo. */
+function sbMontarVerComo(email, nombre, year, q) {
+  var r = sbArmarVista(nombre, year, q);
+  if (!r) return false;
+  VEND.preview = { email: email, nombre: r.vend.nombre };
+  VEND.year = year; VEND.q = q;
+  VEND.data = r.vend; VEND.hist = r.hist; VEND.dia = r.dia;
+  pintarVerComo(r.vend, true);
+  return true;
+}
+
+/** Refresca los números del panel Admin desde la base espejo (rápido y en
+ *  silencio). Respeta los overrides manuales del esquema (AsesorasMes). */
+function sbRefrescarPanel() {
+  if (!sbDisponible() || !COM.data || !COM.data.results) return;
+  var year = COM.year, q = COM.q, hoyR = new Date();
+  if (year !== hoyR.getFullYear()) return;
+  sbVistaFull().then(function (full) {
+    if (!full || !full.anual) return;
+    if (COM.year !== year || COM.q !== q) return;
+    var meses = COM.data.meses || [(q - 1) * 3 + 1, (q - 1) * 3 + 2, (q - 1) * 3 + 3];
+    var idx = {};
+    full.anual.forEach(function (a) { idx[String(a.asesora).toUpperCase() + '|' + a.y + '|' + a.mes] = a; });
+    var cambio = false;
+    COM.data.results.forEach(function (r) {
+      var nomR = String(r.nombre || '').trim().toUpperCase();
+      var esq = sbAsesoraEsquema(nomR);
+      meses.forEach(function (m, j) {
+        var reg = esq && (esq.meses || [])[m - 1];
+        if (reg && (reg.ventaOv != null || reg.margenOv != null)) return;  // override manual manda
+        var a = idx[nomR + '|' + year + '|' + m];
+        var v = a ? Math.round(Number(a.ventas)) : 0;
+        var mg = a ? Math.round(Number(a.margen)) : 0;
+        if (r.ventas && r.ventas[j] !== v)   { r.ventas[j] = v;   cambio = true; }
+        if (r.marginM && r.marginM[j] !== mg) { r.marginM[j] = mg; cambio = true; }
+      });
+    });
+    if (cambio && COM.vista === 'home' && !COM.comoEmail) pintarHome();
+  });
+}
+
 /* ── Ver como asesora ── */
 
 // PRECARGA (2-ago): apenas el panel Admin queda pintado, se traen en segundo
@@ -3315,10 +3550,12 @@ function vcArgs(email) {
 }
 
 function vcPrecache() {
-  if (vcPrecargando) return;
   if (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA) return;
-  // La lista de asesoras viaja en cfgFull (el mismo campo que usa el selector
-  // "Ver como"); cfg queda como respaldo por si el backend cambia la forma.
+  // Vía rápida: UNA llamada a la base espejo precarga las vistas de TODAS
+  // las asesoras (~2 s). El desfile de llamadas a Apps Script queda solo
+  // como respaldo si la base no está disponible.
+  if (sbDisponible()) { sbVistaFull(); return; }
+  if (vcPrecargando) return;
   var vend = COM.data &&
     ((COM.data.cfgFull && COM.data.cfgFull.vendedoras) ||
      (COM.data.cfg && COM.data.cfg.vendedoras));
@@ -3347,6 +3584,34 @@ window.comVerComo = function (email) {
     cargar();
     return;
   }
+
+  // ── VÍA RÁPIDA: montar desde la base espejo, sin tocar Apps Script ──
+  var vendCfgV = COM.data && COM.data.cfgFull && COM.data.cfgFull.vendedoras;
+  var nombreV = (vendCfgV && vendCfgV[email]) ? String(vendCfgV[email].nombre || '') : '';
+  var hoyV2 = new Date();
+  if (sbDisponible() && nombreV && COM.year === hoyV2.getFullYear()) {
+    // Con la precarga lista: pinta AL INSTANTE (y refresca por detrás)
+    if (SBC.full && sbMontarVerComo(email, nombreV, COM.year, COM.q)) {
+      sbVistaFull().then(function (full) {
+        if (full && COM.comoEmail === email) sbMontarVerComo(email, nombreV, COM.year, COM.q);
+      });
+      return;
+    }
+    // Sin precarga aún: spinner + una sola llamada (~2 s)
+    var cV = cont();
+    if (cV) cV.innerHTML = pestañas('home') + '<div class="ld"><div class="sp"></div>Cargando su vista...</div>';
+    sbVistaFull().then(function (full) {
+      if (COM.comoEmail !== email) return;
+      if (full && sbMontarVerComo(email, nombreV, COM.year, COM.q)) return;
+      comVerComoApps(email);   // la base no contestó: vía de siempre
+    });
+    return;
+  }
+  comVerComoApps(email);
+};
+
+// Vía de respaldo por Apps Script (la de siempre, con su propia caché)
+function comVerComoApps(email) {
   // Montar la experiencia REAL de la asesora con una respuesta del servidor
   function vcMontar(r) {
     var d = r.vend;
