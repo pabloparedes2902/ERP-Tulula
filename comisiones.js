@@ -3325,7 +3325,11 @@ function vcArgs(email) {
 function vcPrecache() {
   if (vcPrecargando) return;
   if (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA) return;
-  var vend = COM.data && COM.data.cfg && COM.data.cfg.vendedoras;
+  // La lista de asesoras viaja en cfgFull (el mismo campo que usa el selector
+  // "Ver como"); cfg queda como respaldo por si el backend cambia la forma.
+  var vend = COM.data &&
+    ((COM.data.cfgFull && COM.data.cfgFull.vendedoras) ||
+     (COM.data.cfg && COM.data.cfg.vendedoras));
   if (!vend) return;
   var emails = Object.keys(vend).filter(function (e) {
     var c = VC_CACHE[vcKey(e)];
