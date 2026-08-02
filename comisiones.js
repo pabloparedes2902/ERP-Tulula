@@ -2328,22 +2328,14 @@ function bannerCelebracion(d, nivel) {
 }
 
 /** Cierres anteriores de la asesora, desde SU historial (sin montos ajenos). */
-/** Meses del trimestre cerrado en que la asesora tuvo actividad (según su
- *  propia serie del historial). Ej: Angie entró en mayo → "Mayo – Junio 2026". */
+/** Meses que CONTARON en el cierre. Vienen del servidor (esquema de sueldos +
+ *  fecha de ingreso), no de si tuvo ventas: Angie vendió en abril pero entró
+ *  al esquema en mayo → su Q2 dice "Mayo – Junio 2026". */
 function mesesDeCierre(c) {
-  var h = VEND.hist;
-  if (!h || !h.series) return '';
-  var p = String(c.yq || '').match(/^(\d{4})-Q(\d)$/);
-  if (!p) return '';
-  var y = parseInt(p[1], 10), q = parseInt(p[2], 10);
-  var serie = h.series[y];
-  if (!serie) return '';
-  var noms = [];
-  for (var m = (q - 1) * 3 + 1; m <= q * 3; m++) {
-    var v = serie[m];
-    if (v && ((v.margen || 0) > 0 || (v.ventas || 0) > 0)) noms.push(MESES_LARGO[m - 1]);
-  }
-  return noms.length ? 'Meses: ' + noms.join(' – ') + ' ' + y : '';
+  if (!c.meses || !c.meses.length) return '';
+  var p = String(c.yq || '').match(/^(\d{4})-Q\d$/);
+  var noms = c.meses.map(function (m) { return MESES_LARGO[m - 1]; });
+  return 'Meses: ' + noms.join(' – ') + (p ? ' ' + p[1] : '');
 }
 
 function tarjetaCierresVend() {
