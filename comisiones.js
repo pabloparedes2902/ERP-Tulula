@@ -3160,25 +3160,6 @@ window.comCambiarPeriodo = function () {
 };
 
 // Lo llama el botón de recarga del ERP: tira todo lo guardado y vuelve a pedir
-// PRE-ARRANQUE (2-ago): apenas el navegador carga este archivo (solo admin),
-// restaurar del disco config/esquema/cierres y pedir YA los números a la base
-// espejo (RPC con caché precalculada: ~200 ms). Así "Ver como" abre al
-// instante aunque el usuario haga clic apenas entra al módulo.
-try {
-  if (!(typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA)) {
-    extrasRestaurar(new Date().getFullYear());
-    // Foto del disco: datos listos AL INSTANTE (aunque tengan unas horas);
-    // SBC.t = 0 marca que son viejos, así el refresco de abajo trae frescos.
-    try {
-      var _snap = JSON.parse(localStorage.getItem('com_sb_full') || 'null');
-      if (_snap && _snap.d && _snap.d.anual && Date.now() - _snap.t < 24 * 60 * 60 * 1000) {
-        SBC.full = _snap.d; SBC.t = 0;
-      }
-    } catch (e) {}
-    if (sbDisponible()) sbVistaFull();
-  }
-} catch (e) {}
-
 // Gancho para el banco de pruebas: limpiar la caché de la vía rápida
 window.__sbcReset = function () { SBC.full = null; SBC.t = 0; SBC.cargando = null; };
 
@@ -3961,5 +3942,24 @@ window.comCfgReset = function () {
 };
 
 
+
+
+// ── PRE-ARRANQUE (2-ago) ──────────────────────────────────────────────
+// Corre al FINAL del archivo (todo ya inicializado): restaura del disco la
+// config/esquema/cierres y la FOTO de datos, y pide números frescos a la
+// base espejo (caché precalculada: ~200-400 ms). Así "Ver como" abre al
+// instante aunque el usuario haga clic apenas entra al módulo.
+try {
+  if (!(typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA)) {
+    extrasRestaurar(new Date().getFullYear());
+    try {
+      var _snap = JSON.parse(localStorage.getItem('com_sb_full') || 'null');
+      if (_snap && _snap.d && _snap.d.anual && Date.now() - _snap.t < 24 * 60 * 60 * 1000) {
+        SBC.full = _snap.d; SBC.t = 0;   // t=0: viejos → el refresco trae frescos
+      }
+    } catch (e) {}
+    if (sbDisponible()) sbVistaFull();
+  }
+} catch (e) {}
 
 })();
