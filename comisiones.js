@@ -70,7 +70,7 @@ function cacheGuardar(year, q, data) {
  *  bootstrap de Apps Script. */
 function extrasRestaurar(year) {
   try {
-    if (ASE.data && CIERRE.cerradosTrim.length) return;
+    if (ASE.data && CIERRE.cerradosTrim.length && EXTRA.cfgFull) return;
     var raw = localStorage.getItem('com_extra_' + year);
     if (!raw) return;
     var o = JSON.parse(raw);
@@ -78,6 +78,7 @@ function extrasRestaurar(year) {
     if (o.ase && !ASE.data) { ASE.data = o.ase; ASE.year = year; }
     if (o.cierresTrim && !CIERRE.cerradosTrim.length) CIERRE.cerradosTrim = o.cierresTrim;
     if (o.cierresMes && !CIERRE.cerradosMes.length)  CIERRE.cerradosMes  = o.cierresMes;
+    if (o.cfgFull && !EXTRA.cfgFull) EXTRA.cfgFull = o.cfgFull;
   } catch (e) {}
 }
 
@@ -448,6 +449,7 @@ function traer(year, q) {
       if (typeof MY_ROLE === 'undefined' || MY_ROLE === 'Administrador') {
         localStorage.setItem('com_extra_' + year, JSON.stringify({
           t: Date.now(), ase: b.asesoras || null,
+          cfgFull: (b.admin && b.admin.cfgFull) || null,
           cierresTrim: b.cierresTrim || [], cierresMes: b.cierresMes || [] }));
       }
     } catch (e) {}
@@ -3158,6 +3160,17 @@ window.comCambiarPeriodo = function () {
 };
 
 // Lo llama el botón de recarga del ERP: tira todo lo guardado y vuelve a pedir
+// PRE-ARRANQUE (2-ago): apenas el navegador carga este archivo (solo admin),
+// restaurar del disco config/esquema/cierres y pedir YA los números a la base
+// espejo (RPC con caché precalculada: ~200 ms). Así "Ver como" abre al
+// instante aunque el usuario haga clic apenas entra al módulo.
+try {
+  if (!(typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA)) {
+    extrasRestaurar(new Date().getFullYear());
+    if (sbDisponible()) sbVistaFull();
+  }
+} catch (e) {}
+
 // Gancho para el banco de pruebas: limpiar la caché de la vía rápida
 window.__sbcReset = function () { SBC.full = null; SBC.t = 0; SBC.cargando = null; };
 
@@ -3413,6 +3426,7 @@ window.comAplicarCustom = function () {
    respaldo y para lo que no está en la base (config, cierres).       */
 
 var SBC = { full: null, t: 0, cargando: null };
+var EXTRA = { cfgFull: null };   // respaldo de config (tiers/sueldos) desde el disco
 var SBC_TTL = 5 * 60 * 1000;   // 5 min: el espejo se refresca cada minuto
 
 function sbDisponible() {
@@ -3459,12 +3473,12 @@ function sbArmarVista(nombre, year, q) {
   var full = SBC.full;
   var hoy = new Date();
   if (!full || !full.anual) return null;
-  if (!COM.data || !COM.data.cfgFull) return null;
+  var cfgFull = (COM.data && COM.data.cfgFull) || EXTRA.cfgFull;
+  if (!cfgFull) return null;
   if (!ASE.data || !(ASE.data.asesoras || []).length) return null;
   if (year !== hoy.getFullYear()) return null;   // el RPC cubre year-1..year; el esquema, el año actual
   nombre = String(nombre || '').trim().toUpperCase();
 
-  var cfgFull = COM.data.cfgFull;
   var xMeta = Number(cfgFull.xMeta) || 12;
   var meses = [(q - 1) * 3 + 1, (q - 1) * 3 + 2, (q - 1) * 3 + 3];
 
@@ -3644,8 +3658,13 @@ window.comVerComo = function (email) {
   }
 
   // ── VÍA RÁPIDA: montar desde la base espejo, sin tocar Apps Script ──
-  var vendCfgV = COM.data && COM.data.cfgFull && COM.data.cfgFull.vendedoras;
+  var cfgV = (COM.data && COM.data.cfgFull) || EXTRA.cfgFull;
+  var vendCfgV = cfgV && cfgV.vendedoras;
   var nombreV = (vendCfgV && vendCfgV[email]) ? String(vendCfgV[email].nombre || '') : '';
+  if (!nombreV && ASE.data) {   // respaldo: el esquema guardado también trae los correos
+    var eV = (ASE.data.asesoras || []).find(function (a) { return a.email === email; });
+    if (eV) nombreV = String(eV.nombre || '');
+  }
   var hoyV2 = new Date();
   if (sbDisponible() && nombreV && COM.year === hoyV2.getFullYear()) {
     // Con la precarga lista: pinta AL INSTANTE (y refresca por detrás)
