@@ -522,7 +522,12 @@ function pintarHome() {
   // Cinturón de seguridad (2-ago): si el admin está mirando "Ver como" una
   // asesora, NADIE puede repintar la vista Admin encima. Salir del preview
   // (comVerComo('')) limpia comoEmail antes de volver a llamar acá.
-  if (COM.comoEmail) return;
+  // 3-ago: al VOLVER al módulo con "Ver como" activo, remontar la vista de
+  // la asesora al instante en vez de dejar la pantalla esperando.
+  if (COM.comoEmail) {
+    try { window.comVerComo(COM.comoEmail); } catch (e) {}
+    return;
+  }
   var d = COM.data;
   if (!d) return;
   var c = cont();
@@ -841,16 +846,13 @@ function tarjetaReglas(cfg, R, titulo) {
                  (i + 1) + '° desde ' + t.from + '% → ' + t.rate + '%');
   }).join(' &nbsp;·&nbsp; ');
 
+  // 3-ago (pedido Pablo): versión de 3 líneas de siempre, y NUNCA mostrar el
+  // multiplicador del sueldo (dato interno).
   return '<div class="card">' +
     '<div class="ct">' + esc(titulo || 'Reglas vigentes') + '</div>' +
     '<div style="font-size:13px;line-height:2.1">' +
-      '<b>Meta</b> = ' + x + '× tu sueldo del mes, medida en margen.<br>' +
-      '<b>Comisiona quien cobra:</b> cada pago se acredita a la asesora que lo registró, ' +
-      'y el margen del pedido se reparte proporcional a lo que cobró cada una.<br>' +
-      'Un pedido comisiona cuando queda <b>pagado al 100%</b>, y cuenta en el mes ' +
-      'en que se terminó de cobrar.<br>' +
-      '<b>Niveles</b> (% del margen del trimestre): ' +
-        punto('var(--rd)', 'no llega') + ' &nbsp;·&nbsp; ' + niveles + '<br>' +
+      'La meta se calcula según tu sueldo del mes, medida en margen. Pago <b>trimestral</b>.<br>' +
+      '<b>Niveles</b>: ' + punto('var(--rd)', 'no llega') + ' &nbsp;·&nbsp; ' + niveles + '<br>' +
       'El bono se activa cuando el equipo completo supera el <b>' + gate + '%</b>.' +
     '</div>' +
   '</div>';
@@ -2226,6 +2228,11 @@ function vendSelector() {
       });
     });
   }
+  // El esquema arrancó en 2026-Q2: nada anterior a eso (pedido Pablo 3-ago)
+  Object.keys(ops).forEach(function (o) {
+    var p0 = o.split('-');
+    if (parseInt(p0[0], 10) < 2026 || (parseInt(p0[0], 10) === 2026 && parseInt(p0[1], 10) < 2)) delete ops[o];
+  });
   var sel = VEND.year + '-' + VEND.q;
   var estilo = 'background:var(--bg2);border:1px solid var(--bd);color:var(--tx);' +
                'padding:6px 10px;border-radius:var(--r);font-size:13px;font-family:inherit;cursor:pointer';
@@ -2389,10 +2396,10 @@ function bannerCelebracion(d, nivel) {
  *  fecha de ingreso), no de si tuvo ventas: Angie vendió en abril pero entró
  *  al esquema en mayo → su Q2 dice "Mayo – Junio 2026". */
 function mesesDeCierre(c) {
-  if (!c.meses || !c.meses.length) return '';
+  if (!c.meses || !c.meses.length || c.meses.length >= 3) return '';   // trimestre completo: no hace falta
   var p = String(c.yq || '').match(/^(\d{4})-Q\d$/);
   var noms = c.meses.map(function (m) { return MESES_LARGO[m - 1]; });
-  return 'Meses: ' + noms.join(' – ') + (p ? ' ' + p[1] : '');
+  return 'Meses considerados: ' + noms.join(' – ') + (p ? ' ' + p[1] : '');
 }
 
 function tarjetaCierresVend() {
@@ -2576,11 +2583,11 @@ function pintarVerComo(d, real) {
       (real ? tarjetaMetaDia(d) : '') +
       tarjetaPrincipal +
 
-      '<div class="card"><div class="ct">Tu margen mes a mes</div>' + filasMes + '</div>' +
-      (real ? tarjetaCamino() : '') +
+      (cerrado ? '' : '<div class="card"><div class="ct">Tu margen mes a mes</div>' + filasMes + '</div>') +
+      (real && !cerrado ? tarjetaCamino() : '') +
       '<div class="card"><div class="ct">Ranking del trimestre</div>' + rank + '</div>' +
-      (real ? tarjetaCierresVend() : cierresDeAsesora(d.nombre)) +
-      tarjetaReglas(cfg, R, 'Leyenda') +
+      (cerrado ? '' : (real ? tarjetaCierresVend() : cierresDeAsesora(d.nombre))) +
+      (cerrado ? '' : tarjetaReglas(cfg, R, 'Leyenda')) +
     '</div>';
 }
 
