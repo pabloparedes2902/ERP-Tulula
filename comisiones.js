@@ -2450,18 +2450,56 @@ function pintarVerComo(d, real) {
   }).join('');
 
   // Ranking — nombre y porcentaje, sin montos
-  var rank = R.rows.map(function (r) { return { nombre: r.nombre, cumpl: r.cumpl }; })
-    .sort(function (a, b) { return b.cumpl - a.cumpl; })
-    .map(function (r, i) {
-      var yoMismo = r.nombre === d.nombre;
-      return '<div class="com-row">' +
-               '<span style="font-weight:' + (yoMismo ? '700' : '400') + ';' +
-                     (yoMismo ? 'color:var(--ac)' : '') + '">' +
-                 (i + 1) + '. ' + esc(r.nombre) + (yoMismo ? ' (tú)' : '') + '</span>' +
-               '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(r.cumpl, R.tiers)] + '">' +
-                 p2(r.cumpl) + '</span>' +
-             '</div>';
-    }).join('');
+  // ── TRIMESTRE CERRADO (2-ago, pedido Pablo): si este trimestre ya se
+  //    cerró, manda el CIERRE OFICIAL: su bono pagado, su % del cierre,
+  //    los meses que contaron, y el ranking del cierre (sin %, y sin
+  //    asesoras que no participaron — ej. Lucía entró en julio).
+  var yqKey = d.year + '-Q' + d.q;
+  var cierreOf = null, yoCierre = null;
+  try {
+    cierreOf = (CIERRE.cerradosTrim || []).find(function (cx) { return cx.yq === yqKey; }) || null;
+    if (cierreOf) {
+      yoCierre = (cierreOf.filas || []).find(function (x) {
+        return String(x.asesora || '').trim().toUpperCase() ===
+               String(d.nombre || '').trim().toUpperCase();
+      }) || null;
+    }
+  } catch (e) {}
+  var cerrado = !!yoCierre;
+  var mesesCerradoTxt = '';
+  if (cerrado && VEND.hist && VEND.hist.cierres) {
+    var ciH = VEND.hist.cierres.find(function (cx) { return cx.yq === yqKey; });
+    if (ciH) mesesCerradoTxt = mesesDeCierre(ciH);
+  }
+
+  var rank;
+  if (cerrado) {
+    rank = (cierreOf.filas || [])
+      .filter(function (f0) { return (Number(f0.meta) || 0) > 0; })   // solo quienes participaron
+      .slice().sort(function (a, b) { return (b.cumpl || 0) - (a.cumpl || 0); })
+      .map(function (f0, i) {
+        var yoMismo0 = String(f0.asesora || '').trim().toUpperCase() ===
+                       String(d.nombre || '').trim().toUpperCase();
+        return '<div class="com-row">' +
+                 '<span style="font-weight:' + (yoMismo0 ? '700' : '400') + ';' +
+                       (yoMismo0 ? 'color:var(--ac)' : '') + '">' +
+                   (i + 1) + '. ' + esc(f0.asesora) + (yoMismo0 ? ' (tú)' : '') + '</span>' +
+               '</div>';
+      }).join('');
+  } else {
+    rank = R.rows.map(function (r) { return { nombre: r.nombre, cumpl: r.cumpl }; })
+      .sort(function (a, b) { return b.cumpl - a.cumpl; })
+      .map(function (r, i) {
+        var yoMismo = r.nombre === d.nombre;
+        return '<div class="com-row">' +
+                 '<span style="font-weight:' + (yoMismo ? '700' : '400') + ';' +
+                       (yoMismo ? 'color:var(--ac)' : '') + '">' +
+                   (i + 1) + '. ' + esc(r.nombre) + (yoMismo ? ' (tú)' : '') + '</span>' +
+                 '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(r.cumpl, R.tiers)] + '">' +
+                   p2(r.cumpl) + '</span>' +
+               '</div>';
+      }).join('');
+  }
 
   // Cuánto le falta, expresado en VENTAS aproximadas (margen ÷ % de margen real)
   var sig = R.tiers.find(function (t) { return t.from > yo.cumpl; });
@@ -2493,35 +2531,48 @@ function pintarVerComo(d, real) {
       '</div>';
 
   var lvActual = nivelDe(yo.cumpl, R.tiers);
-  c.innerHTML = cabecera +
-    '<div style="max-width:620px;margin:0 auto">' +
-      (real ? bannerCelebracion(d, lvActual) : '') +
-      (real ? tarjetaMetaDia(d) : '') +
+
+  // Tarjeta principal: con el trimestre CERRADO manda el cierre oficial
+  var cumplVer = cerrado ? (Number(yoCierre.cumpl) || 0) : yo.cumpl;
+  var colVer = cerrado ? NIVEL_COLOR[nivelDe(cumplVer, R.tiers)] : col;
+  var bonoVer = cerrado ? (Number(yoCierre.bonoPagar) || 0) : yo.bono;
+  var tarjetaPrincipal =
       '<div class="card">' +
-        // Nombre y cumplimiento en la misma línea, mismo tamaño (como las
-        // tarjetas de asesora de la vista general)
         '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">' +
           '<span class="com-nom">' + esc(d.nombre) + '</span>' +
-          '<span class="com-nom" style="color:' + col + '">' + p2(yo.cumpl) + '</span>' +
+          '<span class="com-nom" style="color:' + colVer + '">' + p2(cumplVer) + '</span>' +
         '</div>' +
-        '<div class="com-sub">' + esc(qTxt) + '</div>' +
+        '<div class="com-sub">' + esc(qTxt) +
+          (cerrado ? ' · <b style="color:var(--gn)">Trimestre cerrado ✓</b>' : '') + '</div>' +
         '<div style="text-align:center;margin:20px 0 8px">' +
-          '<div class="ml">Tu bono del trimestre</div>' +
+          '<div class="ml">' + (cerrado ? 'Tu bono pagado' : 'Tu bono del trimestre') + '</div>' +
           '<div style="font-size:36px;font-weight:700;letter-spacing:-1px;' +
-               'color:' + (yo.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(yo.bono) + '</div>' +
-          '<div class="ml">proyectado al cierre: <b style="color:' +
-            (yoP.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(yoP.bono) + '</b></div>' +
+               'color:' + (bonoVer > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(bonoVer) + '</div>' +
+          (cerrado
+            ? (mesesCerradoTxt ? '<div class="ml">' + esc(mesesCerradoTxt) + '</div>' : '')
+            : '<div class="ml">proyectado al cierre: <b style="color:' +
+                (yoP.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(yoP.bono) + '</b></div>') +
         '</div>' +
-        '<div style="margin-top:18px">' + barra(yo.cumpl, 20, col, R.tiers, true) + '</div>' +
-        barraAvance(d.year, d.q, yo.cumpl, R.tiers) +
-        '<div style="font-size:13px;margin-top:18px">' + falta + '</div>' +
+        '<div style="margin-top:18px">' + barra(cumplVer, 20, colVer, R.tiers, true) + '</div>' +
+        (cerrado ? '' : barraAvance(d.year, d.q, yo.cumpl, R.tiers)) +
+        (cerrado ? '' : '<div style="font-size:13px;margin-top:18px">' + falta + '</div>') +
         '<div style="font-size:13px;margin-top:10px;font-weight:500;color:' +
-             (R.teamGate ? 'var(--gn)' : 'var(--rd)') + '">' +
-          (R.teamGate
-            ? 'El equipo llegó al mínimo: tu bono está activo.'
-            : 'El bono se activa cuando el equipo completo supere el ' + R.gate + '%. Van ' + p2(R.teamCumpl) + '.') +
+             ((cerrado ? cierreOf.teamGate === 'SI' : R.teamGate) ? 'var(--gn)' : 'var(--rd)') + '">' +
+          (cerrado
+            ? (cierreOf.teamGate === 'SI'
+                ? 'El equipo llegó al mínimo: bono pagado.'
+                : 'El equipo no llegó al mínimo en este trimestre.')
+            : (R.teamGate
+                ? 'El equipo llegó al mínimo: tu bono está activo.'
+                : 'El bono se activa cuando el equipo completo supere el ' + R.gate + '%. Van ' + p2(R.teamCumpl) + '.')) +
         '</div>' +
-      '</div>' +
+      '</div>';
+
+  c.innerHTML = cabecera +
+    '<div style="max-width:620px;margin:0 auto">' +
+      (real && !cerrado ? bannerCelebracion(d, lvActual) : '') +
+      (real ? tarjetaMetaDia(d) : '') +
+      tarjetaPrincipal +
 
       '<div class="card"><div class="ct">Tu margen mes a mes</div>' + filasMes + '</div>' +
       (real ? tarjetaCamino() : '') +
