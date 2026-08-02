@@ -3167,6 +3167,14 @@ window.comCambiarPeriodo = function () {
 try {
   if (!(typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA)) {
     extrasRestaurar(new Date().getFullYear());
+    // Foto del disco: datos listos AL INSTANTE (aunque tengan unas horas);
+    // SBC.t = 0 marca que son viejos, así el refresco de abajo trae frescos.
+    try {
+      var _snap = JSON.parse(localStorage.getItem('com_sb_full') || 'null');
+      if (_snap && _snap.d && _snap.d.anual && Date.now() - _snap.t < 24 * 60 * 60 * 1000) {
+        SBC.full = _snap.d; SBC.t = 0;
+      }
+    } catch (e) {}
     if (sbDisponible()) sbVistaFull();
   }
 } catch (e) {}
@@ -3452,7 +3460,18 @@ function sbVistaFull(forzar) {
     }).then(function (r) { return r.ok ? r.json() : null; });
   }).then(function (d) {
     SBC.cargando = null;
-    if (d && d.anual) { SBC.full = d; SBC.t = Date.now(); }
+    if (d && d.anual) {
+      SBC.full = d; SBC.t = Date.now();
+      // Foto en disco: la próxima vez que se abra el ERP, la vista pinta AL
+      // INSTANTE con esta foto y se refresca por detrás (el pase a la base
+      // puede tardar ~10 s en renovarse cuando pasó >1 h; con la foto no se
+      // siente). Solo laptop del admin.
+      try {
+        if (typeof MY_ROLE === 'undefined' || MY_ROLE === 'Administrador') {
+          localStorage.setItem('com_sb_full', JSON.stringify({ t: Date.now(), d: d }));
+        }
+      } catch (e) {}
+    }
     return SBC.full;
   }).catch(function () { SBC.cargando = null; return null; });
   return SBC.cargando;
