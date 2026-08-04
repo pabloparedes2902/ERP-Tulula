@@ -147,6 +147,7 @@
     <input type="date" id="pDesde"> <input type="date" id="pHasta">
     <button class="btn" onclick="setPeriodo('custom',null)">Aplicar</button>
   </div>
+  <div class="periodos" id="embChips" style="margin-top:2px"></div>
   <div id="embEstado">—</div>
   <div id="embZona"></div>
 </div>
@@ -155,7 +156,7 @@
 'use strict';
 const MODO_VIEWER = !/(^|[?&])edit=1(&|$)/.test(location.search.slice(1)); /* editor solo con ?edit=1 (lo pasa el ERP si MY_ROLE es Administrador) */
 const BASE_N8N = 'https://n8n-production-4e716.up.railway.app/webhook';
-const URL_EMBUDO = BASE_N8N + '/embudo-rango'; /* historico Postgres (se llena cada noche 3am) */
+const URL_EMBUDO = BASE_N8N + '/embudo-rango-v2'; /* historico Postgres con desglose por asesora (nocturno 3am) */
 const URL_GUARDAR = BASE_N8N + '/playbook-guardar';
 const URL_CARGAR = BASE_N8N + '/playbook-cargar';
 const BENCH = { t1:60, t2:40, t3:35 }; /* referencia Perú/LatAm — mas conservadora que la global (65/45/40) */
@@ -709,16 +710,70 @@ function pintarEmbudo(ac, nota){
   document.getElementById('embZona').innerHTML = h;
   document.getElementById('embEstado').textContent = nota;
 }
+let embSel = 'todas', embData = null;
 function cargarEmbudo(){
   const r = rango();
   document.getElementById('embEstado').textContent = 'Leyendo la base de datos ('+r.lbl+')…';
   fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(d => {
-    pintarEmbudo(d.acumulado, `✅ Datos reales · ${r.lbl} · ${d.total} conversaciones · se actualiza cada noche a las 3am`);
+    embData = { d: d, lbl: r.lbl };
+    pintarChips();
+    pintarSeleccion();
   }).catch(() => {
+    document.getElementById('embChips').innerHTML = '';
     pintarEmbudo({frias:375, tibias:198, calientes:64, compras:12}, '⚠️ Sin conexión con el servicio. Datos de EJEMPLO.');
   });
 }
-
+function pintarChips(){
+  const d = embData.d;
+  const ases = (d.asesoras||[]).slice().sort((a,b)=>b.total-a.total);
+  let h = `<button class="btn ${embSel==='todas'?'on':''}" onclick="selAsesora('todas')">Todas</button>`;
+  for (const a of ases){
+    const nom = a.asesora==='Tula' ? '🤖 Tula' : a.asesora.split(' ')[0];
+    h += `<button class="btn ${embSel===a.asesora?'on':''}" onclick="selAsesora('${a.asesora.replace(/'/g,"\\'")}')">${nom}</button>`;
+  }
+  h += `<button class="btn ${embSel==='comparar'?'on':''}" onclick="selAsesora('comparar')" style="margin-left:14px">⚔ Comparar</button>`;
+  document.getElementById('embChips').innerHTML = h;
+}
+function selAsesora(a){ embSel = a; pintarChips(); pintarSeleccion(); }
+function pintarSeleccion(){
+  document.getElementById('embZona').style.width = '560px';
+  const d = embData.d, lbl = embData.lbl;
+  if (embSel === 'comparar') return pintarComparar();
+  if (embSel === 'todas'){
+    pintarEmbudo(d.acumulado, `✅ Datos reales · ${lbl} · ${d.total} conversaciones · se actualiza cada noche a las 3am`);
+    return;
+  }
+  const a = (d.asesoras||[]).find(x=>x.asesora===embSel);
+  if (!a){ embSel='todas'; return pintarSeleccion(); }
+  pintarEmbudo(a.acumulado, `✅ ${a.asesora==='Tula'?'🤖 Tula (el agente, sin asesora asignada)':a.asesora} · ${lbl} · ${a.total} conversaciones`);
+}
+function pintarComparar(){
+  document.getElementById('embZona').style.width = '780px';
+  const d = embData.d;
+  const ases = (d.asesoras||[]).slice().sort((a,b)=>b.total-a.total);
+  const filas = [['frias','FRÍAS','var(--f-am)'],['tibias','TIBIAS','var(--f-na)'],['calientes','CALIENTES','var(--f-ro)'],['compras','COMPRAS','var(--f-ve)']];
+  const card = a => {
+    const g = a.acumulado.frias ? Math.round(a.acumulado.compras/a.acumulado.frias*1000)/10 : 0;
+    let h2 = `<div style="border:1px solid var(--bd);border-radius:12px;padding:14px;background:var(--card);width:240px">` +
+      `<div style="font-weight:900;margin-bottom:2px">${a.asesora==='Tula'?'🤖 Tula (agente)':a.asesora}</div>` +
+      `<div style="font-size:11px;color:var(--txt2);margin-bottom:10px">${a.total} conversaciones · conv. global <b style="color:${g>=8?'var(--ok)':'var(--bad)'}">${g}%</b></div>`;
+    for (const [k,nom,col] of filas){
+      const v = a.acumulado[k]||0;
+      const w = a.acumulado.frias ? Math.max(4, Math.round(v/a.acumulado.frias*100)) : 4;
+      h2 += `<div style="display:flex;align-items:center;gap:8px;margin:5px 0">` +
+        `<span style="width:74px;font-size:9.5px;font-weight:800;letter-spacing:.08em;color:var(--txt2)">${nom}</span>` +
+        `<div style="flex:1;background:var(--bg3,rgba(255,255,255,.05));border-radius:6px;height:16px;overflow:hidden">` +
+        `<div style="width:${w}%;height:100%;background:${col};border-radius:6px"></div></div>` +
+        `<b style="width:34px;text-align:right;font-size:12px">${v}</b></div>`;
+    }
+    return h2 + `</div>`;
+  };
+  const todas = { asesora:'TODAS', total:d.total, acumulado:d.acumulado };
+  document.getElementById('embZona').innerHTML =
+    `<div style="display:flex;flex-wrap:wrap;gap:12px;justify-content:center;width:760px;max-width:100%;margin:0 auto">` +
+    [todas].concat(ases).map(card).join('') + `</div>`;
+  document.getElementById('embEstado').textContent = '⚔ Comparativa · quién convierte mejor cada etapa (Tula = cerradas por el agente sin asesora)';
+}
 render(); fitView(); cargarNube();
 </script>
 </body>
