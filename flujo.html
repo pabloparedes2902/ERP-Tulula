@@ -94,7 +94,14 @@
   /* EMBUDO 3D (igual v5) */
   #vEmbudo{display:none;flex:1;overflow:auto;padding:18px}
   .periodos{display:flex;gap:7px;justify-content:center;margin-bottom:6px;flex-wrap:wrap;align-items:center}
-  .periodos input{background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:5px 8px;font-size:12px}
+  .periodos input,.periodos select{background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:6px 9px;font-size:12px;font-weight:700;cursor:pointer}
+  .ddpanel{position:absolute;top:calc(100% + 6px);left:0;z-index:60;background:var(--card);border:1.5px solid var(--bd);border-radius:10px;padding:8px;min-width:186px;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+  .ddrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px;cursor:pointer;font-size:12.5px;font-weight:700;white-space:nowrap}
+  .ddrow:hover{background:rgba(255,255,255,.06)}
+  .ddrow input{cursor:pointer;accent-color:var(--bot);width:14px;height:14px;padding:0}
+  .ddsep{height:1px;background:var(--bd);margin:5px 2px}
+  .oport{margin-top:11px;padding:9px 10px;border-radius:9px;background:rgba(255,255,255,.045);border-left:3px solid var(--f-ro);font-size:11.5px;line-height:1.45}
+  .oport b{color:var(--f-ro)}
   #embEstado{font-size:11.5px;color:var(--txt2);text-align:center;margin:6px 0 20px}
   #embZona{width:560px;margin:0 auto;position:relative}
   .seg{position:relative;margin:0 auto;color:#15181c;text-align:center}
@@ -139,15 +146,19 @@
   <div id="labZona"></div>
 </div>
 <div id="vEmbudo">
-  <div class="periodos">
-    <button class="btn on" data-p="mtd" onclick="setPeriodo('mtd',this)">Mes hasta hoy</button>
-    <button class="btn" data-p="7" onclick="setPeriodo('7',this)">7 días</button>
-    <button class="btn" data-p="15" onclick="setPeriodo('15',this)">15 días</button>
-    <button class="btn" data-p="30" onclick="setPeriodo('30',this)">30 días</button>
-    <input type="date" id="pDesde"> <input type="date" id="pHasta">
-    <button class="btn" onclick="setPeriodo('custom',null)">Aplicar</button>
+  <div class="periodos" style="margin-bottom:10px">
+    <select id="selPeriodo" onchange="onPeriodo()">
+      <option value="mtd" selected>Mes hasta hoy</option>
+      <option value="7">Últimos 7 días</option>
+      <option value="15">Últimos 15 días</option>
+      <option value="30">Últimos 30 días</option>
+      <option value="custom">Personalizado…</option>
+    </select>
+    <span id="boxCustom" style="display:none;gap:6px;align-items:center">
+      <input type="date" id="pDesde" onchange="onPeriodo()"><input type="date" id="pHasta" onchange="onPeriodo()" style="margin-left:6px">
+    </span>
+    <div id="embChips" style="position:relative"></div>
   </div>
-  <div class="periodos" id="embChips" style="margin-top:2px"></div>
   <div id="embEstado">—</div>
   <div id="embZona"></div>
 </div>
@@ -669,12 +680,18 @@ function rango(){
   } else d = new Date(ahora - parseInt(periodo)*86400000);
   return { desde: Math.floor(d/1000), hasta: Math.floor(ahora/1000), lbl: periodo==='mtd'?'mes hasta hoy':'últimos '+periodo+' días' };
 }
-function setPeriodo(p, btn){
-  periodo = p;
-  document.querySelectorAll('.periodos .btn[data-p]').forEach(b=>b.classList.remove('on'));
-  if (btn) btn.classList.add('on');
+function onPeriodo(){
+  const sel = document.getElementById('selPeriodo');
+  periodo = sel.value;
+  document.getElementById('boxCustom').style.display = (periodo==='custom') ? 'inline-flex' : 'none';
+  if (periodo==='custom'){
+    const pd = document.getElementById('pDesde').value, ph = document.getElementById('pHasta').value;
+    if (!pd || !ph) { document.getElementById('embEstado').textContent = 'Elige las dos fechas para aplicar el rango.'; return; }
+  }
   cargarEmbudo();
 }
+/* compatibilidad por si algo viejo la llama */
+function setPeriodo(p){ const s=document.getElementById('selPeriodo'); if(s){ s.value=p; } onPeriodo(); }
 function shade(col){ return `linear-gradient(90deg, rgba(0,0,0,.32), rgba(255,255,255,.28) 46%, rgba(255,255,255,.05) 54%, rgba(0,0,0,.36)), ${col}`; }
 function pintarEmbudo(ac, nota){
   const filas = [
@@ -711,6 +728,9 @@ function pintarEmbudo(ac, nota){
   document.getElementById('embEstado').textContent = nota;
 }
 let embSel = 'todas', embData = null;
+const ASESORAS_FIJAS = ['Angie','Dayann','Lucia','Tula'];
+let embSet = new Set(['todas']);   /* multiseleccion */
+function nomCorto(a){ return a==='Tula' ? '🤖 Tula' : String(a).split(' ')[0]; }
 function cargarEmbudo(){
   const r = rango();
   document.getElementById('embEstado').textContent = 'Leyendo la base de datos ('+r.lbl+')…';
@@ -723,56 +743,128 @@ function cargarEmbudo(){
     pintarEmbudo({frias:375, tibias:198, calientes:64, compras:12}, '⚠️ Sin conexión con el servicio. Datos de EJEMPLO.');
   });
 }
-function pintarChips(){
-  const d = embData.d;
-  const ases = (d.asesoras||[]).slice().sort((a,b)=>b.total-a.total);
-  let h = `<button class="btn ${embSel==='todas'?'on':''}" onclick="selAsesora('todas')">Todas</button>`;
-  for (const a of ases){
-    const nom = a.asesora==='Tula' ? '🤖 Tula' : a.asesora.split(' ')[0];
-    h += `<button class="btn ${embSel===a.asesora?'on':''}" onclick="selAsesora('${a.asesora.replace(/'/g,"\\'")}')">${nom}</button>`;
-  }
-  h += `<button class="btn ${embSel==='comparar'?'on':''}" onclick="selAsesora('comparar')" style="margin-left:14px">⚔ Comparar</button>`;
-  document.getElementById('embChips').innerHTML = h;
+function listaAsesoras(){
+  const d = embData ? embData.d : {};
+  const dev = (d.asesoras||[]).map(a=>a.asesora);
+  const orden = ASESORAS_FIJAS.filter(x=>dev.some(y=>y===x||y.split(' ')[0]===x))
+    .map(x=>dev.find(y=>y===x||y.split(' ')[0]===x));
+  dev.forEach(a=>{ if(!orden.includes(a)) orden.push(a); });
+  return orden;
 }
-function selAsesora(a){ embSel = a; pintarChips(); pintarSeleccion(); }
+function etiquetaDD(){
+  if (embSet.has('todas')) return 'Todas';
+  const n = [...embSet].map(nomCorto);
+  return n.length<=2 ? n.join(' + ') : n.length+' seleccionadas';
+}
+function pintarChips(){
+  const ases = listaAsesoras();
+  let filas = `<label class="ddrow"><input type="checkbox" ${embSet.has('todas')?'checked':''} onchange="togAses('todas')"><span>Todas</span></label><div class="ddsep"></div>`;
+  for (const a of ases){
+    filas += `<label class="ddrow"><input type="checkbox" ${embSet.has(a)?'checked':''} onchange="togAses('${String(a).replace(/'/g,"\\'")}')"><span>${nomCorto(a)}</span></label>`;
+  }
+  const abierto = document.getElementById('ddPanel') && document.getElementById('ddPanel').style.display==='block';
+  document.getElementById('embChips').innerHTML =
+    `<button class="btn ${embSet.has('todas')?'':'on'}" onclick="toggleDD(event)">Asesoras: ${etiquetaDD()} ▾</button>` +
+    `<div class="ddpanel" id="ddPanel" style="display:${abierto?'block':'none'}" onclick="event.stopPropagation()">${filas}</div>`;
+}
+function toggleDD(e){
+  e.stopPropagation();
+  const p = document.getElementById('ddPanel');
+  p.style.display = p.style.display==='block' ? 'none' : 'block';
+}
+document.addEventListener('click', ()=>{ const p=document.getElementById('ddPanel'); if(p) p.style.display='none'; });
+function togAses(a){
+  if (a==='todas'){ embSet = new Set(['todas']); }
+  else {
+    embSet.delete('todas');
+    if (embSet.has(a)) embSet.delete(a); else embSet.add(a);
+    if (embSet.size===0) embSet = new Set(['todas']);
+  }
+  pintarChips();
+  document.getElementById('ddPanel').style.display='block';
+  pintarSeleccion();
+}
+function selAsesora(a){ togAses(a); }
 function pintarSeleccion(){
-  document.getElementById('embZona').style.width = '560px';
   const d = embData.d, lbl = embData.lbl;
-  if (embSel === 'comparar') return pintarComparar();
-  if (embSel === 'todas'){
+  if (embSet.has('todas')){
+    document.getElementById('embZona').style.width = '560px';
     pintarEmbudo(d.acumulado, `✅ Datos reales · ${lbl} · ${d.total} conversaciones · se actualiza cada noche a las 3am`);
     return;
   }
-  const a = (d.asesoras||[]).find(x=>x.asesora===embSel);
-  if (!a){ embSel='todas'; return pintarSeleccion(); }
+  if (embSet.size >= 2) return pintarComparar();
+  const quien = [...embSet][0];
+  const a = (d.asesoras||[]).find(x=>x.asesora===quien);
+  if (!a){ embSet = new Set(['todas']); pintarChips(); return pintarSeleccion(); }
+  document.getElementById('embZona').style.width = '560px';
   pintarEmbudo(a.acumulado, `✅ ${a.asesora==='Tula'?'🤖 Tula (el agente, sin asesora asignada)':a.asesora} · ${lbl} · ${a.total} conversaciones`);
+  document.getElementById('embZona').innerHTML += tarjetaOportunidad(a.acumulado, nomCorto(a.asesora));
+}
+/* ---- principal oportunidad de mejora: la transicion mas lejos del benchmark ---- */
+function oportunidad(ac){
+  if (!ac || !ac.frias) return null;
+  const t = [
+    Math.round((ac.tibias||0)/ac.frias*100),
+    ac.tibias ? Math.round((ac.calientes||0)/ac.tibias*100) : 0,
+    ac.calientes ? Math.round((ac.compras||0)/ac.calientes*100) : 0
+  ];
+  const b = [BENCH.t1, BENCH.t2, BENCH.t3];
+  const textos = [
+    ['Enganchar al inicio', `de cada 100 que escriben, solo ${t[0]} llegan a hablar de una prenda`, 'Mostrar foto + precio en el primer mensaje, sin interrogatorio previo'],
+    ['Despertar la intención', `de cada 100 que conversan, solo ${t[1]} piden talla o precio en serio`, 'Cotizar apenas haya prenda + talla + destino, en vez de seguir preguntando'],
+    ['Cerrar la venta', `de cada 100 interesadas, solo ${t[2]} terminan pagando`, 'Asumir la venta: detalle con TOTAL, Yape y pedir la constancia']
+  ];
+  let i=0, peor=-999;
+  b.forEach((x,k)=>{ const gap = x - t[k]; if (gap > peor){ peor = gap; i = k; } });
+  return { titulo:textos[i][0], detalle:textos[i][1], accion:textos[i][2], real:t[i], bench:b[i], gap:peor };
+}
+function tarjetaOportunidad(ac, quien){
+  const o = oportunidad(ac);
+  if (!o) return '';
+  const signo = o.gap > 0 ? `${o.gap} puntos por debajo` : `${Math.abs(o.gap)} puntos por encima`;
+  return `<div class="oport"><b>Principal oportunidad de ${quien}: ${o.titulo}</b><br>${o.detalle} — ${signo} de la referencia Perú (${o.bench}%).<br><span style="color:var(--txt2)">Qué mover: ${o.accion}</span></div>`;
 }
 function pintarComparar(){
-  document.getElementById('embZona').style.width = '780px';
+  document.getElementById('embZona').style.width = '100%';
   const d = embData.d;
-  const ases = (d.asesoras||[]).slice().sort((a,b)=>b.total-a.total);
+  const sel = (d.asesoras||[]).filter(a=>embSet.has(a.asesora)).sort((a,b)=>b.total-a.total);
   const filas = [['frias','FRÍAS','var(--f-am)'],['tibias','TIBIAS','var(--f-na)'],['calientes','CALIENTES','var(--f-ro)'],['compras','COMPRAS','var(--f-ve)']];
-  const card = a => {
-    const g = a.acumulado.frias ? Math.round(a.acumulado.compras/a.acumulado.frias*1000)/10 : 0;
-    let h2 = `<div style="border:1px solid var(--bd);border-radius:12px;padding:14px;background:var(--card);width:240px">` +
-      `<div style="font-weight:900;margin-bottom:2px">${a.asesora==='Tula'?'🤖 Tula (agente)':a.asesora}</div>` +
-      `<div style="font-size:11px;color:var(--txt2);margin-bottom:10px">${a.total} conversaciones · conv. global <b style="color:${g>=8?'var(--ok)':'var(--bad)'}">${g}%</b></div>`;
+
+  const barras = (ac, alto) => {
+    let h2 = '';
     for (const [k,nom,col] of filas){
-      const v = a.acumulado[k]||0;
-      const w = a.acumulado.frias ? Math.max(4, Math.round(v/a.acumulado.frias*100)) : 4;
-      h2 += `<div style="display:flex;align-items:center;gap:8px;margin:5px 0">` +
-        `<span style="width:74px;font-size:9.5px;font-weight:800;letter-spacing:.08em;color:var(--txt2)">${nom}</span>` +
-        `<div style="flex:1;background:var(--bg3,rgba(255,255,255,.05));border-radius:6px;height:16px;overflow:hidden">` +
-        `<div style="width:${w}%;height:100%;background:${col};border-radius:6px"></div></div>` +
-        `<b style="width:34px;text-align:right;font-size:12px">${v}</b></div>`;
+      const v = ac[k]||0;
+      const w = ac.frias ? Math.max(3, Math.round(v/ac.frias*100)) : 3;
+      h2 += `<div style="display:flex;align-items:center;gap:10px;margin:8px 0">` +
+        `<span style="width:86px;font-size:10.5px;font-weight:800;letter-spacing:.08em;color:var(--txt2)">${nom}</span>` +
+        `<div style="flex:1;background:rgba(255,255,255,.06);border-radius:7px;height:${alto}px;overflow:hidden">` +
+        `<div style="width:${w}%;height:100%;background:${col};border-radius:7px"></div></div>` +
+        `<b style="width:48px;text-align:right;font-size:15px">${v}</b></div>`;
     }
-    return h2 + `</div>`;
+    return h2;
   };
+
+  const card = (a, ancho, destacado) => {
+    const ac = a.acumulado;
+    const g = ac.frias ? Math.round((ac.compras||0)/ac.frias*1000)/10 : 0;
+    return `<div style="border:1.5px solid ${destacado?'var(--bot)':'var(--bd)'};border-radius:14px;padding:18px 20px;background:var(--card);width:${ancho};box-sizing:border-box">` +
+      `<div style="font-weight:900;font-size:${destacado?'17':'15'}px;margin-bottom:3px">${a.asesora==='Tula'?'🤖 Tula (agente)':a.asesora}</div>` +
+      `<div style="font-size:12px;color:var(--txt2);margin-bottom:12px">${a.total} conversaciones · conv. global <b style="color:${g>=8?'var(--ok)':'var(--bad)'}">${g}%</b></div>` +
+      barras(ac, destacado?20:18) +
+      (destacado ? '' : tarjetaOportunidad(ac, nomCorto(a.asesora))) +
+      `</div>`;
+  };
+
   const todas = { asesora:'TODAS', total:d.total, acumulado:d.acumulado };
+  const anchoCol = sel.length >= 3 ? 'calc(33.333% - 9px)' : (sel.length === 2 ? 'calc(50% - 7px)' : '100%');
   document.getElementById('embZona').innerHTML =
-    `<div style="display:flex;flex-wrap:wrap;gap:12px;justify-content:center;width:760px;max-width:100%;margin:0 auto">` +
-    [todas].concat(ases).map(card).join('') + `</div>`;
-  document.getElementById('embEstado').textContent = '⚔ Comparativa · quién convierte mejor cada etapa (Tula = cerradas por el agente sin asesora)';
+    `<div style="max-width:1120px;margin:0 auto">` +
+      card(todas, '100%', true) +
+      `<div style="display:flex;flex-wrap:wrap;gap:13px;margin-top:13px">` +
+        sel.map(a=>card(a, anchoCol, false)).join('') +
+      `</div>` +
+    `</div>`;
+  document.getElementById('embEstado').textContent = '⚔ Comparativa · ' + embData.lbl + ' · arriba el total, abajo cada seleccionada con su principal oportunidad';
 }
 render(); fitView(); cargarNube();
 </script>
