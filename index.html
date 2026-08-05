@@ -5697,6 +5697,43 @@ const SB_LECTURA_PESADOS = true;
 // 30 min = seis vueltas del disparador. Si se llega a eso, algo dejó de correr.
 const SB_PESADOS_VENCE_MS = 30 * 60 * 1000;
 
+// ══════════════════════════════════════════════════════════════════════════
+// 05-ago-2026 — LEER LO QUE ACABAS DE ESCRIBIR (duda por clave)
+//
+// EL BUG QUE ARREGLA: registrabas un ingreso o una falla, la pantalla se
+// refrescaba… y mostraba los números de ANTES. Las hojas se escribían bien,
+// pero la pantalla lee la copia precalculada de la base (espejo_cache), que se
+// rehace cada 5 min (stock) o 30 min (lotes). La pantalla releía la copia
+// VIEJA y parecía que el movimiento nunca se guardó: el ingreso "no aparecía"
+// en Lotes y la falla "no descontaba" el stock.
+//
+// LA REGLA: después de una escritura nuestra, esa clave queda EN DUDA. La
+// copia de la base solo vuelve a servir cuando se haya generado DESPUES de la
+// escritura; mientras tanto se le pregunta a Apps Script (fresco). La duda
+// vive en localStorage: sobrevive recargas de página.
+//
+// Es el mismo patrón de _yayOlvidar/_yayEspejoConfirmar (Yayitas), pero para
+// cualquier clave del espejo. Además, _stockEscrito() le pide al backend que
+// ponga el espejo al día YA (espejo.refrescar → espejarDatoYa, que existía
+// para esto y nadie llamaba), así los otros dispositivos también ven el
+// cambio en segundos y no en 5-30 minutos.
+// ══════════════════════════════════════════════════════════════════════════
+function _espejoDudaMap(){ try { return JSON.parse(localStorage.getItem('erp_espejo_duda')||'{}'); } catch(e){ return {}; } }
+function _espejoDudar(claves){ try { const m=_espejoDudaMap(); const ts=Date.now(); (claves||[]).forEach(c=>{ m[c]=ts; }); localStorage.setItem('erp_espejo_duda', JSON.stringify(m)); } catch(e){} }
+function _espejoConfiar(clave){ try { const m=_espejoDudaMap(); if (m[clave]!==undefined){ delete m[clave]; localStorage.setItem('erp_espejo_duda', JSON.stringify(m)); } } catch(e){} }
+
+// Llamar después de CADA escritura que mueve stock. `claves` quedan en duda
+// (se leen frescas hasta que el espejo las alcance); `refrescarYa` (máx. 3) se
+// le piden al backend en segundo plano — sin esperar la respuesta.
+function _stockEscrito(claves, refrescarYa){
+  _espejoDudar(claves);
+  try {
+    apiSend('espejo.refrescar', { claves: (refrescarYa && refrescarYa.length ? refrescarYa : claves).slice(0,3) })
+      .then(r => { try { ((r && r.hechas) || []).forEach(_espejoConfiar); } catch(e){} })
+      .catch(()=>{});   // si falla, el disparador de 5/30 min lo pone al día igual
+  } catch(e) {}
+}
+
 // Trae de la base el resultado ya calculado de una pantalla.
 // Devuelve null si no se puede o si está vencido → quien llama usa Apps Script.
 async function _sbCacheLeer(clave, venceMs) {
@@ -5720,6 +5757,16 @@ async function _sbCacheLeer(clave, venceMs) {
     if (!(edad >= 0) || edad > _vence) {
       try { _errLog('sb.cache.vencida', new Error(clave + ' con ' + Math.round(edad / 60000) + ' min')); } catch (_) {}
       return null;
+    }
+    // 05-ago — LEER LO QUE ACABAS DE ESCRIBIR: si esta clave quedó EN DUDA por
+    // una escritura nuestra, la copia solo sirve si se generó DESPUES de esa
+    // escritura. La válvula de 40 min cubre un reloj local desfasado: para
+    // entonces el espejo ya dio dos vueltas completas y seguro la alcanzó.
+    const _duda = _espejoDudaMap()[clave];
+    if (_duda) {
+      const _gen = new Date(j[0].generado).getTime();
+      if (_gen > _duda || (Date.now() - _duda) > 40 * 60 * 1000) _espejoConfiar(clave);
+      else return null;   // copia anterior a la escritura → quien llama va a Apps Script
     }
     return j[0].datos;
   } catch (e) { try { _errLog('sb.cache.' + clave, e); } catch (_) {} return null; }
@@ -17238,6 +17285,7 @@ function _loteAjustarPrompt(codigo, prenda, dis, col, talla, actual){
     if(isNaN(nueva)||nueva<0){ toast('Cantidad inválida','err'); return; }
     this.disabled=true; this.textContent='Guardando...';
     try{ const r=await apiSend('lote.ajustar',{codigo,prenda,dis,col,talla,nueva});
+      _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock'], ['stock.resumen','lotes.listar']);  // 05-ago
       toast('✓ Ajustado a '+r.nueva+' ('+(r.diff>=0?'+':'')+r.diff+')','ok');
       close(); try{ stData=null; _stLsDel(); }catch(e){} loadLotes();
     }catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='Guardar'; }
@@ -17699,6 +17747,7 @@ function renderConf(el) {
       this.disabled = true;
       try {
         const res = await apiSend('conf.setFalla', { dis, col, talla, cantidad });
+        _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'], ['stock.resumen']);  // 05-ago
         const total = (res && res.total!=null) ? res.total : cantidad;   // total real (incluye fallas automáticas)
         const d = confData && confData.find(x => x.dis===dis && x.col===col);
         if (d) {
@@ -17941,6 +17990,10 @@ function _confAbrirIngresarStock(confEl) {
         resFal = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: falladas }));
       }
       if (buenas.length)   res    = await apiSend('stock.crearLote', { items: buenas });
+      // 05-ago — la pantalla no puede volver a mostrar la copia de ANTES de este
+      // ingreso: el stock y los lotes quedan en duda y el espejo se pone al día ya.
+      _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock','fallas.resumen'],
+                    ['stock.resumen','lotes.listar']);
 
       const lotes = (res && res.lotes && res.lotes.length) ? res.lotes.join(', ') : '';
       const partes = [];
@@ -18037,6 +18090,7 @@ function _invAbrirRecuperarFalla(){
     if(!_recCart.length){ toast('Agrega al menos un SKU','err'); return; }
     this.disabled=true; this.textContent='Recuperando...';
     try{ const res=await apiSend('fallas.recuperar',{items:_recCart});
+      _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'], ['stock.resumen']);  // 05-ago
       toast('✓ Recuperado: '+(res.filas||0)+' SKU / '+(res.unidades||0)+' und al stock','ok');
       _recCart=[]; _close(); _refrescarInv();
     }catch(e){ toast('No se pudo recuperar: '+esc(e.message),'err'); this.disabled=false; this.textContent='Recuperar'; }
@@ -18342,6 +18396,7 @@ function _confAbrirIngresarFalla(confEl) {
       // siempre: cada apertura de Yayitas se iría por Apps Script aunque no haga falta.
       _yayOlvidar();
       const res = _yayEspejoConfirmar(await apiSend('fallas.deshacer', {}));
+      _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'], ['stock.resumen']);  // 05-ago
       const u = res && res.undone;
       toast(u ? ('✓ Deshecha: '+esc(u.prenda+' '+u.dis+' '+u.col+' '+u.talla)+' (x'+u.cantidad+(u.motivo?', '+esc(u.motivo):'')+')') : '✓ Falla deshecha', 'ok');
       confData = null; try { _confLsDel(); } catch(e) {}
@@ -18423,6 +18478,8 @@ function _confAbrirIngresarFalla(confEl) {
       // siempre: cada apertura de Yayitas se iría por Apps Script aunque no haga falta.
       _yayOlvidar();
       const res = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: _falCart }));
+      // 05-ago — sin esto, la pantalla releía el espejo viejo y la falla "no descontaba".
+      _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'], ['stock.resumen']);
       toast('✓ '+(res.filas||0)+' falla(s) · '+(res.unidades||0)+' und descontadas del stock', 'ok');
       _falCart = [];
       _close();
@@ -18545,6 +18602,7 @@ function _confAbrirCrearSku(confEl) {
     this.disabled = true; this.textContent = 'Creando...';
     try {
       const res = await apiSend('sku.crear', { items: _skuCart });
+      _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock'], ['stock.resumen','lotes.listar']);  // 05-ago
       const n = (res.skus||[]).length, ya = (res.yaExistian||[]).length;
       toast('✓ '+n+' SKU nuevo(s)'+(ya?' ('+ya+' ya existían)':'')+(res.unidades?' · stock inicial '+res.unidades+' und':''), 'ok');
       _skuCart = []; _close();
