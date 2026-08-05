@@ -5294,6 +5294,12 @@ async function _sbRpcPago(fn, params) {
 // RESERVAS (sin Fecha Pedido) siguen por Apps Script: tienen su propio contador
 // "R-1, R-2…" que no se migro todavia.
 const SB_PILOTO_CREAR = true;
+// 05-ago FASE 1 STOCK: "Registrar ingreso" nace en la base (RPC stock_crear_lote,
+// décimas de segundo) y la hoja se pone al día por detrás (Aplicador cada minuto +
+// empujón inmediato stock.colaAplicar). Si la base falla o la prenda aún no está
+// espejada en Maestros, cae solo a Apps Script — nunca se queda sin registrar.
+// REVERSA: poner en false + bash publicar.sh.
+const SB_STOCK_CREAR = true;
 
 // ══════════════════════════════════════════════════════════════════════════
 // PASO 2 (28-jul) — GUARDAR UN CAMBIO EN LA BASE
@@ -17964,6 +17970,43 @@ function _confAbrirIngresarStock(confEl) {
   // Limpiar: solo limpia los campos de ingreso; CONSERVA los SKUs ya agregados.
   document.getElementById('stk-limpiar').addEventListener('click', () => { inp.value=''; document.getElementById('stk-cant').value=''; selEst.value=''; _syncDestino(); lst.classList.remove('on'); inp.focus(); });
 
+  // 05-ago FASE 1 BASE — molde de _crearPedidoRapido: si la vía rápida no puede
+  // (interruptor, sin sesión, RPC caída, prenda sin espejar), devuelve null y el
+  // que llama se va por Apps Script como siempre. Sale en verLentos() como
+  // `stock.crear.base`; si no aparece y sí `api.stock.crearLote`, la vía rápida
+  // se está cayendo en silencio.
+  async function _stockCrearRapido(items) {
+    const _c = _cronAbrir('stock.crear.base');
+    try {
+      if (typeof SB_STOCK_CREAR === 'undefined' || !SB_STOCK_CREAR) { _cronCerrar(_c, false); return null; }
+      if (typeof SB_URL === 'undefined' || !SB_ANON) { _cronCerrar(_c, false); return null; }
+      const tok = await _sbSesionAsegurar();
+      if (!tok) { _cronCerrar(_c, false); return null; }
+      const req = 'stk-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+      const r = await fetch(SB_URL + '/rest/v1/rpc/stock_crear_lote', {
+        method: 'POST',
+        headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_items: items.map(it => ({ prenda: it.prenda, cantidad: it.cantidad })), p_request: req }),
+      });
+      if (!r.ok) { _cronCerrar(_c, false); try { console.warn('[stock] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+      const d = await r.json();
+      if (!(d && d.ok === true)) { _cronCerrar(_c, false); return null; }
+      _cronCerrar(_c, true);
+      return { ok: true, lotes: d.lotes || [], filas: d.filas || 0, unidades: d.unidades || 0, via: 'base' };
+    } catch (e) { _cronCerrar(_c, false); try { console.warn('[stock] RPC fallo → via Apps Script'); } catch(_){} return null; }
+  }
+
+  // El aviso 🎉 de PREVENTA, compartido por las dos vías (por Apps Script llega en la
+  // respuesta; por la base llega con el empujón, unos segundos después).
+  function _stkAvisoPreventa(pl) {
+    if (!pl || !pl.length) return;
+    const detalle = pl.slice(0,6).map(x => '#'+x.nro+' '+(x.cliente||'').split(' ')[0]+' — '+x.prenda).join('\n');
+    setTimeout(() => {
+      toast('🎉 '+pl.length+' prenda'+(pl.length!==1?'s':'')+' en PREVENTA ya tiene'+(pl.length!==1?'n':'')+' stock:\n'
+        + detalle + (pl.length>6 ? '\n… y '+(pl.length-6)+' más (ver Cola de envíos)' : ''), 'ok');
+    }, 1200);
+  }
+
   document.getElementById('stk-crear').addEventListener('click', async function() {
     if (!_stkCart.length) { toast('Agrega al menos un SKU','err'); return; }
     this.disabled = true; this.textContent = 'Registrando...';
@@ -17989,11 +18032,20 @@ function _confAbrirIngresarStock(confEl) {
         _yayOlvidar();
         resFal = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: falladas }));
       }
-      if (buenas.length)   res    = await apiSend('stock.crearLote', { items: buenas });
+      let viaBase = false;
+      if (buenas.length) {
+        res = await _stockCrearRapido(buenas);              // la base: décimas de segundo…
+        if (res) viaBase = true;
+        else res = await apiSend('stock.crearLote', { items: buenas });   // …o Apps Script, como siempre
+      }
       // 05-ago — la pantalla no puede volver a mostrar la copia de ANTES de este
       // ingreso: el stock y los lotes quedan en duda y el espejo se pone al día ya.
+      // VÍA BASE: acá NO se refresca el espejo — la hoja todavía no tiene el lote
+      // (lo escribe el empujón en unos segundos). Refrescarlo antes sellaría la
+      // copia VIEJA con fecha nueva y la duda la daría por buena. El empujón
+      // refresca DESPUÉS de escribir la hoja (StockBase.gs).
       _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock','fallas.resumen'],
-                    ['stock.resumen','lotes.listar']);
+                    viaBase ? [] : ['stock.resumen','lotes.listar']);
 
       const lotes = (res && res.lotes && res.lotes.length) ? res.lotes.join(', ') : '';
       const partes = [];
@@ -18002,20 +18054,23 @@ function _confAbrirIngresarStock(confEl) {
       toast('✓ '+partes.join(' · '), 'ok');
 
       // LOTES F3 — AVISO: prendas vendidas en PREVENTA que YA tienen stock con este ingreso
-      if (res && Array.isArray(res.preventaListas) && res.preventaListas.length) {
-        const pl = res.preventaListas;
-        const detalle = pl.slice(0,6).map(x => '#'+x.nro+' '+(x.cliente||'').split(' ')[0]+' — '+x.prenda).join('\n');
-        setTimeout(() => {
-          toast('🎉 '+pl.length+' prenda'+(pl.length!==1?'s':'')+' en PREVENTA ya tiene'+(pl.length!==1?'n':'')+' stock:\n'
-            + detalle + (pl.length>6 ? '\n… y '+(pl.length-6)+' más (ver Cola de envíos)' : ''), 'ok');
-        }, 1200);
-      }
+      if (res && Array.isArray(res.preventaListas)) _stkAvisoPreventa(res.preventaListas);
       _stkCart = [];
       _close();
       // refrescar confección con datos frescos (limpia caché local; el backend ya invalidó el suyo)
       confData = null;
       try { _confLsDel(); } catch(e) {}
-      _refrescarInv();
+      if (viaBase) {
+        // EL EMPUJÓN (molde de espejoAplicarNro): la hoja se pone al día en segundos,
+        // el aviso de PREVENTA llega con la respuesta, y recién ahí se refresca la
+        // pantalla (antes del drenado, la hoja todavía mostraría el stock viejo).
+        apiSend('stock.colaAplicar', { items: buenas })
+          .then(r => { if (r && Array.isArray(r.preventaListas)) _stkAvisoPreventa(r.preventaListas); })
+          .catch(()=>{})
+          .finally(()=>{ try { _refrescarInv(); } catch(e) {} });
+      } else {
+        _refrescarInv();
+      }
     } catch(e) {
       toast('Error al registrar el ingreso: '+esc(e.message),'err');
       this.disabled = false; this.textContent = 'Registrar ingreso';
