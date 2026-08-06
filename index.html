@@ -481,6 +481,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <button class="tab on" data-e="_ACTIVOS"><span class="lbl">Activos</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e=""><span class="lbl">Todos</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e="_INCOMPLETOS"><span class="lbl">Prenda pendiente</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
+          <button class="tab" data-e="_PAGOPEND"><span class="lbl">Pago pendiente</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e="ENVIAR"><span class="lbl">Enviar</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e="EN CAMINO"><span class="lbl">En camino</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e="ENTREGADO"><span class="lbl">Entregados</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
@@ -7589,6 +7590,32 @@ function _renderPedsDesde(rawRows, estVal) {
     if (algunaRoja) _incompletosSet.add(nro);
   });
 
+  // Pago pendiente (ago-2026) — pedidos ENTREGADOS con saldo abierto.
+  // Misma regla que el badge de Estado de Pago: todo lo que no es COMPLETO
+  // (INCOMPLETO = pago parcial, PENDIENTE = no pago nada). Respeta el ajuste
+  // manual EstadoPagoManual mientras no haya entrado un pago nuevo.
+  const _pagoPendSet = new Set();
+  Object.keys(_byNroAll).forEach(nro => {
+    const rows = _byNroAll[nro];
+    if (!rows.some(r => String(r['Estado']||'').trim().toUpperCase() === 'ENTREGADO')) return;
+    const pagado = parseFloat(rows[0]._totalPagado) || 0;
+    let sub = 0;
+    rows.forEach(r => { const v = parseFloat(r['Subtotal']) || 0; if (v > sub) sub = v; });
+    let label = '';
+    const raw = String(rows[0]['EstadoPagoManual'] || '').trim();
+    if (raw) {
+      const parts = raw.split('|');
+      const man = String(parts[0]||'').trim().toUpperCase();
+      const snap = parts.length > 1 ? parseFloat(parts[1]) : NaN;
+      const vigente = ['COMPLETO','INCOMPLETO','PENDIENTE'].indexOf(man) >= 0
+                      && (isNaN(snap) || Math.abs(pagado - snap) < 0.01);
+      if (vigente) label = man;
+    }
+    if (!label) label = calcEstadoPago(pagado, sub).label;
+    if (label !== 'COMPLETO') _pagoPendSet.add(nro);
+  });
+  try { window._pagoPendSet = _pagoPendSet; } catch(_){}
+
   // ── Cambios ACTIVOS: se leen del sistema NUEVO (hoja Cambios2 → cambios2.listar / _c2List),
   //    EXACTAMENTE igual que el Módulo de Cambios. El sistema viejo (histCamData / hoja "Cambios")
   //    tiene registros huérfanos que NO se migraron y NO se usa aquí.
@@ -7639,6 +7666,8 @@ function _renderPedsDesde(rawRows, estVal) {
     filtered = pRaw.filter(r => _activosSet.has(String(r['NroPedido']||'').trim()));
   } else if (estVal === '_INCOMPLETOS') {
     filtered = pRaw.filter(r => _incompletosSet.has(String(r['NroPedido']||'').trim()));
+  } else if (estVal === '_PAGOPEND') {
+    filtered = pRaw.filter(r => _pagoPendSet.has(String(r['NroPedido']||'').trim()));
   } else if (estVal === '_SHOWROOM') {
     filtered = pRaw.filter(r => /^R-/i.test(String(r['NroPedido']||'').trim()));
   } else if (estVal === 'CAMBIO') {
@@ -7731,12 +7760,21 @@ function _updateTabCounts(rawRows, incompletosSet, activosSet, nCambio, nDevol, 
     if (e === '_ACTIVOS')          n = activosSet ? activosSet.size : 0;
     else if (e === '')             n = all.size;                 // Todos = período
     else if (e === '_INCOMPLETOS') n = incompletosSet ? incompletosSet.size : 0;
+    else if (e === '_PAGOPEND')   n = (window._pagoPendSet ? window._pagoPendSet.size : 0);
     else if (e === '_SHOWROOM')    n = reservas.size;
     else if (e === 'CAMBIO')       n = nCambio || 0;
     else if (e === '_DEVOLUCIONES')n = nDevol || 0;
     else if (e === 'ENTREGADO')    n = entregadosPeriodo.size;   // Entregados = período
     else                           n = (byEst[e.toUpperCase()] || new Set()).size;
     cntEl.textContent = '(' + n + ')';
+    // Alerta de cobranza: la pestaña se pinta en rojo mientras haya entregados sin cobrar.
+    if (e === '_PAGOPEND') {
+      const _lbl = t.querySelector('.lbl');
+      const _on  = n > 0;
+      if (_lbl) _lbl.style.color = _on ? '#f87171' : '';
+      cntEl.style.color  = _on ? '#f87171' : '';
+      t.style.fontWeight = _on ? '700' : '';
+    }
   });
 }
 
