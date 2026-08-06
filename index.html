@@ -2493,7 +2493,7 @@ const _CRON_TOPE = 400;
 // pasa los 3 s, y las vías rápidas tardan 176-470 ms. Se registraban sólo las
 // llamadas lentas a Apps Script — justo el sesgo que esto viene a corregir.
 // Sin esta línea, verLentos() seguiría mostrando una sola columna.
-const _CRON_SIEMPRE = /^(rapido\.|pedido\.|dup\.|(api\.)?(pedidos\.crear|pedidos\.detectarDuplicados|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
+const _CRON_SIEMPRE = /^(rapido\.|pedido\.|stock\.|dup\.|(api\.)?(pedidos\.crear|pedidos\.detectarDuplicados|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
 
 function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
 function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
@@ -5300,6 +5300,10 @@ const SB_PILOTO_CREAR = true;
 // espejada en Maestros, cae solo a Apps Script — nunca se queda sin registrar.
 // REVERSA: poner en false + bash publicar.sh.
 const SB_STOCK_CREAR = true;
+// 06-ago FASE 2: registrar FALLA nace en la base (RPC falla_ingresar) por el mismo
+// riel: cola_espejo → Aplicador → hoja → espejo. Fallback total a Apps Script.
+// REVERSA: poner en false + bash publicar.sh (independiente de SB_STOCK_CREAR).
+const SB_FALLA_CREAR = true;
 
 // ══════════════════════════════════════════════════════════════════════════
 // PASO 2 (28-jul) — GUARDAR UN CAMBIO EN LA BASE
@@ -18024,13 +18028,17 @@ function _confAbrirIngresarStock(confEl) {
       let res = { lotes:[], filas:0, unidades:0 };
       // Primero el montón: si falla, no queda un lote creado a medias sin sus fallas.
       let resFal = null;
+      let viaBaseFal = false;
       if (falladas.length) {
       // 30-jul — EL ORDEN IMPORTA. `_yayOlvidar()` pone la copia de la base en duda;
       // `_yayEspejoConfirmar` se la devuelve si el backend avisó que la dejó al día.
       // Al revés, el olvido pisa la confirmación y la pantalla se queda desconfiando para
       // siempre: cada apertura de Yayitas se iría por Apps Script aunque no haga falta.
         _yayOlvidar();
-        resFal = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: falladas }));
+        let rf = await _fallasIngresarRapido(falladas);      // la base: décimas…
+        if (rf) viaBaseFal = true;
+        else rf = await apiSend('fallas.ingresar', { items: falladas });   // …o Apps Script
+        resFal = _yayEspejoConfirmar(rf);
       }
       let viaBase = false;
       if (buenas.length) {
@@ -18040,12 +18048,17 @@ function _confAbrirIngresarStock(confEl) {
       }
       // 05-ago — la pantalla no puede volver a mostrar la copia de ANTES de este
       // ingreso: el stock y los lotes quedan en duda y el espejo se pone al día ya.
-      // VÍA BASE: acá NO se refresca el espejo — la hoja todavía no tiene el lote
-      // (lo escribe el empujón en unos segundos). Refrescarlo antes sellaría la
-      // copia VIEJA con fecha nueva y la duda la daría por buena. El empujón
-      // refresca DESPUÉS de escribir la hoja (StockBase.gs).
-      _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock','fallas.resumen'],
-                    viaBase ? [] : ['stock.resumen','lotes.listar']);
+      // VÍA BASE (fix 06-ago, visto en vivo): SOLO se marca la duda — nada de
+      // refrescar acá. La hoja todavía no tiene el lote (lo escribe el empujón en
+      // segundos); refrescar antes sella la copia VIEJA con fecha nueva y la duda
+      // la da por buena. OJO: _stockEscrito con lista vacía refresca IGUAL (cae al
+      // default) — por eso acá se llama a _espejoDudar directo, no a _stockEscrito.
+      if (viaBase || viaBaseFal) {
+        _espejoDudar(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock','fallas.resumen']);
+      } else {
+        _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock','fallas.resumen'],
+                      ['stock.resumen','lotes.listar']);
+      }
 
       const lotes = (res && res.lotes && res.lotes.length) ? res.lotes.join(', ') : '';
       const partes = [];
@@ -18060,10 +18073,11 @@ function _confAbrirIngresarStock(confEl) {
       // refrescar confección con datos frescos (limpia caché local; el backend ya invalidó el suyo)
       confData = null;
       try { _confLsDel(); } catch(e) {}
-      if (viaBase) {
-        // EL EMPUJÓN (molde de espejoAplicarNro): la hoja se pone al día en segundos,
-        // el aviso de PREVENTA llega con la respuesta, y recién ahí se refresca la
-        // pantalla (antes del drenado, la hoja todavía mostraría el stock viejo).
+      if (viaBase || viaBaseFal) {
+        // EL EMPUJÓN (molde de espejoAplicarNro): la hoja se pone al día en segundos
+        // (drena stock-crear Y falla-crear), el aviso de PREVENTA llega con la
+        // respuesta, y recién ahí se refresca la pantalla (antes del drenado, la
+        // hoja todavía mostraría el stock viejo).
         apiSend('stock.colaAplicar', { items: buenas })
           .then(r => { if (r && Array.isArray(r.preventaListas)) _stkAvisoPreventa(r.preventaListas); })
           .catch(()=>{})
@@ -18190,6 +18204,37 @@ function _yayOlvidar() { _yayOlvidarCache(); _stYayVieja = true; _stYayEspejoOk 
 function _yayEspejoConfirmar(res) {
   try { if (res && res.espejo === true) _stYayEspejoOk = true; } catch (e) {}
   return res;
+}
+
+// ── FASE 2 (06-ago) — REGISTRAR FALLA POR LA BASE ──────────────────────────
+// Molde de _stockCrearRapido: si la vía rápida no puede (interruptor, sin
+// sesión, RPC caída, prenda sin espejar), devuelve null y el que llama se va
+// por Apps Script como siempre. Devuelve espejo:false a propósito: el montón
+// queda al día recién cuando el Aplicador escribe la hoja (el empujón tarda
+// segundos) — mientras tanto Yayitas pregunta por Apps Script y nunca miente.
+// Sale en verLentos() como `falla.crear.base`.
+async function _fallasIngresarRapido(items) {
+  const _c = _cronAbrir('falla.crear.base');
+  try {
+    if (typeof SB_FALLA_CREAR === 'undefined' || !SB_FALLA_CREAR) { _cronCerrar(_c, false); return null; }
+    if (typeof SB_URL === 'undefined' || !SB_ANON) { _cronCerrar(_c, false); return null; }
+    const tok = await _sbSesionAsegurar();
+    if (!tok) { _cronCerrar(_c, false); return null; }
+    const req = 'fal-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    const r = await fetch(SB_URL + '/rest/v1/rpc/falla_ingresar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_items: items.map(it => ({
+        prenda: it.prenda, cantidad: it.cantidad, motivo: it.motivo || '',
+        destino: it.destino || '', lote: it.lote || '', nueva: !!it.nueva,
+      })), p_request: req }),
+    });
+    if (!r.ok) { _cronCerrar(_c, false); try { console.warn('[falla] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+    const d = await r.json();
+    if (!(d && d.ok === true)) { _cronCerrar(_c, false); return null; }
+    _cronCerrar(_c, true);
+    return d;
+  } catch (e) { _cronCerrar(_c, false); try { console.warn('[falla] RPC fallo → via Apps Script'); } catch(_){} return null; }
 }
 
 // ── LA VÍA RÁPIDA (30-jul-2026, segunda vuelta) ───────────────────────────
@@ -18532,9 +18577,20 @@ function _confAbrirIngresarFalla(confEl) {
       // Al revés, el olvido pisa la confirmación y la pantalla se queda desconfiando para
       // siempre: cada apertura de Yayitas se iría por Apps Script aunque no haga falta.
       _yayOlvidar();
-      const res = _yayEspejoConfirmar(await apiSend('fallas.ingresar', { items: _falCart }));
+      let rf2 = await _fallasIngresarRapido(_falCart);       // la base: décimas…
+      const viaBaseFal2 = !!rf2;
+      if (!rf2) rf2 = await apiSend('fallas.ingresar', { items: _falCart });   // …o Apps Script
+      const res = _yayEspejoConfirmar(rf2);
       // 05-ago — sin esto, la pantalla releía el espejo viejo y la falla "no descontaba".
-      _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'], ['stock.resumen']);
+      // 06-ago VÍA BASE: SOLO duda (la hoja aún no tiene la falla; el empujón la
+      // escribe en segundos y recién ahí el espejo se pone al día — refrescar antes
+      // sella la copia vieja, la lección del 05/06-ago).
+      if (viaBaseFal2) {
+        _espejoDudar(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen']);
+        apiSend('stock.colaAplicar', {}).catch(()=>{});      // el empujón drena falla-crear también
+      } else {
+        _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'], ['stock.resumen']);
+      }
       toast('✓ '+(res.filas||0)+' falla(s) · '+(res.unidades||0)+' und descontadas del stock', 'ok');
       _falCart = [];
       _close();
