@@ -7318,6 +7318,14 @@ function pGroupByPedido(rows) {
 // Primera prenda: lleva todos los datos del pedido (_isContinuacion=false)
 // Prendas adicionales: solo Prenda/Precio (_isContinuacion=true)
 function pExpandFlat(grouped) {
+  // PERF (ago-2026) — antes, por CADA pedido se recorrían histCamData + _c2Hist + histDevData
+  // ENTEROS buscando su NroPedido: ~10.000 pedidos x ~400 registros = millones de comparaciones
+  // en cada filtrado, y la pantalla se congelaba. Ahora se indexa UNA vez por llamada.
+  const _idxCam = new Map(), _idxDev = new Map();
+  const _pushIdx = (m, k, v) => { if (!k) return; const a = m.get(k); if (a) a.push(v); else m.set(k, [v]); };
+  (Array.isArray(histCamData) ? histCamData : []).forEach(c => _pushIdx(_idxCam, String(c['NroPedido']||'').trim(), c));
+  (Array.isArray(_c2Hist)     ? _c2Hist     : []).forEach(c => _pushIdx(_idxCam, String(c['NroPedido']||'').trim(), c));
+  (Array.isArray(histDevData) ? histDevData : []).forEach(d => _pushIdx(_idxDev, String(d['NroPedido']||'').trim(), d));
   const flat = [];
   grouped.forEach(ped => {
     const hasSaldo = (ped._totalPagado||0) < (parseFloat(ped['Subtotal'])||0) - 0.01;
@@ -7335,8 +7343,8 @@ function pExpandFlat(grouped) {
       const _nroPed = String(ped['NroPedido']||'').trim();
       if (_nroPed) {
         const _normP = s => String(s||'').trim().toUpperCase().replace(/\s+/g,' ');
-        const _cambs = (Array.isArray(histCamData) ? histCamData : []).concat(Array.isArray(_c2Hist) ? _c2Hist : []).filter(c => String(c['NroPedido']||'').trim() === _nroPed);
-        const _devs  = (Array.isArray(histDevData) ? histDevData : []).filter(d => String(d['NroPedido']||'').trim() === _nroPed);
+        const _cambs = _idxCam.get(_nroPed) || [];   // PERF ago-2026: lookup, no barrido
+        const _devs  = _idxDev.get(_nroPed) || [];
         if (_cambs.length || _devs.length) {
           const _activas = new Set();
           _cambs.forEach(c => {
@@ -8906,7 +8914,7 @@ function renderPT(el, rows, total, hayMas) {
         pFlt[col] = { lib:true, val:v };
       }
       clearTimeout(pDeb);
-      pDeb = setTimeout(pAply, 120);
+      pDeb = setTimeout(pAply, 300);   // FIX ago-2026: 120 ms era muy poco — cada tecla lanzaba un recálculo completo
     });
   });
   // Recuperar foco tras re-render (si el usuario sigue tipeando).
@@ -10115,11 +10123,25 @@ function pSortDir(col, asc) {
     else if (PF.has(col)) { va=new Date(va||0); vb=new Date(vb||0); }
     else if (PN.has(col)) { va=parseFloat(va)||0; vb=parseFloat(vb)||0; }
     else { va=String(va||'').toLowerCase(); vb=String(vb||'').toLowerCase(); }
-    return pSA ? (va>vb?1:-1) : (va<vb?1:-1);
+    // FIX ago-2026: devolver 0 en empates — sin esto el orden no es estable y filas iguales
+    // bailaban de sitio entre ordenamientos.
+    if (va > vb) return pSA ? 1 : -1;
+    if (va < vb) return pSA ? -1 : 1;
+    return 0;
   });
   pFlat = pExpandFlat(pAll);
-  const tb = document.querySelector('table.pt tbody');
-  if (tb) { tb.innerHTML = mkTBody(pFlat); requestAnimationFrame(fixStickyLeft); }
+  // FIX ago-2026 — ORDENAR NO ORDENABA TODO. Acá se escribía el tbody a mano
+  // (innerHTML = mkTBody) saltándose el virtualizador: pintaba las ~22.000 filas de golpe
+  // (lento) y, peor, el virtualizador se quedaba con el array PREVIO al orden, así que al
+  // primer scroll repintaba con el orden viejo. Ahora se usa el mismo render que el resto.
+  const _wSort = document.getElementById('ped-w');
+  if (_wSort && _wSort.querySelector('table.pt thead')) {
+    pRenderTBodyFast(_wSort, pFlat, pAll.length, false);
+  } else {
+    const tb = document.querySelector('table.pt tbody');
+    if (tb) tb.innerHTML = mkTBody(pFlat);
+  }
+  requestAnimationFrame(fixStickyLeft);
 }
 
 // ── CARGA PROGRESIVA DEL HISTÓRICO COMPLETO (scope ≠ activos) ──────────────
@@ -10458,7 +10480,17 @@ function pAply() {
   });
 
   // Paso 1b — FIX 25-jul: VISTA SIEMPRE COMPLETA (ver _pedsCompletarPedidos)
-  filtered = _pedsCompletarPedidos(filtered, _filasPestana);
+  // FIX ago-2026 — FILTROS COMBINADOS. "Completar el pedido" volvía a meter TODAS sus filas,
+  // incluidas las que NO cumplían el filtro. Con Canal+Origen+Asesora (que cambian de un lote a
+  // otro dentro del mismo pedido) eso hacía aparecer filas de otro canal / otra asesora.
+  // Ahora, si el filtro es sobre una columna que identifica al pedido, NO se completa: se
+  // muestran solo las filas que cumplen. Para columnas de detalle (Prenda, Precio) se mantiene
+  // el completado, que existe para no mostrar Subtotales parciales.
+  const _COLS_PEDIDO = new Set(['CANAL','ORIGEN','Asesora','Estado','Courier','Distrito',
+    'Provincia','Region','Cliente','DNI','Celular','Email','Fecha Pedido','Fecha Envio','NroPedido']);
+  const _filtraPorPedido = Object.entries(pFlt||{}).some(([c,f]) =>
+    _COLS_PEDIDO.has(c) && f && (f.lib ? String(f.val||'').trim() !== '' : (f.val && f.val.size)));
+  if (!_filtraPorPedido) filtered = _pedsCompletarPedidos(filtered, _filasPestana);
 
   // Paso 2: agrupar por pedido
   pAll = pGroupByPedido(filtered);
