@@ -183,6 +183,9 @@
   .simbar input#simTexto{flex:1;min-width:220px}
   .simbar input#simNombre{width:118px;font-size:12px}
   .simbar input:disabled{opacity:.5}
+  #cfgTexto{width:100%;height:330px;background:var(--bg);border:1.5px solid var(--bd);color:var(--txt);border-radius:12px;padding:12px;font-size:12px;line-height:1.55;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
+  #cfgTexto:disabled{opacity:.55}
+  .cfgsucio{border-color:var(--warn)!important}
   .simpie{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--txt2);margin-top:9px;line-height:1.5}
   @keyframes simblink{0%,80%,100%{opacity:.25}40%{opacity:1}}
   .simdots span{display:inline-block;animation:simblink 1.2s infinite}
@@ -237,6 +240,20 @@
       <span id="simCosto"></span>
     </div>
   </div>
+  <div class="simwrap">
+    <div class="simhead">
+      <h3>📝 Prompt de Tula</h3>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="cfgCargar()">↻ Recargar</button>
+      <button class="btn verde" id="cfgBtn" onclick="cfgGuardar()">💾 Guardar</button>
+    </div>
+    <div class="simsub">Son las instrucciones con las que responde Tula, en WhatsApp real y en el simulador de arriba. Lo que guardes acá aplica desde el siguiente mensaje. Se guarda copia de la versión anterior por si hay que volver atrás.</div>
+    <textarea id="cfgTexto" spellcheck="false" disabled></textarea>
+    <div class="simpie">
+      <span id="cfgEstado">Cargando…</span>
+      <span id="cfgChars"></span>
+    </div>
+  </div>
   <div class="periodos" style="margin-bottom:14px">
     <select id="calPeriodo" onchange="cargarCalidad()">
       <option value="mtd">Mes hasta hoy</option>
@@ -275,7 +292,9 @@ const URL_CALIDAD  = BASE_N8N + '/objeciones-calidad';
 const URL_ENSENAR  = BASE_N8N + '/ensenar-agente'; /* objeciones + calidad (nocturno 4am) */ /* historico Postgres con desglose por asesora (nocturno 3am) */
 const URL_GUARDAR = BASE_N8N + '/playbook-guardar';
 const URL_CARGAR = BASE_N8N + '/playbook-cargar';
-const URL_SIMULAR = BASE_N8N + '/simular'; /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
+const URL_SIMULAR = BASE_N8N + '/simular';
+const URL_PROMPT_CARGAR  = BASE_N8N + '/prompt-cargar';  /* lee bot.config */
+const URL_PROMPT_GUARDAR = BASE_N8N + '/prompt-guardar'; /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
 const BENCH = { t1:60, t2:40, t3:35 }; /* referencia Perú/LatAm — mas conservadora que la global (65/45/40) */
 const B='bot', H='hum', C='cli';
 const QUIEN = { bot:'🤖 TULA', hum:'👩‍💼 ASESORA', cli:'🙋‍♀️ CLIENTA' };
@@ -1145,8 +1164,48 @@ function simEnviar(){
     });
 }
 
+/* ===== EDITOR DEL PROMPT DE TULA (bot.config) ===== */
+let CFG = { original:null, cargado:false, confirmando:false, guardando:false };
+function cfgEstado(txt){ const e=document.getElementById('cfgEstado'); if(e) e.textContent=txt; }
+function cfgPintarChars(){
+  const ta=document.getElementById('cfgTexto'), c=document.getElementById('cfgChars');
+  if(!ta||!c) return;
+  const n=ta.value.length, sucio = CFG.original!==null && ta.value!==CFG.original;
+  ta.classList.toggle('cfgsucio', sucio);
+  c.textContent = n.toLocaleString('es-PE') + ' caracteres' + (sucio ? ' · sin guardar' : '');
+  if(!sucio && !CFG.guardando){ CFG.confirmando=false; const b=document.getElementById('cfgBtn'); if(b){ b.textContent='💾 Guardar'; b.classList.remove('rojo'); b.classList.add('verde'); } }
+}
+function cfgCargar(){
+  const ta=document.getElementById('cfgTexto'); if(!ta) return;
+  ta.disabled=true; cfgEstado('Leyendo…');
+  fetch(URL_PROMPT_CARGAR + '?t=' + Date.now()).then(r=>r.json()).then(d=>{
+    ta.value = String(d.valor||'');
+    CFG.original = ta.value; CFG.cargado = true; ta.disabled=false;
+    cfgEstado('En vivo — es el prompt que está usando Tula ahora');
+    cfgPintarChars();
+  }).catch(()=>{ ta.disabled=true; cfgEstado('⚠️ No pude leer el prompt'); });
+}
+function cfgGuardar(){
+  const ta=document.getElementById('cfgTexto'), b=document.getElementById('cfgBtn');
+  if(!ta||!CFG.cargado||CFG.guardando) return;
+  if(ta.value === CFG.original){ cfgEstado('No cambiaste nada'); return; }
+  if(ta.value.length < 5000){ cfgEstado('⚠️ Muy corto (' + ta.value.length + '). El mínimo son 5.000 caracteres — no se guardó nada.'); return; }
+  if(!CFG.confirmando){ CFG.confirmando=true; b.textContent='⚠️ Confirmar — sale en vivo'; b.classList.remove('verde'); b.classList.add('rojo'); cfgEstado('Un clic más y Tula responde con este prompt.'); return; }
+  CFG.guardando=true; b.textContent='Guardando…'; cfgEstado('Guardando…');
+  fetch(URL_PROMPT_GUARDAR, { method:'POST', body: JSON.stringify({ valor: ta.value }) })
+    .then(r=>r.text()).then(txt=>{
+      let d=null; try{ d=JSON.parse(txt); }catch(e){ d=null; }
+      if(d && d.ok){ CFG.original = ta.value; cfgEstado('✅ Guardado. Aplica desde el siguiente mensaje. El primero paga el caché (~15k tokens, una vez).'); }
+      else { cfgEstado('⚠️ El servidor lo rechazó — no se guardó nada. Revisa el largo del texto.'); }
+    })
+    .catch(()=>cfgEstado('⚠️ Sin conexión — no se guardó nada'))
+    .finally(()=>{ CFG.guardando=false; CFG.confirmando=false; b.textContent='💾 Guardar'; b.classList.remove('rojo'); b.classList.add('verde'); cfgPintarChars(); });
+}
+document.addEventListener('input', function(e){ if(e.target && e.target.id==='cfgTexto') cfgPintarChars(); });
+
 function cargarCalidad(){
   if (!SIM.sesion) simNueva();
+  if (!CFG.cargado) cfgCargar();
   const r = rangoCal();
   document.getElementById('calEstado').textContent = 'Leyendo…';
   fetch(`${URL_CALIDAD}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(pintarCalidad)
@@ -1174,7 +1233,7 @@ function pintarCalidad(d){
   casos.forEach(c=>{
     const info = SENAL_TXT[c.senal] || [c.senal,''];
     const col = c.severidad>=3?'var(--bad)':c.severidad>=2?'var(--f-na)':'var(--f-am)';
-    const prev = String(c.mensajes_cliente||'').split('|').map(s=>s.trim()).filter(Boolean).slice(-5);
+    const prev = String(c.mensajes_cliente||'').split('|').map(s=>s.trim()).filter(Boolean).slice(-10);
     const bloqueCli = prev.length
       ? prev.map(m=>`<div class="cqmsg cli">${esc(m)}</div>`).join('')
       : `<div class="cqmsg vacio">— sin registro del mensaje previo (se completa en el análisis de esta noche) —</div>`;
