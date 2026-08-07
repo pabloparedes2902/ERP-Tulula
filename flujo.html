@@ -192,6 +192,8 @@
   .cfgdet>summary:hover{color:var(--txt);border-color:var(--hover)}
   .cfgdet[open]>summary{border-style:solid;margin-bottom:2px}
   .cqmsg.previo{opacity:.6}
+  .cqregla{border:1.5px solid var(--ab);border-radius:14px;background:var(--card);padding:15px 18px;margin-bottom:14px}
+  .cqreglatxt{font-size:13.5px;line-height:1.55;font-weight:700;margin:2px 0 2px}
   .cqrep{font-size:10px;font-weight:800;color:var(--bad);border:1px solid var(--bad);border-radius:7px;padding:1px 7px;margin-left:6px}
   .cqsug{font-size:10px;font-weight:800;color:var(--warn);border:1px dashed var(--warn);border-radius:7px;padding:2px 7px}
   textarea.sugerido{border-color:var(--warn)!important;border-style:dashed!important}
@@ -276,6 +278,7 @@
     </select>
     <span id="calEstado" style="color:var(--txt2);font-size:12px"></span>
   </div>
+  <div id="reglasZona"></div>
   <div id="calZona"></div>
 </div>
 <div id="vEmbudo">
@@ -309,7 +312,9 @@ const URL_SIMULAR = BASE_N8N + '/simular';
 const URL_PROMPT_CARGAR  = BASE_N8N + '/prompt-cargar';  /* lee bot.config */
 const URL_PROMPT_GUARDAR = BASE_N8N + '/prompt-guardar';
 const URL_PROMPT_REVERTIR = BASE_N8N + '/prompt-revertir'; /* vuelve a la version anterior */
-const URL_SUGERIR = BASE_N8N + '/sugerir'; /* redacta 'lo que debio responder' */ /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
+const URL_SUGERIR = BASE_N8N + '/sugerir';
+const URL_REGLAS = BASE_N8N + '/reglas';                 /* reglas destiladas pendientes */
+const URL_REGLA_DECIDIR = BASE_N8N + '/regla-decidir';   /* aprobar = entra al prompt */ /* redacta 'lo que debio responder' */ /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
 const BENCH = { t1:60, t2:40, t3:35 }; /* referencia Perú/LatAm — mas conservadora que la global (65/45/40) */
 const B='bot', H='hum', C='cli';
 const QUIEN = { bot:'🤖 TULA', hum:'👩‍💼 ASESORA', cli:'🙋‍♀️ CLIENTA' };
@@ -1261,9 +1266,44 @@ function cfgDiff(viejo, nuevo){
   return { mas, menos, chars: b.join('\n').length - a.join('\n').length };
 }
 
+/* reglas que el destilador propone subir al prompt — nunca entran solas */
+function cargarReglas(){
+  fetch(URL_REGLAS + '?t=' + Date.now()).then(r=>r.json()).then(pintarReglas).catch(()=>{});
+}
+function pintarReglas(d){
+  const z=document.getElementById('reglasZona'); if(!z) return;
+  const rs=(d && d.reglas) || [];
+  if(!rs.length){ z.innerHTML=''; return; }
+  z.innerHTML = rs.map(r => `<div class="cqregla" id="regla${r.id}">`+
+    `<div class="cqlbl">🧠 Regla sugerida para el manual de Tula</div>`+
+    `<div class="cqreglatxt">${simEsc(r.regla)}</div>`+
+    `<div style="font-size:11px;color:var(--txt2);margin:6px 0 10px">Sale de ${simEsc(r.motivo||'')} · ${simEsc(r.dia||'')} · al aprobarla se archivan esas correcciones sueltas</div>`+
+    `<button class="btn verde" style="font-size:11px;padding:5px 12px" onclick="decidirRegla(${r.id},'aprobar')">✓ Aprobar y aplicar</button> `+
+    `<button class="btn" style="font-size:11px;padding:5px 10px" onclick="decidirRegla(${r.id},'descartar')">✗ Descartar</button>`+
+    `<span id="regok${r.id}" style="font-size:11px;color:var(--ok);margin-left:8px"></span>`+
+  `</div>`).join('');
+}
+function decidirRegla(id, accion){
+  const s=document.getElementById('regok'+id);
+  if(accion==='aprobar' && !confirm('Esta regla se agrega al manual de Tula y aplica a TODAS las clientas desde el siguiente mensaje. ¿La apruebas?')) return;
+  if(s) s.textContent='…';
+  fetch(URL_REGLA_DECIDIR, { method:'POST', body: JSON.stringify({ id:id, accion:accion }) })
+    .then(r=>r.json()).then(d=>{
+      const card=document.getElementById('regla'+id);
+      if(d && d.ok){
+        if(card) card.innerHTML = (accion==='aprobar')
+          ? '<div style="font-size:12px;color:var(--ok);font-weight:800">✓ Regla agregada al manual · ' + (d.desactivadas||0) + ' correcciones sueltas archivadas</div>'
+          : '<div style="font-size:12px;color:var(--txt2)">Descartada</div>';
+        if(accion==='aprobar'){ CFG.cargado=false; }
+      } else if(s) s.textContent='⚠️ no se pudo aplicar';
+    })
+    .catch(()=>{ if(s) s.textContent='⚠️ sin conexión'; });
+}
+
 function cargarCalidad(){
   if (!SIM.sesion) simNueva();
   if (!CFG.cargado) cfgCargar();
+  cargarReglas();
   const r = rangoCal();
   document.getElementById('calEstado').textContent = 'Leyendo…';
   fetch(`${URL_CALIDAD}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(pintarCalidad)
