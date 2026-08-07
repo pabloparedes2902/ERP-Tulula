@@ -8942,7 +8942,7 @@ function renderPT(el, rows, total, hayMas) {
     Estado:      { tipo:'select', opts: () => mOpts('Estado', ['ENVIAR','EN CAMINO','ENTREGADO','SEPARAR','DEVOLUCION']) },
     EstadoPago:  { tipo:'select', opts: () => ['COMPLETO','INCOMPLETO','PENDIENTE','AUTO'] },
     Canal:       { tipo:'select', opts: () => mOpts('Canal', ['TIKTOK','WHATSAPP','CONTACTO','PAGINA WEB','SHOWROOM','INSTAGRAM','OTROS','MARKETPLACE','FACEBOOK']) },
-    Origen:      { tipo:'select', opts: () => mOpts('Origen', ['ADS DIRECTO','ADS INDIRECTO','ORGANICO DIRECTO','ORGANICO INDIRECTO','LIVE','PRESENCIAL','VIRTUAL','SAGA','ANA','PABLO','PAGINA WEB','OTROS']  /* FIX ago-2026: unificada con la lista de Nuevo pedido. Antes acá se ofrecían 'ADS' y 'ORGANICO' a secas y ensuciaban los reportes por origen. */) },
+    Origen:      { tipo:'select', opts: () => mOpts('Origen', ['ADS DIRECTO','ADS INDIRECTO','ORGANICO DIRECTO','ORGANICO INDIRECTO','LIVE','PRESENCIAL','VIRTUAL','SAGA','ANA','PABLO','PAGINA WEB','OTROS']  /* FIX ago-2026: unificada con la lista de Nuevo pedido. Antes acá se ofrecían 'ADS' y 'ORGANICO' a secas y ensuciaban los informes por origen. */) },
     Courier:     { tipo:'select', opts: () => mOpts('Courier', ['INDRIVER','N/A','OLVA','RECOJO','SALVA','SHALOM']) },
     Asesora:     { tipo:'text',   placeholder: 'Nombre asesora...' },
     FechaEnvio:  { tipo:'date' },
@@ -15335,6 +15335,11 @@ async function _npExecuteSave(job) {
     }
   } catch (e) {}
   const nuevoNro = res.NroPedido;
+  // FIX 07-ago — la VENTA descuenta stock y nadie lo avisaba: la pantalla Stock
+  // seguia mostrando el vendible de antes (memoria + copia local + espejo viejo).
+  // Igual que en los ingresos: foto local fuera y clave del espejo en duda.
+  try { stData = null; _stLsDel(); } catch(e){}
+  try { _espejoDudar(['stock.resumen','catalogo.stock','reposicion.calc']); } catch(e){}
   _pendOlvidar();   // recién creado: si la buscan de nuevo, YA tiene pendiente
   // Disparar la subida de vouchers en BACKGROUND (no esperar) — fire-and-forget.
   // Reforma jul-2026: skipSheet (solo Drive) + constancia.setPago asocia las URLs
@@ -16736,6 +16741,50 @@ function _stLsGet() {
 function _stLsSet(data) { try { localStorage.setItem('erp_' + ST_LS_KEY, JSON.stringify({ts: Date.now(), data})); } catch(e) {} }
 function _stLsDel() { try { localStorage.removeItem('erp_' + ST_LS_KEY); } catch(e) {} }
 
+// ══════════════════════════════════════════════════════════════════════════
+// FIX 07-ago — EL STOCK SE REFRESCA SOLO EN TODOS LOS DISPOSITIVOS.
+//
+// EL BUG QUE ARREGLA (visto en vivo: Estefany veia 41 mientras Pablo veia 51):
+// la copia en memoria (stData) vivia TODA la sesion sin releerse nunca
+// (`if(stData){render;return}`), y la copia de localStorage sobrevivia a
+// recargas fuertes y a cerrar/abrir sesion (el logout no la borraba). La
+// "duda" del espejo es POR DISPOSITIVO: el que ESCRIBE ve fresco; los demas
+// se quedaban con la foto vieja hasta 10 min — o para siempre sin recargar.
+//
+// LA REGLA (stale-while-revalidate): se pinta YA lo guardado (instantaneo,
+// como siempre) y, si esa copia tiene mas de 45 s, se relee en segundo plano
+// y se repinta SOLO si cambio. Ademas, con la pantalla Stock/Inventario
+// abierta, un latido cada 60 s hace lo mismo. El espejo del servidor se pone
+// al dia en segundos tras cada escritura (empujon/espejarDatoYa), asi que
+// cualquier dispositivo converge al dato real en ~1 min como maximo.
+// ══════════════════════════════════════════════════════════════════════════
+let _stDataTs = 0;                       // cuando se obtuvo stData (0 = desconocido → revalida)
+const ST_REVAL_MS = 45 * 1000;           // edad maxima tolerada antes de releer en segundo plano
+function _stLsTs(){ try{ const raw=localStorage.getItem('erp_'+ST_LS_KEY); if(!raw) return 0; const o=JSON.parse(raw); return o.ts||0; }catch(e){ return 0; } }
+let _stRevalidando = false;
+function _stRevalidar(el, renderFn){
+  if (_stRevalidando) return;
+  if (typeof _stYayMode !== 'undefined' && _stYayMode) return;   // Yayitas tiene su propio ciclo
+  if (Date.now() - _stDataTs < ST_REVAL_MS) return;              // todavia fresco
+  _stRevalidando = true;
+  _stockResumenRapido().then(fresco => {
+    if (!Array.isArray(fresco) || !fresco.length) return;
+    const cambio = JSON.stringify(fresco) !== JSON.stringify(stData);
+    stData = fresco; _stDataTs = Date.now(); _stLsSet(fresco);
+    if (cambio && el && document.body.contains(el) && !_stYayMode) { try { renderFn(el); } catch(e){} }
+  }).catch(()=>{}).finally(()=>{ _stRevalidando = false; });
+}
+// El latido: con Stock o Inventario a la vista, revalida cada 60 s.
+setInterval(function(){
+  try {
+    if (document.visibilityState !== 'visible') return;
+    if (typeof curPg === 'undefined' || (curPg !== 'stock' && curPg !== 'inventario')) return;
+    const el = document.getElementById(curPg === 'stock' ? 'st-w' : 'inv-w');
+    if (!el) return;
+    _stRevalidar(el, curPg === 'stock' ? renderStock : renderInv);
+  } catch(e){}
+}, 60 * 1000);
+
 async function loadStock() {
   const el=document.getElementById('st-w');
   if(!_stOrdenInit){
@@ -16750,11 +16799,11 @@ async function loadStock() {
   }
   // Si quedó abierto Yayitas, se recalcula al entrar. Ver _yayEntrarStock.
   if(_stYayMode){ return _yayEntrarStock(el, renderStock); }
-  if(stData){renderStock(el);return;}
+  if(stData){renderStock(el); _stRevalidar(el, renderStock); return;}   // FIX 07-ago: revalida en 2º plano
   const cached = _stLsGet();
-  if(cached){ stData = cached; renderStock(el); cargarVistasStock().then(()=>renderStock(el)); return; }
+  if(cached){ stData = cached; _stDataTs = _stLsTs(); renderStock(el); cargarVistasStock().then(()=>renderStock(el)); _stRevalidar(el, renderStock); return; }
   el.innerHTML=spin('Calculando stock...');
-  try{stData=await _stockResumenRapido(); _stLsSet(stData); await cargarVistasStock(); renderStock(el);}
+  try{stData=await _stockResumenRapido(); _stDataTs=Date.now(); _stLsSet(stData); await cargarVistasStock(); renderStock(el);}
   catch(e){el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>';}
 }
 
@@ -17193,11 +17242,11 @@ async function loadInv(){
   const el=document.getElementById('inv-w');
   // Si quedó abierto Yayitas, se recalcula al entrar. Ver _yayEntrarStock.
   if(_stYayMode){ return _yayEntrarStock(el, renderInv); }
-  if(stData){ renderInv(el); return; }
+  if(stData){ renderInv(el); _stRevalidar(el, renderInv); return; }   // FIX 07-ago: revalida en 2º plano
   const cached=_stLsGet();
-  if(cached){ stData=cached; renderInv(el); cargarVistasStock().then(()=>renderInv(el)); return; }
+  if(cached){ stData=cached; _stDataTs=_stLsTs(); renderInv(el); cargarVistasStock().then(()=>renderInv(el)); _stRevalidar(el, renderInv); return; }
   el.innerHTML=spin('Calculando inventario...');
-  try{ stData=await _stockResumenRapido(); _stLsSet(stData); await cargarVistasStock(); renderInv(el); }
+  try{ stData=await _stockResumenRapido(); _stDataTs=Date.now(); _stLsSet(stData); await cargarVistasStock(); renderInv(el); }
   catch(e){ el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 
@@ -26081,6 +26130,10 @@ async function _onGoogleCredential(resp){
     try { _sbAuthConCredencial(resp.credential); } catch(_){}
     SESSION_TOKEN = data.sessionToken; MY_ROLE = data.rol; MY_EMAIL = data.email;
     MY_ASESORA = data.asesora || '';
+    // FIX 07-ago — inicio de sesion NUEVO (no renovacion en caliente): la foto de
+    // stock guardada puede ser de otro usuario o de antes de un movimiento hecho
+    // desde otro equipo. Se suelta para que la primera pantalla ya venga fresca.
+    if (!window._appBooted) { try { _stLsDel(); } catch(e){} }
     localStorage.setItem('erp_sess', SESSION_TOKEN);
     localStorage.setItem('erp_rol', MY_ROLE);
     localStorage.setItem('erp_email', MY_EMAIL);
@@ -26127,6 +26180,12 @@ function logout(){
   try{ google.accounts.id.disableAutoSelect(); }catch(e){}
   SESSION_TOKEN=''; MY_ROLE=''; MY_EMAIL='';
   localStorage.removeItem('erp_sess'); localStorage.removeItem('erp_rol'); localStorage.removeItem('erp_email');
+  // FIX 07-ago — al salir se sueltan las FOTOS DE DATOS guardadas en este equipo.
+  // Antes sobrevivian al cambio de usuario: quien entraba despues heredaba el
+  // stock (y la duda del espejo) de la sesion anterior y veia numeros viejos.
+  try { _stLsDel(); } catch(e){}
+  try { _confLsDel(); } catch(e){}
+  try { localStorage.removeItem('erp_espejo_duda'); } catch(e){}
   location.reload();
 }
 
