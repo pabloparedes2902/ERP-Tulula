@@ -10340,11 +10340,11 @@ const MAESTROS_OPTS = {
 // Quién puede editar en celda. Por email de Google, que es el único identificador
 // único. Quien no esté acá sigue usando el modal y la edición masiva, como siempre.
 const EDIT_CELDA_EMAILS = [
-  'pabloparedes2902@gmail.com',   // Pablo
-  // 'estefany@...',              // ← Estefany  (falta el correo)
-  // 'roxana@...',                // ← Roxana    (falta el correo)
-  // 'ana@...',                   // ← Ana       (falta el correo)
-];
+  'pabloparedes2902@gmail.com',    // Pablo    — Administrador
+  'anaveronicame@gmail.com',       // Ana      — Administrador
+  'bueno.estefany20@gmail.com',    // Estefany — Logística
+  'rox4nna@gmail.com',             // Roxana   — Logística
+];  // Tomados de la hoja "Usuarios". Para sumar a alguien, agregar su correo acá.
 
 // Columna visible → cómo se edita y cómo se llama en el servidor.
 const EDIT_CELDA_COLS = {
@@ -10354,6 +10354,19 @@ const EDIT_CELDA_COLS = {
   'Asesora':           { tipo:'select', campo:'Asesora',          opts:()=>mOpts('Asesora', ['DAYANN','ANGIE','LUCIA','OTROS','N/A']) },
   'Comentarios Envio': { tipo:'text',   campo:'ComentariosEnvio' },
   'Fecha Envio':       { tipo:'date',   campo:'FechaEnvio' },
+  // ── Datos de la clienta (ago-2026) ──────────────────────────────────────────
+  // Van por 'pedidos.actualizar' (la misma vía del modal), no por la masiva.
+  'Nombres y Apellidos': { tipo:'text', campo:'NombreApellido', via:'pedido' },
+  'Direccion':           { tipo:'text', campo:'Direccion',      via:'pedido', avisaDespachado:true },
+  'Referencia':          { tipo:'text', campo:'Referencia',     via:'pedido', avisaDespachado:true },
+  'Email':               { tipo:'text', campo:'Email',          via:'pedido' },
+  // Celular y DNI identifican a la clienta: con ellos se arma su historial y por ahí
+  // le escribe el bot. Un dígito mal manda el mensaje a un desconocido y parte el
+  // historial en dos → validación estricta antes de dejar guardar.
+  'Celular':             { tipo:'text', campo:'Celular', via:'pedido', avisaDespachado:true,
+                           valida:v => (v==='' || /^[0-9]{9}$/.test(v)) ? '' : 'El celular debe tener exactamente 9 dígitos' },
+  'DNI':                 { tipo:'text', campo:'DNI',     via:'pedido', avisaDespachado:true,
+                           valida:v => (v==='' || /^[0-9]{8}$/.test(v)) ? '' : 'El DNI debe tener exactamente 8 dígitos' },
 };
 
 function _celdaPuedeEditar(){
@@ -10374,6 +10387,26 @@ function _celdaGuardar(nro, col, valor, esDeshacer){
   })();
   if (String(previo) === String(valor)) return;   // no cambió: no molestar al servidor
 
+  // Validación de formato (celular, DNI). No se guarda nada que no cumpla.
+  if (!esDeshacer && def.valida) {
+    const err = def.valida(String(valor||'').trim());
+    if (err) { toast('✕ ' + err, 'err'); return; }
+  }
+  // Aviso si el pedido ya salió: cambiar la dirección o el celular ahora NO cambia
+  // el paquete que ya está en la calle. Se puede hacer, pero que quede claro.
+  if (!esDeshacer && def.avisaDespachado) {
+    const est = (function(){
+      const f = pRaw.filter(r => String(r['NroPedido']||'').trim() === nro);
+      return f.map(r => String(r['Estado']||'').trim().toUpperCase());
+    })();
+    if (est.indexOf('EN CAMINO') >= 0 || est.indexOf('ENTREGADO') >= 0) {
+      const cual = est.indexOf('EN CAMINO') >= 0 ? 'EN CAMINO' : 'ENTREGADO';
+      if (!confirm('El pedido #' + nro + ' ya está ' + cual + '.\n\n' +
+                   'Cambiar "' + col + '" acá NO modifica el paquete que ya salió, solo el registro.\n\n' +
+                   '¿Guardar igual?')) return;
+    }
+  }
+
   pRaw.forEach(r => { if (String(r['NroPedido']||'').trim() === nro) r[col] = valor; });
   try { if (typeof lsSetPeds === 'function') lsSetPeds(pRaw, (typeof pLastSyncTs!=='undefined'&&pLastSyncTs)?pLastSyncTs:Date.now()); } catch(_){}
   try { pAply(); } catch(_){}
@@ -10384,6 +10417,11 @@ function _celdaGuardar(nro, col, valor, esDeshacer){
   }
 
   (async () => {
+    if (def.via === 'pedido') {
+      // Datos de la clienta: misma llamada que usa el modal de edición.
+      const body = { NroPedido: nro }; body[def.campo] = valor;
+      return apiSend('pedidos.actualizar', body);
+    }
     if (typeof _sbRpcCampoMasivo === 'function' && await _sbRpcCampoMasivo([nro], def.campo, valor)) {
       if (typeof _sbEspejarYa === 'function') _sbEspejarYa([nro]);
       return;
