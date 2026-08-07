@@ -192,6 +192,9 @@
   .cfgdet>summary:hover{color:var(--txt);border-color:var(--hover)}
   .cfgdet[open]>summary{border-style:solid;margin-bottom:2px}
   .cqmsg.previo{opacity:.6}
+  .cqfoto{display:block;max-width:150px;max-height:200px;border-radius:9px;border:1px solid var(--bd);margin-top:6px;cursor:zoom-in;object-fit:cover}
+  .cqfoto.zoom{max-width:100%;max-height:none;cursor:zoom-out}
+  .cqlista{font-size:11.5px;line-height:1.6;border:1px dashed var(--bd);border-radius:9px;padding:8px 11px;margin-top:7px;max-height:190px;overflow-y:auto}
   .cqmas{margin:8px 0 4px;border:1px solid var(--bd);border-radius:10px;padding:9px 11px;max-height:290px;overflow-y:auto}
   .cqsem{font-size:10px;font-weight:800;border-radius:7px;padding:2px 8px;margin-left:6px}
   .cqsem.verde{color:var(--ok);border:1px solid var(--ok)}
@@ -322,7 +325,8 @@ const URL_PROMPT_REVERTIR = BASE_N8N + '/prompt-revertir'; /* vuelve a la versio
 const URL_SUGERIR = BASE_N8N + '/sugerir';
 const URL_REGLAS = BASE_N8N + '/reglas';                 /* reglas destiladas pendientes */
 const URL_REGLA_DECIDIR = BASE_N8N + '/regla-decidir';
-const URL_CONTEXTO = BASE_N8N + '/contexto';   /* trae hasta 20 mensajes de la conversacion */   /* aprobar = entra al prompt */ /* redacta 'lo que debio responder' */ /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
+const URL_CONTEXTO = BASE_N8N + '/contexto';
+const URL_PARECIDOS = BASE_N8N + '/parecidos';  /* que casos se van a cerrar junto con este */   /* trae hasta 20 mensajes de la conversacion */   /* aprobar = entra al prompt */ /* redacta 'lo que debio responder' */ /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
 const BENCH = { t1:60, t2:40, t3:35 }; /* referencia Perú/LatAm — mas conservadora que la global (65/45/40) */
 const B='bot', H='hum', C='cli';
 const QUIEN = { bot:'🤖 TULA', hum:'👩‍💼 ASESORA', cli:'🙋‍♀️ CLIENTA' };
@@ -1325,18 +1329,36 @@ function decidirRegla(id, accion){
 }
 
 /* trae hasta 20 mensajes de la conversacion real, para cuando el contexto no alcanza */
+/* muestra exactamente que casos se van a cerrar junto con este */
+function verParecidos(id){
+  const z=document.getElementById('parz'+id); if(!z) return;
+  if(z.innerHTML){ z.innerHTML=''; return; }
+  z.innerHTML='<div style="font-size:11px;color:var(--txt2);margin-top:5px">buscando…</div>';
+  fetch(URL_PARECIDOS, { method:'POST', body: JSON.stringify({ caso_id:id }) })
+    .then(r=>r.json()).then(d=>{
+      const cs=(d && d.casos) || [];
+      if(!cs.length){ z.innerHTML='<div class="cqlista">No encontré otros casos suficientemente parecidos. Se corrige solo este.</div>'; return; }
+      z.innerHTML='<div class="cqlista">' + cs.map(x=>
+        `<div style="margin-bottom:6px"><b>conv ${x.conversacion}</b> · ${simEsc(x.dia||'')} — ella: «${simEsc(x.cliente||'(sin registro)')}»</div>`
+      ).join('') + '</div>';
+    })
+    .catch(()=>{ z.innerHTML='<div class="cqlista">Sin conexión</div>'; });
+}
+
 function masContexto(id){
   const c = ((window.__CAL && window.__CAL.casos) || []).find(x => +x.id === +id);
   const z = document.getElementById('ctxz'+id), b = document.getElementById('ctx'+id);
   if(!c || !z) return;
   if(z.innerHTML){ z.innerHTML=''; if(b) b.textContent='🔎 Más contexto'; return; }
   if(b){ b.textContent='trayendo…'; b.disabled=true; }
-  fetch(URL_CONTEXTO, { method:'POST', body: JSON.stringify({ conversacion: c.conversacion, tope: 20 }) })
+  fetch(URL_CONTEXTO, { method:'POST', body: JSON.stringify({ conversacion: c.conversacion, tope: 30 }) })
     .then(r=>r.json()).then(d=>{
       const ms=(d && d.mensajes) || [];
       if(!ms.length){ z.innerHTML='<div class="cqmsg vacio">No pude traer la conversación</div>'; return; }
       z.innerHTML = '<div class="cqlbl">Conversación completa (últimos '+ms.length+')</div><div class="cqmas">' +
-        ms.map(m => `<div class="cqmsg ${m.quien==='clienta'?'cli':'bot'}">${m.quien==='asesora'?('<b>'+simEsc(m.nombre||'asesora')+':</b> '):''}${simEsc(m.texto)}</div>`).join('') +
+        ms.map(m => `<div class="cqmsg ${m.quien==='clienta'?'cli':'bot'}">${m.quien==='asesora'?('<b>'+simEsc(m.nombre||'asesora')+':</b> '):''}${simEsc(m.texto)}` +
+          ((m.fotos||[]).map(f=>`<img class="cqfoto" src="${f.thumb||f.url}" loading="lazy" onclick="this.classList.toggle('zoom')" alt="foto enviada">`).join('')) +
+          `</div>`).join('') +
         '</div>';
     })
     .catch(()=>{ z.innerHTML='<div class="cqmsg vacio">Sin conexión</div>'; })
@@ -1415,7 +1437,7 @@ function pintarCalidad(d){
         <div class="cqhint">Ej.: «solo si ella ya dijo su talla» · «solo en provincia» · «nunca si el total pasa de S/300» · «siempre»</div>
         <textarea id="cmt${c.id}" placeholder="En qué situación vale esta respuesta y en cuál no…" style="${TA}"></textarea>
 
-        ${(+c.parecidos > 1) ? `<label style="display:flex;align-items:center;gap:7px;margin-top:9px;font-size:11.5px;color:var(--txt2);cursor:pointer"><input type="checkbox" id="par${c.id}" checked> Aplicar esta misma corrección a los <b>${c.parecidos}</b> casos iguales y cerrarlos todos</label>` : ''}
+        ${(+c.parecidos > 1) ? `<label style="display:flex;align-items:center;gap:7px;margin-top:9px;font-size:11.5px;color:var(--txt2);cursor:pointer"><input type="checkbox" id="par${c.id}" checked> Aplicar esta misma corrección a los <b>${c.parecidos}</b> casos iguales y cerrarlos todos</label><div style="margin:3px 0 0"><a href="javascript:void(0)" onclick="verParecidos(${c.id})" style="font-size:11px;color:var(--bot)">ver cuáles son</a></div><div id="parz${c.id}"></div>` : ''}
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn verde" style="font-size:11px;padding:5px 12px" onclick="guardarEnsenar(${c.id})">Guardar y entrenar</button>
           <button class="btn" style="font-size:11px;padding:5px 10px" onclick="marcarBien(${c.id})">👍 Estaba bien</button>
