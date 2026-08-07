@@ -194,6 +194,8 @@
   .cqmsg.previo{opacity:.6}
   .cqfoto{display:block;max-width:150px;max-height:200px;border-radius:9px;border:1px solid var(--bd);margin-top:6px;cursor:zoom-in;object-fit:cover}
   .cqfoto.zoom{max-width:100%;max-height:none;cursor:zoom-out}
+  .cqpospuesto{opacity:.62}
+  .cqpos{font-size:10px;font-weight:800;color:var(--txt2);border:1px solid var(--bd);border-radius:7px;padding:1px 7px;margin-left:6px}
   .cqlista{font-size:11.5px;line-height:1.6;border:1px dashed var(--bd);border-radius:9px;padding:8px 11px;margin-top:7px;max-height:190px;overflow-y:auto}
   .cqmas{margin:8px 0 4px;border:1px solid var(--bd);border-radius:10px;padding:9px 11px;max-height:290px;overflow-y:auto}
   .cqsem{font-size:10px;font-weight:800;border-radius:7px;padding:2px 8px;margin-left:6px}
@@ -326,7 +328,8 @@ const URL_SUGERIR = BASE_N8N + '/sugerir';
 const URL_REGLAS = BASE_N8N + '/reglas';                 /* reglas destiladas pendientes */
 const URL_REGLA_DECIDIR = BASE_N8N + '/regla-decidir';
 const URL_CONTEXTO = BASE_N8N + '/contexto';
-const URL_PARECIDOS = BASE_N8N + '/parecidos';  /* que casos se van a cerrar junto con este */   /* trae hasta 20 mensajes de la conversacion */   /* aprobar = entra al prompt */ /* redacta 'lo que debio responder' */ /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
+const URL_PARECIDOS = BASE_N8N + '/parecidos';
+const URL_POSPONER = BASE_N8N + '/posponer';   /* lo manda al final de la lista */  /* que casos se van a cerrar junto con este */   /* trae hasta 20 mensajes de la conversacion */   /* aprobar = entra al prompt */ /* redacta 'lo que debio responder' */ /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
 const BENCH = { t1:60, t2:40, t3:35 }; /* referencia Perú/LatAm — mas conservadora que la global (65/45/40) */
 const B='bot', H='hum', C='cli';
 const QUIEN = { bot:'🤖 TULA', hum:'👩‍💼 ASESORA', cli:'🙋‍♀️ CLIENTA' };
@@ -1330,6 +1333,27 @@ function decidirRegla(id, accion){
 
 /* trae hasta 20 mensajes de la conversacion real, para cuando el contexto no alcanza */
 /* muestra exactamente que casos se van a cerrar junto con este */
+/* manda el caso al final de la lista sin resolverlo ni ocultarlo */
+function posponerCaso(id){
+  const c = ((window.__CAL && window.__CAL.casos) || []).find(x => +x.id === +id);
+  const b = document.getElementById('pos'+id);
+  const yaEstaba = !!(c && c.pospuesto_at);
+  if(b){ b.textContent='…'; b.disabled=true; }
+  fetch(URL_POSPONER, { method:'POST', body: JSON.stringify({ caso_id:id, deshacer: yaEstaba }) })
+    .then(r=>r.json()).then(d=>{
+      if(d && d.ok){
+        if(c) c.pospuesto_at = yaEstaba ? null : new Date().toISOString();
+        const card=document.getElementById('caso'+id);
+        if(card) card.classList.toggle('cqpospuesto', !yaEstaba);
+        if(b) b.textContent = yaEstaba ? '🕓 Dejarlo para el final' : '🕓 Devolver al inicio';
+        const ok=document.getElementById('ok'+id);
+        if(ok) ok.textContent = yaEstaba ? 'De vuelta en la lista' : 'Lo veo al final';
+      } else if(b) b.textContent='⚠️ no se pudo';
+    })
+    .catch(()=>{ if(b) b.textContent='⚠️ sin conexión'; })
+    .finally(()=>{ if(b) b.disabled=false; });
+}
+
 function verParecidos(id){
   const z=document.getElementById('parz'+id); if(!z) return;
   if(z.innerHTML){ z.innerHTML=''; return; }
@@ -1405,11 +1429,12 @@ function pintarCalidad(d){
       : '';
     const bloqueBot = (botGrp.length ? botGrp : [c.texto_bot]).map(m=>`<div class="cqmsg bot">${esc(m)}</div>`).join('');
     const badgeRep = (+c.repeticiones > 2) ? `<span class="cqrep">se repitió ${c.repeticiones} veces</span>` : '';
+    const badgePos = c.pospuesto_at ? `<span class="cqpos">dejado para el final</span>` : '';
     const bloqueCli = prev.length
       ? prev.map(m=>`<div class="cqmsg cli">${esc(m)}</div>`).join('')
       : `<div class="cqmsg vacio">— sin registro del mensaje previo (se completa en el análisis de esta noche) —</div>`;
-    h += `<div class="cqcaso" style="border-left-color:${col}" id="caso${c.id}">
-      <div class="meta">${c.dia||''} · conversación ${c.conversacion} · <b style="color:${col}">${info[0]}</b>${badgeRep}</div>
+    h += `<div class="cqcaso${c.pospuesto_at ? ' cqpospuesto' : ''}" style="border-left-color:${col}" id="caso${c.id}">
+      <div class="meta">${c.dia||''} · conversación ${c.conversacion} · <b style="color:${col}">${info[0]}</b>${badgeRep}${badgePos}</div>
 
       ${bloquePrevio}
       <div class="cqlbl">Ella escribió</div>
@@ -1442,6 +1467,7 @@ function pintarCalidad(d){
           <button class="btn verde" style="font-size:11px;padding:5px 12px" onclick="guardarEnsenar(${c.id})">Guardar y entrenar</button>
           <button class="btn" style="font-size:11px;padding:5px 10px" onclick="marcarBien(${c.id})">👍 Estaba bien</button>
           <button class="btn" style="font-size:11px;padding:5px 10px" onclick="abrirEnsenar(${c.id})">Saltar</button>
+          <button class="btn" id="pos${c.id}" style="font-size:11px;padding:5px 10px" onclick="posponerCaso(${c.id})">🕓 ${c.pospuesto_at ? 'Devolver al inicio' : 'Dejarlo para el final'}</button>
           <span id="ok${c.id}" style="font-size:11px;color:var(--ok)"></span>
         </div>
       </div></div>`;
