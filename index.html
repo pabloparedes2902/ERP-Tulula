@@ -8891,6 +8891,10 @@ function renderPT(el, rows, total, hayMas) {
   el.removeEventListener('click', pClick);
   el.addEventListener('click', pClick);
 
+  // Edición en celda (ago-2026): doble clic. Mismo patrón remove+add para sobrevivir re-renders.
+  el.removeEventListener('dblclick', _celdaDblClick);
+  el.addEventListener('dblclick', _celdaDblClick);
+
   // J-9 (fix) — Resize por EVENT DELEGATION: un solo listener en el contenedor padre.
   // Sobrevive a cualquier re-render (polling, merge delta, optimistic update) sin reinstalar.
   el.removeEventListener('mousedown', _pedCrsMousedown);
@@ -10321,6 +10325,150 @@ const MAESTROS_OPTS = {
   'Asesora':      [],  // dinámico desde datos
   'Distrito':     [], 'Provincia': [], 'Region': [],
 };
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// EDICIÓN EN CELDA (ago-2026) — doble clic sobre una celda para corregirla sin
+// abrir el pedido. Solo en campos de CLASIFICACIÓN: equivocarse no rompe nada.
+// Estado, pagos, montos y prendas siguen SOLO en el modal: mueven plata, stock
+// y procesos, y un cambio accidental ahí no se ve hasta que es tarde.
+//   • Doble clic entra en edición (el clic simple sigue seleccionando).
+//   • Enter guarda · Escape cancela · Tab guarda y sale.
+//   • Ctrl+Z (Cmd+Z en Mac) deshace el último cambio, uno por uno.
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Quién puede editar en celda. Por email de Google, que es el único identificador
+// único. Quien no esté acá sigue usando el modal y la edición masiva, como siempre.
+const EDIT_CELDA_EMAILS = [
+  'pabloparedes2902@gmail.com',   // Pablo
+  // 'estefany@...',              // ← Estefany  (falta el correo)
+  // 'roxana@...',                // ← Roxana    (falta el correo)
+  // 'ana@...',                   // ← Ana       (falta el correo)
+];
+
+// Columna visible → cómo se edita y cómo se llama en el servidor.
+const EDIT_CELDA_COLS = {
+  'Courier':           { tipo:'select', campo:'Courier',          opts:()=>mOpts('Courier', ['INDRIVER','N/A','OLVA','RECOJO','SALVA','SHALOM']) },
+  'ORIGEN':            { tipo:'select', campo:'Origen',           opts:()=>mOpts('Origen',  ['ADS DIRECTO','ADS INDIRECTO','ORGANICO DIRECTO','ORGANICO INDIRECTO','LIVE','PRESENCIAL','VIRTUAL','SAGA','ANA','PABLO','PAGINA WEB','OTROS']) },
+  'CANAL':             { tipo:'select', campo:'Canal',            opts:()=>mOpts('Canal',   ['TIKTOK','WHATSAPP','CONTACTO','PAGINA WEB','SHOWROOM','INSTAGRAM','OTROS','MARKETPLACE','FACEBOOK']) },
+  'Asesora':           { tipo:'select', campo:'Asesora',          opts:()=>mOpts('Asesora', ['DAYANN','ANGIE','LUCIA','OTROS','N/A']) },
+  'Comentarios Envio': { tipo:'text',   campo:'ComentariosEnvio' },
+  'Fecha Envio':       { tipo:'date',   campo:'FechaEnvio' },
+};
+
+function _celdaPuedeEditar(){
+  try { return EDIT_CELDA_EMAILS.indexOf(String(MY_EMAIL||'').trim().toLowerCase()) >= 0; }
+  catch(_) { return false; }
+}
+
+let _celdaEditando = null;       // {td, nro, col, valorPrevio}
+const _celdaUndo   = [];         // pila de cambios para Ctrl+Z (máx 50)
+
+// Escribe el valor: memoria + caché local + servidor. Es la MISMA vía que usa la
+// edición masiva, así que el backend ya la soporta (no se inventa un camino nuevo).
+function _celdaGuardar(nro, col, valor, esDeshacer){
+  const def = EDIT_CELDA_COLS[col]; if (!def) return;
+  const previo = (function(){
+    const f = pRaw.find(r => String(r['NroPedido']||'').trim() === nro);
+    return f ? String(f[col]==null?'':f[col]) : '';
+  })();
+  if (String(previo) === String(valor)) return;   // no cambió: no molestar al servidor
+
+  pRaw.forEach(r => { if (String(r['NroPedido']||'').trim() === nro) r[col] = valor; });
+  try { if (typeof lsSetPeds === 'function') lsSetPeds(pRaw, (typeof pLastSyncTs!=='undefined'&&pLastSyncTs)?pLastSyncTs:Date.now()); } catch(_){}
+  try { pAply(); } catch(_){}
+
+  if (!esDeshacer) {
+    _celdaUndo.push({nro, col, valor: previo});
+    if (_celdaUndo.length > 50) _celdaUndo.shift();
+  }
+
+  (async () => {
+    if (typeof _sbRpcCampoMasivo === 'function' && await _sbRpcCampoMasivo([nro], def.campo, valor)) {
+      if (typeof _sbEspejarYa === 'function') _sbEspejarYa([nro]);
+      return;
+    }
+    return apiPost('pedidos.actualizarMasivo', { nros:[nro], campo: def.campo, valor: valor });
+  })().catch(e => toast('⚠ No se pudo guardar #'+nro+': '+esc(e.message), 'err'));
+
+  toast('✓ #'+nro+' · '+col+' → '+(valor||'(vacío)'), 'ok');
+}
+
+function _celdaCerrarEditor(guardar){
+  const ed = _celdaEditando; if (!ed) return;
+  _celdaEditando = null;
+  const inp = ed.td.querySelector('.cel-ed');
+  const nuevo = inp ? String(inp.value||'').trim() : null;
+  ed.td.innerHTML = ed.htmlPrevio;
+  if (guardar && nuevo !== null) _celdaGuardar(ed.nro, ed.col, nuevo, false);
+}
+
+function _celdaAbrirEditor(td, tr){
+  if (!_celdaPuedeEditar()) return;
+  if (tr.classList.contains('ped-cont')) return;          // fila de continuación: no tiene datos del pedido
+  const idx = td.cellIndex - 2; if (idx < 0) return;      // 0=checkbox, 1=botón Ver
+  const colDef = PCOLS[idx]; if (!colDef) return;
+  const col = colDef.k; const def = EDIT_CELDA_COLS[col]; if (!def) return;
+  const nro = String(tr.getAttribute('data-nro')||'').trim(); if (!nro) return;
+  if (_celdaEditando) _celdaCerrarEditor(true);
+
+  const fila = pRaw.find(r => String(r['NroPedido']||'').trim() === nro);
+  const actual = fila ? String(fila[col]==null?'':fila[col]) : '';
+  const htmlPrevio = td.innerHTML;
+
+  const stIn = 'width:100%;box-sizing:border-box;padding:2px 4px;font-size:12px;font-family:inherit;'
+             + 'background:var(--bg3);color:var(--tx);border:2px solid var(--ac);border-radius:4px;outline:none';
+  let inp;
+  if (def.tipo === 'select') {
+    inp = document.createElement('select');
+    const vals = def.opts(); const todos = vals.slice();
+    if (actual && todos.indexOf(actual) < 0) todos.unshift(actual);
+    todos.unshift('');
+    todos.forEach(v => { const o=document.createElement('option'); o.value=v; o.textContent=(v||'—'); if(v===actual)o.selected=true; inp.appendChild(o); });
+  } else {
+    inp = document.createElement('input');
+    inp.type = (def.tipo === 'date') ? 'date' : 'text';
+    inp.value = (def.tipo === 'date') ? String(actual||'').slice(0,10) : actual;
+  }
+  inp.className = 'cel-ed'; inp.style.cssText = stIn;
+  td.innerHTML = ''; td.appendChild(inp);
+  _celdaEditando = {td, tr, nro, col, htmlPrevio};
+
+  inp.focus(); if (inp.select) try { inp.select(); } catch(_){}
+  inp.addEventListener('keydown', function(e){
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); _celdaCerrarEditor(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); _celdaCerrarEditor(false); }
+    else if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); _celdaCerrarEditor(true); }
+  }, true);
+  inp.addEventListener('blur', function(){ setTimeout(()=>{ if (_celdaEditando && _celdaEditando.td===td) _celdaCerrarEditor(true); }, 120); });
+  if (def.tipo === 'select') inp.addEventListener('change', function(){ _celdaCerrarEditor(true); });
+}
+
+function _celdaDblClick(e){
+  const td = e.target.closest && e.target.closest('td'); if (!td) return;
+  const tr = td.closest('tr'); if (!tr || !tr.getAttribute('data-nro')) return;
+  if (td.querySelector('.cel-ed')) return;
+  e.preventDefault(); e.stopPropagation();
+  _celdaAbrirEditor(td, tr);
+}
+
+// Ctrl+Z / Cmd+Z — deshace el último cambio hecho en celda, uno por uno.
+if (!window._celdaUndoBound) {
+  window._celdaUndoBound = true;
+  document.addEventListener('keydown', function(e){
+    if (!(e.key === 'z' || e.key === 'Z') || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+    if (_celdaEditando) return;                                   // dentro del editor, Ctrl+Z es del input
+    const t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName||'')) return;
+    if (!_celdaUndo.length) return;
+    e.preventDefault();
+    const u = _celdaUndo.pop();
+    _celdaGuardar(u.nro, u.col, u.valor, true);
+    toast('↶ Deshecho · #'+u.nro+' · '+u.col+' → '+(u.valor||'(vacío)'), 'ok');
+  }, true);
+  // La tabla se repinta al hacer scroll (virtualización): cerrar el editor abierto.
+  window.addEventListener('scroll', function(){ if (_celdaEditando) _celdaCerrarEditor(true); }, true);
+}
 
 function pOpenDrp(col, btn) {
   pCloseDrp(); if (pDrp===col) { pDrp=null; return; } pDrp=col;
