@@ -192,6 +192,11 @@
   .cfgdet>summary:hover{color:var(--txt);border-color:var(--hover)}
   .cfgdet[open]>summary{border-style:solid;margin-bottom:2px}
   .cqmsg.previo{opacity:.6}
+  .cqmas{margin:8px 0 4px;border:1px solid var(--bd);border-radius:10px;padding:9px 11px;max-height:290px;overflow-y:auto}
+  .cqsem{font-size:10px;font-weight:800;border-radius:7px;padding:2px 8px;margin-left:6px}
+  .cqsem.verde{color:var(--ok);border:1px solid var(--ok)}
+  .cqsem.ambar{color:var(--warn);border:1px solid var(--warn)}
+  .cqsem.rojo{color:var(--bad);border:1px solid var(--bad)}
   .cqchoque{font-size:11.5px;line-height:1.5;color:var(--warn);border:1px dashed var(--warn);border-radius:9px;padding:7px 10px;margin:8px 0}
   .cqfallo{border-color:var(--bad)!important}
   .cqregla{border:1.5px solid var(--ab);border-radius:14px;background:var(--card);padding:15px 18px;margin-bottom:14px}
@@ -316,7 +321,8 @@ const URL_PROMPT_GUARDAR = BASE_N8N + '/prompt-guardar';
 const URL_PROMPT_REVERTIR = BASE_N8N + '/prompt-revertir'; /* vuelve a la version anterior */
 const URL_SUGERIR = BASE_N8N + '/sugerir';
 const URL_REGLAS = BASE_N8N + '/reglas';                 /* reglas destiladas pendientes */
-const URL_REGLA_DECIDIR = BASE_N8N + '/regla-decidir';   /* aprobar = entra al prompt */ /* redacta 'lo que debio responder' */ /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
+const URL_REGLA_DECIDIR = BASE_N8N + '/regla-decidir';
+const URL_CONTEXTO = BASE_N8N + '/contexto';   /* trae hasta 20 mensajes de la conversacion */   /* aprobar = entra al prompt */ /* redacta 'lo que debio responder' */ /* escribe bot.config + respaldo */ /* caja de chat de la pestaña Calidad — workflow "🎮 Simulador de Tula" */
 const BENCH = { t1:60, t2:40, t3:35 }; /* referencia Perú/LatAm — mas conservadora que la global (65/45/40) */
 const B='bot', H='hum', C='cli';
 const QUIEN = { bot:'🤖 TULA', hum:'👩‍💼 ASESORA', cli:'🙋‍♀️ CLIENTA' };
@@ -1288,9 +1294,10 @@ function pintarReglas(d){
     }
     const choque = r.conflicto ? `<div class="cqchoque">⚠️ Choca con el manual: ${simEsc(r.conflicto)}</div>` : '';
     return `<div class="cqregla" id="regla${r.id}">`+
-      `<div class="cqlbl">🧠 Regla sugerida para el manual de Tula</div>`+
+      `<div class="cqlbl">🧠 Regla sugerida para el manual de Tula${r.semaforo ? `<span class="cqsem ${r.semaforo}">${r.semaforo==='verde'?'lista':r.semaforo==='rojo'?'no aprobar así':'revisar antes'}</span>` : ''}</div>`+
       `<div class="cqreglatxt">${simEsc(r.regla)}</div>`+
       choque+
+      (r.revision ? `<div class="cqchoque" style="border-color:var(--ab);color:var(--txt)">🔍 Mi revisión: ${simEsc(r.revision)}</div>` : '')+
       `<div style="font-size:11px;color:var(--txt2);margin:6px 0 10px">Sale de ${simEsc(r.motivo||'')} · ${simEsc(r.dia||'')} · al aprobarla se archivan esas correcciones sueltas</div>`+
       `<button class="btn verde" style="font-size:11px;padding:5px 12px" onclick="decidirRegla(${r.id},'aprobar')">✓ Aprobar y aplicar</button> `+
       `<button class="btn" style="font-size:11px;padding:5px 10px" onclick="decidirRegla(${r.id},'descartar')">✗ Descartar</button>`+
@@ -1315,6 +1322,25 @@ function decidirRegla(id, accion){
       } else if(s) s.textContent='⚠️ no se pudo aplicar';
     })
     .catch(()=>{ if(s) s.textContent='⚠️ sin conexión'; });
+}
+
+/* trae hasta 20 mensajes de la conversacion real, para cuando el contexto no alcanza */
+function masContexto(id){
+  const c = ((window.__CAL && window.__CAL.casos) || []).find(x => +x.id === +id);
+  const z = document.getElementById('ctxz'+id), b = document.getElementById('ctx'+id);
+  if(!c || !z) return;
+  if(z.innerHTML){ z.innerHTML=''; if(b) b.textContent='🔎 Más contexto'; return; }
+  if(b){ b.textContent='trayendo…'; b.disabled=true; }
+  fetch(URL_CONTEXTO, { method:'POST', body: JSON.stringify({ conversacion: c.conversacion, tope: 20 }) })
+    .then(r=>r.json()).then(d=>{
+      const ms=(d && d.mensajes) || [];
+      if(!ms.length){ z.innerHTML='<div class="cqmsg vacio">No pude traer la conversación</div>'; return; }
+      z.innerHTML = '<div class="cqlbl">Conversación completa (últimos '+ms.length+')</div><div class="cqmas">' +
+        ms.map(m => `<div class="cqmsg ${m.quien==='clienta'?'cli':'bot'}">${m.quien==='asesora'?('<b>'+simEsc(m.nombre||'asesora')+':</b> '):''}${simEsc(m.texto)}</div>`).join('') +
+        '</div>';
+    })
+    .catch(()=>{ z.innerHTML='<div class="cqmsg vacio">Sin conexión</div>'; })
+    .finally(()=>{ if(b){ b.textContent='🔎 Ocultar contexto'; b.disabled=false; } });
 }
 
 function cargarCalidad(){
@@ -1374,7 +1400,9 @@ function pintarCalidad(d){
       <div style="color:var(--txt2);margin-bottom:8px;font-size:12px">${esc(c.explicacion)}</div>
 
       ${MODO_VIEWER ? '<div style="font-size:10.5px;color:var(--txt2)">Solo lectura — el entrenamiento del agente lo hace un administrador</div>'
-        : `<button class="btn" style="font-size:11px;padding:4px 10px" onclick="abrirEnsenar(${c.id})">✏️ Enseñarle</button>`}
+        : `<button class="btn" style="font-size:11px;padding:4px 10px" onclick="abrirEnsenar(${c.id})">✏️ Enseñarle</button>` +
+          `<button class="btn" id="ctx${c.id}" style="font-size:11px;padding:4px 10px;margin-left:6px" onclick="masContexto(${c.id})">🔎 Más contexto</button>`}
+      <div id="ctxz${c.id}"></div>
       <div id="ens${c.id}" style="display:none;margin-top:10px">
         <div class="cqlbl" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span>Lo que debió responder</span>
@@ -1387,6 +1415,7 @@ function pintarCalidad(d){
         <div class="cqhint">Ej.: «solo si ella ya dijo su talla» · «solo en provincia» · «nunca si el total pasa de S/300» · «siempre»</div>
         <textarea id="cmt${c.id}" placeholder="En qué situación vale esta respuesta y en cuál no…" style="${TA}"></textarea>
 
+        ${(+c.parecidos > 1) ? `<label style="display:flex;align-items:center;gap:7px;margin-top:9px;font-size:11.5px;color:var(--txt2);cursor:pointer"><input type="checkbox" id="par${c.id}" checked> Aplicar esta misma corrección a los <b>${c.parecidos}</b> casos iguales y cerrarlos todos</label>` : ''}
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn verde" style="font-size:11px;padding:5px 12px" onclick="guardarEnsenar(${c.id})">Guardar y entrenar</button>
           <button class="btn" style="font-size:11px;padding:5px 10px" onclick="marcarBien(${c.id})">👍 Estaba bien</button>
@@ -1444,7 +1473,8 @@ function _enviarLeccion(id, accion, texto_bueno, comentario, okMsg){
   fetch(URL_ENSENAR, { method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ caso_id:id, conversacion:caso.conversacion, senal:caso.senal,
       texto_malo: caso.texto_bot, mensajes_cliente: caso.mensajes_cliente||'',
-      texto_bueno: texto_bueno, comentario: comentario, accion: accion })
+      texto_bueno: texto_bueno, comentario: comentario, accion: accion,
+      aplicar_parecidos: !!(document.getElementById('par'+id) && document.getElementById('par'+id).checked) })
   }).then(r=>r.json()).then(()=>{
     document.getElementById('ok'+id).textContent = okMsg;
     const el = document.getElementById('caso'+id);
