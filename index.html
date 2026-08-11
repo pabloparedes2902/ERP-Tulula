@@ -3713,6 +3713,55 @@ window.panelAplicarCustom = function(){
   PANEL.rango = 'custom'; _panelRender();
 };
 
+// ══════════════════════════════════════════════════════════════════════════
+// COMPRAS DE ADS — de la MISMA vista que lee el Embudo: erp.v_compras_ads
+//
+// Antes este numero salia de la serie diaria Resumen_ROAS, es decir, de una
+// segunda formula equivalente pero escrita aparte. Equivalente hoy no es lo
+// mismo que igual manana: cada cambio en una de las dos las separaba, y eso
+// paso cuatro veces en un solo dia.
+//
+// Ahora el criterio (WhatsApp + origen ADS + pago COMPLETO + no anulado, por
+// fecha de pago) vive UNA sola vez, en la vista. Si cambia, cambia para el
+// Panel y para el Embudo a la vez.
+//
+// Se cachea por rango en memoria. Si la lectura falla, se deja el numero de
+// la serie diaria: el Panel nunca se queda en blanco por esto.
+// ══════════════════════════════════════════════════════════════════════════
+window._panelCompras = {};          // { "d1|d2": {total, conClic, sinClic} | 'cargando' | null }
+
+async function _panelComprasAds(d1, d2){
+  const clave = d1 + '|' + d2;
+  if (_panelCompras[clave] !== undefined) return _panelCompras[clave];
+  _panelCompras[clave] = 'cargando';
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) { _panelCompras[clave] = null; return null; }
+    const url = SB_URL + '/rest/v1/v_compras_ads?select=numero,con_clic'
+              + '&dia_pago=gte.' + encodeURIComponent(d1)
+              + '&dia_pago=lte.' + encodeURIComponent(d2)
+              + '&limit=5000';
+    const r = await fetch(url, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) { _panelCompras[clave] = null; return null; }
+    const filas = await r.json();
+    if (!Array.isArray(filas)) { _panelCompras[clave] = null; return null; }
+    const conClic = filas.filter(function(x){ return x.con_clic; }).length;
+    _panelCompras[clave] = { total: filas.length, conClic: conClic, sinClic: filas.length - conClic };
+  } catch (e) {
+    _panelCompras[clave] = null;
+  }
+  return _panelCompras[clave];
+}
+
+// Pide el dato si falta y vuelve a pintar cuando llega. No bloquea el render.
+function _panelComprasAsegurar(d1, d2){
+  const clave = d1 + '|' + d2;
+  if (_panelCompras[clave] !== undefined) return;
+  _panelComprasAds(d1, d2).then(function(){
+    if (typeof _panelRender === 'function' && curPg === 'panel') _panelRender();
+  });
+}
+
 function _panelRender(){
   const c = document.getElementById('panel-c');
   let d1, d2;
@@ -3728,6 +3777,20 @@ function _panelRender(){
   const cdCur = _panelCanal(aggCur, canal), cdPrev = _panelCanal(aggPrev, canal);
   const cur = _panelVista(cdCur, vista);
   const prev= _panelVista(cdPrev, vista);
+
+  // Compras de ads de WhatsApp: se toma de la vista compartida, no de la serie.
+  // Asi el Panel y el Embudo no pueden diferir: leen la misma fila.
+  let comprasNota = '';
+  if (canal === 'whatsapp' && vista === 'ads'){
+    _panelComprasAsegurar(d1, d2);
+    _panelComprasAsegurar(pD1, pD2);
+    const cv = _panelCompras[d1 + '|' + d2], pv = _panelCompras[pD1 + '|' + pD2];
+    if (cv && cv !== 'cargando'){
+      cur.pedidos  = cv.total;
+      comprasNota  = cv.conClic + ' con clic · ' + cv.sinClic + ' sin clic';
+    }
+    if (pv && pv !== 'cargando') prev.pedidos = pv.total;
+  }
   const canalNom = canal==='web'?'Página web':(canal==='meta'?'Meta Ads (Web + WhatsApp)':'WhatsApp');
 
   const S = v => 'S/ '+fmt(v);
@@ -3763,7 +3826,7 @@ function _panelRender(){
     _panelCard('ROAS',             cur.roas!=null?cur.roas.toFixed(2)+'x':guion, cur.aplicaGasto?'Ventas ÷ gasto':'no aplica', cur.roas!=null?_panelDelta(cur.roas,prev.roas,true):''),
     _panelCard('CAC S/',           cur.cac!=null?S(cur.cac):guion, cur.aplicaGasto?'Gasto ÷ ventas':'no aplica', cur.cac!=null?_panelDelta(cur.cac,prev.cac,false):''),
     _panelCard('Margen S/',        S(cur.margen), cur.margenPct.toFixed(0)+'%'+(cur.aplicaGasto?' (−prendas −ads)':' (−prendas)'), _panelDelta(cur.margen,prev.margen,true)),
-    _panelCard('Ventas #',         _pInt(cur.pedidos), 'pedidos', _panelDelta(cur.pedidos,prev.pedidos,true)),
+    _panelCard('Ventas #',         _pInt(cur.pedidos), comprasNota || 'pedidos', _panelDelta(cur.pedidos,prev.pedidos,true)),
     _panelCard('Prendas #',        _pInt(cur.prendas), (cur.pedidos>0?(cur.prendas/cur.pedidos).toFixed(1)+' x pedido':''), _panelDelta(cur.prendas,prev.prendas,true)),
     _panelCard('Ticket promedio',  S(cur.ticket), 'Ventas ÷ pedidos', _panelDelta(cur.ticket,prev.ticket,true))
   ].join('');
