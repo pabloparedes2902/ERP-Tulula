@@ -416,6 +416,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
     <div class="ns">Principal</div>
     <button class="nb on" data-pg="dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</button>
     <button class="nb" data-pg="panel"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14"/></svg>Panel<span id="metacapi-badge" style="display:none;margin-left:auto;background:var(--rd);color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700" title="Ventas con error al enviar a Meta"></span></button>
+    <button class="nb" data-pg="marketing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11v2a1 1 0 001 1h2l4 4V6L6 10H4a1 1 0 00-1 1z"/><path d="M15.5 8.5a5 5 0 010 7"/><path d="M18.5 5.5a9 9 0 010 13"/></svg>Marketing</button>
     <div class="ns">Ventas</div>
     <button class="nb" data-pg="pedidos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>Pedidos</button>
     <button class="nb" data-pg="clientes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>Clientes</button>
@@ -471,6 +472,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
 
     <div id="pg-panel" class="pg"><div id="panel-c"><div class="ld"><div class="sp"></div>Cargando...</div></div></div>
     <div id="pg-comisiones" class="pg"><div id="com-w"><div class="ld"><div class="sp"></div>Cargando comisiones...</div></div></div>
+    <div id="pg-marketing" class="pg"><iframe id="marketing-frame" title="Marketing Tulula" style="width:100%;height:calc(100vh - 118px);border:0;border-radius:12px;background:var(--bg2)" src=""></iframe></div>
     <div id="pg-flujo" class="pg"><iframe id="flujo-frame" title="Flujo de ventas Tulula" style="width:100%;height:calc(100vh - 118px);border:0;border-radius:12px;background:#0d0f14;display:block"></iframe></div>
 
     <div id="pg-pedidos" class="pg">
@@ -3524,6 +3526,13 @@ function _comLazy(silencioso) {
 // al iframe SOLO la primera vez que se abre el modulo (no pesa en el arranque del ERP).
 // Administrador entra como EDITOR (?edit=1); Ventas entra como visor de solo lectura.
 // Los datos (guardar/cargar/embudo) van directo a n8n via webhooks, no tocan Apps Script.
+// MARKETING (11-ago-2026): salio de Ventas y es modulo propio. Mismo patron
+// que flujo: iframe que se carga la primera vez que se abre, no en el arranque.
+function _marketingLazy(){
+  var f = document.getElementById('marketing-frame');
+  if (!f) return;
+  if (f.getAttribute('src') !== 'marketing.html') f.setAttribute('src', 'marketing.html');
+}
 function _flujoLazy(){
   var f = document.getElementById('flujo-frame');
   if (!f) return;
@@ -3543,6 +3552,7 @@ function loadPg(pg) {
   else if (pg==='panel')      loadPanel();
   else if (pg==='comisiones') _comLazy();
   else if (pg==='flujo')      _flujoLazy();
+  else if (pg==='marketing')  _marketingLazy();
   else if (pg==='pedidos')    loadPeds('_ACTIVOS');
   else if (pg==='nuevo')      npInit();
   else if (pg==='clientes')   loadClis();
@@ -3737,7 +3747,7 @@ async function _panelComprasAds(d1, d2){
   try {
     const tok = await _sbSesionAsegurar();
     if (!tok) { _panelCompras[clave] = null; return null; }
-    const url = SB_URL + '/rest/v1/v_compras_ads?select=numero,con_clic'
+    const url = SB_URL + '/rest/v1/v_compras_ads?select=numero,con_clic,venta_prendas'
               + '&dia_pago=gte.' + encodeURIComponent(d1)
               + '&dia_pago=lte.' + encodeURIComponent(d2)
               + '&limit=5000';
@@ -3746,7 +3756,8 @@ async function _panelComprasAds(d1, d2){
     const filas = await r.json();
     if (!Array.isArray(filas)) { _panelCompras[clave] = null; return null; }
     const conClic = filas.filter(function(x){ return x.con_clic; }).length;
-    _panelCompras[clave] = { total: filas.length, conClic: conClic, sinClic: filas.length - conClic };
+    const soles = filas.reduce(function(a,x){ return a + (Number(x.venta_prendas) || 0); }, 0);
+    _panelCompras[clave] = { total: filas.length, conClic: conClic, sinClic: filas.length - conClic, soles: soles };
   } catch (e) {
     _panelCompras[clave] = null;
   }
@@ -3785,11 +3796,19 @@ function _panelRender(){
     _panelComprasAsegurar(d1, d2);
     _panelComprasAsegurar(pD1, pD2);
     const cv = _panelCompras[d1 + '|' + d2], pv = _panelCompras[pD1 + '|' + pD2];
-    if (cv && cv !== 'cargando'){
-      cur.pedidos  = cv.total;
-      comprasNota  = cv.conClic + ' con clic · ' + cv.sinClic + ' sin clic';
-    }
-    if (pv && pv !== 'cargando') prev.pedidos = pv.total;
+    // Ventas y pedidos salen de la vista. El monto es SIN envio: el flete se le
+    // paga al courier y contarlo como ingreso infla el ROAS.
+    const aplicar = function(o, v){
+      if (!v || v === 'cargando') return;
+      o.pedidos = v.total;
+      o.ventas  = v.soles;
+      o.roas    = o.gasto > 0 ? o.ventas / o.gasto : null;
+      o.cac     = o.pedidos > 0 ? o.gasto / o.pedidos : null;
+      o.ticket  = o.pedidos > 0 ? o.ventas / o.pedidos : 0;
+    };
+    aplicar(cur, cv);
+    aplicar(prev, pv);
+    if (cv && cv !== 'cargando') comprasNota = cv.conClic + ' con clic · ' + cv.sinClic + ' sin clic';
   }
   const canalNom = canal==='web'?'Página web':(canal==='meta'?'Meta Ads (Web + WhatsApp)':'WhatsApp');
 
@@ -4128,7 +4147,7 @@ async function _prodEliminar(sku) {
 // El menu ya los esconde (_applyRoleUI) y el servidor ya los bloquea (Auth.gs).
 // Esto es el tercer cerrojo: aunque alguien llegue por un atajo, un enlace o el
 // modulo que abrio la ultima vez, no entra.
-const PG_SOLO_ADMIN = {dashboard:1, panel:1, papelera:1, config:1};
+const PG_SOLO_ADMIN = {dashboard:1, panel:1, papelera:1, config:1, marketing:1};
 function _pgPermitida(pg){ return !(PG_SOLO_ADMIN[pg] && MY_ROLE !== 'Administrador'); }
 
 function navegarA(pg) {
@@ -26330,7 +26349,7 @@ function _applyRoleUI(){
   // 'comisiones' TEMPORAL (2-ago-2026): oculto para las asesoras hasta el
   // lanzamiento. Para lanzar: quitar 'comisiones' de esta lista y ejecutar
   // comAsesorasEncender() en Apps Script.
-  ['dashboard','panel','papelera','config','comisiones'].forEach(function(pg){
+  ['dashboard','panel','papelera','config','comisiones','marketing'].forEach(function(pg){
     var b = document.querySelector('.nb[data-pg="'+pg+'"]'); if(b) b.style.display='none';
   });
   // Ocultar la etiqueta de sección "Sistema" (sus 2 items quedaron ocultos).
