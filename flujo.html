@@ -287,6 +287,7 @@
   </div>
   <div id="suiteZona"></div>
   <div id="perfZona"></div>
+  <div id="aprZona"></div>
   <div class="periodos" style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <select id="calPeriodo" onchange="cargarCalidad()">
       <option value="mtd">Mes hasta hoy</option>
@@ -1576,6 +1577,7 @@ function cargarCalidad(){
   if (MODO_VIEWER){ const bt=document.getElementById('btnEntrenarTodo'); if(bt) bt.style.display='none'; const sm=document.getElementById('simModo'); if(sm) sm.style.display='none'; }
   cargarReglas();
   cargarPerformance();
+  cargarAprendizaje();
   cargarSuite();
   cargarPoliticas();
   cargarVersiones();
@@ -1749,6 +1751,56 @@ function pintarPerformance(d){
   }).join('');
   z.innerHTML = `<div class="cq" style="padding:13px 16px"><h3 style="margin:0 0 8px">📈 Performance Tula <span style="font-weight:400;color:var(--txt2);font-size:11px">· ${hoy.fecha||''} (último día completo)</span></h3><div class="cqkpi" style="margin:0">${tiles}</div></div>`;
 }
+/* ===== ESTA SEMANA APRENDI (workflow 📚): feed de aprendizaje + score de reincidencia ===== */
+const URL_APRENDIZAJE = BASE_N8N + '/aprendizaje-semana';
+function cargarAprendizaje(){
+  fetch(URL_APRENDIZAJE + '?t=' + Date.now()).then(r=>r.json()).then(pintarAprendizaje)
+    .catch(()=>{ const z=document.getElementById('aprZona'); if(z) z.innerHTML=''; });
+}
+function pintarAprendizaje(d){
+  const z=document.getElementById('aprZona'); if(!z) return;
+  const ret=(d&&d.retencion)||{}, rein=(d&&d.reincidentes)||[], feed=(d&&d.feed)||[], sem=(d&&d.semana)||{};
+  const apr=+ret.aprendidos||0, fir=+ret.firmes||0;
+  const pct = apr ? Math.round(fir*100/apr) : null;
+  const col = pct===null?'var(--txt2)':(pct>=85?'var(--ok)':pct>=60?'var(--warn)':'var(--bad)');
+  const ICO={correccion:'✏️',regla:'📜',version:'🗂️',caso:'🧪'};
+  const tiles = `<div class="cqkpi" style="margin:0 0 4px">
+    <div><b style="color:${col}">${pct===null?'—':pct+'%'}</b><span>RETENCIÓN</span><i style="font-style:normal;font-size:10.5px;color:var(--txt2)">${fir} de ${apr} lecciones firmes</i></div>
+    <div><b style="${+ret.reincidentes?'color:var(--bad)':''}">${+ret.reincidentes||0}</b><span>REINCIDENTES</span><i style="font-style:normal;font-size:10.5px;color:var(--txt2)">las sabía y volvió a fallar</i></div>
+    <div><b>${+ret.aun_no||0}</b><span>EN PROCESO</span><i style="font-style:normal;font-size:10.5px;color:var(--txt2)">enseñadas, aún no las domina</i></div>
+    <div><b>${+sem.correcciones||0}</b><span>CORRECCIONES 7D</span></div>
+    <div><b>${+sem.versiones||0}</b><span>VERSIONES DEL MANUAL 7D</span></div>
+  </div>`;
+  const reinHtml = rein.length ? `<div class="cqlbl" style="margin-top:12px;color:var(--bad)">⚠️ Lecciones que reincidieron</div>` +
+    rein.map(r=>`<div class="cqcaso" style="border-left-color:var(--bad);padding:8px 12px">
+      <div style="font-size:12px;font-weight:600">${simEsc(String(r.nombre||''))}</div>
+      ${r.razon?`<div style="font-size:11px;color:var(--txt2)">${simEsc(String(r.razon||'').slice(0,180))}</div>`:''}
+      <div style="font-size:11px;color:var(--warn);margin-top:2px">→ refuérzala: corrígela de nuevo en "Qué corregir hoy" o súbela como regla del manual</div>
+    </div>`).join('') : '';
+  // feed agrupado por día
+  const porDia={};
+  feed.forEach(f=>{ const dia=String(f.fecha||'').slice(0,10); if(dia) (porDia[dia]=porDia[dia]||[]).push(f); });
+  const dias=Object.keys(porDia).sort().reverse();
+  const DIAS_TXT=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+  let vis=0, tot=0;
+  const feedHtml = dias.map(dia=>{
+    const dt=new Date(dia+'T12:00:00');
+    const cab=`<div class="cqlbl${vis>=14?' aprMas':''}" style="margin-top:10px${vis>=14?';display:none':''}">${DIAS_TXT[dt.getDay()]} ${dia.slice(8,10)}/${dia.slice(5,7)}</div>`;
+    return cab + porDia[dia].map(f=>{
+      tot++; const oculto = vis>=14; vis++;
+      return `<div${oculto?' class="aprMas"':''} style="${oculto?'display:none;':''}padding:4px 0;font-size:12px;border-bottom:1px dashed var(--bd)">${ICO[f.tipo]||'•'} <b style="font-weight:600">${simEsc(String(f.titulo||''))}</b><span style="color:var(--txt2)"> — ${simEsc(String(f.detalle||''))}</span></div>`;
+    }).join('');
+  }).join('');
+  const verTodo = tot>14 ? `<button class="btn" style="margin-top:8px;font-size:11px" onclick="aprVerTodo(this)">Ver todo (${tot})</button>` : '';
+  z.innerHTML = `<div class="cq" style="padding:13px 16px">
+    <h3 style="margin:0 0 8px">📚 Esta semana aprendí <span style="font-weight:400;color:var(--txt2);font-size:11px">· últimos 7 días</span></h3>
+    ${tiles}${reinHtml}
+    <div class="cqlbl" style="margin-top:12px">Diario de aprendizaje</div>
+    ${feedHtml || '<div style="color:var(--txt2);font-size:12px">Sin actividad esta semana.</div>'}
+    ${verTodo}
+  </div>`;
+}
+function aprVerTodo(b){ document.querySelectorAll('.aprMas').forEach(e=>e.style.display=''); b.style.display='none'; }
 function pintarCalidad(d){
   window.__CAL = d;
   const t = d.totales||{}, objs = d.objeciones||[], cals = d.calidad||[], vb = d.verbatims||[];
