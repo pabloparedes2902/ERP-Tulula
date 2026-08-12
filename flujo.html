@@ -255,6 +255,10 @@
     <div class="simhead">
       <h3>🎮 Simulador — habla con Tula</h3>
       <span style="flex:1"></span>
+      <span id="simModo" style="display:flex;gap:4px;margin-right:6px">
+        <button class="btn on" id="modoVivo" onclick="simCambiarModo(false)" title="Chatea contra el manual que está en producción">En vivo</button>
+        <button class="btn" id="modoBorrador" onclick="simCambiarModo(true)" title="Chatea contra un borrador del manual, sin tocar producción">🧪 Borrador</button>
+      </span>
       <button class="btn" onclick="simNueva()">🔄 Nueva conversación</button>
     </div>
     <div class="simchat" id="simChat"></div>
@@ -267,6 +271,19 @@
       <span id="simEstado"></span>
       <span id="simCosto"></span>
     </div>
+  </div>
+  <div class="simwrap" id="borradorPanel" style="display:none;margin-top:10px;border-style:dashed">
+    <div class="simhead">
+      <h3>🧪 Borrador del manual</h3>
+      <span id="borEstado" style="font-size:11px;color:var(--txt2)"></span>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="borTraer()" title="Copia el manual en vivo al borrador">⬇ Traer el manual en vivo</button>
+      <button class="btn verde" id="borGuardarBtn" onclick="borGuardar()">💾 Guardar borrador</button>
+      <button class="btn" id="borPromoverBtn" onclick="borPromover()" style="border-color:var(--warn);color:var(--warn)">🚀 Promover a producción</button>
+    </div>
+    <div class="simsub">Edita y prueba aquí sin miedo: el chat de arriba (en modo Borrador) responde con ESTE texto. Producción no se toca hasta que promuevas — y al promover, la suite de regresión corre sola y el banner de arriba te avisa si algo se rompió.</div>
+    <textarea id="borTexto" spellcheck="false" style="width:100%;min-height:300px;background:var(--bg3,rgba(255,255,255,.04));border:1.5px solid var(--bd);border-radius:10px;color:var(--txt);padding:12px;font-size:12px;font-family:ui-monospace,monospace;resize:vertical;line-height:1.5"></textarea>
+    <div class="simpie"><span id="borChars"></span><span id="borMsg" style="color:var(--ok)"></span></div>
   </div>
   <div id="suiteZona"></div>
   <div id="perfZona"></div>
@@ -1154,7 +1171,70 @@ function rangoCal(){
   return { desde: Math.floor(_dia(-n)/1000), hasta: Math.floor(_dia(-1, true)/1000) };
 }
 /* ===== SIMULADOR DE TULA (pestaña Calidad) ===== */
-let SIM = { sesion:null, gasto:0, turnos:0, ocupado:false };
+let SIM = { sesion:null, gasto:0, turnos:0, ocupado:false, borrador:false };
+/* ===== MODO BORRADOR: editar y probar sin tocar produccion ===== */
+const URL_BOR_CARGAR = BASE_N8N + '/borrador-cargar';
+const URL_BOR_GUARDAR = BASE_N8N + '/borrador-guardar';
+const URL_BOR_SINCRONIZAR = BASE_N8N + '/borrador-sincronizar';
+const URL_BOR_PROMOVER = BASE_N8N + '/borrador-promover';
+const BOR = { cargado:false, original:'' };
+function simCambiarModo(borrador){
+  if (MODO_VIEWER && borrador) return;
+  SIM.borrador = !!borrador;
+  const bv=document.getElementById('modoVivo'), bb=document.getElementById('modoBorrador'), p=document.getElementById('borradorPanel');
+  if(bv) bv.classList.toggle('on', !SIM.borrador);
+  if(bb) bb.classList.toggle('on', SIM.borrador);
+  if(p) p.style.display = SIM.borrador ? 'block' : 'none';
+  simNueva(); /* sesion nueva al cambiar de modo para no mezclar contextos */
+  document.getElementById('simEstado').textContent = SIM.borrador ? '🧪 chateando contra el BORRADOR' : '';
+  if(SIM.borrador && !BOR.cargado) borCargar();
+}
+function borPintar(){
+  const ta=document.getElementById('borTexto');
+  if(!ta) return;
+  document.getElementById('borChars').textContent = ta.value.length.toLocaleString('es-PE') + ' caracteres' + (ta.value!==BOR.original ? ' · sin guardar' : '');
+}
+function borCargar(){
+  const ta=document.getElementById('borTexto'); if(!ta) return;
+  document.getElementById('borEstado').textContent = 'cargando…';
+  fetch(URL_BOR_CARGAR + '?t=' + Date.now()).then(r=>r.json()).then(d=>{
+    ta.value = String(d.valor||''); BOR.original = ta.value; BOR.cargado = true;
+    document.getElementById('borEstado').textContent = d.igual_a_produccion ? 'igual al manual en vivo' : '≠ difiere del manual en vivo';
+    borPintar();
+  }).catch(()=>{ document.getElementById('borEstado').textContent = '⚠️ sin conexión'; });
+}
+function borTraer(){
+  if(!confirm('Esto copia el manual EN VIVO al borrador (pisa lo que haya en el borrador). ¿Dale?')) return;
+  fetch(URL_BOR_SINCRONIZAR, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+    .then(r=>r.json()).then(()=>{ BOR.cargado=false; borCargar(); document.getElementById('borMsg').textContent='⬇ traído del manual en vivo'; setTimeout(()=>document.getElementById('borMsg').textContent='',3000); })
+    .catch(()=>alert('Sin conexión'));
+}
+function borGuardar(){
+  const ta=document.getElementById('borTexto'); if(!ta) return;
+  const b=document.getElementById('borGuardarBtn'); b.disabled=true; b.textContent='Guardando…';
+  fetch(URL_BOR_GUARDAR, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({valor: ta.value})})
+    .then(r=>r.json()).then(d=>{
+      if(d && d.ok){ BOR.original=ta.value; document.getElementById('borMsg').textContent='💾 borrador guardado — pruébalo en el chat de arriba'; document.getElementById('borEstado').textContent='≠ difiere del manual en vivo'; }
+      else document.getElementById('borMsg').textContent='⚠️ ' + ((d&&d.error)||'no se pudo guardar');
+      borPintar(); setTimeout(()=>document.getElementById('borMsg').textContent='',5000);
+    })
+    .catch(()=>{ document.getElementById('borMsg').textContent='⚠️ sin conexión'; })
+    .finally(()=>{ b.disabled=false; b.textContent='💾 Guardar borrador'; });
+}
+function borPromover(){
+  const ta=document.getElementById('borTexto');
+  if(ta && ta.value!==BOR.original){ alert('Tienes cambios sin guardar. Guarda el borrador primero.'); return; }
+  if(!confirm('El BORRADOR reemplaza al manual EN VIVO y aplica a TODAS las clientas desde el siguiente mensaje.\n\nSe guarda respaldo de la versión actual y la suite de regresión corre sola (mira el banner de arriba en unos minutos).\n\n¿Promover?')) return;
+  const b=document.getElementById('borPromoverBtn'); b.disabled=true; b.textContent='Promoviendo…';
+  fetch(URL_BOR_PROMOVER, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
+    .then(r=>r.json()).then(d=>{
+      if(d && d.ok){ document.getElementById('borMsg').textContent='🚀 promovido a producción ('+(d.chars||0).toLocaleString('es-PE')+' chars) — suite corriendo, revisa el banner en ~10 min'; document.getElementById('borEstado').textContent='igual al manual en vivo'; CFG.cargado=false; setTimeout(cargarSuite, 12*60*1000); }
+      else document.getElementById('borMsg').textContent='⚠️ no se promovió (¿borrador vacío?)';
+    })
+    .catch(()=>{ document.getElementById('borMsg').textContent='⚠️ sin conexión'; })
+    .finally(()=>{ b.disabled=false; b.textContent='🚀 Promover a producción'; });
+}
+document.addEventListener('input', function(e){ if(e.target && e.target.id==='borTexto') borPintar(); });
 /* precios Haiku 4.5 por millón de tokens (USD) */
 const SIM_TARIFA = { in:1.00, out:5.00, cacheR:0.10, cacheW:1.25 };
 
@@ -1205,7 +1285,7 @@ function simEnviar(){
   esperando.querySelector('.simmsg').innerHTML = '<span class="simdots"><span>●</span><span>●</span><span>●</span></span>';
   const t0 = Date.now();
   /* sin cabecera content-type a propósito: así el navegador no dispara preflight CORS */
-  fetch(URL_SIMULAR, { method:'POST', body: JSON.stringify({ sesion:SIM.sesion, mensaje:msg, nombre:nombre }) })
+  fetch(URL_SIMULAR, { method:'POST', body: JSON.stringify({ sesion:SIM.sesion, mensaje:msg, nombre:nombre, borrador: SIM.borrador===true }) })
     .then(r => r.json())
     .then(d => {
       esperando.remove();
@@ -1485,7 +1565,7 @@ function ctxCargar(id, nivel){
 function cargarCalidad(){
   if (!SIM.sesion) simNueva();
   if (!CFG.cargado) cfgCargar();
-  if (MODO_VIEWER){ const bt=document.getElementById('btnEntrenarTodo'); if(bt) bt.style.display='none'; }
+  if (MODO_VIEWER){ const bt=document.getElementById('btnEntrenarTodo'); if(bt) bt.style.display='none'; const sm=document.getElementById('simModo'); if(sm) sm.style.display='none'; }
   cargarReglas();
   cargarPerformance();
   cargarSuite();
