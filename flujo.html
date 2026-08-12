@@ -1633,6 +1633,31 @@ function polNueva(){
   fetch(URL_POL_GUARDAR, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({clave, titulo:nombre.trim(), valor:'(escribe aquí la política)', activo:false})})
     .then(()=>cargarPoliticas()).catch(()=>alert('Sin conexión'));
 }
+/* ===== ¿POR QUE RESPONDI ASI?: trazas por mensaje (modelo, tokens, costo, guard) ===== */
+const URL_TRAZAS = BASE_N8N + '/trazas';
+function verPorQue(id, conversacion){
+  const z=document.getElementById('pq'+id); if(!z) return;
+  if(z.style.display!=='none'){ z.style.display='none'; return; }
+  z.style.display='block';
+  if(z.dataset.cargado) return;
+  z.innerHTML='<div class="cqmsg vacio">leyendo las trazas…</div>';
+  fetch(URL_TRAZAS + '?conversacion=' + conversacion + '&t=' + Date.now()).then(r=>r.json()).then(d=>{
+    const ts=(d&&d.trazas)||[];
+    if(!ts.length){ z.innerHTML='<div class="cqmsg vacio">Sin trazas para esta conversación todavía (se registran desde el 12-ago).</div>'; return; }
+    z.dataset.cargado='1';
+    z.innerHTML = '<div class="cqlbl">Qué pasó por dentro (últimas '+ts.length+' respuestas)</div>' + ts.map(t=>{
+      const f = t.fecha? new Date(t.fecha).toLocaleString('es-PE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+      const mod = /sonnet/.test(t.modelo||'') ? '<span style="color:var(--warn);font-weight:800">Sonnet</span>' : 'Haiku';
+      const guard = t.guard ? `<div style="font-size:11px;color:var(--warn);margin-top:3px">🛡️ el guard corrigió la respuesta<br><s style="color:var(--txt2)">${simEsc(String(t.original||'').slice(0,160))}</s></div>` : '';
+      return `<div class="cqcaso" style="border-left-color:${t.guard?'var(--warn)':'var(--bd)'};padding:8px 12px">
+        <div class="meta">${f} · ${mod} · ${t.tok_in||0}→${t.tok_out||0} tokens · $${(+t.costo||0).toFixed(4)}${t.ficha?' · 🧾 cierre':''}</div>
+        <div style="font-size:11.5px;color:var(--txt2)">Ella: ${simEsc(String(t.mensaje||'').slice(0,120))}</div>
+        <div style="font-size:12px;margin-top:2px">Tula: ${simEsc(String(t.respuesta||'').slice(0,200))}</div>
+        ${guard}
+      </div>`;
+    }).join('');
+  }).catch(()=>{ z.innerHTML='<div class="cqmsg vacio">Sin conexión con el servicio de trazas</div>'; });
+}
 /* ===== VERSIONES DEL MANUAL: historial con changelog y restaurar ===== */
 const URL_VER_LISTAR = BASE_N8N + '/versiones-listar';
 const URL_VER_RESTAURAR = BASE_N8N + '/version-restaurar';
@@ -1708,17 +1733,19 @@ function pintarPerformance(d){
   const z=document.getElementById('perfZona'); if(!z) return;
   const dias=(d&&d.dias)||[]; if(!dias.length){ z.innerHTML=''; return; }
   const hoy=dias[0], ayer=dias[1]||null;
-  const M=[['cierres','Cierres cotizados',1],['ventas','Ventas',1],['escaladas','Escaladas',0],['graves','Señales graves',-1]];
+  const M=[['cierres','Cierres cotizados',1],['ventas','Ventas',1],['escaladas','Escaladas',0],['graves','Señales graves',-1],['costo_ia','Costo IA',0]];
   const tiles=M.map(([k,lbl,dir])=>{
-    const v=+hoy[k]||0, a=ayer?(+ayer[k]||0):null;
+    const esCosto = k==='costo_ia';
+    const v = esCosto ? (+hoy[k]||0) : (+hoy[k]||0);
+    const a = ayer ? (+ayer[k]||0) : null;
     let delta='';
     if(a!==null){
-      const dif=v-a; const flecha=dif>0?'▲':dif<0?'▼':'=';
+      const dif=+(v-a).toFixed(2); const flecha=dif>0?'▲':dif<0?'▼':'=';
       const bueno = dir===0 ? null : (dir===1 ? dif>=0 : dif<=0);
       const col = dif===0||bueno===null ? 'var(--txt2)' : (bueno?'var(--ok)':'var(--bad)');
-      delta=`<i style="color:${col};font-style:normal;font-size:10.5px">${flecha} ${Math.abs(dif)} vs ayer</i>`;
+      delta=`<i style="color:${col};font-style:normal;font-size:10.5px">${flecha} ${esCosto?('$'+Math.abs(dif).toFixed(2)):Math.abs(dif)} vs ayer</i>`;
     }
-    return `<div><b>${v}</b><span>${lbl.toUpperCase()}</span>${delta}</div>`;
+    return `<div><b>${esCosto?('$'+v.toFixed(2)):v}</b><span>${lbl.toUpperCase()}</span>${delta}</div>`;
   }).join('');
   z.innerHTML = `<div class="cq" style="padding:13px 16px"><h3 style="margin:0 0 8px">📈 Performance Tula <span style="font-weight:400;color:var(--txt2);font-size:11px">· ${hoy.fecha||''} (último día completo)</span></h3><div class="cqkpi" style="margin:0">${tiles}</div></div>`;
 }
@@ -1778,7 +1805,8 @@ function pintarCalidad(d){
       <div style="color:var(--txt2);margin-bottom:8px;font-size:12px">${esc(c.explicacion)}</div>
 
       ${MODO_VIEWER ? '<div style="font-size:10.5px;color:var(--txt2)">Solo lectura — el entrenamiento del agente lo hace un administrador</div>'
-        : `<button class="btn" style="font-size:11px;padding:4px 10px" onclick="abrirEnsenar(${c.id})">✏️ Enseñarle</button>`}
+        : `<button class="btn" style="font-size:11px;padding:4px 10px" onclick="abrirEnsenar(${c.id})">✏️ Enseñarle</button> <button class="btn" style="font-size:11px;padding:4px 10px" onclick="verPorQue(${c.id}, ${c.conversacion})">🔍 ¿Por qué?</button>`}
+      <div id="pq${c.id}" style="display:none;margin-top:8px"></div>
       <div id="ens${c.id}" style="display:none;margin-top:10px">
         <div class="cqlbl" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span>Lo que debió responder</span>
