@@ -268,6 +268,7 @@
       <span id="simCosto"></span>
     </div>
   </div>
+  <div id="suiteZona"></div>
   <div id="perfZona"></div>
   <div class="periodos" style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <select id="calPeriodo" onchange="cargarCalidad()">
@@ -307,6 +308,7 @@ const BASE_N8N = 'https://n8n-production-4e716.up.railway.app/webhook';
 const URL_EMBUDO = BASE_N8N + '/embudo-rango-v2';
 const URL_CALIDAD  = BASE_N8N + '/objeciones-calidad';
 const URL_PERFORMANCE = BASE_N8N + '/performance-tula'; /* workflow 📈 Performance Tula */
+const URL_SUITE = BASE_N8N + '/suite-estado'; /* workflow 🧪 Suite de regresión */
 const URL_ENSENAR  = BASE_N8N + '/ensenar-agente'; /* objeciones + calidad (nocturno 4am) */ /* historico Postgres con desglose por asesora (nocturno 3am) */
 const URL_GUARDAR = BASE_N8N + '/playbook-guardar';
 const URL_CARGAR = BASE_N8N + '/playbook-cargar';
@@ -1486,9 +1488,40 @@ function cargarCalidad(){
   if (MODO_VIEWER){ const bt=document.getElementById('btnEntrenarTodo'); if(bt) bt.style.display='none'; }
   cargarReglas();
   cargarPerformance();
+  cargarSuite();
   const r = rangoCal();
   fetch(`${URL_CALIDAD}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(pintarCalidad)
     .catch(()=>{ document.getElementById('calZona').innerHTML = '<div class="cq">Todavía no hay datos. El análisis corre cada noche a las 4am.</div>'; });
+}
+/* ===== SUITE DE REGRESION: lo aprendido no se desaprende ===== */
+function cargarSuite(){
+  fetch(URL_SUITE + '?t=' + Date.now()).then(r=>r.json()).then(pintarSuite)
+    .catch(()=>{ const z=document.getElementById('suiteZona'); if(z) z.innerHTML=''; });
+}
+function pintarSuite(d){
+  const z=document.getElementById('suiteZona'); if(!z) return;
+  if(!d || !d.total){ z.innerHTML=''; return; }
+  const ok=+d.ok||0, total=+d.total||0, reg=d.regresiones||[];
+  const fecha = d.fecha ? new Date(d.fecha).toLocaleString('es-PE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+  if(!reg.length){
+    z.innerHTML = `<div style="border:1.5px solid var(--ok);border-radius:12px;padding:9px 14px;margin-bottom:12px;font-size:12px"><span style="color:var(--ok)">🧪 Suite de regresión: <b>sin regresiones</b></span> <span style="color:var(--txt2)">· ${ok}/${total} lecciones estables · corrida ${fecha} · corre sola cada madrugada y con cada cambio del manual</span></div>`;
+    return;
+  }
+  const lista = reg.slice(0,4).map(f=>`<div style="margin:5px 0 0;font-size:11.5px"><b>${simEsc(f.nombre||('caso '+f.caso_id))}</b> — <span style="color:var(--txt2)">${simEsc(f.razon||'')}</span></div>`).join('');
+  z.innerHTML = `<div style="border:1.5px solid var(--bad);border-radius:12px;padding:11px 14px;margin-bottom:12px;font-size:12.5px">
+    <b style="color:var(--bad)">⚠️ El último cambio del manual rompió ${reg.length} lección(es) que antes funcionaban</b>
+    ${lista}${reg.length>4?`<div style="font-size:11px;color:var(--txt2);margin-top:4px">y ${reg.length-4} más…</div>`:''}
+    <div style="margin-top:9px"><button class="btn rojo" style="font-size:11px;padding:5px 12px" onclick="suiteRevertir(this)">↩︎ Revertir el manual a la versión anterior</button>
+    <span style="font-size:11px;color:var(--txt2);margin-left:8px">corrida ${fecha}</span></div>
+  </div>`;
+}
+function suiteRevertir(b){
+  if(!confirm('Esto vuelve el manual de Tula a la versión anterior y vuelve a correr la suite. ¿Dale?')) return;
+  b.disabled=true; b.textContent='Volviendo…';
+  fetch(URL_PROMPT_REVERTIR, {method:'POST', body:'{}'}).then(r=>r.json()).then(d=>{
+    b.textContent = d&&d.ok ? '✓ Revertido — recorriendo suite…' : '⚠️ no hay versión anterior';
+    if(d&&d.ok){ CFG.cargado=false; setTimeout(cargarSuite, 90000); }
+  }).catch(()=>{ b.textContent='⚠️ sin conexión'; b.disabled=false; });
 }
 /* ===== PERFORMANCE TULA (numeros del dia vs ayer, workflow 📈) ===== */
 function cargarPerformance(){
