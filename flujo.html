@@ -138,6 +138,13 @@
   .cqcaso q{display:block;font-style:italic;margin:3px 0;color:var(--txt)}
   .cqlbl{font-size:9.5px;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:var(--txt2);margin:9px 0 4px}
   .cqhint{font-size:10.5px;color:var(--txt2);margin-bottom:4px;line-height:1.45}
+  .cqoro{font-size:10px;font-weight:800;color:#f7b500;border:1px solid #f7b500;border-radius:7px;padding:1px 7px;margin-left:6px}
+  .ctxdet{float:right;max-width:56%;margin-left:12px}
+  .ctxdet>summary{cursor:pointer;font-size:11px;color:var(--bot);list-style:none;border:1px solid var(--bd);border-radius:8px;padding:3px 10px;user-select:none}
+  .ctxdet>summary::-webkit-details-marker{display:none}
+  .ctxdet[open]>summary{border-color:var(--bot)}
+  .ctxdet .cqmas{max-height:340px}
+  .cqkpi i{display:block;margin-top:2px}
   .cqmsg{border-radius:9px;padding:6px 10px;margin-bottom:4px;font-size:12.5px;line-height:1.45;max-width:88%}
   .cqmsg.cli{background:rgba(255,255,255,.08);border-left:2px solid var(--f-na)}
   .cqmsg.bot{background:rgba(80,200,140,.10);border-left:2px solid var(--ok);margin-left:12%;max-width:88%}
@@ -251,7 +258,6 @@
       <span style="flex:1"></span>
       <button class="btn" onclick="simNueva()">🔄 Nueva conversación</button>
     </div>
-    <div class="simsub">Es la misma Tula de WhatsApp: mismo prompt (<b>bot.config</b>), mismo catálogo, mismo stock en vivo y los mismos ejemplos de Angie. No manda nada a nadie y no toca las conversaciones reales.</div>
     <div class="simchat" id="simChat"></div>
     <div class="simbar">
       <input type="text" id="simNombre" value="Vale" title="Nombre de la clienta simulada" placeholder="Nombre">
@@ -259,36 +265,20 @@
       <button class="btn on" id="simBtn" onclick="simEnviar()">Enviar</button>
     </div>
     <div class="simpie">
-      <span id="simEstado">Sesión nueva — escribe el primer mensaje</span>
+      <span id="simEstado"></span>
       <span id="simCosto"></span>
     </div>
   </div>
-  <details class="cfgdet">
-  <summary>⚙️ Instrucciones base de Tula — casi nunca hace falta tocarlas</summary>
-  <div class="simwrap" style="margin-top:10px">
-    <div class="simhead">
-      <h3>📝 Prompt de Tula</h3>
-      <span style="flex:1"></span>
-      <button class="btn" onclick="cfgCargar()">↻ Recargar</button>
-      <button class="btn" id="cfgRev" onclick="cfgRevertir()" title="Vuelve a la versión guardada antes del último cambio">↩︎ Volver atrás</button>
-      <button class="btn verde" id="cfgBtn" onclick="cfgGuardar()">💾 Guardar</button>
-    </div>
-    <div class="simsub">Son las instrucciones con las que responde Tula, en WhatsApp real y en el simulador de arriba. Lo que guardes acá aplica desde el siguiente mensaje. Se guarda copia de la versión anterior por si hay que volver atrás.</div>
-    <textarea id="cfgTexto" spellcheck="false" disabled></textarea>
-    <div class="simpie">
-      <span id="cfgEstado">Cargando…</span>
-      <span id="cfgChars"></span>
-    </div>
-  </div>
-  </details>
-  <div class="periodos" style="margin-bottom:14px">
+  <div id="perfZona"></div>
+  <div class="periodos" style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <select id="calPeriodo" onchange="cargarCalidad()">
       <option value="mtd">Mes hasta hoy</option>
       <option value="7">Últimos 7 días</option>
       <option value="14">Últimos 14 días</option>
       <option value="30" selected>Últimos 30 días</option>
     </select>
-    <span id="calEstado" style="color:var(--txt2);font-size:12px"></span>
+    <button class="btn verde" id="btnEntrenarTodo" onclick="entrenarTodo()">📤 Mandar a entrenamiento</button>
+    <span id="etProg" style="color:var(--txt2);font-size:12px"></span>
   </div>
   <div id="reglasZona"></div>
   <div id="calZona"></div>
@@ -317,6 +307,7 @@ const MODO_VIEWER = !/(^|[?&])edit=1(&|$)/.test(location.search.slice(1)); /* ed
 const BASE_N8N = 'https://n8n-production-4e716.up.railway.app/webhook';
 const URL_EMBUDO = BASE_N8N + '/embudo-rango-v2';
 const URL_CALIDAD  = BASE_N8N + '/objeciones-calidad';
+const URL_PERFORMANCE = BASE_N8N + '/performance-tula'; /* workflow 📈 Performance Tula */
 const URL_ENSENAR  = BASE_N8N + '/ensenar-agente'; /* objeciones + calidad (nocturno 4am) */ /* historico Postgres con desglose por asesora (nocturno 3am) */
 const URL_GUARDAR = BASE_N8N + '/playbook-guardar';
 const URL_CARGAR = BASE_N8N + '/playbook-cargar';
@@ -1173,7 +1164,7 @@ function simNueva(){
   SIM = { sesion: simNuevaSesion(), gasto:0, turnos:0, ocupado:false };
   const c = document.getElementById('simChat');
   c.innerHTML = '<div class="simvacio">Conversación nueva.<br>Escribe como escribiría una clienta que acaba de ver el anuncio.</div>';
-  document.getElementById('simEstado').textContent = 'Sesión nueva — escribe el primer mensaje';
+  document.getElementById('simEstado').textContent = '';
   document.getElementById('simCosto').textContent = '';
   document.getElementById('simTexto').value = '';
   document.getElementById('simTexto').focus();
@@ -1411,11 +1402,12 @@ function verParecidos(id){
 }
 
 function masContexto(id){
+  /* se abre como desplegable DENTRO del caso; carga una sola vez */
   const c = ((window.__CAL && window.__CAL.casos) || []).find(x => +x.id === +id);
-  const z = document.getElementById('ctxz'+id), b = document.getElementById('ctx'+id);
-  if(!c || !z) return;
-  if(z.innerHTML){ z.innerHTML=''; if(b) b.textContent='🔎 Más contexto'; return; }
-  if(b){ b.textContent='trayendo…'; b.disabled=true; }
+  const z = document.getElementById('ctxz'+id);
+  if(!c || !z || z.dataset.cargado) return;
+  z.dataset.cargado = '1';
+  z.innerHTML = '<div class="cqmsg vacio">trayendo la conversación…</div>';
   fetch(URL_CONTEXTO, { method:'POST', body: JSON.stringify({ conversacion: c.conversacion, tope: 30 }) })
     .then(r=>r.json()).then(d=>{
       const ms=(d && d.mensajes) || [];
@@ -1426,41 +1418,68 @@ function masContexto(id){
           `</div>`).join('') +
         '</div>';
     })
-    .catch(()=>{ z.innerHTML='<div class="cqmsg vacio">Sin conexión</div>'; })
-    .finally(()=>{ if(b){ b.textContent='🔎 Ocultar contexto'; b.disabled=false; } });
+    .catch(()=>{ z.innerHTML='<div class="cqmsg vacio">Sin conexión</div>'; z.dataset.cargado=''; });
 }
 
 function cargarCalidad(){
   if (!SIM.sesion) simNueva();
   if (!CFG.cargado) cfgCargar();
+  if (MODO_VIEWER){ const bt=document.getElementById('btnEntrenarTodo'); if(bt) bt.style.display='none'; }
   cargarReglas();
+  cargarPerformance();
   const r = rangoCal();
-  document.getElementById('calEstado').textContent = 'Leyendo…';
   fetch(`${URL_CALIDAD}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(pintarCalidad)
-    .catch(()=>{ document.getElementById('calEstado').textContent = '⚠️ Sin conexión con el servicio';
-      document.getElementById('calZona').innerHTML = '<div class="cq">Todavía no hay datos. El análisis corre cada noche a las 4am.</div>'; });
+    .catch(()=>{ document.getElementById('calZona').innerHTML = '<div class="cq">Todavía no hay datos. El análisis corre cada noche a las 4am.</div>'; });
+}
+/* ===== PERFORMANCE TULA (numeros del dia vs ayer, workflow 📈) ===== */
+function cargarPerformance(){
+  fetch(URL_PERFORMANCE + '?t=' + Date.now()).then(r=>r.json()).then(pintarPerformance)
+    .catch(()=>{ const z=document.getElementById('perfZona'); if(z) z.innerHTML=''; });
+}
+function pintarPerformance(d){
+  const z=document.getElementById('perfZona'); if(!z) return;
+  const dias=(d&&d.dias)||[]; if(!dias.length){ z.innerHTML=''; return; }
+  const hoy=dias[0], ayer=dias[1]||null;
+  const M=[['cierres','Cierres cotizados',1],['ventas','Ventas',1],['escaladas','Escaladas',0],['graves','Señales graves',-1],['fallidos','Fallidos',-1]];
+  const tiles=M.map(([k,lbl,dir])=>{
+    const v=+hoy[k]||0, a=ayer?(+ayer[k]||0):null;
+    let delta='';
+    if(a!==null){
+      const dif=v-a; const flecha=dif>0?'▲':dif<0?'▼':'=';
+      const bueno = dir===0 ? null : (dir===1 ? dif>=0 : dif<=0);
+      const col = dif===0||bueno===null ? 'var(--txt2)' : (bueno?'var(--ok)':'var(--bad)');
+      delta=`<i style="color:${col};font-style:normal;font-size:10.5px">${flecha} ${Math.abs(dif)} vs ayer</i>`;
+    }
+    return `<div><b>${v}</b><span>${lbl.toUpperCase()}</span>${delta}</div>`;
+  }).join('');
+  z.innerHTML = `<div class="cq" style="padding:13px 16px"><h3 style="margin:0 0 8px">📈 Performance Tula <span style="font-weight:400;color:var(--txt2);font-size:11px">· ${hoy.fecha||''} (último día completo)</span></h3><div class="cqkpi" style="margin:0">${tiles}</div></div>`;
 }
 function pintarCalidad(d){
   window.__CAL = d;
-  const t = d.totales||{}, objs = d.objeciones||[], cals = d.calidad||[], casos = d.casos||[], vb = d.verbatims||[];
-  document.getElementById('calEstado').textContent = (t.pend||0) + ' por corregir · ' + (t.resueltos||0) + ' corregidos esta semana · ' + (t.correcciones||0) + ' correcciones activas · se actualiza cada noche a las 4am';
+  const t = d.totales||{}, objs = d.objeciones||[], cals = d.calidad||[], vb = d.verbatims||[];
+  let casos = d.casos||[];
+  /* fila ORO primero: compra en juego; despues severidad y repeticiones */
+  const ES_ORO = c => /yape|plin|pagar|pago|deposit|constancia|comprob|direcci|env[ií]o|total|separa|lo llevo|lo quiero|comprar|cu[aá]nto sale/i.test(String(c.mensajes_cliente||'')+' '+String(c.explicacion||'')) || +c.severidad>=3 || ['contradice','niega_stock_falso'].includes(c.senal);
+  casos = casos.slice().sort((a,b)=> (ES_ORO(b)-ES_ORO(a)) || (+b.severidad - +a.severidad) || (+b.repeticiones - +a.repeticiones));
+  window.__CAL.casos = casos;
   const graves = casos.filter(c=>+c.severidad>=3).length;
 
   let h = `<div class="cqkpi">
-    <div><b style="color:${graves?'var(--bad)':'var(--ok)'}">${graves}</b><span>GRAVES · PUEDEN HABER COSTADO LA VENTA</span></div>
-    <div><b>${t.pend||0}</b><span>CASOS POR REVISAR</span></div>
-    <div><b>${t.obj||0}</b><span>OBJECIONES REGISTRADAS</span></div>
+    <div><b id="kpiGraves" style="color:${graves?'var(--bad)':'var(--ok)'}">${graves}</b><span>GRAVES · PUEDEN HABER COSTADO LA VENTA</span></div>
+    <div><b id="kpiCasos">${casos.length}</b><span>CASOS POR REVISAR</span></div>
+    <div><b id="kpiObj">${t.obj||0}</b><span>OBJECIONES REGISTRADAS</span></div>
   </div>`;
 
   /* ---------- 1. COLA DE CASOS (arriba) ---------- */
   h += `<div class="cq"><h3>Qué corregir hoy</h3>
-    <div class="sub">Lo más grave primero. En cada caso podés escribir cómo <b>debió</b> haber respondido — eso entra al entrenamiento del agente y se aplica solo.</div>`;
+    <div class="sub">🔥 Primero los casos con compra en juego. En cada caso podés escribir cómo <b>debió</b> haber respondido — eso entra al entrenamiento del agente y se aplica solo.</div>`;
   if (!casos.length) h += '<div style="color:var(--ok);font-size:12.5px">✅ Nada pendiente en este período.</div>';
   const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const TA = 'width:100%;min-height:58px;background:var(--bg3,rgba(255,255,255,.05));border:1.5px solid var(--bd);border-radius:8px;color:var(--txt);padding:8px;font-size:12.5px;font-family:inherit;resize:vertical';
   casos.forEach(c=>{
     const info = SENAL_TXT[c.senal] || [c.senal,''];
     const col = c.severidad>=3?'var(--bad)':c.severidad>=2?'var(--f-na)':'var(--f-am)';
+    const badgeOro = ES_ORO(c) ? `<span class="cqoro">🔥 ORO · compra en juego</span>` : '';
     const prev = String(c.mensajes_cliente||'').split('|').map(s=>s.trim()).filter(Boolean).slice(-10);
     /* nuestras 2 ultimas interacciones + la ultima de ella, para no juzgar a ciegas */
     const prevBot = String(c.previo_bot||'').split('|').map(s=>s.trim()).filter(Boolean).slice(-2);
@@ -1475,7 +1494,8 @@ function pintarCalidad(d){
       ? prev.map(m=>`<div class="cqmsg cli">${esc(m)}</div>`).join('')
       : `<div class="cqmsg vacio">— sin registro del mensaje previo (se completa en el análisis de esta noche) —</div>`;
     h += `<div class="cqcaso${c.pospuesto_at ? ' cqpospuesto' : ''}" style="border-left-color:${col}" id="caso${c.id}">
-      <div class="meta">${c.dia||''} · conversación ${c.conversacion} · <b style="color:${col}">${info[0]}</b>${badgeRep}${badgePos}</div>
+      <details class="ctxdet" id="ctxdet${c.id}" ontoggle="if(this.open) masContexto(${c.id})"><summary>🔎 Más contexto</summary><div id="ctxz${c.id}"></div></details>
+      <div class="meta">${c.dia||''} · conversación ${c.conversacion} · <b style="color:${col}">${info[0]}</b>${badgeOro}${badgeRep}${badgePos}</div>
 
       ${bloquePrevio}
       <div class="cqlbl">Ella escribió</div>
@@ -1488,9 +1508,7 @@ function pintarCalidad(d){
       <div style="color:var(--txt2);margin-bottom:8px;font-size:12px">${esc(c.explicacion)}</div>
 
       ${MODO_VIEWER ? '<div style="font-size:10.5px;color:var(--txt2)">Solo lectura — el entrenamiento del agente lo hace un administrador</div>'
-        : `<button class="btn" style="font-size:11px;padding:4px 10px" onclick="abrirEnsenar(${c.id})">✏️ Enseñarle</button>` +
-          `<button class="btn" id="ctx${c.id}" style="font-size:11px;padding:4px 10px;margin-left:6px" onclick="masContexto(${c.id})">🔎 Más contexto</button>`}
-      <div id="ctxz${c.id}"></div>
+        : `<button class="btn" style="font-size:11px;padding:4px 10px" onclick="abrirEnsenar(${c.id})">✏️ Enseñarle</button>`}
       <div id="ens${c.id}" style="display:none;margin-top:10px">
         <div class="cqlbl" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           <span>Lo que debió responder</span>
@@ -1500,7 +1518,6 @@ function pintarCalidad(d){
         <textarea id="txt${c.id}" class="${c.sugerencia ? 'sugerido' : ''}" placeholder="La respuesta exacta que Tula tenía que dar en ese momento…" style="${TA}">${esc(c.sugerencia||'')}</textarea>
 
         <div class="cqlbl" style="margin-top:8px">Cuándo aplica / de qué depende</div>
-        <div class="cqhint">Ej.: «solo si ella ya dijo su talla» · «solo en provincia» · «nunca si el total pasa de S/300» · «siempre»</div>
         <textarea id="cmt${c.id}" placeholder="En qué situación vale esta respuesta y en cuál no…" style="${TA}"></textarea>
 
         ${(+c.parecidos > 1) ? `<label style="display:flex;align-items:center;gap:7px;margin-top:9px;font-size:11.5px;color:var(--txt2);cursor:pointer"><input type="checkbox" id="par${c.id}" checked> Aplicar esta misma corrección a los <b>${c.parecidos}</b> casos iguales y cerrarlos todos</label><div style="margin:3px 0 0"><a href="javascript:void(0)" onclick="verParecidos(${c.id})" style="font-size:11px;color:var(--bot)">ver cuáles son</a></div><div id="parz${c.id}"></div>` : ''}
@@ -1549,6 +1566,7 @@ function pintarCalidad(d){
   });
   h += `</div>`;
   document.getElementById('calZona').innerHTML = h;
+  autoSugerencias(); /* pre-carga las propuestas ✨ para que "Mandar a entrenamiento" tenga todo listo */
 }
 function abrirEnsenar(id){
   const b = document.getElementById('ens'+id);
@@ -1564,12 +1582,70 @@ function _enviarLeccion(id, accion, texto_bueno, comentario, okMsg){
       texto_malo: caso.texto_bot, mensajes_cliente: caso.mensajes_cliente||'',
       texto_bueno: texto_bueno, comentario: comentario, accion: accion,
       aplicar_parecidos: !!(document.getElementById('par'+id) && document.getElementById('par'+id).checked) })
-  }).then(r=>r.json()).then(()=>{
+  }).then(r=>r.json()).then((resp)=>{
     document.getElementById('ok'+id).textContent = okMsg;
-    const el = document.getElementById('caso'+id);
-    el.style.opacity = .45;
-    el.style.borderLeftColor = accion==='falso_positivo' ? 'var(--txt2)' : 'var(--ok)';
+    quitarCaso(id, resp);
   }).catch(()=>{ document.getElementById('ok'+id).textContent = '⚠️ No se pudo guardar'; });
+}
+/* saca el caso (y sus parecidos) de la pantalla y descuenta los contadores de arriba */
+function quitarCaso(id, resp){
+  const caso = ((window.__CAL||{}).casos||[]).find(c=>String(c.id)===String(id)) || {};
+  const el = document.getElementById('caso'+id);
+  if(el){ el.style.transition='opacity .5s, max-height .5s'; el.style.opacity=0; setTimeout(()=>el.remove(), 520); }
+  window.__CAL.casos = (window.__CAL.casos||[]).filter(c=>String(c.id)!==String(id));
+  const dec = (elId, n)=>{ const e=document.getElementById(elId); if(e) e.textContent = Math.max(0, (+e.textContent||0) - n); };
+  dec('kpiCasos', 1);
+  if(+caso.severidad>=3) dec('kpiGraves', 1);
+  dec('kpiObj', 1);
+  /* los parecidos cerrados por el backend desaparecen refrescando la cola en silencio */
+  const cerrados = resp && +resp.casos_cerrados;
+  if(cerrados > 1){ setTimeout(()=>{ const r=rangoCal();
+    fetch(`${URL_CALIDAD}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(pintarCalidad).catch(()=>{}); }, 900); }
+}
+/* boton "Mandar a entrenamiento": entrena de golpe todos los casos que ya tienen respuesta lista */
+async function entrenarTodo(){
+  if (MODO_VIEWER) return;
+  const casos = ((window.__CAL||{}).casos||[]).filter(c=>document.getElementById('caso'+c.id));
+  const listos = casos.filter(c=>{ const ta=document.getElementById('txt'+c.id); const txt=(ta&&ta.value||'').trim()||String(c.sugerencia||'').trim(); return txt.length>=4; });
+  if(!listos.length){ document.getElementById('etProg').textContent='No hay casos con respuesta lista todavía.'; return; }
+  if(!confirm('Se van a entrenar '+listos.length+' casos con la respuesta escrita o la propuesta ✨ cargada (y se cierran sus casos parecidos). ¿Dale?')) return;
+  const b=document.getElementById('btnEntrenarTodo'); b.disabled=true;
+  let n=0;
+  for(const c of listos){
+    n++; document.getElementById('etProg').textContent='Entrenando '+n+'/'+listos.length+'…';
+    const ta=document.getElementById('txt'+c.id);
+    const txt=((ta&&ta.value)||'').trim()||String(c.sugerencia||'').trim();
+    const cmt=((document.getElementById('cmt'+c.id)||{}).value||'').trim();
+    try{
+      const r = await fetch(URL_ENSENAR, { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ caso_id:c.id, conversacion:c.conversacion, senal:c.senal, texto_malo:c.texto_bot,
+          mensajes_cliente:c.mensajes_cliente||'', texto_bueno:txt, comentario:cmt, accion:'entrenar', aplicar_parecidos:true }) });
+      await r.json().catch(()=>({}));
+      const el=document.getElementById('caso'+c.id); if(el) el.remove();
+    }catch(e){}
+  }
+  document.getElementById('etProg').textContent='✅ '+n+' casos entrenados.';
+  b.disabled=false;
+  const r=rangoCal();
+  fetch(`${URL_CALIDAD}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(pintarCalidad).catch(()=>{});
+}
+/* pre-carga la propuesta ✨ en todos los casos que no la tienen, uno por uno */
+async function autoSugerencias(){
+  if (MODO_VIEWER) return;
+  const casos = ((window.__CAL||{}).casos||[]).filter(c=>!c.sugerencia && document.getElementById('txt'+c.id) && !document.getElementById('txt'+c.id).value.trim());
+  window.__AUTOSUG_RUN = (window.__AUTOSUG_RUN||0)+1; const miRun = window.__AUTOSUG_RUN;
+  for(const c of casos){
+    if(miRun !== window.__AUTOSUG_RUN) return; /* se repinto la cola: aborta esta corrida */
+    try{
+      const r = await fetch(URL_SUGERIR, { method:'POST', body: JSON.stringify({ caso_id:c.id, senal:c.senal, texto_bot:c.texto_bot, explicacion:c.explicacion, mensajes_cliente:c.mensajes_cliente }) });
+      const d = await r.json();
+      if(d && d.sugerencia){
+        c.sugerencia = d.sugerencia;
+        const ta=document.getElementById('txt'+c.id), chip=document.getElementById('chip'+c.id);
+        if(ta && !ta.value.trim()){ ta.value=d.sugerencia; ta.classList.add('sugerido'); if(chip) chip.style.display='inline-block'; }
+      }
+    }catch(e){}
+  }
 }
 function guardarEnsenar(id){
   const txt = (document.getElementById('txt'+id).value||'').trim();
