@@ -187,6 +187,14 @@ body.paint-mode-on td[data-paint-prenda]:hover{outline:2px solid #39ff14;outline
 #ped-w table.pt td[data-pp-color="GREEN"],#ped-w table.pt td[data-cli-color="GREEN"]{background:#173404 !important;color:#C0DD97 !important}
 #ped-w table.pt td[data-pp-color="RED"],#ped-w table.pt td[data-cli-color="RED"]{background:#501313 !important;color:#F09595 !important}
 #ped-w table.pt td[data-cli-color="GREEN"],#ped-w table.pt td[data-cli-color="RED"]{font-weight:500}
+/* 12-ago — Historial de la clienta en Activos: chip "N ant." + panel flotante */
+.cli-hist-chip{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;font-size:10px;font-weight:700;background:#2b3546;color:#9fb6d4;cursor:pointer;vertical-align:middle;white-space:nowrap;user-select:none}
+.cli-hist-chip:hover{background:#3a4762;color:#cfe0f5}
+#cli-hist-pop{position:fixed;z-index:420;min-width:320px;max-width:460px;max-height:340px;overflow:auto;background:#141a24;border:1px solid #33405a;border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,.55);padding:10px 12px;font-size:12px;color:var(--tx)}
+#cli-hist-pop .chp-h{font-weight:700;font-size:12px;margin-bottom:8px;color:#cfe0f5;display:flex;justify-content:space-between;gap:10px;align-items:center}
+#cli-hist-pop .chp-x{cursor:pointer;color:var(--mu);font-weight:700;padding:0 4px}
+#cli-hist-pop .chp-it{padding:6px 0;border-top:1px solid #212b3d;line-height:1.5}
+#cli-hist-pop .chp-pr{color:var(--mu);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:430px}
 #ped-w table.pt td[data-pp-color="GREEN"] span,
 #ped-w table.pt td[data-pp-color="RED"] span{color:inherit !important}
 #ped-w table.pt tr:hover td[data-pp-color="GREEN"],#ped-w table.pt tr:hover td[data-cli-color="GREEN"]{background:#1f4a08 !important}
@@ -255,6 +263,11 @@ html.light #ped-w table.pt td[data-pp-color="GREEN"],html.light #ped-w table.pt 
 html.light #ped-w table.pt td[data-pp-color="RED"],html.light #ped-w table.pt td[data-cli-color="RED"]{background:#f7d4d4!important;color:#8a1c1c!important}
 html.light #ped-w table.pt tr:hover td[data-pp-color="GREEN"],html.light #ped-w table.pt tr:hover td[data-cli-color="GREEN"]{background:#cdebb5!important}
 html.light #ped-w table.pt tr:hover td[data-pp-color="RED"],html.light #ped-w table.pt tr:hover td[data-cli-color="RED"]{background:#f3c2c2!important}
+html.light .cli-hist-chip{background:#e3e9f2;color:#4a5a72}
+html.light .cli-hist-chip:hover{background:#d3dcea;color:#2e3c50}
+html.light #cli-hist-pop{background:#fff;border-color:#ccd6e4;box-shadow:0 10px 32px rgba(30,40,60,.25)}
+html.light #cli-hist-pop .chp-h{color:#22314a}
+html.light #cli-hist-pop .chp-it{border-top-color:#e8edf4}
 /* MODO CLARO — chips (Canal/Origen/Estado) más claros y legibles. */
 html.light .bgy{background:#e5e7eb!important;color:#4b5563!important}
 html.light .bgn{background:#d1f0db!important;color:#15803d!important}
@@ -3694,6 +3707,84 @@ async function loadPanel(force){
   _panelRender();
 }
 
+// ── Detalle "prendas sin costo" del Panel (12-ago-2026) ──────────────────────
+// Antes el aviso decía "9 prendas" y no cuáles: había que pedirlo a mano. Ahora el
+// recuadro es clickeable y arma la lista acá mismo, con el MISMO criterio del backend
+// (Fecha de PAGO, canal WhatsApp, origen Ads/Orgánico, prenda con precio > 0).
+// Separa lo que de verdad falta cargar (prendas) de lo que nunca va a tener costo
+// (cobros de cambio, reservas de showroom) para que el aviso deje de ser ruido.
+function _pscNorm(s){ return String(s==null?'':s).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim(); }
+function _pscEsTecnica(prenN){
+  if (!prenN || prenN === '_PAGO_') return true;
+  return prenN.indexOf('CAMBIO CAM-') === 0 || prenN.indexOf('PENDIENTE PRENDA') === 0 || prenN.indexOf('RESERVA SHOWROOM') === 0;
+}
+function _pscFechaISO(v){
+  if (!v) return '';
+  const s = String(v), m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[0];
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return '';
+  return new Date(d.getTime() - 5*3600000).toISOString().slice(0,10);
+}
+async function panelSinCostoVer(){
+  const host = document.getElementById('panel-sincosto-det');
+  if (!host) return;
+  if (host.dataset.abierto === '1'){ host.dataset.abierto = '0'; host.innerHTML = ''; return; }
+  host.dataset.abierto = '1';
+  host.innerHTML = '<div style="padding:10px 14px;font-size:12px;color:var(--mu)">Buscando…</div>';
+  let d1, d2;
+  if (PANEL.rango==='custom' && PANEL.d1 && PANEL.d2){ d1=PANEL.d1; d2=PANEL.d2; }
+  else { const rr=_panelRangoPreset(PANEL.rango||'30'); d1=rr[0]; d2=rr[1]; }
+  try {
+    const diag = await api('diag.prendasSinCosto');
+    const sinSet = new Set((diag.items||[]).map(x => _pscNorm(x.diseno)));
+    const tok = await _sbSesionAsegurar();
+    if (!tok) throw new Error('sin sesión de base');
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=row_json&eliminado=is.null&order=id.desc&limit=5000',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    const j = await r.json();
+    const reales = [], tecnicas = [];
+    (j||[]).forEach(function(x){
+      const p = x.row_json || {};
+      const f = _pscFechaISO(p['Fecha Pago']); if (!f || f < d1 || f > d2) return;
+      const est = _pscNorm(p['Estado']); if (est==='CANCELADO' || est==='DEVOLUCION') return;
+      const cN = _pscNorm(p['CANAL']||'OTROS'), oN = _pscNorm(p['ORIGEN']||'OTROS');
+      const esAds = oN.indexOf('ADS')===0 || oN.indexOf('ANUNCIO')===0, esOrg = oN.indexOf('ORGANIC')===0;
+      if (!(cN==='WHATSAPP' && (esAds||esOrg))) return;
+      const pren = String(p['Prenda']||'').trim(); if (!pren) return;
+      const prenN = _pscNorm(pren);
+      let v = parseFloat(p['Precio']);
+      if (isNaN(v)) v = (parseFloat(p['Subtotal'])||0) - (parseFloat(p['Envio'])||0);
+      if (!(v>0)) return;
+      if (!sinSet.has(prenN)) return;
+      (_pscEsTecnica(prenN) ? tecnicas : reales).push({ f:f, nro:p['NroPedido'], pren:pren, v:v });
+    });
+    reales.sort(function(a,b){ return a.f<b.f?-1:1; });
+    tecnicas.sort(function(a,b){ return a.f<b.f?-1:1; });
+    const fila = function(x, color){
+      return '<tr><td style="padding:4px 8px;color:var(--mu)">'+esc(x.f)+'</td>'
+        + '<td style="padding:4px 8px"><a href="#" onclick="event.preventDefault();_abrirPedidoDesdeBusqueda('+JSON.stringify(String(x.nro))+')" style="color:var(--ac)">'+esc(String(x.nro))+'</a></td>'
+        + '<td style="padding:4px 8px;color:'+color+'">'+esc(x.pren)+'</td>'
+        + '<td style="padding:4px 8px;text-align:right">S/ '+fmt(x.v)+'</td></tr>';
+    };
+    const tabla = function(titulo, arr, color, nota){
+      if (!arr.length) return '';
+      return '<div style="margin-top:10px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--mu);margin-bottom:4px">'+titulo+' ('+arr.length+')</div>'
+        + '<table style="width:100%;border-collapse:collapse;font-size:12px">'+arr.map(function(x){return fila(x,color);}).join('')+'</table>'
+        + (nota ? '<div style="font-size:11px;color:var(--mu);margin-top:4px">'+nota+'</div>' : '') + '</div>';
+    };
+    host.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:12px 14px;margin-top:8px">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:12.5px">Detalle '+esc(d1)+' → '+esc(d2)+'</b>'
+      + '<button class="btn bg bs" style="font-size:11px" onclick="panelSinCostoVer()">Cerrar</button></div>'
+      + (reales.length||tecnicas.length ? '' : '<div style="font-size:12px;color:var(--mu);margin-top:8px">Nada pendiente en este periodo.</div>')
+      + tabla('Falta cargar el costo en la hoja Cost', reales, '#dc2626', 'Estas SÍ inflan el margen. Cargalas en Configuración → Costos.')
+      + tabla('No son prendas (se ignoran)', tecnicas, 'var(--mu)', 'Cobros de cambio, reservas de showroom y placeholders: no tienen costo de producto y no deberían contar como prenda vendida.')
+      + '</div>';
+  } catch(e){
+    host.innerHTML = '<div style="padding:10px 14px;font-size:12px;color:#dc2626">No se pudo armar el detalle: '+esc(e.message||String(e))+'</div>';
+  }
+}
+window.panelSinCostoVer = panelSinCostoVer;
 window.panelSetRango = function(preset){ PANEL.rango = preset; _panelRender(); };
 window.panelSetVista = function(v){ PANEL.vista = v; _panelRender(); };
 window.panelSetCanal = function(c){ PANEL.canal = c; _panelRender(); };
@@ -3806,9 +3897,11 @@ function _panelRender(){
   // ── Aviso de datos sin costo (solo cuando el canal incluye WhatsApp; el dato es de WhatsApp) ──
   const aviso = (canal==='web') ? ''
     : (aggCur.sinCosto>0
-      ? '<div style="background:rgba(220,38,38,.08);border:1px solid #dc2626;border-radius:var(--r);padding:10px 14px;font-size:12.5px;color:#dc2626;display:flex;gap:8px;align-items:center">'
-        + '⚠️ <span><b>'+aggCur.sinCosto+'</b> prenda(s) de WhatsApp vendidas SIN costo cargado en el periodo. El margen está <b>sobreestimado</b> hasta cargar esos costos en la hoja Cost.</span></div>'
-      : '<div style="background:rgba(22,163,74,.08);border:1px solid #16a34a;border-radius:var(--r);padding:10px 14px;font-size:12.5px;color:#16a34a">✓ 100% de las prendas WhatsApp del periodo tienen costo cargado — el margen es confiable.</div>');
+      ? '<div onclick="panelSinCostoVer()" title="Clic para ver cuáles son" style="cursor:pointer;background:rgba(220,38,38,.08);border:1px solid #dc2626;border-radius:var(--r);padding:10px 14px;font-size:12.5px;color:#dc2626;display:flex;gap:8px;align-items:center">'
+        + '⚠️ <span><b>'+aggCur.sinCosto+'</b> prenda(s) de WhatsApp vendidas SIN costo cargado en el periodo. El margen está <b>sobreestimado</b> hasta cargar esos costos en la hoja Cost. <u>Ver cuáles</u></span></div>'
+        + '<div id="panel-sincosto-det"></div>'
+      : '<div onclick="panelSinCostoVer()" title="Clic para revisar el detalle" style="cursor:pointer;background:rgba(22,163,74,.08);border:1px solid #16a34a;border-radius:var(--r);padding:10px 14px;font-size:12.5px;color:#16a34a">✓ 100% de las prendas WhatsApp del periodo tienen costo cargado — el margen es confiable. <u>Revisar</u></div>'
+        + '<div id="panel-sincosto-det"></div>');
 
   const genTxt = PANEL._gen ? new Date(PANEL._gen).toLocaleString('es-PE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
 
@@ -9588,6 +9681,151 @@ function _cliColorRecalcNro(nro) {
 // Fuerza la reconstrucción en el próximo uso (por si algún flujo nuevo toca pRaw).
 function _cliColorInvalidar() { window._cliColorMap = null; }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   HISTORIAL DE LA CLIENTA EN ACTIVOS (12-ago-2026) — pedido de Pablo
+   "Esta clienta tiene N pedidos anteriores · Ver historial"
+
+   QUÉ HACE: en la pestaña Activos, junto al nombre de la clienta aparece un
+   chip "N ant." si esa persona tiene pedidos ANTERIORES al que se está viendo.
+   Clic → panel flotante con esos pedidos (solo lectura, para confirmar).
+   Otro clic (o Esc, o clic afuera) → se oculta. Colapsado por defecto.
+
+   FUENTE: pRaw completo, ya en memoria (mismas reglas que _cliColorMap:
+   congelado durante la carga progresiva para no mostrar cuentas a medias).
+   La identidad de la clienta es la MISMA del servidor: _cliClaveDeFila
+   (teléfono manda; luego DNI; luego nombre). Claves 'p:' (solo nro) no
+   identifican a nadie → esos pedidos no suman historial.
+   "Anterior" = nro correlativo menor; si algún nro no es numérico (reservas),
+   desempata la Fecha Pedido.
+   ════════════════════════════════════════════════════════════════════════════ */
+window._cliHistMap = null;   // { porClave: clave → [resumen de pedido...], deNro: nro → clave }
+window._cliHistLen = -1;     // largo de pRaw con el que se construyó
+
+// Recorre las filas crudas UNA vez y arma el índice clienta → pedidos.
+// Pura a propósito (recibe el array) para poder probarla sin navegador.
+function _cliHistRebuildDe(arr) {
+  arr = Array.isArray(arr) ? arr : [];
+  const porNro = Object.create(null);
+  for (let i = 0; i < arr.length; i++) {
+    const r = arr[i];
+    if (!r) continue;
+    const nro = String(r['NroPedido'] || '').trim();
+    if (!nro) continue;
+    let o = porNro[nro];
+    if (!o) {
+      const num = /^\d+$/.test(nro) ? parseInt(nro, 10) : 0;
+      o = porNro[nro] = { nro: nro, num: num, fMs: 0, fecha: '', estado: '', sub: 0, prendas: [], clave: '' };
+    }
+    if (!o.clave) {
+      const k = _cliClaveDeFila(r);
+      if (k && k.charAt(0) !== 'p') o.clave = k;   // 'p:' = sin identidad real
+    }
+    if (!o.fMs) {
+      const f = r['Fecha Pedido'];
+      const ms = f ? new Date(f).getTime() : NaN;
+      if (!isNaN(ms) && ms > 0) { o.fMs = ms; o.fecha = String(f); }
+    }
+    if (!o.sub) { const s = parseFloat(r['Subtotal']); if (s) o.sub = s; }
+    const pr = String(r['Prenda'] || '').trim();
+    if (pr && !_esPago(pr.toUpperCase())) {
+      o.prendas.push(pr);
+      if (!o.estado) o.estado = String(r['Estado'] || '').trim();
+    }
+  }
+  const porClave = Object.create(null), deNro = Object.create(null);
+  for (const nro in porNro) {
+    const o = porNro[nro];
+    if (!o.clave) continue;
+    deNro[nro] = o.clave;
+    (porClave[o.clave] = porClave[o.clave] || []).push(o);
+  }
+  for (const k in porClave) porClave[k].sort((a, b) => (a.num - b.num) || (a.fMs - b.fMs));
+  return { porClave: porClave, deNro: deNro };
+}
+
+// Pedidos ANTERIORES al nro dado, de la misma clienta. Pura (recibe el índice).
+function _cliHistAnterioresDe(hist, nro) {
+  if (!hist || !hist.deNro) return [];
+  const n = String(nro || '').trim();
+  const clave = hist.deNro[n];
+  if (!clave) return [];
+  const lst = hist.porClave[clave] || [];
+  let cur = null;
+  for (let i = 0; i < lst.length; i++) if (lst[i].nro === n) { cur = lst[i]; break; }
+  if (!cur) return [];
+  return lst.filter(o =>
+    o.nro !== n &&
+    ((cur.num && o.num) ? o.num < cur.num : (o.fMs && cur.fMs && o.fMs < cur.fMs)));
+}
+
+// Índice vigente, con la misma disciplina que _cliColorMapaVigente: durante la
+// carga progresiva NO se construye (cuentas a medias); al terminar, se arma una vez.
+function _cliHistMapaVigente() {
+  const arr = (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) ? pRaw : [];
+  if (window._pedsCargaEnCurso) return window._cliHistMap || { porClave: {}, deNro: {} };
+  if (!window._cliHistMap || window._cliHistLen !== arr.length) {
+    window._cliHistMap = _cliHistRebuildDe(arr);
+    window._cliHistLen = arr.length;
+  }
+  return window._cliHistMap;
+}
+
+// ── Panel flotante (mostrar / ocultar) ──────────────────────────────────────
+function _cliHistPopCerrar() {
+  const pop = document.getElementById('cli-hist-pop');
+  if (pop) pop.remove();
+}
+function _cliHistPopAbrir(chip, nro) {
+  _cliHistPopCerrar();
+  const ant = _cliHistAnterioresDe(_cliHistMapaVigente(), nro);
+  if (!ant.length) return;
+  const _f = ms => { if (!ms) return '—'; const d = new Date(ms);
+    return String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getFullYear()).slice(-2); };
+  const vis = ant.slice(-10).reverse();   // los 10 más recientes, del más nuevo al más viejo
+  let html = '<div class="chp-h"><span>Esta clienta tiene ' + ant.length + ' pedido' + (ant.length > 1 ? 's' : '') +
+             ' anterior' + (ant.length > 1 ? 'es' : '') + '</span><span class="chp-x" title="Ocultar">✕</span></div>';
+  vis.forEach(o => {
+    const prTxt = esc(o.prendas.join(', '));
+    html += '<div class="chp-it"><b style="font-family:monospace;color:var(--ac)">#' + esc(o.nro) + '</b>' +
+            ' · ' + _f(o.fMs) + (o.estado ? ' · ' + esc(o.estado) : '') + (o.sub ? ' · S/' + fmt(o.sub) : '') +
+            (prTxt ? '<span class="chp-pr" title="' + prTxt + '">' + prTxt + '</span>' : '') + '</div>';
+  });
+  if (ant.length > vis.length) html += '<div class="chp-it" style="color:var(--mu)">…y ' + (ant.length - vis.length) + ' más (ficha completa en Clientes)</div>';
+  const pop = document.createElement('div');
+  pop.id = 'cli-hist-pop';
+  pop.setAttribute('data-nro', String(nro));
+  pop.innerHTML = html;
+  document.body.appendChild(pop);
+  // Posicionar junto al chip, sin salirse de la pantalla
+  const r = chip.getBoundingClientRect();
+  const pw = Math.min(460, window.innerWidth - 20);
+  let x = Math.min(r.left, window.innerWidth - pw - 10);
+  let y = r.bottom + 6;
+  const ph = pop.offsetHeight || 200;
+  if (y + ph > window.innerHeight - 10) y = Math.max(10, r.top - ph - 6);
+  pop.style.left = Math.max(10, x) + 'px';
+  pop.style.top = y + 'px';
+}
+document.addEventListener('click', e => {
+  const t = e.target;
+  const chip = t && t.closest ? t.closest('.cli-hist-chip') : null;
+  const pop = document.getElementById('cli-hist-pop');
+  if (chip) {
+    const nro = chip.getAttribute('data-hist-nro') || '';
+    if (pop && pop.getAttribute('data-nro') === nro) { _cliHistPopCerrar(); return; }   // 2º clic = ocultar
+    _cliHistPopAbrir(chip, nro);
+    return;
+  }
+  if (pop && (!t || !pop.contains(t) || (t.closest && t.closest('.chp-x')))) _cliHistPopCerrar();
+});
+window.addEventListener('keydown', e => { if (e.key === 'Escape') _cliHistPopCerrar(); });
+window.addEventListener('scroll', e => {
+  // Scroll DENTRO del panel (tiene su propia barra) no lo cierra; el de la grilla sí.
+  const pop = document.getElementById('cli-hist-pop');
+  if (pop && e.target && pop.contains(e.target)) return;
+  _cliHistPopCerrar();
+}, true);
+
 // ── MODO SHEETS (25-jul) — LA FÓRMULA REACCIONA A CAMBIOS REALES, Y A NADA MÁS ──
 // Regla que pidió Pablo: el color del nombre lo decide la fórmula, venga el cambio de
 // quien venga (él u otra asesora). Lo que NO puede pasar es que se mueva SIN que nadie
@@ -9623,6 +9861,10 @@ function mkTBody(rows) {
   // Color de la clienta: SIEMPRE del mapa calculado sobre pRaw COMPLETO.
   // Nunca se recalcula acá — así el slice del viewport no puede alterarlo.
   const _cliColor = _cliColorMapaVigente();
+
+  // 12-ago — Historial de la clienta: SOLO en Activos (ahí falta el contexto;
+  // en Todos el historial ya está a la vista). Fuera de Activos no cuesta nada.
+  const _cliHist = (typeof pEst !== 'undefined' && pEst === '_ACTIVOS') ? _cliHistMapaVigente() : null;
 
   const _cliDup = {};    // F3 (23-jul): NroPedido → texto "⚠ vs #NNN" si es posible duplicado (web)
   rows.forEach(p => {
@@ -9670,6 +9912,17 @@ function mkTBody(rows) {
 
       // Filas de continuación: solo Prenda y Precio; resto vacío
       if (esCont && c.k !== 'Prenda' && c.k !== 'Precio') {
+        // 12-ago — SEMÁFORO EN TODO EL PEDIDO (pedido de Pablo): la celda Nombre
+        // de las filas de continuación también lleva el color del pedido. Antes
+        // solo la primera fila se pintaba (acá se cortaba con un <td> pelado) y,
+        // para colmo, el clic del modo pintar SÍ coloreaba todas las filas en
+        // vivo — el color "se caía" de las filas 2+ en el siguiente render.
+        if (c.k === 'Nombres y Apellidos') {
+          const ccC = _cliColor[nroFor] || '';
+          const _attrC = (ccC === 'GREEN' || ccC === 'RED') ? ' data-cli-color="'+ccC+'"' : '';
+          tds += '<td'+TC+_attrC+'></td>';
+          return;
+        }
         tds += '<td'+TC+'></td>';
         return;
       }
@@ -9854,7 +10107,14 @@ function mkTBody(rows) {
         // FIX color-igual: el nombre usa data-cli-color con LAS MISMAS reglas CSS
         // que la prenda (mismo hex en normal y en hover) → color idéntico garantizado.
         const _cliAttr = (cc === 'GREEN' || cc === 'RED') ? ' data-cli-color="'+cc+'"' : '';
-        tds += '<td'+_tcNoStyleC+_styleC+_cliAttr+' title="'+t+'">'+(t||'<span style="color:var(--mu)">—</span>')+'</td>';
+        // 12-ago — HISTORIAL EN ACTIVOS: chip "N ant." si la clienta tiene
+        // pedidos anteriores (clic = mostrar/ocultar el panel; son solo de confirmación).
+        let _histChip = '';
+        if (_cliHist) {
+          const _nAnt = _cliHistAnterioresDe(_cliHist, nro).length;
+          if (_nAnt > 0) _histChip = '<span class="cli-hist-chip" data-hist-nro="'+esc(nro)+'" title="Esta clienta tiene '+_nAnt+' pedido'+(_nAnt>1?'s':'')+' anterior'+(_nAnt>1?'es':'')+' — clic para ver / ocultar">'+_nAnt+' ant.</span>';
+        }
+        tds += '<td'+_tcNoStyleC+_styleC+_cliAttr+' title="'+t+'">'+(t||'<span style="color:var(--mu)">—</span>')+_histChip+'</td>';
       } else {
         const t = esc(String(v||''));
         tds += '<td'+TC+' title="'+t+'">'+(t||'<span style="color:var(--mu)">—</span>')+'</td>';
