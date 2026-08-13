@@ -334,7 +334,6 @@
     <span id="boxCustom" style="display:none;gap:6px;align-items:center">
       <input type="date" id="pDesde" onchange="onPeriodo()"><input type="date" id="pHasta" onchange="onPeriodo()" style="margin-left:6px">
     </span>
-    <div id="embChips" style="position:relative"></div>
     <span id="embInfo" style="color:var(--txt2);font-size:11px"></span>
   </div>
   <div id="embEstado">—</div>
@@ -880,7 +879,7 @@ function _dia(offset, finDelDia){
 function _fdd(seg){ const d=new Date(seg*1000); const p=n=>String(n).padStart(2,'0'); return p(d.getDate())+'/'+p(d.getMonth()+1); }
 function rango(){
   const seg = d => Math.floor(d / 1000);
-  const conFechas = o => { o.lbl = _fdd(o.desde)+' → '+_fdd(o.hasta); return o; };
+  const conFechas = o => { o.lbl = _fdd(o.desde)+' - '+_fdd(o.hasta); return o; };
   if (periodo === 'custom'){
     const pd = document.getElementById('pDesde').value, ph = document.getElementById('pHasta').value;
     if (pd && ph) return conFechas({ desde: seg(new Date(pd+'T00:00:00')), hasta: seg(new Date(ph+'T23:59:59')) });
@@ -934,10 +933,7 @@ function pintarEmbudo(ac, nota, acPrev){
     /* comparativo vs periodo anterior equivalente: verde sube, rojo baja, amarillo igual */
     let delta='';
     if(acPrev){
-      const prev=+(acPrev[f.k]||0), dif=(+f.c||0)-prev;
-      const col = dif===0 ? 'var(--warn)' : (dif>0 ? 'var(--ok)' : 'var(--bad)');
-      const fl = dif>0?'▲':dif<0?'▼':'●';
-      delta=`<div style="font-size:10px;color:${col};font-weight:700">${fl} ${Math.abs(dif)} vs ant.</div>`;
+      delta=`<div style="margin-top:3px">${capsulaDelta(f.c, acPrev[f.k])}</div>`;
     }
     h += `<div style="position:relative">` +
          `<div class="seg" style="width:${wT}%;height:96px;background:${shade(f.col)};clip-path:polygon(0 0,100% 0,${100-inset}% 100%,${inset}% 100%)">` +
@@ -953,88 +949,73 @@ function pintarEmbudo(ac, nota, acPrev){
   document.getElementById('embZona').innerHTML = h;
   document.getElementById('embEstado').textContent = /⚠️|Leyendo|Elige/.test(nota||'') ? nota : '';
 }
-let embSel = 'todas', embData = null;
-const ASESORAS_FIJAS = ['Angie','Dayann','Lucia','Tula'];
-let embSet = new Set(['todas']);   /* multiseleccion */
+let embData = null;
 function nomCorto(a){ return a==='Tula' ? '🤖 Tula' : String(a).split(' ')[0]; }
+/* capsula de delta vs periodo anterior: fondo claro al 50% para que el color se lea sobre cualquier etapa */
+function capsulaDelta(v, prev){
+  if (prev === undefined || prev === null) return '';
+  const dif = (+v||0) - (+prev||0);
+  const col = dif===0 ? '#8a5a00' : (dif>0 ? '#0b6b3a' : '#a11616');
+  const fl = dif>0?'▲':dif<0?'▼':'●';
+  return `<span style="display:inline-block;background:rgba(255,255,255,.5);border-radius:999px;padding:1px 8px;font-size:10px;font-weight:800;color:${col};line-height:1.5">${fl} ${Math.abs(dif)}</span>`;
+}
 function cargarEmbudo(){
   const r = rango();
   const len = r.hasta - r.desde;
   const pHasta = r.desde - 1, pDesde = pHasta - len;
-  document.getElementById('embEstado').textContent = 'Leyendo la base de datos ('+r.lbl+')…';
+  document.getElementById('embEstado').textContent = 'Leyendo\u2026';
   Promise.all([
     fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()),
     fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).catch(()=>null)
   ]).then(([d, dp]) => {
-    embData = { d: d, dPrev: dp, lbl: r.lbl, lblPrev: _fdd(pDesde)+' → '+_fdd(pHasta) };
+    embData = { d: d, dPrev: dp, lbl: r.lbl };
     const inf=document.getElementById('embInfo');
-    if(inf) inf.textContent = r.lbl+' · '+(d.total||0)+' conversaciones · vs '+embData.lblPrev;
-    pintarChips();
-    pintarSeleccion();
+    if(inf) inf.textContent = r.lbl;
+    pintarTodo();
   }).catch(() => {
-    document.getElementById('embChips').innerHTML = '';
-    pintarEmbudo({frias:375, tibias:198, calientes:64, compras:12}, '⚠️ Sin conexión con el servicio. Datos de EJEMPLO.');
+    pintarEmbudo({frias:375, tibias:198, calientes:64, compras:12}, '\u26a0\ufe0f Sin conexi\u00f3n con el servicio. Datos de EJEMPLO.');
   });
 }
-function listaAsesoras(){
-  const d = embData ? embData.d : {};
-  const dev = (d.asesoras||[]).map(a=>a.asesora);
-  const orden = ASESORAS_FIJAS.filter(x=>dev.some(y=>y===x||y.split(' ')[0]===x))
-    .map(x=>dev.find(y=>y===x||y.split(' ')[0]===x));
-  dev.forEach(a=>{ if(!orden.includes(a)) orden.push(a); });
-  return orden;
+/* vista unica: embudo grafico de todas arriba + caja de cada asesora debajo */
+function pintarTodo(){
+  const d = embData.d, dp = embData.dPrev;
+  const z = document.getElementById('embZona');
+  z.style.width = '100%';
+  pintarEmbudo(d.acumulado, '', dp && dp.acumulado);
+  z.innerHTML = `<div style="max-width:560px;margin:0 auto">${z.innerHTML}</div>` + cajasAsesoras(d, dp);
 }
-function etiquetaDD(){
-  if (embSet.has('todas')) return 'Todas';
-  const n = [...embSet].map(nomCorto);
-  return n.length<=2 ? n.join(' + ') : n.length+' seleccionadas';
-}
-function pintarChips(){
-  const ases = listaAsesoras();
-  let filas = `<label class="ddrow"><input type="checkbox" ${embSet.has('todas')?'checked':''} onchange="togAses('todas')"><span>Todas</span></label><div class="ddsep"></div>`;
+function cajasAsesoras(d, dp){
+  const FIL5 = [['frias','CONVERSACIONES','#4aa8d8'],['tibias','FR\u00cdAS','var(--f-am)'],['dio_talla','TIBIAS','var(--f-na)'],['calientes','CALIENTES','var(--f-ro)'],['compras','COMPRAS','#3ecf8e']];
+  const ases = (d.asesoras||[]).slice().sort((a,b)=>(b.total||0)-(a.total||0));
+  if (!ases.length) return '';
+  let h = '<div style="max-width:780px;margin:26px auto 0;display:flex;flex-direction:column;gap:13px">';
   for (const a of ases){
-    filas += `<label class="ddrow"><input type="checkbox" ${embSet.has(a)?'checked':''} onchange="togAses('${String(a).replace(/'/g,"\\'")}')"><span>${nomCorto(a)}</span></label>`;
+    const ac = a.acumulado||{};
+    const ap = dp && (dp.asesoras||[]).find(x=>x.asesora===a.asesora);
+    const acp = ap && ap.acumulado;
+    const conv = ac.frias ? Math.round((ac.compras||0)/ac.frias*1000)/10 : 0;
+    h += `<div style="border:1.5px solid var(--bd);border-radius:14px;padding:16px 18px;background:var(--card)">` +
+      `<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">` +
+        `<span style="font-weight:900;font-size:15.5px">${a.asesora==='Tula'?'\ud83e\udd16 Tula':nomCorto(a.asesora)}</span>` +
+        `<span style="font-weight:900;font-size:15.5px;color:${conv>=8?'var(--ok)':'var(--bad)'}">${conv}%</span></div>`;
+    FIL5.forEach(([k,nom,col], idx)=>{
+      const v = ac[k]||0;
+      const base = ac.frias||0;
+      const w = base ? Math.max(2, Math.round(v/base*100)) : 2;
+      const prevEtapa = idx ? (ac[FIL5[idx-1][0]]||0) : 0;
+      const pc = idx===0 ? '' : (prevEtapa ? Math.round(v/prevEtapa*100)+'%' : '\u2014');
+      h += `<div style="display:flex;align-items:center;gap:10px;margin:7px 0">` +
+        `<span style="width:112px;font-size:10px;font-weight:800;letter-spacing:.07em;color:var(--txt2)">${nom}</span>` +
+        `<div style="flex:1;background:rgba(255,255,255,.06);border-radius:6px;height:18px;overflow:hidden">` +
+          `<div style="width:${w}%;height:100%;background:${col};border-radius:6px"></div></div>` +
+        `<b style="width:46px;text-align:right;font-size:14.5px">${v}</b>` +
+        `<span style="width:40px;text-align:right;font-size:12px;font-weight:800;color:var(--txt2)">${pc}</span>` +
+        `<span style="width:64px;text-align:right">${capsulaDelta(v, acp && acp[k])}</span></div>`;
+    });
+    h += bloqueMejora(a, d);
+    h += `</div>`;
   }
-  const abierto = document.getElementById('ddPanel') && document.getElementById('ddPanel').style.display==='block';
-  document.getElementById('embChips').innerHTML =
-    `<button class="btn ${embSet.has('todas')?'':'on'}" onclick="toggleDD(event)">Asesoras: ${etiquetaDD()} ▾</button>` +
-    `<div class="ddpanel" id="ddPanel" style="display:${abierto?'block':'none'}" onclick="event.stopPropagation()">${filas}</div>`;
-}
-function toggleDD(e){
-  e.stopPropagation();
-  const p = document.getElementById('ddPanel');
-  p.style.display = p.style.display==='block' ? 'none' : 'block';
-}
-document.addEventListener('click', ()=>{ const p=document.getElementById('ddPanel'); if(p) p.style.display='none'; });
-function togAses(a){
-  if (a==='todas'){ embSet = new Set(['todas']); }
-  else {
-    embSet.delete('todas');
-    if (embSet.has(a)) embSet.delete(a); else embSet.add(a);
-    if (embSet.size===0) embSet = new Set(['todas']);
-  }
-  pintarChips();
-  document.getElementById('ddPanel').style.display='block';
-  pintarSeleccion();
-}
-function selAsesora(a){ togAses(a); }
-function pintarSeleccion(){
-  const d = embData.d, dp = embData.dPrev, lbl = embData.lbl;
-  if (embSet.has('todas')){
-    document.getElementById('embZona').style.width = '560px';
-    pintarEmbudo(d.acumulado, '', dp && dp.acumulado);
-    return;
-  }
-  if (embSet.size >= 2) return pintarComparar();
-  const quien = [...embSet][0];
-  const a = (d.asesoras||[]).find(x=>x.asesora===quien);
-  if (!a){ embSet = new Set(['todas']); pintarChips(); return pintarSeleccion(); }
-  const ap = dp && (dp.asesoras||[]).find(x=>x.asesora===quien);
-  document.getElementById('embZona').style.width = '560px';
-  pintarEmbudo(a.acumulado, '', ap && ap.acumulado);
-  const inf=document.getElementById('embInfo');
-  if(inf) inf.textContent = (a.asesora==='Tula'?'🤖 Tula':a.asesora)+' · '+lbl+' · '+a.total+' conversaciones · vs '+embData.lblPrev;
-  document.getElementById('embZona').innerHTML += tarjetaOportunidad(a.acumulado, nomCorto(a.asesora));
+  return h + '</div>';
 }
 /* ---- Principal mejora: diagnostico puntual por asesora ---- */
 const MIN_N = 20, MIN_BASE = 8;
@@ -1101,79 +1082,6 @@ function bloqueMejora(a, d){
   return `<details class="mej"><summary>Principal mejora: ${m.tit}</summary>` +
          `<div class="cuerpo">${m.cuerpo}<span class="acc">${m.acc}</span></div></details>`;
 }
-/* compat vista individual */
-function tarjetaOportunidad(ac, quien){
-  const d = embData ? embData.d : {};
-  const a = (d.asesoras||[]).find(x=>nomCorto(x.asesora)===quien) || {asesora:quien, total:(ac.frias||0), acumulado:ac};
-  const m = mejoraDe(a, d);
-  return `<div class="oport"><b>Principal mejora: ${m.tit}</b><br>${m.cuerpo}<br><span style="color:var(--txt2)">${m.acc}</span></div>`;
-}
-function pintarComparar(){
-  document.getElementById('embZona').style.width = '100%';
-  const d = embData.d;
-  const sel = (d.asesoras||[]).filter(a=>embSet.has(a.asesora)).sort((a,b)=>b.total-a.total);
-  const FIL = [['frias','FRÍAS','var(--f-am)'],['tibias','TIBIAS','var(--f-na)'],['calientes','CALIENTES','var(--f-ro)'],['compras','COMPRAS','var(--f-ve)']];
-
-  /* ---------- bloque TODAS (ancho completo, con columna de %) ---------- */
-  const acT = d.acumulado || {};
-  const tT = trans(acT);
-  const convT = acT.frias ? Math.round((acT.compras||0)/acT.frias*1000)/10 : 0;
-  let hT = `<div style="border:1.5px solid var(--bot);border-radius:14px;padding:18px 20px;background:var(--card)">` +
-    `<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:12px">` +
-      `<div style="font-weight:900;font-size:17px">TODAS</div>` +
-      `<div style="font-weight:900;font-size:17px;color:${convT>=8?'var(--ok)':'var(--bad)'}">${convT}%</div></div>`;
-  FIL.forEach(([k,nom,col], idx) => {
-    const v = acT[k]||0;
-    const w = acT.frias ? Math.max(2, Math.round(v/acT.frias*100)) : 2;
-    const pc = idx===0 ? '' : (tT[idx-1]===null ? '—' : tT[idx-1]+'%');
-    hT += `<div style="display:flex;align-items:center;gap:12px;margin:8px 0">` +
-      `<span style="width:92px;font-size:10.5px;font-weight:800;letter-spacing:.08em;color:var(--txt2)">${nom}</span>` +
-      `<div style="flex:1;background:rgba(255,255,255,.06);border-radius:7px;height:20px;overflow:hidden">` +
-      `<div style="width:${w}%;height:100%;background:${col};border-radius:7px"></div></div>` +
-      `<b style="width:56px;text-align:right;font-size:16px">${v}</b>` +
-      `<span style="width:52px;text-align:right;font-size:13px;font-weight:800;color:var(--txt2)">${pc}</span></div>`;
-  });
-  hT += `</div>`;
-
-  /* ---------- bloque UNICO de asesoras: columna de etiquetas fijada ---------- */
-  let hA = '';
-  if (sel.length){
-    let head = `<tr><th class="fixcol"></th>`;
-    for (const a of sel){
-      const ac = a.acumulado||{};
-      const g = ac.frias ? Math.round((ac.compras||0)/ac.frias*1000)/10 : 0;
-      head += `<th class="colA"><div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px;min-width:230px">` +
-        `<span class="nomA">${a.asesora==='Tula'?'🤖 Tula':a.asesora}</span>` +
-        `<span class="tasaA" style="color:${g>=8?'var(--ok)':'var(--bad)'}">${g}%</span></div></th>`;
-    }
-    head += `</tr>`;
-
-    let cuerpo = '';
-    FIL.forEach(([k,nom,col], idx) => {
-      cuerpo += `<tr><td class="fixcol etq">${nom}</td>`;
-      for (const a of sel){
-        const ac = a.acumulado||{}, t = trans(ac);
-        const v = ac[k]||0;
-        const w = ac.frias ? Math.max(2, Math.round(v/ac.frias*100)) : 2;
-        const pc = idx===0 ? '' : (t[idx-1]===null ? '—' : t[idx-1]+'%');
-        cuerpo += `<td class="colA"><div style="display:flex;align-items:center;gap:10px">` +
-          `<div class="barra"><div style="width:${w}%;height:100%;background:${col};border-radius:5px"></div></div>` +
-          `<b class="num">${v}</b><span class="pct">${pc}</span></div></td>`;
-      }
-      cuerpo += `</tr>`;
-    });
-
-    let pie = `<tr><td class="fixcol"></td>`;
-    for (const a of sel) pie += `<td class="colA" style="border-top:1px solid var(--bd)">${bloqueMejora(a, d)}</td>`;
-    pie += `</tr>`;
-
-    hA = `<div class="cmpwrap" style="margin-top:13px"><table class="cmp"><thead>${head}</thead><tbody>${cuerpo}${pie}</tbody></table></div>`;
-  }
-
-  document.getElementById('embZona').innerHTML = `<div style="max-width:1720px;margin:0 auto">${hT}${hA}</div>`;
-  document.getElementById('embEstado').textContent = '⚔ Comparativa · ' + embData.lbl + ' · % = cuántas pasan de la etapa anterior';
-}
-
 /* ===== CALIDAD + OBJECIONES ===== */
 const SENAL_TXT = {
   niega_stock_falso: ['Niega stock que sí existe', 'Le dijo a la clienta que no había algo que sí estaba en stock'],
