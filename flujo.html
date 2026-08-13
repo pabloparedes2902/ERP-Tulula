@@ -312,6 +312,7 @@
     <span id="etProg" style="color:var(--txt2);font-size:12px"></span>
   </div>
   <div id="reglasZona"></div>
+  <div id="calZona"></div>
   <details id="polZona" style="margin-bottom:14px;display:none">
     <summary style="cursor:pointer;font-size:12px;font-weight:800;color:var(--txt2);padding:9px 13px;border:1.5px dashed var(--bd);border-radius:11px;list-style:none">🏷️ Políticas comerciales — tarifas, pagos, horarios y promos (aplican al bot al instante)</summary>
     <div id="polLista" style="margin-top:10px"></div>
@@ -320,8 +321,6 @@
     <summary style="cursor:pointer;font-size:12px;font-weight:800;color:var(--txt2);padding:9px 13px;border:1.5px dashed var(--bd);border-radius:11px;list-style:none">🗂️ Versiones del manual — historial de cambios y restaurar</summary>
     <div id="verLista" style="margin-top:10px"></div>
   </details>
-  <div id="calZona"></div>
-  <div id="aprZona"></div>
 </div>
 <div id="vEmbudo">
   <div class="periodos" style="margin-bottom:10px">
@@ -1500,7 +1499,7 @@ function pintarReglas(d){
       `</div>`;
     }
     return `<div class="cqregla" id="regla${r.id}">`+
-      `<div class="cqlbl">🧠 Regla sugerida para el manual de Tula${r.semaforo ? `<span class="cqsem ${r.semaforo}">${r.semaforo==='verde'?'lista':r.semaforo==='rojo'?'no aprobar así':'revisar antes'}</span>` : ''}</div>`+
+      `<div class="cqlbl">${r.senal==='reincidencia'?'🔁 Lección reincidente — refuérzala aprobándola como regla':r.senal==='scorecard'?'📐 Oportunidad detectada por el Scorecard':'🧠 Regla sugerida para el manual de Tula'}${r.semaforo ? `<span class="cqsem ${r.semaforo}">${r.semaforo==='verde'?'lista':r.semaforo==='rojo'?'no aprobar así':'revisar antes'}</span>` : ''}</div>`+
       `<div class="cqreglatxt" id="regtxt${r.id}">${simEsc(r.regla)}</div>`+
       (r.revision ? `<div class="cqchoque" style="border-color:var(--ab);color:var(--txt)">🔍 Mi revisión: ${simEsc(r.revision)}</div>` : '')+
       `<div style="font-size:11px;color:var(--txt2);margin:6px 0 0">Sale de ${simEsc(r.motivo||'')} · ${simEsc(r.dia||'')}</div>`+
@@ -1631,7 +1630,6 @@ function cargarCalidad(){
   cargarReglas();
   cargarPerformance();
   cargarScorecard();
-  cargarAprendizaje();
   cargarSuite();
   cargarPoliticas();
   cargarVersiones();
@@ -1792,15 +1790,22 @@ function cargarPerformance(){
   const r=rangoGlobal();
   Promise.all([
     fetch(`${URL_PERFORMANCE}?desde=${r.desde}&hasta=${r.hasta}&t=${Date.now()}`).then(x=>x.json()),
-    fetch(`${URL_PERFORMANCE}?desde=${r.prevDesde}&hasta=${r.prevHasta}&t=${Date.now()}`).then(x=>x.json())
-  ]).then(([a,b])=>pintarPerformance(a&&a.rango, b&&b.rango, r))
+    fetch(`${URL_PERFORMANCE}?desde=${r.prevDesde}&hasta=${r.prevHasta}&t=${Date.now()}`).then(x=>x.json()),
+    fetch(`${URL_SCORECARD}?desde=${r.desde}&hasta=${r.hasta}&t=${Date.now()}`).then(x=>x.json()).catch(()=>null),
+    fetch(`${URL_SCORECARD}?desde=${r.prevDesde}&hasta=${r.prevHasta}&t=${Date.now()}`).then(x=>x.json()).catch(()=>null)
+  ]).then(([a,b,s1,s2])=>pintarPerformance(a&&a.rango, b&&b.rango, r, s1, s2))
     .catch(()=>{ const z=document.getElementById('perfZona'); if(z) z.innerHTML=''; });
 }
-function pintarPerformance(cur, prev, r){
+function _resolTula(sc){
+  const t=((sc&&sc.periodo)||[]).find(x=>x.vendedora==='Tula');
+  if(!t || !+t.convs) return null;
+  return Math.round(100*(+t.cotizadas||0)/(+t.convs));
+}
+function pintarPerformance(cur, prev, r, sc1, sc2){
   const z=document.getElementById('perfZona'); if(!z) return;
   if(!cur){ z.innerHTML=''; return; }
   const M=[['cierres','Cierres cotizados',1],['ventas','Ventas',1],['escaladas','Escaladas',0],['graves','Señales graves',-1],['costo_ia','Costo IA',0]];
-  const tiles=M.map(([k,lbl,dir])=>{
+  let tiles=M.map(([k,lbl,dir])=>{
     const esCosto = k==='costo_ia';
     const v=+(cur[k]||0), a=prev? +(prev[k]||0) : null;
     let delta='';
@@ -1811,6 +1816,13 @@ function pintarPerformance(cur, prev, r){
     }
     return `<div><b>${esCosto?('$'+v.toFixed(2)):v}</b><span>${lbl.toUpperCase()}</span>${delta}</div>`;
   }).join('');
+  /* tasa de resolucion sola: % de convs solo-Tula que llegaron a cotizacion */
+  const rs1=_resolTula(sc1), rs2=_resolTula(sc2);
+  if(rs1!==null){
+    let delta='';
+    if(rs2!==null){ const dif=rs1-rs2; const fl=dif>0?'▲':dif<0?'▼':'●'; delta=`<i style="color:${semaforo(dif,1)};font-style:normal;font-size:10.5px">${fl} ${Math.abs(dif)}pp vs período anterior</i>`; }
+    tiles+=`<div title="De las conversaciones que Tula atendió sola, % que llegaron a cotización con total"><b>${rs1}%</b><span>RESOLUCIÓN SOLA</span>${delta}</div>`;
+  }
   z.innerHTML = `<div class="cq" style="padding:13px 16px"><h3 style="margin:0 0 8px">📈 Performance Tula <span style="font-weight:400;color:var(--txt2);font-size:11px">· ${r.label} (${r.desde} → ${r.hasta}) vs período anterior equivalente</span></h3><div class="cqkpi" style="margin:0">${tiles}</div></div>`;
 }
 /* ===== SCORECARD DE VENTAS (workflow 📐): modelo top 0.1% vs vendedoras, diario ===== */
@@ -1896,56 +1908,6 @@ function scChart(ndias){
   const leyenda=vends.map(v=>`<span style="font-size:10.5px;margin-right:12px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${COL[v]};margin-right:4px"></span>${simEsc(v)}${v==='Tula'?' 🤖':''}</span>`).join('');
   box.innerHTML=`<div style="overflow-x:auto"><svg width="${W}" height="${H}" style="min-width:${W}px">${g}</svg></div><div style="margin-top:2px">${leyenda}</div>`;
 }
-/* ===== ESTA SEMANA APRENDI (workflow 📚): feed de aprendizaje + score de reincidencia ===== */
-const URL_APRENDIZAJE = BASE_N8N + '/aprendizaje-semana';
-function cargarAprendizaje(){
-  fetch(URL_APRENDIZAJE + '?t=' + Date.now()).then(r=>r.json()).then(pintarAprendizaje)
-    .catch(()=>{ const z=document.getElementById('aprZona'); if(z) z.innerHTML=''; });
-}
-function pintarAprendizaje(d){
-  const z=document.getElementById('aprZona'); if(!z) return;
-  const ret=(d&&d.retencion)||{}, rein=(d&&d.reincidentes)||[], feed=(d&&d.feed)||[], sem=(d&&d.semana)||{};
-  const apr=+ret.aprendidos||0, fir=+ret.firmes||0;
-  const pct = apr ? Math.round(fir*100/apr) : null;
-  const col = pct===null?'var(--txt2)':(pct>=85?'var(--ok)':pct>=60?'var(--warn)':'var(--bad)');
-  const ICO={correccion:'✏️',regla:'📜',version:'🗂️',caso:'🧪'};
-  const tiles = `<div class="cqkpi" style="margin:0 0 4px">
-    <div><b style="color:${col}">${pct===null?'—':pct+'%'}</b><span>RETENCIÓN</span><i style="font-style:normal;font-size:10.5px;color:var(--txt2)">${fir} de ${apr} lecciones firmes</i></div>
-    <div><b style="${+ret.reincidentes?'color:var(--bad)':''}">${+ret.reincidentes||0}</b><span>REINCIDENTES</span><i style="font-style:normal;font-size:10.5px;color:var(--txt2)">las sabía y volvió a fallar</i></div>
-    <div><b>${+ret.aun_no||0}</b><span>EN PROCESO</span><i style="font-style:normal;font-size:10.5px;color:var(--txt2)">enseñadas, aún no las domina</i></div>
-    <div><b>${+sem.correcciones||0}</b><span>CORRECCIONES 7D</span></div>
-    <div><b>${+sem.versiones||0}</b><span>VERSIONES DEL MANUAL 7D</span></div>
-  </div>`;
-  const reinHtml = rein.length ? `<div class="cqlbl" style="margin-top:12px;color:var(--bad)">⚠️ Lecciones que reincidieron</div>` +
-    rein.map(r=>`<div class="cqcaso" style="border-left-color:var(--bad);padding:8px 12px">
-      <div style="font-size:12px;font-weight:600">${simEsc(String(r.nombre||''))}</div>
-      ${r.razon?`<div style="font-size:11px;color:var(--txt2)">${simEsc(String(r.razon||'').slice(0,180))}</div>`:''}
-      <div style="font-size:11px;color:var(--warn);margin-top:2px">→ refuérzala: corrígela de nuevo en "Qué corregir hoy" o súbela como regla del manual</div>
-    </div>`).join('') : '';
-  // feed agrupado por día
-  const porDia={};
-  feed.forEach(f=>{ const dia=String(f.fecha||'').slice(0,10); if(dia) (porDia[dia]=porDia[dia]||[]).push(f); });
-  const dias=Object.keys(porDia).sort().reverse();
-  const DIAS_TXT=['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
-  let vis=0, tot=0;
-  const feedHtml = dias.map(dia=>{
-    const dt=new Date(dia+'T12:00:00');
-    const cab=`<div class="cqlbl${vis>=14?' aprMas':''}" style="margin-top:10px${vis>=14?';display:none':''}">${DIAS_TXT[dt.getDay()]} ${dia.slice(8,10)}/${dia.slice(5,7)}</div>`;
-    return cab + porDia[dia].map(f=>{
-      tot++; const oculto = vis>=14; vis++;
-      return `<div${oculto?' class="aprMas"':''} style="${oculto?'display:none;':''}padding:4px 0;font-size:12px;border-bottom:1px dashed var(--bd)">${ICO[f.tipo]||'•'} <b style="font-weight:600">${simEsc(String(f.titulo||''))}</b><span style="color:var(--txt2)"> — ${simEsc(String(f.detalle||''))}</span></div>`;
-    }).join('');
-  }).join('');
-  const verTodo = tot>14 ? `<button class="btn" style="margin-top:8px;font-size:11px" onclick="aprVerTodo(this)">Ver todo (${tot})</button>` : '';
-  z.innerHTML = `<div class="cq" style="padding:13px 16px">
-    <h3 style="margin:0 0 8px">📚 Esta semana aprendí <span style="font-weight:400;color:var(--txt2);font-size:11px">· últimos 7 días</span></h3>
-    ${tiles}${reinHtml}
-    <div class="cqlbl" style="margin-top:12px">Diario de aprendizaje</div>
-    ${feedHtml || '<div style="color:var(--txt2);font-size:12px">Sin actividad esta semana.</div>'}
-    ${verTodo}
-  </div>`;
-}
-function aprVerTodo(b){ document.querySelectorAll('.aprMas').forEach(e=>e.style.display=''); b.style.display='none'; }
 function pintarCalidad(d){
   window.__CAL = d;
   const t = d.totales||{}, objs = d.objeciones||[], cals = d.calidad||[], vb = d.verbatims||[];
