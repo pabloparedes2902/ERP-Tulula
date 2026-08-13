@@ -335,6 +335,7 @@
       <input type="date" id="pDesde" onchange="onPeriodo()"><input type="date" id="pHasta" onchange="onPeriodo()" style="margin-left:6px">
     </span>
     <div id="embChips" style="position:relative"></div>
+    <span id="embInfo" style="color:var(--txt2);font-size:11px"></span>
   </div>
   <div id="embEstado">—</div>
   <div id="embZona"></div>
@@ -876,24 +877,26 @@ function _dia(offset, finDelDia){
   if (finDelDia) d.setHours(23, 59, 59);
   return d;
 }
+function _fdd(seg){ const d=new Date(seg*1000); const p=n=>String(n).padStart(2,'0'); return p(d.getDate())+'/'+p(d.getMonth()+1); }
 function rango(){
   const seg = d => Math.floor(d / 1000);
+  const conFechas = o => { o.lbl = _fdd(o.desde)+' → '+_fdd(o.hasta); return o; };
   if (periodo === 'custom'){
     const pd = document.getElementById('pDesde').value, ph = document.getElementById('pHasta').value;
-    if (pd && ph) return { desde: seg(new Date(pd+'T00:00:00')), hasta: seg(new Date(ph+'T23:59:59')), lbl: pd+' → '+ph };
+    if (pd && ph) return conFechas({ desde: seg(new Date(pd+'T00:00:00')), hasta: seg(new Date(ph+'T23:59:59')) });
     periodo = 'mtd';
   }
   if (periodo === 'mtd'){
     const a = new Date();
-    return { desde: seg(new Date(a.getFullYear(), a.getMonth(), 1)), hasta: seg(new Date()), lbl: 'mes hasta hoy' };
+    return conFechas({ desde: seg(new Date(a.getFullYear(), a.getMonth(), 1)), hasta: seg(new Date()) });
   }
   /* "Hoy" NO esta en el selector a proposito: el embudo de conversaciones se
      arma cada noche a las 3am, asi que hoy siempre daria Frias = 0 mientras
      Compras si sale en vivo del ERP. Un embudo imposible. La rama se deja por
      si alguien llama rango() con 'hoy' desde otro lado. */
-  if (periodo === 'hoy') return { desde: seg(_dia(0)), hasta: seg(_dia(0, true)), lbl: 'hoy' };
+  if (periodo === 'hoy') return conFechas({ desde: seg(_dia(0)), hasta: seg(_dia(0, true)) });
   const n = parseInt(periodo) || 30;
-  return { desde: seg(_dia(-n)), hasta: seg(_dia(-1, true)), lbl: 'últimos '+n+' días (sin hoy)' };
+  return conFechas({ desde: seg(_dia(-n)), hasta: seg(_dia(-1, true)) });
 }
 function onPeriodo(){
   const sel = document.getElementById('selPeriodo');
@@ -908,52 +911,38 @@ function onPeriodo(){
 /* compatibilidad por si algo viejo la llama */
 function setPeriodo(p){ const s=document.getElementById('selPeriodo'); if(s){ s.value=p; } onPeriodo(); }
 function shade(col){ return `linear-gradient(90deg, rgba(0,0,0,.32), rgba(255,255,255,.28) 46%, rgba(255,255,255,.05) 54%, rgba(0,0,0,.36)), ${col}`; }
-function pintarEmbudo(ac, nota){
+function pintarEmbudo(ac, nota, acPrev){
   const filas = [
-    {n:'FRÍAS', c:ac.frias, col:'var(--f-am)'}, {n:'TIBIAS', c:ac.tibias, col:'var(--f-na)'},
-    {n:'CALIENTES', c:ac.calientes, col:'var(--f-ro)'}, {n:'COMPRAS', c:ac.compras, col:'var(--f-ve)'}
+    {n:'FRÍAS', c:ac.frias, k:'frias', col:'var(--f-am)'}, {n:'TIBIAS', c:ac.tibias, k:'tibias', col:'var(--f-na)'},
+    {n:'CALIENTES', c:ac.calientes, k:'calientes', col:'var(--f-ro)'}, {n:'COMPRAS', c:ac.compras, k:'compras', col:'var(--f-ve)'}
   ];
   /* frías/tibias en entero; calientes/compras con 1 decimal (son chicos y el decimal importa) */
   const pcts = filas.map((f,i) => !ac.frias ? 0 : (i<2 ? Math.round(f.c/ac.frias*100) : (Math.round(f.c/ac.frias*1000)/10).toFixed(1)));
-  const trans = [
-    {real: filas[0].c?Math.round(filas[1].c/filas[0].c*100):0, bench:BENCH.t1},
-    {real: filas[1].c?Math.round(filas[2].c/filas[1].c*100):0, bench:BENCH.t2},
-    {real: filas[2].c?Math.round(filas[3].c/filas[2].c*100):0, bench:BENCH.t3}
-  ];
-  let peor = 0, peorGap = -999;
-  trans.forEach((t,i)=>{ const g = t.bench-t.real; if (g>peorGap){ peorGap=g; peor=i; } });
   const W = [100, 76, 52, 30];
   let h = `<div class="boca" style="width:100%;height:26px;background:linear-gradient(180deg, rgba(255,255,255,.35), rgba(0,0,0,.25)), var(--f-am);margin-bottom:-14px"></div>`;
   filas.forEach((f, i) => {
     const wT = W[i], wB = i<3 ? W[i+1] : 12, inset = (wT-wB)/2/wT*100;
+    /* comparativo vs periodo anterior equivalente: verde sube, rojo baja, amarillo igual */
+    let delta='';
+    if(acPrev){
+      const prev=+(acPrev[f.k]||0), dif=(+f.c||0)-prev;
+      const col = dif===0 ? 'var(--warn)' : (dif>0 ? 'var(--ok)' : 'var(--bad)');
+      const fl = dif>0?'▲':dif<0?'▼':'●';
+      delta=`<div style="font-size:10px;color:${col};font-weight:700">${fl} ${Math.abs(dif)} vs ant.</div>`;
+    }
     h += `<div style="position:relative">` +
          `<div class="seg" style="width:${wT}%;height:96px;background:${shade(f.col)};clip-path:polygon(0 0,100% 0,${100-inset}% 100%,${inset}% 100%)">` +
-         `<div class="inner"><div class="fpct">${pcts[i]}%</div><div class="fc">${f.c}</div></div></div>` +
+         `<div class="inner"><div class="fpct">${pcts[i]}%</div><div class="fc">${f.c}</div>${delta}</div></div>` +
          `<div class="fizq" style="right:calc(${50+wT/2}% + 16px)">${f.n}</div></div>`;
-    if (i<3){
-      const t = trans[i], ok = t.real>=t.bench?'fok':'fbad';
-      h += `<div class="ftrans">▼ pasa el <span class="${ok}">${t.real}%</span> · Perú ~${t.bench}%` +
-           (i===peor && peorGap>0 ? '<span class="ffuego">🔥 MAYOR OPORTUNIDAD</span>' : '') + `</div>`;
-    }
-    /* COMPRAS: el desglose con clic / sin clic. Solo si el servicio lo manda,
-       asi la pagina sigue funcionando contra la version vieja del webhook. */
+    /* COMPRAS: el desglose con clic / sin clic (conteos, no porcentajes) */
     if (i===3 && ac.compras_con_clic !== undefined){
       h += `<div class="ftrans"><b>${ac.compras_con_clic}</b> con clic de anuncio · ` +
-           `<b>${ac.compras_sin_clic}</b> sin clic` +
-           (ac.compras_clasificador !== undefined
-             ? ` · <span style="opacity:.6">el lector de chats detectaba ${ac.compras_clasificador}</span>`
-             : '') + `</div>`;
+           `<b>${ac.compras_sin_clic}</b> sin clic</div>`;
     }
   });
   h += `<div class="tubo"><div style="height:34px;background:${shade('var(--f-ve)')};border-radius:0 0 8px 8px"></div></div>`;
-  const g = ac.frias ? Math.round(ac.compras/ac.frias*1000)/10 : 0;
-  h += `<div class="ftrans" style="margin-top:14px">Conversión global: <b class="${g>=8?'fok':'fbad'}">${g}%</b> · referencia Perú/LatAm: ~8% (rango 5-15%)</div>`;
-  /* De donde sale COMPRAS. Sin esto nadie sabe si el numero es real o inferido. */
-  if (ac.compras_con_clic !== undefined){
-    h += `<div class="ftrans" style="opacity:.65;font-size:11px">Compras = ventas del ERP · WhatsApp · origen ADS · pago COMPLETO</div>`;
-  }
   document.getElementById('embZona').innerHTML = h;
-  document.getElementById('embEstado').textContent = nota;
+  document.getElementById('embEstado').textContent = /⚠️|Leyendo|Elige/.test(nota||'') ? nota : '';
 }
 let embSel = 'todas', embData = null;
 const ASESORAS_FIJAS = ['Angie','Dayann','Lucia','Tula'];
@@ -961,9 +950,16 @@ let embSet = new Set(['todas']);   /* multiseleccion */
 function nomCorto(a){ return a==='Tula' ? '🤖 Tula' : String(a).split(' ')[0]; }
 function cargarEmbudo(){
   const r = rango();
+  const len = r.hasta - r.desde;
+  const pHasta = r.desde - 1, pDesde = pHasta - len;
   document.getElementById('embEstado').textContent = 'Leyendo la base de datos ('+r.lbl+')…';
-  fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(d => {
-    embData = { d: d, lbl: r.lbl };
+  Promise.all([
+    fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()),
+    fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).catch(()=>null)
+  ]).then(([d, dp]) => {
+    embData = { d: d, dPrev: dp, lbl: r.lbl, lblPrev: _fdd(pDesde)+' → '+_fdd(pHasta) };
+    const inf=document.getElementById('embInfo');
+    if(inf) inf.textContent = r.lbl+' · '+(d.total||0)+' conversaciones · vs '+embData.lblPrev;
     pintarChips();
     pintarSeleccion();
   }).catch(() => {
@@ -1014,18 +1010,21 @@ function togAses(a){
 }
 function selAsesora(a){ togAses(a); }
 function pintarSeleccion(){
-  const d = embData.d, lbl = embData.lbl;
+  const d = embData.d, dp = embData.dPrev, lbl = embData.lbl;
   if (embSet.has('todas')){
     document.getElementById('embZona').style.width = '560px';
-    pintarEmbudo(d.acumulado, `✅ Datos reales · ${lbl} · ${d.total} conversaciones · se actualiza cada noche a las 3am`);
+    pintarEmbudo(d.acumulado, '', dp && dp.acumulado);
     return;
   }
   if (embSet.size >= 2) return pintarComparar();
   const quien = [...embSet][0];
   const a = (d.asesoras||[]).find(x=>x.asesora===quien);
   if (!a){ embSet = new Set(['todas']); pintarChips(); return pintarSeleccion(); }
+  const ap = dp && (dp.asesoras||[]).find(x=>x.asesora===quien);
   document.getElementById('embZona').style.width = '560px';
-  pintarEmbudo(a.acumulado, `✅ ${a.asesora==='Tula'?'🤖 Tula (el agente, sin asesora asignada)':a.asesora} · ${lbl} · ${a.total} conversaciones`);
+  pintarEmbudo(a.acumulado, '', ap && ap.acumulado);
+  const inf=document.getElementById('embInfo');
+  if(inf) inf.textContent = (a.asesora==='Tula'?'🤖 Tula':a.asesora)+' · '+lbl+' · '+a.total+' conversaciones · vs '+embData.lblPrev;
   document.getElementById('embZona').innerHTML += tarjetaOportunidad(a.acumulado, nomCorto(a.asesora));
 }
 /* ---- Principal mejora: diagnostico puntual por asesora ---- */
