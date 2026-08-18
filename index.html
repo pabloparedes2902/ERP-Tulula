@@ -3304,6 +3304,28 @@ async function _refrescarModulo(pg) {
         // Pedidos ya tiene su propio recargado completo (limpia filtros y fechas).
         pFlt = {}; window._pedFechaDesde = ''; window._pedFechaHasta = '';
         return await loadPeds(pEst, true);
+
+      // 18-ago-2026 — Flujo y Marketing viven en un iframe. loadPg() solo revisa
+      // si el iframe ya tiene src y se va, asi que el 🔄 no hacia NADA en el
+      // Embudo. Ahora se le avisa al iframe para que vuelva a pedir su data sin
+      // perder el rango de fechas; si no contesta en 1.2s, se recarga entero.
+      case 'flujo':
+      case 'marketing': {
+        const f = document.getElementById(pg === 'flujo' ? 'flujo-frame' : 'marketing-frame');
+        if (!f || !f.getAttribute('src')) return await loadPg(pg);   // aun no cargado: carga normal
+        let contesto = false;
+        const oir = e => { if (e && e.data && e.data.tipo === 'erp-refrescar-ok') contesto = true; };
+        window.addEventListener('message', oir);
+        try { f.contentWindow.postMessage({ tipo: 'erp-refrescar' }, '*'); } catch (_) {}
+        return await new Promise(res => setTimeout(() => {
+          window.removeEventListener('message', oir);
+          if (!contesto) {
+            try { f.contentWindow.location.reload(); }
+            catch (_) { const src = f.getAttribute('src'); f.setAttribute('src', ''); f.setAttribute('src', src); }
+          }
+          res();
+        }, 1200));
+      }
       default:
         return await loadPg(pg);
     }
