@@ -262,9 +262,11 @@
   <div id="espEstado" style="color:var(--txt2);font-size:12px;margin-bottom:14px"></div>
   <div id="espLista"></div>
 </div>
-<div id="vPrompt" style="display:none;padding:26px;max-width:2000px;margin:0 auto">
-  <h2 style="margin:0 0 4px">Saneamiento del prompt maestro</h2>
-  <div id="prEstado" style="color:var(--txt2);font-size:12px;margin-bottom:16px"></div>
+<div id="vPrompt" style="display:none;padding:26px;max-width:3000px;margin:0 auto">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+    <h2 style="margin:0">Saneamiento del prompt maestro</h2>
+    <div id="prEstado" style="color:var(--txt2);font-size:12px"></div>
+  </div>
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
     <span style="font-size:11.5px;color:var(--txt2)">Ventana:</span>
     <select id="prVent" onchange="cargarPrompt()" style="background:var(--card);color:inherit;border:1px solid var(--bd);border-radius:8px;padding:5px 9px;font-size:12.5px">
@@ -276,8 +278,8 @@
     <input id="prDias" type="number" min="1" max="365" value="14" style="display:none;width:70px;background:var(--card);color:inherit;border:1px solid var(--bd);border-radius:8px;padding:5px 9px;font-size:12.5px" onchange="cargarPrompt()">
     <span id="prDiasLbl" style="display:none;font-size:11.5px;color:var(--txt2)">dias hacia atras</span>
   </div>
-  <div id="prKpis" style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:12px;margin-bottom:18px"></div>
-  <div id="prBloques" style="margin-bottom:22px;max-height:58vh;overflow-y:auto;padding-right:6px"></div>
+  <div id="prKpis" style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) 1px repeat(3,minmax(0,1fr));gap:10px;align-items:stretch;margin-bottom:18px"></div>
+  <div id="prBloques" style="margin-bottom:22px;max-height:calc(100vh - 300px);overflow-y:auto;padding-right:6px"></div>
 </div>
 <div id="vLab" style="display:none;padding:26px;max-width:900px;margin:0 auto">
   <h2 style="margin:0 0 4px">🧪 Laboratorio — mejora continua</h2>
@@ -887,11 +889,24 @@ function cargarPrompt(){
   if(_dl) _dl.style.display=_cust?'inline':'none';
   const _h = _cust ? Math.max(1,parseInt((_di&&_di.value)||14,10))*24 : parseInt((_sel&&_sel.value)||24,10);
   const _lbl = _h===24?'24 horas':_h===48?'2 dias':_h===168?'7 dias':(_h/24)+' dias';
+  /* 18-ago-2026 — las 5 etapas del embudo salen del MISMO endpoint que usa la
+     seccion Embudo. Una sola definicion de embudo para todo el ERP: si cambia
+     alla, cambia aca, y nunca pueden decir numeros distintos. */
+  /* El embudo se guarda POR DIA (proceso de las 3am), asi que la ventana se
+     redondea a dias completos de Lima. Si pides 24h te da HOY; 168h te da los
+     ultimos 7 dias. Sin esto, "24 horas" cruzaba dos dias y el denominador
+     salia inflado. */
+  const _prDiasV = Math.max(1, Math.round(_h/24));
+  const _prHoy = new Date(Date.now() - 5*3600*1000);
+  const _prIni = new Date(Date.UTC(_prHoy.getUTCFullYear(), _prHoy.getUTCMonth(), _prHoy.getUTCDate() - (_prDiasV-1)));
+  const _prDesde = Math.floor(_prIni.getTime()/1000) + 5*3600;
+  const _prHasta = Math.floor(Date.now()/1000);
   Promise.all([
     fetch(BASE_N8N + '/prompt-avance?h=' + _h).then(r=>r.json()),
     fetch(BASE_N8N + '/indice-asesora?d=' + Math.max(1,Math.round(_h/24))).then(r=>r.json()).catch(()=>null),
-    fetch(BASE_N8N + '/indice-asesora?d=7').then(r=>r.json()).catch(()=>null)
-  ]).then(([d, idx, _idx7])=>{
+    fetch(BASE_N8N + '/indice-asesora?d=7').then(r=>r.json()).catch(()=>null),
+    fetch(`${URL_EMBUDO}?desde=${_prDesde}&hasta=${_prHasta}`).then(r=>r.json()).catch(()=>null)
+  ]).then(([d, idx, _idx7, emb])=>{
     const _tula = idx && (idx.tabla||[]).filter(x=>x.vendedora==='Tula')[0];
     const pct = d.chars_total ? (d.chars_aprob*100/d.chars_total) : 0;
     const num = v => (v===null||v===undefined) ? '—' : v;
@@ -906,14 +921,38 @@ function cargarPrompt(){
     const _hist = d.score_hist||[];
     const _ult = _hist.filter(x=>x.fecha===d.score_fecha)[0] || _hist[_hist.length-1];
     const _casos = _ult && _ult.casos ? _ult.casos+' casos' : 'sin testeo';
+    /* ── FILA UNICA DE 8 ─────────────────────────────────────────────────
+       Izquierda (5): el embudo, etapas por accion observable de la clienta.
+       Cada una es subconjunto de la anterior y todas se miden sobre el mismo
+       denominador, asi que los porcentajes se pueden comparar entre si.
+       Derecha (3): salud del agente. Denominador propio, por eso el separador.
+       "Prompt saneado" salio de la fila: ya esta al 100%.
+       ──────────────────────────────────────────────────────────────────── */
+    const _ac  = (emb && emb.acumulado) || {};
+    const _tot = Number((emb && emb.total) || 0);
+    const _pc  = n => _tot ? (Number(n||0)*100/_tot).toFixed(1)+'% de '+_tot : '—';
+    const _et  = (t,n,c) => kpi(t, _tot ? Number(n||0).toLocaleString() : '—', _pc(n), c);
+
+    /* Faltas = todo lo que salio mal en una respuesta, en una sola cifra:
+       lo que el validador tuvo que corregir + las faltas duras. Misma unidad
+       (% de respuestas). Las contradicciones del prompt no son por respuesta,
+       asi que van en el pie como conteo, no sumadas al porcentaje. */
+    const _faltas = (d.validador===null||d.validador===undefined) && (d.faltas_duras===null||d.faltas_duras===undefined)
+      ? null : Math.min(100, Number(d.validador||0) + Number(d.faltas_duras||0));
+    const _pieFaltas = (d.turnos||d.val_total||0) + ' respuestas · ' + (d.contradicciones||0) + ' contradicciones';
+
+    const _sep = '<div style="width:1px;background:var(--bd);opacity:.55;margin:6px 0"></div>';
+
     document.getElementById('prKpis').innerHTML =
-        kpi('Prompt saneado', pct.toFixed(1)+'%', d.chars_aprob.toLocaleString()+'/'+d.chars_total.toLocaleString()+' chars', pct>=50?'var(--ok)':'var(--warn)')
+        _et('Conversaciones', _tot, 'inherit')
+      + _et('Respondio',  _ac.tibias,    'inherit')
+      + _et('2 datos',    _ac.dio_talla, 'inherit')
+      + _et('Info pago',  _ac.calientes, 'inherit')
+      + _et('Compro',     _ac.compras,   (Number(_ac.compras||0)>0?'var(--ok)':'inherit'))
+      + _sep
       + kpi('Calificacion', score===null?'—':score.toFixed(2), _tulaSrc?(_tulaSrc.convs+' convs de Tula'+_tulaVent):'sin datos', score===null?'inherit':(score>=8?'var(--ok)':score>=6?'var(--warn)':'var(--bad)'))
-      + kpi('Faltas validador', dec(d.validador)+'%', (d.val_total||0)+' respuestas', (d.validador!==null&&d.validador<5)?'var(--ok)':'var(--bad)')
       + kpi('Escaladas', dec(d.escaladas)+'%', (d.convs||0)+' conversaciones', (d.escaladas!==null&&d.escaladas<15)?'var(--ok)':'var(--warn)')
-      + kpi('Contradicciones', num(d.contradicciones), 'de '+(d.hallazgos_total||0)+' hallazgos', d.contradicciones===0?'var(--ok)':'var(--bad)')
-      + kpi('Cotizacion', dec(d.cotiza)+'%', 'de '+(d.convs||0)+' conversaciones', (d.cotiza!==null&&d.cotiza>=10)?'var(--ok)':'var(--warn)')
-      + kpi('Faltas duras', dec(d.faltas_duras)+'%', 'de '+(d.turnos||0)+' respuestas', (d.faltas_duras!==null&&d.faltas_duras<1)?'var(--ok)':'var(--bad)');
+      + kpi('Faltas', _faltas===null?'—':_faltas.toFixed(1)+'%', _pieFaltas, _faltas===null?'inherit':(_faltas<2?'var(--ok)':_faltas<6?'var(--warn)':'var(--bad)'));
 
     const bl = d.bloques||[];
     const secs = d.secciones||[];
@@ -1021,9 +1060,9 @@ function pintarEmbudo(ac, nota, acPrev){
   const tieneTalla = ac.dio_talla !== undefined;
   const filas = tieneTalla ? [
     {n:'CONVERSACIONES', c:ac.frias, k:'frias', col:'#4aa8d8'},
-    {n:'FRÍAS', c:ac.tibias, k:'tibias', col:'var(--f-am)'},
-    {n:'TIBIAS', c:ac.dio_talla, k:'dio_talla', col:'var(--f-na)'},
-    {n:'CALIENTES', c:ac.calientes, k:'calientes', col:'var(--f-ro)'},
+    {n:'FRÍAS (respondió)', c:ac.tibias, k:'tibias', col:'var(--f-am)'},
+    {n:'TIBIAS (2 datos)', c:ac.dio_talla, k:'dio_talla', col:'var(--f-na)'},
+    {n:'CALIENTES (info pago)', c:ac.calientes, k:'calientes', col:'var(--f-ro)'},
     {n:'COMPRAS', c:ac.compras, k:'compras', col:'#3ecf8e'}
   ] : [
     {n:'FRÍAS', c:ac.frias, k:'frias', col:'var(--f-am)'}, {n:'TIBIAS', c:ac.tibias, k:'tibias', col:'var(--f-na)'},
@@ -1091,7 +1130,7 @@ function pintarTodo(){
   z.innerHTML = `<div style="max-width:560px;margin:0 auto">${z.innerHTML}</div>` + cajasAsesoras(d, dp);
 }
 function cajasAsesoras(d, dp){
-  const FIL5 = [['frias','CONVERSACIONES','#4aa8d8'],['tibias','FR\u00cdAS','var(--f-am)'],['dio_talla','TIBIAS','var(--f-na)'],['calientes','CALIENTES','var(--f-ro)'],['compras','COMPRAS','#3ecf8e']];
+  const FIL5 = [['frias','CONVERSACIONES','#4aa8d8'],['tibias','FR\u00cdAS (respondi\u00f3)','var(--f-am)'],['dio_talla','TIBIAS (2 datos)','var(--f-na)'],['calientes','CALIENTES (info pago)','var(--f-ro)'],['compras','COMPRAS','#3ecf8e']];
   const ases = (d.asesoras||[]).slice().sort((a,b)=>(b.total||0)-(a.total||0));
   if (!ases.length) return '';
   let h = '<div style="max-width:1720px;margin:26px auto 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:13px;align-items:stretch">';
