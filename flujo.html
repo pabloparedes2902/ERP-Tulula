@@ -235,7 +235,9 @@
     <button class="btn" id="bEspera" onclick="irVista('espera')">Espera</button>
     <button class="btn on" id="bDetalle" onclick="irVista('detalle')">Flujo</button>
     <button class="btn" id="bLab" onclick="irVista('lab')">Laboratorio</button>
-  <button class="btn" id="bPrompt" onclick="irVista('prompt')" style="display:none">Prompt</button>
+  <!-- 19-ago-2026: la seccion Prompt se disolvio dentro de Embudo. El boton queda
+       comentado por si algun dia hace falta volver a abrirla.
+  <button class="btn" id="bPrompt" onclick="irVista('prompt')" style="display:none">Prompt</button> -->
     <span id="estadoGuardado"></span>
     <button class="btn" id="bYape" onclick="yapeAbrir()" title="Que Yape se le esta mandando a las clientas ahora mismo">💳 Yape: …</button>
     <button class="btn" onclick="document.body.classList.toggle('light');this.textContent=document.body.classList.contains('light')?'🌙':'☀️'">☀️</button>
@@ -304,7 +306,6 @@
     <span id="filtroInfo" style="color:var(--txt2);font-size:11px"></span>
   </div>
   <div id="perfZona"></div>
-  <div id="scZona"></div>
   <div class="simwrap" id="simWrap">
     <div class="simhead">
       <h3 style="cursor:pointer" onclick="simToggle()">🎮 Simulador — habla con Tula</h3>
@@ -330,6 +331,9 @@
     </div>
     </div>
   </div>
+  <!-- 19-ago-2026: los pilares de la calificacion bajan aqui, justo debajo del
+       Simulador. Arriba competian con el filtro y nadie los veia. -->
+  <div id="scZona" style="margin-top:14px"></div>
   <div class="simwrap" id="borradorPanel" style="display:none;margin-top:10px;border-style:dashed">
     <div class="simhead">
       <h3>🧪 Borrador del manual</h3>
@@ -372,8 +376,10 @@
     </span>
     <span id="embInfo" style="color:var(--txt2);font-size:11px"></span>
   </div>
+  <div id="embKpis" style="display:flex;gap:16px;align-items:stretch;margin:6px 0 18px"></div>
   <div id="embEstado">—</div>
   <div id="embZona"></div>
+  <div id="embSerie" style="margin-top:22px"></div>
 </div>
 
 <script>
@@ -952,7 +958,7 @@ function cargarPrompt(){
         '<div style="flex:5 1 0;min-width:0">'
       +   _grpTit('Embudo')
       +   '<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px">'
-      +     _et('Conversaciones', _tot, 'inherit')
+      +     kpi('Conversaciones', _tot ? _tot.toLocaleString() : '—', 'base del embudo', 'inherit')
       +     _et('Respondio',  _ac.tibias,    'inherit')
       +     _et('2 datos',    _ac.dio_talla, 'inherit')
       +     _et('Info pago',  _ac.calientes, 'inherit')
@@ -1124,19 +1130,132 @@ function cargarEmbudo(){
   const len = r.hasta - r.desde;
   const pHasta = r.desde - 1, pDesde = pHasta - len;
   document.getElementById('embEstado').textContent = 'Leyendo\u2026';
+  /* 19-ago-2026 — la seccion Prompt se disolvio aca. Los 3 indicadores de salud
+     del agente se piden con la MISMA ventana que el embudo, para que nadie tenga
+     que comparar de memoria entre dos pantallas. */
+  const _hEmb = Math.max(1, Math.round((r.hasta - r.desde)/3600));
+  const _dEmb = Math.max(1, Math.round(_hEmb/24));
   Promise.all([
     fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()),
-    fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).catch(()=>null)
-  ]).then(([d, dp]) => {
+    fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).catch(()=>null),
+    fetch(`${BASE_N8N}/prompt-avance?h=${_hEmb}`).then(x=>x.json()).catch(()=>null),
+    fetch(`${BASE_N8N}/indice-asesora?d=${_dEmb}`).then(x=>x.json()).catch(()=>null),
+    fetch(`${BASE_N8N}/indice-asesora?d=7`).then(x=>x.json()).catch(()=>null)
+  ]).then(([d, dp, av, idx, idx7]) => {
     embData = { d: d, dPrev: dp, lbl: r.lbl };
     const inf=document.getElementById('embInfo');
     if(inf) inf.textContent = r.lbl;
+    try { pintarOcho(d, av, idx, idx7); } catch(e){}
     pintarTodo();
+    try { pintarSerie(d); } catch(e){}
   }).catch(() => {
     pintarEmbudo({frias:375, tibias:198, calientes:64, compras:12}, '\u26a0\ufe0f Sin conexi\u00f3n con el servicio. Datos de EJEMPLO.');
   });
 }
 /* vista unica: embudo grafico de todas arriba + caja de cada asesora debajo */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   LOS 8 INDICADORES (19-ago-2026)
+   Izquierda EMBUDO (5): etapas por accion observable de la clienta. Cada una es
+   subconjunto de la anterior, todas sobre el mismo denominador. Conversaciones
+   muestra el conteo porque es la base; las otras cuatro muestran su %.
+   Derecha PROMPT (3): salud del agente, denominador propio. De ahi el separador.
+   ══════════════════════════════════════════════════════════════════════════ */
+function pintarOcho(emb, av, idx, idx7){
+  const z = document.getElementById('embKpis'); if(!z) return;
+  const d = av || {};
+  const ac = (emb && emb.acumulado) || {};
+  const tot = Number((emb && emb.total) || 0);
+  const dec = v => (v===null||v===undefined) ? '—' : Number(v).toFixed(1);
+
+  const kpi = (t,v,s,c)=>'<div style="min-width:0;border:1px solid var(--bd);border-radius:12px;padding:12px 10px;background:var(--card);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center">'
+    +'<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.3px;white-space:nowrap">'+t+'</div>'
+    +'<div style="font-size:26px;font-weight:800;color:'+(c||'inherit')+';line-height:1.35">'+v+'</div>'
+    +'<div style="font-size:10.5px;color:var(--txt2);white-space:nowrap">'+s+'</div></div>';
+
+  const et = (t,n,c) => {
+    const v = Number(n||0);
+    return kpi(t, tot ? (v*100/tot).toFixed(1)+'%' : '—',
+                  tot ? v.toLocaleString()+' de '+tot.toLocaleString() : 'sin datos', c);
+  };
+
+  let tulaSrc = idx && (idx.tabla||[]).filter(x=>x.vendedora==='Tula')[0];
+  let tulaVent = '';
+  if(!tulaSrc && idx7){ tulaSrc = (idx7.tabla||[]).filter(x=>x.vendedora==='Tula')[0]; tulaVent = ' · 7d'; }
+  const score = tulaSrc ? Number(tulaSrc.indice) : null;
+
+  /* Faltas = lo que el validador tuvo que corregir + las faltas duras, misma
+     unidad (% de respuestas). Las contradicciones del prompt no son por
+     respuesta: van en el pie como conteo, nunca sumadas al porcentaje. */
+  const faltas = (d.validador==null && d.faltas_duras==null)
+    ? null : Math.min(100, Number(d.validador||0) + Number(d.faltas_duras||0));
+  const pieFaltas = (d.turnos||d.val_total||0) + ' respuestas · ' + (d.contradicciones||0) + ' contradicciones';
+
+  const gt = t => '<div style="font-size:12.5px;font-weight:800;letter-spacing:1.6px;color:var(--txt2);text-transform:uppercase;margin:0 0 8px 2px">'+t+'</div>';
+
+  z.innerHTML =
+      '<div style="flex:5 1 0;min-width:0">' + gt('Embudo')
+    +   '<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px">'
+    +     kpi('Conversaciones', tot ? tot.toLocaleString() : '—', 'base del embudo', 'inherit')
+    +     et('Respondio',  ac.tibias,    'inherit')
+    +     et('2 datos',    ac.dio_talla, 'inherit')
+    +     et('Info pago',  ac.calientes, 'inherit')
+    +     et('Compro',     ac.compras,   (Number(ac.compras||0)>0?'var(--ok)':'inherit'))
+    +   '</div></div>'
+    + '<div style="width:3px;flex:0 0 3px;border-radius:2px;background:linear-gradient(180deg,transparent,var(--bd) 12%,var(--bd) 88%,transparent)"></div>'
+    + '<div style="flex:3 1 0;min-width:0">' + gt('Prompt')
+    +   '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">'
+    +     kpi('Calificacion', score===null?'—':score.toFixed(2), tulaSrc?(tulaSrc.convs+' convs de Tula'+tulaVent):'sin datos', score===null?'inherit':(score>=8?'var(--ok)':score>=6?'var(--warn)':'var(--bad)'))
+    +     kpi('Escaladas', dec(d.escaladas)+'%', (d.convs||0)+' conversaciones', (d.escaladas!=null&&d.escaladas<15)?'var(--ok)':'var(--warn)')
+    +     kpi('Faltas', faltas===null?'—':faltas.toFixed(1)+'%', pieFaltas, faltas===null?'inherit':(faltas<2?'var(--ok)':faltas<6?'var(--warn)':'var(--bad)'))
+    +   '</div></div>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   EVOLUCION DIA A DIA (19-ago-2026)
+   Barras apiladas por dia, con las mismas 5 etapas y los mismos colores del
+   embudo de arriba. Sigue el filtro de fechas de la cabecera: la serie viene
+   del propio endpoint del embudo, no de una consulta aparte, para que no
+   puedan decir cosas distintas.
+   ══════════════════════════════════════════════════════════════════════════ */
+function pintarSerie(d){
+  const z = document.getElementById('embSerie'); if(!z) return;
+  const serie = (d && d.serie) || [];
+  if(!serie.length){ z.innerHTML=''; return; }
+  const CAPAS = [
+    ['frias','Solo entro','#4aa8d8'],
+    ['tibias','Respondio','var(--f-am)'],
+    ['dio_talla','2 datos','var(--f-na)'],
+    ['calientes','Info pago','var(--f-ro)'],
+    ['compras','Compro','#3ecf8e']
+  ];
+  const tot = r => CAPAS.reduce((a,[k])=>a+Number(r[k]||0),0);
+  const max = Math.max(1, ...serie.map(tot));
+  const dm = iso => { const p=String(iso).split('-'); return p[2]+'/'+p[1]; };
+
+  const barras = serie.map(r=>{
+    const t = tot(r);
+    const capas = CAPAS.map(([k,,col])=>{
+      const v = Number(r[k]||0); if(!v) return '';
+      return '<div title="'+k+': '+v+'" style="height:'+(v*100/Math.max(1,t))+'%;background:'+col+'"></div>';
+    }).join('');
+    return '<div style="flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:5px">'
+      + '<div style="font-size:10px;color:var(--txt2)">'+t+'</div>'
+      + '<div style="width:100%;max-width:46px;height:'+Math.round(14+ (t*116/max)) +'px;border-radius:5px;overflow:hidden;display:flex;flex-direction:column-reverse;background:rgba(255,255,255,.04)">'+capas+'</div>'
+      + '<div style="font-size:10px;color:var(--txt2);white-space:nowrap">'+dm(r.dia)+'</div></div>';
+  }).join('');
+
+  const leyenda = CAPAS.map(([,nom,col])=>'<span style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--txt2)"><i style="width:9px;height:9px;border-radius:2px;background:'+col+';display:inline-block"></i>'+nom+'</span>').join('<span style="width:12px;display:inline-block"></span>');
+
+  z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:14px;padding:15px 17px;background:var(--card)">'
+    + '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px">'
+    +   '<b style="font-size:14px">Evolucion dia a dia</b>'
+    +   '<span style="font-size:11px;color:var(--txt2)">sigue el filtro de fechas de arriba</span>'
+    +   '<span style="flex:1"></span>' + leyenda
+    + '</div>'
+    + '<div style="display:flex;gap:6px;align-items:flex-end">' + barras + '</div></div>';
+}
+
 function pintarTodo(){
   const d = embData.d, dp = embData.dPrev;
   const z = document.getElementById('embZona');
