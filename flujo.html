@@ -1147,7 +1147,7 @@ function cargarEmbudo(){
     if(inf) inf.textContent = r.lbl;
     try { pintarOcho(d, av, idx, idx7); } catch(e){}
     pintarTodo();
-    try { pintarSerie(d); } catch(e){}
+    try { pintarSerie(idx || idx7); } catch(e){}
   }).catch(() => {
     pintarEmbudo({frias:375, tibias:198, calientes:64, compras:12}, '\u26a0\ufe0f Sin conexi\u00f3n con el servicio. Datos de EJEMPLO.');
   });
@@ -1212,48 +1212,85 @@ function pintarOcho(emb, av, idx, idx7){
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   EVOLUCION DIA A DIA (19-ago-2026)
-   Barras apiladas por dia, con las mismas 5 etapas y los mismos colores del
-   embudo de arriba. Sigue el filtro de fechas de la cabecera: la serie viene
-   del propio endpoint del embudo, no de una consulta aparte, para que no
-   puedan decir cosas distintas.
+   EVOLUCION DIA A DIA — CALIFICACION POR ASESORA (19-ago-2026)
+   Una linea por asesora, Tula incluida como una vendedora mas. Eje vertical
+   fijo de 0 a 10 con marcas cada 2, para que la comparacion entre dias y entre
+   asesoras sea siempre la misma: si el eje se reescala solo, una caida de 0.3
+   parece un derrumbe. Sigue el filtro de fechas de la cabecera.
    ══════════════════════════════════════════════════════════════════════════ */
-function pintarSerie(d){
+const COLOR_ASESORA = {
+  'Tula':   '#7aa2ff',
+  'Angie':  '#3ecf8e',
+  'Lucia':  '#f5a524',
+  'Dayann': '#e879c7',
+  'Mixta':  '#8b93a7'
+};
+const PALETA_EXTRA = ['#4aa8d8','#ff8f6b','#b18cff','#59d0c4','#d4c05a'];
+
+function pintarSerie(idx){
   const z = document.getElementById('embSerie'); if(!z) return;
-  const serie = (d && d.serie) || [];
-  if(!serie.length){ z.innerHTML=''; return; }
-  const CAPAS = [
-    ['frias','Solo entro','#4aa8d8'],
-    ['tibias','Respondio','var(--f-am)'],
-    ['dio_talla','2 datos','var(--f-na)'],
-    ['calientes','Info pago','var(--f-ro)'],
-    ['compras','Compro','#3ecf8e']
-  ];
-  const tot = r => CAPAS.reduce((a,[k])=>a+Number(r[k]||0),0);
-  const max = Math.max(1, ...serie.map(tot));
-  const dm = iso => { const p=String(iso).split('-'); return p[2]+'/'+p[1]; };
+  const hist = (idx && idx.historia) || [];
+  if(!hist.length){ z.innerHTML=''; return; }
 
-  const barras = serie.map(r=>{
-    const t = tot(r);
-    const capas = CAPAS.map(([k,,col])=>{
-      const v = Number(r[k]||0); if(!v) return '';
-      return '<div title="'+k+': '+v+'" style="height:'+(v*100/Math.max(1,t))+'%;background:'+col+'"></div>';
-    }).join('');
-    return '<div style="flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:5px">'
-      + '<div style="font-size:10px;color:var(--txt2)">'+t+'</div>'
-      + '<div style="width:100%;max-width:46px;height:'+Math.round(14+ (t*116/max)) +'px;border-radius:5px;overflow:hidden;display:flex;flex-direction:column-reverse;background:rgba(255,255,255,.04)">'+capas+'</div>'
-      + '<div style="font-size:10px;color:var(--txt2);white-space:nowrap">'+dm(r.dia)+'</div></div>';
-  }).join('');
+  const fechas = [...new Set(hist.map(x=>x.fecha))].sort();
+  const quienes = [...new Set(hist.map(x=>x.vendedora))].filter(v=>v && v!=='Mixta');
+  if(fechas.length<2 || !quienes.length){
+    z.innerHTML='<div style="color:var(--txt2);font-size:11.5px;padding:6px 2px">Aun no hay dias suficientes para dibujar la evolucion.</div>';
+    return;
+  }
 
-  const leyenda = CAPAS.map(([,nom,col])=>'<span style="display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--txt2)"><i style="width:9px;height:9px;border-radius:2px;background:'+col+';display:inline-block"></i>'+nom+'</span>').join('<span style="width:12px;display:inline-block"></span>');
+  const color = (v,i) => COLOR_ASESORA[v] || PALETA_EXTRA[i % PALETA_EXTRA.length];
+  const val = {};
+  hist.forEach(x=>{ val[x.vendedora+'|'+x.fecha] = (x.score!=null ? +x.score : (x.indice!=null ? +x.indice : null)); });
+
+  /* lienzo */
+  const W = 1000, H = 300, mL = 34, mR = 12, mT = 12, mB = 30;
+  const px = i => mL + (fechas.length===1 ? (W-mL-mR)/2 : i*(W-mL-mR)/(fechas.length-1));
+  const py = v => mT + (10-v)*(H-mT-mB)/10;
+
+  /* rejilla horizontal de 2 en 2 */
+  let grid='';
+  for(let v=0; v<=10; v+=2){
+    const y = py(v);
+    grid += '<line x1="'+mL+'" y1="'+y+'" x2="'+(W-mR)+'" y2="'+y+'" stroke="var(--bd)" stroke-width="1" opacity="'+(v===0?'.9':'.35')+'"/>'
+          + '<text x="'+(mL-8)+'" y="'+(y+4)+'" text-anchor="end" font-size="11" fill="var(--txt2)">'+v+'</text>';
+  }
+
+  /* etiquetas de dia — como maximo 10 para que no se encimen */
+  const paso = Math.max(1, Math.ceil(fechas.length/10));
+  let ejeX='';
+  fechas.forEach((f,i)=>{
+    if(i % paso && i !== fechas.length-1) return;
+    const pr = f.split('-');
+    ejeX += '<text x="'+px(i)+'" y="'+(H-9)+'" text-anchor="middle" font-size="11" fill="var(--txt2)">'+pr[2]+'/'+pr[1]+'</text>';
+  });
+
+  /* una linea por asesora; los dias sin dato cortan la linea, no la inventan */
+  let lineas='', puntos='';
+  quienes.forEach((v,qi)=>{
+    const col = color(v,qi);
+    let d='', abierto=false;
+    fechas.forEach((f,i)=>{
+      const y = val[v+'|'+f];
+      if(y==null || isNaN(y)){ abierto=false; return; }
+      d += (abierto?' L ':' M ') + px(i).toFixed(1) + ' ' + py(y).toFixed(1);
+      abierto = true;
+      puntos += '<circle cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="3" fill="'+col+'"><title>'+v+' · '+f+' · '+(+y).toFixed(2)+'</title></circle>';
+    });
+    if(d) lineas += '<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>';
+  });
+
+  const leyenda = quienes.map((v,qi)=>'<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--txt2)"><i style="width:14px;height:3px;border-radius:2px;background:'+color(v,qi)+';display:inline-block"></i>'+v+(v==='Tula'?' 🤖':'')+'</span>').join('<span style="width:14px;display:inline-block"></span>');
 
   z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:14px;padding:15px 17px;background:var(--card)">'
-    + '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px">'
+    + '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">'
     +   '<b style="font-size:14px">Evolucion dia a dia</b>'
-    +   '<span style="font-size:11px;color:var(--txt2)">sigue el filtro de fechas de arriba</span>'
+    +   '<span style="font-size:11px;color:var(--txt2)">calificacion sobre 10 · sigue el filtro de fechas de arriba</span>'
     +   '<span style="flex:1"></span>' + leyenda
     + '</div>'
-    + '<div style="display:flex;gap:6px;align-items:flex-end">' + barras + '</div></div>';
+    + '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block" preserveAspectRatio="none">'
+    +   grid + lineas + puntos + ejeX
+    + '</svg></div>';
 }
 
 function pintarTodo(){
