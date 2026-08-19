@@ -1099,7 +1099,7 @@ function pintarEmbudo(ac, nota, acPrev){
     /* comparativo vs periodo anterior equivalente: verde sube, rojo baja, amarillo igual */
     let delta='';
     if(acPrev){
-      delta=`<div style="margin-top:3px">${capsulaDelta(f.c, acPrev[f.k])}</div>`;
+      delta=`<div style="margin-top:3px">${capsulaDelta(f.c, acPrev[f.k], i===0?0:ac.frias, i===0?0:acPrev.frias)}</div>`;
     }
     h += `<div style="position:relative">` +
          `<div class="seg" style="width:${wT}%;height:96px;background:${shade(f.col)};clip-path:polygon(0 0,100% 0,${100-inset}% 100%,${inset}% 100%)">` +
@@ -1118,12 +1118,28 @@ function pintarEmbudo(ac, nota, acPrev){
 let embData = null;
 function nomCorto(a){ return a==='Tula' ? '🤖 Tula' : String(a).split(' ')[0]; }
 /* capsula de delta vs periodo anterior: fondo claro al 50% para que el color se lea sobre cualquier etapa */
-function capsulaDelta(v, prev){
+/* 19-ago-2026 — la capsula ahora compara TASAS, no conteos.
+   Antes decia "-60" y no se sabia si era peor: si entraron menos conversaciones,
+   caen todas las etapas y aun asi podes estar convirtiendo mejor. Ahora compara
+   el % sobre la base del embudo y lo expresa en PUNTOS porcentuales.
+   Excepcion: la primera etapa (Conversaciones) no tiene tasa contra que medirse
+   — ahi se compara el volumen y se muestra como variacion %. */
+function capsulaDelta(v, prev, base, prevBase){
   if (prev === undefined || prev === null) return '';
-  const dif = (+v||0) - (+prev||0);
-  const col = dif===0 ? '#8a5a00' : (dif>0 ? '#0b6b3a' : '#a11616');
-  const fl = dif>0?'▲':dif<0?'▼':'●';
-  return `<span style="display:inline-block;background:rgba(255,255,255,.5);border-radius:999px;padding:1px 8px;font-size:10px;font-weight:800;color:${col};line-height:1.5">${fl} ${Math.abs(dif)}</span>`;
+  let dif, txt;
+  if (base && prevBase){
+    dif = ((+v||0)/base*100) - ((+prev||0)/prevBase*100);
+    txt = Math.abs(dif).toFixed(1) + ' pts';
+  } else {
+    const pv = +prev||0;
+    if (!pv) return '';
+    dif = ((+v||0) - pv) * 100 / pv;
+    txt = Math.abs(dif).toFixed(0) + '%';
+  }
+  if (Math.abs(dif) < 0.05) { dif = 0; }
+  const col = dif===0 ? '#7a4f00' : (dif>0 ? '#075c31' : '#8f1111');
+  const fl  = dif>0?'▲':dif<0?'▼':'●';
+  return `<span style="display:inline-block;background:rgba(255,255,255,.82);border-radius:999px;padding:1.5px 8px;font-size:10px;font-weight:800;color:${col};line-height:1.5;white-space:nowrap">${fl} ${txt}</span>`;
 }
 function cargarEmbudo(){
   const r = rango();
@@ -1231,71 +1247,72 @@ function pintarSerie(idx){
   const z = document.getElementById('embSerie'); if(!z) return;
   const hist = (idx && idx.historia) || [];
   if(!hist.length){ z.innerHTML=''; return; }
-
   const fechas = [...new Set(hist.map(x=>x.fecha))].sort();
   const quienes = [...new Set(hist.map(x=>x.vendedora))].filter(v=>v && v!=='Mixta');
   if(fechas.length<2 || !quienes.length){
     z.innerHTML='<div style="color:var(--txt2);font-size:11.5px;padding:6px 2px">Aun no hay dias suficientes para dibujar la evolucion.</div>';
     return;
   }
-
   const color = (v,i) => COLOR_ASESORA[v] || PALETA_EXTRA[i % PALETA_EXTRA.length];
   const val = {};
   hist.forEach(x=>{ val[x.vendedora+'|'+x.fecha] = (x.score!=null ? +x.score : (x.indice!=null ? +x.indice : null)); });
 
-  /* lienzo */
-  /* 19-ago: alto FIJO en px. Antes era height:auto sobre un viewBox 1000x300, y
-     con el contenedor a 3000px el grafico se estiraba a ~900px de alto. Ahora
-     mide lo mismo que una caja de asesora. */
-  const W = 1000, H = 200, mL = 30, mR = 10, mT = 10, mB = 24;
-  const px = i => mL + (fechas.length===1 ? (W-mL-mR)/2 : i*(W-mL-mR)/(fechas.length-1));
-  const py = v => mT + (10-v)*(H-mT-mB)/10;
-
-  /* rejilla horizontal de 2 en 2 */
-  let grid='';
-  for(let v=0; v<=10; v+=2){
-    const y = py(v);
-    grid += '<line x1="'+mL+'" y1="'+y+'" x2="'+(W-mR)+'" y2="'+y+'" stroke="var(--bd)" stroke-width="1" opacity="'+(v===0?'.9':'.35')+'"/>'
-          + '<text x="'+(mL-7)+'" y="'+(y+4)+'" text-anchor="end" font-size="13" fill="var(--txt2)">'+v+'</text>';
-  }
-
-  /* etiquetas de dia — como maximo 10 para que no se encimen */
-  const paso = Math.max(1, Math.ceil(fechas.length/10));
-  let ejeX='';
-  fechas.forEach((f,i)=>{
-    if(i % paso && i !== fechas.length-1) return;
-    const pr = f.split('-');
-    ejeX += '<text x="'+px(i)+'" y="'+(H-7)+'" text-anchor="middle" font-size="13" fill="var(--txt2)">'+pr[2]+'/'+pr[1]+'</text>';
-  });
-
-  /* una linea por asesora; los dias sin dato cortan la linea, no la inventan */
-  let lineas='', puntos='';
-  quienes.forEach((v,qi)=>{
-    const col = color(v,qi);
-    let d='', abierto=false;
-    fechas.forEach((f,i)=>{
-      const y = val[v+'|'+f];
-      if(y==null || isNaN(y)){ abierto=false; return; }
-      d += (abierto?' L ':' M ') + px(i).toFixed(1) + ' ' + py(y).toFixed(1);
-      abierto = true;
-      puntos += '<circle cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="2.6" fill="'+col+'"><title>'+v+' · '+f+' · '+(+y).toFixed(2)+'</title></circle>';
-    });
-    if(d) lineas += '<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
-  });
-
-  const leyenda = quienes.map((v,qi)=>'<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--txt2)"><i style="width:14px;height:3px;border-radius:2px;background:'+color(v,qi)+';display:inline-block"></i>'+v+(v==='Tula'?' 🤖':'')+'</span>').join('<span style="width:14px;display:inline-block"></span>');
+  const leyenda = quienes.map((v,qi)=>'<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--txt2)"><i style="width:14px;height:3px;border-radius:2px;background:'+color(v,qi)+';display:inline-block"></i>'+v+(v==='Tula'?' \u{1F916}':'')+'</span>').join('<span style="width:14px;display:inline-block"></span>');
 
   z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:14px;padding:12px 14px;background:var(--card)">'
     + '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
     +   '<b style="font-size:13.5px">Evolucion dia a dia</b>'
     +   '<span style="font-size:11px;color:var(--txt2)">calificacion sobre 10 · sigue el filtro de fechas de arriba</span>'
     +   '<span style="flex:1"></span>' + leyenda
-    + '</div>'
-    + '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:210px;display:block" preserveAspectRatio="none">'
-    +   grid + lineas + puntos + ejeX
-    + '</svg></div>';
-}
+    + '</div><div id="embSerieSvg"></div></div>';
 
+  /* 19-ago-2026 — el SVG se dibuja en PIXELES REALES, midiendo el ancho del
+     contenedor. Antes usaba un viewBox 1000x200 con preserveAspectRatio="none"
+     estirado a 2900px: la escala X quedaba en 2.9 y la Y en 1.05, y por eso el
+     texto y las lineas salian jalados. Ahora 1 unidad = 1 pixel y nada se
+     deforma. El ResizeObserver lo redibuja cuando cambia el ancho. */
+  const host = document.getElementById('embSerieSvg');
+  const dibujar = () => {
+    const W = Math.max(320, Math.round(host.clientWidth || 900));
+    const H = 260, mL = 40, mR = 16, mT = 16, mB = 28;
+    const px = i => mL + (fechas.length===1 ? (W-mL-mR)/2 : i*(W-mL-mR)/(fechas.length-1));
+    const py = v => mT + (10-v)*(H-mT-mB)/10;
+    let grid='';
+    for(let v=0; v<=10; v+=2){
+      const y = py(v);
+      grid += '<line x1="'+mL+'" y1="'+y.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+y.toFixed(1)+'" stroke="var(--bd)" stroke-width="1" opacity="'+(v===0?'.85':'.32')+'"/>'
+            + '<text x="'+(mL-8)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="11" fill="var(--txt2)">'+v+'</text>';
+    }
+    const paso = Math.max(1, Math.ceil(fechas.length / Math.max(2, Math.floor((W-mL-mR)/42))));
+    let ejeX='';
+    fechas.forEach((f,i)=>{
+      if(i % paso && i !== fechas.length-1) return;
+      const pr = f.split('-');
+      const anc = i===0 ? 'start' : (i===fechas.length-1 ? 'end' : 'middle');
+      ejeX += '<text x="'+px(i).toFixed(1)+'" y="'+(H-9)+'" text-anchor="'+anc+'" font-size="11" fill="var(--txt2)">'+pr[2]+'/'+pr[1]+'</text>';
+    });
+    let lineas='', puntos='';
+    quienes.forEach((v,qi)=>{
+      const col = color(v,qi);
+      let d='', abierto=false;
+      fechas.forEach((f,i)=>{
+        const y = val[v+'|'+f];
+        if(y==null || isNaN(y)){ abierto=false; return; }
+        d += (abierto?' L ':' M ') + px(i).toFixed(1) + ' ' + py(y).toFixed(1);
+        abierto = true;
+        puntos += '<circle cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="3.2" fill="'+col+'" stroke="var(--card)" stroke-width="1.5"><title>'+v+' · '+f+' · '+(+y).toFixed(2)+'</title></circle>';
+      });
+      if(d) lineas += '<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>';
+    });
+    host.innerHTML = '<svg width="'+W+'" height="'+H+'" viewBox="0 0 '+W+' '+H+'" style="display:block">'+grid+lineas+puntos+ejeX+'</svg>';
+  };
+  dibujar();
+  if (window.ResizeObserver) {
+    if (window.__roSerie) window.__roSerie.disconnect();
+    window.__roSerie = new ResizeObserver(() => dibujar());
+    window.__roSerie.observe(host);
+  }
+}
 function pintarTodo(){
   const d = embData.d, dp = embData.dPrev;
   const z = document.getElementById('embZona');
@@ -1329,7 +1346,7 @@ function cajasAsesoras(d, dp){
           `<div style="width:${w}%;height:100%;background:${col};border-radius:6px"></div></div>` +
         `<b style="width:46px;text-align:right;font-size:14.5px">${v}</b>` +
         `<span style="width:40px;text-align:right;font-size:12px;font-weight:800;color:var(--txt2)">${pc}</span>` +
-        `<span style="width:64px;text-align:right">${capsulaDelta(v, acp && acp[k])}</span></div>`;
+        `<span style="width:72px;text-align:right">${capsulaDelta(v, acp && acp[k], idx===0?0:(ac.frias||0), idx===0?0:((acp&&acp.frias)||0))}</span></div>`;
     });
     h += bloqueMejora(a, d);
     h += `</div>`;
