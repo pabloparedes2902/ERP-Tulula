@@ -163,7 +163,7 @@
   .esec{transition:opacity .18s,filter .18s;cursor:pointer}
   .eani{filter:drop-shadow(0 0 5px currentColor)}
   #embSvg:hover .esec{opacity:.06}
-  #embSvg .esec:hover{opacity:1 !important;filter:drop-shadow(0 0 18px var(--c))}
+  #embSvg .esec:hover{opacity:1 !important;fill:var(--c) !important;filter:drop-shadow(0 0 18px var(--c))}
   .elb{font-size:12.5px;font-weight:800;letter-spacing:.6px}
   .eln{font-size:14px;font-weight:800;fill:#c9cfe0}
   .epc{font-size:17px;font-weight:800;fill:#fff;paint-order:stroke;stroke:#0b0e16;stroke-width:4px;stroke-linejoin:round}
@@ -304,6 +304,7 @@
 </div>
 <div id="vCalidad" style="display:none;padding:22px 26px;max-width:1720px;margin:0 auto">
   <div id="suiteZona"></div>
+  <div id="entrKpis" style="margin:0 0 16px"></div>
   <div class="periodos" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <select id="filtroGlobal" onchange="filtroCambio()">
       <option value="mtd" selected>Mes hasta hoy</option>
@@ -377,7 +378,7 @@
   </details>
 </div>
 <div id="vEmbudo">
-  <div class="periodos" style="margin-bottom:10px">
+  <div class="periodos" style="margin:2px 0 14px;justify-content:center">
     <select id="selPeriodo" onchange="onPeriodo()">
       <option value="mtd" selected>Mes hasta hoy</option>
       <option value="7">Últimos 7 días</option>
@@ -390,7 +391,6 @@
     </span>
     <span id="embInfo" style="color:var(--txt2);font-size:11px"></span>
   </div>
-  <div id="embKpis" style="display:flex;gap:16px;align-items:stretch;margin:6px 0 18px"></div>
   <div id="embEstado">—</div>
   <div id="embZona"></div>
   <div id="embSerie" style="margin-top:22px"></div>
@@ -1122,7 +1122,7 @@ function pintarEmbudo(ac, nota, acPrev){
     {n:'FRÍAS (respondió)',     c:+ac.tibias||0,    k:'tibias'},
     {n:'TIBIAS (2 datos)',      c:+ac.dio_talla||0, k:'dio_talla'},
     {n:'CALIENTES (info pago)', c:+ac.calientes||0, k:'calientes'},
-    {n:'COMPRAS',               c:+ac.compras||0,   k:'compras'}
+    {n:'VENTAS',                c:+ac.compras||0,   k:'compras'}
   ];
   const base = +ac.frias || 0;
   const W=880, H=478, cx=500, topY=46, botY=440, topR=268, botR=58, GAP=18, n=5;
@@ -1208,22 +1208,56 @@ function cargarEmbudo(){
      que comparar de memoria entre dos pantallas. */
   const _hEmb = Math.max(1, Math.round((r.hasta - r.desde)/3600));
   const _dEmb = Math.max(1, Math.round(_hEmb/24));
-  Promise.all([
-    fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()),
-    fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).catch(()=>null),
-    fetch(`${BASE_N8N}/prompt-avance?h=${_hEmb}`).then(x=>x.json()).catch(()=>null),
-    fetch(`${BASE_N8N}/indice-asesora?d=${_dEmb}`).then(x=>x.json()).catch(()=>null),
-    fetch(`${BASE_N8N}/indice-asesora?d=7`).then(x=>x.json()).catch(()=>null)
-  ]).then(([d, dp, av, idx, idx7]) => {
-    embData = { d: d, dPrev: dp, lbl: r.lbl };
-    const inf=document.getElementById('embInfo');
-    if(inf) inf.textContent = r.lbl;
-    try { pintarOcho(d, av, idx, idx7); } catch(e){}
-    pintarTodo();
-    try { pintarSerie(idx || idx7); } catch(e){}
-  }).catch(() => {
-    pintarEmbudo({frias:375, tibias:198, dio_talla:120, calientes:64, compras:12, compras_con_clic:12, compras_sin_clic:0}, '\u26a0\ufe0f Sin conexi\u00f3n con el servicio. Datos de EJEMPLO.');
+  /* 19-ago-2026 — CARGA INSTANTANEA.
+     Antes: Promise.all con 5 fetch. Como Promise.all espera a TODOS, un solo
+     endpoint lento congelaba la pantalla entera — y los del embudo tardan
+     minutos porque recorren Chatwoot conversacion por conversacion.
+     Ahora: (1) se pinta al toque lo ultimo que se vio, guardado en el navegador;
+            (2) cada fetch pinta su parte apenas llega, sin esperar a los demas. */
+  const _clave = 'erp_emb_' + r.desde + '_' + r.hasta;
+  let _pintado = false;
+  try {
+    const cache = JSON.parse(localStorage.getItem(_clave) || 'null');
+    if (cache && cache.d) {
+      embData = { d: cache.d, dPrev: cache.dp || null, lbl: r.lbl };
+      pintarTodo(); _pintado = true;
+      document.getElementById('embEstado').textContent = 'Mostrando lo ultimo guardado \u2014 actualizando\u2026';
+    }
+  } catch(e){}
+
+  const _guardar = () => { try {
+    localStorage.setItem(_clave, JSON.stringify({ d: embData && embData.d, dp: embData && embData.dPrev }));
+  } catch(e){} };
+
+  const inf = document.getElementById('embInfo');
+  if (inf) inf.textContent = r.lbl;
+
+  /* 1) el embudo actual: apenas llega, se dibuja */
+  fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(d=>{
+    embData = { d: d, dPrev: (embData && embData.dPrev) || null, lbl: r.lbl };
+    pintarTodo(); _pintado = true; _guardar();
+    document.getElementById('embEstado').textContent = '';
+  }).catch(()=>{
+    if (!_pintado) pintarEmbudo({frias:375, tibias:198, dio_talla:120, calientes:64, compras:12, compras_con_clic:12, compras_sin_clic:0},
+      '\u26a0\ufe0f Sin conexi\u00f3n con el servicio. Datos de EJEMPLO.');
   });
+
+  /* 2) el periodo anterior: solo agrega las capsulas de variacion */
+  fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).then(dp=>{
+    if (!embData || !embData.d) return;
+    embData.dPrev = dp; pintarTodo(); _guardar();
+  }).catch(()=>{});
+
+  /* 3) y 4) la salud del prompt, que ahora vive en Entrenamiento */
+  let _av=null, _idx=null, _idx7=null;
+  const _kpi = () => { try { pintarPrompt(_av, _idx, _idx7); } catch(e){} };
+  fetch(`${BASE_N8N}/prompt-avance?h=${_hEmb}`).then(x=>x.json()).then(v=>{_av=v;_kpi();}).catch(()=>{});
+  fetch(`${BASE_N8N}/indice-asesora?d=${_dEmb}`).then(x=>x.json()).then(v=>{
+    _idx=v; _kpi(); try { pintarSerie(v); } catch(e){}
+  }).catch(()=>{});
+  fetch(`${BASE_N8N}/indice-asesora?d=7`).then(x=>x.json()).then(v=>{
+    _idx7=v; _kpi(); if(!_idx){ try { pintarSerie(v); } catch(e){} }
+  }).catch(()=>{});
 }
 /* vista unica: embudo grafico de todas arriba + caja de cada asesora debajo */
 
@@ -1234,23 +1268,18 @@ function cargarEmbudo(){
    muestra el conteo porque es la base; las otras cuatro muestran su %.
    Derecha PROMPT (3): salud del agente, denominador propio. De ahi el separador.
    ══════════════════════════════════════════════════════════════════════════ */
-function pintarOcho(emb, av, idx, idx7){
-  const z = document.getElementById('embKpis'); if(!z) return;
+/* 19-ago-2026 — los 5 indicadores del EMBUDO se borraron: repetian exactamente
+   lo que ya dice el embudo grande. Los 3 del PROMPT se mudaron a Entrenamiento,
+   que es donde se trabaja sobre el manual del agente. */
+function pintarPrompt(av, idx, idx7){
+  const z = document.getElementById('entrKpis'); if(!z) return;
   const d = av || {};
-  const ac = (emb && emb.acumulado) || {};
-  const tot = Number((emb && emb.total) || 0);
   const dec = v => (v===null||v===undefined) ? '—' : Number(v).toFixed(1);
 
   const kpi = (t,v,s,c)=>'<div style="min-width:0;border:1px solid var(--bd);border-radius:12px;padding:12px 10px;background:var(--card);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center">'
     +'<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.3px;white-space:nowrap">'+t+'</div>'
     +'<div style="font-size:26px;font-weight:800;color:'+(c||'inherit')+';line-height:1.35">'+v+'</div>'
     +'<div style="font-size:10.5px;color:var(--txt2);white-space:nowrap">'+s+'</div></div>';
-
-  const et = (t,n,c) => {
-    const v = Number(n||0);
-    return kpi(t, tot ? (v*100/tot).toFixed(1)+'%' : '—',
-                  tot ? v.toLocaleString()+' de '+tot.toLocaleString() : 'sin datos', c);
-  };
 
   let tulaSrc = idx && (idx.tabla||[]).filter(x=>x.vendedora==='Tula')[0];
   let tulaVent = '';
@@ -1267,16 +1296,7 @@ function pintarOcho(emb, av, idx, idx7){
   const gt = t => '<div style="font-size:12.5px;font-weight:800;letter-spacing:1.6px;color:var(--txt2);text-transform:uppercase;margin:0 0 8px 2px">'+t+'</div>';
 
   z.innerHTML =
-      '<div style="flex:5 1 0;min-width:0">' + gt('Embudo')
-    +   '<div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px">'
-    +     kpi('Conversaciones', tot ? tot.toLocaleString() : '—', 'base del embudo', 'inherit')
-    +     et('Respondio',  ac.tibias,    'inherit')
-    +     et('2 datos',    ac.dio_talla, 'inherit')
-    +     et('Info pago',  ac.calientes, 'inherit')
-    +     et('Compro',     ac.compras,   (Number(ac.compras||0)>0?'var(--ok)':'inherit'))
-    +   '</div></div>'
-    + '<div style="width:3px;flex:0 0 3px;border-radius:2px;background:linear-gradient(180deg,transparent,var(--bd) 12%,var(--bd) 88%,transparent)"></div>'
-    + '<div style="flex:3 1 0;min-width:0">' + gt('Prompt')
+      '<div style="min-width:0">' + gt('Salud del prompt')
     +   '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">'
     +     kpi('Calificacion', score===null?'—':score.toFixed(2), tulaSrc?(tulaSrc.convs+' convs de Tula'+tulaVent):'sin datos', score===null?'inherit':(score>=8?'var(--ok)':score>=6?'var(--warn)':'var(--bad)'))
     +     kpi('Escaladas', dec(d.escaladas)+'%', (d.convs||0)+' conversaciones', (d.escaladas!=null&&d.escaladas<15)?'var(--ok)':'var(--warn)')
@@ -1318,8 +1338,7 @@ function pintarSerie(idx){
 
   z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:14px;padding:12px 14px;background:var(--card)">'
     + '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
-    +   '<b style="font-size:13.5px">Evolucion dia a dia</b>'
-    +   '<span style="font-size:11px;color:var(--txt2)">calificacion sobre 10 · sigue el filtro de fechas de arriba</span>'
+    +   '<b style="font-size:13.5px">Evoluci\u00f3n por Asesora</b>'
     +   '<span style="flex:1"></span>' + leyenda
     + '</div><div id="embSerieSvg"></div></div>';
 
@@ -1377,7 +1396,7 @@ function pintarSerie(idx){
         tip.innerHTML = '<div style="font-size:10.5px;font-weight:800;color:var(--txt2);letter-spacing:.04em">'
           + '<i style="display:inline-block;width:9px;height:9px;border-radius:50%;background:'+d.c+';margin-right:6px"></i>'
           + d.a.toUpperCase()+' · '+pr[2]+'/'+pr[1]+'</div>'
-          + '<div style="font-size:22px;font-weight:900;color:#fff;line-height:1.15">'+d.v+'</div>';
+          + '<div style="font-size:18px;font-weight:900;color:#fff;line-height:1.15">'+d.v+'</div>';
         tip.style.display='block';
         const x=+c.getAttribute('cx'), y=+c.getAttribute('cy');
         tip.style.left = Math.max(2, Math.min(W - tip.offsetWidth - 2, x - tip.offsetWidth/2)) + 'px';
@@ -1418,7 +1437,7 @@ function _op(hex, a){
 function cajasAsesoras(d, dp){
   /* 19-ago-2026 — las cajas por asesora usan los MISMOS tonos neon del embudo,
      para que una etapa se reconozca por su color en las dos vistas. */
-  const FIL5 = [['frias','CONVERSACIONES','#38e0ff'],['tibias','FR\u00cdAS (respondi\u00f3)','#ffd23f'],['dio_talla','TIBIAS (2 datos)','#ff9f45'],['calientes','CALIENTES (info pago)','#ff5d8f'],['compras','COMPRAS','#34ffb0']];
+  const FIL5 = [['frias','CONVERSACIONES','#38e0ff'],['tibias','FR\u00cdAS','#ffd23f'],['dio_talla','TIBIAS','#ff9f45'],['calientes','CALIENTES','#ff5d8f'],['compras','VENTAS','#34ffb0']];
   const ases = (d.asesoras||[]).slice().sort((a,b)=>(b.total||0)-(a.total||0));
   if (!ases.length) return '';
   let h = '<div style="width:100%;margin:26px auto 0;display:grid;grid-template-columns:repeat('+ases.length+',minmax(0,1fr));gap:12px;align-items:stretch">';
@@ -1435,10 +1454,12 @@ function cajasAsesoras(d, dp){
       const v = ac[k]||0;
       const base = ac.frias||0;
       const w = base ? Math.max(2, Math.round(v/base*100)) : 2;
-      const prevEtapa = idx ? (ac[FIL5[idx-1][0]]||0) : 0;
-      const pc = idx===0 ? '' : (prevEtapa ? (idx===4 ? (v/prevEtapa*100).toFixed(1) : Math.round(v/prevEtapa*100))+'%' : '\u2014');
+      /* 19-ago-2026 — misma formula que el embudo grande: contra CONVERSACIONES,
+         no contra la etapa anterior. Asi el 24.9% de la caja significa lo mismo
+         que el 24.9% del embudo y se pueden comparar de un vistazo. */
+      const pc = idx===0 ? '' : (base ? (idx===4 ? (v/base*100).toFixed(1) : Math.round(v/base*100))+'%' : '\u2014');
       h += `<div style="display:flex;align-items:center;gap:10px;margin:7px 0">` +
-        `<span style="width:84px;font-size:9px;font-weight:800;letter-spacing:.03em;color:var(--txt2);line-height:1.15">${nom}</span>` +
+        `<span style="width:96px;font-size:9.5px;font-weight:800;letter-spacing:.04em;color:var(--txt2);white-space:nowrap">${nom}</span>` +
         /* la barra lleva su propio color al 20% de fondo: se ve de que etapa es
            aunque no haya avance. Antes era gris y todas parecian iguales. */
         `<div style="flex:1;background:${_op(col,.2)};border-radius:6px;height:18px;overflow:hidden">` +
