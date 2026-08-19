@@ -5969,6 +5969,16 @@ function _espejoConfiar(clave){ try { const m=_espejoDudaMap(); if (m[clave]!==u
 // le piden al backend en segundo plano — sin esperar la respuesta.
 function _stockEscrito(claves, refrescarYa){
   _espejoDudar(claves);
+  /* 19-ago-2026 — LISTA DE ESPERA POR STOCK. Este es el punto unico por donde
+     pasa toda escritura que mueve stock, asi que aqui se le avisa al vigilante
+     para que cruce lo que entro contra las clientas que lo estaban esperando.
+     No se espera la respuesta: si falla, el barrido de cada hora lo recoge. */
+  try {
+    fetch('https://n8n-production-4e716.up.railway.app/webhook/stock-ingreso', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ origen: 'erp', claves: claves || [] }), keepalive: true
+    }).catch(function(){});
+  } catch (e) {}
   try {
     apiSend('espejo.refrescar', { claves: (refrescarYa && refrescarYa.length ? refrescarYa : claves).slice(0,3) })
       .then(r => { try { ((r && r.hechas) || []).forEach(_espejoConfiar); } catch(e){} })
@@ -9116,11 +9126,20 @@ function renderPT(el, rows, total, hayMas) {
   // Los botones siguen respondiendo igual: los clics se atienden por delegación
   // desde el documento, así que da lo mismo dónde estén dibujados.
   window._pedToolbarHtml =
-     '<label style="font-size:11px;color:var(--mu)">Desde</label>'
+    /* 19-ago-2026 — SELECTOR DE FECHA. El Embudo cuenta por dia de PAGO y Pedidos
+       filtraba por fecha de PEDIDO: el mismo rango daba numeros distintos y parecia
+       que uno de los dos mentia. Ahora eliges cual. Por defecto, fecha de pedido. */
+     '<label style="font-size:11px;color:var(--mu)">Filtrar por</label>'
+    +'<select id="exp-campo" style="'+inpDateSt+';min-width:132px">'
+    +  '<option value="pedido"' + (window._pedFechaCampo==='pago'?'':' selected') + '>Fecha de pedido</option>'
+    +  '<option value="pago"'   + (window._pedFechaCampo==='pago'?' selected':'') + '>Fecha de pago</option>'
+    +'</select>'
+    +'<label style="font-size:11px;color:var(--mu)">Desde</label>'
     +'<input type="date" id="exp-desde" value="'+(window._pedFechaDesde||'')+'" style="'+inpDateSt+'">'
     +'<label style="font-size:11px;color:var(--mu)">Hasta</label>'
     +'<input type="date" id="exp-hasta" value="'+(window._pedFechaHasta||'')+'" style="'+inpDateSt+'">'
     +'<button class="btn bg bs" id="btn-filtrar-fecha" style="font-size:11px">📅 Filtrar</button>'
+    +'<span id="ped-filtro-activo" style="font-size:11px;color:var(--mu);font-style:italic"></span>'
     +'<button class="btn bp bs" onclick="navegarA(\'nuevo\')" style="font-size:11px;white-space:nowrap">＋ Nuevo pedido</button>'
     +(Object.keys(pFlt).length ? '<button class="btn bg bs" id="btn-clf" style="font-size:11px">✕ Filtros</button>' : '');
   // FIX: pintarla YA. Antes solo se pintaba desde pRenderTBodyFast (el camino
@@ -10521,15 +10540,25 @@ function pClick(e) {
   if (ftd) {
     window._pedFechaDesde = document.getElementById('exp-desde')?.value || '';
     window._pedFechaHasta = document.getElementById('exp-hasta')?.value || '';
+    window._pedFechaCampo = document.getElementById('exp-campo')?.value || 'pedido';
     const desde = window._pedFechaDesde, hasta = window._pedFechaHasta;
+    const porPago = window._pedFechaCampo === 'pago';
     const filtered = pAll.filter(p => {
       if (!desde && !hasta) return true;
-      const d = p['Fecha Pedido'];
+      /* por pago: la fecha del ULTIMO pago, la misma que usa el Embudo.
+         Un pedido sin pagar no tiene fecha de pago: no entra en ese filtro. */
+      const d = porPago ? (p._fechaPago || '') : p['Fecha Pedido'];
       const ds = d instanceof Date ? d.toISOString().split('T')[0] : String(d||'').split('T')[0];
+      if (!ds) return false;
       if (desde && ds < desde) return false;
       if (hasta && ds > hasta) return false;
       return true;
     });
+    try {
+      const _av = document.getElementById('ped-filtro-activo');
+      if (_av) _av.textContent = (desde || hasta)
+        ? ('filtrando por ' + (porPago ? 'fecha de pago' : 'fecha de pedido')) : '';
+    } catch (_) {}
     const flat = pExpandFlat(filtered);
     renderPT(document.getElementById('ped-w'), flat, filtered.length, false);
     return;
@@ -13185,6 +13214,12 @@ function verPed(p) {
             _sbEspejarYa(nro);                              // que la hoja lo tenga en segundos
             return _rpc.pagoId;
           }
+          /* 19-ago-2026 — EL FALLBACK YA NO ES SILENCIOSO.
+             Si el RPC a la base falla, el pago se guarda en la hoja y los reportes
+             no lo ven: el Embudo no lo cuenta y el pedido queda PENDIENTE aunque
+             en pantalla diga COMPLETO. Fue lo que paso con el 21428 y con 7 mas.
+             Ahora la asesora se entera en el momento. */
+          try { toast('⚠️ El pago se guardo en la hoja pero NO llego a la base — avisale a Pablo (pedido ' + nro + ')', 'err'); } catch (_) {}
           return apiPost('pago.agregar', {NroPedido: nro, Monto: monto, FormaPago: forma, FechaPago: fecha, Constancia: constanciaUrl, AsesoraPago: asesoraPago});
         })()
           .then(res => {
