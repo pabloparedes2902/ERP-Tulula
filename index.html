@@ -6186,6 +6186,55 @@ async function _alertasListarRapido() {
   if (d && typeof d === 'object' && d.totales) return d;
   return api('alertas.listar');
 }
+// ══════════════════════════════════════════════════════════════════════
+// BUZÓN DE ALERTAS + LISTA DE ESPERA POR STOCK (20-ago-2026)
+//
+// Las alertas de los vigilantes (procesos nocturnos, motor de seguimientos,
+// adjuntos rotos, reconciliador) ya no viven cada una por su lado: todas caen
+// en erp.alertas por el webhook /alerta. Acá se leen para mostrarlas junto a
+// las alertas operativas que ya calculaba Apps Script.
+//
+// La lista de espera la llena Tula sola cuando detecta que a una clienta le
+// dijimos que no había stock. Se muestra en la misma pantalla porque es lo
+// mismo: algo que alguien tiene que mirar hoy.
+//
+// Las dos son de solo lectura y fallan en silencio: si Supabase no responde,
+// la pantalla de Alertas sigue funcionando con lo de siempre.
+// ══════════════════════════════════════════════════════════════════════
+async function _sbBuzonAlertas() {
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/v_alertas_abiertas?select=*&order=creada_at.desc&limit=100',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+async function _sbEsperaStock() {
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/v_espera_stock?select=*&order=pedido_el.desc&limit=200',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+async function _sbAlertaAtender(id) {
+  const tok = await _sbSesionAsegurar();
+  if (!tok) throw new Error('sin sesion');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/alerta_atender', {
+    method: 'POST',
+    headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_id: id, p_por: (typeof USUARIO !== 'undefined' && USUARIO) ? String(USUARIO) : 'ERP' })
+  });
+  if (!r.ok) throw new Error('no se pudo marcar (' + r.status + ')');
+  return true;
+}
+
 async function _fallasResumenRapido(desde, hasta) {
   if (!desde && !hasta) {
     const d = await _sbCacheLeer('fallas.resumen');
@@ -26465,10 +26514,84 @@ async function loadAlertas() {
   const w = document.getElementById('alertas-w');
   w.innerHTML = spin('Revisando alertas...');
   try {
-    const r = await _alertasListarRapido();
+    // Las tres fuentes van en paralelo. Las dos de Supabase pueden devolver
+    // null sin romper nada: la pantalla se arma con lo que haya llegado.
+    const [r, buzon, espera] = await Promise.all([
+      _alertasListarRapido(),
+      _sbBuzonAlertas(),
+      _sbEsperaStock()
+    ]);
+    _ALERT_BUZON  = Array.isArray(buzon)  ? buzon  : [];
+    _ALERT_ESPERA = Array.isArray(espera) ? espera : [];
     _renderAlertas(w, r);
-    _updateAlertBadge(r.total);
+    _updateAlertBadge((r.total || 0) + _ALERT_BUZON.length + _ALERT_ESPERA.length);
   } catch(e) { w.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
+}
+
+let _ALERT_BUZON = [], _ALERT_ESPERA = [];
+
+// ── Alertas del buzón (vigilantes de n8n) ──────────────────────────────
+function _secBuzon() {
+  if (!_ALERT_BUZON.length) return '';
+  const COL = { critica: 'var(--rd)', aviso: '#d97706', info: '#3b82f6' };
+  const ICO = { critica: '🔴', aviso: '🟠', info: '🔵' };
+  const orden = { critica: 0, aviso: 1, info: 2 };
+  const arr = _ALERT_BUZON.slice().sort((a,b) =>
+    (orden[a.nivel] ?? 3) - (orden[b.nivel] ?? 3) ||
+    String(b.creada_at||'').localeCompare(String(a.creada_at||'')));
+
+  let h = '<div class="card" style="padding:14px;margin-bottom:12px;border-left:4px solid #8b5cf6">'
+        + '<h3 style="margin:0 0 10px 0;font-size:14px;color:#8b5cf6">🛰 Vigilantes del sistema ('+arr.length+')</h3>';
+  arr.forEach(a => {
+    const col = COL[a.nivel] || '#3b82f6';
+    const rep = Number(a.repeticiones || 1);
+    h += '<div style="background:var(--bg3);border-radius:var(--r);padding:10px;margin-bottom:6px;border-left:3px solid '+col+'" data-alerta="'+a.id+'">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
+      + '<div style="flex:1;min-width:0"><b>'+(ICO[a.nivel]||'')+' '+esc(a.titulo||'')+'</b>'
+      + (rep > 1 ? ' <span class="badge" style="background:'+col+'22;color:'+col+';font-size:10px">×'+rep+'</span>' : '')
+      + '<div style="font-size:11px;color:var(--mu);margin-top:2px">'+esc(a.origen||'')+' · '+_alertaCuando(a.creada_at)+'</div></div>'
+      + '<button class="btn bg bs alerta-atender" data-id="'+a.id+'">✓ Atendida</button>'
+      + '</div>';
+    if (a.detalle) {
+      h += '<div style="font-size:11px;color:var(--mu);margin-top:6px;line-height:1.6;white-space:pre-wrap">'+esc(String(a.detalle).slice(0,700))+'</div>';
+    }
+    h += '</div>';
+  });
+  return h + '</div>';
+}
+
+// ── Lista de espera por stock ──────────────────────────────────────────
+function _secEspera() {
+  if (!_ALERT_ESPERA.length) return '';
+  let h = '<div class="card" style="padding:14px;margin-bottom:12px;border-left:4px solid var(--gn)">'
+        + '<h3 style="margin:0 0 4px 0;font-size:14px;color:var(--gn)">🟢 Esperando que llegue stock ('+_ALERT_ESPERA.length+')</h3>'
+        + '<div style="font-size:11px;color:var(--mu);margin-bottom:10px">Clientas a las que les dijimos que no teníamos lo que pedían. '
+        + 'Cuando entre el stock, el vigilante avisa solo.</div>'
+        + '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+        + '<thead><tr style="color:var(--mu);text-align:left">'
+        + '<th style="padding:4px 6px">Clienta</th><th style="padding:4px 6px">Teléfono</th>'
+        + '<th style="padding:4px 6px">Prenda</th><th style="padding:4px 6px">Talla</th>'
+        + '<th style="padding:4px 6px">Color</th><th style="padding:4px 6px">Espera</th></tr></thead><tbody>';
+  _ALERT_ESPERA.forEach(e => {
+    const dias = e.pedido_el ? Math.max(0, Math.round((Date.now() - new Date(e.pedido_el).getTime())/86400000)) : 0;
+    h += '<tr style="border-top:1px solid var(--bd)">'
+      + '<td style="padding:5px 6px">'+esc(e.nombre || '—')+'</td>'
+      + '<td style="padding:5px 6px;color:var(--mu)">'+esc(e.telefono || '')+'</td>'
+      + '<td style="padding:5px 6px"><b>'+esc(e.prenda || '')+'</b></td>'
+      + '<td style="padding:5px 6px">'+esc(e.talla || '—')+'</td>'
+      + '<td style="padding:5px 6px">'+esc(e.color || '—')+'</td>'
+      + '<td style="padding:5px 6px;color:'+(dias >= 7 ? 'var(--am)' : 'var(--mu)')+'">'+dias+' día'+(dias!==1?'s':'')+'</td>'
+      + '</tr>';
+  });
+  return h + '</tbody></table></div>';
+}
+
+function _alertaCuando(iso) {
+  if (!iso) return '';
+  const min = Math.round((Date.now() - new Date(iso).getTime())/60000);
+  if (min < 60) return 'hace ' + min + ' min';
+  if (min < 1440) return 'hace ' + Math.round(min/60) + ' h';
+  return 'hace ' + Math.round(min/1440) + ' d';
 }
 
 function _renderAlertas(w, r) {
@@ -26493,12 +26616,17 @@ function _renderAlertas(w, r) {
     h += '</div>';
     return h;
   };
+  const extras = _secBuzon() + _secEspera();
   let html = '';
-  if (r.total === 0) {
+  if (r.total === 0 && !extras) {
     html = '<div class="card" style="padding:40px;text-align:center">'
       + '<div style="font-size:48px;margin-bottom:12px">✓</div>'
       + '<h3 style="margin:0 0 6px 0;color:var(--gn)">Todo en orden</h3>'
       + '<p style="color:var(--mu);margin:0">No hay alertas activas por ahora.</p></div>';
+  } else if (r.total === 0) {
+    html = '<div style="display:flex;gap:8px;margin-bottom:12px">'
+      + '<span style="flex:1"></span>'
+      + '<button class="btn bg bs" onclick="loadAlertas()">↻ Refrescar</button></div>';
   } else {
     html = '<div style="display:flex;gap:8px;margin-bottom:12px">'
       + '<div class="badge" style="background:#7a1a1a33;color:var(--rd);border:1px solid #7a1a1a">'+r.totales.criticas+' crítica'+(r.totales.criticas!==1?'s':'')+'</div>'
@@ -26511,7 +26639,25 @@ function _renderAlertas(w, r) {
     html += sec('Advertencias', '#d97706', r.advertencias, '◆');
     html += sec('Informativas', '#3b82f6', r.info, 'ℹ');
   }
-  w.innerHTML = html;
+  // Los vigilantes y la lista de espera van arriba: son lo que cambió hoy.
+  w.innerHTML = extras + html;
+
+  w.querySelectorAll('.alerta-atender').forEach(b => b.addEventListener('click', async function() {
+    const id = this.dataset.id;
+    this.disabled = true; this.textContent = 'Marcando…';
+    try {
+      await _sbAlertaAtender(Number(id));
+      const fila = w.querySelector('[data-alerta="'+id+'"]');
+      if (fila) { fila.style.opacity = '.35'; }
+      this.textContent = '✓ Lista';
+      _ALERT_BUZON = _ALERT_BUZON.filter(a => String(a.id) !== String(id));
+      _updateAlertBadge(document.querySelectorAll('#alertas-w [data-alerta]').length + _ALERT_ESPERA.length);
+      toast('✓ Alerta marcada como atendida', 'ok');
+    } catch(e) {
+      this.disabled = false; this.textContent = '✓ Atendida';
+      toast('Error: ' + esc(e.message), 'err');
+    }
+  }));
 }
 
 function _updateAlertBadge(n) {
@@ -26523,8 +26669,11 @@ function _updateAlertBadge(n) {
 
 async function _pollAlertBadge() {
   try {
-    const r = await _alertasListarRapido();
-    _updateAlertBadge(r.total);
+    const [r, buzon, espera] = await Promise.all([
+      _alertasListarRapido(), _sbBuzonAlertas(), _sbEsperaStock()
+    ]);
+    const extra = (Array.isArray(buzon) ? buzon.length : 0) + (Array.isArray(espera) ? espera.length : 0);
+    _updateAlertBadge((r.total || 0) + extra);
   } catch(e) {}
 }
 
