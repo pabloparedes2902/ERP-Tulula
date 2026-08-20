@@ -308,6 +308,7 @@
 </div>
 <div id="vCalidad" style="display:none;padding:22px 26px;max-width:1720px;margin:0 auto">
   <div id="suiteZona"></div>
+  <div id="marcador" style="margin:0 0 14px"></div>
   <div id="entrKpis" style="margin:0 0 16px"></div>
   <div class="periodos" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <select id="filtroGlobal" onchange="filtroCambio()">
@@ -1254,6 +1255,10 @@ function cargarEmbudo(){
   let _av=null, _idx=null, _idx7=null;
   const _kpi = () => { try { pintarPrompt(_av, _idx, _idx7); } catch(e){} };
   fetch(`${BASE_N8N}/prompt-avance?h=${_hEmb}`).then(x=>x.json()).then(v=>{_av=v;_kpi();}).catch(()=>{});
+  /* el marcador sigue el mismo rango de fechas que el embudo */
+  const _f = t => new Date(t*1000).toISOString().slice(0,10);
+  fetch(`${BASE_N8N}/marcador?desde=${_f(r.desde)}&hasta=${_f(r.hasta)}`).then(x=>x.json())
+    .then(v=>{ try { pintarMarcador(v); } catch(e){} }).catch(()=>{});
   fetch(`${BASE_N8N}/indice-asesora?d=${_dEmb}`).then(x=>x.json()).then(v=>{
     _idx=v; _kpi(); try { pintarSerie(v); } catch(e){}
   }).catch(()=>{});
@@ -1270,6 +1275,58 @@ function cargarEmbudo(){
    muestra el conteo porque es la base; las otras cuatro muestran su %.
    Derecha PROMPT (3): salud del agente, denominador propio. De ahi el separador.
    ══════════════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════════════════
+   EL MARCADOR (19-ago-2026)
+   Los tres numeros que dicen si el entrenamiento sirve:
+     1. % de ventas que cerro Tula sola          -> la meta
+     2. % de conversaciones donde la asesora entro ANTES de info de pago
+        -> si esto no baja, el numero de Tula no se puede mover por mas que
+           se optimice el manual. Es el indicador de cumplimiento de la regla.
+     3. Volumen del periodo, para dimensionar
+   ══════════════════════════════════════════════════════════════════════════ */
+function pintarMarcador(m){
+  const z = document.getElementById('marcador'); if(!z || !m) return;
+  const S = (n)=> Number(n||0).toLocaleString('es-PE');
+  const tarjeta = (tit, val, sub, col, barra) =>
+    '<div style="flex:1 1 0;min-width:0;border:1px solid var(--bd);border-radius:14px;padding:14px 16px;background:var(--card)">'
+    + '<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap">'+tit+'</div>'
+    + '<div style="font-size:30px;font-weight:900;line-height:1.25;color:'+col+'">'+val+'</div>'
+    + '<div style="font-size:10.5px;color:var(--txt2)">'+sub+'</div>'
+    + (barra||'') + '</div>';
+  const barraMeta = (pct, meta, bien) => {
+    const w = Math.max(2, Math.min(100, pct));
+    const c = bien ? 'var(--ok)' : 'var(--bad)';
+    return '<div style="margin-top:9px;height:7px;border-radius:5px;background:rgba(255,255,255,.08);overflow:hidden">'
+         + '<div style="width:'+w+'%;height:100%;background:'+c+';border-radius:5px"></div></div>'
+         + '<div style="font-size:9.5px;color:var(--txt2);margin-top:3px">meta '+meta+'</div>';
+  };
+  const tulaOk = m.tula.pct >= m.tula.meta;
+  const antOk  = m.anticipadas.pct <= m.anticipadas.meta;
+  let h = '<div style="font-size:12.5px;font-weight:800;letter-spacing:1.6px;color:var(--txt2);text-transform:uppercase;margin:0 0 8px 2px">El marcador</div>'
+    + '<div style="display:flex;gap:12px;align-items:stretch;flex-wrap:wrap">'
+    + tarjeta('Ventas cerradas por Tula', m.tula.pct.toFixed(1)+'%', m.tula.n+' de '+m.ventas+' ventas',
+              tulaOk?'var(--ok)':'var(--bad)', barraMeta(m.tula.pct, '90%', tulaOk))
+    + tarjeta('Entradas anticipadas', m.anticipadas.pct.toFixed(1)+'%', m.anticipadas.n+' veces la asesora entro antes de info de pago',
+              antOk?'var(--ok)':'var(--bad)', barraMeta(m.anticipadas.pct, 'menos de 20%', antOk))
+    + tarjeta('Ventas del periodo', S(m.ventas), 'S/ '+S(m.monto)+' sin envio', 'inherit', '')
+    + '</div>';
+  if ((m.asesoras||[]).length){
+    h += '<div style="margin-top:10px;border:1px solid var(--bd);border-radius:14px;padding:12px 16px;background:var(--card)">'
+       + '<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Entradas anticipadas por asesora</div>';
+    for(const a of m.asesoras){
+      const ok = a.pct <= 20;
+      h += '<div style="display:flex;align-items:center;gap:10px;margin:6px 0">'
+         + '<span style="width:90px;font-size:11px;font-weight:800;color:var(--txt2)">'+a.asesora+'</span>'
+         + '<div style="flex:1;background:rgba(255,255,255,.07);border-radius:6px;height:16px;overflow:hidden">'
+         +   '<div style="width:'+Math.max(2,Math.min(100,a.pct))+'%;height:100%;background:'+(ok?'var(--ok)':'var(--bad)')+';border-radius:6px"></div></div>'
+         + '<b style="width:52px;text-align:right;font-size:13px;color:'+(ok?'var(--ok)':'var(--bad)')+'">'+a.pct.toFixed(0)+'%</b>'
+         + '<span style="width:78px;text-align:right;font-size:11px;color:var(--txt2)">'+a.anticipadas+' de '+a.ventas+'</span></div>';
+    }
+    h += '</div>';
+  }
+  z.innerHTML = h;
+}
+
 /* 19-ago-2026 — los 5 indicadores del EMBUDO se borraron: repetian exactamente
    lo que ya dice el embudo grande. Los 3 del PROMPT se mudaron a Entrenamiento,
    que es donde se trabaja sobre el manual del agente. */
