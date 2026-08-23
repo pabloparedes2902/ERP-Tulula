@@ -13513,7 +13513,9 @@ function verPed(p) {
       if (_base) return _base;
       return apiSend('pedidos.eliminar', {NroPedido:nro, Force:_forz});
     })()
-      .then(() => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){} })
+      .then(() => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){}
+        // 23-ago — eliminar un pedido DEVUELVE stock (venta viva): misma duda que al crear.
+        try { _espejoDudar(['stock.resumen','catalogo.stock','reposicion.calc']); } catch(e){} })
       .catch(e => { _papeleraPendDel(nro); toast('Error al eliminar en servidor: '+esc(e.message)+' — refresca para reintentar','err'); });
   });
 
@@ -18137,8 +18139,15 @@ function renderInv(el){
           else if(bi===2){ v=d.conf?d.conf[t]:undefined; dash=(v===undefined||v===null); }
           else if(bi===3){ const base=d.conf?d.conf[t]:undefined; if(base===undefined||base===null){dash=true;} else v=(d.vtas&&d.vtas[t])||0; }
           else { v=d.stock?d.stock[t]:undefined; dash=(v===null||v===undefined); }
-          if(dash) tr+=`<td style="${STEMPTY}${TB}${P}${sep}${C}color:#6b7280">–</td>`;
-          else { tr+=`<td style="${dataSt}${TB}${P}${sep}${C}">${_capsula(v)}</td>`; }
+          // 23-ago (Pablo): Confección Total es la ÚNICA puerta de edición del stock.
+          // Doble clic en su celda → panel "qué pasó" (producción / conteo / no disp. / recuperar).
+          // La celda plomo (talla nunca confeccionada) también abre: sirve para estrenar la talla.
+          const _edT=(bi===0 && !_stYayMode)
+            ? ` class="iv-tot-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="${t}" title="Doble clic: mover stock de ${esc(d.diseno)} ${esc(d.color)} ${t}"`
+            : '';
+          const _edCur=_edT?'cursor:cell;':'';
+          if(dash) tr+=`<td${_edT} style="${STEMPTY}${TB}${P}${sep}${C}${_edCur}color:#6b7280">–</td>`;
+          else { tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_capsula(v)}</td>`; }
         });
       });
       tr+='</tr>';
@@ -18184,6 +18193,8 @@ function renderInv(el){
   el.querySelectorAll('.iv-nodisp-info').forEach(b=>b.addEventListener('click',(ev)=>{ ev.stopPropagation(); _invNoDispDetalle(b.dataset.pren||'', b.dataset.dis||'', b.dataset.col||''); }));
   // Clic en 🕑 → kardex (historial completo del SKU).
   el.querySelectorAll('.iv-kardex').forEach(b=>b.addEventListener('click',(ev)=>{ ev.stopPropagation(); _invKardex(b.dataset.pren||'', b.dataset.dis||'', b.dataset.col||''); }));
+  // 23-ago — doble clic en una celda de Confección Total → panel "qué pasó" (única puerta de edición).
+  el.querySelectorAll('.iv-tot-cell').forEach(c=>c.addEventListener('dblclick',(ev)=>{ ev.preventDefault(); ev.stopPropagation(); _ivTotAbrir(c.dataset.pren||'', c.dataset.dis||'', c.dataset.colr||'', c.dataset.tal||'', el); }));
   // Eventos — filtros
   el.querySelectorAll('.tab[data-ivcat]').forEach(btn=>btn.addEventListener('click',function(){ stCatActiva=this.getAttribute('data-ivcat'); renderInv(el); }));
   let ivTxtTimer=null; const txtInp=document.getElementById('iv-txt');
@@ -18212,6 +18223,231 @@ function renderInv(el){
   if(yayBtn) yayBtn.addEventListener('click',()=>stockYayitasToggle());
   const yayVol=document.getElementById('st-yay-volver');
   if(yayVol) yayVol.addEventListener('click',()=>stockYayitasToggle());
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// EDICIÓN DESDE LA CELDA DE CONFECCIÓN TOTAL (23-ago-2026, decisión de Pablo)
+//
+// Regla: Confección Total es la ÚNICA puerta de edición del stock. Ventas y
+// Stock jamás se tocan; Conf. Real y No disponible se mueven SOLOS según lo
+// que se declare acá. Y "editar" no es escribir un número: es DECLARAR QUÉ
+// PASÓ — cada acción escribe su movimiento con fecha/usuario/motivo y las
+// tres columnas se recalculan siempre cuadradas.
+//
+// Optimista + deshacer: la pantalla cambia EN EL ACTO (se muta stData y se
+// repinta); el guardado viaja por detrás por la MISMA doble vía de los
+// formularios grandes (base → Apps Script). Si el servidor rechaza, se
+// revierte lo pintado y sale el aviso rojo. "Deshacer" (10 s) escribe el
+// movimiento CONTRARIO — libro contable: nada se borra, todo queda trazado.
+// ══════════════════════════════════════════════════════════════════════════
+
+// Muta la copia local (stData) de UN SKU+talla. m = deltas {total,fallas,conf,stock}.
+function _ivTotMut(pren, dis, col, tal, m){
+  try{
+    const d=(stData||[]).find(x=>x.prenda===pren&&x.diseno===dis&&x.color===col);
+    if(!d) return false;
+    const upd=(k,dv)=>{ if(!dv) return; if(!d[k]) d[k]={}; const cur=d[k][tal]; d[k][tal]=(cur==null?0:cur)+dv; };
+    upd('total',m.total); upd('fallas',m.fallas); upd('conf',m.conf); upd('stock',m.stock);
+    try{ _stLsSet(stData); }catch(e){}
+    return true;
+  }catch(e){ return false; }
+}
+
+// Copia global de la vía rápida de producción (la de _confAbrirIngresarStock vive
+// encerrada en ese formulario). Mismo contrato: null → el que llama va por Apps Script.
+async function _ivCrearLoteRapido(items) {
+  const _c = _cronAbrir('stock.crear.base');
+  try {
+    if (typeof SB_STOCK_CREAR === 'undefined' || !SB_STOCK_CREAR) { _cronCerrar(_c, false); return null; }
+    if (typeof SB_URL === 'undefined' || !SB_ANON) { _cronCerrar(_c, false); return null; }
+    const tok = await _sbSesionAsegurar();
+    if (!tok) { _cronCerrar(_c, false); return null; }
+    const req = 'stk-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    const r = await fetch(SB_URL + '/rest/v1/rpc/stock_crear_lote', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_items: items.map(it => ({ prenda: it.prenda, cantidad: it.cantidad })), p_request: req }),
+    });
+    if (!r.ok) { _cronCerrar(_c, false); return null; }
+    const d = await r.json();
+    if (!(d && d.ok === true)) { _cronCerrar(_c, false); return null; }
+    _cronCerrar(_c, true);
+    return { ok: true, lotes: d.lotes || [], filas: d.filas || 0, unidades: d.unidades || 0, via: 'base' };
+  } catch (e) { _cronCerrar(_c, false); return null; }
+}
+
+// Aviso ✓ con botón Deshacer (10 s). undoFn = escribe el movimiento contrario.
+function _ivToastDeshacer(msg, undoFn){
+  try{
+    const dv=document.createElement('div');
+    dv.style.cssText='position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:900;background:var(--bg2);border:1px solid var(--gn);border-radius:var(--r2);padding:10px 14px;display:flex;gap:12px;align-items:center;font-size:13px;color:var(--tx);box-shadow:0 6px 24px rgba(0,0,0,.5)';
+    dv.innerHTML='<span>✓ '+msg+'</span><button class="btn bg bs" style="font-size:12px;font-weight:700">↩ Deshacer</button>';
+    document.body.appendChild(dv);
+    let vivo=true;
+    const cerrar=()=>{ if(!vivo) return; vivo=false; try{ dv.remove(); }catch(e){} };
+    dv.querySelector('button').addEventListener('click',()=>{ cerrar(); try{ undoFn(); }catch(e){} });
+    setTimeout(cerrar, 10000);
+  }catch(e){ toast('✓ '+msg,'ok'); }
+}
+
+// El panel. Todo bloqueado salvo la acción: el SKU y la talla vienen de la celda.
+function _ivTotAbrir(pren, dis, col, tal, invEl){
+  const d=(stData||[]).find(x=>x.prenda===pren&&x.diseno===dis&&x.color===col);
+  if(!d){ toast('No encuentro ese SKU en la copia local — refresca el Stock','err'); return; }
+  const full=(pren+' '+dis+' '+col+' '+tal).replace(/\s+/g,' ').trim();
+  const num=o=>{ const v=o&&o[tal]; return (v==null)?0:v; };
+  const tot0=num(d.total), nd0=num(d.fallas), real0=num(d.conf), vt0=num(d.vtas);
+  const stk0=(d.stock&&typeof d.stock[tal]==='number')?d.stock[tal]:(real0-vt0);
+  const MOTIVOS=_stkMotivos();
+  const inpSt='width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
+  const chip=(l,v,c)=>'<span style="display:inline-flex;gap:5px;align-items:center;background:var(--bg3);border:1px solid var(--bd);border-radius:4px;padding:2px 8px;font-size:11.5px"><span style="color:var(--mu)">'+l+'</span><b style="color:'+c+';font-variant-numeric:tabular-nums">'+v+'</b></span>';
+  const ov=document.createElement('div');
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:650;display:flex;align-items:flex-start;justify-content:center;padding:60px 24px 24px;overflow:auto';
+  ov.innerHTML='<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:460px;width:100%;padding:18px">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">'
+      +'<div><div style="font-size:14px;font-weight:800">'+esc(pren)+' '+esc(dis)+' '+esc(col)+' · Talla <span style="color:#60a5fa">'+esc(tal)+'</span></div>'
+      +'<div style="font-size:11px;color:var(--mu)">La prenda y la talla están fijas — se edita declarando qué pasó.</div></div>'
+      +'<button id="ivt-x" class="btn bg bs" style="font-size:12px">✕</button></div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'
+      +chip('Total',tot0,'#8ec3ff')+chip('No disp.',nd0,'#fca5a5')+chip('Real',real0,'#86efac')+chip('Ventas',vt0,'#c4b5fd')+chip('Stock',stk0,'#fcd34d')+'</div>'
+    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">'
+      +'<button class="btn bg bs ivt-tab" data-acc="prod" style="font-size:12px">➕ Entró producción</button>'
+      +'<button class="btn bg bs ivt-tab" data-acc="conteo" style="font-size:12px">✏️ Corrección de conteo</button>'
+      +'<button class="btn bg bs ivt-tab" data-acc="nodisp" style="font-size:12px">🚫 No disponible</button>'
+      +'<button class="btn bg bs ivt-tab" data-acc="rec" style="font-size:12px"'+(nd0>0?'':' disabled title="No hay unidades No disponibles en esta talla"')+'>♻ Recuperar</button></div>'
+    +'<div id="ivt-panel"></div></div>';
+  document.body.appendChild(ov);
+  const cerrar=()=>ov.remove();
+  ov.addEventListener('click',e=>{ if(e.target===ov) cerrar(); });
+  ov.querySelector('#ivt-x').addEventListener('click',cerrar);
+
+  const panel=ov.querySelector('#ivt-panel');
+  const marcarTab=acc=>ov.querySelectorAll('.ivt-tab').forEach(b=>{ const on=b.dataset.acc===acc; b.style.borderColor=on?'var(--ac)':''; b.style.fontWeight=on?'700':''; });
+  let _lotesRec=null;   // se cargan una vez al abrir Recuperar
+
+  const pintar=acc=>{
+    marcarTab(acc);
+    if(acc==='prod'){
+      panel.innerHTML='<div style="font-size:11px;color:var(--mu);margin-bottom:8px">Llegaron unidades del taller. Se crea un lote y suben <b>Total, Real y Stock</b>.</div>'
+        +'<div class="fr" style="align-items:flex-end"><div class="fg" style="max-width:110px"><label>Cantidad</label><input id="ivt-cant" type="number" min="1" step="1" style="'+inpSt+'"></div>'
+        +'<button id="ivt-ok" class="btn bp bs" style="font-size:12px;align-self:flex-end">Registrar</button></div>';
+    } else if(acc==='conteo'){
+      panel.innerHTML='<div style="font-size:11px;color:var(--mu);margin-bottom:8px">Contaste y el número real es otro. Escribe el <b>Total contado</b>; la diferencia queda como corrección trazada (nada se borra).</div>'
+        +'<div class="fr" style="align-items:flex-end"><div class="fg" style="max-width:130px"><label>Total contado</label><input id="ivt-cant" type="number" min="0" step="1" value="'+tot0+'" style="'+inpSt+'"></div>'
+        +'<div class="fg"><label>Comentario (opcional)</label><input id="ivt-com" type="text" placeholder="p. ej. conteo físico agosto" style="'+inpSt+'"></div>'
+        +'<button id="ivt-ok" class="btn bp bs" style="font-size:12px;align-self:flex-end">Corregir</button></div>'
+        +'<div id="ivt-prev" style="font-size:11px;color:var(--mu);margin-top:6px"></div>';
+      const inp=panel.querySelector('#ivt-cant'), prev=panel.querySelector('#ivt-prev');
+      const pv=()=>{ const n=parseInt(inp.value,10); if(isNaN(n)){ prev.textContent=''; return; } const df=n-tot0; prev.innerHTML=df===0?'Sin cambio.':('Corrección: <b style="color:'+(df>0?'#4ade80':'#f87171')+'">'+(df>0?'+':'')+df+'</b> → Total '+n+' · Real '+(real0+df)+' · Stock '+(stk0+df)); };
+      inp.addEventListener('input',pv); pv();
+    } else if(acc==='nodisp'){
+      panel.innerHTML='<div style="font-size:11px;color:var(--mu);margin-bottom:8px">Unidades que salen del stock vendible (falla, lavado, préstamo…). Baja <b>Real y Stock</b>; el Total no cambia.</div>'
+        +'<div class="fr" style="align-items:flex-end"><div class="fg" style="max-width:100px"><label>Cantidad</label><input id="ivt-cant" type="number" min="1" max="'+Math.max(real0,1)+'" step="1" style="'+inpSt+'"></div>'
+        +'<div class="fg"><label>Motivo</label><select id="ivt-mot" style="'+inpSt+'">'+MOTIVOS.map(m=>'<option value="'+esc(m)+'">'+esc(m)+'</option>').join('')+'</select></div></div>'
+        +'<div class="fr" style="align-items:flex-end;margin-top:6px"><div class="fg"><label>Destino</label><select id="ivt-dst" style="'+inpSt+'">'
+          +'<option value="">Sugerido por el motivo</option><option value="REPARAR">Reparar y devolver al stock</option><option value="YAYITAS">Yayitas (se vende con falla)</option>'
+          +'<option value="VUELVE">Prestada — vuelve sola</option><option value="DESCARTAR">Descartar</option><option value="PERDIDA">Perdida / robada</option></select></div>'
+        +'<button id="ivt-ok" class="btn bp bs" style="font-size:12px;align-self:flex-end">Registrar</button></div>';
+    } else if(acc==='rec'){
+      panel.innerHTML='<div style="font-size:11px;color:var(--mu);margin-bottom:8px">Unidades No disponibles que vuelven al stock vendible. Sube <b>Real y Stock</b>; el Total no cambia.</div>'
+        +'<div class="fr" style="align-items:flex-end"><div class="fg" style="max-width:100px"><label>Cantidad</label><input id="ivt-cant" type="number" min="1" max="'+nd0+'" step="1" style="'+inpSt+'"></div>'
+        +'<div class="fg"><label>Lote</label><select id="ivt-lote" style="'+inpSt+'"><option value="__">Cargando lotes…</option></select></div>'
+        +'<button id="ivt-ok" class="btn bp bs" style="font-size:12px;align-self:flex-end">Recuperar</button></div>';
+      const sel=panel.querySelector('#ivt-lote');
+      (async()=>{ if(_lotesRec===null){ try{ _lotesRec=await api('fallas.lotesDisponibles',{prenda:full})||[]; }catch(e){ _lotesRec=[]; } }
+        if(!sel.isConnected) return;
+        sel.innerHTML=_lotesRec.length?_lotesRec.map(l=>'<option value="'+esc(l.lote)+'">'+esc(l.etiqueta)+' · '+l.disponibles+' disp.</option>').join(''):'<option value="">(sin lote)</option>';
+      })();
+    }
+    const okB=panel.querySelector('#ivt-ok');
+    if(okB) okB.addEventListener('click',()=>_ivTotAplicar(acc));
+    const cInp=panel.querySelector('#ivt-cant'); if(cInp){ cInp.focus(); cInp.addEventListener('keydown',e=>{ if(e.key==='Enter') _ivTotAplicar(acc); }); }
+  };
+  ov.querySelectorAll('.ivt-tab').forEach(b=>b.addEventListener('click',()=>{ if(!b.disabled) pintar(b.dataset.acc); }));
+  pintar('prod');
+
+  const repintar=()=>{ try{ if(invEl&&document.body.contains(invEl)) renderInv(invEl); }catch(e){} };
+
+  async function _ivTotAplicar(acc){
+    const n=parseInt((panel.querySelector('#ivt-cant')||{}).value,10);
+    if(acc!=='conteo' && (isNaN(n)||n<1)){ toast('Pon una cantidad válida (1 o más)','err'); return; }
+    const clavesEsc=['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock','fallas.resumen'];
+    // ── ➕ PRODUCCIÓN ─────────────────────────────────────────────────────
+    if(acc==='prod'){
+      const items=[{prenda:full,cantidad:n}];
+      _ivTotMut(pren,dis,col,tal,{total:n,conf:n,stock:n}); repintar(); cerrar();
+      try{
+        let res=await _ivCrearLoteRapido(items); const viaBase=!!res;
+        if(!res) res=await apiSend('stock.crearLote',{items:items});
+        if(viaBase){ _espejoDudar(clavesEsc); apiSend('stock.colaAplicar',{items:items}).catch(()=>{}); }
+        else _stockEscrito(clavesEsc,['stock.resumen','lotes.listar']);
+        const lote=(res&&res.lotes&&res.lotes[0])||'';
+        _ivToastDeshacer('+'+n+' '+esc(full)+(lote?' (lote '+esc(lote)+')':''),async()=>{
+          _ivTotMut(pren,dis,col,tal,{total:-n,conf:-n,stock:-n}); _stDataTs=0; repintar();
+          try{ await apiSend('stock.ajustarConteo',{prenda:full,delta:-n,comentario:'Deshacer producción'+(lote?' '+lote:'')}); _stockEscrito(clavesEsc,['stock.resumen']); toast('↩ Deshecho','ok'); }
+          catch(e){ toast('No se pudo deshacer: '+esc(e.message),'err'); _stDataTs=0; }
+        });
+      }catch(e){ _ivTotMut(pren,dis,col,tal,{total:-n,conf:-n,stock:-n}); _stDataTs=0; repintar(); toast('No entró la producción: '+esc(e.message)+' — se deshizo lo pintado','err'); }
+      return;
+    }
+    // ── ✏️ CORRECCIÓN DE CONTEO ──────────────────────────────────────────
+    if(acc==='conteo'){
+      const contado=parseInt((panel.querySelector('#ivt-cant')||{}).value,10);
+      if(isNaN(contado)||contado<0){ toast('Pon el total contado (0 o más)','err'); return; }
+      const df=contado-tot0;
+      if(df===0){ toast('El total ya es '+tot0+' — nada que corregir','err'); return; }
+      if(real0+df<0){ toast('Esa corrección dejaría Conf. Real en '+(real0+df)+'. Revisa el conteo (las No disponibles se manejan con 🚫).','err'); return; }
+      const com=String((panel.querySelector('#ivt-com')||{}).value||'').trim();
+      _ivTotMut(pren,dis,col,tal,{total:df,conf:df,stock:df}); repintar(); cerrar();
+      try{
+        await apiSend('stock.ajustarConteo',{prenda:full,delta:df,comentario:com||'Corrección de conteo'});
+        _stockEscrito(clavesEsc,['stock.resumen']);
+        _ivToastDeshacer('Conteo corregido: '+(df>0?'+':'')+df+' en '+esc(full),async()=>{
+          _ivTotMut(pren,dis,col,tal,{total:-df,conf:-df,stock:-df}); _stDataTs=0; repintar();
+          try{ await apiSend('stock.ajustarConteo',{prenda:full,delta:-df,comentario:'Deshacer corrección'}); _stockEscrito(clavesEsc,['stock.resumen']); toast('↩ Deshecho','ok'); }
+          catch(e){ toast('No se pudo deshacer: '+esc(e.message),'err'); _stDataTs=0; }
+        });
+      }catch(e){ _ivTotMut(pren,dis,col,tal,{total:-df,conf:-df,stock:-df}); _stDataTs=0; repintar(); toast('No entró la corrección: '+esc(e.message)+' — se deshizo lo pintado','err'); }
+      return;
+    }
+    // ── 🚫 NO DISPONIBLE ─────────────────────────────────────────────────
+    if(acc==='nodisp'){
+      if(n>real0){ toast('Solo hay '+real0+' en Conf. Real de esa talla','err'); return; }
+      const mot=String((panel.querySelector('#ivt-mot')||{}).value||'').trim();
+      const dst=String((panel.querySelector('#ivt-dst')||{}).value||'').trim();
+      const items=[{prenda:full,cantidad:n,motivo:mot,destino:dst}];
+      _ivTotMut(pren,dis,col,tal,{fallas:n,conf:-n,stock:-n}); repintar(); cerrar();
+      try{
+        _yayOlvidar();
+        let rf=await _fallasIngresarRapido(items); const viaBase=!!rf;
+        if(!rf) rf=await apiSend('fallas.ingresar',{items:items});
+        rf=_yayEspejoConfirmar(rf);
+        if(viaBase) _espejoDudar(clavesEsc); else _stockEscrito(clavesEsc,['stock.resumen']);
+        const fid=(rf&&rf.ids&&rf.ids[0])||'';
+        _ivToastDeshacer(n+' → No disponible ('+esc(mot)+') · '+esc(full),async()=>{
+          _ivTotMut(pren,dis,col,tal,{fallas:-n,conf:n,stock:n}); _stDataTs=0; repintar();
+          try{ _yayOlvidar(); const rd=await apiSend('fallas.deshacer',fid?{fallaId:fid}:{}); _yayEspejoConfirmar(rd); _stockEscrito(clavesEsc,['stock.resumen']); toast('↩ Deshecho','ok'); }
+          catch(e){ toast('No se pudo deshacer: '+esc(e.message),'err'); _stDataTs=0; }
+        });
+      }catch(e){ _ivTotMut(pren,dis,col,tal,{fallas:-n,conf:n,stock:n}); _stDataTs=0; repintar(); toast('No se pudo registrar: '+esc(e.message)+' — se deshizo lo pintado','err'); }
+      return;
+    }
+    // ── ♻ RECUPERAR ──────────────────────────────────────────────────────
+    if(acc==='rec'){
+      if(n>nd0){ toast('Solo hay '+nd0+' No disponibles en esa talla','err'); return; }
+      const selL=panel.querySelector('#ivt-lote'); const lote=selL?String(selL.value||'').trim():'';
+      if(lote==='__'){ toast('Espera a que carguen los lotes','err'); return; }
+      const enLote=(_lotesRec||[]).find(l=>String(l.lote)===lote);
+      if(enLote&&n>enLote.disponibles){ toast('Solo hay '+enLote.disponibles+' en '+(lote||'sin lote'),'err'); return; }
+      _ivTotMut(pren,dis,col,tal,{fallas:-n,conf:n,stock:n}); repintar(); cerrar();
+      try{
+        await apiSend('fallas.recuperar',{items:[{prenda:full,cantidad:n,lote:lote}]});
+        _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'],['stock.resumen']);
+        toast('✓ '+n+' recuperada'+(n>1?'s':'')+' al stock · '+esc(full),'ok');
+      }catch(e){ _ivTotMut(pren,dis,col,tal,{fallas:n,conf:-n,stock:-n}); _stDataTs=0; repintar(); toast('No se pudo recuperar: '+esc(e.message)+' — se deshizo lo pintado','err'); }
+      return;
+    }
+  }
 }
 
 // Desglose de "No disponible" por motivo (Falla, Lavado, TikTok Live, Sesión…) al hacer clic en ⓘ.
