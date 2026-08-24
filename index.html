@@ -8382,6 +8382,12 @@ let _pedsPollTimer = null;
 let _pedsPollInFlight = false;
 let _pedsPollVisible = true;
 const PEDS_POLL_INTERVAL = 15000; // 15s entre el FIN de una llamada y el inicio de la siguiente
+// 23-ago (plan anti-saturación, punto 3): con el TIEMPO REAL conectado los cambios
+// llegan solos por el websocket y el poll queda de RESPALDO → 60s en vez de 15s.
+// `pedidos.cambiosDesde` era la acción más llamada del ERP; esto recorta ~4x esa
+// carga en Apps Script sin perder frescura (si el canal se cae, vuelve solo a 15s).
+const PEDS_POLL_INTERVAL_RT = 60000;
+function _pedsPollDelay() { return (window._rtVivo === true) ? PEDS_POLL_INTERVAL_RT : PEDS_POLL_INTERVAL; }
 document.addEventListener('visibilitychange', () => {
   _pedsPollVisible = !document.hidden;
   // P5 — además de la guard de _pedsPollVisible, parar/arrancar el timer cuando la
@@ -8398,14 +8404,15 @@ function _stopPedsPolling() {
 function _startPedsPolling() {
   _stopPedsPolling();
   // No arrancar de inmediato: esperar 15s para no competir con la carga inicial
-  _schedulePedsPoll(PEDS_POLL_INTERVAL);
+  _schedulePedsPoll(_pedsPollDelay());
 }
 function _schedulePedsPoll(delay) {
   _stopPedsPolling();
   _pedsPollTimer = setTimeout(async () => {
     await _pollPedsOnce();
     // Reprogramar SOLO después de que terminó (nunca antes) → imposible acumular
-    _schedulePedsPoll(PEDS_POLL_INTERVAL);
+    // 23-ago: el intervalo se decide EN CADA vuelta (60s con RT vivo, 15s sin él).
+    _schedulePedsPoll(_pedsPollDelay());
   }, delay);
 }
 // ── RECARGA SILENCIOSA (24-jul) ──────────────────────────────────────────────
@@ -11943,7 +11950,11 @@ async function _rtConectar() {
     _rtCanal = _rtCliente.channel('pedidos-rt')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pedidos' }, p => _rtProgramar(p.new && p.new.nro_pedido))
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pedidos' }, p => _rtProgramar(p.new && p.new.nro_pedido))
-      .subscribe(st => { try { console.log('[RT] canal pedidos:', st); } catch (_) {} });
+      .subscribe(st => { try { console.log('[RT] canal pedidos:', st); } catch (_) {}
+        // 23-ago — bandera para el poll adaptativo: SUBSCRIBED = los cambios llegan
+        // solos por websocket (poll de respaldo a 60s); cualquier otro estado = volver
+        // al poll de 15s para no perder frescura.
+        try { window._rtVivo = (st === 'SUBSCRIBED'); } catch (_) {} });
     // El token del websocket vence (~1h): renovarlo con el vigente cada 5 min
     setInterval(async () => {
       try { const t = await _sbSesionAsegurar(); if (t && t !== _rtUltTok && _rtCliente) { _rtCliente.realtime.setAuth(t); _rtUltTok = t; } } catch (_) {}
