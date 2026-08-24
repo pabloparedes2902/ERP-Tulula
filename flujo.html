@@ -1157,19 +1157,56 @@ function cargarEspera(){
     let es = (d && d.esperando) || [];
     es = es.slice().sort((a,b)=> (b.escalado?1:0)-(a.escalado?1:0) || b.minutos-a.minutos);
     document.getElementById('espEstado').textContent = 'Se actualiza sola cada 2 min · última: ' + new Date().toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'});
-    const sem = m => m>15 ? 'var(--bad)' : m>=5 ? 'var(--warn)' : 'var(--ok)';
+    /* 24-ago-2026 - SEMAFORO ACORDADO CON PABLO. Antes era 5/15 min y el numero
+       quedaba congelado hasta el refresco de 2 min: una clienta podia llevar 4
+       minutos esperando y la pantalla decir 2. Ahora el contador corre en vivo
+       cada segundo desde el instante real en que empezo a esperar.
+       Verde 0-2 min (m:ss) - Amarillo 2-5 min (m:ss) - Rojo 5+ min (solo min).
+       Sin milisegundos a proposito: no cambian ninguna decision y obligan a
+       repintar 60 veces por segundo. */
+    const SEM_AM = 120, SEM_RO = 300;   // segundos
+    const semC = s => s >= SEM_RO ? 'var(--bad)' : s >= SEM_AM ? 'var(--warn)' : 'var(--ok)';
+    const semT = s => s >= SEM_RO ? (Math.floor(s/60) + ' min')
+                    : (Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0'));
+    const sem = m => semC(m*60);
     document.getElementById('espLista').innerHTML = es.length===0
       ? '<div style="padding:34px;text-align:center;color:var(--txt2);border:1px dashed var(--bd);border-radius:12px">✅ Nadie está esperando — todo al día</div>'
       : es.map(e=>'<a href="'+e.url+'" target="_blank" class="'+(e.escalado?'esp-escalado':'')+'" style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;margin-bottom:8px;text-decoration:none;color:inherit;background:var(--card)">'
           + '<span style="width:10px;height:10px;border-radius:50%;flex:none;background:'+(e.escalado?'var(--bad)':sem(e.minutos))+'"></span>'
           + '<b style="flex:1">'+e.nombre+'</b>'
           + (e.escalado?'<span class="esp-badge">TULA TE NECESITA</span>':'')
-          + '<span style="font-weight:800;color:'+sem(e.minutos)+'">'+e.minutos+' min</span>'
+          + '<span class="esp-reloj" data-t0="'+(Date.now()-(e.minutos*60000))+'" style="font-weight:800;font-variant-numeric:tabular-nums;color:'+sem(e.minutos)+'">'+semT(e.minutos*60)+'</span>'
           + '<span style="color:var(--txt2);font-size:12px">'+(e.asignada||'sin asesora')+'</span>'
           + '<span style="color:var(--txt2);font-size:12px">abrir en Chatwoot ↗</span></a>').join('');
   }).catch(()=>{ document.getElementById('espEstado').textContent = '⚠️ Sin conexión con el servicio de la campana'; });
+  arrancarRelojEspera();
   clearTimeout(espTimer);
   espTimer = setTimeout(()=>{ if (document.getElementById('vEspera').style.display !== 'none') cargarEspera(); }, 120000);
+}
+
+/* 24-ago-2026 - Reloj vivo de la campana. Un solo setInterval para TODA la lista
+   (no uno por fila): repinta cada segundo leyendo data-t0 de cada <span>. Se
+   apaga solo cuando la vista Espera no esta visible, para no gastar bateria. */
+let espReloj = null;
+function arrancarRelojEspera(){
+  clearInterval(espReloj);
+  const pinta = () => {
+    const v = document.getElementById('vEspera');
+    if (!v || v.style.display === 'none') { clearInterval(espReloj); return; }
+    const SEM_AM = 120, SEM_RO = 300;
+    document.querySelectorAll('#espLista .esp-reloj').forEach(el => {
+      const s = Math.max(0, Math.floor((Date.now() - Number(el.dataset.t0 || Date.now())) / 1000));
+      el.textContent = s >= SEM_RO ? (Math.floor(s/60) + ' min')
+                     : (Math.floor(s/60) + ':' + String(s%60).padStart(2,'0'));
+      el.style.color = s >= SEM_RO ? 'var(--bad)' : s >= SEM_AM ? 'var(--warn)' : 'var(--ok)';
+      const fila = el.closest('a');
+      if (fila) fila.querySelector('span').style.background = fila.classList.contains('esp-escalado')
+        ? 'var(--bad)'
+        : (s >= SEM_RO ? 'var(--bad)' : s >= SEM_AM ? 'var(--warn)' : 'var(--ok)');
+    });
+  };
+  pinta();
+  espReloj = setInterval(pinta, 1000);
 }
 
 /* ===== EMBUDO 3D ===== */
