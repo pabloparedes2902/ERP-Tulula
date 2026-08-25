@@ -237,6 +237,10 @@
   @keyframes simblink{0%,80%,100%{opacity:.25}40%{opacity:1}}
   @keyframes escBlink{0%,100%{box-shadow:0 0 0 0 rgba(255,93,93,.55)}50%{box-shadow:0 0 0 6px rgba(255,93,93,0)}}
   .esp-escalado{border-color:var(--bad)!important;background:rgba(255,93,93,.10)!important;animation:escBlink 1.2s ease-in-out infinite}
+  .esp-btn{background:var(--ok);color:#04231a;border:0;font-size:11px;font-weight:800;padding:5px 10px;border-radius:7px;cursor:pointer;flex:none}
+  .esp-btn:hover{filter:brightness(1.12)}
+  .esp-btn:disabled{opacity:.6;cursor:default}
+  .esp-tomada{background:var(--bd);color:var(--txt2);font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;flex:none}
   .esp-badge{background:var(--bad);color:#fff;font-size:11px;font-weight:800;padding:2px 7px;border-radius:6px;letter-spacing:.3px}
   @media (prefers-reduced-motion: reduce){ .esp-escalado{animation:none} }
   /* Pulso (22-ago-2026) */
@@ -1150,11 +1154,31 @@ function cargarPrompt(){
 }
 
 
+/* 24-ago-2026 - QUIEN ATIENDE. El ERP abre este archivo en un iframe y le pasa
+   ?who=<asesora> (ver _flujoLazy en index.html). Sin ese dato el boton no aparece:
+   una cola compartida sin nombre no sirve, las tres se meten a la misma clienta. */
+const YO = (new URLSearchParams(location.search).get('who') || '').trim();
+let espTomadas = {};
+async function tomarEspera(conv, seg, btn){
+  if (!YO) return;
+  btn.disabled = true; btn.textContent = 'guardando…';
+  try {
+    await fetch(BASE_N8N + '/espera-tomar', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({conversation_id: conv, asesora: YO, espera_seg: seg})});
+    espTomadas[conv] = {asesora: YO};
+    cargarEspera();
+  } catch(e) { btn.disabled = false; btn.textContent = 'la atiendo yo'; }
+}
 let espTimer = null;
 function cargarEspera(){
   document.getElementById('espEstado').textContent = 'Consultando…';
   fetch(BASE_N8N + '/campana-espera').then(r=>r.json()).then(d=>{
     let es = (d && d.esperando) || [];
+    fetch(BASE_N8N + '/espera-tomadas').then(r=>r.json()).then(t=>{
+      const arr = Array.isArray(t) ? t : (t ? [t] : []);
+      espTomadas = {}; arr.forEach(x=>{ if(x && x.conversation_id) espTomadas[x.conversation_id] = x; });
+      pintarEspera(es);
+    }).catch(()=> pintarEspera(es));
     es = es.slice().sort((a,b)=> (b.escalado?1:0)-(a.escalado?1:0) || b.minutos-a.minutos);
     document.getElementById('espEstado').textContent = 'Se actualiza sola cada 2 min · última: ' + new Date().toLocaleTimeString('es-PE',{hour:'2-digit',minute:'2-digit'});
     /* 24-ago-2026 - SEMAFORO ACORDADO CON PABLO. Antes era 5/15 min y el numero
@@ -1169,15 +1193,7 @@ function cargarEspera(){
     const semT = s => s >= SEM_RO ? (Math.floor(s/60) + ' min')
                     : (Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0'));
     const sem = m => semC(m*60);
-    document.getElementById('espLista').innerHTML = es.length===0
-      ? '<div style="padding:34px;text-align:center;color:var(--txt2);border:1px dashed var(--bd);border-radius:12px">✅ Nadie está esperando — todo al día</div>'
-      : es.map(e=>'<a href="'+e.url+'" target="_blank" class="'+(e.escalado?'esp-escalado':'')+'" style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;margin-bottom:8px;text-decoration:none;color:inherit;background:var(--card)">'
-          + '<span style="width:10px;height:10px;border-radius:50%;flex:none;background:'+(e.escalado?'var(--bad)':sem(e.minutos))+'"></span>'
-          + '<b style="flex:1">'+e.nombre+'</b>'
-          + (e.escalado?'<span class="esp-badge">TULA TE NECESITA</span>':'')
-          + '<span class="esp-reloj" data-t0="'+(Date.now()-(e.minutos*60000))+'" style="font-weight:800;font-variant-numeric:tabular-nums;color:'+sem(e.minutos)+'">'+semT(e.minutos*60)+'</span>'
-          + '<span style="color:var(--txt2);font-size:12px">'+(e.asignada||'sin asesora')+'</span>'
-          + '<span style="color:var(--txt2);font-size:12px">abrir en Chatwoot ↗</span></a>').join('');
+    // el pintado vive en pintarEspera(), lo llama el fetch de arriba
   }).catch(()=>{ document.getElementById('espEstado').textContent = '⚠️ Sin conexión con el servicio de la campana'; });
   arrancarRelojEspera();
   clearTimeout(espTimer);
@@ -1187,6 +1203,25 @@ function cargarEspera(){
 /* 24-ago-2026 - Reloj vivo de la campana. Un solo setInterval para TODA la lista
    (no uno por fila): repinta cada segundo leyendo data-t0 de cada <span>. Se
    apaga solo cuando la vista Espera no esta visible, para no gastar bateria. */
+
+function pintarEspera(es){
+    document.getElementById('espLista').innerHTML = es.length===0
+      ? '<div style="padding:34px;text-align:center;color:var(--txt2);border:1px dashed var(--bd);border-radius:12px">✅ Nadie está esperando — todo al día</div>'
+      : es.map(e=>'<a href="'+e.url+'" target="_blank" class="'+(e.escalado?'esp-escalado':'')+'" style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--bd);border-radius:10px;margin-bottom:8px;text-decoration:none;color:inherit;background:var(--card)">'
+          + '<span style="width:10px;height:10px;border-radius:50%;flex:none;background:'+(e.escalado?'var(--bad)':sem(e.minutos))+'"></span>'
+          + '<b style="flex:1">'+e.nombre+'</b>'
+          + (e.escalado?'<span class="esp-badge">TULA TE NECESITA</span>':'')
+          + '<span class="esp-reloj" data-t0="'+(Date.now()-(e.minutos*60000))+'" style="font-weight:800;font-variant-numeric:tabular-nums;color:'+sem(e.minutos)+'">'+semT(e.minutos*60)+'</span>'
+          + '<span style="color:var(--txt2);font-size:12px">'+(e.asignada||'sin asesora')+'</span>'
+          + (espTomadas[e.conv] ? '<span class="esp-tomada">la atiende '+espTomadas[e.conv].asesora+'</span>' : (YO ? '<button class="esp-btn" data-conv="'+e.conv+'" data-seg="'+(e.minutos*60)+'">la atiendo yo</button>' : ''))
+          + '<span style="color:var(--txt2);font-size:12px">abrir en Chatwoot ↗</span></a>').join('');
+  document.querySelectorAll('#espLista .esp-btn').forEach(b=>{
+    b.addEventListener('click', ev=>{ ev.preventDefault(); ev.stopPropagation();
+      tomarEspera(Number(b.dataset.conv), Number(b.dataset.seg), b); });
+  });
+  arrancarRelojEspera();
+}
+
 let espReloj = null;
 function arrancarRelojEspera(){
   clearInterval(espReloj);
