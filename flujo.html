@@ -284,7 +284,7 @@
   <div class="hbtns">
     <button class="btn" id="bEmbudo" onclick="irVista('embudo')">Embudo</button>
     <button class="btn" id="bCalidad" onclick="irVista('calidad')">Entrenamiento</button>
-    <button class="btn" id="bEspera" onclick="irVista('espera')">Espera</button><button class="btn" id="bSeg" onclick="irVista('seg')">Seguimientos</button>
+    <button class="btn" id="bEspera" onclick="irVista('espera')">Espera</button><button class="btn" id="bSeg" onclick="irVista('seg')">Seguimientos</button><button class="btn" id="bRec" onclick="irVista('rec')">Recuperar</button>
     <button class="btn on" id="bDetalle" onclick="irVista('detalle')">Flujo</button>
     <button class="btn" id="bLab" onclick="irVista('lab')">Laboratorio</button>
     <!-- 21-ago-2026: se vuelve a abrir. Los KPIs del prompt si se mudaron a Embudo,
@@ -365,6 +365,14 @@
   <div style="display:none"><table id="pl-toques"></table><table id="pl-salida"></table></div>
 </div>
 
+<!-- 25-ago-2026 — RECUPERAR: clientas a las que el validador les tiro la respuesta
+     buena y les mando "dame un segundito". Nadie escalo: quedaron esperando.
+     El validador ya se arreglo; esta pestana es para rescatar a las de atras. -->
+<div id="vRec" style="display:none;padding:18px 22px;max-width:none;margin:0;flex:1;overflow-y:auto;min-height:0">
+  <h2 style="margin:0 0 3px">🛟 Recuperar · clientas que quedaron esperando</h2>
+  <div style="color:var(--txt2);font-size:12px;margin-bottom:14px" id="recSub">Cargando…</div>
+  <div id="recZona"></div>
+</div>
 <div id="vSeg" style="display:none;padding:18px 22px;max-width:none;margin:0;flex:1;overflow-y:auto;min-height:0">
   <h2 style="margin:0 0 3px">📈 Seguimientos · evolución del agente</h2>
   <div style="color:var(--txt2);font-size:12px;margin-bottom:16px">
@@ -946,13 +954,14 @@ function importar(inp){
 function irVista(v){
   if (v==='general') v='detalle';
   window.__VISTA = v;   /* 18-ago: el 🔄 del ERP necesita saber que vista recargar */
-  ['bDetalle','bEmbudo','bEspera','bSeg','bLab','bCalidad','bPrompt','bPulso'].forEach(id=>{const b=document.getElementById(id); if(b) b.classList.remove('on');});
-  document.getElementById(v==='embudo'?'bEmbudo':v==='espera'?'bEspera':v==='seg'?'bSeg':v==='lab'?'bLab':v==='calidad'?'bCalidad':v==='prompt'?'bPrompt':v==='pulso'?'bPulso':'bDetalle').classList.add('on');
+  ['bDetalle','bEmbudo','bEspera','bSeg','bRec','bLab','bCalidad','bPrompt','bPulso'].forEach(id=>{const b=document.getElementById(id); if(b) b.classList.remove('on');});
+  document.getElementById(v==='rec'?'bRec':v==='embudo'?'bEmbudo':v==='espera'?'bEspera':v==='seg'?'bSeg':v==='lab'?'bLab':v==='calidad'?'bCalidad':v==='prompt'?'bPrompt':v==='pulso'?'bPulso':'bDetalle').classList.add('on');
   vp.style.display = (v==='detalle')?'block':'none';
   document.getElementById('barra2').style.display = (v==='detalle')?'flex':'none';
   document.getElementById('vEmbudo').style.display = v==='embudo'?'block':'none';
   document.getElementById('vEspera').style.display = v==='espera'?'block':'none';
   document.getElementById('vSeg').style.display = v==='seg'?'block':'none';
+  document.getElementById('vRec').style.display = v==='rec'?'block':'none';
   document.getElementById('vLab').style.display = v==='lab'?'block':'none';
   document.getElementById('vPrompt').style.display = v==='prompt'?'block':'none';
   document.getElementById('vCalidad').style.display = v==='calidad'?'block':'none';
@@ -964,6 +973,7 @@ function irVista(v){
   }
   if (v==='embudo') cargarEmbudo();
   if (v==='espera') cargarEspera();
+  if (v==='rec') cargarRecuperar();
   if (v==='seg') cargarPulso();   // misma fuente: pintarPulso llena las dos tablas
   if (v==='lab') pintarLab();
   if (v==='prompt') cargarPrompt();
@@ -1275,8 +1285,7 @@ function cargarPrompt(){
       + '<div style="width:3px;flex:0 0 3px;border-radius:2px;background:linear-gradient(180deg,transparent,var(--bd) 12%,var(--bd) 88%,transparent);opacity:1"></div>'
       + '<div style="flex:3 1 0;min-width:0">'
       +   _grpTit('Prompt')
-      +   '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">'
-      +     kpi('Calificacion', score===null?'—':score.toFixed(2), _tulaSrc?(_tulaSrc.convs+' convs de Tula'+_tulaVent):'sin datos', score===null?'inherit':(score>=8?'var(--ok)':score>=6?'var(--warn)':'var(--bad)'))
+      +   '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">'
       +     kpi('Escaladas', dec(d.escaladas)+'%', (d.convs||0)+' conversaciones', (d.escaladas!==null&&d.escaladas<15)?'var(--ok)':'var(--warn)')
       +     kpi('Faltas', _faltas===null?'—':_faltas.toFixed(1)+'%', _pieFaltas, _faltas===null?'inherit':(_faltas<2?'var(--ok)':_faltas<6?'var(--warn)':'var(--bad)'))
       +   '</div>'
@@ -1328,6 +1337,70 @@ async function tomarEspera(conv, seg, btn){
   } catch(e) { btn.disabled = false; btn.textContent = 'la atiendo yo'; }
 }
 let espTimer = null;
+/* ══════════════════════════════════════════════════════════════════════════
+   RECUPERAR (25-ago-2026)
+   Fuente: bot.v_recuperar_clientas via /webhook/recuperar. Cada fila es una
+   clienta a la que el validador le bloqueo una respuesta correcta y le mando
+   el fallback. La columna "respuesta" es el texto que Tula tenia listo: se
+   copia y se le manda tal cual.
+   ══════════════════════════════════════════════════════════════════════════ */
+function cargarRecuperar(){
+  const z=document.getElementById('recZona'); if(!z) return;
+  document.getElementById('recSub').textContent='Consultando…';
+  fetch(BASE_N8N+'/recuperar?t='+Date.now()).then(r=>r.json())
+    .then(d=>pintarRecuperar(Array.isArray(d)?d:(d?[d]:[])))
+    .catch(()=>{ z.innerHTML=''; document.getElementById('recSub').textContent='No se pudo consultar.'; });
+}
+function _recEsc(t){ return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function recCopiar(i){
+  const el=document.getElementById('recTxt'+i); if(!el) return;
+  const t=el.getAttribute('data-full')||el.textContent;
+  navigator.clipboard.writeText(t).then(()=>{
+    const b=document.getElementById('recBtn'+i); if(!b) return;
+    const v=b.textContent; b.textContent='copiado ✓';
+    setTimeout(()=>{ b.textContent=v; },1400);
+  }).catch(()=>{});
+}
+let recFilas = [];
+function recMarcar(i){
+  const f = recFilas[i]; if(!f) return;
+  if(!YO){ return; }
+  const b = document.getElementById('recMk'+i);
+  if(b){ b.disabled = true; b.textContent = 'guardando…'; }
+  fetch(BASE_N8N+'/recuperar-marcar',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({conversacion:f.conversacion, ts:f.ts, asesora:YO})})
+    .then(()=>cargarRecuperar())
+    .catch(()=>{ if(b){ b.disabled=false; b.textContent='ya la contacte'; } });
+}
+function pintarRecuperar(filas){
+  const z=document.getElementById('recZona');
+  const sub=document.getElementById('recSub');
+  recFilas = filas;
+  if(!filas.length){ z.innerHTML='<div style="color:var(--txt2);font-size:12.5px">Ninguna. El validador no bloqueo nada en las ultimas 3 semanas.</div>'; sub.textContent=''; return; }
+  const col = f => f==='color_inexistente'?'var(--warn)': f==='precio_inventado'?'var(--bad)':'var(--txt2)';
+  const pend = filas.filter(f=>!f.contactada_por).length;
+  sub.innerHTML = '<b>'+pend+'</b> por contactar de '+filas.length+' en los ultimos 21 dias. Escribile, pegale la respuesta que Tula tenia lista y marcala.'
+    + (YO ? '' : ' <span style="color:var(--warn)">Abrí esta pestaña desde el ERP para poder marcarlas con tu nombre.</span>');
+  z.innerHTML = filas.map((f,i)=>{
+    const resp=String(f.respuesta||'').trim();
+    const hecha=!!f.contactada_por;
+    return '<div style="border:1px solid var(--bd);border-radius:12px;padding:12px 14px;margin-bottom:9px;background:var(--card);opacity:'+(hecha?'.5':'1')+'">'
+      +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:6px">'
+      +  '<b style="font-size:14px">'+_recEsc(f.numero||'sin numero')+'</b>'
+      +  '<span style="font-size:11px;color:var(--txt2)">'+_recEsc(f.fecha||'')+'</span>'
+      +  '<span style="font-size:10.5px;padding:1px 7px;border-radius:99px;border:1px solid '+col(f.falta)+';color:'+col(f.falta)+'">'+_recEsc(f.falta||'')+'</span>'
+      +  (hecha?'<span style="font-size:10.5px;padding:1px 7px;border-radius:99px;background:var(--ok);color:#0b1220;font-weight:700">contactada por '+_recEsc(f.contactada_por)+' · '+_recEsc(f.contactada_at||'')+'</span>':'')
+      +  '<span style="flex:1"></span>'
+      +  (resp&&!hecha?'<button class="btn" id="recBtn'+i+'" style="font-size:11px;padding:3px 10px" onclick="recCopiar('+i+')">copiar respuesta</button>':'')
+      +  (!hecha&&YO?'<button class="btn" id="recMk'+i+'" style="font-size:11px;padding:3px 10px" onclick="recMarcar('+i+')">ya la contacte</button>':'')
+      +'</div>'
+      +'<div style="font-size:12.5px;margin-bottom:5px"><span style="color:var(--txt2)">ella escribio:</span> '+_recEsc(f.pregunto||'\u2014')+'</div>'
+      +'<div style="font-size:11.5px;color:var(--txt2);margin-bottom:7px">se le bloqueo: '+_recEsc(f.detalle||'')+'</div>'
+      +(resp&&!hecha?'<div id="recTxt'+i+'" data-full="'+_recEsc(resp)+'" style="font-size:12.5px;white-space:pre-wrap;background:rgba(255,255,255,.04);border-radius:8px;padding:9px 11px;line-height:1.45">'+_recEsc(resp)+'</div>':'')
+      +'</div>';
+  }).join('');
+}
+
 function cargarEspera(){
   document.getElementById('espEstado').textContent = 'Consultando…';
   fetch(BASE_N8N + '/campana-espera').then(r=>r.json()).then(d=>{
@@ -1732,8 +1805,7 @@ function pintarPrompt(av, idx, idx7){
 
   z.innerHTML =
       '<div style="min-width:0">' + gt('Salud del prompt')
-    +   '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">'
-    +     kpi('Calificacion', score===null?'—':score.toFixed(2), tulaSrc?(tulaSrc.convs+' convs de Tula'+tulaVent):'sin datos', score===null?'inherit':(score>=8?'var(--ok)':score>=6?'var(--warn)':'var(--bad)'))
+    +   '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px">'
     +     kpi('Escaladas', dec(d.escaladas)+'%', (d.convs||0)+' conversaciones', (d.escaladas!=null&&d.escaladas<15)?'var(--ok)':'var(--warn)')
     +     kpi('Faltas', faltas===null?'—':faltas.toFixed(1)+'%', pieFaltas, faltas===null?'inherit':(faltas<2?'var(--ok)':faltas<6?'var(--warn)':'var(--bad)'))
     +   '</div></div>';
@@ -1756,7 +1828,10 @@ const COLOR_ASESORA = {
 const PALETA_EXTRA = ['#4aa8d8','#ff8f6b','#b18cff','#59d0c4','#d4c05a'];
 
 function pintarSerie(idx){
-  const z = document.getElementById('embSerie'); if(!z) return;
+  /* 25-ago-2026 — el score se retiro del panel: estaba anticorrelacionado con vender
+     (r=-0.942). Se mide por embudo. */
+  const z = document.getElementById('embSerie'); if(z) z.innerHTML=''; return;
+  if(!z) return;
   const hist = (idx && idx.historia) || [];
   if(!hist.length){ z.innerHTML=''; return; }
   const fechas = [...new Set(hist.map(x=>x.fecha))].sort();
@@ -2684,7 +2759,9 @@ function cargarScorecard(){
     .catch(()=>{ const z=document.getElementById('scZona'); if(z) z.innerHTML=''; });
 }
 function pintarScorecard(d){
-  const z=document.getElementById('scZona'); if(!z) return;
+  /* 25-ago-2026 — retirado: el score no predice ventas. */
+  const z=document.getElementById('scZona'); if(z) z.innerHTML=''; return;
+  if(!z) return;
   const filas=(d&&d.tabla)||[]; if(!filas.length){ z.innerHTML=''; return; }
   const colScore=s=> s>=8?'var(--ok)': s>=6?'var(--warn)':'var(--bad)';
   const mejor=Math.max(...filas.map(v=>+v.indice||0));
