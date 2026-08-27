@@ -409,6 +409,15 @@
   <!-- 27-ago-2026 — RETIRADOS "Saneamiento del prompt" y "Bloques del prompt".
        Repetian el embudo que ya vive en su pestana, y los bloques nunca se
        usaron para decidir nada: Pablo pidio quitarlos. -->
+  <div class="pl-sec">Mesa de etiquetado · aquí se entrena</div>
+  <div id="mesaCab" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+    <select id="mesaSenal" onchange="mesaCargar()"
+            style="background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:6px 9px;font-size:12px;font-weight:700;cursor:pointer"></select>
+    <span id="mesaCuenta" style="font-size:12px;color:var(--txt2)"></span>
+    <span style="margin-left:auto;font-size:11.5px;color:var(--txt2)">Tu criterio es lo que entrena al agente. 10 al día alcanza.</span>
+  </div>
+  <div id="mesaCaso"></div>
+
   <div class="pl-sec">Bitácora de cambios</div>
   <div id="tlBita" style="color:var(--txt2);font-size:12.5px">cargando…</div>
 </div>
@@ -1079,7 +1088,7 @@ function _pintarPeriodo(){
 function _recargarPorPeriodo(){
   const v = window.__VISTA;
   if (v==='seg'){ cargarPulso(); cargarAutopsia(); }
-  else if (v==='prompt'){ cargarTaller(); }
+  else if (v==='prompt'){ cargarTaller(); mesaCargar(); }
   else { cargarEmbudo(); }
 }
 
@@ -1194,6 +1203,107 @@ function pintarSello(){
 }
 try { pintarSello(); } catch(e){}
 
+/* ============================================================
+   MESA DE ETIQUETADO (27-ago-2026)
+   Aca es donde de verdad se entrena a Tula. El sistema marca respuestas
+   sospechosas solas — 3.299 acumuladas sin revisar — pero decidir cual estuvo
+   mal DE VERDAD y que debio decir en su lugar no lo puede hacer el sistema.
+   Una a la vez, tres botones, y si estuvo mal se escribe la version buena.
+   Eso alimenta bot.correcciones, que es de donde salen los ejemplos y las reglas.
+   ============================================================ */
+const URL_MESA_COLA = BASE_N8N + '/etiquetar-cola';
+const URL_MESA_VOTO = BASE_N8N + '/etiquetar-guardar';
+const MESA_NOM = {
+  repregunta:'Repregunta algo que ella ya dijo',
+  generico:'Responde genérico, sin agarrar lo que preguntó',
+  robotico:'Suena a robot',
+  repite:'Repite lo que ya había dicho',
+  contradice:'Se contradice con lo dicho antes',
+  niega_stock_falso:'Dice que no hay stock cuando sí hay'
+};
+let MESA = { casos: [], i: 0, senal: 'repregunta' };
+
+function mesaCargar(){
+  const sel = document.getElementById('mesaSenal');
+  const senal = (sel && sel.value) || MESA.senal || 'repregunta';
+  MESA.senal = senal;
+  const z = document.getElementById('mesaCaso');
+  if (z) z.innerHTML = '<div style="color:var(--txt2);font-size:13px">Cargando…</div>';
+  fetch(URL_MESA_COLA + '?senal=' + encodeURIComponent(senal) + '&n=12&t=' + Date.now())
+    .then(r=>r.json()).then(d=>{
+      MESA.casos = d.casos || []; MESA.i = 0; MESA.pendientes = d.pendientes || 0;
+      const s2 = document.getElementById('mesaSenal');
+      if (s2 && !s2.options.length){
+        s2.innerHTML = (d.por_senal||[]).filter(x=>MESA_NOM[x.senal])
+          .map(x=>'<option value="'+x.senal+'">'+MESA_NOM[x.senal]+' ('+x.n+')</option>').join('');
+        s2.value = senal;
+      }
+      mesaPintar();
+    }).catch(()=>{ if(z) z.innerHTML='<div style="color:var(--bad);font-size:13px">No se pudo leer la cola.</div>'; });
+}
+
+function _mEsc(t){ return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function mesaPintar(){
+  const z = document.getElementById('mesaCaso'); if(!z) return;
+  const c = document.getElementById('mesaCuenta');
+  const caso = MESA.casos[MESA.i];
+  if (c) c.textContent = MESA.pendientes ? (MESA.pendientes + ' sin revisar · vas por ' + Math.min(MESA.i+1, MESA.casos.length) + ' de ' + MESA.casos.length + ' en esta tanda') : '';
+  if (!caso){
+    z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:12px;padding:22px;background:var(--card);text-align:center">'
+      + '<div style="font-size:15px;font-weight:800;margin-bottom:5px">Tanda terminada 👏</div>'
+      + '<div style="color:var(--txt2);font-size:13px;margin-bottom:12px">Cada etiqueta tuya vale más que cien métricas.</div>'
+      + '<button class="btn verde" onclick="mesaCargar()">Traer otra tanda</button></div>';
+    return;
+  }
+  const burbuja = (quien, txt, mio) =>
+    '<div style="margin-bottom:8px"><div style="font-size:10.5px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--txt2);margin-bottom:3px">'+quien+'</div>'
+    + '<div style="background:'+(mio?'var(--bd)':'rgba(128,128,160,.12)')+';border-radius:10px;padding:9px 12px;font-size:13.5px;line-height:1.5;white-space:pre-wrap">'+_mEsc(txt)+'</div></div>';
+
+  z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:12px;padding:16px 18px;background:var(--card)">'
+    + (caso.previo ? burbuja('Tula, antes', caso.previo, true) : '')
+    + burbuja('La clienta', caso.cliente || '(sin texto)', false)
+    + burbuja('Tula respondió', caso.bot, true)
+    + (caso.porque ? '<div style="font-size:12.5px;color:var(--txt2);border-left:3px solid var(--warn);padding:6px 0 6px 10px;margin:10px 0 12px;line-height:1.5"><b>Por qué se marcó:</b> '+_mEsc(caso.porque)+'</div>' : '')
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
+    +   '<button class="btn" style="border-color:var(--bad);color:var(--bad);font-weight:800" onclick="mesaVoto(\'mal\')">Estuvo mal</button>'
+    +   '<button class="btn" style="border-color:var(--ok);color:var(--ok);font-weight:800" onclick="mesaVoto(\'bien\')">Estuvo bien</button>'
+    +   '<button class="btn" onclick="mesaVoto(\'no_aplica\')">No aplica</button>'
+    +   '<span style="margin-left:auto;font-size:11px;color:var(--txt2);align-self:center">conversación '+_mEsc(caso.conversacion)+'</span>'
+    + '</div>'
+    + '<div id="mesaBueno" style="display:none">'
+    +   '<div style="font-size:12px;font-weight:800;margin-bottom:5px">¿Qué debió decir?</div>'
+    +   '<textarea id="mesaTexto" rows="3" placeholder="Escríbelo como se lo dirías tú a la clienta"'
+    +     ' style="width:100%;background:var(--bg3,rgba(255,255,255,.05));border:1.5px solid var(--bd);border-radius:9px;color:var(--txt);padding:9px 11px;font-size:13px;font-family:inherit;resize:vertical"></textarea>'
+    +   '<div style="display:flex;gap:8px;margin-top:8px">'
+    +     '<button class="btn verde" onclick="mesaGuardar(\'mal\')">Guardar y siguiente</button>'
+    +     '<button class="btn" onclick="document.getElementById(\'mesaBueno\').style.display=\'none\'">Cancelar</button>'
+    +   '</div>'
+    + '</div></div>';
+}
+
+function mesaVoto(v){
+  if (v === 'mal'){
+    const b = document.getElementById('mesaBueno');
+    if (b){ b.style.display='block'; const t=document.getElementById('mesaTexto'); if(t) t.focus(); }
+    return;
+  }
+  mesaGuardar(v);
+}
+
+function mesaGuardar(v){
+  const caso = MESA.casos[MESA.i]; if(!caso) return;
+  const t = document.getElementById('mesaTexto');
+  const bueno = (v==='mal' && t) ? String(t.value||'').trim() : '';
+  if (v==='mal' && bueno.length < 3){ if(t) t.focus(); return; }
+  fetch(URL_MESA_VOTO, {method:'POST', headers:{'content-type':'application/json'},
+    body: JSON.stringify({ id: caso.id, veredicto: v, texto_bueno: bueno, nota: '' })})
+    .then(r=>r.json()).then(()=>{
+      if (MESA.pendientes) MESA.pendientes--;
+      MESA.i++; mesaPintar();
+    }).catch(()=>{ alert('No se pudo guardar. Revisa la conexión y vuelve a intentar.'); });
+}
+
 /* ===== VISTAS ===== */
 function irVista(v){
   if (v==='general') v='detalle';
@@ -1216,7 +1326,7 @@ function irVista(v){
   if (v==='embudo') { _pintarPeriodo(); cargarEmbudo(); }
   if (v==='hoy'){ cargarEspera(); cargarRecuperar(); }
   if (v==='seg') segAplicar();   // segAplicar llama a cargarPulso y cargarAutopsia con el rango
-  if (v==='prompt') cargarTaller();
+  if (v==='prompt'){ cargarTaller(); mesaCargar(); }
   if (v==='calidad') cargarCalidad();
   if (v==='pulso') cargarPulso();
 }
