@@ -267,15 +267,17 @@
   @media (prefers-reduced-motion: reduce){ .esp-escalado{animation:none} }
   /* Mesa: la lista a la izquierda para navegar y volver, el caso a la derecha.
      Un auditor necesita poder saltar, retomar y ver cuanto le falta. (27-ago) */
-  .mesa-split{display:grid;grid-template-columns:270px 1fr;gap:14px;align-items:start}
+  .mesa-split{display:grid;grid-template-columns:minmax(330px,26%) 1fr;gap:14px;align-items:start}
   @media (max-width:900px){ .mesa-split{grid-template-columns:1fr} }
   .mesa-lista{border:1px solid var(--bd);border-radius:12px;background:var(--card);
-              max-height:520px;overflow-y:auto;padding:6px}
+              max-height:560px;overflow-y:auto;padding:6px}
   .mesa-it{padding:8px 10px;border-radius:9px;cursor:pointer;border:1px solid transparent;margin-bottom:3px}
   .mesa-it:hover{background:rgba(128,128,160,.10)}
   .mesa-it.on{border-color:var(--accent,var(--ok));background:rgba(128,128,160,.14)}
   .mesa-it.hecho{opacity:.42}
-  .mesa-it .f{font-size:12px;font-weight:650;line-height:1.35;overflow-wrap:anywhere}
+  /* Dos lineas exactas: la frase en una, los datos en otra. Antes se partia en
+     cuatro y la lista era ilegible. (27-ago-2026) */
+  .mesa-it .f{font-size:12px;font-weight:650;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .mesa-it .m{font-size:10.5px;color:var(--txt2);margin-top:2px;display:flex;gap:7px}
   .mesa-cubre{font-weight:800;color:var(--warn)}
   .mesa-campo{margin-bottom:9px}
@@ -419,8 +421,8 @@
   <div style="color:var(--txt2);font-size:12px;margin-bottom:12px" id="recSub">Cargando…</div>
   <div id="recZona"></div>
 </div>
-<div id="vPrompt" style="display:none;padding:26px;max-width:3000px;margin:0 auto">
-  <h2 style="margin:0 0 14px">Taller · el agente y su entrenamiento</h2>
+<div id="vPrompt" style="display:none;padding:20px 26px;max-width:none;margin:0;width:100%">
+  <h2 style="margin:0 0 16px">Taller</h2>
   <div class="periodos" style="margin:0 0 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-start">
     <select id="tlPeriodo" onchange="tlOnPeriodo()">
       <option value="mtd" selected>Mes hasta hoy</option>
@@ -444,7 +446,7 @@
   <!-- 27-ago-2026 — RETIRADOS "Saneamiento del prompt" y "Bloques del prompt".
        Repetian el embudo que ya vive en su pestana, y los bloques nunca se
        usaron para decidir nada: Pablo pidio quitarlos. -->
-  <div class="pl-sec">Mesa de etiquetado · aquí se entrena</div>
+  <div class="pl-sec">Mesa de etiquetado</div>
   <div id="mesaCab" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
     <select id="mesaSenal" onchange="mesaCargar()"
             style="background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:6px 9px;font-size:12px;font-weight:700;cursor:pointer"></select>
@@ -452,8 +454,7 @@
     <span id="mesaCuenta" style="font-size:12px;color:var(--txt2)"></span>
     <span id="mesaRacha" style="margin-left:auto"></span>
   </div>
-  <div style="font-size:11.5px;color:var(--txt2);margin-bottom:12px">
-    El juez eres tú. Lo de abajo lo marcó el asistente del juez, que se equivoca — por eso lo miras tú.</div>
+
   <div class="mesa-split">
     <div id="mesaLista" class="mesa-lista"></div>
     <div id="mesaCaso"></div>
@@ -1179,32 +1180,49 @@ function cargarTaller(){
 }
 
 function pintarTaller(){
-  /* 27-ago-2026 — los cuatro indicadores que le sirven a un JUEZ. Ninguno es una
-     venta: todos dependen del trabajo de Pablo y ninguno se mueve por la
-     temporada ni por lo que hizo una asesora ayer. Ese es el criterio. */
-  const d = TALLER || {}, j = d.juez || {};
+  /* 27-ago-2026 — LOS PARAMETROS. Cada regla del manual con su porcentaje de
+     incumplimiento sobre todas las respuestas del bot, y contra la semana
+     anterior. Estos si dependen del trabajo de entrenamiento: si bajan, sirvio. */
+  const d = TALLER || {};
   const box = document.getElementById('tlJuez'); if(!box) return;
-  const tarjeta = (t, v, sub, col) =>
-      '<div style="min-width:0;border:1px solid var(--bd);border-radius:12px;padding:13px 12px;background:var(--card);text-align:center">'
-    + '<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.3px">'+t+'</div>'
-    + '<div style="font-size:25px;font-weight:800;line-height:1.3;color:'+(col||'inherit')+'">'+v+'</div>'
-    + '<div style="font-size:10.5px;color:var(--txt2);line-height:1.35">'+sub+'</div></div>';
-  const n = x => (x===null||x===undefined) ? '—' : x;
-  const dl = Number(j.senal_delta);
-  const dtxt = (j.senal_delta===null||j.senal_delta===undefined) ? '—' : ((dl>0?'+':'')+dl+'%');
-  const dcol = (j.senal_delta===null||j.senal_delta===undefined) ? 'inherit' : (dl < 0 ? 'var(--ok)' : (dl > 0 ? 'var(--bad)' : 'inherit'));
+  const P = d.parametros || [];
+  if (!P.length){ box.innerHTML=''; return; }
+  const et = d.etiquetas || {};
+  const cel = p => {
+    const dl = Number(p.delta);
+    const sube = dl > 0.05, baja = dl < -0.05;
+    const col = baja ? 'var(--ok)' : (sube ? 'var(--bad)' : 'var(--txt2)');
+    const fl  = baja ? '▼' : (sube ? '▲' : '●');
+    const act = (MESA.senal === p.senal);
+    return '<div onclick="mesaVerSenal(\''+p.senal+'\')" title="Ver los casos de esta regla"'
+      + ' style="cursor:pointer;min-width:0;border:1.5px solid '+(act?'var(--ok)':'var(--bd)')+';border-radius:12px;'
+      + 'padding:12px 13px;background:var(--card)">'
+      + '<div style="font-size:11.5px;font-weight:700;line-height:1.3;margin-bottom:6px">'+(PARAM_NOM[p.senal]||p.senal)+'</div>'
+      + '<div style="display:flex;align-items:baseline;gap:7px">'
+      +   '<span style="font-size:26px;font-weight:800;letter-spacing:-.5px">'+Number(p.pct).toFixed(1)+'%</span>'
+      +   '<span style="font-size:12px;font-weight:800;color:'+col+'">'+fl+' '+Math.abs(dl).toFixed(1)+'</span>'
+      + '</div>'
+      + '<div style="font-size:10.5px;color:var(--txt2);margin-top:3px">'+p.n+' de '+(d.respuestas_7d||0)+' · '+p.pendientes+' por revisar</div>'
+      + '</div>';
+  };
   box.innerHTML =
-      '<div style="font-size:12.5px;font-weight:800;letter-spacing:1.6px;color:var(--txt2);text-transform:uppercase;margin:0 0 8px 2px">Cómo va tu entrenamiento</div>'
-    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px">'
-    +   tarjeta('Tus etiquetas', n(j.etiquetas), n(j.etiquetas_semana)+' esta semana', 'inherit')
-    +   tarjeta('Acierta el asistente', j.precision===null||j.precision===undefined ? 'sin medir' : j.precision+'%',
-               'en '+(MESA_NOM[MESA.senal]||MESA.senal||'la señal'), 'inherit')
-    +   tarjeta('La señal que atacas', dtxt, 'esta semana vs la anterior', dcol)
-    +   tarjeta('La nota más baja', n(j.dim_valor), n(j.dim_nombre)+' · era '+n(j.dim_antes), 'inherit')
+      '<div style="display:flex;align-items:baseline;gap:10px;margin:0 0 9px 2px;flex-wrap:wrap">'
+    +   '<span style="font-size:12.5px;font-weight:800;letter-spacing:1.6px;color:var(--txt2);text-transform:uppercase">Qué está incumpliendo Tula</span>'
+    +   '<span style="font-size:11px;color:var(--txt2)">últimos 7 días vs los 7 anteriores</span>'
+    +   '<span style="margin-left:auto;font-size:11px;color:var(--txt2)">'+(et.total||0)+' etiquetas tuyas · '+(et.semana||0)+' esta semana</span>'
     + '</div>'
-    + '<div style="font-size:11px;color:var(--txt2);margin-top:7px;line-height:1.5">'
-    +   'Los cuatro dependen de tu trabajo. Las ventas viven en Embudo, porque se mueven por cosas que tú no controlas.'
-    + '</div>';
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:10px">'
+    + P.map(cel).join('') + '</div>';
+}
+
+/* Un clic en un parametro trae sus casos a la mesa. */
+function mesaVerSenal(sen){
+  const sel = document.getElementById('mesaSenal');
+  if (sel){ sel.value = sen; }
+  MESA.senal = sen;
+  mesaCargar();
+  const m = document.getElementById('mesaCab');
+  if (m && m.scrollIntoView) m.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 /* 27-ago-2026 — Sello de version del panel. Solo dice que version estas viendo.
@@ -1233,6 +1251,13 @@ try { pintarSello(); } catch(e){}
    ============================================================ */
 const URL_MESA_COLA = BASE_N8N + '/etiquetar-cola';
 const URL_MESA_VOTO = BASE_N8N + '/etiquetar-guardar';
+const PARAM_NOM = {
+  repregunta:'Vuelve a pedir un dato que ella ya dio',
+  generico:'Responde sin ningún dato concreto',
+  repite:'Repite un mensaje suyo anterior',
+  contradice:'Da dos precios o dos envíos distintos',
+  niega_stock_falso:'Dice que no hay, y después lo ofrece'
+};
 const MESA_NOM = {
   repregunta:'Repregunta algo que ella ya dijo',
   generico:'Responde genérico, sin agarrar lo que preguntó',
@@ -1296,7 +1321,7 @@ function mesaLista(){
   z.innerHTML = (MESA.casos||[]).map(function(c,k){
     const hecho = MESA.hechos && MESA.hechos[c.id];
     return '<div class="mesa-it'+(k===MESA.i?' on':'')+(hecho?' hecho':'')+'" onclick="mesaIr('+k+')">'
-      + '<div class="f">'+_mEsc(String(c.bot||'').slice(0,70))+'</div>'
+      + '<div class="f" title="'+_mEsc(c.bot)+'">'+_mEsc(String(c.bot||''))+'</div>'
       + '<div class="m"><span>#'+_mEsc(c.conversacion)+'</span>'
       + (Number(c.cubre)>1 ? '<span class="mesa-cubre">cubre '+c.cubre+'</span>' : '')
       + (hecho ? '<span>✓ '+hecho+'</span>' : '') + '</div></div>';
@@ -1317,7 +1342,6 @@ function mesaPintar(){
   if (!caso){
     z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:12px;padding:22px;background:var(--card);text-align:center">'
       + '<div style="font-size:15px;font-weight:800;margin-bottom:5px">Tanda terminada 👏</div>'
-      + '<div style="color:var(--txt2);font-size:13px;margin-bottom:12px">Cada etiqueta tuya vale más que cien métricas.</div>'
       + '<button class="btn verde" onclick="mesaCargar()">Traer otra tanda</button></div>';
     return;
   }
@@ -1337,17 +1361,18 @@ function mesaPintar(){
     + burbuja('La clienta', caso.cliente || '(sin texto)', false)
     + burbuja('Tula respondió', caso.bot, true)
     + (caso.porque ? '<div style="font-size:12.5px;color:var(--txt2);border-left:3px solid var(--warn);padding:6px 0 6px 10px;margin:10px 0 12px;line-height:1.5"><b>Por qué lo marcó el asistente:</b> '+_mEsc(caso.porque)+'</div>' : '')
+    + '<div style="font-size:11px;font-weight:800;letter-spacing:.09em;text-transform:uppercase;color:var(--txt2);margin:14px 0 7px;padding-top:11px;border-top:1px solid var(--bd)">Tu veredicto</div>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
     +   '<button class="btn" style="border-color:var(--bad);color:var(--bad);font-weight:800" onclick="mesaVoto(\'mal\')">Estuvo mal<span class="mesa-tecla">1</span></button>'
     +   '<button class="btn" style="border-color:var(--ok);color:var(--ok);font-weight:800" onclick="mesaVoto(\'bien\')">Estuvo bien<span class="mesa-tecla">2</span></button>'
     +   '<button class="btn" onclick="mesaVoto(\'no_aplica\')">No aplica<span class="mesa-tecla">3</span></button>'
     + '</div>'
     + '<div id="mesaBueno" style="display:none;border-top:1px solid var(--bd);padding-top:11px">'
-    +   '<div class="mesa-campo"><label>Qué debió decir <span class="ay">— el ejemplo: enseña el tono</span></label>'
+    +   '<div class="mesa-campo"><label>Qué debió decir </label>'
     +     '<textarea id="mesaTexto" rows="2" placeholder="Escríbelo como se lo dirías tú a la clienta"></textarea></div>'
-    +   '<div class="mesa-campo"><label>La regla <span class="ay">— el criterio: va al manual y aplica a casos que no viste</span></label>'
+    +   '<div class="mesa-campo"><label>La regla </label>'
     +     '<textarea id="mesaRegla" rows="2" placeholder="Antes de pedir la talla, revisar si ya la dijo antes"></textarea></div>'
-    +   '<div class="mesa-campo"><label>Cuándo aplica <span class="ay">— el alcance: sin esto, cada regla es un caso especial</span></label>'
+    +   '<div class="mesa-campo"><label>Cuándo aplica </label>'
     +     '<input id="mesaCond" placeholder="Siempre que vaya a pedir talla, color o destino"></div>'
     +   '<div style="display:flex;gap:8px;margin-top:8px">'
     +     '<button class="btn verde" onclick="mesaGuardar(\'mal\')">Guardar y siguiente</button>'
