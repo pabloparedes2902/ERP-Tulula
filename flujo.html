@@ -265,6 +265,16 @@
   .esp-tomada{background:var(--bd);color:var(--txt2);font-size:11px;font-weight:700;padding:4px 9px;border-radius:7px;flex:none}
   .esp-badge{background:var(--bad);color:#fff;font-size:11px;font-weight:800;padding:2px 7px;border-radius:6px;letter-spacing:.3px}
   @media (prefers-reduced-motion: reduce){ .esp-escalado{animation:none} }
+  /* Mesa de etiquetado (27-ago-2026) */
+  .mesa-prec{font-size:11px;font-weight:800;border-radius:6px;padding:2px 8px;border:1px solid var(--bd);color:var(--txt2)}
+  .mesa-prec.buena{color:var(--ok);border-color:var(--ok)}
+  .mesa-prec.dudosa{color:var(--warn);border-color:var(--warn)}
+  .mesa-prec.mala{color:var(--bad);border-color:var(--bad)}
+  .mesa-racha{font-size:11.5px;font-weight:800;color:var(--txt2);display:inline-flex;align-items:center;gap:6px}
+  .mesa-racha b{color:var(--ok);font-size:13px}
+  /* El Taller es la pestana mas larga del panel: necesita su propio scroll
+     vertical, y horizontal solo cuando una tabla no entra. (27-ago-2026) */
+  #vPrompt{max-height:calc(100vh - 96px);overflow-y:auto;overflow-x:auto;padding-right:14px}
   /* Pulso (22-ago-2026) */
   .pl-sec{margin:24px 0 11px;font-size:11.5px;text-transform:uppercase;letter-spacing:1.3px;
           color:var(--txt2);font-weight:800;border-bottom:1px solid var(--bd);padding-bottom:7px}
@@ -410,12 +420,15 @@
        Repetian el embudo que ya vive en su pestana, y los bloques nunca se
        usaron para decidir nada: Pablo pidio quitarlos. -->
   <div class="pl-sec">Mesa de etiquetado · aquí se entrena</div>
-  <div id="mesaCab" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+  <div id="mesaCab" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
     <select id="mesaSenal" onchange="mesaCargar()"
             style="background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:6px 9px;font-size:12px;font-weight:700;cursor:pointer"></select>
+    <span id="mesaPrec" class="mesa-prec"></span>
     <span id="mesaCuenta" style="font-size:12px;color:var(--txt2)"></span>
-    <span style="margin-left:auto;font-size:11.5px;color:var(--txt2)">Tu criterio es lo que entrena al agente. 10 al día alcanza.</span>
+    <span id="mesaRacha" style="margin-left:auto"></span>
   </div>
+  <div style="font-size:11.5px;color:var(--txt2);margin-bottom:12px">
+    El juez eres tú. Lo de abajo lo marcó el asistente del juez, que se equivoca — por eso lo miras tú.</div>
   <div id="mesaCaso"></div>
 
   <div class="pl-sec">Bitácora de cambios</div>
@@ -1209,6 +1222,9 @@ try { pintarSello(); } catch(e){}
    sospechosas solas — 3.299 acumuladas sin revisar — pero decidir cual estuvo
    mal DE VERDAD y que debio decir en su lugar no lo puede hacer el sistema.
    Una a la vez, tres botones, y si estuvo mal se escribe la version buena.
+   Nombres, que importan: el JUEZ es Pablo. Lo que marca automaticamente es el
+   ASISTENTE DEL JUEZ — propone, se equivoca, y su acierto se mide contra las
+   etiquetas de Pablo, no al reves.
    Eso alimenta bot.correcciones, que es de donde salen los ejemplos y las reglas.
    ============================================================ */
 const URL_MESA_COLA = BASE_N8N + '/etiquetar-cola';
@@ -1232,16 +1248,42 @@ function mesaCargar(){
   fetch(URL_MESA_COLA + '?senal=' + encodeURIComponent(senal) + '&n=12&t=' + Date.now())
     .then(r=>r.json()).then(d=>{
       MESA.casos = d.casos || []; MESA.i = 0; MESA.pendientes = d.pendientes || 0;
+      MESA.porSenal = d.por_senal || []; MESA.racha = d.racha || 0; MESA.hoy = d.hoy || 0;
       const s2 = document.getElementById('mesaSenal');
       if (s2 && !s2.options.length){
-        s2.innerHTML = (d.por_senal||[]).filter(x=>MESA_NOM[x.senal])
+        s2.innerHTML = MESA.porSenal.filter(x=>MESA_NOM[x.senal])
           .map(x=>'<option value="'+x.senal+'">'+MESA_NOM[x.senal]+' ('+x.n+')</option>').join('');
         s2.value = senal;
       }
+      mesaCabecera();
       mesaPintar();
     }).catch(()=>{ if(z) z.innerHTML='<div style="color:var(--bad);font-size:13px">No se pudo leer la cola.</div>'; });
 }
 
+/* Cuanto le acierta el asistente del juez en esta senal, medido contra las
+   etiquetas de Pablo. Es el dato que dice cuanto creerle. Sin al menos 10
+   juzgadas no se muestra un porcentaje: se dice que no esta medido. */
+function mesaCabecera(){
+  const p = document.getElementById('mesaPrec');
+  const r = document.getElementById('mesaRacha');
+  const info = (MESA.porSenal||[]).filter(x=>x.senal===MESA.senal)[0];
+  if (p){
+    p.className = 'mesa-prec';
+    if (!info || info.precision === null || info.precision === undefined){
+      p.textContent = 'el asistente no está medido aquí';
+    } else {
+      p.textContent = 'el asistente acierta ' + info.precision + '% · ' + info.juzgadas + ' juzgadas por ti';
+      p.classList.add(info.precision >= 70 ? 'buena' : (info.precision >= 40 ? 'dudosa' : 'mala'));
+    }
+  }
+  if (r){
+    const d = Number(MESA.racha||0), h = Number(MESA.hoy||0);
+    r.className = 'mesa-racha';
+    r.innerHTML = d > 0
+      ? '🔥 <b>' + d + '</b> ' + (d===1?'día seguido':'días seguidos') + ' · ' + h + ' hoy'
+      : 'sin racha todavía · etiqueta una y arranca';
+  }
+}
 function _mEsc(t){ return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function mesaPintar(){
@@ -1264,7 +1306,7 @@ function mesaPintar(){
     + (caso.previo ? burbuja('Tula, antes', caso.previo, true) : '')
     + burbuja('La clienta', caso.cliente || '(sin texto)', false)
     + burbuja('Tula respondió', caso.bot, true)
-    + (caso.porque ? '<div style="font-size:12.5px;color:var(--txt2);border-left:3px solid var(--warn);padding:6px 0 6px 10px;margin:10px 0 12px;line-height:1.5"><b>Por qué se marcó:</b> '+_mEsc(caso.porque)+'</div>' : '')
+    + (caso.porque ? '<div style="font-size:12.5px;color:var(--txt2);border-left:3px solid var(--warn);padding:6px 0 6px 10px;margin:10px 0 12px;line-height:1.5"><b>Por qué lo marcó el asistente:</b> '+_mEsc(caso.porque)+'</div>' : '')
     + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">'
     +   '<button class="btn" style="border-color:var(--bad);color:var(--bad);font-weight:800" onclick="mesaVoto(\'mal\')">Estuvo mal</button>'
     +   '<button class="btn" style="border-color:var(--ok);color:var(--ok);font-weight:800" onclick="mesaVoto(\'bien\')">Estuvo bien</button>'
@@ -1300,7 +1342,8 @@ function mesaGuardar(v){
     body: JSON.stringify({ id: caso.id, veredicto: v, texto_bueno: bueno, nota: '' })})
     .then(r=>r.json()).then(()=>{
       if (MESA.pendientes) MESA.pendientes--;
-      MESA.i++; mesaPintar();
+      if (v !== 'no_aplica'){ MESA.hoy = Number(MESA.hoy||0) + 1; if (!MESA.racha) MESA.racha = 1; }
+      MESA.i++; mesaCabecera(); mesaPintar();
     }).catch(()=>{ alert('No se pudo guardar. Revisa la conexión y vuelve a intentar.'); });
 }
 
