@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20260826-131204';
+const SW_VERSION = 'tulula-20260828-guard';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 
@@ -61,6 +61,18 @@ self.addEventListener('fetch', event => {
 
   // 2. Bypass: chrome-extension, devtools, otros esquemas raros
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
+  // 2.5. EL PANEL (flujo.html) → NETWORK-FIRST. 27-ago-2026.
+  //    flujo.html es una herramienta de trabajo, no una web que tenga que abrir
+  //    offline: importa mucho más que esté al día que que abra 200ms antes.
+  //    Con stale-while-revalidate pasaba esto: publicabas, recargabas, y seguías
+  //    viendo la versión vieja sin saberlo — la nueva recién aparecía a la
+  //    SEGUNDA recarga. Ahora manda la red; el caché queda solo de red de
+  //    seguridad para cuando no hay internet.
+  if (url.origin === self.location.origin && /\/flujo\.html$/.test(url.pathname)) {
+    event.respondWith(networkFirst(req, CACHE_RUNTIME));
+    return;
+  }
 
   // 3. HTML (navegación) → PERF Fase 2a: STALE-WHILE-REVALIDATE + AVISO DE VERSIÓN.
   //    Abre INSTANTÁNEO desde caché y descarga la versión nueva en segundo plano.
