@@ -429,6 +429,14 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
 </style>
 </head>
 <body>
+<!-- ══════════════════════════════════════════════════════════════════════
+     29-ago-2026 — TRAÍDO DESDE publico/. Este bloque lo agregó el proyecto
+     del Taller/flujo.html el 27-ago DIRECTAMENTE sobre publico/index.html.
+     publicar.sh copia index.html de la madre ENCIMA de publico/, así que al
+     publicar el ERP lo habríamos borrado sin enterarnos. Ahora vive acá, que
+     es la única copia que manda. Los dos proyectos comparten este archivo y
+     sw.js en el repo ERP-Tulula: lo que se agregue allá hay que traerlo acá.
+     ══════════════════════════════════════════════════════════════════════ -->
 <!-- 27-ago-2026 — Sello de version, igual que en flujo.html. La fecha sale de
      document.lastModified: es la del archivo que REALMENTE sirvio el servidor,
      asi que si el service worker te dio una copia vieja, aca se ve vieja. -->
@@ -1657,6 +1665,10 @@ function setOpcion(elOId, texto, opts) {
 // ══════════════════════════════════════════════════════════════════════════
 const _LIMPIABLES = {
   pedidos: {
+    detalle: () => Object.keys(typeof pFlt !== 'undefined' ? pFlt : {}).map(k => {
+      var col = (typeof PCOLS !== 'undefined') ? PCOLS.filter(function (c) { return c.k === k; })[0] : null;
+      return col ? col.l : k;
+    }),
     hay:     () => Object.keys(typeof pFlt !== 'undefined' ? pFlt : {}).length > 0,
     limpiar: () => pClrFlt(),
   },
@@ -1665,6 +1677,8 @@ const _LIMPIABLES = {
   // Sus filtros por columna viven en localStorage porque `renderCambios2` los guarda
   // para que sobrevivan al refresco; borrar la clave y repintar es todo lo que hace falta.
   cambios2: {
+    detalle: () => { try { const f = JSON.parse(localStorage.getItem('erp_c2_filt') || '{}');
+                           return Object.keys(f).filter(k => String(f[k] || '').trim()); } catch (e) { return []; } },
     hay:     () => { try { return Object.values(JSON.parse(localStorage.getItem('erp_c2_filt') || '{}'))
                               .some(v => String(v || '').trim()); } catch (e) { return false; } },
     limpiar: () => {
@@ -1673,7 +1687,16 @@ const _LIMPIABLES = {
       if (el && typeof renderCambios2 === 'function') renderCambios2(el, window._c2Data);
     },
   },
+  // 29-ago-2026 — Clientes faltaba en esta lista: el botón global no se encendía
+  // nunca en ese módulo, aunque tuviera columnas filtradas.
+  clientes: {
+    detalle: () => { try { return Object.keys(cliColFilters || {}).filter(k => cliColFilters[k] && cliColFilters[k].size); } catch (e) { return []; } },
+    hay:     () => { try { return Object.keys(cliColFilters || {}).some(k => cliColFilters[k] && cliColFilters[k].size); } catch (e) { return false; } },
+    limpiar: () => { try { cliColFilters = {};
+      if (typeof renderClis === 'function') renderClis(); } catch (e) {} },
+  },
   histcambios: {
+    detalle: () => Object.keys(typeof _hcColFilt !== 'undefined' ? _hcColFilt : {}).filter(k => String(_hcColFilt[k] || '').trim()),
     hay:     () => Object.values(typeof _hcColFilt !== 'undefined' ? _hcColFilt : {}).some(v => String(v || '').trim()),
     limpiar: () => {
       _hcColFilt = {};
@@ -1682,6 +1705,7 @@ const _LIMPIABLES = {
     },
   },
   devoluciones: {
+    detalle: () => Object.keys(typeof _hdColFilt !== 'undefined' ? _hdColFilt : {}).filter(k => String(_hdColFilt[k] || '').trim()),
     hay:     () => Object.values(typeof _hdColFilt !== 'undefined' ? _hdColFilt : {}).some(v => String(v || '').trim()),
     limpiar: () => {
       _hdColFilt = {};
@@ -1715,10 +1739,28 @@ function _limpiarFiltrosSync() {
   b.disabled = false;
   b.style.opacity = '1';
   b.style.cursor = 'pointer';
-  b.style.color = hay ? '#f59e0b' : 'var(--tx)';
-  b.style.borderColor = hay ? '#f59e0b88' : 'var(--bd)';
-  b.title = hay ? 'Quitar todos los filtros de columna de esta pantalla'
-                : 'No hay filtros de columna puestos en esta pantalla';
+  // 29-ago-2026 — ANTES este botón solo cambiaba de MATIZ cuando había filtros
+  // puestos. En la práctica nadie lo miraba: en Cambios quedó un filtro guardado
+  // días y el módulo mostró 3 de 126 sin que nada lo dijera. Criterio de Google
+  // Sheets: el filtro puede sobrevivir, pero tiene que VERSE. Ahora, cuando hay
+  // filtros, el botón se pinta de ámbar lleno y dice QUÉ columnas están filtradas.
+  let det = [];
+  if (hay) { try { det = (m.detalle ? m.detalle() : []) || []; } catch (e) { det = []; } }
+  if (hay) {
+    b.style.background = '#fde68a';
+    b.style.color = '#78350f';
+    b.style.borderColor = '#f59e0b';
+    b.style.fontWeight = '700';
+    b.textContent = '✕ Filtro activo' + (det.length ? ' — ' + det.join(' · ') : '');
+    b.title = 'Esta pantalla está mostrando menos de lo que hay. Clic para quitar los filtros.';
+  } else {
+    b.style.background = 'var(--bg3)';
+    b.style.color = 'var(--mu)';
+    b.style.borderColor = 'var(--bd)';
+    b.style.fontWeight = '';
+    b.textContent = '✕ Limpiar';
+    b.title = 'No hay filtros de columna puestos en esta pantalla';
+  }
 }
 
 function limpiarFiltrosPantalla() {
@@ -8801,10 +8843,32 @@ function _pedPintarCabecera(total, hayMas) {
         // Se queda el número, que sí sirve. Y se avisa SOLO cuando algo salió
         // mal de verdad: si la carga se cortó y faltan pedidos, eso sí hay que
         // saberlo porque un filtro podría no encontrarlos.
+        // 29-ago-2026 — EL MISMO AVISO QUE EN CAMBIOS.
+        // Criterio Google Sheets: un filtro puede sobrevivir, pero NUNCA puede ser
+        // invisible. Sheets marca la columna filtrada y dice cuántas filas quedan.
+        // Acá el boton "✕ Limpiar" de la barra se tenia con ambar y nadie lo veia:
+        // se trabajaba con media tabla escondida sin saberlo. Ahora el aviso va
+        // pegado al contador, con el nombre de cada columna filtrada.
+        var _pf = [];
+        try {
+          Object.keys(pFlt || {}).forEach(function (k) {
+            var col = (typeof PCOLS !== 'undefined') ? PCOLS.filter(function (c) { return c.k === k; })[0] : null;
+            _pf.push(col ? col.l : k);
+          });
+        } catch (_e) {}
         cnt.innerHTML = 'Mostrando <strong style="color:var(--tx)">' + total + '</strong> pedidos'
+          + (_pf.length
+              ? ' <span id="ped-filtaviso" style="display:inline-flex;align-items:center;gap:7px;background:#fde68a;color:#78350f;'
+                + 'border:1px solid #f59e0b;border-radius:8px;padding:1px 9px;font-size:12px;font-weight:700;margin-left:8px;vertical-align:middle">'
+                + 'Filtro activo — ' + esc(_pf.join(' · '))
+                + '<button id="ped-filtlimpiar" style="font-size:11px;padding:1px 8px;background:#78350f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit">Limpiar</button>'
+                + '</span>'
+              : '')
           + ((!window._pedsCargaEnCurso && window._pedsCargaIncompleta)
               ? ' <span style="color:#f87171">(⚠ faltan pedidos — pulsa 🔄)</span>'
               : '');
+        var _pb = cnt.querySelector('#ped-filtlimpiar');
+        if (_pb) _pb.addEventListener('click', function (ev) { ev.stopPropagation(); try { pClrFlt(); } catch (_) {} });
       }
     }
     // ── Barra de fechas / Excel / ✕ Filtros, junto a las pestañas ──
@@ -17476,6 +17540,19 @@ function _stFiltrarRows(rows){
   });
 }
 let stVistas=[]; // vistas de orden manual guardadas (compartidas): [{nombre,orden:[clave],por,fecha}]
+// 29-ago-2026 — la vista se llama como su dueña. Las dos que existían ("Prueba" y
+// "Estefany") no decían quién las hizo, así que nadie sabía cuál era la suya y se
+// terminaba trabajando sobre la de otra persona. El nombre sale del usuario y
+// sigue siendo editable antes de guardar.
+function _stNombreUsuario(){
+  try{
+    var e=String(_stEmail()||'').split('@')[0];
+    var t=e.split(/[._\-]/)[0].replace(/[0-9]+/g,'');
+    if(!t) t=e.replace(/[0-9]+/g,'');
+    if(!t) return '';
+    return t.charAt(0).toUpperCase()+t.slice(1).toLowerCase();
+  }catch(_){ return ''; }
+}
 const _stGrpKey = g => String(g._prenda||'')+'|||'+String(g._diseno||'');
 async function cargarVistasStock(){ try{ stVistas = await _vistasStockRapido() || []; }catch(e){ stVistas = stVistas||[]; } return stVistas; }
 let stHideNoStock=false;            // ocultar filas sin stock (toggle)
@@ -17786,6 +17863,18 @@ function renderStock(el) {
         + '</optgroup>') : '')
     +'</select>';
   ctrl+='<button id="st-ordenar" class="btn bg bs" style="font-size:12px;flex-shrink:0" title="Crear/editar un orden manual arrastrando diseños">↕ Ordenar vista</button>';
+  // 29-ago-2026 — MISMO CRITERIO QUE PEDIDOS Y CAMBIOS: nada que cambie lo que
+  // ves puede quedar escondido. Estar dentro del orden guardado de otra persona
+  // se nota igual que un filtro puesto — si no, uno trabaja meses sobre una vista
+  // ajena de hace meses creyendo que ve el orden general.
+  if(stOrden && stOrden.indexOf('view:')===0){
+    var _vAct=stOrden.slice(5);
+    ctrl+='<span id="st-vistaviso" style="display:inline-flex;align-items:center;gap:7px;background:#fde68a;color:#78350f;'
+       + 'border:1px solid #f59e0b;border-radius:8px;padding:3px 10px;font-size:12px;font-weight:700;white-space:nowrap">'
+       + 'Orden guardado — ' + esc(_vAct)
+       + '<button id="st-vistasalir" style="font-size:11px;padding:1px 8px;background:#78350f;color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:inherit">Volver al general</button>'
+       + '</span>';
+  }
   ctrl+='<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mu);cursor:pointer;white-space:nowrap"><input id="st-hide" type="checkbox"'+(stHideNoStock?' checked':'')+' style="accent-color:var(--ac);width:14px;height:14px;cursor:pointer"> Ocultar sin stock</label>';
   if(stFiltroTxt||stCatActiva) ctrl+='<button id="st-clr" class="btn bg bs" style="font-size:12px;flex-shrink:0">✕ Limpiar</button>';
   // 30-jul — la puerta a "Stock - Yayitas". Va acá y no en el menú lateral porque es
@@ -17817,14 +17906,19 @@ function renderStock(el) {
   else if(stOrden==='prenda')  groups.sort((a,b)=>String(a._prenda).localeCompare(String(b._prenda),'es'));
   else if(stOrden==='cat')     groups.sort((a,b)=>String(a._cat).localeCompare(String(b._cat),'es')||String(a._diseno).localeCompare(String(b._diseno),'es'));
   else if(stOrden && stOrden.indexOf('view:')===0){
-    // Orden manual guardado: por la posición de cada diseño en la vista; lo no listado va al final (por reciente).
+    // FIX 29-ago-2026 — LO NUEVO VA ARRIBA, SIEMPRE.
+    // Antes, lo que no figuraba en la vista guardada se mandaba al FINAL. Efecto real:
+    // una prenda recien ingresada quedaba enterrada abajo de todo el orden manual y no
+    // se veia. Ahora lo no listado (= lo nuevo) encabeza la lista, entre si por fecha de
+    // ingreso, y debajo va el orden manual guardado. Asi la vista personalizada no hay
+    // que rehacerla cada vez que entra mercaderia.
     const v=(stVistas||[]).find(x=>('view:'+x.nombre)===stOrden);
     const ord=(v&&Array.isArray(v.orden))?v.orden:[];
     const idx={}; ord.forEach((k,i)=>{ idx[k]=i; });
     groups.sort((a,b)=>{
       const ia=idx[_stGrpKey(a)], ib=idx[_stGrpKey(b)];
-      if(ia==null&&ib==null) return b._fechaMs-a._fechaMs;
-      if(ia==null) return 1; if(ib==null) return -1;
+      if(ia==null&&ib==null) return b._fechaMs-a._fechaMs;   // dos nuevos: el mas reciente primero
+      if(ia==null) return -1; if(ib==null) return 1;         // lo nuevo, arriba
       return ia-ib;
     });
   }
@@ -17978,6 +18072,8 @@ function renderStock(el) {
   }));
   const ordBtn=document.getElementById('st-ordenar');
   if(ordBtn) ordBtn.addEventListener('click',()=>_stAbrirOrdenar(el, groups));
+  const salirV=document.getElementById('st-vistasalir');
+  if(salirV) salirV.addEventListener('click',()=>{ stOrden='reciente'; _stOrdenSave(stOrden); renderStock(el); });
   const clrBtn=document.getElementById('st-clr');
   if(clrBtn) clrBtn.addEventListener('click',()=>{stFiltroTxt='';stCatActiva='';renderStock(el);}); // mantiene el orden/vista elegido
   const yayBtn=document.getElementById('st-yay');
@@ -18113,7 +18209,8 @@ function renderInv(el){
   else if(stOrden&&stOrden.indexOf('view:')===0){
     const v=(stVistas||[]).find(x=>('view:'+x.nombre)===stOrden);
     const ord=(v&&Array.isArray(v.orden))?v.orden:[]; const idx={}; ord.forEach((k,i)=>{ idx[k]=i; });
-    groups.sort((a,b)=>{ const ia=idx[_stGrpKey(a)], ib=idx[_stGrpKey(b)]; if(ia==null&&ib==null)return b._fechaMs-a._fechaMs; if(ia==null)return 1; if(ib==null)return -1; return ia-ib; });
+    // FIX 29-ago-2026 — lo nuevo arriba (mismo criterio que renderStock).
+    groups.sort((a,b)=>{ const ia=idx[_stGrpKey(a)], ib=idx[_stGrpKey(b)]; if(ia==null&&ib==null)return b._fechaMs-a._fechaMs; if(ia==null)return -1; if(ib==null)return 1; return ia-ib; });
   }
   const rowsCount=rows.length;
 
@@ -18732,7 +18829,7 @@ function _stAbrirOrdenar(el, groups){
   const items = (groups||[]).map(g=>({ key:_stGrpKey(g), prenda:g._prenda||'', diseno:g._diseno||'', cat:g._cat||'' }));
   if(!items.length){ toast('No hay diseños para ordenar','err'); return; }
   // Nombre sugerido: si estás sobre una vista guardada, reusar su nombre.
-  const vistaActual = (stOrden && stOrden.indexOf('view:')===0) ? stOrden.slice(5) : '';
+  const vistaActual = (stOrden && stOrden.indexOf('view:')===0) ? stOrden.slice(5) : _stNombreUsuario();
 
   const ov=document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:900;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
@@ -18757,7 +18854,7 @@ function _stAbrirOrdenar(el, groups){
     <div style="font-size:12px;color:var(--mu);margin-bottom:12px">Arrastra los diseños para definir el orden. Luego guárdalo con un nombre — quedará disponible para todos.</div>
     <div id="sto-list" style="max-height:46vh;overflow:auto;padding:2px;margin-bottom:14px">${li}</div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
-      <input id="sto-name" type="text" maxlength="60" placeholder="Nombre de la vista (ej. Mi orden)" value="${esc(vistaActual)}" style="flex:1;padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">
+      <input id="sto-name" type="text" maxlength="60" placeholder="Nombre de la vista (ej. tu nombre)" value="${esc(vistaActual)}" style="flex:1;padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">
       <button id="sto-save" class="btn bp" style="font-size:13px">Guardar vista</button>
     </div>
     <div style="border-top:1px solid var(--bd);padding-top:12px">
@@ -18773,12 +18870,23 @@ function _stAbrirOrdenar(el, groups){
 
   // Drag & drop reordenable
   let dragEl=null;
+  // FIX 29-ago-2026 — EL ARRASTRE NO ARRANCABA.
+  // Chrome cancela el arrastre en el acto si en 'dragstart' nadie llama a
+  // dataTransfer.setData(). Faltaba: el cursor cambiaba a mano pero el bloque
+  // no se movia nunca, asi que nadie podia crear su propio orden. Se agrega el
+  // setData, el efecto 'move' y un 'drop' que evita que el navegador se lleve
+  // el texto a otra parte.
   listEl.querySelectorAll('.st-ord-it').forEach(it=>{
-    it.addEventListener('dragstart',()=>{ dragEl=it; it.classList.add('st-ord-drag'); it.style.opacity='.4'; });
+    it.addEventListener('dragstart',e=>{
+      dragEl=it; it.classList.add('st-ord-drag'); it.style.opacity='.4';
+      try{ e.dataTransfer.setData('text/plain', it.dataset.key||'x'); e.dataTransfer.effectAllowed='move'; }catch(_){}
+    });
     it.addEventListener('dragend',()=>{ it.classList.remove('st-ord-drag'); it.style.opacity='1'; dragEl=null; });
   });
+  listEl.addEventListener('drop',e=>{ e.preventDefault(); e.stopPropagation(); });
   listEl.addEventListener('dragover',e=>{
     e.preventDefault();
+    try{ e.dataTransfer.dropEffect='move'; }catch(_){}
     if(!dragEl) return;
     const after=_stOrdAfter(listEl, e.clientY);
     if(after==null) listEl.appendChild(dragEl);
@@ -21653,6 +21761,23 @@ function renderCambios2(el, cambios){
   function saveFilt(){try{localStorage.setItem('erp_c2_filt',JSON.stringify(filt));}catch(e){}}
   function tabFn(){for(var i=0;i<TABS.length;i++)if(TABS[i].k===tab)return TABS[i].f;return function(){return true;};}
   function pasaFiltros(c){ return COLS.every(function(col){ var q=String(filt[col.k]||'').trim().toLowerCase(); if(!q) return true; return String(col.g(c)||'').toLowerCase().indexOf(q)>=0; }); }
+  // FIX 29-ago-2026 — EL FILTRO INVISIBLE.
+  // Los filtros de columna se guardaban en el navegador y seguian aplicandose dias
+  // despues, sin ninguna senal en pantalla. Un "su" olvidado en la columna Cliente
+  // dejaba el modulo mostrando 3 cambios de 126 — parecia que faltaban datos.
+  // Ahora, si hay algun filtro puesto, sale un aviso amarillo con el detalle y un
+  // boton para limpiarlo de un clic.
+  var _c2AvisoFiltro='';
+  (function(){
+    var act=[]; COLS.forEach(function(col){ var q=String(filt[col.k]||'').trim(); if(q) act.push(col.t+': "'+q+'"'); });
+    if(!act.length) return;
+    _c2AvisoFiltro='<div id="c2-filtaviso" style="display:flex;align-items:center;gap:8px;background:#fde68a;color:#78350f;'
+      + 'border:1px solid #f59e0b;border-radius:8px;padding:3px 10px;font-size:12px;font-weight:600;white-space:nowrap">'
+      + '<span>Filtro activo — ' + esc(act.join(' · ')) + '</span>'
+      + '<span id="c2-filtcuenta" style="opacity:.8;font-weight:500"></span>'
+      + '<button id="c2-filtlimpiar" class="btn" style="font-size:11px;padding:2px 9px;background:#78350f;color:#fff;border:none;border-radius:6px;cursor:pointer">Limpiar</button>'
+      + '</div>';
+  })();
   // CABECERA DE UNA SOLA FILA (26-jul): pestañas a la izquierda y "Nuevo cambio"
   // al extremo derecho, con el MISMO alto que "Nuevo pedido" (padding 4px 12px,
   // 12px de letra). Antes el botón vivía en una fila propia arriba, que se comía
@@ -21660,7 +21785,7 @@ function renderCambios2(el, cambios){
   var tabsH='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;flex-wrap:wrap">'
           + '<div class="tabs" style="border-bottom:none;margin-bottom:0">';
   TABS.forEach(function(tb){ var n=cambios.filter(tb.f).length; tabsH+='<button class="tab c2-tab'+(tb.k===tab?' on':'')+'" data-tab="'+esc(tb.k)+'"><span class="lbl">'+esc(tb.t)+'</span> <span class="cnt" style="opacity:.65;font-size:11px">('+n+')</span></button>'; });
-  tabsH+='</div>'
+  tabsH+='</div>' + _c2AvisoFiltro
        + '<button class="btn bp" onclick="navegarA(\'cambios\')" style="font-size:12px;padding:4px 12px;white-space:nowrap">＋ Nuevo cambio</button>'
        + '</div>';
   // Ancho medido contra el contenido real. El Comentario queda fijo: tiene su
@@ -21713,7 +21838,11 @@ function renderCambios2(el, cambios){
   }
   function paint(){
     var tb=el.querySelector('#c2-tbody'); if(!tb) return;
-    var list=cambios.filter(tabFn()).filter(pasaFiltros);
+    var _enTab=cambios.filter(tabFn());
+    var list=_enTab.filter(pasaFiltros);
+    // Igual que Sheets: además del icono, siempre se ve cuántas filas quedaron.
+    var _cu=el.querySelector('#c2-filtcuenta');
+    if(_cu) _cu.textContent=' · mostrando '+list.length+' de '+_enTab.length;
     if(!list.length){ tb.innerHTML='<tr><td colspan="'+(COLS.length+1)+'" style="text-align:center;color:var(--mu);padding:18px">Sin cambios en esta vista</td></tr>'; return; }
     var guion='<span style="color:var(--mu)">—</span>'; var rowsH='';
     list.forEach(function(c){
@@ -21773,6 +21902,14 @@ function renderCambios2(el, cambios){
   function paintTabs(){ el.querySelectorAll('.c2-tab').forEach(function(b){ b.classList.toggle('on', b.dataset.tab===tab); }); }
   el.querySelectorAll('.c2-tab').forEach(function(b){ b.addEventListener('click',function(){ tab=this.dataset.tab; saveTab(); paintTabs(); paint(); }); });
   el.querySelectorAll('.c2-filt').forEach(function(inp){ inp.addEventListener('input',function(){ filt[this.dataset.k]=this.value; saveFilt(); paint(); }); });
+  var _btnLimpiar=el.querySelector('#c2-filtlimpiar');
+  if(_btnLimpiar) _btnLimpiar.addEventListener('click',function(){
+    Object.keys(filt).forEach(function(k){ delete filt[k]; });
+    saveFilt();
+    el.querySelectorAll('.c2-filt').forEach(function(i){ i.value=''; });
+    var av=el.querySelector('#c2-filtaviso'); if(av) av.remove();
+    paint();
+  });
   if(!window._c2CrsBound){
     document.addEventListener('mousedown', function(e){
       var rs=e.target.closest&&e.target.closest('.crs'); if(!rs) return;
