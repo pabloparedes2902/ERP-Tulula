@@ -6132,7 +6132,11 @@ const SB_LECTURA_PESADOS = true;
 
 // Si lo guardado tiene más de esto, se desconfía y se le pregunta a Apps Script.
 // 30 min = seis vueltas del disparador. Si se llega a eso, algo dejó de correr.
-const SB_PESADOS_VENCE_MS = 30 * 60 * 1000;
+const SB_PESADOS_VENCE_MS = 45 * 60 * 1000;   // 29-ago: 30 -> 45. NO es cuanto se espera:
+// es cuando el ERP desconfia de su copia y se va al camino lento (10-40 s por pantalla).
+// Medido el 29-ago: tres pantallas estaban en 43 min, o sea por el camino lento sin
+// necesidad. Con el aviso de la Etapa 1 y la campanita de la Etapa 2 la copia ya no
+// envejece, asi que estos 45 min son el paracaidas, no el vuelo.
 
 // ══════════════════════════════════════════════════════════════════════════
 // 05-ago-2026 — LEER LO QUE ACABAS DE ESCRIBIR (duda por clave)
@@ -6162,6 +6166,63 @@ function _espejoConfiar(clave){ try { const m=_espejoDudaMap(); if (m[clave]!==u
 // Llamar después de CADA escritura que mueve stock. `claves` quedan en duda
 // (se leen frescas hasta que el espejo las alcance); `refrescarYa` (máx. 3) se
 // le piden al backend en segundo plano — sin esperar la respuesta.
+// 29-ago-2026 · ETAPA 1 DE VELOCIDAD — EL AVISO QUE FALTABA.
+// Medido el 29-ago contra la base real: la copia de 'stock.resumen' tenia 12
+// minutos y las de Fallas/Lotes/vista de Stock, 43 — por encima del limite de
+// frescura, o sea que el ERP las tiraba y le preguntaba a Google en vivo.
+// La causa: este aviso ("rehace la foto de estas pantallas AHORA") solo salia
+// desde el modulo de Stock/Confeccion/Fallas. Registrar un CAMBIO, una
+// DEVOLUCION o un PEDIDO tambien mueve stock y no avisaba nadie: la foto
+// quedaba vieja hasta la vuelta de 5/30 min. Ahora tambien avisan.
+// _stockMovido = el aviso solo. _stockEscrito = el aviso + el webhook de la
+// lista de espera, que es exclusivo de los INGRESOS de stock.
+const _ESP_CLAVES_STOCK = ['stock.resumen','catalogo.stock','lotes.listar','confeccion.listar','fallas.resumen'];
+function _stockMovido(claves, refrescarYa){
+  _espejoDudar(claves);
+  try {
+    apiSend('espejo.refrescar', { claves: (refrescarYa && refrescarYa.length ? refrescarYa : claves).slice(0,3) })
+      .then(r => { try { ((r && r.hechas) || []).forEach(_espejoConfiar); } catch(e){}
+                   try { _stRefrescarYa(); } catch(e){} })
+      .catch(()=>{});   // si falla, el disparador de 5/30 min lo pone al dia igual
+  } catch(e) {}
+}
+
+// ── ETAPA 2 · LA CAMPANITA DE STOCK ─────────────────────────────────────────
+// Pedidos ya tenia aviso en vivo desde el 23-ago: cuando otra persona toca un
+// pedido, tu pantalla se repinta sola en ~1 s. Stock no tenia nada: traia los
+// numeros al entrar y se quedaba congelado hasta salir y volver (o hasta el
+// latido de 60 s, que releia la MISMA copia vieja).
+// Ahora la base avisa por 'espejo_pulso' — una tabla minuscula (clave + fecha)
+// que un disparador de Postgres toca cada vez que se rehace una foto. Se
+// escucha esa y no 'espejo_cache' a proposito: la foto de stock pesa cientos de
+// KB y mandarla entera por el canal a cada pantalla seria un desperdicio.
+let _rtEspTimer = null;
+function _rtEspejoAviso(clave){
+  clave = String(clave || '');
+  if (_ESP_CLAVES_STOCK.indexOf(clave) < 0) return;   // solo las que mueven stock
+  try { _espejoConfiar(clave); } catch(_){}
+  clearTimeout(_rtEspTimer);
+  _rtEspTimer = setTimeout(_stRefrescarYa, 700);      // varias claves seguidas = un solo repintado
+}
+
+// Fuerza la relectura de Stock/Inventario ya mismo, sin esperar el latido.
+// Si la pantalla no esta a la vista, solo tira la foto local: al entrar se
+// recalcula sola y no se gasta una llamada en algo que nadie esta mirando.
+function _stRefrescarYa(){
+  try {
+    _stDataTs = 0;
+    const _pg = (typeof curPg === 'undefined') ? '' : curPg;
+    if (_pg !== 'stock' && _pg !== 'inventario') {
+      stData = null; try { _stLsDel(); } catch(_){}
+      return;
+    }
+    if (typeof _stYayMode !== 'undefined' && _stYayMode) return;   // Yayitas tiene su ciclo
+    const el = document.getElementById(_pg === 'stock' ? 'st-w' : 'inv-w');
+    if (!el) return;
+    _stRevalidar(el, _pg === 'stock' ? renderStock : renderInv);
+  } catch(_){}
+}
+
 function _stockEscrito(claves, refrescarYa){
   _espejoDudar(claves);
   /* 19-ago-2026 — LISTA DE ESPERA POR STOCK. Este es el punto unico por donde
@@ -6215,6 +6276,9 @@ async function _sbCacheLeer(clave, venceMs) {
       if (_gen > _duda || (Date.now() - _duda) > 40 * 60 * 1000) _espejoConfiar(clave);
       else return null;   // copia anterior a la escritura → quien llama va a Apps Script
     }
+    // 29-ago — se anota CUANDO se genero esta copia (no cuando la leimos):
+    // es lo que pinta el sello "actualizado hace X" en Stock.
+    try { (window._espejoGen = window._espejoGen || {})[clave] = new Date(j[0].generado).getTime(); } catch (_) {}
     return j[0].datos;
   } catch (e) { try { _errLog('sb.cache.' + clave, e); } catch (_) {} return null; }
 }
@@ -6222,6 +6286,8 @@ async function _sbCacheLeer(clave, venceMs) {
 async function _stockResumenRapido() {
   const d = await _sbCacheLeer('stock.resumen');
   if (Array.isArray(d) && d.length) return d;
+  // Vino de Apps Script en vivo: es el dato del segundo, no una copia.
+  try { (window._espejoGen = window._espejoGen || {})['stock.resumen'] = Date.now(); } catch (_) {}
   return api('stock.resumen', {});
 }
 
@@ -11975,7 +12041,7 @@ async function _sbReconciliarTope(){
 // Respeta los mismos guardias que el radar: tombstones, ediciones locales
 // frescas y pintados propios. REVERSA: SB_REALTIME = false y publicar.
 const SB_REALTIME = true;
-let _rtCliente = null, _rtCanal = null, _rtUltTok = null;
+let _rtCliente = null, _rtCanal = null, _rtUltTok = null, _rtCanalEsp = null;
 let _rtNrosPend = new Set(), _rtTimer = null;
 
 function _rtProgramar(nro) {
@@ -12069,6 +12135,24 @@ async function _rtConectar() {
         // solos por websocket (poll de respaldo a 60s); cualquier otro estado = volver
         // al poll de 15s para no perder frescura.
         try { window._rtVivo = (st === 'SUBSCRIBED'); } catch (_) {} });
+
+    // 29-ago-2026 · ETAPA 2 — LA CAMPANITA DE STOCK.
+    // Mismo mecanismo que el canal de pedidos, pero sobre 'espejo_pulso': una
+    // tabla de dos columnas (clave + cuando se rehizo) que un disparador de
+    // Postgres toca cada vez que se regenera la foto de una pantalla.
+    // POR QUE NO se escucha 'espejo_cache' directamente: ahi vive la foto
+    // entera (stock.resumen son ~636 filas, cientos de KB). El canal manda la
+    // fila COMPLETA a cada pantalla abierta en cada refresco — un desperdicio
+    // enorme y con riesgo de que el aviso se descarte por tamano. El pulso
+    // pesa nada y dice todo lo que hace falta: "esta pantalla ya cambio".
+    try {
+      _rtCanalEsp = _rtCliente.channel('espejo-rt')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'espejo_pulso' },
+            p => { try { _rtEspejoAviso(p && p.new && p.new.clave); } catch (_) {} })
+        .subscribe(st => { try { console.log('[RT] canal espejo:', st); } catch (_) {}
+          try { window._rtEspVivo = (st === 'SUBSCRIBED'); } catch (_) {} });
+    } catch (e) { try { console.warn('[RT] espejo no disponible:', e && e.message); } catch (_) {} }
+
     // El token del websocket vence (~1h): renovarlo con el vigente cada 5 min
     setInterval(async () => {
       try { const t = await _sbSesionAsegurar(); if (t && t !== _rtUltTok && _rtCliente) { _rtCliente.realtime.setAuth(t); _rtUltTok = t; } } catch (_) {}
@@ -13640,7 +13724,8 @@ function verPed(p) {
     })()
       .then(() => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){}
         // 23-ago — eliminar un pedido DEVUELVE stock (venta viva): misma duda que al crear.
-        try { _espejoDudar(['stock.resumen','catalogo.stock','reposicion.calc']); } catch(e){} })
+        // 29-ago · ETAPA 1 — y ademas se rehace la foto para todos, no solo para quien elimino.
+        try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){} })
       .catch(e => { _papeleraPendDel(nro); toast('Error al eliminar en servidor: '+esc(e.message)+' — refresca para reintentar','err'); });
   });
 
@@ -16168,7 +16253,10 @@ async function _npExecuteSave(job) {
   // seguia mostrando el vendible de antes (memoria + copia local + espejo viejo).
   // Igual que en los ingresos: foto local fuera y clave del espejo en duda.
   try { stData = null; _stLsDel(); } catch(e){}
-  try { _espejoDudar(['stock.resumen','catalogo.stock','reposicion.calc']); } catch(e){}
+  // 29-ago · ETAPA 1 — antes solo se ponia la clave EN DUDA: eso arregla la
+  // pantalla de QUIEN vendio, pero las demas personas seguian leyendo la copia
+  // vieja hasta la vuelta de 5/30 min. Ahora ademas se pide rehacer la foto ya.
+  try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
   _pendOlvidar();   // recién creado: si la buscan de nuevo, YA tiene pendiente
   // Disparar la subida de vouchers en BACKGROUND (no esperar) — fire-and-forget.
   // Reforma jul-2026: skipSheet (solo Drive) + constancia.setPago asocia las URLs
@@ -17627,6 +17715,31 @@ setInterval(function(){
   } catch(e){}
 }, 60 * 1000);
 
+// Pinta el sello de frescura. Se llama al render y cada 20 s mientras Stock
+// este a la vista, para que el "hace X" no se quede congelado.
+function _stPintarFrescura(){
+  try {
+    const sp = document.getElementById('st-frescura');
+    if (!sp) return;
+    const t = (window._espejoGen || {})['stock.resumen'] || 0;
+    if (!t) { sp.textContent=''; return; }
+    const seg = Math.max(0, Math.round((Date.now() - t) / 1000));
+    let txt, col = 'var(--mu)';
+    if (seg < 45)        txt = 'actualizado ahora';
+    else if (seg < 5400) { const m = Math.round(seg/60); txt = 'actualizado hace ' + m + ' min'; if (m >= 15) col = '#f59e0b'; }
+    else                 { const h = Math.round(seg/3600); txt = 'actualizado hace ' + h + ' h'; col = '#f59e0b'; }
+    if (window._rtEspVivo) txt = '\u25CF ' + txt;   // punto = la campanita esta conectada
+    sp.textContent = txt; sp.style.color = col;
+  } catch(_){}
+}
+setInterval(function(){
+  try {
+    if (document.visibilityState !== 'visible') return;
+    if (typeof curPg === 'undefined' || curPg !== 'stock') return;
+    _stPintarFrescura();
+  } catch(_){}
+}, 20 * 1000);
+
 async function loadStock() {
   const el=document.getElementById('st-w');
   if(!_stOrdenInit){
@@ -17870,6 +17983,9 @@ function renderStock(el) {
   // 30-jul — la puerta a "Stock - Yayitas". Va acá y no en el menú lateral porque es
   // donde ya estás mirando el inventario cuando te preguntás qué hay para rematar.
   if (!_stYayMode) ctrl+='<button id="st-yay" class="btn bg bs" style="font-size:12px;flex-shrink:0;border-color:#f59e0b55;color:#f59e0b" title="Ver solo las prendas con falla marcadas para vender">🟠 Yayitas</button>';
+  // 29-ago-2026 — SELLO DE FRESCURA. Antes habia que adivinar si el numero en
+  // pantalla era de hace un segundo o de hace media hora. Ahora se ve.
+  ctrl+='<span id="st-frescura" style="font-size:11px;color:var(--mu);white-space:nowrap;margin-left:auto" title="Cuando se calculo este stock"></span>';
   ctrl+='</div>';
 
   // Filtrar
@@ -18060,6 +18176,7 @@ function renderStock(el) {
   el.querySelectorAll('.st-color-edit').forEach(c=>c.addEventListener('click',()=>{
     _abrirColorPicker(c.dataset.col||'', ()=>renderStock(el));
   }));
+  try { _stPintarFrescura(); } catch(_){}   // 29-ago: sello "actualizado hace X"
   const ordBtn=document.getElementById('st-ordenar');
   if(ordBtn) ordBtn.addEventListener('click',()=>_stAbrirOrdenar(el, groups));
   const clrBtn=document.getElementById('st-clr');
@@ -21429,6 +21546,10 @@ async function _camProcessSaveQueue() {
       if (_r2) { try { _sbEspejarYa(_r2.NroCambio); } catch(_){} }
       else { _r2 = await apiSend('cambios2.registrarYSync', job.payload); }
       try { _cronDesdeServidor('cambio.registrar', _r2 && _r2.ms); } catch(_){}
+      // 29-ago · ETAPA 1 — un cambio MUEVE stock (vuelve una prenda, sale otra).
+      // Sin este aviso la pantalla de Stock de las demas personas seguia con el
+      // numero viejo hasta la vuelta de 5/30 min. Medido: 10 a 45 minutos.
+      try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
       _c2Hist = null;  // forzar recarga del mapa v2 en Pedidos
       _c2List = null;  // F1 23-jul: también la lista (contador pestaña Cambio)
       // F1 23-jul: Cambios2 no pasa por el changelog → traer las filas nuevas del
@@ -21983,6 +22104,8 @@ async function _c2EditProcesar() {
         r = await apiSend('cambios2.editarPrendas', job.body);
       }
       try { _cronDesdeServidor('cambio.editar', r && r.ms); } catch (_) {}
+      // 29-ago · ETAPA 1 — editar las prendas de un cambio mueve stock igual.
+      try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
       _cronCerrar(cron, true);
       _c2EditQueue.shift();
       _c2EditIndicador();
@@ -22333,6 +22456,8 @@ function editarCambios2(nc){
       const _sb = await _sbRpcCambioCancelar(nc);
       if (_sb) { try { _sbEspejarYa(nc); } catch(_){} }
       else { await api('cambios2.cancelar',{nc:nc}); }
+      // 29-ago · ETAPA 1 — anular devuelve el stock a como estaba.
+      try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
       toast('Cambio anulado','ok'); refresca(); }
     catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑 Anular cambio'; }
   });
@@ -24703,6 +24828,8 @@ async function _devProcessSaveQueue() {
     const job = _devSaveQueue[0];
     try {
       await apiSend('devoluciones.registrar', job.body);
+      // 29-ago · ETAPA 1 — una devolucion devuelve la prenda al stock vendible.
+      try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
       _devSaveQueue.shift();
       _devUpdateSaveIndicator();
       try { histDevData = null; _hdLsDel(); if (document.getElementById('pg-devoluciones') && document.getElementById('pg-devoluciones').classList.contains('on')) loadDevoluciones(true); } catch(e) {}
