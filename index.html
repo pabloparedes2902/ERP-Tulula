@@ -11230,9 +11230,27 @@ const EDIT_CELDA_COLS = {
                            valida:v => {
                              const t = String(v||'').trim();
                              if (t === '') return '';
-                             if (/^n\.?\s*\/?\s*a\.?$/i.test(t)) return '';   // N/A, N.A., n/a…
-                             if (t.length >= 6 && t.length <= 20) return '';
-                             return 'Documento demasiado corto. Escribí el número completo, o "N/A" si no lo tenés.';
+                             // "N/A" y variantes: clienta sin documento. 1.054 casos reales.
+                             if (/^n\.?\s*\/?\s*a\.?$/i.test(t)) return '';
+                             // Documento CON etiqueta escrita: "CE: 000100091", "DNI. 07364602",
+                             // "RUC 20611259060", "Rut.13.528.232-4". 37 casos reales.
+                             if (/^(c\.?\s*e|dni|ruc|rut)\b/i.test(t)) {
+                               return /[0-9]{5,}/.test(t) ? '' : 'Falta el número del documento.';
+                             }
+                             // 30-ago-2026 · PEDIDO DE PABLO: un número suelto NO puede llevar letras.
+                             // Caso real encontrado: "O8200375" — una letra O en vez del cero. A esa
+                             // clienta el bot no le escribía y su historial quedaba partido en dos.
+                             // Se permiten dígitos y guiones (documentos extranjeros: "08602866-8").
+                             if (/[A-Za-zÁÉÍÓÚÑáéíóúñ]/.test(t)) {
+                               return 'El documento no puede llevar letras. Si es un cero, escribí 0 (no la letra O). Si no tenés el documento, escribí N/A.';
+                             }
+                             if (!/^[0-9-]+$/.test(t)) {
+                               return 'El documento solo puede tener números (y guiones). Si no lo tenés, escribí N/A.';
+                             }
+                             const _dig = t.replace(/[^0-9]/g, '');
+                             if (_dig.length < 6) return 'Documento demasiado corto. Escribí el número completo, o "N/A" si no lo tenés.';
+                             if (_dig.length > 15) return 'Documento demasiado largo — revisá el número.';
+                             return '';
                            } },
 };
 
@@ -13690,14 +13708,69 @@ function verPed(p) {
     document.getElementById('modal-ped').classList.remove('on');
     toast('Pedido #'+nro+' actualizado', 'ok');
     // 3. Enviar al servidor en background — si falla, avisa y recarga
-    apiSend('pedidos.actualizar', body).catch(e => {
+    _guardarPedidoModal(nro, body).catch(e => {
       toast('Error al guardar #'+nro+': '+esc(e.message)+'. Recargando...', 'err');
       stData=null; confData=null; pRawEst=null; _invalidarPrefetch();
       loadPeds(pEst, true);
     });
   });
 
-  // Recalcular el TOTAL PEDIDO EN VIVO al tipear el envío (sin esperar al guardado).
+  // ══════════════════════════════════════════════════════════════════════════
+// 30-ago-2026 · ETAPA 3 · TANDA 1 — EL MODAL POR LA VÍA RÁPIDA.
+//
+// MEDIDO en vivo ese día sobre el pedido 20301:
+//   apiSend('pedidos.actualizar')  →  9,8 segundos
+//   la misma escritura en la base  →  0,23 segundos
+//
+// La vía rápida YA EXISTÍA (`campo_masivo`, bandera SB_PILOTO_CAMPOS) y ya la
+// usaban la edición de celda y la masiva. Lo que faltaba era que el MODAL la
+// aprovechara: manda varios campos juntos y por eso caía entero al camino lento.
+//
+// QUÉ HACE: parte el guardado en dos. Los campos de la lista blanca
+// (SB_CAMPOS_MASIVOS: Estado, Courier, Canal, Origen, Asesora, ComentariosEnvio)
+// van por la base, uno por uno, en paralelo. Todo lo demás — dinero, prendas,
+// dirección, nombre, documento, fechas, conversión de reserva — sigue por Apps
+// Script, que es donde viven sus reglas.
+//
+// Si TODO lo que cambió es de la lista blanca, el guardado entero es instantáneo.
+// Si hay UN solo campo fuera de la lista, se manda el body COMPLETO por el camino
+// de siempre y no se parte nada: nunca media escritura por un lado y media por otro.
+//
+// SALVAGUARDA: si la base no contesta con un ok explícito para algún campo, ese
+// guardado cae al camino viejo. El camino viejo no se toca ni se borra.
+// ══════════════════════════════════════════════════════════════════════════
+async function _guardarPedidoModal(nro, body) {
+  try {
+    const _meta = { NroPedido:1, action:1 };
+    const campos = Object.keys(body || {}).filter(k => !k.startsWith('_') && !_meta[k]);
+    if (!campos.length) return;
+
+    const rapidos = (typeof SB_CAMPOS_MASIVOS !== 'undefined') ? SB_CAMPOS_MASIVOS : [];
+    const todosRapidos = campos.length > 0 && campos.every(k => rapidos.indexOf(k) >= 0);
+
+    // Un solo campo fuera de la lista blanca → todo por el camino de siempre.
+    if (!todosRapidos || typeof _sbRpcCampoMasivo !== 'function') {
+      return apiSend('pedidos.actualizar', body);
+    }
+
+    const t0 = Date.now();
+    const res = await Promise.all(campos.map(k => _sbRpcCampoMasivo([nro], k, body[k])));
+    if (res.some(ok => !ok)) {
+      // Alguno no pasó: se rehace TODO por el camino viejo. Repetir un campo que
+      // ya se escribió no rompe nada (se vuelve a poner el mismo valor).
+      try { console.warn('[guardado] la vía rápida no pudo con todos los campos — se usa Apps Script'); } catch (_) {}
+      return apiSend('pedidos.actualizar', body);
+    }
+    try { _sbEspejarYa([nro]); } catch (_) {}          // la hoja se pone al día en segundos
+    try { console.log('[guardado] #' + nro + ' por la vía rápida en ' + (Date.now() - t0) + ' ms (' + campos.length + ' campo(s))'); } catch (_) {}
+    try { window._ultimoGuardadoMs = Date.now() - t0; } catch (_) {}
+    return { ok:true, via:'base', ms: Date.now() - t0, campos: campos.length };
+  } catch (e) {
+    return apiSend('pedidos.actualizar', body);        // ante cualquier duda, el camino de siempre
+  }
+}
+
+// Recalcular el TOTAL PEDIDO EN VIVO al tipear el envío (sin esperar al guardado).
   // Envío único: el 1er lote toma el valor, los demás quedan en 0 (espejo de lo que guarda el backend).
   (function(){
     const _envInp = qId('medit-Envio'); if (!_envInp) return;
