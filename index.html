@@ -12149,6 +12149,30 @@ function _rtFlujoAplicar(que) {
 window._fantasmas = { revisados: 0, hallados: 0, reparados: 0, ultima: 0, detalle: [] };
 let _fantasmaEnCurso = false;
 
+// HISTORICO — sobrevive al cierre del navegador. Es la evidencia de si el tema
+// quedó cerrado de verdad: si en un mes marca cero, está cerrado con datos y no
+// con mi palabra. Si marca algo, ahí está el hueco que todavía no vimos.
+const _FANT_HIST_KEY = 'erp_fantasmas_hist';
+function _fantasmaHist() {
+  try {
+    const raw = localStorage.getItem(_FANT_HIST_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {}
+  return { desde: Date.now(), revisiones: 0, revisados: 0, hallados: 0, reparados: 0, ultimos: [] };
+}
+function _fantasmaHistGuardar(h) { try { localStorage.setItem(_FANT_HIST_KEY, JSON.stringify(h)); } catch (_) {} }
+function _fantasmaHistAnotar(revisados, hallados, nros) {
+  try {
+    const h = _fantasmaHist();
+    h.revisiones++; h.revisados += revisados; h.hallados += hallados; h.reparados += hallados;
+    if (hallados) {
+      h.ultimos = (nros || []).map(function (n) { return { nro: n, t: Date.now() }; })
+                    .concat(h.ultimos || []).slice(0, 25);
+    }
+    _fantasmaHistGuardar(h);
+  } catch (_) {}
+}
+
 async function _fantasmaVigilar() {
   if (_fantasmaEnCurso) return;
   if (typeof document === 'undefined' || document.hidden) return;
@@ -12160,7 +12184,11 @@ async function _fantasmaVigilar() {
     // Los pedidos que la persona TIENE DELANTE ahora mismo.
     const nros = [];
     const vistos = new Set();
-    const filas = document.querySelectorAll('#peds-tb tr[data-nro], #peds-tb tr[data-n]');
+    // 30-ago · DEFECTO CAZADO EN PRUEBA: el selector decía '#peds-tb', que NO
+    // EXISTE. El detector caía siempre al plan B (los primeros 40 de memoria),
+    // que no son los que la persona tiene delante. Las filas reales cuelgan de
+    // #pg-pedidos y llevan data-nro. Comprobado en vivo: 52 filas, con data-nro.
+    const filas = document.querySelectorAll('#pg-pedidos tr[data-nro]');
     filas.forEach(function (tr) {
       const n = String(tr.getAttribute('data-nro') || tr.getAttribute('data-n') || '').trim();
       if (n && !vistos.has(n)) { vistos.add(n); nros.push(n); }
@@ -12210,6 +12238,7 @@ async function _fantasmaVigilar() {
 
     window._fantasmas.revisados += lista.length;
     window._fantasmas.ultima = Date.now();
+    _fantasmaHistAnotar(lista.length, sospechosos.length, sospechosos);
     if (!sospechosos.length) return;
 
     window._fantasmas.hallados += sospechosos.length;
@@ -12218,6 +12247,18 @@ async function _fantasmaVigilar() {
     try { _errLog('fantasma.detectado', new Error(sospechosos.length + ' pedidos')); } catch (_) {}
     sospechosos.forEach(function (n) { try { _rtProgramar(n); } catch (_) {} });
     window._fantasmas.reparados += sospechosos.length;
+
+    // 30-ago · AVISO EN PANTALLA (pedido de Pablo: "que no se quede en silencio").
+    // Se dice QUE paso y que YA se corrigio, para que nadie se asuste ni desconfie
+    // de lo que esta viendo. Nombra los pedidos: si estabas trabajando en uno de
+    // ellos, mira otra vez antes de despachar.
+    try {
+      const _lbl = sospechosos.length === 1
+        ? ('El pedido ' + sospechosos[0] + ' mostraba datos viejos — ya se corrigió')
+        : (sospechosos.length + ' pedidos mostraban datos viejos — ya se corrigieron (' +
+           sospechosos.slice(0, 4).join(', ') + (sospechosos.length > 4 ? '…' : '') + ')');
+      toast('⚠️ ' + _lbl, 'err');
+    } catch (_) {}
   } catch (_) {
   } finally { _fantasmaEnCurso = false; }
 }
@@ -12260,7 +12301,13 @@ async function _rtPulsoAlcanzar() {
   } catch (_) {}
 }
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { try { _rtPulsoAlcanzar(); } catch (_) {} }
+  if (!document.hidden) {
+    try { _rtPulsoAlcanzar(); } catch (_) {}
+    // 30-ago — y ademas se revisa que lo que quedo en pantalla sea verdad. Volver
+    // a una ventana que estuvo horas atras de otra es JUSTO cuando aparece el
+    // fantasma; el detector de cada 3 min no corre en pestañas ocultas.
+    setTimeout(function () { try { _fantasmaVigilar(); } catch (_) {} }, 4000);
+  }
 });
 
 let _rtTimbreTimer = null, _rtTimbreCuenta = 0;
@@ -26832,6 +26879,23 @@ async function loadCfgBlindaje() {
   if (f.hallados > 0 && f.detalle && f.detalle.length) {
     h += '<div style="font-size:12px;color:#f59e0b;margin-top:6px">Últimos: ' + esc(f.detalle.join(', ')) + '</div>';
   }
+  // HISTÓRICO — la evidencia acumulada. Si en un mes marca cero, el tema está
+  // cerrado con datos y no con la palabra de nadie.
+  const hh = _fantasmaHist();
+  const dias = Math.max(1, Math.round((Date.now() - (hh.desde || Date.now())) / 86400000));
+  h += '<div style="margin-top:12px;padding:10px;border:1px solid var(--bd);border-radius:var(--r)">';
+  h += '<div style="font-size:12px;font-weight:600;margin-bottom:4px">Histórico (desde hace ' + dias + ' día' + (dias === 1 ? '' : 's') + ')</div>';
+  h += '<div style="font-size:12px;color:var(--mu);font-variant-numeric:tabular-nums">' +
+       'Revisiones: ' + (hh.revisiones || 0) + ' · Pedidos comparados: ' + (hh.revisados || 0) +
+       ' · <b style="color:' + ((hh.hallados || 0) ? '#f59e0b' : '#34d399') + '">Desajustes: ' + (hh.hallados || 0) + '</b></div>';
+  if ((hh.hallados || 0) === 0 && (hh.revisiones || 0) > 20) {
+    h += '<div style="font-size:12px;color:#34d399;margin-top:4px">Sin un solo desajuste en ' + (hh.revisiones || 0) + ' revisiones.</div>';
+  }
+  if (hh.ultimos && hh.ultimos.length) {
+    h += '<div style="font-size:11px;color:var(--mu);margin-top:6px">Últimos casos: ' +
+         esc(hh.ultimos.slice(0, 8).map(function (x) { return x.nro + ' (' + hace(x.t) + ')'; }).join(' · ')) + '</div>';
+  }
+  h += '</div>';
   h += '<button id="cfg-blind-revisar" class="btn bg bs" style="font-size:12px;margin-top:10px">Revisar ahora</button>';
   h += '</div>';
   el.innerHTML = h;
