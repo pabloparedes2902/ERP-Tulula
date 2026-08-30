@@ -634,7 +634,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <div class="fr">
           <div class="fg"><label>Documento</label>
             <div class="dw">
-              <select id="np-dtp"><option value="DNI">DNI</option><option value="RUC">RUC</option><option value="CE">C.E.</option></select>
+              <select id="np-dtp"><option value="DNI">DNI</option><option value="RUC">RUC</option><option value="CE">C.E.</option><option value="NA">Sin documento (N/A)</option></select>
               <input id="np-dnum" type="text" placeholder="Número" maxlength="8" autocomplete="off">
             </div>
             <div id="np-dhint" style="font-size:11px;color:var(--mu);margin-top:4px">DNI: 8 dígitos</div>
@@ -5683,7 +5683,19 @@ const SB_PILOTO_CONSTANCIAS = true;   // ← reversa: poner en false y publicar
 const SB_PILOTO_CAMPOS = true;        // ← reversa: poner en false y publicar
 // Campos permitidos por la vía rápida (los demás siguen por Apps Script: fechas
 // y EstadoPagoManual tienen lógica especial en la hoja).
-const SB_CAMPOS_MASIVOS = ['Estado','Courier','Canal','Origen','Asesora','ComentariosEnvio'];
+const SB_CAMPOS_MASIVOS = ['Estado','Courier','Canal','Origen','Asesora','ComentariosEnvio',
+  // TANDA 2 (30-ago-2026) — los datos de la clienta y su direccion. Este cambio va
+  // ULTIMO a proposito: antes tuvieron que estar listos los otros dos lados, o la
+  // pantalla mandaria por la via rapida algo que la hoja nunca recibiria.
+  //   · pedidosActualizarMasivo (Code.gs) — para que el Aplicador pueda bajarlo
+  //   · campo_masivo (Supabase)           — para que el espejo lo acepte
+  // Los tres los compara tests/regresion_tanda2_campos.js.
+  'NombreApellido','Direccion','Distrito','Provincia','Region','Referencia','Celular','Email'];
+
+// Campos que el backend guarda SIEMPRE en MAYUSCULAS (lista UP_PEDIDO en Code.gs).
+// La base tambien las aplica; esto es para que la pantalla muestre de una lo mismo
+// que va a quedar guardado, sin el parpadeo de "lo escribi en minusculas y cambio".
+const SB_CAMPOS_MAYUSCULA = ['NombreApellido','Direccion','Distrito','Provincia','Region','Referencia'];
 
 // ══════════════════════════════════════════════════════════════════════════
 // PASO 4 DE LA MIGRACIÓN (25-jul) — PAGOS DIRECTO EN LA BASE
@@ -13753,8 +13765,14 @@ async function _guardarPedidoModal(nro, body) {
       return apiSend('pedidos.actualizar', body);
     }
 
+    // Se manda ya en mayusculas lo que el backend pondria en mayusculas igual.
+    const _norm = (k, v) => (typeof SB_CAMPOS_MAYUSCULA !== 'undefined' &&
+                             SB_CAMPOS_MAYUSCULA.indexOf(k) >= 0 &&
+                             v != null && String(v).trim() !== '')
+                            ? String(v).toUpperCase() : v;
+
     const t0 = Date.now();
-    const res = await Promise.all(campos.map(k => _sbRpcCampoMasivo([nro], k, body[k])));
+    const res = await Promise.all(campos.map(k => _sbRpcCampoMasivo([nro], k, _norm(k, body[k]))));
     if (res.some(ok => !ok)) {
       // Alguno no pasó: se rehace TODO por el camino viejo. Repetir un campo que
       // ya se escribió no rompe nada (se vuelve a poner el mismo valor).
@@ -14286,7 +14304,7 @@ function _npPrecheckDuplicados() {
   clearTimeout(_npDupTimer);
   _npDupTimer = setTimeout(async () => {
     if (NP.modo !== 'nuevo') return;
-    const dni = (document.getElementById('np-dnum')?.value || '').trim();
+    const dni = _npDocBuscable(document.getElementById('np-dnum')?.value);
     const tels = [...document.querySelectorAll('#np-tels input')].map(i => (i.value||'').trim()).filter(Boolean);
     if (!dni && !tels.length) return;
     const prendas = [...document.querySelectorAll('#np-prendas .np-prenda')].map(i => i.value.trim()).filter(Boolean);
@@ -14339,14 +14357,9 @@ async function npInit() {
   });
 
   // Evento: documento
-  document.getElementById('np-dtp').addEventListener('change', function() {
-    const info = {DNI:'8 dígitos', RUC:'11 dígitos', CE:'9 dígitos'};
-    const maxl = {DNI:8, RUC:11, CE:9};
-    document.getElementById('np-dhint').textContent = this.value + ': ' + info[this.value];
-    document.getElementById('np-dnum').maxLength = maxl[this.value];
-    document.getElementById('np-dnum').value = '';
-  });
+  document.getElementById('np-dtp').addEventListener('change', function() { _npAplicarTipoDoc(this.value); });
   document.getElementById('np-dnum').addEventListener('input', function() {
+    if (this.readOnly) return;   // modo N/A: el valor lo pone el selector, no el teclado
     this.value = this.value.replace(/\D/g, '');
     npAutoDetect();
     npLookupSaldos();
@@ -14910,16 +14923,20 @@ function npRellenar(c, resEl) {
   document.getElementById('np-nom').value  = c.n   || '';
   // Documento
   const dni = String(c.d || '').trim();
-  if (dni && /^\d{8}$/.test(dni)) {
-    document.getElementById('np-dtp').value  = 'DNI';
-    document.getElementById('np-dnum').value = dni;
-    document.getElementById('np-dhint').textContent = 'DNI: 8 dígitos';
-  } else {
+  // 30-ago-2026 — antes SOLO se reconocia el DNI de 8. A una clienta con carne (9),
+  // con RUC (11) o sin documento se le borraba el numero y el selector se quedaba
+  // en lo que hubiera de antes, mintiendo sobre que tipo de documento era.
+  if (/^N\/?A$/i.test(dni))       { _npAplicarTipoDoc('NA'); }
+  else if (/^\d{8}$/.test(dni))   { _npAplicarTipoDoc('DNI', dni); }
+  else if (/^\d{9}$/.test(dni))   { _npAplicarTipoDoc('CE',  dni); }
+  else if (/^\d{11}$/.test(dni))  { _npAplicarTipoDoc('RUC', dni); }
+  else {
     // 30-jul-2026 — SIN ESTE `else` EL DOCUMENTO DE LA CLIENTA ANTERIOR SE QUEDABA.
     // Elegís a la clienta A (DNI 12345678), cambiás de idea, elegís a la clienta B (sin
     // DNI o con RUC/CE) → el pedido de B se guardaba CON EL DNI DE A. Silencioso:
     // npValidar no lo ve, porque el DNI es formalmente válido. Entre selecciones nadie
     // limpia el formulario, así que el campo sobrevive.
+    document.getElementById('np-dnum').readOnly = false;
     document.getElementById('np-dnum').value = '';
   }
   // Dirección
@@ -15070,6 +15087,42 @@ function npConfirmDuplicados(candidatos, prendasNuevas) {
 // Al escribir DNI o teléfono, busca en el índice y ofrece autocompletar
 // solo si el formulario principal está vacío. No sobreescribe datos ya ingresados.
 let _npAutoDetectTimer = null;
+// ════════════════════════════════════════════════════════════════════════════
+// 30-ago-2026 · "SIN DOCUMENTO (N/A)" — POR QUE EXISTE.
+//
+// Hasta hoy el campo se podia dejar VACIO. Un vacio no se distingue de un olvido:
+// nadie sabe si la clienta no dio documento o si quien tomo el pedido se salteo el
+// campo. Asi se juntaron 915 filas vacias que hubo que sanear a mano el 30-ago.
+//
+// Con N/A la ausencia queda DECLARADA. El campo nunca vuelve a quedar vacio, y el
+// saneo de atras no se degrada de nuevo con los pedidos nuevos.
+//
+// El numero se llena solo y se bloquea a proposito: si se pudiera escribir encima,
+// volveriamos a tener "N/A 12345678" y variantes.
+// ════════════════════════════════════════════════════════════════════════════
+const _NP_DOC_INFO = { DNI:'8 dígitos', RUC:'11 dígitos', CE:'9 dígitos', NA:'la clienta no dio documento' };
+const _NP_DOC_LARGO = { DNI:8, RUC:11, CE:9, NA:3 };
+
+function _npAplicarTipoDoc(tipo, valor) {
+  const num = document.getElementById('np-dnum');
+  const hint = document.getElementById('np-dhint');
+  const sel = document.getElementById('np-dtp');
+  if (!num || !hint || !sel) return;
+  sel.value = tipo;
+  num.maxLength = _NP_DOC_LARGO[tipo] || 11;
+  hint.textContent = (tipo === 'NA' ? 'Sin documento' : tipo) + ': ' + (_NP_DOC_INFO[tipo] || '');
+  if (tipo === 'NA') { num.value = 'N/A'; num.readOnly = true; }
+  else { num.readOnly = false; num.value = (valor === undefined) ? '' : String(valor); }
+}
+
+// Un documento que dice N/A NO sirve para buscar: despues del saneo del 30-ago hay
+// ~1.969 clientas con N/A. Buscar por ese texto las traeria a todas y llenaria la
+// pantalla de duplicados falsos. Para buscar, N/A vale lo mismo que vacio.
+function _npDocBuscable(v) {
+  const t = String(v || '').trim();
+  return /^N\/?A$/i.test(t) ? '' : t;
+}
+
 function npAutoDetect() {
   clearTimeout(_npAutoDetectTimer);
   _npAutoDetectTimer = setTimeout(npAutoDetectDo, 250);
@@ -15086,7 +15139,7 @@ function npAutoDetectDo() {
 
   let matches = [];
   // Match por documento (DNI: 8 dígitos, RUC: 11, CE: 9)
-  if (dni && ((dtp==='DNI' && dni.length===8) || (dtp==='RUC' && dni.length===11) || (dtp==='CE' && dni.length>=8))) {
+  if (dni && dtp !== 'NA' && ((dtp==='DNI' && dni.length===8) || (dtp==='RUC' && dni.length===11) || (dtp==='CE' && dni.length>=8))) {
     matches = NP.idxData.filter(c => String(c.d||'').trim() === dni);
   }
   // Si no, match por teléfono (9 dígitos)
@@ -16200,7 +16253,7 @@ async function npGuardar() {
   // ── Verificar duplicados (FA.3) ──
   // Solo en modo 'nuevo' (si ya eligió agregar a pedido vigente, no hace falta)
   if (NP.modo === 'nuevo') {
-    const _dni = (document.getElementById('np-dnum').value || '').trim();
+    const _dni = _npDocBuscable(document.getElementById('np-dnum').value);
     const _tels = [...document.querySelectorAll('#np-tels input')].map(i => i.value.trim()).filter(Boolean);
     const _prendas = [...document.querySelectorAll('#np-prendas .np-prenda')].map(i => i.value.trim()).filter(Boolean);
     if (_dni || _tels.length) {
@@ -16926,9 +16979,18 @@ function npValidar() {
   if (emailVal && !emailVal.includes('@')) errs.push('El correo electrónico debe contener el signo @');
   const dtp = document.getElementById('np-dtp').value;
   const dnum = (document.getElementById('np-dnum').value || '').trim();
-  if (dnum) {
-    if (!/^\d+$/.test(dnum)) errs.push(dtp + ': solo se permiten números');
-    else { const n = {DNI:8,RUC:11,CE:9}[dtp]; if (dnum.length !== n) errs.push(dtp + ': debe tener ' + n + ' dígitos (tiene ' + dnum.length + ')'); }
+  // 30-ago-2026 — EL DOCUMENTO YA NO PUEDE QUEDAR VACIO. Si la clienta no lo dio, se
+  // elige "Sin documento (N/A)". Un vacio no se distingue de un olvido; asi se
+  // acumularon las 915 filas vacias que hubo que sanear a mano.
+  if (dtp === 'NA') {
+    if (!/^N\/?A$/i.test(dnum)) errs.push('Con "Sin documento" el número debe decir N/A');
+  } else if (!dnum) {
+    errs.push('Falta el documento. Si la clienta no lo dio, elegí "Sin documento (N/A)" en el selector');
+  } else if (!/^\d+$/.test(dnum)) {
+    errs.push(dtp + ': solo se permiten números');
+  } else {
+    const n = {DNI:8,RUC:11,CE:9}[dtp];
+    if (dnum.length !== n) errs.push(dtp + ': debe tener ' + n + ' dígitos (tiene ' + dnum.length + ')');
   }
   document.querySelectorAll('#np-tels input').forEach((inp, i) => {
     const v = (inp.value || '').trim();
@@ -16955,6 +17017,9 @@ function npLimpiar() {
     _npSaldos.applyPendiente = []; _npSaldos.acked = false; _npSaldos.lastKey = '';
   }
   ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-obs','np-fenv'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  // el selector de documento vuelve a DNI y el campo se destraba (si quedo en N/A
+  // estaba en readOnly, y sin esto el formulario nuevo nacia bloqueado)
+  try { _npAplicarTipoDoc('DNI'); } catch (_) {}
   ['np-courier','np-origen','np-asesora'].forEach(id => { const e = document.getElementById(id); if (e) e.selectedIndex = 0; });
   ['np-env','np-dsc'].forEach(id => { const e = document.getElementById(id); if (e) e.value = '0'; });
   document.getElementById('np-prendas').innerHTML = '';
