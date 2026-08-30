@@ -11209,8 +11209,12 @@ const EDIT_CELDA_COLS = {
   // historial en dos → validación estricta antes de dejar guardar.
   'Celular':             { tipo:'text', campo:'Celular', via:'pedido', avisaDespachado:true,
                            valida:v => (v==='' || /^[0-9]{9}$/.test(v)) ? '' : 'El número de celular debe tener 9 dígitos.' },
+  // 30-ago-2026 — Pablo: este campo NO guarda solo DNI. Guarda tambien CARNE DE
+  // EXTRANJERIA y RUC. La validacion vieja exigia 8 digitos exactos, asi que
+  // BLOQUEABA cargar un CE (9) o un RUC (11). Ahora acepta los tres largos.
   'DNI':                 { tipo:'text', campo:'DNI',     via:'pedido', avisaDespachado:true,
-                           valida:v => (v==='' || /^[0-9]{8}$/.test(v)) ? '' : 'El número de DNI debe tener 8 dígitos.' },
+                           valida:v => (v==='' || /^[0-9]{8}$/.test(v) || /^[0-9]{9}$/.test(v) || /^[0-9]{11}$/.test(v))
+                             ? '' : 'Documento invalido. DNI 8 digitos, carne de extranjeria 9, RUC 11.' },
 };
 
 
@@ -12806,6 +12810,21 @@ function verPed(p) {
   const envioMonto = parseFloat(p['Envio'])||0; // editable: envío del 1er lote (no se multiplica al guardar)
   // Envío TOTAL del pedido (suma 1 vez por lote) — solo para mostrar el total correcto.
   const envioTotalDisp = (p._envioTotal != null) ? (parseFloat(p._envioTotal)||0) : envioMonto;
+  // 30-ago-2026 · UN ENVÍO POR DESPACHO, NO POR PEDIDO (corrección de Pablo).
+  // Un pedido con cambios tiene MÁS DE UN envío legítimo. Medido en la base ese
+  // día: 68 pedidos con varios envíos, 154 envíos en total.
+  // El campo de abajo mostraba el TOTAL sumado; si alguien lo editaba, el total
+  // se escribía en la 1ª prenda y CERO en las demás — el total quedaba bien pero
+  // se DESTRUÍA el reparto por despacho (con qué se cuadra al courier).
+  // Con varios envíos, el campo pasa a ser de solo lectura y se manda a editarlo
+  // desde cada despacho, que es donde sí se guarda bien (pedidos.loteActualizar).
+  const _enviosDelPedido = (function () {
+    try {
+      const m = p._envioFechas || {};
+      return Object.values(m).filter(function (v) { return (parseFloat(v) || 0) > 0; }).length;
+    } catch (_) { return 1; }
+  })();
+  const _variosEnvios = _enviosDelPedido > 1;
   const descuentoMonto = parseFloat(p['Descuento'])||0;
 
   h += '<hr class="sep"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
@@ -12897,10 +12916,15 @@ function verPed(p) {
     prendas.forEach((pr, pi) => { h += _prendaRowHtml(pr, pi); });
   }
   h += '<tr style="border-top:1px solid var(--bd);background:var(--bg3)">'
-    +'<td style="padding:7px 12px;font-size:11px;color:var(--mu)">Envío</td>'
+    +'<td style="padding:7px 12px;font-size:11px;color:var(--mu)">Envío'
+      + (_variosEnvios ? '<br><span style="font-size:10px;color:#f59e0b">' + _enviosDelPedido + ' envíos — edítalos en cada despacho</span>' : '')
+    +'</td>'
     +'<td style="padding:4px 12px;text-align:right">'
-    +'<input id="medit-Envio" type="number" min="0" step="1" value="'+esc(envioTotalDisp||0)+'" '
-    +'style="width:100px;padding:5px 8px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:monospace;font-size:13px;text-align:right"></td>'
+    +'<input id="medit-Envio" type="number" min="0" max="99" step="1" value="'+esc(envioTotalDisp||0)+'" '
+    + (_variosEnvios ? 'readonly title="Este pedido tiene varios envíos. Editar el total acá borraría el reparto por despacho." ' : '')
+    +'style="width:100px;padding:5px 8px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);color:'
+    + (_variosEnvios ? 'var(--mu);cursor:not-allowed' : 'var(--tx)')
+    +';font-family:monospace;font-size:13px;text-align:right"></td>'
     +'<td></td>'
     +'</tr>';
   if (descuentoMonto > 0) {
@@ -13535,7 +13559,16 @@ function verPed(p) {
       this.disabled = true; this.textContent = 'Despachando...';
       try {
         const body = { NroPedido: nro, lote: lk, Estado: estado, Courier: courier, FechaEnvio: fecha };
-        if (envioV !== '') body.Envio = parseFloat(envioV) || 0;
+        if (envioV !== '') {
+          const _ev = parseFloat(envioV) || 0;
+          // Tope de S/99 (Pablo, 30-ago) — mismo criterio que en el modal general.
+          if (_ev < 0 || _ev > 99) {
+            toast('El envío debe estar entre S/0 y S/99 — revisá el monto', 'err');
+            this.disabled = false; this.textContent = 'Despachar';
+            return;
+          }
+          body.Envio = _ev;
+        }
         const r = await apiSend('pedidos.loteActualizar', body);
         pRaw.forEach(rw => {
           if (String(rw['NroPedido']) !== String(nro)) return;
@@ -13577,6 +13610,21 @@ function verPed(p) {
     // Envío: el campo muestra el TOTAL del pedido (suma por lote). Si no se cambió a propósito,
     // NO reenviarlo (evita escribir ese total en cada fila y multiplicar el envío por lote).
     if (String(body.Envio||'') === String(envioTotalDisp||0)) delete body.Envio;
+    // 30-ago — CINTURÓN Y TIRANTES. Aunque el campo esté bloqueado arriba, acá se
+    // vuelve a impedir: con varios envíos NUNCA se manda el total del pedido.
+    if (_variosEnvios && body.Envio !== undefined) {
+      delete body.Envio;
+      try { toast('El envío de este pedido se edita en cada despacho, no en el total', 'err'); } catch (_) {}
+    }
+    // TOPE DE S/99 (Pablo, 30-ago): un cero de más en el envío distorsiona el
+    // margen y nadie lo mira. Se corta antes de guardar, no después.
+    if (body.Envio !== undefined) {
+      const _e = parseFloat(body.Envio) || 0;
+      if (_e < 0 || _e > 99) {
+        try { toast('El envío debe estar entre S/0 y S/99 — revisá el monto', 'err'); } catch (_) {}
+        return;
+      }
+    }
     // B3 — Ajuste manual del Estado de Pago: solo se guarda si la asesora tocó el selector.
     // Se almacena "ESTADO|pagadoSnapshot"; vuelve a automático cuando cambie el total pagado.
     {
