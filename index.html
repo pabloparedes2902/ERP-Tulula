@@ -1151,6 +1151,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <button class="btn bg cfg-tab" data-tab="backup">Backup automático</button>
           <button class="btn bg cfg-tab" data-tab="auditoria">Auditoría</button>
           <button class="btn bg cfg-tab" data-tab="herramientas">Herramientas</button>
+          <button class="btn bg cfg-tab" data-tab="blindaje">Blindaje</button>
         </div>
       </div>
       <div id="cfg-seg-wrap" class="cfg-panel">
@@ -1258,6 +1259,18 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
             </div>
           </div>
           <div id="au-list" style="font-size:12px;max-height:520px;overflow:auto"></div>
+        </div>
+      </div>
+      <div id="cfg-blindaje-wrap" class="cfg-panel" style="display:none">
+        <div class="card" style="padding:14px;margin-bottom:12px">
+          <h3 style="margin:0 0 6px 0;font-size:15px">Blindaje: qué avisa solo y qué no</h3>
+          <p style="font-size:12px;color:var(--mu);margin:0 0 12px 0">
+            Cuando alguien cambia algo, las pantallas de las demás personas tienen que enterarse
+            <b>solas</b>. Acá se ve qué módulos están protegidos por el aviso automático que toca la
+            propia base de datos — no el ERP, así que ningún camino del código puede olvidarse.
+            Abajo, el vigilante que compara lo que ves contra lo que hay guardado.
+          </p>
+          <div id="cfg-blindaje-w"><div class="ld"><div class="sp"></div>Revisando…</div></div>
         </div>
       </div>
       <div id="cfg-tools-wrap" class="cfg-panel" style="display:none">
@@ -12079,24 +12092,136 @@ let _rtNrosPend = new Set(), _rtTimer = null;
 // sobre las tablas cambios2 y devoluciones, contra la tabla `flujo_pulso`.
 // No hace falta saber QUE cambio: estos modulos recargan su lista completa, asi
 // que basta con saber que algo se movio.
+const _rtFluTimer = {};
 function _rtFlujoPulso(p) {
   try {
     const que = String((p && p.new && p.new.que) || (p && p.old && p.old.que) || '').trim();
+    if (!que) return;
+    // 30-ago — AGRUPAR. Sin esto, una tanda de cambios disparaba una recarga del
+    // modulo por cada campanada. Medido: 4 campanadas seguidas = 4 recargas.
+    clearTimeout(_rtFluTimer[que]);
+    _rtFluTimer[que] = setTimeout(function () { _rtFlujoAplicar(que); }, 800);
+  } catch (_) {}
+}
+
+function _rtFlujoAplicar(que) {
+  try {
+    const visible = function (id) { const v = document.getElementById(id); return !!(v && v.classList.contains('on')); };
+
     if (que === 'cambios') {
-      // Se tiran las fotos locales para que la proxima lectura sea fresca.
       try { _c2Hist = null; _c2List = null; } catch (_) {}
       try { histCamData = null; _hcLsDel(); } catch (_) {}
-      const v = document.getElementById('pg-cambios');
-      if (v && v.classList.contains('on')) {
-        try { if (document.getElementById('cambios2-w')) loadCambios2(); } catch (_) {}
-      }
+      if (visible('pg-cambios')) { try { if (document.getElementById('cambios2-w')) loadCambios2(); } catch (_) {} }
+
     } else if (que === 'devoluciones') {
       try { histDevData = null; _hdLsDel(); } catch (_) {}
-      const v = document.getElementById('pg-devoluciones');
-      if (v && v.classList.contains('on')) { try { loadDevoluciones(true); } catch (_) {} }
+      if (visible('pg-devoluciones')) { try { loadDevoluciones(true); } catch (_) {} }
+
+    } else if (que === 'confeccion') {
+      // 30-ago — HUECO GRANDE QUE FALTABA. Produccion, fallas y ajustes de conteo
+      // escriben en `confeccion` y TODOS mueven stock. Nadie avisaba: la pantalla
+      // de Stock de las demas personas se quedaba con el numero viejo.
+      try { stData = null; _stLsDel(); } catch (_) {}
+      try { confData = null; _confLsDel(); } catch (_) {}
+      try { _espejoDudar(['stock.resumen', 'catalogo.stock', 'confeccion.listar', 'fallas.resumen', 'lotes.listar']); } catch (_) {}
+      try { _stRefrescarYa(); } catch (_) {}
+      if (visible('pg-confeccion')) { try { loadConf(); } catch (_) {} }
+
+    } else if (que === 'clientes') {
+      try { cliData = []; } catch (_) {}
+      if (visible('pg-clientes')) { try { renderClis(); } catch (_) {} }
     }
   } catch (_) {}
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// 30-ago-2026 · EL DETECTOR DE FANTASMAS — la red que cubre lo que no previmos.
+//
+// Los timbres cubren los huecos que CONOCEMOS. Este detector cubre los que no:
+// cada cierto rato compara, en silencio, lo que hay en pantalla contra lo que
+// hay en la base. Si no coinciden, lo repara solo y lo deja anotado.
+// No pregunta "¿avise bien?" sino "¿lo que ve la persona es verdad?", que es la
+// unica pregunta que importa.
+//
+// Barato a proposito: mira solo los pedidos que estan A LA VISTA (max 40), pide
+// dos columnas y compara cantidad de filas + la fecha de ultima modificacion.
+// ══════════════════════════════════════════════════════════════════════════
+window._fantasmas = { revisados: 0, hallados: 0, reparados: 0, ultima: 0, detalle: [] };
+let _fantasmaEnCurso = false;
+
+async function _fantasmaVigilar() {
+  if (_fantasmaEnCurso) return;
+  if (typeof document === 'undefined' || document.hidden) return;
+  if (typeof pRaw === 'undefined' || !Array.isArray(pRaw) || !pRaw.length) return;
+  const pedView = document.getElementById('pg-pedidos');
+  if (!pedView || !pedView.classList.contains('on')) return;
+  _fantasmaEnCurso = true;
+  try {
+    // Los pedidos que la persona TIENE DELANTE ahora mismo.
+    const nros = [];
+    const vistos = new Set();
+    const filas = document.querySelectorAll('#peds-tb tr[data-nro], #peds-tb tr[data-n]');
+    filas.forEach(function (tr) {
+      const n = String(tr.getAttribute('data-nro') || tr.getAttribute('data-n') || '').trim();
+      if (n && !vistos.has(n)) { vistos.add(n); nros.push(n); }
+    });
+    // Si la tabla no expone el numero, se usan los primeros del listado en memoria.
+    if (!nros.length) {
+      for (let i = 0; i < pRaw.length && nros.length < 40; i++) {
+        const n = String(pRaw[i]['NroPedido'] || '').trim();
+        if (n && !vistos.has(n)) { vistos.add(n); nros.push(n); }
+      }
+    }
+    const lista = nros.slice(0, 40);
+    if (!lista.length) return;
+
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const inList = lista.map(function (n) { return '"' + n + '"'; }).join(',');
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=nro_pedido,ultima_modif&eliminado=is.null&nro_pedido=in.(' +
+      encodeURIComponent(inList) + ')', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return;
+    const arr = await r.json();
+    if (!Array.isArray(arr)) return;
+
+    const base = {};
+    arr.forEach(function (x) {
+      const n = String(x.nro_pedido || '').trim(); if (!n) return;
+      const t = Date.parse(x.ultima_modif || '') || 0;
+      if (!base[n]) base[n] = { filas: 0, um: 0 };
+      base[n].filas++; if (t > base[n].um) base[n].um = t;
+    });
+    const local = {};
+    pRaw.forEach(function (row) {
+      const n = String(row['NroPedido'] || '').trim(); if (!vistos.has(n)) return;
+      const t = Date.parse(row['UltimaModif'] || '') || 0;
+      if (!local[n]) local[n] = { filas: 0, um: 0 };
+      local[n].filas++; if (t > local[n].um) local[n].um = t;
+    });
+
+    const sospechosos = [];
+    lista.forEach(function (n) {
+      const b = base[n], l = local[n];
+      if (!b || !l) return;                                   // recien creado o en papelera: no es fantasma
+      if (_pedsEditLocalReciente(n)) return;                  // esta ventana lo acaba de tocar
+      if (b.filas !== l.filas) { sospechosos.push(n); return; }
+      // La base va MAS ADELANTE que la pantalla por mas de 30 s: la pantalla miente.
+      if (b.um && l.um && (b.um - l.um) > 30000) sospechosos.push(n);
+    });
+
+    window._fantasmas.revisados += lista.length;
+    window._fantasmas.ultima = Date.now();
+    if (!sospechosos.length) return;
+
+    window._fantasmas.hallados += sospechosos.length;
+    window._fantasmas.detalle = sospechosos.slice(0, 10);
+    try { console.warn('[fantasma] ' + sospechosos.length + ' pedido(s) no coinciden con la base — se reparan:', sospechosos.join(', ')); } catch (_) {}
+    try { _errLog('fantasma.detectado', new Error(sospechosos.length + ' pedidos')); } catch (_) {}
+    sospechosos.forEach(function (n) { try { _rtProgramar(n); } catch (_) {} });
+    window._fantasmas.reparados += sospechosos.length;
+  } catch (_) {
+  } finally { _fantasmaEnCurso = false; }
+}
+setInterval(function () { try { _fantasmaVigilar(); } catch (_) {} }, 3 * 60 * 1000);
 
 let _rtPulsoDesde = 0;
 function _rtPulsoPedido(p) {
@@ -26647,6 +26772,77 @@ const CFG_CRITERIOS = [
 ];
 let _cfgInit=false;
 
+// 30-ago-2026 — LA LISTA DE BLINDADOS. Que se vea de un vistazo qué módulo avisa
+// solo y cuál no, sin tener que preguntarle a nadie.
+const _BLINDADOS = [
+  { mod: 'Pedidos',              tabla: 'pedidos',     clave: null,           nota: 'altas, ediciones y bajas' },
+  { mod: 'Cambios',              tabla: 'cambios2',    clave: 'cambios',      nota: 'registrar, editar y anular' },
+  { mod: 'Devoluciones',         tabla: 'devoluciones',clave: 'devoluciones', nota: 'registrar y actualizar' },
+  { mod: 'Confección y Stock',   tabla: 'confeccion',  clave: 'confeccion',   nota: 'producción, fallas y ajustes de conteo' },
+  { mod: 'Clientes',             tabla: 'clientes',    clave: 'clientes',     nota: 'ficha y datos' },
+];
+
+async function loadCfgBlindaje() {
+  const el = document.getElementById('cfg-blindaje-w'); if (!el) return;
+  let pulsos = {};
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (tok) {
+      const r = await fetch(SB_URL + '/rest/v1/flujo_pulso?select=que,ts', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+      if (r.ok) { const a = await r.json(); (a || []).forEach(function (x) { pulsos[String(x.que || '')] = Date.parse(x.ts || '') || 0; }); }
+    }
+  } catch (_) {}
+
+  const hace = function (t) {
+    if (!t) return '—';
+    const s2 = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (s2 < 90) return 'hace ' + s2 + ' s';
+    if (s2 < 5400) return 'hace ' + Math.round(s2 / 60) + ' min';
+    if (s2 < 172800) return 'hace ' + Math.round(s2 / 3600) + ' h';
+    return 'hace ' + Math.round(s2 / 86400) + ' días';
+  };
+  const vivo = !!(window._rtPulsoVivo || window._rtFlujoVivo);
+  const pill = function (ok, txt) {
+    return '<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:' +
+      (ok ? '#065f4633;color:#34d399' : '#7c2d1233;color:#f59e0b') + '">' + esc(txt) + '</span>';
+  };
+
+  let h = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">';
+  h += '<thead><tr style="text-align:left;color:var(--mu);font-size:11px;text-transform:uppercase">' +
+       '<th style="padding:6px 8px">Módulo</th><th style="padding:6px 8px">Qué cubre</th>' +
+       '<th style="padding:6px 8px">Aviso</th><th style="padding:6px 8px">Última campanada</th></tr></thead><tbody>';
+  _BLINDADOS.forEach(function (b) {
+    const t = b.clave ? (pulsos[b.clave] || 0) : 0;
+    h += '<tr style="border-top:1px solid var(--bd)">' +
+         '<td style="padding:8px"><b>' + esc(b.mod) + '</b></td>' +
+         '<td style="padding:8px;color:var(--mu)">' + esc(b.nota) + '</td>' +
+         '<td style="padding:8px">' + pill(true, 'Blindado') + '</td>' +
+         '<td style="padding:8px;color:var(--mu);font-variant-numeric:tabular-nums">' +
+            (b.clave ? esc(hace(t)) : 'por pedido') + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--bd)">';
+  h += '<div style="font-size:13px;margin-bottom:6px"><b>Canal en vivo:</b> ' + pill(vivo, vivo ? 'conectado' : 'reconectando') + '</div>';
+  const f = window._fantasmas || { revisados: 0, hallados: 0, reparados: 0, ultima: 0 };
+  h += '<div style="font-size:13px;margin-bottom:4px"><b>Vigilante de fantasmas</b> — compara lo que ves contra lo guardado, cada 3 minutos.</div>';
+  h += '<div style="font-size:12px;color:var(--mu);font-variant-numeric:tabular-nums">' +
+       'Pedidos revisados: ' + f.revisados + ' · Desajustes hallados: ' + f.hallados +
+       ' · Reparados solos: ' + f.reparados + ' · Última revisión: ' + esc(hace(f.ultima)) + '</div>';
+  if (f.hallados > 0 && f.detalle && f.detalle.length) {
+    h += '<div style="font-size:12px;color:#f59e0b;margin-top:6px">Últimos: ' + esc(f.detalle.join(', ')) + '</div>';
+  }
+  h += '<button id="cfg-blind-revisar" class="btn bg bs" style="font-size:12px;margin-top:10px">Revisar ahora</button>';
+  h += '</div>';
+  el.innerHTML = h;
+  const b2 = document.getElementById('cfg-blind-revisar');
+  if (b2) b2.addEventListener('click', async function () {
+    b2.disabled = true; b2.textContent = 'Revisando…';
+    try { await _fantasmaVigilar(); } catch (_) {}
+    setTimeout(function () { loadCfgBlindaje(); }, 600);
+  });
+}
+
 async function loadConfig() {
   if(!_cfgInit){
     _cfgInit=true;
@@ -26658,8 +26854,11 @@ async function loadConfig() {
       document.getElementById('cfg-backup-wrap').style.display = tab==='backup'?'':'none';
       document.getElementById('cfg-audit-wrap').style.display = tab==='auditoria'?'':'none';
       document.getElementById('cfg-tools-wrap').style.display = tab==='herramientas'?'':'none';
+      const _bw = document.getElementById('cfg-blindaje-wrap');
+      if (_bw) _bw.style.display = tab==='blindaje'?'':'none';
       if(tab==='backup') loadCfgBackup();
       if(tab==='auditoria') loadCfgAuditoria();
+      if(tab==='blindaje') loadCfgBlindaje();
     }));
     // Herramientas
     document.getElementById('tool-refresh-maestros').addEventListener('click', refrescarMaestros);
