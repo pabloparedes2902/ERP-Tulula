@@ -6208,8 +6208,14 @@ function _rtEspejoAviso(clave){
 // Fuerza la relectura de Stock/Inventario ya mismo, sin esperar el latido.
 // Si la pantalla no esta a la vista, solo tira la foto local: al entrar se
 // recalcula sola y no se gasta una llamada en algo que nadie esta mirando.
+let _stUltimoForzado = 0;
 function _stRefrescarYa(){
   try {
+    // 29-ago — FRENO. El timbre puede sonar varias veces seguidas (una venta, un
+    // cambio y una devolucion casi juntos). Sin esto, cada campanada dispararia
+    // una relectura y se castigaria a la base sin ganar frescura.
+    if (Date.now() - _stUltimoForzado < 15000) return;
+    _stUltimoForzado = Date.now();
     _stDataTs = 0;
     const _pg = (typeof curPg === 'undefined') ? '' : curPg;
     if (_pg !== 'stock' && _pg !== 'inventario') {
@@ -12044,6 +12050,35 @@ const SB_REALTIME = true;
 let _rtCliente = null, _rtCanal = null, _rtUltTok = null, _rtCanalEsp = null;
 let _rtNrosPend = new Set(), _rtTimer = null;
 
+// Recibe CUALQUIER aviso del canal de pedidos y lo convierte en accion.
+//  · Si el aviso trae el numero de pedido (INSERT/UPDATE) → camino de siempre.
+//  · Si viene vacio (BORRADO) → se intenta deducir el pedido por el id que cada
+//    fila ya guarda en _sbId; si tampoco se puede, se toca el timbre a secas y el
+//    radar —que si funciona— averigua que cambio.
+let _rtTimbreTimer = null, _rtTimbreCuenta = 0;
+function _rtCampanada(p) {
+  try {
+    window._rtVivo = true;   // llego algo DE VERDAD: recien ahora vale relajar el poll
+    const nro = String((p && p.new && p.new.nro_pedido) || '').trim();
+    if (nro) { _rtProgramar(nro); return; }
+    const id = (p && p.old && p.old.id != null) ? String(p.old.id) : '';
+    if (id && typeof pRaw !== 'undefined' && Array.isArray(pRaw)) {
+      const fila = pRaw.find(r => String(r._sbId || '') === id);
+      if (fila) { _rtProgramar(String(fila['NroPedido'] || '').trim()); return; }
+    }
+    _rtTimbreCuenta++;
+    clearTimeout(_rtTimbreTimer);
+    _rtTimbreTimer = setTimeout(_rtTimbreSonar, 900);   // un guardado = varios borrados
+  } catch (_) {}
+}
+function _rtTimbreSonar() {
+  const n = _rtTimbreCuenta; _rtTimbreCuenta = 0;
+  if (!n) return;
+  try { console.log('[RT] timbre (' + n + ' avisos sin contenido) — se le pregunta al servidor'); } catch (_) {}
+  try { _pollPedsOnce(); } catch (_) {}
+  try { _stRefrescarYa(); } catch (_) {}
+}
+
 function _rtProgramar(nro) {
   try {
     if (!nro) return;
@@ -12127,14 +12162,24 @@ async function _rtConectar() {
     if (!tok) { setTimeout(_rtConectar, 15000); return; }   // aún sin sesión SB → reintentar
     _rtCliente = supabase.createClient(SB_URL, SB_ANON, { auth: { persistSession: false } });
     _rtCliente.realtime.setAuth(tok); _rtUltTok = tok;
+    // 29-ago-2026 · EL TIMBRE POR BORRADO. Antes se escuchaba solo INSERT y UPDATE.
+    // MEDIDO EN VIVO ese dia, con dos ventanas y el pedido 20301: de 8 avisos que
+    // mando la base, los 8 fueron DELETE y NINGUNO INSERT ni UPDATE. Sin errores y
+    // con el canal en SUBSCRIBED. O sea: el tiempo real "conectado" no entregaba
+    // NADA util, y lo unico que actualizaba la pantalla era el radar de 60 s.
+    // Cada guardado hace DELETE + INSERT en la base; el borrado SI llega siempre.
+    // Asi que se escucha '*' y el borrado se usa como CAMPANADA: no hace falta su
+    // contenido, basta con saber que algo paso para que el radar averigue que fue.
     _rtCanal = _rtCliente.channel('pedidos-rt')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'pedidos' }, p => _rtProgramar(p.new && p.new.nro_pedido))
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pedidos' }, p => _rtProgramar(p.new && p.new.nro_pedido))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, p => _rtCampanada(p))
       .subscribe(st => { try { console.log('[RT] canal pedidos:', st); } catch (_) {}
-        // 23-ago — bandera para el poll adaptativo: SUBSCRIBED = los cambios llegan
-        // solos por websocket (poll de respaldo a 60s); cualquier otro estado = volver
-        // al poll de 15s para no perder frescura.
-        try { window._rtVivo = (st === 'SUBSCRIBED'); } catch (_) {} });
+        // 29-ago — LA BANDERA YA NO MIENTE. Antes se encendia con solo CONECTAR, y
+        // con ella el poll de respaldo se relajaba de 15 s a 60 s. Como el canal
+        // conectaba pero no entregaba, el resultado fue dejar Pedidos 4 veces mas
+        // lento que antes y que nadie se enterara. Ahora conectar solo apaga la
+        // bandera si el canal se cayo: encenderla es trabajo de la primera
+        // campanada REAL (ver _rtCampanada).
+        try { if (st !== 'SUBSCRIBED') window._rtVivo = false; } catch (_) {} });
 
     // 29-ago-2026 · ETAPA 2 — LA CAMPANITA DE STOCK.
     // Mismo mecanismo que el canal de pedidos, pero sobre 'espejo_pulso': una
@@ -12148,7 +12193,14 @@ async function _rtConectar() {
     try {
       _rtCanalEsp = _rtCliente.channel('espejo-rt')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'espejo_pulso' },
-            p => { try { _rtEspejoAviso(p && p.new && p.new.clave); } catch (_) {} })
+            p => { try {
+              // 29-ago — igual que en pedidos: el aviso puede llegar SIN contenido
+              // (los borrados). Si no se sabe que pantalla se rehizo, se revalida
+              // el stock igual: es barato (lee la copia, no recalcula nada).
+              const cl = String((p && p.new && p.new.clave) || (p && p.old && p.old.clave) || '');
+              if (cl) { _rtEspejoAviso(cl); }
+              else { clearTimeout(_rtEspTimer); _rtEspTimer = setTimeout(_stRefrescarYa, 900); }
+            } catch (_) {} })
         .subscribe(st => { try { console.log('[RT] canal espejo:', st); } catch (_) {}
           try { window._rtEspVivo = (st === 'SUBSCRIBED'); } catch (_) {} });
     } catch (e) { try { console.warn('[RT] espejo no disponible:', e && e.message); } catch (_) {} }
