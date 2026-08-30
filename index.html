@@ -12047,7 +12047,7 @@ async function _sbReconciliarTope(){
 // Respeta los mismos guardias que el radar: tombstones, ediciones locales
 // frescas y pintados propios. REVERSA: SB_REALTIME = false y publicar.
 const SB_REALTIME = true;
-let _rtCliente = null, _rtCanal = null, _rtUltTok = null, _rtCanalEsp = null;
+let _rtCliente = null, _rtCanal = null, _rtUltTok = null, _rtCanalEsp = null, _rtCanalPul = null;
 let _rtNrosPend = new Set(), _rtTimer = null;
 
 // Recibe CUALQUIER aviso del canal de pedidos y lo convierte en accion.
@@ -12055,6 +12055,64 @@ let _rtNrosPend = new Set(), _rtTimer = null;
 //  · Si viene vacio (BORRADO) → se intenta deducir el pedido por el id que cada
 //    fila ya guarda en _sbId; si tampoco se puede, se toca el timbre a secas y el
 //    radar —que si funciona— averigua que cambio.
+// ══════════════════════════════════════════════════════════════════════════
+// 30-ago-2026 · EL TIMBRE LO TOCA LA BASE, NO EL ERP.
+//
+// POR QUE HIZO FALTA (medido, no supuesto): el timbre por borrado del 29-ago
+// arreglo los guardados de pedido (que hacen DELETE + INSERT), pero NO las
+// altas puras. Agregar un pago es un INSERT solo: Supabase no entrega los
+// INSERT y no hubo ningun DELETE, asi que NO sono ningun aviso. La base quedo
+// con 5 filas y la otra ventana con 4. Ese es el fantasma que veia Pablo.
+//
+// COMO SE CIERRA: una tabla-timbre (`pedidos_pulso`) que un disparador de
+// Postgres toca en CADA cambio de la tabla pedidos — alta, edicion o baja, la
+// haga quien la haga y por el camino que sea. El timbre se BORRA y se vuelve a
+// escribir, porque el borrado es el UNICO aviso que Supabase entrega, y trae el
+// numero de pedido. Ningun camino del ERP puede olvidarse de tocarlo: no lo
+// toca el ERP, lo toca la base.
+// Medido el 30-ago: la campanada llego a la otra ventana en 0,2 segundos
+// despues de un alta pura, que antes no producia ningun aviso.
+// ══════════════════════════════════════════════════════════════════════════
+let _rtPulsoDesde = 0;
+function _rtPulsoPedido(p) {
+  try {
+    const nro = String((p && p.new && p.new.nro) || (p && p.old && p.old.nro) || '').trim();
+    _rtPulsoDesde = Date.now();
+    if (!nro) { _rtCampanada({}); return; }   // sin numero: timbre a secas
+    window._rtVivo = true;
+    _rtProgramar(nro);                        // relectura COMPLETA de ese pedido
+  } catch (_) {}
+}
+
+// EL ALCANCE — lo que hace que esto sea definitivo y no "casi siempre".
+// Una campanada se puede perder: la laptop se durmio, se cayo el wifi, la
+// pestana estuvo horas en segundo plano. Sin esto, esa ventana se quedaria con
+// datos viejos para siempre y volveria el fantasma.
+// Al reconectar el canal y al volver a mirar la pestana, se le pregunta a la
+// tabla-timbre QUE PEDIDOS cambiaron desde la ultima vez y se releen todos.
+async function _rtPulsoAlcanzar() {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return;
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const desde = new Date(_rtPulsoDesde || (Date.now() - 60 * 60 * 1000)).toISOString();
+    const r = await fetch(SB_URL + '/rest/v1/pedidos_pulso?select=nro,ts&ts=gt.' +
+      encodeURIComponent(desde) + '&order=ts.desc&limit=300',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return;
+    const arr = await r.json();
+    _rtPulsoDesde = Date.now();
+    if (!Array.isArray(arr) || !arr.length) return;
+    try { console.log('[RT] alcance: ' + arr.length + ' pedido(s) cambiaron mientras no mirabamos'); } catch (_) {}
+    // Avalancha (volvimos despues de horas): no se piden 300 pedidos uno a uno,
+    // se deja que el radar haga una pasada completa.
+    if (arr.length > 60) { try { _pollPedsOnce(); } catch (_) {} return; }
+    arr.forEach(x => { const n = String((x && x.nro) || '').trim(); if (n) _rtProgramar(n); });
+  } catch (_) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { try { _rtPulsoAlcanzar(); } catch (_) {} }
+});
+
 let _rtTimbreTimer = null, _rtTimbreCuenta = 0;
 function _rtCampanada(p) {
   try {
@@ -12180,6 +12238,21 @@ async function _rtConectar() {
         // bandera si el canal se cayo: encenderla es trabajo de la primera
         // campanada REAL (ver _rtCampanada).
         try { if (st !== 'SUBSCRIBED') window._rtVivo = false; } catch (_) {} });
+
+    // 30-ago-2026 · EL TIMBRE DE PEDIDOS (ver el bloque grande de _rtPulsoPedido).
+    // Este es el canal PRINCIPAL: suena en todo cambio de pedidos, sea alta,
+    // edicion o baja. El canal 'pedidos-rt' de arriba queda como segundo camino.
+    try {
+      _rtCanalPul = _rtCliente.channel('pedidos-pulso-rt')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos_pulso' },
+            p => { try { _rtPulsoPedido(p); } catch (_) {} })
+        .subscribe(st => { try { console.log('[RT] canal pulso pedidos:', st); } catch (_) {}
+          try {
+            window._rtPulsoVivo = (st === 'SUBSCRIBED');
+            // Al (re)conectar, ponerse al dia con lo que paso mientras no habia canal.
+            if (st === 'SUBSCRIBED') _rtPulsoAlcanzar();
+          } catch (_) {} });
+    } catch (e) { try { console.warn('[RT] pulso de pedidos no disponible:', e && e.message); } catch (_) {} }
 
     // 29-ago-2026 · ETAPA 2 — LA CAMPANITA DE STOCK.
     // Mismo mecanismo que el canal de pedidos, pero sobre 'espejo_pulso': una
