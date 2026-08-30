@@ -12047,7 +12047,7 @@ async function _sbReconciliarTope(){
 // Respeta los mismos guardias que el radar: tombstones, ediciones locales
 // frescas y pintados propios. REVERSA: SB_REALTIME = false y publicar.
 const SB_REALTIME = true;
-let _rtCliente = null, _rtCanal = null, _rtUltTok = null, _rtCanalEsp = null, _rtCanalPul = null;
+let _rtCliente = null, _rtCanal = null, _rtUltTok = null, _rtCanalEsp = null, _rtCanalPul = null, _rtCanalFlu = null;
 let _rtNrosPend = new Set(), _rtTimer = null;
 
 // Recibe CUALQUIER aviso del canal de pedidos y lo convierte en accion.
@@ -12073,6 +12073,31 @@ let _rtNrosPend = new Set(), _rtTimer = null;
 // Medido el 30-ago: la campanada llego a la otra ventana en 0,2 segundos
 // despues de un alta pura, que antes no producia ningun aviso.
 // ══════════════════════════════════════════════════════════════════════════
+// ── 30-ago · EL MISMO BLINDAJE PARA CAMBIOS Y DEVOLUCIONES ─────────────────
+// Estos dos modulos tenian el mismo agujero que Pedidos: dependian de que el
+// ERP se acordara de avisar. Ahora el aviso lo toca un disparador de Postgres
+// sobre las tablas cambios2 y devoluciones, contra la tabla `flujo_pulso`.
+// No hace falta saber QUE cambio: estos modulos recargan su lista completa, asi
+// que basta con saber que algo se movio.
+function _rtFlujoPulso(p) {
+  try {
+    const que = String((p && p.new && p.new.que) || (p && p.old && p.old.que) || '').trim();
+    if (que === 'cambios') {
+      // Se tiran las fotos locales para que la proxima lectura sea fresca.
+      try { _c2Hist = null; _c2List = null; } catch (_) {}
+      try { histCamData = null; _hcLsDel(); } catch (_) {}
+      const v = document.getElementById('pg-cambios');
+      if (v && v.classList.contains('on')) {
+        try { if (document.getElementById('cambios2-w')) loadCambios2(); } catch (_) {}
+      }
+    } else if (que === 'devoluciones') {
+      try { histDevData = null; _hdLsDel(); } catch (_) {}
+      const v = document.getElementById('pg-devoluciones');
+      if (v && v.classList.contains('on')) { try { loadDevoluciones(true); } catch (_) {} }
+    }
+  } catch (_) {}
+}
+
 let _rtPulsoDesde = 0;
 function _rtPulsoPedido(p) {
   try {
@@ -12253,6 +12278,15 @@ async function _rtConectar() {
             if (st === 'SUBSCRIBED') _rtPulsoAlcanzar();
           } catch (_) {} });
     } catch (e) { try { console.warn('[RT] pulso de pedidos no disponible:', e && e.message); } catch (_) {} }
+
+    // 30-ago-2026 · TIMBRE DE CAMBIOS Y DEVOLUCIONES (ver _rtFlujoPulso).
+    try {
+      _rtCanalFlu = _rtCliente.channel('flujo-pulso-rt')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'flujo_pulso' },
+            p => { try { _rtFlujoPulso(p); } catch (_) {} })
+        .subscribe(st => { try { console.log('[RT] canal flujo (cambios/devoluciones):', st); } catch (_) {}
+          try { window._rtFlujoVivo = (st === 'SUBSCRIBED'); } catch (_) {} });
+    } catch (e) { try { console.warn('[RT] pulso de flujo no disponible:', e && e.message); } catch (_) {} }
 
     // 29-ago-2026 · ETAPA 2 — LA CAMPANITA DE STOCK.
     // Mismo mecanismo que el canal de pedidos, pero sobre 'espejo_pulso': una
