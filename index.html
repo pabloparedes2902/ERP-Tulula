@@ -7621,6 +7621,52 @@ async function _sbRpcEliminar(fn, params) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// AGREGAR PRENDA POR LA VIA RAPIDA (31-ago-2026)
+// Diseno y riesgos: sql/agregar_prenda_DISENO.md
+//
+// LO QUE NO PASA POR ACA, y por que:
+//   · Una YAYITA sale del monton de fallas, que vive en OTRA hoja. Por esta via
+//     se venderia la falla sin descontarla y el stock quedaria descuadrado.
+//   · Sin Estado, la hoja tiene que decidir PREVENTA mirando el stock.
+// Los dos casos devuelven null y la pantalla se va por el camino de siempre.
+//
+// REVERSA INMEDIATA: poner SB_PILOTO_AGREGAR = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_PILOTO_AGREGAR = true;
+
+async function _sbRpcAgregarPrenda(nro, d) {
+  try {
+    if (!SB_PILOTO_AGREGAR) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (!d || !String(d.prenda || '').trim()) return null;
+    if (/^YAYITA\s*-/i.test(String(d.prenda || ''))) return null;   // monton de fallas: no
+    if (!String(d.estado || '').trim()) return null;                 // la hoja decide PREVENTA
+    if (!String(d.requestId || '').trim()) return null;              // sin esto podria duplicar
+    const _env = parseFloat(d.envio) || 0;
+    if (_env < 0 || _env > 99) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_agregar_prenda', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        p_nro: String(nro), p_prenda: String(d.prenda).trim(),
+        p_precio: parseFloat(d.precio) || 0, p_envio: _env,
+        p_estado: String(d.estado).trim(), p_fecha_pedido: String(d.fechaPedido || ''),
+        p_comentarios: String(d.comentarios || ''), p_cliente: d.cliente || {},
+        p_request_id: String(d.requestId),
+      }),
+    });
+    if (!r.ok) { try { console.warn('[agregar-prenda] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+    const x = await r.json();
+    return (x && x.ok === true) ? x : null;
+  } catch (e) {
+    try { console.warn('[agregar-prenda] RPC fallo → via Apps Script'); } catch(_){}
+    return null;
+  }
+}
+
 async function _sbRpcConstanciaSet(nro, pagoId, urls) {
   try {
     if (!SB_PILOTO_CONSTANCIAS) return false;
@@ -13507,14 +13553,37 @@ function verPed(p) {
       // FIX 25-jul: adivinar el lote con la misma regla del servidor, para que el
       // total en pantalla sea correcto desde ya (ver _loteSiguienteLocal).
       const _loteAdiv = _loteSiguienteLocal(nro);
-      apiPost('pedidos.agregar', {
+      const _esYay  = !!(qId('mpf-yay-chk') && qId('mpf-yay-chk').checked);
+      const _estAdd = qId('medit-Estado').value;
+      const _fpAdd  = qId('medit-FechaPedido').value;
+      const _porAppsScriptAdd = () => apiPost('pedidos.agregar', {
         NroPedido: nro, cliente: cli, requestId: _reqAdd,
         prendas: [{prenda, precio, envio: _envio, subtotal: precio + _envio, pago: 0, formaPago: '', comentarios: _coment,
-          esYayita: !!(qId('mpf-yay-chk') && qId('mpf-yay-chk').checked)}],
-        FechaPedido: qId('medit-FechaPedido').value, Estado: qId('medit-Estado').value,
+          esYayita: _esYay}],
+        FechaPedido: _fpAdd, Estado: _estAdd,
       })
         .then(r => _corregirLoteAgregada(nro, prenda, _loteAdiv, r && r.lote))
         .catch(e => toast('Error al agregar prenda: '+esc(e.message),'err'));
+
+      // 31-ago — VIA RAPIDA. Una YAYITA o un Estado vacio NO pasan por aca:
+      // la primera sale del monton de fallas (otra hoja) y el segundo lo tiene
+      // que decidir la hoja mirando el stock. Ver sql/agregar_prenda_DISENO.md
+      if (_esYay || !String(_estAdd || '').trim() || typeof _sbRpcAgregarPrenda !== 'function') {
+        _porAppsScriptAdd();
+      } else {
+        const _t0Add = Date.now();
+        _sbRpcAgregarPrenda(nro, { prenda: prenda, precio: precio, envio: _envio,
+                                   estado: _estAdd, fechaPedido: _fpAdd,
+                                   comentarios: _coment, cliente: cli, requestId: _reqAdd })
+          .then(r => {
+            if (!r) return _porAppsScriptAdd();          // la base dijo que no: camino viejo
+            _corregirLoteAgregada(nro, prenda, _loteAdiv, r.lote);
+            try { _sbEspejarYa([nro]); } catch (_) {}    // la hoja se pone al dia en segundos
+            try { window._ultimoGuardadoMs = Date.now() - _t0Add; } catch (_) {}
+            try { console.log('[agregar-prenda] #' + nro + ' por la via rapida en ' + (Date.now() - _t0Add) + ' ms'); } catch (_) {}
+          })
+          .catch(() => _porAppsScriptAdd());
+      }
       // Actualizar cache local
       pRaw.push({ NroPedido: nro, Prenda: prenda, Precio: precio, Envio: _envio, Subtotal: precio + _envio, Pago: 0, 'Forma pago': '', 'Fecha Pago': '', Nombres: cli.Nombre, 'Nombres y Apellidos': cli.Nombre, 'CANAL': cli.Canal, 'ORIGEN': cli.Origen, 'Asesora': cli.Asesora, 'Comentarios Envio': _coment, 'Fecha Pedido': qId('medit-FechaPedido').value, 'Lote': _loteAdiv, 'Descuento': 0, 'Estado': qId('medit-Estado').value });
       // Insertar nueva fila en la tabla del modal sin cerrarlo
