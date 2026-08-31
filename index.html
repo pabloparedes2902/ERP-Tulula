@@ -5756,6 +5756,43 @@ async function _sbRpcCampoFila(id, campos, ref) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// EL ENVIO POR LA VIA RAPIDA (31-ago-2026)
+//
+// POR QUE NO VA POR campo_fila: el envio NO es de una fila, es del pedido. La
+// hoja lo reparte con una regla propia — el total vive en la 1ra prenda y las
+// demas quedan en cero — para que el total NUNCA se multiplique por la cantidad
+// de prendas. La pantalla suma una vez por despacho, tomando el mayor de cada uno.
+//
+// La base repite ese mismo reparto, y el Aplicador llama a `pedidosActualizar`
+// con el pedido entero, que es donde esa regla ya vivia. Nadie la reescribe.
+//
+// SI EL PEDIDO TIENE VARIOS DESPACHOS CON ENVIO, la base levanta
+// ENVIO_POR_DESPACHO y esta funcion devuelve false: el guardado se va entero por
+// el camino de siempre. Ese caso se edita despacho por despacho, no en el total.
+// La pantalla ya lo impide antes (_variosEnvios), pero la regla vive en los tres
+// lados: una regla que solo vive en la pantalla no es una regla, es una sugerencia.
+// ══════════════════════════════════════════════════════════════════════════
+async function _sbRpcEnvioPedido(nro, valor) {
+  try {
+    if (!SB_PILOTO_CAMPOS) return false;
+    if (!nro) return false;
+    const v = parseFloat(valor);
+    if (isNaN(v) || v < 0 || v > 99) return false;   // el tope, tambien aca
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return false;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/envio_pedido', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_nro: String(nro), p_valor: v }),
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return !!(d && d.ok === true);
+  } catch (e) { return false; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // PASO 4 DE LA MIGRACIÓN (25-jul) — PAGOS DIRECTO EN LA BASE
 // ──────────────────────────────────────────────────────────────────────────
 // Agregar y eliminar un pago pasan a escribirse en Supabase con una operación
@@ -13846,7 +13883,13 @@ async function _guardarPedidoModal(nro, body) {
     if (!campos.length) return;
 
     const rapidos = (typeof SB_CAMPOS_MASIVOS !== 'undefined') ? SB_CAMPOS_MASIVOS : [];
-    const todosRapidos = campos.length > 0 && campos.every(k => rapidos.indexOf(k) >= 0);
+    // 31-ago — EL ENVIO TAMBIEN ES RAPIDO, pero por su propia puerta. No es un
+    // campo masivo (no se escribe igual en todas las filas): tiene la regla de
+    // reparto por despacho. Antes, un envio arrastraba TODO el guardado —los 17
+    // campos rapidos incluidos— al camino de 11,6 s.
+    const _rapido = k => rapidos.indexOf(k) >= 0 ||
+                         (k === 'Envio' && typeof _sbRpcEnvioPedido === 'function');
+    const todosRapidos = campos.length > 0 && campos.every(_rapido);
 
     // Un solo campo fuera de la lista blanca → todo por el camino de siempre.
     if (!todosRapidos || typeof _sbRpcCampoMasivo !== 'function') {
@@ -13860,7 +13903,9 @@ async function _guardarPedidoModal(nro, body) {
                             ? String(v).toUpperCase() : v;
 
     const t0 = Date.now();
-    const res = await Promise.all(campos.map(k => _sbRpcCampoMasivo([nro], k, _norm(k, body[k]))));
+    const res = await Promise.all(campos.map(k => (k === 'Envio')
+      ? _sbRpcEnvioPedido(nro, body[k])
+      : _sbRpcCampoMasivo([nro], k, _norm(k, body[k]))));
     if (res.some(ok => !ok)) {
       // Alguno no pasó: se rehace TODO por el camino viejo. Repetir un campo que
       // ya se escribió no rompe nada (se vuelve a poner el mismo valor).
