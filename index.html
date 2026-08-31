@@ -7710,6 +7710,119 @@ async function _sbRpcLoteDespachar(nro, lote, d) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// MOVER UNA PRENDA DE LOTE POR LA VIA RAPIDA (31-ago-2026)
+// Antes: 14,4 s por Apps Script. Diseno: sql/mover_lote_31ago.sql
+//
+// La base NO elige la fila por posicion: repite la misma busqueda de la hoja
+// (la primera de esa prenda que este en otro lote). Y respeta la misma guarda:
+// una prenda EN CAMINO o ENTREGADA no se mueve.
+//
+// REVERSA INMEDIATA: poner SB_PILOTO_MOVER = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_PILOTO_MOVER = true;
+
+async function _sbRpcMoverLote(nro, prenda, lote) {
+  try {
+    if (!SB_PILOTO_MOVER) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (!String(prenda || '').trim()) return null;
+    if (!/^L\d+$/.test(String(lote || '').trim().toUpperCase())) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/prenda_mover_lote', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_nro: String(nro), p_prenda: String(prenda).trim(),
+                             p_lote: String(lote).trim().toUpperCase() }),
+    });
+    if (!r.ok) {
+      let _msg = '';
+      try { const _e = await r.json(); _msg = String(_e && (_e.message || _e.hint) || ''); } catch(_) {}
+      // "Ya salio" es un NO del negocio, no una falla de red: se propaga para que
+      // la persona lo vea, en vez de reintentarlo por el camino viejo.
+      if (/PRENDA_YA_SALIO/.test(_msg)) {
+        const err = new Error('Esa prenda ya salió — no se puede mover de lote.');
+        err._negocio = true; throw err;
+      }
+      try { console.warn('[mover-lote] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){}
+      return null;
+    }
+    const x = await r.json();
+    return (x && x.ok === true) ? x : null;
+  } catch (e) {
+    if (e && e._negocio) throw e;
+    try { console.warn('[mover-lote] RPC fallo → via Apps Script'); } catch(_){}
+    return null;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// EDITAR UNA DEVOLUCION POR LA VIA RAPIDA (31-ago-2026)
+// Antes: 9,7 s por Apps Script. Diseno: sql/devolucion_editar_31ago.sql
+//
+// LO QUE NO PASA POR ACA: pasar la devolucion a "REEMBOLSO REALIZADO". Ese
+// cambio devuelve la prenda al stock (o al monton de fallas) y esa cuenta vive
+// solo en la hoja. Tampoco la foto de recepcion: es una imagen.
+// En los dos casos se usa el camino de siempre.
+//
+// REVERSA INMEDIATA: poner SB_PILOTO_DEVOL = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_PILOTO_DEVOL = true;
+
+const DEVOL_CAMPOS_RAPIDOS = ['Nombre','DNI','Celular','Direccion','Referencia','Distrito',
+  'Provincia','Region','PrendaDevuelta','PrecioOriginal','MontoReembolso','MontoReembolsoCash',
+  'DetalleReembolsoCash','FormaPagoReembolso','ConstanciaReembolso','Motivo','MotivoDetalle',
+  'CourierRetorno','FechaSolicitud','FechaRetornoPrenda','FechaRecepcionPrenda','FechaReembolso',
+  'CondicionPrenda','ReingresaStock','Comentario','Estado'];
+
+async function _sbRpcDevolucionEditar(payload) {
+  try {
+    if (!SB_PILOTO_DEVOL) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const id = String((payload && payload.ID) || '').trim();
+    if (!id) return null;
+    const campos = {};
+    for (const k in payload) {
+      if (!Object.prototype.hasOwnProperty.call(payload, k)) continue;
+      if (k === 'ID' || k === 'action') continue;
+      // Un campo que esta via no sabe manejar tumba el intento entero: nada de
+      // guardar la mitad por un lado y la mitad por el otro.
+      if (DEVOL_CAMPOS_RAPIDOS.indexOf(k) < 0) return null;
+      campos[k] = payload[k];
+    }
+    if (!Object.keys(campos).length) return null;
+    // El reembolso realizado mueve stock: no pasa por aca.
+    if (campos.Estado !== undefined &&
+        /REEMBOLSO REALIZADO/i.test(String(campos.Estado || ''))) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/devolucion_editar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_id: id, p_campos: campos }),
+    });
+    if (!r.ok) { try { console.warn('[devolucion] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+    const x = await r.json();
+    return (x && x.ok === true) ? x : null;
+  } catch (e) {
+    try { console.warn('[devolucion] RPC fallo → via Apps Script'); } catch(_){}
+    return null;
+  }
+}
+
+// Puerta unica: primero la base, y si no puede, Apps Script como siempre.
+async function _devolucionActualizar(payload) {
+  const _t0 = Date.now();
+  const r = await _sbRpcDevolucionEditar(payload);
+  if (r) {
+    try { window._ultimoGuardadoMs = Date.now() - _t0; } catch (_) {}
+    try { console.log('[devolucion] ' + payload.ID + ' por la via rapida en ' + (Date.now() - _t0) + ' ms'); } catch (_) {}
+    return { ok: true, Estado: r.Estado || (payload && payload.Estado) || '' };
+  }
+  return apiSend('devoluciones.actualizar', payload);
+}
+
 async function _sbRpcConstanciaSet(nro, pagoId, urls) {
   try {
     if (!SB_PILOTO_CONSTANCIAS) return false;
@@ -13852,7 +13965,17 @@ function verPed(p) {
       if (!destino || destino === actual) return;
       this.disabled = true;
       try {
-        await apiSend('pedidos.moverLote', { NroPedido: nro, prenda: prendaTxt, lote: destino });
+        // 31-ago — VIA RAPIDA. Si la base no puede, el camino de siempre.
+        const _t0Mov = Date.now();
+        const _rMov = (typeof _sbRpcMoverLote === 'function')
+          ? await _sbRpcMoverLote(nro, prendaTxt, destino) : null;
+        if (_rMov) {
+          try { _sbEspejarYa([nro]); } catch (_) {}
+          try { window._ultimoGuardadoMs = Date.now() - _t0Mov; } catch (_) {}
+          try { console.log('[mover-lote] #' + nro + ' ' + prendaTxt + ' → ' + destino + ' por la via rapida en ' + (Date.now() - _t0Mov) + ' ms'); } catch (_) {}
+        } else {
+          await apiSend('pedidos.moverLote', { NroPedido: nro, prenda: prendaTxt, lote: destino });
+        }
         const fila = pRaw.find(r => String(r['NroPedido']) === String(nro)
           && String(r['Prenda']||'').trim() === prendaTxt
           && String(r['Lote']||'').trim().toUpperCase() === actual);
@@ -26672,7 +26795,7 @@ function hdVerDetalle(r, containerEl) {
         toast('✓ Prenda recibida registrada', 'ok');
         const wEl = document.getElementById('histdev-w');
         if (wEl && typeof renderDevoluciones === 'function') renderDevoluciones(wEl, histDevData || []);
-        apiSend('devoluciones.actualizar', payload).catch(e => {
+        _devolucionActualizar(payload).catch(e => {
           toast('No se pudo guardar la recepción: ' + esc(e.message) + '. Se recarga la lista.', 'err');
           histDevData = null; _hdLsDel(); loadDevoluciones(true);
         });
@@ -26769,7 +26892,7 @@ function hdVerDetalle(r, containerEl) {
             MontoReembolsoCash:cashTotal2, DetalleReembolsoCash:detalleCash,
             ConstanciaReembolso:constancia, Estado:newEstado,
           };
-          apiSend('devoluciones.actualizar', _payload3).catch(e => {
+          _devolucionActualizar(_payload3).catch(e => {
             toast('No se pudo guardar el reembolso: '+esc(e.message)+'. Se recarga la lista.','err');
             histDevData=null; _hdLsDel(); loadDevoluciones(true);
           });
@@ -26971,7 +27094,7 @@ function hdAbrirEditor(r, containerEl) {
       toast('✓ Devolución actualizada', 'ok');
       overlay.remove();
       // Server en background: si falla, avisar y forzar recarga
-      apiSend('devoluciones.actualizar', body).catch(e => {
+      _devolucionActualizar(body).catch(e => {
         toast('Error al guardar en servidor: ' + esc(e.message) + ' — recargando', 'err');
         histDevData = null; _hdLsDel();
         loadDevoluciones(true);
