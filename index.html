@@ -7667,6 +7667,49 @@ async function _sbRpcAgregarPrenda(nro, d) {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// DESPACHAR UN LOTE POR LA VIA RAPIDA (31-ago-2026)
+// Diseno y regla del envio: sql/lote_despachar_31ago.sql
+//
+// OJO CON EL ENVIO: en un LOTE va el MISMO numero en todas sus filas (la
+// pantalla suma una vez por lote tomando el mayor). En el pedido entero
+// (_sbRpcEnvioPedido) va el total en la 1ra prenda y cero en las demas.
+// Son dos reglas distintas a proposito.
+//
+// REVERSA INMEDIATA: poner SB_PILOTO_LOTE = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_PILOTO_LOTE = true;
+
+async function _sbRpcLoteDespachar(nro, lote, d) {
+  try {
+    if (!SB_PILOTO_LOTE) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (!/^L\d+$/.test(String(lote || '').trim().toUpperCase())) return null;
+    const _env = (d && d.envio !== undefined && d.envio !== null && String(d.envio) !== '')
+      ? parseFloat(d.envio) : null;
+    if (_env !== null && (isNaN(_env) || _env < 0 || _env > 99)) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/lote_despachar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        p_nro: String(nro), p_lote: String(lote).trim().toUpperCase(),
+        p_estado: String((d && d.estado) || ''),
+        p_courier: String((d && d.courier) || ''),
+        p_fecha_envio: String((d && d.fechaEnvio) || ''),
+        p_envio: _env,
+      }),
+    });
+    if (!r.ok) { try { console.warn('[lote] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+    const x = await r.json();
+    return (x && x.ok === true) ? x : null;
+  } catch (e) {
+    try { console.warn('[lote] RPC fallo → via Apps Script'); } catch(_){}
+    return null;
+  }
+}
+
 async function _sbRpcConstanciaSet(nro, pagoId, urls) {
   try {
     if (!SB_PILOTO_CONSTANCIAS) return false;
@@ -13855,7 +13898,19 @@ function verPed(p) {
           }
           body.Envio = _ev;
         }
-        const r = await apiSend('pedidos.loteActualizar', body);
+        // 31-ago — VIA RAPIDA. Si la base no puede, el camino de siempre.
+        const _t0Lote = Date.now();
+        let r = (typeof _sbRpcLoteDespachar === 'function')
+          ? await _sbRpcLoteDespachar(nro, lk, { estado: estado, courier: courier,
+              fechaEnvio: fecha, envio: (envioV !== '' ? body.Envio : null) })
+          : null;
+        if (r) {
+          try { _sbEspejarYa([nro]); } catch (_) {}   // la hoja se pone al dia en segundos
+          try { window._ultimoGuardadoMs = Date.now() - _t0Lote; } catch (_) {}
+          try { console.log('[lote] #' + nro + ' ' + lk + ' por la via rapida en ' + (Date.now() - _t0Lote) + ' ms'); } catch (_) {}
+        } else {
+          r = await apiSend('pedidos.loteActualizar', body);
+        }
         pRaw.forEach(rw => {
           if (String(rw['NroPedido']) !== String(nro)) return;
           if (String(rw['Lote']||'').trim().toUpperCase() !== lk) return;
