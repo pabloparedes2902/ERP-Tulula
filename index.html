@@ -5708,6 +5708,54 @@ const SB_CAMPOS_MASIVOS = ['Estado','Courier','Canal','Origen','Asesora','Coment
 const SB_CAMPOS_MAYUSCULA = ['NombreApellido','Direccion','Distrito','Provincia','Region','Referencia'];
 
 // ══════════════════════════════════════════════════════════════════════════
+// LA VIA RAPIDA POR FILA (30-ago-2026). Diseno: sql/via_por_fila_DISENO.md
+//
+// La via de arriba (`campo_masivo`) escribe en TODAS las filas del pedido. Esta
+// escribe en UNA SOLA. Es la unica por la que puede viajar el Precio: medido el
+// 30-ago, de 10.184 pedidos, 4.016 (39,4%) tienen precios DISTINTOS entre sus
+// prendas y perderian el desglose con una sola edicion por la via masiva.
+//
+// VIAJAN DOS REFERENCIAS A LA MISMA FILA, porque cada lado la busca distinto:
+//   · `id`  — la clave de la fila en el espejo (llega en la fila como `_sbId`)
+//   · `ref` — como encontrarla en la hoja: nro + nombre de prenda + nº de unidad
+// La base compara las dos antes de escribir: si no describen la misma fila,
+// levanta REF_NO_COINCIDE y no toca nada. Sin `ref`, no se manda.
+//
+// ESTA LISTA TIENE QUE DECIR LO MISMO que CAMPOS_FILA_OK (Aplicador.gs) y que la
+// lista blanca de campo_fila (Supabase). Las tres las compara
+// tests/regresion_via_por_fila.js. Esta va ULTIMA a proposito: si la pantalla se
+// adelanta, el dato entra al espejo y la hoja no se entera — y quedan distintos
+// para siempre.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_CAMPOS_FILA = ['Precio'];
+// Envio, Pago, FormaPago, FechaPago y AsesoraPago ya los aceptan la base y el
+// Aplicador, pero la pantalla todavia no los manda: entran de a uno y midiendo.
+// Subtotal NUNCA entra: es Precio + Envio, se calcula. FechaPedido tampoco:
+// puede convertir una reserva en pedido y eso necesita el camino completo.
+
+async function _sbRpcCampoFila(id, campos, ref) {
+  try {
+    if (!SB_PILOTO_CAMPOS) return false;
+    if (id === null || id === undefined || id === '') return false;
+    const nombres = Object.keys(campos || {});
+    if (!nombres.length) return false;
+    if (!nombres.every(k => SB_CAMPOS_FILA.indexOf(k) >= 0)) return false;
+    if (!ref || (!ref.prenda && !ref.pagoId && !ref.pagoKey)) return false;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return false;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/campo_fila', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_id: Number(id), p_campos: campos, p_ref: ref }),
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return !!(d && d.ok === true);
+  } catch (e) { return false; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // PASO 4 DE LA MIGRACIÓN (25-jul) — PAGOS DIRECTO EN LA BASE
 // ──────────────────────────────────────────────────────────────────────────
 // Agregar y eliminar un pago pasan a escribirse en Supabase con una operación
@@ -13498,13 +13546,19 @@ function verPed(p) {
     // F4 (23-jul): SOLO la unidad elegida (nº de ocurrencia), no todas las del mismo nombre.
     const _occSel = parseInt(qId('mpfe-original').dataset.occ || '0', 10);
     let _vis = -1;
+    let _filaEd = null;
     pRaw.forEach(r => {
       if (String(r['NroPedido']||'').trim() === nro && String(r['Prenda']||'').trim() === originalNombre) {
         _vis++;
         if (_vis === _occSel) {
           r['Prenda'] = nuevaPrend;
           r['Precio'] = nuevoPrecio;
-          r['Subtotal'] = nuevoPrecio;
+          // 30-ago: el Subtotal es Precio + Envio. Antes se pintaba SOLO el precio
+          // y, en la prenda que lleva el envio del pedido (regla "envio unico": el
+          // total vive en la 1ra prenda), el saldo se veia corto por el monto del
+          // envio. El servidor ahora recalcula con esta misma regla.
+          r['Subtotal'] = nuevoPrecio + (parseFloat(r['Envio']) || 0);
+          _filaEd = r;
         }
       }
     });
@@ -13519,20 +13573,44 @@ function verPed(p) {
     toast('✓ Prenda actualizada', 'ok');
     qId('medit-prenda-edit-form').style.display = 'none';
     stData = null; confData = null; pRawEst = null; _invalidarPrefetch();
-    // Server en background
-    apiPost('pedidos.actualizar', {
+    // ── SERVER EN SEGUNDO PLANO ─────────────────────────────────────────
+    // VIA RAPIDA POR FILA (30-ago): si lo UNICO que cambio es el precio, va
+    // directo a la base y el Aplicador baja esa MISMA fila a la hoja. Si tambien
+    // cambio el nombre de la prenda, va por el camino de siempre: un renombre
+    // toca el catalogo y el stock, y eso no viaja por esta via.
+    // El Subtotal ya no se manda: el servidor lo calcula (Precio + Envio).
+    const _reintentar = e => {
+      // F4 (23-jul): si el server rechazó, RE-SINCRONIZAR el pedido desde la hoja
+      // (antes el cambio optimista quedaba en pantalla aunque el server dijera NO).
+      const _m = (e && e.message) ? e.message : String(e || 'no se pudo guardar');
+      toast('Error al sincronizar: '+esc(_m)+' — recargando el pedido…', 'err');
+      try { _pedsRefrescarNros([nro]); } catch(_){}
+    };
+    const _porAppsScript = () => apiPost('pedidos.actualizar', {
       NroPedido: nro,
       _prendaTarget: originalNombre,
       _prendaOcc: _occSel,
       Prenda: nuevaPrend,
       Precio: nuevoPrecio,
-      Subtotal: nuevoPrecio,
-    }).catch(e => {
-      // F4 (23-jul): si el server rechazó, RE-SINCRONIZAR el pedido desde la hoja
-      // (antes el cambio optimista quedaba en pantalla aunque el server dijera NO).
-      toast('Error al sincronizar: '+esc(e.message)+' — recargando el pedido…', 'err');
-      try { _pedsRefrescarNros([nro]); } catch(_){}
-    });
+    }).catch(_reintentar);
+
+    const _soloPrecio = (nuevaPrend === originalNombre);
+    const _idFila = _filaEd ? _filaEd._sbId : null;
+    if (_soloPrecio && _idFila !== null && _idFila !== undefined &&
+        typeof _sbRpcCampoFila === 'function') {
+      const _t0 = Date.now();
+      _sbRpcCampoFila(_idFila, { Precio: nuevoPrecio },
+                      { nro: nro, prenda: originalNombre, occ: _occSel })
+        .then(ok => {
+          if (!ok) return _porAppsScript();          // la base dijo que no: camino viejo
+          try { _sbEspejarYa([nro]); } catch (_) {}  // la hoja se pone al dia en segundos
+          try { window._ultimoGuardadoMs = Date.now() - _t0; } catch (_) {}
+          try { console.log('[precio] #' + nro + ' por la via rapida en ' + (Date.now() - _t0) + ' ms'); } catch (_) {}
+        })
+        .catch(() => _porAppsScript());
+    } else {
+      _porAppsScript();
+    }
   });
 
   // ── Eliminar prenda existente — K-15: OPTIMISTA ──────────
