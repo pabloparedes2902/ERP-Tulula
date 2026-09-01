@@ -7801,6 +7801,80 @@ async function _stockKardexRapido(p) {
   }
 }
 
+/*═══════════════════════════════════════════════════════════════════════════
+  VIA RAPIDA PARA LOS DOS AJUSTES · 31-ago-2026
+  ─────────────────────────────────────────────────────────────────────────
+  Medido por Apps Script: ajustar el conteo 9,8-11,2 s · ajustar un lote 11,6 s.
+  De eso, ~4 s son el viaje. Por acá: ~0,3 s.
+
+  La pantalla NO escribe la hoja: encola el pedido en Supabase y contesta al
+  instante. El Aplicador lo aplica a Confección en los 15 minutos siguientes
+  llamando a la MISMA función de siempre, con su candado y sus guardas.
+
+  LA GUARDA DE STOCK NO SE DEBILITA. La comprobación del RPC es un aviso
+  anticipado; la de verdad corre en la hoja, dentro del Aplicador. Si el RPC deja
+  pasar algo que la hoja rechaza, se rechaza igual que hoy.
+
+  EL RECHAZO DE NEGOCIO SE RESPETA. Si la base dice STOCK_INSUFICIENTE, eso NO es
+  una falla de red: es un "no" válido y se le muestra a la persona. Reintentarlo
+  por Apps Script sería saltarse la protección, que es peor que fallar.
+
+  REVERSA INMEDIATA: SB_PILOTO_AJUSTES = false y publicar.
+═══════════════════════════════════════════════════════════════════════════*/
+const SB_PILOTO_AJUSTES = true;
+
+async function _sbRpcAjuste(fn, params) {
+  try {
+    if (!SB_PILOTO_AJUSTES) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!r.ok) {
+      let _msg = '';
+      try { const _e = await r.json(); _msg = String(_e && (_e.message || _e.hint) || ''); } catch (_) {}
+      // Rechazo de NEGOCIO: se propaga, no se reintenta por la vía vieja.
+      if (/STOCK_INSUFICIENTE|DELTA_|CANTIDAD_|CODIGO_INVALIDO/i.test(_msg)) {
+        const err = new Error(_msg); err._negocio = true; throw err;
+      }
+      if (r.status === 401 || r.status === 403) _sbVencerTok();
+      try { console.warn('[ajuste] RPC ' + fn + ' HTTP ' + r.status + ' → vía Apps Script'); } catch (_) {}
+      return null;
+    }
+    const d = await r.json();
+    return (d && d.ok === true) ? d : null;
+  } catch (e) {
+    if (e && e._negocio) throw e;
+    try { console.warn('[ajuste] ' + fn + ' falló → vía Apps Script'); } catch (_) {}
+    return null;
+  }
+}
+
+/** Una sola puerta para ajustar el conteo. Rápida si se puede, de siempre si no. */
+async function _ajustarConteo(body) {
+  const req = 'caj-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+  const d = await _sbRpcAjuste('conteo_ajustar', {
+    p_prenda: String(body.prenda || ''), p_delta: parseInt(body.delta, 10),
+    p_comentario: String(body.comentario || ''), p_request: req });
+  if (d) return { ok: true, delta: parseInt(body.delta, 10), via: 'base' };
+  return apiSend('stock.ajustarConteo', body);
+}
+
+/** Una sola puerta para ajustar un lote. */
+async function _ajustarLote(body) {
+  const req = 'laj-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+  const d = await _sbRpcAjuste('lote_ajustar', {
+    p_codigo: String(body.codigo || ''), p_prenda: String(body.prenda || ''),
+    p_dis: String(body.dis || ''), p_col: String(body.col || ''),
+    p_talla: String(body.talla || ''), p_nueva: parseInt(body.nueva, 10), p_request: req });
+  if (d) return { ok: true, nueva: parseInt(body.nueva, 10), via: 'base' };
+  return apiSend('lote.ajustar', body);
+}
+
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
 //
 // RED: si la base no responde, se borra por Apps Script como siempre. Pero si
@@ -19832,7 +19906,7 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
         const lote=(res&&res.lotes&&res.lotes[0])||'';
         _ivToastDeshacer('+'+n+' '+esc(full)+(lote?' (lote '+esc(lote)+')':''),async()=>{
           _ivTotMut(pren,dis,col,tal,{total:-n,conf:-n,stock:-n}); _stDataTs=0; repintar();
-          try{ await apiSend('stock.ajustarConteo',{prenda:full,delta:-n,comentario:'Deshacer producción'+(lote?' '+lote:'')}); _stockEscrito(clavesEsc,['stock.resumen']); toast('↩ Deshecho','ok'); }
+          try{ await _ajustarConteo({prenda:full,delta:-n,comentario:'Deshacer producción'+(lote?' '+lote:'')}); _stockEscrito(clavesEsc,['stock.resumen']); toast('↩ Deshecho','ok'); }
           catch(e){ toast('No se pudo deshacer: '+esc(e.message),'err'); _stDataTs=0; }
         });
       }catch(e){ _ivTotMut(pren,dis,col,tal,{total:-n,conf:-n,stock:-n}); _stDataTs=0; repintar(); toast('No entró la producción: '+esc(e.message)+' — se deshizo lo pintado','err'); }
@@ -19848,11 +19922,11 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
       const com=String((panel.querySelector('#ivt-com')||{}).value||'').trim();
       _ivTotMut(pren,dis,col,tal,{total:df,conf:df,stock:df}); repintar(); cerrar();
       try{
-        await apiSend('stock.ajustarConteo',{prenda:full,delta:df,comentario:com||'Corrección de conteo'});
+        await _ajustarConteo({prenda:full,delta:df,comentario:com||'Corrección de conteo'});
         _stockEscrito(clavesEsc,['stock.resumen']);
         _ivToastDeshacer('Conteo corregido: '+(df>0?'+':'')+df+' en '+esc(full),async()=>{
           _ivTotMut(pren,dis,col,tal,{total:-df,conf:-df,stock:-df}); _stDataTs=0; repintar();
-          try{ await apiSend('stock.ajustarConteo',{prenda:full,delta:-df,comentario:'Deshacer corrección'}); _stockEscrito(clavesEsc,['stock.resumen']); toast('↩ Deshecho','ok'); }
+          try{ await _ajustarConteo({prenda:full,delta:-df,comentario:'Deshacer corrección'}); _stockEscrito(clavesEsc,['stock.resumen']); toast('↩ Deshecho','ok'); }
           catch(e){ toast('No se pudo deshacer: '+esc(e.message),'err'); _stDataTs=0; }
         });
       }catch(e){ _ivTotMut(pren,dis,col,tal,{total:-df,conf:-df,stock:-df}); _stDataTs=0; repintar(); toast('No entró la corrección: '+esc(e.message)+' — se deshizo lo pintado','err'); }
@@ -20049,7 +20123,7 @@ function _loteAjustarPrompt(codigo, prenda, dis, col, talla, actual){
     const nueva=parseInt(inp.value,10);
     if(isNaN(nueva)||nueva<0){ toast('Cantidad inválida','err'); return; }
     this.disabled=true; this.textContent='Guardando...';
-    try{ const r=await apiSend('lote.ajustar',{codigo,prenda,dis,col,talla,nueva});
+    try{ const r=await _ajustarLote({codigo,prenda,dis,col,talla,nueva});
       _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock'], ['stock.resumen','lotes.listar']);  // 05-ago
       toast('✓ Ajustado a '+r.nueva+' ('+(r.diff>=0?'+':'')+r.diff+')','ok');
       close(); try{ stData=null; _stLsDel(); }catch(e){} loadLotes();
