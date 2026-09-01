@@ -6351,7 +6351,12 @@ const SB_PESADOS_VENCE_MS = 45 * 60 * 1000;   // 29-ago: 30 -> 45. NO es cuanto 
 // cambio en segundos y no en 5-30 minutos.
 // ══════════════════════════════════════════════════════════════════════════
 function _espejoDudaMap(){ try { return JSON.parse(localStorage.getItem('erp_espejo_duda')||'{}'); } catch(e){ return {}; } }
-function _espejoDudar(claves){ try { const m=_espejoDudaMap(); const ts=Date.now(); (claves||[]).forEach(c=>{ m[c]=ts; }); localStorage.setItem('erp_espejo_duda', JSON.stringify(m)); } catch(e){} }
+function _espejoDudar(claves){ try { const m=_espejoDudaMap(); const ts=Date.now(); (claves||[]).forEach(c=>{ m[c]=ts; }); localStorage.setItem('erp_espejo_duda', JSON.stringify(m));
+  // 31-ago — si lo que quedo en duda es el catalogo o el stock, se tira tambien el
+  // memo en memoria que usa la lectura directa del libro. Sin esto, un SKU recien
+  // creado no apareceria en Inventario hasta 10 minutos despues.
+  try { if ((claves||[]).some(c => /catalogo|stock|maestros|sku/i.test(String(c)))) _libroCatalogoOlvidar(); } catch(_){}
+} catch(e){} }
 function _espejoConfiar(clave){ try { const m=_espejoDudaMap(); if (m[clave]!==undefined){ delete m[clave]; localStorage.setItem('erp_espejo_duda', JSON.stringify(m)); } } catch(e){} }
 
 // Llamar después de CADA escritura que mueve stock. `claves` quedan en duda
@@ -6500,13 +6505,33 @@ async function _sbCacheLeer(clave, venceMs) {
 
   REVERSA INMEDIATA: SB_LECTURA_LIBRO = false y publicar.
 
-  ⚠️ ARRANCA EN false A PROPOSITO. Antes de encenderlo hay que comprobar que da
-  EXACTAMENTE lo mismo que el camino de siempre. Para eso esta `libroDirectoComparar()`
-  mas abajo: se corre desde la consola y compara celda por celda.
+  ENCENDIDO EL 31-ago-2026, DESPUES DE COMPARAR. `libroDirectoComparar()` trajo el
+  inventario por los dos caminos y los comparo celda por celda:
+      638 SKUs por los dos lados · 0 DIFERENCIAS
+  El comparador queda: se puede volver a correr cuando se quiera.
 ═══════════════════════════════════════════════════════════════════════════*/
-const SB_LECTURA_LIBRO = false;          // ← encender recien despues de comparar
+const SB_LECTURA_LIBRO = true;           // 31-ago: encendido con 0 diferencias
 const LIBRO_TSTD = ['XS','S','M','L','XL','2XL','3XL'];
 const LIBRO_ESTADO_MAX_MIN = 30;         // marca mas vieja que esto = no confiar
+
+/**
+ * El catalogo de SKUs, guardado en memoria unos minutos.
+ * Solo se usa para que los SKU SIN MOVIMIENTO salgan en 0 — si no, un producto
+ * recien creado desapareceria de Inventario. Cambia unicamente al crear o borrar
+ * un SKU, y esas dos acciones tiran el memo (`_libroCatalogoOlvidar`).
+ */
+let _libroCatMemo = null, _libroCatMemoTs = 0;
+const LIBRO_CAT_MEMO_MIN = 10;
+function _libroCatalogoOlvidar() { _libroCatMemo = null; _libroCatMemoTs = 0; }
+function _libroCatalogoMemo() {
+  if (_libroCatMemo && (Date.now() - _libroCatMemoTs) < LIBRO_CAT_MEMO_MIN * 60000) {
+    return Promise.resolve(_libroCatMemo);
+  }
+  return Promise.resolve(_maestrosSkusRapido()).then(function (c) {
+    if (Array.isArray(c) && c.length) { _libroCatMemo = c; _libroCatMemoTs = Date.now(); }
+    return c;
+  }).catch(function () { return _libroCatMemo || []; });
+}
 
 async function _sbLibroDirecto(forzar) {
   try {
@@ -6525,19 +6550,35 @@ async function _sbLibroDirecto(forzar) {
     const edadMin = (Date.now() - new Date(est.ts).getTime()) / 60000;
     if (!(edadMin >= 0) || edadMin > LIBRO_ESTADO_MAX_MIN) return null;  // marca vieja: no confiar
 
-    // 2) El libro. Paginado, igual que lo lee el backend.
-    const filas = [];
-    for (let off = 0; off < 50000; off += 1000) {
-      const r = await fetch(SB_URL + '/rest/v1/stock_saldos' +
-        '?select=prenda,diseno,color,talla,cat,conf,ventas,fallas,fecha_ms' +
-        '&order=prenda.asc,diseno.asc,color.asc,talla.asc&limit=1000&offset=' + off, { headers: H });
-      if (!r.ok) return null;
-      const p = await r.json();
-      if (!p.length) break;
-      filas.push.apply(filas, p);
-      if (p.length < 1000) break;
-    }
-    if (!filas.length) return null;
+    // 2) El libro Y el catalogo, EN PARALELO.
+    //
+    // MEDIDO EL 31-ago, y fue una sorpresa: leer el libro entero cuesta 802 ms
+    // (2.527 filas en 3 paginas), pero el CATALOGO costaba 3.689 ms — el 82% del
+    // total. Se pedia DESPUES del libro y, cuando su copia espejada esta en duda
+    // (pasa cada vez que alguien crea o borra un SKU), cae a Apps Script y paga
+    // los ~4 s de viaje. La lectura directa quedaba tan lenta como la vieja.
+    //
+    // El catalogo NO depende del libro, asi que va en paralelo. Y ademas se
+    // guarda en memoria unos minutos: cambia solo cuando se crea o se borra un
+    // SKU, o sea casi nunca dentro de una sesion.
+    const pLibro = (async () => {
+      const acc = [];
+      for (let off = 0; off < 50000; off += 1000) {
+        const r = await fetch(SB_URL + '/rest/v1/stock_saldos' +
+          '?select=prenda,diseno,color,talla,cat,conf,ventas,fallas,fecha_ms' +
+          '&order=prenda.asc,diseno.asc,color.asc,talla.asc&limit=1000&offset=' + off, { headers: H });
+        if (!r.ok) return null;
+        const p = await r.json();
+        if (!p.length) break;
+        acc.push.apply(acc, p);
+        if (p.length < 1000) break;
+      }
+      return acc;
+    })();
+    const pCat = _libroCatalogoMemo();
+
+    const filas = await pLibro;
+    if (!filas || !filas.length) return null;
 
     // 3) La misma forma que devuelve stockResumen(). Si esto se desalinea, la
     //    pantalla pinta cualquier cosa: por eso existe libroDirectoComparar().
@@ -6554,7 +6595,7 @@ async function _sbLibroDirecto(forzar) {
     // 4) Los SKU del catalogo sin movimiento salen en 0 — si no, un producto
     //    recien creado DESAPARECERIA de Inventario. Mismo criterio que el backend.
     try {
-      const cat = await _maestrosSkusRapido();
+      const cat = await pCat;
       (Array.isArray(cat) ? cat : []).forEach(function (sk) {
         const pren = String(sk.producto||'').trim(), dis = String(sk.diseno||'').trim(),
               col = String(sk.color||'').trim();
