@@ -6480,10 +6480,175 @@ async function _sbCacheLeer(clave, venceMs) {
   } catch (e) { try { _errLog('sb.cache.' + clave, e); } catch (_) {} return null; }
 }
 
+/*═══════════════════════════════════════════════════════════════════════════
+  LEER EL LIBRO DIRECTO · 31-ago-2026
+  ─────────────────────────────────────────────────────────────────────────
+  El inventario tarda 6,6 s, de los cuales ~4 son el viaje a Apps Script. Pero
+  el libro (`stock_saldos`) YA VIVE EN SUPABASE: la pantalla se lo pedia a Apps
+  Script, que se lo pedia a Supabase. Leyendolo directo son ~0,2 s.
+
+  ES DISTINTO DE LA COPIA QUE YA HABIA. `_sbCacheLeer('stock.resumen')` trae una
+  FOTO periodica del resultado, con su fecha y su mecanismo de duda. Esto trae el
+  LIBRO VIVO, que es la misma fuente que usa el backend.
+
+  LA GUARDA, Y ES LA UNICA QUE IMPORTA: `libro_estado.sucio`. Cuando el libro
+  esta sucio sus numeros son viejos, y el backend lo sabe porque cae al calculo
+  completo. La pantalla no puede ver esa marca (vive en las Propiedades del
+  Script), por eso el backend la espeja en Supabase. Si dice sucio —o si no se
+  puede leer, o si viene con mas de 30 minutos— esta funcion devuelve null y el
+  ERP sigue por donde iba. NUNCA muestra un numero viejo sin avisar.
+
+  REVERSA INMEDIATA: SB_LECTURA_LIBRO = false y publicar.
+
+  ⚠️ ARRANCA EN false A PROPOSITO. Antes de encenderlo hay que comprobar que da
+  EXACTAMENTE lo mismo que el camino de siempre. Para eso esta `libroDirectoComparar()`
+  mas abajo: se corre desde la consola y compara celda por celda.
+═══════════════════════════════════════════════════════════════════════════*/
+const SB_LECTURA_LIBRO = false;          // ← encender recien despues de comparar
+const LIBRO_TSTD = ['XS','S','M','L','XL','2XL','3XL'];
+const LIBRO_ESTADO_MAX_MIN = 30;         // marca mas vieja que esto = no confiar
+
+async function _sbLibroDirecto(forzar) {
+  try {
+    // `forzar` existe SOLO para el comparador: deja probar el camino nuevo con el
+    // interruptor apagado, sin tocar lo que ve el equipo.
+    if (!SB_LECTURA_LIBRO && !forzar) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const H = { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok };
+
+    // 1) ¿Se puede confiar? Esto va PRIMERO y decide todo lo demas.
+    const re = await fetch(SB_URL + '/rest/v1/libro_estado?id=eq.1&select=sucio,ts,motivo', { headers: H });
+    if (!re.ok) { if (re.status === 401 || re.status === 403) _sbVencerTok(); return null; }
+    const est = (await re.json())[0];
+    if (!est || est.sucio !== false) return null;                   // sucio, o sin fila
+    const edadMin = (Date.now() - new Date(est.ts).getTime()) / 60000;
+    if (!(edadMin >= 0) || edadMin > LIBRO_ESTADO_MAX_MIN) return null;  // marca vieja: no confiar
+
+    // 2) El libro. Paginado, igual que lo lee el backend.
+    const filas = [];
+    for (let off = 0; off < 50000; off += 1000) {
+      const r = await fetch(SB_URL + '/rest/v1/stock_saldos' +
+        '?select=prenda,diseno,color,talla,cat,conf,ventas,fallas,fecha_ms' +
+        '&order=prenda.asc,diseno.asc,color.asc,talla.asc&limit=1000&offset=' + off, { headers: H });
+      if (!r.ok) return null;
+      const p = await r.json();
+      if (!p.length) break;
+      filas.push.apply(filas, p);
+      if (p.length < 1000) break;
+    }
+    if (!filas.length) return null;
+
+    // 3) La misma forma que devuelve stockResumen(). Si esto se desalinea, la
+    //    pantalla pinta cualquier cosa: por eso existe libroDirectoComparar().
+    const libro = {};
+    filas.forEach(function (x) {
+      const k = x.prenda + '|' + x.diseno + '|' + x.color;
+      if (!libro[k]) libro[k] = { prenda:x.prenda, dis:x.diseno, col:x.color,
+                                  cat:x.cat || '', tallas:{}, fechaMs:0 };
+      libro[k].tallas[x.talla] = { conf:x.conf, v:x.ventas || 0, fa:x.fallas };
+      const fm = Number(x.fecha_ms) || 0;
+      if (fm > libro[k].fechaMs) libro[k].fechaMs = fm;
+    });
+
+    // 4) Los SKU del catalogo sin movimiento salen en 0 — si no, un producto
+    //    recien creado DESAPARECERIA de Inventario. Mismo criterio que el backend.
+    try {
+      const cat = await _maestrosSkusRapido();
+      (Array.isArray(cat) ? cat : []).forEach(function (sk) {
+        const pren = String(sk.producto||'').trim(), dis = String(sk.diseno||'').trim(),
+              col = String(sk.color||'').trim();
+        if (!pren || !dis || !col) return;
+        const k = pren + '|' + dis + '|' + col;
+        if (libro[k]) return;
+        const t = String(sk.talla||'').trim().toUpperCase();
+        const tt = (t === 'XXL') ? '2XL' : (t === 'XXXL') ? '3XL' : t;
+        if (LIBRO_TSTD.indexOf(tt) < 0) return;
+        libro[k] = { prenda:pren, dis:dis, col:col, cat:String(sk.categoria||'').trim(),
+                     tallas:{}, fechaMs:0 };
+        libro[k].tallas[tt] = { conf:0, v:0, fa:null };
+      });
+    } catch (_) {}
+
+    const out = [];
+    Object.keys(libro).forEach(function (k) {
+      const d = libro[k], conf = {}, fallas = {}, total = {}, vtas = {}, stock = {};
+      LIBRO_TSTD.forEach(function (t) {
+        const x = d.tallas[t];
+        const c  = (x && x.conf !== null && x.conf !== undefined) ? x.conf : undefined;
+        const fv = (x && x.fa   !== null && x.fa   !== undefined) ? Math.max(0, x.fa) : undefined;
+        const v  = (x && x.v) ? x.v : 0;
+        if (c  !== undefined) conf[t] = c;
+        if (fv !== undefined) fallas[t] = fv;
+        if (c !== undefined || fv !== undefined) total[t] = (c || 0) + (fv || 0);
+        if (v) vtas[t] = v;
+        stock[t] = (c === undefined) ? null : (c - v);
+      });
+      out.push({ diseno:d.dis, color:d.col, cat:d.cat || '', prenda:d.prenda,
+                 tallas:LIBRO_TSTD, conf:conf, fallas:fallas, total:total,
+                 vtas:vtas, stock:stock, fechaMs:d.fechaMs || 0 });
+    });
+    out.sort(function (a, b) { return b.fechaMs - a.fechaMs; });
+    return out;
+  } catch (e) {
+    try { console.warn('[libro directo] falló → vía de siempre'); } catch (_) {}
+    return null;
+  }
+}
+
+/**
+ * COMPARADOR. Se corre a mano desde la consola: libroDirectoComparar()
+ * Trae el inventario por LOS DOS caminos y los compara celda por celda.
+ * No escribe nada. Es lo que tiene que dar 0 diferencias ANTES de encender
+ * SB_LECTURA_LIBRO — porque un numero de stock equivocado en pantalla es peor
+ * que un inventario lento.
+ */
+async function libroDirectoComparar() {
+  const t0 = Date.now();
+  const viejo = await api('stock.resumen', {});
+  const tViejo = Date.now() - t0;
+  const t1 = Date.now();
+  const nuevo = await _sbLibroDirecto(true);   // forzado: se compara aunque este apagado
+  const tNuevo = Date.now() - t1;
+  if (!nuevo) { const m = { error: 'el camino directo devolvio null (¿libro sucio? ¿SQL sin correr?)',
+                            msViejo: tViejo }; console.log(m); return m; }
+
+  const idx = a => { const m = {}; (a||[]).forEach(d => {
+      m[d.prenda + '|' + d.diseno + '|' + d.color] = d; }); return m; };
+  const A = idx(viejo), B = idx(nuevo), difs = [];
+  const claves = Object.keys(A).concat(Object.keys(B).filter(k => !A[k]));
+  claves.forEach(k => {
+    const a = A[k], b = B[k];
+    if (!a) { difs.push('SOBRA en el directo: ' + k); return; }
+    if (!b) { difs.push('FALTA en el directo: ' + k); return; }
+    LIBRO_TSTD.forEach(t => {
+      const va = a.stock ? a.stock[t] : undefined, vb = b.stock ? b.stock[t] : undefined;
+      if (va !== vb) difs.push(k + ' [' + t + '] stock  viejo=' + va + '  directo=' + vb);
+      const ca = a.conf ? a.conf[t] : undefined, cb = b.conf ? b.conf[t] : undefined;
+      if (ca !== cb) difs.push(k + ' [' + t + '] conf   viejo=' + ca + '  directo=' + cb);
+    });
+  });
+  const r = { skusViejo: (viejo||[]).length, skusDirecto: nuevo.length,
+              msViejo: tViejo, msDirecto: tNuevo,
+              vecesMasRapido: tViejo && tNuevo ? +(tViejo / tNuevo).toFixed(1) : null,
+              diferencias: difs.length, muestra: difs.slice(0, 25),
+              veredicto: difs.length ? 'NO ENCENDER TODAVIA' : 'IDENTICOS — se puede encender' };
+  console.log(r);
+  return r;
+}
+
 async function _stockResumenRapido() {
+  // 1) EL LIBRO VIVO, directo de Supabase (~0,2 s). Devuelve null si el libro
+  //    esta sucio o si algo no cuadra: nunca muestra un numero viejo sin avisar.
+  const lib = await _sbLibroDirecto();
+  if (Array.isArray(lib) && lib.length) {
+    try { (window._espejoGen = window._espejoGen || {})['stock.resumen'] = Date.now(); } catch (_) {}
+    return lib;
+  }
+  // 2) La copia periodica de siempre.
   const d = await _sbCacheLeer('stock.resumen');
   if (Array.isArray(d) && d.length) return d;
-  // Vino de Apps Script en vivo: es el dato del segundo, no una copia.
+  // 3) Apps Script. Vino en vivo: es el dato del segundo, no una copia.
   try { (window._espejoGen = window._espejoGen || {})['stock.resumen'] = Date.now(); } catch (_) {}
   return api('stock.resumen', {});
 }
