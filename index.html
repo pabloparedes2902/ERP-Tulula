@@ -8025,7 +8025,7 @@ async function _sbRpcAjuste(fn, params) {
       let _msg = '';
       try { const _e = await r.json(); _msg = String(_e && (_e.message || _e.hint) || ''); } catch (_) {}
       // Rechazo de NEGOCIO: se propaga, no se reintenta por la vía vieja.
-      if (/STOCK_INSUFICIENTE|SIN_FALLAS_SUFICIENTES|DELTA_|CANTIDAD_|CODIGO_INVALIDO|DEMASIADOS_ITEMS/i.test(_msg)) {
+      if (/STOCK_INSUFICIENTE|SIN_FALLAS_SUFICIENTES|PEDIDO_ELIMINADO|DELTA_|CANTIDAD_|CODIGO_INVALIDO|DEMASIAD/i.test(_msg)) {
         const err = new Error(_msg); err._negocio = true; throw err;
       }
       if (r.status === 401 || r.status === 403) _sbVencerTok();
@@ -8039,6 +8039,41 @@ async function _sbRpcAjuste(fn, params) {
     try { console.warn('[ajuste] ' + fn + ' falló → vía Apps Script'); } catch (_) {}
     return null;
   }
+}
+
+/*═══════════════════════════════════════════════════════════════════════════
+  REGISTRAR UNA DEVOLUCION POR LA VIA RAPIDA · 31-ago-2026
+  ─────────────────────────────────────────────────────────────────────────
+  Acá lo que se gana NO es velocidad de pantalla: esta pantalla ya guardaba en
+  una cola de fondo y no hacía esperar a nadie. Lo que se gana es ESTRUCTURA.
+
+  El DEV-#### se calculaba mirando la hoja entera y tomando el máximo. Ya falló
+  una vez —existe `fixDuplicateNroDevolucion` porque dos registros simultáneos
+  recibieron el mismo número— y con dos caminos abiertos volvería a fallar,
+  porque un candado de Apps Script no sabe nada del otro camino.
+
+  Ahora el número lo reparte un contador propio en Supabase, con candado
+  transaccional. Y la hoja lo verifica igual antes de usarlo: si ese número ya
+  existe, lo descarta y calcula como siempre.
+
+  REVERSA: SB_PILOTO_DEVREG = false y publicar.
+═══════════════════════════════════════════════════════════════════════════*/
+const SB_PILOTO_DEVREG = true;
+
+async function _registrarDevolucion(body) {
+  try {
+    if (!SB_PILOTO_DEVREG) return apiSend('devoluciones.registrar', body);
+    const prendas = (body && body.Prendas) || [];
+    if (!prendas.length) return apiSend('devoluciones.registrar', body);
+    const req = 'dvr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    const d = await _sbRpcAjuste('devolucion_registrar', { p_body: body, p_request: req });
+    if (d && d.NroDevolucion) {
+      return { ok: true, NroDevolucion: d.NroDevolucion, IDs: d.IDs || [], via: 'base' };
+    }
+  } catch (e) {
+    if (e && e._negocio) throw e;
+  }
+  return apiSend('devoluciones.registrar', body);
 }
 
 /*═══════════════════════════════════════════════════════════════════════════
@@ -26284,7 +26319,7 @@ async function _devProcessSaveQueue() {
   while (_devSaveQueue.length) {
     const job = _devSaveQueue[0];
     try {
-      await apiSend('devoluciones.registrar', job.body);
+      await _registrarDevolucion(job.body);
       // 29-ago · ETAPA 1 — una devolucion devuelve la prenda al stock vendible.
       try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
       _devSaveQueue.shift();
