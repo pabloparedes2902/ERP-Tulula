@@ -2464,6 +2464,98 @@ async function refrescarMaestros() {
   }
 }
 
+/*═══════════════════════════════════════════════════════════════════════════
+  EL ESTADO DEL LIBRO, DESDE LA PANTALLA · 31-ago-2026
+  ─────────────────────────────────────────────────────────────────────────
+  El libro es lo que hace que el inventario cueste 0,9 s en vez de 15-20 s.
+  Cuando se apaga, el ERP sigue diciendo la verdad pero se pone lento — y hasta
+  hoy la unica forma de saberlo era abrir el editor de Apps Script y correr una
+  funcion a mano. Ahora se ve desde acá.
+
+  Atajo: Ctrl+Shift+L. Es SOLO LECTURA: mira, cuenta y reporta.
+
+  Lo que muestra, y por que cada cosa:
+   · ENCENDIDO/APAGADO — si esta apagado, el inventario esta lento.
+   · Cuantas veces se apago HOY y POR QUE ACCION — es lo que dice si hay un
+     problema de fondo o fue una limpieza puntual.
+   · Pendientes de absorber — cuanto le falta al libro para estar al dia.
+   · Que reparo el auditor anoche y CUANTO STOCK MOVIO — desde que la reparacion
+     automatica esta encendida, esto es lo que hay que mirar a la mañana: una
+     reparacion es un cambio de inventario que nadie aprobo a mano.
+═══════════════════════════════════════════════════════════════════════════*/
+/** Cartel simple para el estado del libro. Usa la clase .modal que ya existe. */
+function _libroCartel(titulo, htmlCuerpo) {
+  try {
+    let ov = document.getElementById('libroEstadoOv');
+    if (ov) ov.remove();
+    ov = document.createElement('div');
+    ov.id = 'libroEstadoOv';
+    ov.className = 'modal';
+    ov.style.display = 'flex';
+    ov.innerHTML =
+      '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r2);' +
+      'max-width:760px;width:100%;max-height:82vh;overflow:auto;padding:18px 20px">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px">' +
+      '<b style="font-size:16px">' + esc(titulo) + '</b>' +
+      '<button class="btn bs" id="libroEstadoX">Cerrar</button></div>' +
+      htmlCuerpo + '</div>';
+    document.body.appendChild(ov);
+    const cerrar = () => { try { ov.remove(); } catch (e) {} };
+    ov.querySelector('#libroEstadoX').addEventListener('click', cerrar);
+    ov.addEventListener('click', ev => { if (ev.target === ov) cerrar(); });
+  } catch (e) { try { console.log(htmlCuerpo.replace(/<[^>]*>/g, '')); } catch (_) {} }
+}
+
+async function verEstadoLibro() {
+  toast('Consultando el libro...', 'info');
+  try {
+    const [est, rep] = await Promise.all([
+      api('libro.estado', {}).catch(e => 'No se pudo leer el estado: ' + (e && e.message || e)),
+      api('libro.reparo', {}).catch(() => null),
+    ]);
+    const txt = (typeof est === 'string') ? est : JSON.stringify(est, null, 2);
+    const apagado = /Sucio AHORA:\s*true/i.test(txt);
+
+    let html = '<div style="font-family:monospace;font-size:12px;white-space:pre-wrap;line-height:1.5">';
+    html += '<div style="font-family:inherit;font-size:15px;font-weight:700;margin-bottom:10px;color:' +
+            (apagado ? 'var(--rd)' : 'var(--gn)') + '">' +
+            (apagado ? '● EL LIBRO ESTÁ APAGADO — el inventario va lento'
+                     : '● EL LIBRO ESTÁ ENCENDIDO — el inventario va rápido') + '</div>';
+    html += esc(txt);
+
+    if (rep && rep.hay) {
+      html += '\n\n<b>ÚLTIMA REPARACIÓN DEL AUDITOR</b>\n';
+      html += esc(rep.texto || '') + '\n';
+      if (rep.cuando) html += 'Cuándo: ' + esc(String(rep.cuando)) + '\n';
+      if (rep.difsAntes !== undefined)
+        html += 'Diferencias antes: ' + rep.difsAntes + '  ·  después: ' +
+                (rep.difsDespues === undefined ? '(no se reparó)' : rep.difsDespues) + '\n';
+      if (rep.stockMovido !== undefined && rep.stockMovido !== null)
+        html += 'Stock neto movido: ' + rep.stockMovido + ' unidad(es)\n';
+      const top = rep.loQueMasSeMovio || [];
+      if (top.length) {
+        html += '\nLo que más se movió:\n';
+        top.forEach(x => { html += '  ' + esc(String(x.k)) + ' [' + esc(String(x.t)) + ']  stock ' +
+                                   (x.dStock > 0 ? '+' : '') + x.dStock + '\n'; });
+      }
+    } else if (rep) {
+      html += '\n\n<b>ÚLTIMA REPARACIÓN DEL AUDITOR</b>\n' + esc(rep.texto || '');
+    }
+    html += '</div>';
+    _libroCartel('Estado del libro de stock', html);
+  } catch (e) {
+    toast('No se pudo leer el estado del libro: ' + (e && e.message || e), 'err');
+  }
+}
+
+// Atajo de teclado global: Ctrl+Shift+L → estado del libro
+window.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+    e.preventDefault();
+    verEstadoLibro();
+  }
+});
+
 // Atajo de teclado global: Ctrl+Shift+M → refrescar Maestros
 window.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
@@ -7234,6 +7326,60 @@ async function _pagosAgregarMasivo(items) {
     return { agregados: ok, fallos: fallos };
   };
 
+  /*═════════════════════════════════════════════════════════════════════════
+    VIA RAPIDA · 31-ago-2026 — medido 11,8 s por Apps Script, ~0,3 s por acá.
+    ───────────────────────────────────────────────────────────────────────
+    Acá NO hubo que construir riel nuevo: el de pagos de a uno existe y está en
+    producción desde el 25-jul. El RPC `pago_agregar`, el handler del robot con
+    su guarda anti-duplicado, la clave de coalescencia por PagoId y el mapeo del
+    espejo ya estaban. Lo único que faltaba era la puerta: mandar los N pagos
+    por ese riel en vez de mandarlos juntos a Apps Script.
+
+    DE A CINCO, NI EN FILA NI TODOS JUNTOS. En fila, 60 pagos serían 60 viajes
+    seguidos: peor que hoy. Todos juntos, serían 60 conexiones simultáneas contra
+    la base por un clic — descortés y, si algo del lado de Postgres serializa,
+    contraproducente. De a cinco: 60 pagos son 12 tandas de ~0,3 s.
+
+    (La regla vieja "nada en paralelo" existe porque las funciones de Apps Script
+    toman un candado de 30 s y las últimas morirían esperando. Acá no aplica —
+    esto va a Supabase, que no toma ese candado — pero el límite se pone igual.)
+
+    SI ALGUNO NO SALE, VAN TODOS POR EL CAMINO VIEJO. No se mezcla: un lote
+    mitad por la base y mitad por Apps Script deja al usuario sin saber qué
+    pasó con cuál. O todos por la vía rápida, o todos por la de siempre.
+
+    EL TOPE DE 60 SE REPLICA ACA. Lo ponía `pagoAgregarMasivo` en el backend
+    (MASIVO_TOPE) para no pasarse de los 6 minutos de Google. Yendo de a uno ese
+    tope desaparece solo, pero el límite existe también para que nadie dispare
+    500 escrituras de un clic — así que se mantiene, del lado de la pantalla.
+  ═════════════════════════════════════════════════════════════════════════*/
+  const MASIVO_TOPE_FRONT = 60;
+  if (lista.length > MASIVO_TOPE_FRONT) {
+    throw new Error('Máximo ' + MASIVO_TOPE_FRONT + ' pagos por vez (llegaron ' + lista.length + ')');
+  }
+  try {
+    const TANDA = 5;
+    const rs = [];
+    for (let i = 0; i < lista.length; i += TANDA) {
+      const grupo = await Promise.all(lista.slice(i, i + TANDA).map(it =>
+        _sbRpcPago('pago_agregar', {
+          p_nro: String(it.NroPedido), p_monto: parseFloat(it.Monto),
+          p_forma: String(it.FormaPago || it['Forma pago'] || ''),
+          p_fecha: String(it.FechaPago || it['Fecha Pago'] || ''),
+          p_constancia: String(it.Constancia || ''),
+          p_asesora: String(it.AsesoraPago || ''),
+        }).catch(() => null)));
+      rs.push.apply(rs, grupo);
+      if (grupo.some(r => !(r && r.pagoId))) break;   // uno falló: no seguir
+    }
+    // Todos o ninguno: si alguno vino en null, se rehace el lote entero por el
+    // camino de siempre. Los que sí entraron los frena la guarda anti-duplicado
+    // del robot (`_pagoYaEnLaHoja_`), que ya está en producción.
+    if (rs.length && rs.every(r => r && r.pagoId)) {
+      return { agregados: rs.length, fallos: [], via: 'base' };
+    }
+  } catch (e) { try { _errLog('masivo.pagos.base', e); } catch (_) {} }
+
   if (!SB_MASIVO) return unoPorUno();
   try {
     const r = await apiPost('pago.agregarMasivo', { items: lista });
@@ -7879,7 +8025,7 @@ async function _sbRpcAjuste(fn, params) {
       let _msg = '';
       try { const _e = await r.json(); _msg = String(_e && (_e.message || _e.hint) || ''); } catch (_) {}
       // Rechazo de NEGOCIO: se propaga, no se reintenta por la vía vieja.
-      if (/STOCK_INSUFICIENTE|DELTA_|CANTIDAD_|CODIGO_INVALIDO/i.test(_msg)) {
+      if (/STOCK_INSUFICIENTE|SIN_FALLAS_SUFICIENTES|DELTA_|CANTIDAD_|CODIGO_INVALIDO|DEMASIADOS_ITEMS/i.test(_msg)) {
         const err = new Error(_msg); err._negocio = true; throw err;
       }
       if (r.status === 401 || r.status === 403) _sbVencerTok();
@@ -7893,6 +8039,41 @@ async function _sbRpcAjuste(fn, params) {
     try { console.warn('[ajuste] ' + fn + ' falló → vía Apps Script'); } catch (_) {}
     return null;
   }
+}
+
+/*═══════════════════════════════════════════════════════════════════════════
+  RECUPERAR UNA FALLA POR LA VIA RAPIDA · 31-ago-2026
+  Medido: 13,8 s por Apps Script. Por acá: ~0,3 s.
+
+  El RPC valida y encola. La elección de QUÉ unidades del montón se consumen
+  (FIFO, salteando eliminadas, ya recuperadas y de destino terminal) la sigue
+  haciendo la hoja, dentro del robot, contra el dato del momento. Elegirlas acá
+  con datos de hace minutos podría marcar una fila que otra recuperación ya
+  consumió: la misma unidad contada dos veces.
+
+  REVERSA: SB_PILOTO_FALLAREC = false y publicar.
+═══════════════════════════════════════════════════════════════════════════*/
+const SB_PILOTO_FALLAREC = true;
+
+async function _recuperarFalla(body) {
+  const items = (body && body.items) || [];
+  if (!items.length) return apiSend('fallas.recuperar', body);
+  try {
+    if (!SB_PILOTO_FALLAREC) return apiSend('fallas.recuperar', body);
+    const req = 'fre-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    const d = await _sbRpcAjuste('falla_recuperar', {
+      p_items: items.map(it => ({ prenda: String(it.prenda || ''),
+                                  cantidad: parseInt(it.cantidad, 10) || 0,
+                                  lote: String(it.lote || '') })),
+      p_request: req });
+    if (d) return { ok: true, items: items.length, via: 'base' };
+  } catch (e) {
+    // Un "no" de la base (no hay tantas fallas disponibles) es una respuesta
+    // válida, no una falla de red: se le muestra a la persona en vez de
+    // reintentar por el camino viejo, que se saltearía la comprobación.
+    if (e && e._negocio) throw e;
+  }
+  return apiSend('fallas.recuperar', body);
 }
 
 /** Una sola puerta para ajustar el conteo. Rápida si se puede, de siempre si no. */
@@ -20004,7 +20185,7 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
       if(enLote&&n>enLote.disponibles){ toast('Solo hay '+enLote.disponibles+' en '+(lote||'sin lote'),'err'); return; }
       _ivTotMut(pren,dis,col,tal,{fallas:-n,conf:n,stock:n}); repintar(); cerrar();
       try{
-        await apiSend('fallas.recuperar',{items:[{prenda:full,cantidad:n,lote:lote}]});
+        await _recuperarFalla({items:[{prenda:full,cantidad:n,lote:lote}]});
         _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'],['stock.resumen']);
         toast('✓ '+n+' recuperada'+(n>1?'s':'')+' al stock · '+esc(full),'ok');
       }catch(e){ _ivTotMut(pren,dis,col,tal,{fallas:n,conf:-n,stock:-n}); _stDataTs=0; repintar(); toast('No se pudo recuperar: '+esc(e.message)+' — se deshizo lo pintado','err'); }
@@ -21039,7 +21220,7 @@ function _invAbrirRecuperarFalla(){
   document.getElementById('rec-crear').addEventListener('click',async function(){
     if(!_recCart.length){ toast('Agrega al menos un SKU','err'); return; }
     this.disabled=true; this.textContent='Recuperando...';
-    try{ const res=await apiSend('fallas.recuperar',{items:_recCart});
+    try{ const res=await _recuperarFalla({items:_recCart});
       _stockEscrito(['stock.resumen','confeccion.listar','catalogo.stock','fallas.resumen'], ['stock.resumen']);  // 05-ago
       toast('✓ Recuperado: '+(res.filas||0)+' SKU / '+(res.unidades||0)+' und al stock','ok');
       _recCart=[]; _close(); _refrescarInv();
@@ -24482,7 +24663,7 @@ function hcTimeline(r) {
   const cerrar = () => ov.remove();
   ov.addEventListener('click', e => { if (e.target === ov) cerrar(); });
   document.getElementById('hctl-cls').addEventListener('click', cerrar);
-  document.addEventListener('keydown', function _esc(e) {
+  document.addEventListener('keydown', function esc(e) {
     if (e.key === 'Escape') { cerrar(); document.removeEventListener('keydown', _esc); }
   });
 }
@@ -26777,7 +26958,7 @@ function hdTimeline(r) {
   const cerrar = () => ov.remove();
   ov.addEventListener('click', e => { if (e.target === ov) cerrar(); });
   document.getElementById('hdtl-cls').addEventListener('click', cerrar);
-  document.addEventListener('keydown', function _esc(e) {
+  document.addEventListener('keydown', function esc(e) {
     if (e.key === 'Escape') { cerrar(); document.removeEventListener('keydown', _esc); }
   });
 }
