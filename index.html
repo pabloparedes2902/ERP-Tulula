@@ -6908,14 +6908,30 @@ async function _sbSerieDiaria(mes) {
     return j;
   } catch (e) { try { _errLog('sb.serieDiaria', e); } catch (_) {} return null; }
 }
+// 1-set-2026 — MEMO de 3 minutos por mes. El grafico se abre muchas veces al
+// dia y cada apertura pagaba el RPC entero (1-2 s normal; 3-29 s con la base
+// ocupada: el cronometro anoto 17 veces ≥3 s en 24 h, 149 s acumulados). El
+// espejo del que sale el dato ya es de 5 minutos, asi que 3 minutos de memoria
+// no cambian la frescura real de nada. El 🔄 (forzar servidor) pasa de largo:
+// _sbSaltarEspejo saltea el memo y ademas el memo se refresca con lo que traiga.
+const _sdMemo = {};
 async function _serieDiariaRapido(mes) {
+  const k = String(mes || 'vigente');
+  try {
+    if (!window._sbSaltarEspejo) {
+      const m = _sdMemo[k];
+      if (m && (Date.now() - m.ts) < 180000) return m.d;
+    }
+  } catch (_) {}
   const directo = await _sbSerieDiaria(mes);
-  if (directo) return directo;
+  if (directo) { try { _sdMemo[k] = { d: directo, ts: Date.now() }; } catch (_) {} return directo; }
   if (!mes) {
     const d = await _sbCacheLeer('dashboard.serieDiaria');
-    if (d && typeof d === 'object') return d;
+    if (d && typeof d === 'object') { try { _sdMemo[k] = { d: d, ts: Date.now() }; } catch (_) {} return d; }
   }
-  return api('dashboard.serieDiaria', mes ? { mes: mes } : {});
+  const r = await api('dashboard.serieDiaria', mes ? { mes: mes } : {});
+  try { if (r && typeof r === 'object') _sdMemo[k] = { d: r, ts: Date.now() }; } catch (_) {}
+  return r;
 }
 async function _confeccionListarRapido() {
   const d = await _sbCacheLeer('confeccion.listar');
@@ -8030,7 +8046,7 @@ async function _sbRpcAjuste(fn, params) {
       let _msg = '';
       try { const _e = await r.json(); _msg = String(_e && (_e.message || _e.hint) || ''); } catch (_) {}
       // Rechazo de NEGOCIO: se propaga, no se reintenta por la vía vieja.
-      if (/STOCK_INSUFICIENTE|SIN_FALLAS_SUFICIENTES|PEDIDO_ELIMINADO|DELTA_|CANTIDAD_|CODIGO_INVALIDO|DEMASIAD/i.test(_msg)) {
+      if (/STOCK_INSUFICIENTE|STOCK_VIVO|SIN_FALLAS_SUFICIENTES|SIN_ITEMS|FALTAN_DATOS|PEDIDO_ELIMINADO|DELTA_|CANTIDAD_|CODIGO_INVALIDO|DEMASIAD/i.test(_msg)) {
         const err = new Error(_msg); err._negocio = true; throw err;
       }
       if (r.status === 401 || r.status === 403) _sbVencerTok();
@@ -8135,6 +8151,46 @@ async function _ajustarLote(body) {
     p_talla: String(body.talla || ''), p_nueva: parseInt(body.nueva, 10), p_request: req });
   if (d) return { ok: true, nueva: parseInt(body.nueva, 10), via: 'base' };
   return apiSend('lote.ajustar', body);
+}
+
+// ══ CREAR / ELIMINAR SKU POR LA VIA RAPIDA · 1-set-2026 ═══════════════════
+// Medido con v505: crear 6,4-8,3 s · eliminar 5,4-6,8 s de espera mirando la
+// pantalla. Con la cola: ~0,3 s, y el empujon (`espejo.aplicarNro`) deja la
+// hoja al dia en segundos — el Aplicador llama a la MISMA funcion de siempre
+// (skuCrear / skuEliminar SIN force: la guarda STOCK_VIVO corre contra la hoja).
+// REVERSA INMEDIATA: SB_PILOTO_SKU = false y publicar. Un rechazo de NEGOCIO
+// de la base (STOCK_VIVO) se respeta y NO se reintenta por la via vieja.
+const SB_PILOTO_SKU = true;
+
+/** Crear SKU(s): encola y devuelve al instante. `listo` resuelve cuando el
+ *  empujon ya bajo los SKU a la hoja: ahi recien conviene refrescar la vista. */
+async function _skuCrearRapido(items) {
+  try {
+    if (!SB_PILOTO_SKU || !items || !items.length) return await apiSend('sku.crear', { items });
+    const req = 'skc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    const d = await _sbRpcAjuste('sku_crear', { p_items: items, p_request: req });
+    if (d) {
+      const listo = apiSend('espejo.aplicarNro', { nro: req.slice(0, 60) }).catch(() => {});
+      return { ok: true, via: 'base', encolado: true, items: items.length,
+               unidades: items.reduce((s, i) => s + (parseInt(i.cantidad, 10) || 0), 0), listo };
+    }
+  } catch (e) { if (e && e._negocio) throw e; }
+  return apiSend('sku.crear', { items });
+}
+
+/** Eliminar un SKU: idem. El STOCK_VIVO de la base es la misma cuenta que haria
+ *  la hoja, adelantada — se muestra tal cual, sin reintentar por la via vieja. */
+async function _skuEliminarRapido(pr, dis, col) {
+  try {
+    if (!SB_PILOTO_SKU) return await apiSend('sku.eliminar', { prenda: pr, dis: dis, col: col });
+    const req = 'ske-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+    const d = await _sbRpcAjuste('sku_eliminar', { p_prenda: pr, p_dis: dis, p_col: col, p_request: req });
+    if (d) {
+      const listo = apiSend('espejo.aplicarNro', { nro: (String(pr).trim() + ' ' + String(dis).trim() + ' ' + String(col).trim()).toUpperCase().slice(0, 60) }).catch(() => {});
+      return { ok: true, via: 'base', encolado: true, listo };
+    }
+  } catch (e) { if (e && e._negocio) throw e; }
+  return apiSend('sku.eliminar', { prenda: pr, dis: dis, col: col });
 }
 
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
@@ -20846,11 +20902,21 @@ function renderConf(el) {
     const ok = await npConfirm('¿Eliminar definitivamente el SKU "'+pr+' '+dis+' '+col+'"?\n\nYa no aparecerá en stock ni en los catálogos. El historial se conserva oculto (recuperable).');
     if (!ok) return;
     try {
-      await apiSend('sku.eliminar', { prenda:pr, dis:dis, col:col });
-      toast('✓ SKU eliminado: '+pr+' '+dis+' '+col, 'ok');
-      confData = null; try { _confLsDel(); } catch(e) {}
-      if (typeof refrescarMaestros === 'function') { try { await refrescarMaestros(); } catch(e){} }
-      _refrescarInv();
+      const res = await _skuEliminarRapido(pr, dis, col);
+      const _ref = async () => {
+        confData = null; try { _confLsDel(); } catch(e) {}
+        if (typeof refrescarMaestros === 'function') { try { await refrescarMaestros(); } catch(e){} }
+        _refrescarInv();
+      };
+      if (res && res.encolado) {
+        // Via rapida: la pantalla queda libre YA; se refresca cuando el empujon
+        // confirma que la hoja quedo al dia (segundos).
+        toast('✓ Eliminando SKU: '+pr+' '+dis+' '+col+' — segundos', 'ok');
+        (res.listo || Promise.resolve()).then(_ref).catch(()=>{});
+      } else {
+        toast('✓ SKU eliminado: '+pr+' '+dis+' '+col, 'ok');
+        await _ref();
+      }
     } catch(e) { toast('Error al eliminar: '+esc(e.message),'err'); }
   }));
 
@@ -21804,14 +21870,23 @@ function _confAbrirCrearSku(confEl) {
     if (!_skuCart.length) { toast('Agrega al menos un SKU','err'); return; }
     this.disabled = true; this.textContent = 'Creando...';
     try {
-      const res = await apiSend('sku.crear', { items: _skuCart });
+      const res = await _skuCrearRapido(_skuCart);
       _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock'], ['stock.resumen','lotes.listar']);  // 05-ago
-      const n = (res.skus||[]).length, ya = (res.yaExistian||[]).length;
-      toast('✓ '+n+' SKU nuevo(s)'+(ya?' ('+ya+' ya existían)':'')+(res.unidades?' · stock inicial '+res.unidades+' und':''), 'ok');
-      _skuCart = []; _close();
-      if (typeof refrescarMaestros === 'function') { try { await refrescarMaestros(); } catch(e){} }
-      confData = null; try { _confLsDel(); } catch(e) {}
-      _refrescarInv();
+      const _ref = async () => {
+        if (typeof refrescarMaestros === 'function') { try { await refrescarMaestros(); } catch(e){} }
+        confData = null; try { _confLsDel(); } catch(e) {}
+        _refrescarInv();
+      };
+      if (res && res.encolado) {
+        toast('✓ '+res.items+' SKU(s) en creación — segundos'+(res.unidades?' · stock inicial '+res.unidades+' und':''), 'ok');
+        _skuCart = []; _close();
+        (res.listo || Promise.resolve()).then(_ref).catch(()=>{});
+      } else {
+        const n = (res.skus||[]).length, ya = (res.yaExistian||[]).length;
+        toast('✓ '+n+' SKU nuevo(s)'+(ya?' ('+ya+' ya existían)':'')+(res.unidades?' · stock inicial '+res.unidades+' und':''), 'ok');
+        _skuCart = []; _close();
+        await _ref();
+      }
     } catch(e) {
       toast('Error al crear SKU: '+esc(e.message),'err');
       this.disabled = false; this.textContent = 'Crear SKU';
