@@ -778,6 +778,9 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
     <div id="pg-lotes" class="pg">
       <div id="lotes-w"><div class="ld"><div class="sp"></div>Cargando lotes...</div></div>
     </div>
+    <div id="pg-fallashist" class="pg">
+      <div id="fallashist-w"><div class="ld"><div class="sp"></div>Cargando historial de fallas...</div></div>
+    </div>
     <div id="pg-reposicion" class="pg">
       <div id="repo-w"><div class="ld"><div class="sp"></div>Calculando reposición...</div></div>
     </div>
@@ -3896,6 +3899,7 @@ function loadPg(pg) {
   else if (pg==='clientes')   loadClis();
   else if (pg==='inventario') loadInv();
   else if (pg==='lotes')      loadLotes();
+  else if (pg==='fallashist')  loadFallasHist();
   else if (pg==='reposicion') loadReposicion();
   else if (pg==='stock')      loadStock();
   else if (pg==='confeccion') loadConf();
@@ -6862,10 +6866,65 @@ async function _catalogoStockRapido() {
   if (d && (Array.isArray(d) ? d.length : Object.keys(d).length)) return d;
   return api('catalogo.stock', {});
 }
+// FIX 2-set-2026 (Pablo) — el módulo Cambios (historial grande, loadHistCambios) leía
+// SOLO cambios.listar (la hoja Cambios vieja). Pero TODO cambio nuevo se registra desde
+// hace rato por el sistema v2 (cambios2.registrarYSync / _sbRpcCambioRegistrar, ver
+// _camProcessSaveQueue) — la hoja Cambios vieja dejó de recibir filas nuevas. Resultado:
+// cualquier cambio registrado después del cutover a v2 (como CAM de Carmen Farfán #21695
+// o Katia Flores #21645) existía en Cambios2 y por eso SÍ se veía en la pestaña "Cambio"
+// del pedido (que ya lee v2), pero jamás en este listado grande. Se agrega acá, en el
+// único punto de lectura del que dependen los 9 lugares que llaman a esta función, así
+// se arregla una sola vez para todos.
+function _c2ComoFilasHist_(grupos) {
+  const out = [];
+  (grupos || []).forEach(g => {
+    const base = {
+      Grupo: g.NroCambio, Nombre: g.Nombre, DNI: g.DNI, Celular: g.Celular,
+      Region: g.Region, Direccion: g.Direccion, FechaSolicitud: g.FechaSolicitud,
+      Estado: g.Estado, Motivo: g.Motivo, MotivoDetalle: g.MotivoDetalle,
+      Comentario: g.Comentario, FechaRecepcionOriginal: g.FechaRecepcionOriginal,
+      DiferenciaPrecio: g.DiferenciaPrecio, PrecioEnvio: g.PrecioEnvio,
+      MontoPagadoCliente: g.MontoPagadoCliente, MontoAsumidoEmpresa: g.MontoAsumidoEmpresa,
+      Sincronizado: g.Sincronizado, RecibidoOriginal: g.RecibidoOriginal,
+      EnviadaNueva: g.EnviadaNueva, FechaEnvioNueva: g.FechaEnvioNueva,
+      Version: g.Version, _esV2: true,
+    };
+    const dev = g.devueltas || [], nue = g.nuevas || [];
+    let n = 0;
+    dev.forEach((d, i) => {
+      n++;
+      out.push(Object.assign({}, base, {
+        ID: g.NroCambio + '-' + n,
+        NroPedido: d.NroPedido,
+        PrendaOriginal: d.Prenda,
+        PrendaNueva: (nue[i] && nue[i].Prenda) || '',
+        PrecioOriginal: d.Precio,
+        CondicionPrenda: d.CondicionPrenda,
+      }));
+    });
+    for (let j = dev.length; j < nue.length; j++) {
+      n++;
+      out.push(Object.assign({}, base, {
+        ID: g.NroCambio + '-' + n,
+        NroPedido: nue[j].NroPedido,
+        PrendaOriginal: '',
+        PrendaNueva: nue[j].Prenda,
+      }));
+    }
+    if (!dev.length && !nue.length) {
+      // Grupo sin prendas legibles (dato incompleto) — igual se muestra, no se pierde.
+      out.push(Object.assign({}, base, { ID: g.NroCambio + '-1', NroPedido: (g.pedidos && g.pedidos[0]) || '', PrendaOriginal: '', PrendaNueva: '' }));
+    }
+  });
+  return out;
+}
+
 async function _cambiosListarRapido() {
   const d = await _sbCacheLeer('cambios.listar');
-  if (Array.isArray(d) && d.length) return d;
-  return api('cambios.listar', {});
+  const viejo = (Array.isArray(d) && d.length) ? d : await api('cambios.listar', {});
+  let nuevo = [];
+  try { nuevo = _c2ComoFilasHist_(await _c2ListarRapido()); } catch (e) { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} }
+  return (Array.isArray(viejo) ? viejo : []).concat(nuevo);
 }
 async function _coloresListarRapido() {
   const d = await _sbCacheLeer('colores.listar');
@@ -19216,6 +19275,23 @@ function _stNombreUsuario(){
   }catch(_){ return ''; }
 }
 const _stGrpKey = g => String(g._prenda||'')+'|||'+String(g._diseno||'');
+// 2-set-2026 — orden personalizado de COLORES dentro de un diseño (Pablo, drag & drop).
+// Antes SIEMPRE A-Z, sin excepción. Ahora: si la vista activa (view:...) trae un orden
+// de colores para esta clave, se respeta; los colores que la vista no menciona (nuevos,
+// o vistas viejas sin este campo) se agregan al final en A-Z — nunca desaparecen.
+function _stColorSort(g, key) {
+  const v = (typeof stOrden === 'string' && stOrden.indexOf('view:') === 0)
+    ? (stVistas||[]).find(x => ('view:'+x.nombre) === stOrden) : null;
+  const ord = (v && v.coloresOrden && Array.isArray(v.coloresOrden[key])) ? v.coloresOrden[key] : null;
+  if (!ord || !ord.length) { g.sort((a,b) => String(a.color||'').localeCompare(String(b.color||''),'es')); return; }
+  const idx = {}; ord.forEach((c,i) => { idx[String(c||'').toUpperCase()] = i; });
+  g.sort((a,b) => {
+    const ia = idx[String(a.color||'').toUpperCase()], ib = idx[String(b.color||'').toUpperCase()];
+    if (ia==null && ib==null) return String(a.color||'').localeCompare(String(b.color||''),'es');
+    if (ia==null) return 1; if (ib==null) return -1;   // colores nuevos, al final
+    return ia - ib;
+  });
+}
 async function cargarVistasStock(){ try{ stVistas = await _vistasStockRapido() || []; }catch(e){ stVistas = stVistas||[]; } return stVistas; }
 let stHideNoStock=false;            // ocultar filas sin stock (toggle)
 let _stOrdenInit=false;             // ¿ya restauramos el orden guardado del usuario?
@@ -19576,9 +19652,9 @@ function renderStock(el) {
   rows.forEach(d=>{const k=(d.prenda||'')+'|||'+(d.diseno||'');if(!gmap.has(k))gmap.set(k,[]);gmap.get(k).push(d);});
   let groups=[...gmap.values()];
   groups.forEach(g=>{
-    g.sort((a,b)=>String(a.color||'').localeCompare(String(b.color||''),'es'));
-    g._fechaMs=g.reduce((m,x)=>Math.max(m,x.fechaMs||0),0);
     g._cat=g[0].cat; g._prenda=g[0].prenda; g._diseno=g[0].diseno;
+    _stColorSort(g, _stGrpKey(g));
+    g._fechaMs=g.reduce((m,x)=>Math.max(m,x.fechaMs||0),0);
   });
   if(stOrden==='reciente')     groups.sort((a,b)=>b._fechaMs-a._fechaMs);
   else if(stOrden==='antiguo') groups.sort((a,b)=>a._fechaMs-b._fechaMs);
@@ -19832,6 +19908,7 @@ function renderInv(el){
   acc+='<button id="iv-recuperar" class="btn bg bs" style="font-size:12px" title="Unidades que vuelven a estar disponibles">♻ Recuperar</button>';
   acc+='<button id="iv-reposicion" class="btn bg bs" style="font-size:12px" title="Qué reponer y cuánto">📈 Reposición</button>';
   acc+='<button id="iv-lotes" class="btn bg bs" style="font-size:12px" title="Historial de lotes de producción">📦 Lotes</button>';
+  acc+='<button id="iv-fallashist" class="btn bg bs" style="font-size:12px" title="Historial de fallas ingresadas, una por una">🩹 Historial de fallas</button>';
   // 30-jul — la puerta a "Stock - Yayitas". Va al lado de Recuperar porque las dos
   // hablan del mismo montón: una lo devuelve al stock bueno, la otra lo vende con falla.
   acc+='<button id="iv-yay" class="btn bg bs" style="font-size:12px;border-color:#f59e0b55;color:#f59e0b" title="Ver solo las prendas con falla marcadas para vender">🟠 Yayitas</button>';
@@ -19887,7 +19964,7 @@ function renderInv(el){
   const gmap=new Map();
   rows.forEach(d=>{ const k=(d.prenda||'')+'|||'+(d.diseno||''); if(!gmap.has(k))gmap.set(k,[]); gmap.get(k).push(d); });
   let groups=[...gmap.values()];
-  groups.forEach(g=>{ g.sort((a,b)=>String(a.color||'').localeCompare(String(b.color||''),'es')); g._fechaMs=g.reduce((m,x)=>Math.max(m,x.fechaMs||0),0); g._cat=g[0].cat; g._prenda=g[0].prenda; g._diseno=g[0].diseno; });
+  groups.forEach(g=>{ g._cat=g[0].cat; g._prenda=g[0].prenda; g._diseno=g[0].diseno; _stColorSort(g, _stGrpKey(g)); g._fechaMs=g.reduce((m,x)=>Math.max(m,x.fechaMs||0),0); });
   if(stOrden==='reciente')     groups.sort((a,b)=>b._fechaMs-a._fechaMs);
   else if(stOrden==='antiguo') groups.sort((a,b)=>a._fechaMs-b._fechaMs);
   else if(stOrden==='az')      groups.sort((a,b)=>String(a._diseno).localeCompare(String(b._diseno),'es'));
@@ -20034,6 +20111,7 @@ function renderInv(el){
   _b('iv-repfallas',()=>_confAbrirReporteFallas(el));
   _b('iv-reposicion',()=>{ if(typeof navegarA==='function') navegarA('reposicion'); });
   _b('iv-lotes',()=>{ if(typeof navegarA==='function') navegarA('lotes'); });
+  _b('iv-fallashist',()=>{ if(typeof navegarA==='function') navegarA('fallashist'); });
   // Clic en el ícono ℹ de una fila con "No disponible" ≥1 → desglose por motivo.
   el.querySelectorAll('.iv-nodisp-info').forEach(b=>b.addEventListener('click',(ev)=>{ ev.stopPropagation(); _invNoDispDetalle(b.dataset.pren||'', b.dataset.dis||'', b.dataset.col||''); }));
   // Clic en 🕑 → kardex (historial completo del SKU).
@@ -20456,6 +20534,91 @@ function _loteAjustarPrompt(codigo, prenda, dis, col, talla, actual){
   });
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// HISTORIAL DE FALLAS (2-set-2026) — Pablo: "como la pestaña Lotes" pero para
+// fallas. Lotes muestra cada INGRESO de producción; esto muestra cada FALLA
+// registrada, agrupada por día, con quién la ingresó, motivo, destino y si
+// ya se recuperó al stock bueno o sigue en el montón (Yayitas/Reparar/etc.).
+// ════════════════════════════════════════════════════════════════════════
+let fallasHistData = null;
+async function loadFallasHist(){
+  const el = document.getElementById('fallashist-w');
+  el.innerHTML = spin('Cargando historial de fallas...');
+  try {
+    fallasHistData = await apiSend('fallas.listar', {});
+    renderFallasHist(el);
+  } catch(e) { el.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
+}
+function renderFallasHist(el){
+  el = el || document.getElementById('fallashist-w');
+  if (!fallasHistData) { el.innerHTML = '<div class="empty">Sin datos</div>'; return; }
+  // Igual que en Recuperar/Yayitas: Eliminado=SI es una falla que se deshizo (fallasDeshacer)
+  // — no cuenta como historial vivo, se saltea.
+  const vivas = fallasHistData.filter(r => String(r['Eliminado']||'').trim().toUpperCase() !== 'SI');
+  const q = (window._fhQ||'').toLowerCase();
+  let rows = vivas;
+  if (q) {
+    rows = rows.filter(r => {
+      const h = [r['Prenda'],r['Diseno'],r['Color'],r['Talla'],r['Motivo'],r['Destino'],r['Referencia']].map(x=>String(x||'')).join(' ').toLowerCase();
+      return h.includes(q);
+    });
+  }
+  if (!rows.length) { el.innerHTML = _bcInv() + '<div class="empty">'+(q?'Sin resultados para esa búsqueda.':'Aún no hay fallas registradas.')+'</div>'; return; }
+
+  // Agrupar por Fecha (día) — más reciente arriba. Dentro de cada día, más reciente primero.
+  const porFecha = new Map();
+  rows.forEach(r => { const f = String(r['Fecha']||'(sin fecha)'); if (!porFecha.has(f)) porFecha.set(f, []); porFecha.get(f).push(r); });
+  const _fechaOrden = f => { const m = String(f).match(/^(\d{2})\/(\d{2})\/(\d{4})$/); return m ? (m[3]+m[2]+m[1]) : '00000000'; };
+  const fechas = [...porFecha.keys()].sort((a,b) => _fechaOrden(b).localeCompare(_fechaOrden(a)));
+
+  const totU = rows.reduce((s,r) => s + (parseInt(r['Cantidad'],10)||0), 0);
+  let ctrl = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">'
+    + '<input id="fh-q" type="text" placeholder="Buscar por prenda, motivo, destino o quién la ingresó..." autocomplete="off" value="'+esc(window._fhQ||'')+'" style="flex:1;min-width:220px;padding:7px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">'
+    + '<span style="font-size:12px;color:var(--mu)">'+rows.length+' falla'+(rows.length!==1?'s':'')+' · '+totU+' und</span></div>';
+
+  const _destTxt = d => (typeof _falDestinoTxt === 'function') ? _falDestinoTxt(d) : (d||'—');
+  let cards = '';
+  fechas.forEach(f => {
+    const grupo = porFecha.get(f);
+    const uF = grupo.reduce((s,r) => s + (parseInt(r['Cantidad'],10)||0), 0);
+    const key = 'd'+f.replace(/\W/g,'');
+    const abierto = window._fhOpen && window._fhOpen[key];
+    let detalle = '';
+    if (abierto) {
+      detalle = '<div style="padding:2px 14px 12px;border-top:1px solid var(--bd)">'
+        + '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--mu)">'
+        + '<th style="text-align:left;padding:6px 8px">Prenda</th><th style="text-align:center;padding:6px 8px">Cant.</th>'
+        + '<th style="text-align:left;padding:6px 8px">Motivo</th><th style="text-align:left;padding:6px 8px">Destino</th>'
+        + '<th style="text-align:left;padding:6px 8px">Ingresó</th><th style="text-align:center;padding:6px 8px">Estado</th></tr></thead><tbody>'
+        + grupo.map(r => {
+            const recuperado = String(r['Recuperado']||'').trim().toUpperCase()==='SI';
+            const quien = String(r['Referencia']||'').split('@')[0];
+            return '<tr style="border-top:1px solid var(--bd)">'
+              + '<td style="padding:6px 8px">'+esc([r['Prenda'],r['Diseno'],r['Color'],r['Talla']].filter(Boolean).join(' '))+'</td>'
+              + '<td style="padding:6px 8px;text-align:center;font-weight:700">'+(parseInt(r['Cantidad'],10)||0)+'</td>'
+              + '<td style="padding:6px 8px">'+esc(r['Motivo']||'—')+'</td>'
+              + '<td style="padding:6px 8px">'+esc(_destTxt(r['Destino']))+'</td>'
+              + '<td style="padding:6px 8px;color:var(--mu)">'+esc(quien||'—')+'</td>'
+              + '<td style="padding:6px 8px;text-align:center">'+(recuperado ? '<span style="color:#22c55e">↺ recuperada</span>' : '<span style="color:var(--mu)">en el montón</span>')+'</td>'
+              + '</tr>';
+          }).join('')
+        + '</tbody></table></div>';
+    }
+    cards += '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r2);margin-bottom:10px;overflow:hidden">'
+      + '<div class="fh-hd" data-k="'+esc(key)+'" style="display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer;flex-wrap:wrap">'
+      + '<div style="flex:1;min-width:160px"><div style="font-weight:700;font-size:13px">'+esc(f)+'</div>'
+      + '<div style="font-size:12px;color:var(--mu);margin-top:2px">'+grupo.length+' falla'+(grupo.length!==1?'s':'')+'</div></div>'
+      + '<span style="font-weight:700;font-size:13px;white-space:nowrap">'+uF+' und</span>'
+      + '<span style="color:var(--mu)">'+(abierto?'▲':'▼')+'</span>'
+      + '</div>'+detalle+'</div>';
+  });
+
+  el.innerHTML = _bcInv() + ctrl + cards;
+  const qi = document.getElementById('fh-q');
+  if (qi) { qi.addEventListener('input', function(){ window._fhQ = this.value.trim(); renderFallasHist(el); }); if (q) { qi.focus(); qi.setSelectionRange(qi.value.length, qi.value.length); } }
+  el.querySelectorAll('.fh-hd').forEach(h => h.addEventListener('click', function(){ const k = this.getAttribute('data-k'); window._fhOpen = window._fhOpen || {}; window._fhOpen[k] = !window._fhOpen[k]; renderFallasHist(el); }));
+}
+
 // Breadcrumb para volver a Stock (Inventario) desde las sub-vistas (Reposición, Lotes, Catálogo).
 function _bcInv(){ return '<div style="margin-bottom:12px"><button class="btn bg bs" onclick="navegarA(\'inventario\')" style="font-size:12px">← Volver a Stock</button></div>'; }
 
@@ -20519,10 +20682,16 @@ function renderReposicion(){
 // devuelto a la persona a la pantalla de Catálogo al guardar.
 function _stAbrirOrdenar(el, groups, repintar){
   const _render = (typeof repintar === 'function') ? repintar : renderStock;
-  const items = (groups||[]).map(g=>({ key:_stGrpKey(g), prenda:g._prenda||'', diseno:g._diseno||'', cat:g._cat||'' }));
+  const items = (groups||[]).map(g=>({ key:_stGrpKey(g), prenda:g._prenda||'', diseno:g._diseno||'', cat:g._cat||'',
+    colores:[...new Set((g||[]).map(x=>String(x.color||'').trim()).filter(Boolean))] }));
   if(!items.length){ toast('No hay diseños para ordenar','err'); return; }
   // Nombre sugerido: si estás sobre una vista guardada, reusar su nombre.
   const vistaActual = (stOrden && stOrden.indexOf('view:')===0) ? stOrden.slice(5) : _stNombreUsuario();
+  // 2-set-2026 — el orden de COLORES de cada diseño vive acá mientras se edita (se manda
+  // junto con `orden` al guardar). Si ya estás sobre una vista guardada, arranca con lo
+  // que esa vista ya tenía.
+  const vistaCargada = (stOrden && stOrden.indexOf('view:')===0) ? (stVistas||[]).find(x=>('view:'+x.nombre)===stOrden) : null;
+  let coloresOrdenWorking = (vistaCargada && vistaCargada.coloresOrden) ? JSON.parse(JSON.stringify(vistaCargada.coloresOrden)) : {};
 
   const ov=document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:900;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
@@ -20531,6 +20700,7 @@ function _stAbrirOrdenar(el, groups, repintar){
       <span style="font-weight:700;font-size:13px">${esc(it.diseno)}</span>
       <span style="color:var(--mu);font-size:12px">${esc(it.prenda)}</span>
       <span style="color:var(--bd2);font-size:11px;margin-left:auto">${esc(it.cat)}</span>
+      ${it.colores.length>1 ? `<button type="button" class="st-ord-col" data-key="${esc(it.key)}" title="Ordenar los colores de este diseño" style="background:none;border:1px solid var(--bd);border-radius:6px;color:var(--ac);cursor:pointer;font-size:11px;padding:3px 7px">🎨 Colores</button>` : ''}
     </div>`).join('');
   const vistasLi = (stVistas||[]).length
     ? (stVistas.map(v=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px">
@@ -20594,7 +20764,54 @@ function _stAbrirOrdenar(el, groups, repintar){
     arr.sort((a,b2)=>{ const ia=idx[a.dataset.key], ib=idx[b2.dataset.key]; if(ia==null&&ib==null)return 0; if(ia==null)return 1; if(ib==null)return -1; return ia-ib; });
     arr.forEach(x=>listEl.appendChild(x));
     const ni=ov.querySelector('#sto-name'); if(ni) ni.value=v.nombre;
-    toast('Orden de "'+v.nombre+'" cargado — ajústalo y guarda','ok');
+    coloresOrdenWorking = v.coloresOrden ? JSON.parse(JSON.stringify(v.coloresOrden)) : {};
+    toast('Orden de "'+v.nombre+'" cargado (incluye colores) — ajústalo y guarda','ok');
+  }));
+
+  // 2-set-2026 — "🎨 Colores": sub-modal para arrastrar los colores DE UN diseño.
+  ov.querySelectorAll('.st-ord-col').forEach(b=>b.addEventListener('click',(ev)=>{
+    ev.stopPropagation();
+    const key=b.dataset.key;
+    const it=items.find(x=>x.key===key); if(!it) return;
+    const yaOrd=coloresOrdenWorking[key];
+    let coloresIniciales = (Array.isArray(yaOrd) && yaOrd.length)
+      ? yaOrd.filter(c=>it.colores.includes(c)).concat(it.colores.filter(c=>!yaOrd.includes(c)))
+      : [...it.colores].sort((a,b2)=>a.localeCompare(b2,'es'));
+    const sub=document.createElement('div');
+    sub.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:950;display:flex;align-items:center;justify-content:center;padding:24px';
+    const cli=coloresIniciales.map(c=>`<div class="st-col-it" draggable="true" data-c="${esc(c)}" style="display:flex;align-items:center;gap:10px;padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:8px;margin-bottom:6px;cursor:grab;user-select:none">
+        <span style="color:var(--mu);font-size:14px">⠿</span><span style="font-size:13px">${esc(c)}</span>
+      </div>`).join('');
+    sub.innerHTML=`<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:380px;width:100%;padding:18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-weight:700;color:var(--ac);font-size:13px">🎨 ${esc(it.diseno)}</span>
+        <button id="stc-x" class="btn bg bs" style="font-size:11px">Cerrar</button></div>
+      <div style="font-size:11px;color:var(--mu);margin-bottom:10px">Arrastra para ordenar los colores. Se guarda junto con la vista.</div>
+      <div id="stc-list">${cli}</div>
+      <div style="display:flex;justify-content:flex-end;margin-top:12px"><button id="stc-ok" class="btn bp bs" style="font-size:12px">Listo</button></div>
+      </div>`;
+    document.body.appendChild(sub);
+    const subList=sub.querySelector('#stc-list');
+    let dragC=null;
+    subList.querySelectorAll('.st-col-it').forEach(itc=>{
+      itc.addEventListener('dragstart',e=>{ dragC=itc; itc.classList.add('st-col-drag'); itc.style.opacity='.4'; try{ e.dataTransfer.setData('text/plain', itc.dataset.c||'x'); e.dataTransfer.effectAllowed='move'; }catch(_){}});
+      itc.addEventListener('dragend',()=>{ itc.classList.remove('st-col-drag'); itc.style.opacity='1'; dragC=null; });
+    });
+    subList.addEventListener('drop',e=>{ e.preventDefault(); e.stopPropagation(); });
+    subList.addEventListener('dragover',e=>{
+      e.preventDefault(); try{ e.dataTransfer.dropEffect='move'; }catch(_){}
+      if(!dragC) return;
+      const after=_stOrdAfter(subList, e.clientY, '.st-col-it');
+      if(after==null) subList.appendChild(dragC); else subList.insertBefore(dragC, after);
+    });
+    const _closeSub=()=>sub.remove();
+    sub.querySelector('#stc-x').addEventListener('click',_closeSub);
+    sub.addEventListener('click',e=>{ if(e.target===sub) _closeSub(); });
+    sub.querySelector('#stc-ok').addEventListener('click',()=>{
+      coloresOrdenWorking[key]=[...subList.querySelectorAll('.st-col-it')].map(x=>x.dataset.c);
+      toast('Orden de colores de "'+it.diseno+'" listo — se guarda con la vista','ok');
+      _closeSub();
+    });
   }));
   // Eliminar vista
   ov.querySelectorAll('.st-ord-del').forEach(b=>b.addEventListener('click',async ()=>{
@@ -20609,9 +20826,12 @@ function _stAbrirOrdenar(el, groups, repintar){
     const nombre=(ov.querySelector('#sto-name').value||'').trim();
     if(!nombre){ toast('Ponle un nombre a la vista','err'); return; }
     const orden=[...listEl.querySelectorAll('.st-ord-it')].map(x=>x.dataset.key);
+    // Solo se manda coloresOrden de diseños que SIGUEN en la lista (por si alguno se eliminó/no vino esta vez).
+    const clavesVivas=new Set(orden);
+    const coloresOrden={}; Object.keys(coloresOrdenWorking).forEach(k=>{ if(clavesVivas.has(k)) coloresOrden[k]=coloresOrdenWorking[k]; });
     this.disabled=true;
     try{
-      await apiSend('vistas.stock.guardar',{nombre,orden});
+      await apiSend('vistas.stock.guardar',{nombre,orden,coloresOrden});
       await cargarVistasStock();
       stOrden='view:'+nombre; _stOrdenSave(stOrden);
       toast('✓ Vista "'+nombre+'" guardada','ok');
@@ -20619,9 +20839,11 @@ function _stAbrirOrdenar(el, groups, repintar){
     }catch(e){ toast('Error al guardar: '+esc(e.message),'err'); this.disabled=false; }
   });
 }
-// Devuelve el elemento .st-ord-it tras el cual insertar según la posición Y del mouse.
-function _stOrdAfter(container, y){
-  const els=[...container.querySelectorAll('.st-ord-it:not(.st-ord-drag)')];
+// Devuelve el elemento tras el cual insertar según la posición Y del mouse.
+// `sel` por defecto es .st-ord-it (orden de diseños); el sub-modal de colores pasa '.st-col-it'.
+function _stOrdAfter(container, y, sel){
+  sel = sel || '.st-ord-it';
+  const els=[...container.querySelectorAll(sel+':not(.st-ord-drag):not(.st-col-drag)')];
   let closest=null, closestOff=-Infinity;
   els.forEach(ch=>{ const box=ch.getBoundingClientRect(); const off=y-box.top-box.height/2;
     if(off<0 && off>closestOff){ closestOff=off; closest=ch; } });
@@ -20716,6 +20938,12 @@ function renderConf(el) {
   ctrl += '<button id="cf-ingresar-falla" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end;color:var(--rd);border-color:var(--rd)">＋ Ingresar falla</button>';
   ctrl += '<button id="cf-reporte-fallas" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end" title="Reporte de mermas / fallas">📊 Fallas</button>';
   ctrl += '<button id="cf-crear-sku" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end">＋ Crear SKU</button>';
+  // 2-set-2026 — panel de revisión de SKUs eliminados (ocultos). Solo Administrador:
+  // las asesoras ya pueden eliminar (ocultar) desde la ✕ de cada fila; este panel es
+  // el "qué hago con lo oculto" que faltaba (restaurar / borrar para siempre / dejar así).
+  if (typeof MY_ROLE === 'undefined' || MY_ROLE === 'Administrador') {
+    ctrl += '<button id="cf-eliminados" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end;color:var(--mu)" title="Revisar SKUs eliminados (ocultos)">🗑 Eliminados</button>';
+  }
   ctrl += '</div>';
 
   // ── FILTRAR DATOS ────────────────────────────────────────
@@ -20903,6 +21131,8 @@ function renderConf(el) {
   if (repFallaBtn) repFallaBtn.addEventListener('click', () => _confAbrirReporteFallas(el));
   const skuBtn = document.getElementById('cf-crear-sku');
   if (skuBtn) skuBtn.addEventListener('click', () => _confAbrirCrearSku(el));
+  const elimBtn = document.getElementById('cf-eliminados');
+  if (elimBtn) elimBtn.addEventListener('click', () => _confAbrirEliminados(el));
   // Eliminar SKU (borrado suave) — ✕ por fila, con alerta
   el.querySelectorAll('.conf-del').forEach(btn => btn.addEventListener('click', async () => {
     const pr = btn.dataset.prenda||'', dis = btn.dataset.dis||'', col = btn.dataset.col||'';
@@ -21813,6 +22043,75 @@ async function _confAbrirReporteFallas(confEl) {
 }
 
 
+// ── PANEL DE ELIMINADOS (2-set-2026) — Pablo: administración revisa lo que las asesoras
+// ocultaron y decide: Restaurar (vuelve a Stock/Confección tal cual estaba), Eliminar
+// definitivo (borra las filas ocultas para siempre, no se puede deshacer), o cerrar sin
+// tocar nada (queda oculto, tal como está hoy — es la opción por defecto).
+async function _confAbrirEliminados(confEl) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:600;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:820px;width:100%;padding:20px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span class="ct" style="margin:0;color:var(--ac)">🗑 SKUs eliminados</span><button id="skel-cls" class="btn bg bs" style="font-size:12px">Cerrar</button></div>'
+    + '<div style="font-size:11px;color:var(--mu);margin-bottom:12px">Lo que una asesora eliminó queda OCULTO (no borrado). Acá decides: restaurarlo, borrarlo para siempre, o dejarlo así (no hacer nada).</div>'
+    + '<div id="skel-body" style="font-size:13px;color:var(--mu)">Cargando…</div>'
+    + '</div>';
+  document.body.appendChild(ov);
+  const _close = () => ov.remove();
+  ov.addEventListener('click', e => { if (e.target === ov) _close(); });
+  document.getElementById('skel-cls').addEventListener('click', _close);
+
+  const body = document.getElementById('skel-body');
+  const _fmtFecha = v => { if (!v) return '—'; try { const d = new Date(v); return d.toLocaleDateString('es-PE') + ' ' + d.toLocaleTimeString('es-PE', {hour:'2-digit',minute:'2-digit'}); } catch(e) { return '—'; } };
+
+  const render = async () => {
+    body.innerHTML = 'Cargando…';
+    let rows = [];
+    try { rows = await apiSend('sku.eliminados', {}); } catch(e) { body.innerHTML = '<div style="color:var(--rd)">Error: '+esc(e.message)+'</div>'; return; }
+    if (!rows || !rows.length) { body.innerHTML = '<div style="padding:14px 0;text-align:center">No hay SKUs eliminados ahora mismo. ✓</div>'; return; }
+    body.innerHTML = '<div style="border:1px solid var(--bd);border-radius:var(--r);overflow:hidden"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+      + '<thead><tr style="background:var(--bg3)"><th style="padding:6px 10px;text-align:left;color:var(--mu)">SKU</th>'
+      + '<th style="padding:6px 10px;text-align:left;color:var(--mu)">Eliminado por</th>'
+      + '<th style="padding:6px 10px;text-align:left;color:var(--mu)">Fecha</th>'
+      + '<th style="padding:6px 10px;text-align:center;color:var(--mu)">Filas</th>'
+      + '<th style="padding:6px 10px"></th></tr></thead><tbody>'
+      + rows.map((r,i) => '<tr style="border-top:1px solid var(--bd)" data-i="'+i+'">'
+        + '<td style="padding:6px 10px">'+esc(r.prenda)+' '+esc(r.dis)+' '+esc(r.col)+'</td>'
+        + '<td style="padding:6px 10px">'+esc(r.eliminadoPor||'—')+'</td>'
+        + '<td style="padding:6px 10px">'+_fmtFecha(r.fecha)+'</td>'
+        + '<td style="padding:6px 10px;text-align:center;font-family:monospace">'+r.filas+'</td>'
+        + '<td style="padding:6px 10px;text-align:right;white-space:nowrap">'
+          + '<button class="btn bg bs skel-rest" data-i="'+i+'" style="font-size:11px;color:var(--gn);margin-right:6px">↺ Restaurar</button>'
+          + '<button class="btn bg bs skel-def" data-i="'+i+'" style="font-size:11px;color:var(--rd)">✕ Borrar definitivo</button>'
+        + '</td></tr>').join('')
+      + '</tbody></table></div>';
+
+    body.querySelectorAll('.skel-rest').forEach(btn => btn.addEventListener('click', async () => {
+      const r = rows[parseInt(btn.dataset.i,10)];
+      btn.disabled = true; btn.textContent = 'Restaurando…';
+      try {
+        const res = await apiSend('sku.restaurar', { prenda: r.prenda, dis: r.dis, col: r.col });
+        toast('✓ SKU restaurado: '+r.prenda+' '+r.dis+' '+r.col+' ('+res.restauradas+' fila(s))', 'ok');
+        confData = null; try { _confLsDel(); } catch(e) {}
+        if (typeof refrescarMaestros === 'function') { try { await refrescarMaestros(); } catch(e){} }
+        _refrescarInv();
+        render();
+      } catch(e) { toast('Error al restaurar: '+esc(e.message),'err'); btn.disabled=false; btn.textContent='↺ Restaurar'; }
+    }));
+    body.querySelectorAll('.skel-def').forEach(btn => btn.addEventListener('click', async () => {
+      const r = rows[parseInt(btn.dataset.i,10)];
+      const ok = await npConfirm('¿Borrar DEFINITIVAMENTE "'+r.prenda+' '+r.dis+' '+r.col+'"?\n\nEsto borra el historial oculto para siempre — no se puede deshacer.');
+      if (!ok) return;
+      btn.disabled = true; btn.textContent = 'Borrando…';
+      try {
+        const res = await apiSend('sku.eliminarDefinitivo', { prenda: r.prenda, dis: r.dis, col: r.col });
+        toast('✓ Borrado para siempre: '+r.prenda+' '+r.dis+' '+r.col+' ('+res.borradas+' fila(s))', 'ok');
+        render();
+      } catch(e) { toast('Error al borrar: '+esc(e.message),'err'); btn.disabled=false; btn.textContent='✕ Borrar definitivo'; }
+    }));
+  };
+  render();
+}
+
 // ── FASE C — Formulario "Crear SKU": define producto(s) nuevo(s) en Maestros (+ stock inicial opcional) ──
 let _skuCart = [];
 function _confAbrirCrearSku(confEl) {
@@ -21884,6 +22183,20 @@ function _confAbrirCrearSku(confEl) {
         confData = null; try { _confLsDel(); } catch(e) {}
         _refrescarInv();
       };
+      // 2-set-2026 — "el color nuevo no se agrega en Stock" (Pablo): el SKU SÍ se creaba
+      // (Maestros + Confección con cantidad 0), pero el checkbox "Ocultar sin stock"
+      // —que vive en localStorage y puede quedar marcado de una sesión anterior— lo
+      // tapaba en renderStock(): un color nuevo sin unidades aún no tiene stock>0 en
+      // NINGUNA talla, así que la fila se filtra. Si el diseño tenía otro color
+      // ("hermano") CON stock, el bloque se seguía viendo (con ese hermano) y el color
+      // nuevo parecía no haberse agregado; si era diseño 100% nuevo, el bloque entero
+      // desaparecía — cero rastro en pantalla. Al crear un SKU se apaga el filtro para
+      // garantizar que el color recién creado se vea, sea cual sea su stock inicial.
+      if (stHideNoStock) {
+        stHideNoStock = false;
+        try { _stHideSave(false); } catch(e) {}
+        toast('Se desactivó "Ocultar sin stock" para mostrarte el color nuevo', 'info');
+      }
       if (res && res.encolado) {
         toast('✓ '+res.items+' SKU(s) en creación — segundos'+(res.unidades?' · stock inicial '+res.unidades+' und':''), 'ok');
         _skuCart = []; _close();
@@ -23030,6 +23343,27 @@ async function camRegistrar() {
   if (!fpd)              { toast('La fecha de solicitud es obligatoria', 'err'); return; }
   if (!devueltas.length) { toast('Selecciona al menos una prenda a devolver', 'err'); return; }
   if (!nuevas.length)    { toast('Agrega al menos una prenda nueva', 'err'); return; }
+
+  // FIX 2-set-2026 (Pablo, aclarado) — "cambio sobre cambio": BLOQUEA, es por PRENDA
+  // no por pedido. Prendas DISTINTAS del mismo pedido son carriles independientes (van
+  // en envíos distintos) y no chocan nunca. Pero la MISMA prenda no puede tener un cambio
+  // nuevo mientras el cambio anterior sobre ELLA siga sin recibir la original de vuelta
+  // al almacén — primero tiene que volver, y recién ahí puede abrirse OTRO cambio (otro
+  // CAM-####, nunca el mismo) sobre esa prenda. Caso que lo disparó: Yesenia Vilca,
+  // pedido 21616, CAM-0149 sin recibir + un 2º cambio encima de la misma prenda.
+  try {
+    const _normP = s => String(s||'').trim().toUpperCase().replace(/\s+/g,' ');
+    const _choques = [];
+    devueltas.forEach(d => {
+      const abierto = (Array.isArray(_c2List) ? _c2List : []).find(g => {
+        if (String(g.Estado||'').trim().toUpperCase() === 'CANCELADO') return false;
+        if (g.RecibidoOriginal) return false;   // ya volvió: no choca, puede abrirse otro cambio
+        return (g.devueltas||[]).some(dv => String(dv.NroPedido||'').trim() === d.NroPedido && _normP(dv.Prenda) === _normP(d.Prenda));
+      });
+      if (abierto) _choques.push(d.Prenda + ' (' + abierto.NroCambio + ' — su prenda original aún no vuelve al almacén)');
+    });
+    if (_choques.length) { toast('No se puede: ' + _choques.join('; ') + '. Primero debe volver la prenda del cambio anterior.', 'err'); return; }
+  } catch (eCascada) {}
 
   const env       = parseFloat(document.getElementById('cam-envio')?.value) || 0;
   const fpago     = pagos.length ? pagos[0].forma : '';
@@ -25342,8 +25676,23 @@ function hcVerDetalle(grupo, containerEl) {
   ov.querySelector('#hcv-editar')?.addEventListener('click', () => { close(); hcAbrirEditor(head, containerEl); });
 }
 
-function hcAbrirEditor(r, containerEl) {
+async function hcAbrirEditor(r, containerEl) {
   const id = r['ID'] || '';
+  // FIX 2-set-2026 — esta fila viene del sistema v2 (Cambios2), que vive en OTRA hoja
+  // (Cambios2, no Cambios) y tiene su propio modelo (devueltas[]/nuevas[] por grupo, no
+  // una fila por prenda). El editor de abajo guarda contra cambios.actualizar/eliminar
+  // (la hoja VIEJA) — usarlo acá dejaría el registro inconsistente. Ya existe un editor
+  // completo y probado para Cambios2 (editarCambios2, el mismo que usa la pestaña
+  // "Cambio" del pedido): se reutiliza en vez de duplicar lógica de guardado.
+  if (r && r._esV2) {
+    const nc = r.Grupo || (r.ID || '').replace(/-\d+$/, '');
+    if (!(window._c2Data || []).some(x => x.NroCambio === nc)) {
+      try { window._c2Data = await _c2ListarRapido(); } catch (e) { toast('No se pudo cargar el cambio: ' + esc(e.message), 'err'); return; }
+    }
+    if (typeof editarCambios2 === 'function') editarCambios2(nc);
+    else toast('Editor de cambios (v2) no disponible en esta pantalla', 'err');
+    return;
+  }
   // Helper: lee schema v2 con fallback a nombres legacy
   const _g = (row, nuevo, ...legacy) => {
     if (row[nuevo] !== undefined && row[nuevo] !== '') return row[nuevo];
@@ -27624,10 +27973,12 @@ function hdAbrirEditor(r, containerEl) {
     + '<div class="fr">'
     + '<div class="fg"><label>Comentario</label><input id="hde-com" type="text" value="' + esc(r['Comentario']||'') + '"></div></div>'
 
-    + '<div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">'
+    + '<div style="display:flex;gap:10px;justify-content:space-between;margin-top:16px">'
+    + '<button class="btn bg" id="hde-eliminar" style="color:#e5484d">🗑 Eliminar devolución</button>'
+    + '<div style="display:flex;gap:10px">'
     + '<button class="btn bg" id="hd-close2">Cancelar</button>'
     + '<button class="btn bp" id="hde-guardar">Guardar cambios</button>'
-    + '</div></div>';
+    + '</div></div></div>';
 
   document.body.appendChild(overlay);
 
@@ -27651,6 +28002,22 @@ function hdAbrirEditor(r, containerEl) {
       if (!stk.value || stk.value === 'NORMAL') stk.value = 'OUTLET';
     }
     stk.disabled = false;
+  });
+
+  // ── Eliminar devolución (2-set-2026) ──────────────────────
+  document.getElementById('hde-eliminar').addEventListener('click', async function() {
+    if (!confirm('¿Eliminar la devolución ' + id + '?\nEsta acción no se puede deshacer.')) return;
+    this.disabled = true; this.textContent = 'Eliminando...';
+    try {
+      await apiSend('devoluciones.eliminar', { ID: id });
+      toast('✓ Devolución ' + id + ' eliminada', 'ok');
+      overlay.remove();
+      histDevData = null; _hdLsDel();
+      await loadDevoluciones(true);
+    } catch(e) {
+      toast('Error: ' + esc(e.message), 'err');
+      this.disabled = false; this.textContent = '🗑 Eliminar devolución';
+    }
   });
 
   document.getElementById('hde-guardar').addEventListener('click', async function() {
