@@ -23308,7 +23308,34 @@ function camObtenerUltimosPedidos(d, limite) {
 }
 
 // ── REGISTRAR ────────────────────────────────────────────────
+async function _camRevalidarPedidoAntesDeGuardar() {
+  if (!CAM || !CAM.nro) return { ok: true }; // nada que revalidar (prenda por texto libre)
+  let fresco;
+  try {
+    fresco = await _pedDatosRapido({ nro: CAM.nro, tipo: 'nro' });
+  } catch (e) {
+    return { ok: false, motivo: 'No se pudo recargar el pedido #' + CAM.nro + ' antes de guardar: ' + (e && e.message || 'error de red') + '. Vuelve a intentar.' };
+  }
+  if (!fresco) {
+    return { ok: false, motivo: 'No se pudo recargar el pedido #' + CAM.nro + ' antes de guardar (sin respuesta del servidor). Vuelve a intentar.' };
+  }
+  const firma = list => (list || [])
+    .map(p => [p.Prenda || p.prenda || '', p.Estado || p.estado || ''].join(':'))
+    .sort().join('|');
+  const firmaVieja = firma(CAM.prendas);
+  const firmaFresca = firma(fresco.Prendas);
+  if (firmaVieja !== firmaFresca) {
+    try { camRellenar(fresco); } catch (_) {}
+    return { ok: false, motivo: 'El pedido #' + CAM.nro + ' cambió mientras tenías el formulario abierto. Se recargó con los datos actuales — revisa tu selección y vuelve a guardar.' };
+  }
+  return { ok: true };
+}
+
 async function camRegistrar() {
+  {
+    const _rev = await _camRevalidarPedidoAntesDeGuardar();
+    if (!_rev.ok) { toast(_rev.motivo, 'err'); return; }
+  }
   const getV = id => (document.getElementById(id)?.value || '').trim();
   const nom  = getV('cam-nom');
   const fpd  = getV('cam-fpedido');
@@ -24200,7 +24227,8 @@ function editarCambios2(nc){
     +'<div style="'+fg+'"><span style="'+lbl+'">3. F. Envío nueva</span><input id="c2e-fenv" type="date" style="'+inp+'" value="'+dInput(c.FechaEnvioNueva)+'"></div></div>'
     +'<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px"><span style="'+lbl+'">Comentario</span><textarea id="c2e-com" rows="2" style="'+inp+';resize:vertical">'+esc(c.Comentario||'')+'</textarea></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center">'
-    +'<button class="btn bg bs" data-c2del style="font-size:12px;color:#f87171;border-color:#f8717155">🗑 Anular cambio</button>'
+        +'<button class="btn bg bs" data-c2del style="font-size:12px;color:#f87171;border-color:#f8717155">🗑 Anular cambio</button>'
+    +'<button class="btn bg bs" data-c2borrar style="font-size:12px;color:#f87171;border-color:#f8717155">🗑🗑 Eliminar cambio (prueba)</button>'
     +'<div style="display:flex;gap:8px"><button class="btn bg bs" data-close style="font-size:12px">Cerrar</button><button class="btn bp bs" data-c2save style="font-size:12px">Guardar</button></div>'
     +'</div>';
   var ov=_c2Modal(html);
@@ -24371,8 +24399,23 @@ function editarCambios2(nc){
       else { await api('cambios2.cancelar',{nc:nc}); }
       // 29-ago · ETAPA 1 — anular devuelve el stock a como estaba.
       try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
-      toast('Cambio anulado','ok'); refresca(); }
+            toast('Cambio anulado','ok'); refresca(); }
     catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑 Anular cambio'; }
+  });
+  var borrar=ov.querySelector('[data-c2borrar]');
+  if(borrar) borrar.addEventListener('click', async function(){
+    if(this.dataset.armado!=='1'){
+      this.dataset.armado='1'; this.textContent='¿Seguro? Se borra para siempre. Clic de nuevo';
+      var _b=this; setTimeout(function(){ if(_b.dataset.armado==='1'){ _b.dataset.armado=''; _b.textContent='🗑🗑 Eliminar cambio (prueba)'; } }, 4000);
+      return;
+    }
+    this.dataset.armado='';
+    this.disabled=true; this.textContent='...';
+    try{
+      await api('cambios2.eliminar',{nc:nc});
+      try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
+      toast('Cambio '+nc+' eliminado','ok'); refresca(); }
+    catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑🗑 Eliminar cambio (prueba)'; }
   });
 }
 function timelineCambios2(nc){
@@ -26666,7 +26709,7 @@ async function devRegistrar() {
       const m = DEV.prendas.find(p => String(p.prenda||p).trim().toUpperCase() === String(name).trim().toUpperCase());
       if (m && m.precio !== undefined) precio = parseFloat(m.precio) || precioUnico;
     }
-    return { PrendaDevuelta: name, PrecioOriginal: precio, CondicionPrenda: condicionGlobal, ReingresoStock: reingresoGlobal };
+    return { PrendaDevuelta: name, PrecioOriginal: precio, CondicionPrenda: condicionGlobal, ReingresaStock: reingresoGlobal };
   });
 
   try {
