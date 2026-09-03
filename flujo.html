@@ -640,6 +640,10 @@
     <span id="boxCustom" style="display:none;gap:6px;align-items:center">
       <input type="date" id="pDesde" onchange="onPeriodo()"><input type="date" id="pHasta" onchange="onPeriodo()" style="margin-left:6px">
     </span>
+    <span style="display:inline-flex;gap:4px;margin-left:4px">
+      <button type="button" class="btn on" id="btnFuenteWA" onclick="embSetFuente('wa')">WhatsApp</button>
+      <button type="button" class="btn" id="btnFuenteWeb" onclick="embSetFuente('web')">Web</button>
+    </span>
     <span id="embInfo" style="color:var(--txt2);font-size:11px"></span>
   </div>
   <div id="embEstado">—</div>
@@ -652,6 +656,7 @@
 const MODO_VIEWER = !/(^|[?&])edit=1(&|$)/.test(location.search.slice(1)); /* editor solo con ?edit=1 (lo pasa el ERP si MY_ROLE es Administrador) */
 const BASE_N8N = 'https://n8n-production-4e716.up.railway.app/webhook';
 const URL_EMBUDO = BASE_N8N + '/embudo-rango-v2';
+const URL_EMBUDO_WEB = BASE_N8N + '/embudo-web-rango'; /* 3-sep-2026 — PENDIENTE: crear este nodo/endpoint JSON en el workflow n8n "📊 Embudo en vivo (panel)" */
 const URL_CALIDAD  = BASE_N8N + '/objeciones-calidad';
 const URL_PERFORMANCE = BASE_N8N + '/performance-tula'; /* workflow 📈 Performance Tula */
 /* 27-ago-2026 — esta faltaba. Se usaba en cargarPerformance() y no estaba
@@ -2309,6 +2314,40 @@ function shade(col){ return `linear-gradient(90deg, rgba(0,0,0,.32), rgba(255,25
    medida sobre el eje (de y0+e0 a y1+e1), y el centrado horizontal se
    calcula en vivo con getBBox despues de pintar.                          */
 const EMB_NEON = ['#38e0ff','#ffd23f','#ff9f45','#ff5d8f','#34ffb0'];
+/* 3-sep-2026 — Embudo Web: mismo componente, nueva fuente. 7 etapas en vez de 5,
+   dispositivo en vez de asesora. Etapas y paleta van como datos (no codigo) para
+   que pintarEmbudo/cajasGrupo sean genericas y el embudo de WhatsApp no cambie
+   ni un pixel — sigue usando sus valores por defecto de siempre. */
+const EMB_ETAPAS_WA = [
+  {n:'CONVERSACIONES',        k:'frias'},
+  {n:'FRÍAS (respondió)',     k:'tibias'},
+  {n:'TIBIAS (2 datos)',      k:'dio_talla'},
+  {n:'CALIENTES (info pago)', k:'calientes'},
+  {n:'VENTAS',                k:'compras'}
+];
+const EMB_ETAPAS_WEB = [
+  {n:'VISITAS',           k:'visitas'},
+  {n:'VIERON CATEGORÍA',  k:'vieron_categoria'},
+  {n:'VIERON PRENDA',     k:'vieron_prenda'},
+  {n:'ELIGIERON TALLA',   k:'eligieron_talla'},
+  {n:'AL CARRITO',        k:'carrito'},
+  {n:'EMPEZARON EL PAGO', k:'checkout'},
+  {n:'COMPRARON',         k:'compras'}
+];
+const EMB_NEON_WEB = ['#38e0ff','#5ac8fa','#8ecae6','#ffd23f','#ff9f45','#ff5d8f','#34ffb0'];
+let EMB_FUENTE = 'wa'; /* 'wa' | 'web' */
+let embDataWeb = null;
+function embSetFuente(f){
+  if (f !== 'wa' && f !== 'web') return;
+  if (EMB_FUENTE === f) return;
+  EMB_FUENTE = f;
+  const bw = document.getElementById('btnFuenteWA'), bWeb = document.getElementById('btnFuenteWeb');
+  if (bw) bw.classList.toggle('on', f==='wa');
+  if (bWeb) bWeb.classList.toggle('on', f==='web');
+  if ((f==='wa' && embData) || (f==='web' && embDataWeb)) pintarTodo();
+  else { const z=document.getElementById('embZona'); if(z) z.innerHTML=''; }
+  cargarEmbudo();
+}
 function embCapsula(v, prev, base, prevBase){
   if (prev === undefined || prev === null) return null;
   let dif, txt;
@@ -2326,16 +2365,16 @@ function embCapsula(v, prev, base, prevBase){
   const fl  = dif>0 ? '▲' : (dif<0 ? '▼' : '●');
   return {col:col, txt:fl+txt};
 }
-function pintarEmbudo(ac, nota, acPrev){
-  const filas = [
-    {n:'CONVERSACIONES',        c:+ac.frias||0,     k:'frias'},
-    {n:'FRÍAS (respondió)',     c:+ac.tibias||0,    k:'tibias'},
-    {n:'TIBIAS (2 datos)',      c:+ac.dio_talla||0, k:'dio_talla'},
-    {n:'CALIENTES (info pago)', c:+ac.calientes||0, k:'calientes'},
-    {n:'VENTAS',                c:+ac.compras||0,   k:'compras'}
-  ];
-  const base = +ac.frias || 0;
-  const W=880, H=478, cx=500, topY=46, botY=440, topR=268, botR=58, GAP=18, n=5;
+function pintarEmbudo(ac, nota, acPrev, etapasDef, paletaDef){
+  /* 3-sep-2026 — etapasDef/paletaDef son opcionales: sin argumentos se comporta
+     exactamente igual que antes (WhatsApp, 5 etapas). Con EMB_ETAPAS_WEB +
+     EMB_NEON_WEB dibuja el mismo cono con 7 — la geometria de abajo ya era
+     generica en n, no hizo falta tocarla. */
+  const ETAPAS = etapasDef || EMB_ETAPAS_WA;
+  const PALETA = paletaDef || EMB_NEON;
+  const filas = ETAPAS.map(e => ({n:e.n, c:+ac[e.k]||0, k:e.k}));
+  const base = +ac[ETAPAS[0].k] || 0;
+  const W=880, H=478, cx=500, topY=46, botY=440, topR=268, botR=58, GAP=18, n=filas.length;
   const alto=(botY-topY-GAP*(n-1))/n, F=x=>x.toFixed(1);
   /* 19-ago-2026 — sin degradado y sin opacidad: el relleno de cada etapa es el
      MISMO color plano que la barra de esa etapa en las cajas por asesora. La
@@ -2344,7 +2383,7 @@ function pintarEmbudo(ac, nota, acPrev){
   for(let i=0;i<n;i++){
     const y0=topY+i*(alto+GAP), y1=y0+alto;
     const r0=topR+(botR-topR)*(i/n), r1=topR+(botR-topR)*((i+1)/n);
-    const e0=r0*0.165, e1=r1*0.165, C=EMB_NEON[i];
+    const e0=r0*0.165, e1=r1*0.165, C=PALETA[i];
     const d='M '+F(cx-r0)+' '+F(y0)+' A '+F(r0)+' '+F(e0)+' 0 0 0 '+F(cx+r0)+' '+F(y0)+
             ' L '+F(cx+r1)+' '+F(y1)+' A '+F(r1)+' '+F(e1)+' 0 0 1 '+F(cx-r1)+' '+F(y1)+' Z';
     o+='<path class="esec" d="'+d+'" fill="'+C+'" style="--c:'+C+'"><title>'+filas[i].n+': '+filas[i].c+'</title></path>';
@@ -2355,7 +2394,7 @@ function pintarEmbudo(ac, nota, acPrev){
     o+='<line x1="'+F(cx+r0)+'" y1="'+F(y0)+'" x2="'+F(cx+r1)+'" y2="'+F(y1)+'" stroke="'+C+'" stroke-width="3" opacity=".98"/>';
     const ym=((y0+e0)+(y1+e1))/2;
     const ptxt = (base ? filas[i].c*100/base : 0).toFixed(1)+'%';
-    const cap = (i>0 && acPrev) ? embCapsula(filas[i].c, acPrev[filas[i].k], base, (+acPrev.frias||0)) : null;
+    const cap = (i>0 && acPrev) ? embCapsula(filas[i].c, acPrev[filas[i].k], base, (+acPrev[ETAPAS[0].k]||0)) : null;
     let b = '<text x="0" y="0" text-anchor="end" class="epc">'+ptxt+'</text>';
     if(cap) b += '<rect class="ecapbg" x="6" y="-14.34" width="10" height="17" rx="5" fill="'+cap.col+'"/>'+
                  '<text class="ecap" x="0" y="-2.24" text-anchor="middle" fill="#ffffff">'+cap.txt+'</text>';
@@ -2413,6 +2452,7 @@ function cargarSerieEmbudo(){
     .catch(()=>{ const z=document.getElementById('embSerie'); if(z) z.innerHTML=''; });
 }
 function cargarEmbudo(){
+  if (EMB_FUENTE === 'web'){ cargarEmbudoWeb(); return; }
   cargarSerieEmbudo();
   const r = rango();
   const len = r.hasta - r.desde;
@@ -2476,6 +2516,46 @@ function cargarEmbudo(){
   }).catch(()=>{});
   fetch(`${BASE_N8N}/indice-asesora?d=7`).then(x=>x.json()).then(v=>{
     _idx7=v; _kpi();
+  }).catch(()=>{});
+}
+/* 3-sep-2026 — Embudo Web: mismo patron de cache-e-instantaneo que cargarEmbudo,
+   pero sin las llamadas de salud del prompt (son especificas de la conversacion
+   por WhatsApp, no aplican a trafico web) y sin serie diaria por ahora — el
+   grafico de avance por dia queda vacio hasta tener dato de dispositivo por dia. */
+function cargarEmbudoWeb(){
+  const r = rango();
+  const len = r.hasta - r.desde;
+  const pHasta = r.desde - 1, pDesde = pHasta - len;
+  document.getElementById('embEstado').textContent = 'Leyendo…';
+  const serie0 = document.getElementById('embSerie'); if (serie0) serie0.innerHTML = '';
+  const _clave = 'erp_embweb_' + r.desde + '_' + r.hasta;
+  let _pintado = false;
+  try {
+    const cache = JSON.parse(localStorage.getItem(_clave) || 'null');
+    if (cache && cache.d) {
+      embDataWeb = { d: cache.d, dPrev: cache.dp || null, lbl: r.lbl };
+      pintarTodo(); _pintado = true;
+      document.getElementById('embEstado').textContent = 'Mostrando lo ultimo guardado — actualizando…';
+    }
+  } catch(e){}
+  const _guardar = () => { try {
+    localStorage.setItem(_clave, JSON.stringify({ d: embDataWeb && embDataWeb.d, dp: embDataWeb && embDataWeb.dPrev }));
+  } catch(e){} };
+  const inf = document.getElementById('embInfo');
+  if (inf) inf.textContent = r.lbl;
+  fetch(`${URL_EMBUDO_WEB}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(d=>{
+    embDataWeb = { d: d, dPrev: (embDataWeb && embDataWeb.dPrev) || null, lbl: r.lbl };
+    pintarTodo(); _pintado = true; _guardar();
+    document.getElementById('embEstado').textContent = '';
+  }).catch(()=>{
+    if (!_pintado) pintarEmbudo(
+      {visitas:0, vieron_categoria:0, vieron_prenda:0, eligieron_talla:0, carrito:0, checkout:0, compras:0},
+      '⚠️ Falta crear el endpoint web en n8n — sin conexión con el servicio.', null,
+      EMB_ETAPAS_WEB, EMB_NEON_WEB);
+  });
+  fetch(`${URL_EMBUDO_WEB}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).then(dp=>{
+    if (!embDataWeb || !embDataWeb.d) return;
+    embDataWeb.dPrev = dp; pintarTodo(); _guardar();
   }).catch(()=>{});
 }
 /* vista unica: embudo grafico de todas arriba + caja de cada asesora debajo */
@@ -2707,11 +2787,20 @@ window.addEventListener('message', function(ev){
 });
 try{ if (parent !== window) parent.postMessage({tipo:'erp-tema-pedir'}, '*'); }catch(e){}
 function pintarTodo(){
+  if (EMB_FUENTE === 'web'){ pintarTodoWeb(); return; }
   const d = embData.d, dp = embData.dPrev;
   const z = document.getElementById('embZona');
   z.style.width = '100%';
   pintarEmbudo(d.acumulado, '', dp && dp.acumulado);
   z.innerHTML = `<div style="max-width:896px;margin:0 auto">${z.innerHTML}</div>` + cajasAsesoras(d, dp);
+}
+function pintarTodoWeb(){
+  const z = document.getElementById('embZona');
+  if (!embDataWeb || !embDataWeb.d){ z.innerHTML = ''; return; }
+  const d = embDataWeb.d, dp = embDataWeb.dPrev;
+  z.style.width = '100%';
+  pintarEmbudo(d.acumulado, '', dp && dp.acumulado, EMB_ETAPAS_WEB, EMB_NEON_WEB);
+  z.innerHTML = `<div style="max-width:896px;margin:0 auto">${z.innerHTML}</div>` + cajasDispositivos(d, dp);
 }
 /* un color hex con opacidad, sin depender de color-mix */
 function _op(hex, a){
@@ -2720,46 +2809,72 @@ function _op(hex, a){
   const n = parseInt(h,16);
   return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',' + a + ')';
 }
-function cajasAsesoras(d, dp){
-  /* 19-ago-2026 — las cajas por asesora usan los MISMOS tonos neon del embudo,
-     para que una etapa se reconozca por su color en las dos vistas. */
-  const FIL5 = [['frias','CONVERSACIONES','#38e0ff'],['tibias','FR\u00cdAS','#ffd23f'],['dio_talla','TIBIAS','#ff9f45'],['calientes','CALIENTES','#ff5d8f'],['compras','VENTAS','#34ffb0']];
-  const ases = (d.asesoras||[]).slice().sort((a,b)=>(b.total||0)-(a.total||0));
-  if (!ases.length) return '';
-  let h = '<div style="width:100%;margin:26px auto 0;display:grid;grid-template-columns:repeat('+ases.length+',minmax(0,1fr));gap:12px;align-items:stretch">';
-  for (const a of ases){
+function cajasGrupo(d, dp, cfg){
+  /* 3-sep-2026 — generalizacion de cajasAsesoras: mismo layout de tarjetas,
+     configurable por grupo (asesora o dispositivo), etapas y color por etapa.
+     cfg: {campo, claveK, filas:[[k,nombre,color],...], nombreFn, denomK,
+           metaConv, mostrarMejora} */
+  const campo = cfg.campo, claveK = cfg.claveK, FIL = cfg.filas, denomK = cfg.denomK;
+  const grupos = (d[campo]||[]).slice().sort((a,b)=>(b.total||0)-(a.total||0));
+  if (!grupos.length) return '';
+  let h = '<div style="width:100%;margin:26px auto 0;display:grid;grid-template-columns:repeat('+grupos.length+',minmax(0,1fr));gap:12px;align-items:stretch">';
+  for (const a of grupos){
     const ac = a.acumulado||{};
-    const ap = dp && (dp.asesoras||[]).find(x=>x.asesora===a.asesora);
+    const clave = a[claveK];
+    const ap = dp && (dp[campo]||[]).find(x=>x[claveK]===clave);
     const acp = ap && ap.acumulado;
-    const conv = ac.frias ? Math.round((ac.compras||0)/ac.frias*1000)/10 : 0;
+    const denom = ac[denomK]||0;
+    const conv = denom ? Math.round((ac[FIL[FIL.length-1][0]]||0)/denom*1000)/10 : 0;
     h += `<div style="border:1.5px solid var(--bd);border-radius:14px;padding:14px 14px;background:var(--card);min-width:0">` +
       `<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">` +
-        `<span style="font-weight:900;font-size:15.5px">${a.asesora==='Tula'?'\ud83e\udd16 Tula':nomCorto(a.asesora)}</span>` +
-        `<span style="font-weight:900;font-size:15.5px;color:${conv>=8?'var(--ok)':'var(--bad)'}">${conv}%</span></div>`;
-    FIL5.forEach(([k,nom,col], idx)=>{
+        `<span style="font-weight:900;font-size:15.5px">${cfg.nombreFn(clave)}</span>` +
+        `<span style="font-weight:900;font-size:15.5px;color:${conv>=cfg.metaConv?'var(--ok)':'var(--bad)'}">${conv}%</span></div>`;
+    FIL.forEach(([k,nom,col], idx)=>{
       const v = ac[k]||0;
-      const base = ac.frias||0;
+      const base = denom;
       const w = base ? Math.max(2, Math.round(v/base*100)) : 2;
-      /* 19-ago-2026 — misma formula que el embudo grande: contra CONVERSACIONES,
-         no contra la etapa anterior. Asi el 24.9% de la caja significa lo mismo
-         que el 24.9% del embudo y se pueden comparar de un vistazo. */
-      const pc = idx===0 ? '' : (base ? (idx===4 ? (v/base*100).toFixed(1) : Math.round(v/base*100))+'%' : '\u2014');
+      /* 19-ago-2026 — misma formula que el embudo grande: contra la primera
+         etapa, no contra la anterior. Asi el % de la caja significa lo mismo
+         que el % del embudo y se pueden comparar de un vistazo. */
+      const pc = idx===0 ? '' : (base ? (idx===FIL.length-1 ? (v/base*100).toFixed(1) : Math.round(v/base*100))+'%' : '\u2014');
       h += `<div style="display:flex;align-items:center;gap:10px;margin:7px 0">` +
         `<span style="width:96px;font-size:9.5px;font-weight:800;letter-spacing:.04em;color:var(--txt2);white-space:nowrap">${nom}</span>` +
         /* la barra lleva su propio color al 20% de fondo: se ve de que etapa es
            aunque no haya avance. Antes era gris y todas parecian iguales. */
         `<div style="flex:1;background:${_op(col,.2)};border-radius:6px;height:18px;overflow:hidden">` +
           `<div style="width:${w}%;height:100%;background:${col};border-radius:6px"></div></div>` +
-        /* el numero grande es el %, que es lo comparable entre asesoras.
-           El conteo pasa a secundario: depende del volumen de cada una. */
+        /* el numero grande es el %, que es lo comparable entre grupos.
+           El conteo pasa a secundario: depende del volumen de cada uno. */
         `<b style="width:48px;text-align:right;font-size:13.5px">${idx===0?'\u2014':pc}</b>` +
         `<span style="width:38px;text-align:right;font-size:11.5px;font-weight:800;color:var(--txt2)">${v}</span>` +
-        `<span style="width:58px;text-align:right">${idx===0?'':capsulaDelta(v, acp && acp[k], ac.frias||0, (acp&&acp.frias)||0)}</span></div>`;
+        `<span style="width:58px;text-align:right">${idx===0?'':capsulaDelta(v, acp && acp[k], base, (acp&&acp[denomK])||0)}</span></div>`;
     });
-    h += bloqueMejora(a, d);
+    if (cfg.mostrarMejora) h += bloqueMejora(a, d);
     h += `</div>`;
   }
   return h + '</div>';
+}
+function cajasAsesoras(d, dp){
+  /* 19-ago-2026 — las cajas por asesora usan los MISMOS tonos neon del embudo,
+     para que una etapa se reconozca por su color en las dos vistas. */
+  const FIL5 = [['frias','CONVERSACIONES','#38e0ff'],['tibias','FR\u00cdAS','#ffd23f'],['dio_talla','TIBIAS','#ff9f45'],['calientes','CALIENTES','#ff5d8f'],['compras','VENTAS','#34ffb0']];
+  return cajasGrupo(d, dp, {campo:'asesoras', claveK:'asesora', filas:FIL5,
+    nombreFn:x => x==='Tula' ? '\ud83e\udd16 Tula' : nomCorto(x),
+    denomK:'frias', metaConv:8, mostrarMejora:true});
+}
+function nomDispositivo(x){
+  const m = {celular:'\ud83d\udcf1 Celular', movil:'\ud83d\udcf1 Celular', mobile:'\ud83d\udcf1 Celular',
+    pc:'\ud83d\udda5\ufe0f PC', desktop:'\ud83d\udda5\ufe0f PC', tablet:'\ud83d\udcbb Tablet'};
+  return m[String(x).toLowerCase()] || String(x);
+}
+function cajasDispositivos(d, dp){
+  /* 3-sep-2026 — mismas tarjetas que cajasAsesoras, agrupadas por dispositivo
+     en vez de asesora, con las 7 etapas y colores del embudo web. Sin bloque
+     de "Principal mejora": ese diagnostico es de coaching a asesoras, no aplica
+     a trafico web. */
+  const FIL7 = EMB_ETAPAS_WEB.map((e,i)=>[e.k, e.n, EMB_NEON_WEB[i]]);
+  return cajasGrupo(d, dp, {campo:'dispositivos', claveK:'dispositivo', filas:FIL7,
+    nombreFn:nomDispositivo, denomK:'visitas', metaConv:1, mostrarMejora:false});
 }
 /* ---- Principal mejora: diagnostico puntual por asesora ---- */
 const MIN_N = 20, MIN_BASE = 8;
