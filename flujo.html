@@ -2282,24 +2282,24 @@ function rango(){
     if (pd && ph) return conFechas({ desde: seg(new Date(pd+'T00:00:00')), hasta: seg(new Date(ph+'T23:59:59')) });
     periodo = 'mtd';
   }
+  /* 3-sep-2026 - El corte "hasta ayer" es especifico de WhatsApp: el embudo de
+     conversaciones se arma a las 3am, asi que hoy siempre daria Frias = 0
+     mientras Compras si sale en vivo del ERP (embudo imposible). El embudo
+     Web (PostHog + Shopify) no depende de ningun build nocturno: sus datos
+     son en vivo, asi que para EMB_FUENTE==='web' el corte incluye HOY. */
+  const _finPeriodo = () => EMB_FUENTE === 'web' ? _dia(0, true) : _dia(-1, true);
   if (periodo === 'mtd'){
     const a = new Date();
     const _ini = new Date(a.getFullYear(), a.getMonth(), 1);
-    const _fin = _dia(-1, true);
-    /* 22-ago-2026 - MTD termina AYER, igual que "ultimos N dias". El embudo de
-       conversaciones se arma a las 3am pero las Compras salen en vivo del ERP:
-       incluir hoy suma ventas sin sumar sus conversaciones. Mismo motivo por el
-       que "Hoy" no esta en el selector. */
+    const _fin = _finPeriodo();
     if (_fin < _ini) return conFechas({ desde: seg(_ini), hasta: seg(_dia(0, true)) });
     return conFechas({ desde: seg(_ini), hasta: seg(_fin) });
   }
-  /* "Hoy" NO esta en el selector a proposito: el embudo de conversaciones se
-     arma cada noche a las 3am, asi que hoy siempre daria Frias = 0 mientras
-     Compras si sale en vivo del ERP. Un embudo imposible. La rama se deja por
-     si alguien llama rango() con 'hoy' desde otro lado. */
+  /* "Hoy" NO esta en el selector a proposito para WhatsApp (ver nota arriba);
+     se deja la rama por si alguien llama rango() con 'hoy' desde otro lado. */
   if (periodo === 'hoy') return conFechas({ desde: seg(_dia(0)), hasta: seg(_dia(0, true)) });
   const n = parseInt(periodo) || 30;
-  return conFechas({ desde: seg(_dia(-n)), hasta: seg(_dia(-1, true)) });
+  return conFechas({ desde: seg(_dia(-n)), hasta: seg(_finPeriodo()) });
 }
 /* onPeriodo() vive arriba, compartido por las tres pestanas (27-ago-2026). */
 /* compatibilidad por si algo viejo la llama */
@@ -2525,11 +2525,23 @@ function cargarEmbudo(){
 function cargarEmbudoWeb(){
   const r = rango();
   /* 3-sep-2026 (fix sync) — rango() da segundos UNIX (para /embudo-rango-v2 de
-     WhatsApp), pero /embudo-web-rango en n8n espera fecha "YYYY-MM-DD" (asi
-     la parsea cfgWeb con new Date(q.desde)). Sin esto, el fetch devolvia
-     200 con body vacio (NaN en la fecha revienta el workflow) y el catch
-     mostraba "Falta crear el endpoint" aunque el endpoint SI funciona. */
-  const _fISO = t => new Date(t*1000).toISOString().slice(0,10);
+     WhatsApp), pero /embudo-web-rango en n8n espera fecha ISO (asi la parsea
+     cfgWeb con new Date(q.desde)). Sin esto, el fetch devolvia 200 con body
+     vacio (NaN en la fecha revienta el workflow) y el catch mostraba "Falta
+     crear el endpoint" aunque el endpoint SI funciona.
+     3-sep-2026 (fix zona horaria) — la primera version mandaba solo la fecha
+     ("YYYY-MM-DD", sin hora), y cfgWeb la parsea con new Date(str), que para
+     un string sin hora asume medianoche UTC. Como Lima es UTC-5, eso corria
+     el corte 5 horas hacia atras: se colaban compras de la noche del dia
+     anterior (hora Lima) como si fueran del dia siguiente, y a la vez se
+     perdian las ultimas horas del dia. Confirmado con datos reales: 2
+     pedidos del 31-ago (22:18 y 22:46 hora Lima, uno de ellos REEMBOLSADO)
+     se contaban como si fueran de septiembre, mientras la compra de HOY
+     quedaba fuera del rango. Fix: mandar el ISO completo (con hora y "Z")
+     en vez de solo la fecha, para que new Date(...) en n8n reciba el
+     instante UTC exacto que corresponde a la medianoche/fin-de-dia de Lima,
+     no medianoche UTC. */
+  const _fISO = t => new Date(t*1000).toISOString();
   const len = r.hasta - r.desde;
   const pHasta = r.desde - 1, pDesde = pHasta - len;
   document.getElementById('embEstado').textContent = 'Leyendo…';
@@ -2549,7 +2561,7 @@ function cargarEmbudoWeb(){
   } catch(e){} };
   const inf = document.getElementById('embInfo');
   if (inf) inf.textContent = r.lbl;
-  fetch(`${URL_EMBUDO_WEB}?desde=${_fISO(r.desde)}&hasta=${_fISO(r.hasta)}`).then(x=>x.json()).then(d=>{
+  fetch(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(r.desde))}&hasta=${encodeURIComponent(_fISO(r.hasta))}`).then(x=>x.json()).then(d=>{
     embDataWeb = { d: d, dPrev: (embDataWeb && embDataWeb.dPrev) || null, lbl: r.lbl };
     pintarTodo(); _pintado = true; _guardar();
     document.getElementById('embEstado').textContent = '';
@@ -2559,7 +2571,7 @@ function cargarEmbudoWeb(){
       '⚠️ Falta crear el endpoint web en n8n — sin conexión con el servicio.', null,
       EMB_ETAPAS_WEB, EMB_NEON_WEB);
   });
-  fetch(`${URL_EMBUDO_WEB}?desde=${_fISO(pDesde)}&hasta=${_fISO(pHasta)}`).then(x=>x.json()).then(dp=>{
+  fetch(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(pDesde))}&hasta=${encodeURIComponent(_fISO(pHasta))}`).then(x=>x.json()).then(dp=>{
     if (!embDataWeb || !embDataWeb.d) return;
     embDataWeb.dPrev = dp; pintarTodo(); _guardar();
   }).catch(()=>{});
