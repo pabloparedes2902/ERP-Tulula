@@ -19738,6 +19738,7 @@ function renderStock(el) {
     if(gi>0) tbody+=`<tr><td colspan="${NCOLS}" style="height:6px;padding:0;background:#ffffff;border:0"></td></tr>`;
 
     const span=g.length;
+    const gkey=_stGrpKey(g);
     g.forEach((d,ri)=>{
       const isFirst=ri===0;
       const bg=stBg(d.color), tx=stTx(d.color);
@@ -19758,11 +19759,25 @@ function renderStock(el) {
       if(isFirst){
         tr+=`<td rowspan="${span}" style="position:sticky;${LK}z-index:3;${grpSt}${TB}${P}${WKs}${_gc}font-weight:700;text-transform:uppercase;font-size:13px">${esc(d.cat||'')}</td>`;
         tr+=`<td rowspan="${span}" style="position:sticky;${LP}z-index:3;${grpSt}${TB}${P}${WPs}${_gc}font-weight:600;font-size:14px">${esc(d.prenda||'')}</td>`;
-        tr+=`<td rowspan="${span}" style="position:sticky;${LD}z-index:3;${grpSt}${TB}${P}${WDs}${_gc}font-weight:800;font-size:14px">${esc(d.diseno||'')}</td>`;
+        // 4-sep-2026 — flechas inline para reordenar el bloque de Diseño dentro de su Prenda,
+        // directo en la grilla (sin el modal "Ordenar vista"). Pablo pidió esto explícito.
+        tr+=`<td rowspan="${span}" style="position:sticky;${LD}z-index:3;${grpSt}${TB}${P}${WDs}${_gc}font-weight:800;font-size:14px">`
+           +`<div style="display:flex;align-items:center;justify-content:center;gap:5px">`
+           +`<span>${esc(d.diseno||'')}</span>`
+           +`<span style="display:flex;flex-direction:column;line-height:.7;opacity:.55;flex:0 0 auto">`
+           +`<button type="button" class="st-ord-dis-btn" data-key="${esc(gkey)}" data-dir="-1" title="Subir diseño" style="background:none;border:0;color:inherit;cursor:pointer;font-size:10px;padding:1px 2px">▲</button>`
+           +`<button type="button" class="st-ord-dis-btn" data-key="${esc(gkey)}" data-dir="1" title="Bajar diseño" style="background:none;border:0;color:inherit;cursor:pointer;font-size:10px;padding:1px 2px">▼</button>`
+           +`</span></div></td>`;
       }
       // Color — por fila (4ª columna fija), centrado.
+      // 4-sep-2026 — flechas inline para reordenar el color dentro de su diseño, directo
+      // en la grilla. stopPropagation para no disparar el editor de color (_abrirColorPicker).
       tr+=`<td style="position:sticky;${LC}z-index:3;background:${rowBg};color:${rowTx};${TB}${P}${WCs}border-right:${THK};overflow:hidden;box-shadow:2px 0 6px rgba(0,0,0,.4)">`
-         +`<div class="st-color-edit" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}'" style="display:flex;align-items:center;justify-content:center;cursor:pointer">${stDot(d.color)}<span style="white-space:normal;word-break:break-word">${esc(d.color)}</span></div></td>`;
+         +`<div class="st-color-edit" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}'" style="display:flex;align-items:center;justify-content:center;gap:5px;cursor:pointer">`
+         +`<span style="display:flex;flex-direction:column;line-height:.7;opacity:.55;flex:0 0 auto">`
+         +`<button type="button" class="st-ord-col-btn" data-key="${esc(gkey)}" data-color="${esc(d.color)}" data-dir="-1" title="Subir color" style="background:none;border:0;color:inherit;cursor:pointer;font-size:9px;padding:0 2px">▲</button>`
+         +`<button type="button" class="st-ord-col-btn" data-key="${esc(gkey)}" data-color="${esc(d.color)}" data-dir="1" title="Bajar color" style="background:none;border:0;color:inherit;cursor:pointer;font-size:9px;padding:0 2px">▼</button>`
+         +`</span>${stDot(d.color)}<span style="white-space:normal;word-break:break-word">${esc(d.color)}</span></div></td>`;
 
       // Celda de talla inexistente → plomo oscuro (item 3), conservando el guion.
       const STEMPTY='background:#26262c;';
@@ -19825,6 +19840,50 @@ function renderStock(el) {
   if(hideChk) hideChk.addEventListener('change',function(){stHideNoStock=this.checked;_stHideSave(this.checked);renderStock(el);});
   el.querySelectorAll('.st-color-edit').forEach(c=>c.addEventListener('click',()=>{
     _abrirColorPicker(c.dataset.col||'', ()=>renderStock(el));
+  }));
+  // 4-sep-2026 — reordenar inline (Pablo): flechas en la propia grilla, sin pasar por el
+  // modal "Ordenar vista". Reusa el mismo guardado (vistas.stock.guardar) y el mismo
+  // mecanismo de activación (stOrden='view:'+nombre) que ya usaba ese modal — si no hay
+  // vista activa todavía, arranca/edita la del propio usuario (_stNombreUsuario()).
+  async function _stOrdInlineGuardar(nombre, orden, coloresOrden, btn){
+    if(btn) btn.disabled=true;
+    try{
+      await apiSend('vistas.stock.guardar',{nombre:nombre, orden:orden, coloresOrden:coloresOrden});
+      await cargarVistasStock();
+      stOrden='view:'+nombre; _stOrdenSave(stOrden);
+      renderStock(el);
+    }catch(err){ toast('Error al reordenar: '+esc(err.message),'err'); if(btn) btn.disabled=false; }
+  }
+  el.querySelectorAll('.st-ord-dis-btn').forEach(b=>b.addEventListener('click', function(e){
+    e.stopPropagation();
+    const key=this.dataset.key, dir=parseInt(this.dataset.dir,10);
+    const allKeys=groups.map(g=>_stGrpKey(g));
+    const i=allKeys.indexOf(key), j=i+dir;
+    if(i<0||j<0||j>=allKeys.length) return;
+    const t=allKeys[i]; allKeys[i]=allKeys[j]; allKeys[j]=t;
+    const nombre=(stOrden&&stOrden.indexOf('view:')===0)?stOrden.slice(5):_stNombreUsuario();
+    const vAct=(stVistas||[]).find(x=>x.nombre===nombre);
+    const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
+    _stOrdInlineGuardar(nombre, allKeys, coloresOrden, this);
+  }));
+  el.querySelectorAll('.st-ord-col-btn').forEach(b=>b.addEventListener('click', function(e){
+    e.stopPropagation();
+    const key=this.dataset.key, color=String(this.dataset.color||'').toUpperCase(), dir=parseInt(this.dataset.dir,10);
+    const g=groups.find(gg=>_stGrpKey(gg)===key);
+    if(!g) return;
+    const nombre=(stOrden&&stOrden.indexOf('view:')===0)?stOrden.slice(5):_stNombreUsuario();
+    const vAct=(stVistas||[]).find(x=>x.nombre===nombre);
+    const orden=(vAct&&Array.isArray(vAct.orden)&&vAct.orden.length)?vAct.orden.slice():groups.map(gg=>_stGrpKey(gg));
+    const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
+    const cur=[...new Set(g.map(x=>String(x.color||'').toUpperCase()))];
+    let arr=(Array.isArray(coloresOrden[key])&&coloresOrden[key].length)?coloresOrden[key].slice():cur.slice();
+    arr=arr.filter(c=>cur.indexOf(c)>=0);
+    cur.forEach(c=>{ if(arr.indexOf(c)<0) arr.push(c); });
+    const ci=arr.indexOf(color), cj=ci+dir;
+    if(ci<0||cj<0||cj>=arr.length) return;
+    const t=arr[ci]; arr[ci]=arr[cj]; arr[cj]=t;
+    coloresOrden[key]=arr;
+    _stOrdInlineGuardar(nombre, orden, coloresOrden, this);
   }));
   try { _stPintarFrescura(); } catch(_){}   // 29-ago: sello "actualizado hace X"
   const ordBtn=document.getElementById('st-ordenar');
