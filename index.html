@@ -20170,7 +20170,7 @@ function renderInv(el){
       const _ivGrip=(cls,sz)=>`<span class="st-drag-handle ${cls}" style="cursor:grab;opacity:.55;flex:0 0 auto;display:inline-flex;align-items:center;user-select:none" title="Arrastrar para reordenar"><svg width="${sz[0]}" height="${sz[1]}" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.4"/><circle cx="7" cy="3" r="1.4"/><circle cx="3" cy="8" r="1.4"/><circle cx="7" cy="8" r="1.4"/><circle cx="3" cy="13" r="1.4"/><circle cx="7" cy="13" r="1.4"/></svg></span>`;
       let tr=`<tr data-gkey="${esc(gkey)}">`;
       if(isFirst){
-        tr+=`<td rowspan="${span}" draggable="true" data-gkey="${esc(gkey)}" class="iv-dis-cell" style="position:sticky;${LK}z-index:3;${grpSt}${TB}${P}${WKs}${_gc}font-weight:700;text-transform:uppercase;font-size:13px;cursor:grab;user-select:none;-webkit-user-drag:element;">`
+        tr+=`<td rowspan="${span}" data-gkey="${esc(gkey)}" class="iv-dis-cell" style="position:sticky;${LK}z-index:3;${grpSt}${TB}${P}${WKs}${_gc}font-weight:700;text-transform:uppercase;font-size:13px;cursor:grab;user-select:none;-webkit-user-drag:element;">`
            +`<div style="display:flex;align-items:center;justify-content:center;gap:6px">`
            +_ivGrip('iv-drag-dis',[10,16])
            +`<span>${esc(d.cat||'')}</span>`
@@ -20182,7 +20182,7 @@ function renderInv(el){
       const _ndIcon = _ndTot>0 ? `<span class="iv-nodisp-info" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-col="${esc(d.color)}" title="${_ndTot} no disponible(s) — ver motivos" style="cursor:pointer;color:#f87171;font-weight:800;margin-left:4px">ⓘ</span>` : '';
       const _kIcon = `<span class="iv-kardex" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-col="${esc(d.color)}" title="Ver historial (kardex)" style="cursor:pointer;margin-left:4px;opacity:.75">🕑</span>`;
       tr+=`<td style="position:sticky;${LC}z-index:3;background:${rowBg};color:${rowTx};${TB}${P}${WCs}border-right:${THK};overflow:hidden;box-shadow:2px 0 6px rgba(0,0,0,.4)">`
-         +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" draggable="true" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none;-webkit-user-drag:element;">`
+         +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none;-webkit-user-drag:element;">`
          +_ivGrip('iv-drag-color',[8,14])
          +`${stDot(d.color)}<span style="white-space:normal;word-break:break-word">${esc(d.color)}</span></span>${_ndIcon}${_kIcon}</div></td>`;
       // Bloques visibles (VIS)
@@ -20277,12 +20277,17 @@ function renderInv(el){
   if(colsBtn) colsBtn.addEventListener('click',()=>{ invShowAll=!invShowAll; try{localStorage.setItem('erp_inv_showall',invShowAll?'1':'0');}catch(e){} renderInv(el); });
   el.querySelectorAll('.iv-color-edit').forEach(c=>c.addEventListener('click',(e)=>{
     if(e.target.closest('.st-drag-handle')) return; // el grip no abre el editor de color
+    if(c.dataset.ivArrastrado){ delete c.dataset.ivArrastrado; return; } // fue un arrastre, no un click
     _abrirColorPicker(c.dataset.col||'',()=>renderInv(el));
   }));
-  // 4-sep-2026 — reordenar inline (Pablo): drag & drop con grip de puntitos (estilo
-  // Shopify), directo en esta grilla (Movimiento de stock / Inventario Unificado, que es
-  // por donde Pablo realmente entra). Reusa el mismo guardado (vistas.stock.guardar) y el
-  // mismo mecanismo de activación (stOrden='view:'+nombre) que ya usaba "Ordenar vista".
+  // 4-sep-2026 — reordenar inline (Pablo): arrastrar la celda de Diseño o la píldora de
+  // Color para reordenar. (v3, 4-sep-2026) — el drag nativo HTML5 (draggable=true +
+  // dragstart/dragover/drop) no arrancaba en esta grilla: las celdas son
+  // position:sticky dentro de un contenedor con scroll, y ahí Chrome no siempre
+  // dispara dragstart con un gesto real de mouse — Pablo agarraba y no pasaba nada, ni
+  // en Diseño ni en Color. Reemplazado por un arrastre manual con
+  // mousedown/mousemove/mouseup (document.elementFromPoint para saber qué hay debajo
+  // del cursor), que no depende del drag nativo del navegador y por eso sí funciona.
   function _ivVistaActual(){
     const nombre=(stOrden&&stOrden.indexOf('view:')===0)?stOrden.slice(5):_stNombreUsuario();
     const vAct=(stVistas||[]).find(x=>x.nombre===nombre);
@@ -20296,95 +20301,96 @@ function renderInv(el){
       renderInv(el);
     }catch(err){ toast('Error al reordenar: '+esc(err.message),'err'); }
   }
-  // -- Diseños: arrastrar la celda Categoría (⋮⋮ es solo el aviso visual) reordena
-  // todo el bloque. 4-sep-2026 (v2): el handle es la celda ENTERA, no el ícono de
-  // 8px — con solo el ícono, Pablo arrastraba "al lado" y nunca agarraba nada.
-  let _ivDragDisKey=null;
+  // Handlers globales de mousemove/mouseup — se registran UNA SOLA VEZ en toda la
+  // sesión (si no, cada render de esta pantalla apilaría otro par de listeners en
+  // document y nunca se liberarían). mousedown SÍ se re-engancha en cada render
+  // (sobre las celdas nuevas), y ahí mismo guarda en window._ivDrag todo lo que el
+  // arrastre necesita — incluido "groups" de ESTE render — así mousemove/mouseup
+  // nunca trabajan con datos de un render viejo.
+  if(!window._ivDragBound){
+    window._ivDragBound=true;
+    const IV_UMBRAL=4; // px de movimiento antes de considerarlo arrastre y no un click
+    document.addEventListener('mousemove', function(e){
+      const d=window._ivDrag; if(!d) return;
+      if(!d.moved){
+        if(Math.abs(e.clientX-d.x0)<IV_UMBRAL && Math.abs(e.clientY-d.y0)<IV_UMBRAL) return;
+        d.moved=true; d.srcEl.style.opacity='.45';
+      }
+      document.querySelectorAll(d.sel).forEach(c=>{ if(c!==d.srcEl){ c.style.boxShadow=''; c.style.outline=''; } });
+      const under=document.elementFromPoint(e.clientX,e.clientY);
+      const tgt=under && under.closest(d.sel);
+      if(!tgt || tgt===d.srcEl) return;
+      if(d.type==='color' && tgt.closest('tr')?.dataset.gkey!==d.key) return;
+      if(d.type==='dis') tgt.style.boxShadow='inset 0 0 0 2px #8b5cf6';
+      else { tgt.style.outline='2px solid #8b5cf6'; tgt.style.outlineOffset='-2px'; }
+    });
+    document.addEventListener('mouseup', function(e){
+      const d=window._ivDrag; window._ivDrag=null;
+      if(!d) return;
+      d.srcEl.style.opacity='';
+      document.querySelectorAll(d.sel).forEach(c=>{ c.style.boxShadow=''; c.style.outline=''; });
+      if(!d.moved) return; // fue un click, no un arrastre — no hacer nada
+      if(d.type==='color') d.srcEl.dataset.ivArrastrado='1'; // que el click que sigue no abra el editor
+      const under=document.elementFromPoint(e.clientX,e.clientY);
+      const tgt=under && under.closest(d.sel);
+      if(!tgt || tgt===d.srcEl) return;
+      d.onDrop(tgt);
+    });
+  }
+  // -- Diseños: mousedown en la celda Categoría (⋮⋮ es solo el aviso visual, la celda
+  // ENTERA es el handle) arma el arrastre.
   el.querySelectorAll('.iv-dis-cell').forEach(h=>{
-    h.addEventListener('dragstart', function(e){
-      _ivDragDisKey=this.dataset.gkey||null;
-      e.dataTransfer.effectAllowed='move';
-      try{ e.dataTransfer.setData('text/plain', _ivDragDisKey||''); }catch(_e){}
-    });
-    h.addEventListener('dragend', function(){
-      _ivDragDisKey=null;
-      el.querySelectorAll('.iv-dis-cell').forEach(c=>c.style.boxShadow='');
-    });
-  });
-  el.querySelectorAll('.iv-dis-cell').forEach(cell=>{
-    cell.addEventListener('dragover', function(e){
-      if(!_ivDragDisKey || this.dataset.gkey===_ivDragDisKey) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect='move';
-      this.style.boxShadow='inset 0 0 0 2px #8b5cf6';
-    });
-    cell.addEventListener('dragleave', function(){ this.style.boxShadow=''; });
-    cell.addEventListener('drop', function(e){
-      e.preventDefault();
-      this.style.boxShadow='';
-      const targetKey=this.dataset.gkey;
-      const srcKey=_ivDragDisKey || e.dataTransfer.getData('text/plain');
-      if(!srcKey||srcKey===targetKey) return;
-      const allKeys=groups.map(g=>_stGrpKey(g));
-      const i=allKeys.indexOf(srcKey), j=allKeys.indexOf(targetKey);
-      if(i<0||j<0) return;
-      allKeys.splice(j,0, allKeys.splice(i,1)[0]);
-      const { nombre, vAct }=_ivVistaActual();
-      const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
-      _ivOrdInlineGuardar(nombre, allKeys, coloresOrden);
+    h.addEventListener('mousedown', function(e){
+      if(e.button!==0) return;
+      const srcKey=this.dataset.gkey||null;
+      window._ivDrag={
+        type:'dis', sel:'.iv-dis-cell', key:srcKey, srcEl:this,
+        x0:e.clientX, y0:e.clientY, moved:false,
+        onDrop:(tgt)=>{
+          const targetKey=tgt.dataset.gkey;
+          if(!srcKey||!targetKey||srcKey===targetKey) return;
+          const allKeys=groups.map(g=>_stGrpKey(g));
+          const i=allKeys.indexOf(srcKey), j=allKeys.indexOf(targetKey);
+          if(i<0||j<0) return;
+          allKeys.splice(j,0, allKeys.splice(i,1)[0]);
+          const { nombre, vAct }=_ivVistaActual();
+          const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
+          _ivOrdInlineGuardar(nombre, allKeys, coloresOrden);
+        }
+      };
     });
   });
-  // -- Colores: arrastrar la píldora de Color completa reordena dentro de su mismo
-  // diseño. 4-sep-2026 (v2): igual que en Diseño, el handle es la píldora entera.
-  let _ivDragColor=null;
+  // -- Colores: mousedown en la píldora completa arma el arrastre; solo se puede
+  // soltar dentro de la misma fila de diseño (mismo data-gkey).
   el.querySelectorAll('.iv-color-edit').forEach(h=>{
-    h.addEventListener('dragstart', function(e){
-      e.stopPropagation();
+    h.addEventListener('mousedown', function(e){
+      if(e.button!==0) return;
       const key=this.closest('tr')?.dataset.gkey;
-      _ivDragColor={ key, color:String(this.dataset.col||'').toUpperCase() };
-      e.dataTransfer.effectAllowed='move';
-      try{ e.dataTransfer.setData('text/plain', _ivDragColor.color); }catch(_e){}
-    });
-    h.addEventListener('dragend', function(e){
-      e.stopPropagation();
-      _ivDragColor=null;
-      el.querySelectorAll('.iv-color-edit').forEach(c=>c.style.outline='');
-    });
-  });
-  el.querySelectorAll('.iv-color-edit').forEach(row=>{
-    row.addEventListener('dragover', function(e){
-      if(!_ivDragColor) return;
-      const key=this.closest('tr')?.dataset.gkey;
-      if(key!==_ivDragColor.key) return;
-      if(String(this.dataset.col||'').toUpperCase()===_ivDragColor.color) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect='move';
-      this.style.outline='2px solid #8b5cf6'; this.style.outlineOffset='-2px';
-    });
-    row.addEventListener('dragleave', function(){ this.style.outline=''; });
-    row.addEventListener('drop', function(e){
-      if(!_ivDragColor) return;
-      const key=this.closest('tr')?.dataset.gkey;
-      if(key!==_ivDragColor.key) return;
-      e.preventDefault();
-      this.style.outline='';
-      const targetColor=String(this.dataset.col||'').toUpperCase();
-      const srcColor=_ivDragColor.color;
-      if(!targetColor||targetColor===srcColor) return;
-      const g=groups.find(gg=>_stGrpKey(gg)===key);
-      if(!g) return;
-      const { nombre, vAct }=_ivVistaActual();
-      const orden=(vAct&&Array.isArray(vAct.orden)&&vAct.orden.length)?vAct.orden.slice():groups.map(gg=>_stGrpKey(gg));
-      const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
-      const cur=[...new Set(g.map(x=>String(x.color||'').toUpperCase()))];
-      let arr=(Array.isArray(coloresOrden[key])&&coloresOrden[key].length)?coloresOrden[key].slice():cur.slice();
-      arr=arr.filter(c=>cur.indexOf(c)>=0);
-      cur.forEach(c=>{ if(arr.indexOf(c)<0) arr.push(c); });
-      const i=arr.indexOf(srcColor), j=arr.indexOf(targetColor);
-      if(i<0||j<0) return;
-      arr.splice(j,0, arr.splice(i,1)[0]);
-      coloresOrden[key]=arr;
-      _ivOrdInlineGuardar(nombre, orden, coloresOrden);
+      const srcColor=String(this.dataset.col||'').toUpperCase();
+      window._ivDrag={
+        type:'color', sel:'.iv-color-edit', key, color:srcColor, srcEl:this,
+        x0:e.clientX, y0:e.clientY, moved:false,
+        onDrop:(tgt)=>{
+          const tgtKey=tgt.closest('tr')?.dataset.gkey;
+          if(tgtKey!==key) return;
+          const targetColor=String(tgt.dataset.col||'').toUpperCase();
+          if(!targetColor||targetColor===srcColor) return;
+          const g=groups.find(gg=>_stGrpKey(gg)===key);
+          if(!g) return;
+          const { nombre, vAct }=_ivVistaActual();
+          const orden=(vAct&&Array.isArray(vAct.orden)&&vAct.orden.length)?vAct.orden.slice():groups.map(gg=>_stGrpKey(gg));
+          const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
+          const cur=[...new Set(g.map(x=>String(x.color||'').toUpperCase()))];
+          let arr=(Array.isArray(coloresOrden[key])&&coloresOrden[key].length)?coloresOrden[key].slice():cur.slice();
+          arr=arr.filter(c=>cur.indexOf(c)>=0);
+          cur.forEach(c=>{ if(arr.indexOf(c)<0) arr.push(c); });
+          const ii=arr.indexOf(srcColor), jj=arr.indexOf(targetColor);
+          if(ii<0||jj<0) return;
+          arr.splice(jj,0, arr.splice(ii,1)[0]);
+          coloresOrden[key]=arr;
+          _ivOrdInlineGuardar(nombre, orden, coloresOrden);
+        }
+      };
     });
   });
   const clrBtn=document.getElementById('iv-clr');
