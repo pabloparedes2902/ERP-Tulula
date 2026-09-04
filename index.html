@@ -192,6 +192,10 @@ table.pt td{transition:background .12s ease}
 .st-crs{position:absolute;right:0;top:0;height:100%;width:8px;cursor:col-resize;background:transparent;pointer-events:auto;z-index:16}
 .st-crs:hover{background:var(--ac2);opacity:.7}
 .st-crs.on{background:var(--ac2);opacity:1}
+/* Movimiento de stock — mismo tirador y mismo morado que las demas pantallas */
+.iv-crs{position:absolute;right:0;top:0;height:100%;width:10px;cursor:col-resize;background:transparent;pointer-events:auto;z-index:9}
+.iv-crs:hover{background:var(--ac2);opacity:.7}
+.iv-crs.on{background:var(--ac2);opacity:1}
 body.paint-mode-on td[data-paint-prenda]{cursor:crosshair !important;outline:1px dashed rgba(57,255,20,.4);outline-offset:-2px}
 body.paint-mode-on td[data-paint-prenda]:hover{outline:2px solid #39ff14;outline-offset:-2px}
 /* Color de prenda — alta especificidad con #ped-w para ganar contra .ped-cont y :hover (que tienen !important) */
@@ -19852,7 +19856,7 @@ function renderStock(el) {
   }
   async function _stOrdInlineGuardar(nombre, orden, coloresOrden){
     try{
-      await apiSend('vistas.stock.guardar',{nombre:nombre, orden:orden, coloresOrden:coloresOrden});
+      await apiSend('vistas.stock.guardar',{nombre:nombre, orden:orden, coloresOrden:_ivAnchosParaGuardar(coloresOrden)});
       // 4-sep-2026 — SIN ESTO EL REORDEN NO SE VE. `cargarVistasStock` lee por
       // `_vistasStockRapido`, que primero mira el espejo (`espejo_cache`). Apps Script
       // guardaba bien —comprobado contra el servidor— pero el espejo devolvia la copia
@@ -20042,8 +20046,9 @@ if(!window._ivCrsBound){
     if(e.detail>=2){ _ivAutoAncho(k); return; }
     const x0=e.pageX, w0=_ivColW()[k]||110;
     document.body.style.cursor='col-resize';
+    rs.classList.add('on');
     const mv=e2=>_ivSetAncho(k, Math.max(60, Math.round(w0+(e2.pageX-x0))));
-    const up=()=>{ document.body.style.cursor=''; _ivColWSave();
+    const up=()=>{ document.body.style.cursor=''; rs.classList.remove('on'); _ivColWSave();
       document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); };
     document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
   }, true);
@@ -20051,6 +20056,31 @@ if(!window._ivCrsBound){
     const rs=e.target.closest && e.target.closest('.iv-crs'); if(!rs) return;
     e.preventDefault(); e.stopPropagation(); _ivAutoAncho(rs.dataset.ivk);
   }, true);
+}
+// Apps Script solo persiste nombre/orden/coloresOrden: un campo nuevo lo descarta
+// (comprobado contra el servidor). Por eso los anchos viajan DENTRO de coloresOrden,
+// bajo una clave reservada que no puede chocar con ninguna clave de diseño (esas son
+// del tipo "BLUSA|||ALMENDRA") y que el resto del codigo nunca mira, porque siempre
+// consulta coloresOrden[gkey].
+const IV_ANCHOS_KEY='__anchos';
+function _ivAnchosParaGuardar(co){
+  const o = (co && typeof co==='object') ? co : {};
+  o[IV_ANCHOS_KEY] = Object.assign({}, _ivColW());
+  return o;
+}
+// Al activar una vista, sus anchos mandan — una sola vez, para no pisar un ajuste que
+// el usuario acabe de hacer a mano en esta misma sesion.
+function _ivAnchosDesdeVista(){
+  if(typeof stOrden!=='string' || stOrden.indexOf('view:')!==0) return;
+  const n=stOrden.slice(5);
+  if(window._ivVistaAnchos===n) return;
+  window._ivVistaAnchos=n;
+  const v=((typeof stVistas!=='undefined'&&stVistas)||[]).find(x=>x.nombre===n);
+  const a=v && v.coloresOrden && v.coloresOrden[IV_ANCHOS_KEY];
+  if(!a) return;
+  const w=_ivColW();
+  ['k','p','d','c'].forEach(k=>{ if(+a[k]>0) w[k]=+a[k]; });
+  _ivColWSave();
 }
 function _ivFilasGrupo(k){
   const h=document.getElementById('inv-w'); if(!h||!k) return [];
@@ -20236,6 +20266,7 @@ function renderInv(el){
   // 4-sep-2026 — anchos ajustables (antes eran fijos y no se podían tocar acá). Van por
   // variables CSS del <table>: el arrastre del borde y el doble clic los cambian en vivo
   // sin volver a pintar la tabla. Se guardan por usuario en el equipo.
+  try{ _ivAnchosDesdeVista(); }catch(_e){}
   const _iw = _ivColW();
   const ivVars=`--ivk:${_iw.k}px;--ivp:${_iw.p}px;--ivd:${_iw.d}px;--ivc:${_iw.c}px`;
   const LK='left:0;',LP='left:var(--ivk);',LD='left:calc(var(--ivk) + var(--ivp));',LC='left:calc(var(--ivk) + var(--ivp) + var(--ivd));';
@@ -20261,10 +20292,10 @@ function renderInv(el){
   // Antes tenían una fila vacía debajo que se veía como un hueco.
   const _thStk='position:sticky;top:0;z-index:12;background:var(--bg2);text-align:center;vertical-align:middle;padding:4px 8px;font-size:11px;';
   let th1='<tr>';
-  th1+=`<th rowspan="2" style="${_thStk}${LK}${WKs}${TB}">Categoría<span class="iv-crs" data-ivk="k" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido" style="position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;z-index:9"></span></th>`;
-  th1+=`<th rowspan="2" style="${_thStk}${LP}${WPs}${TB}">Prenda<span class="iv-crs" data-ivk="p" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido" style="position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;z-index:9"></span></th>`;
-  th1+=`<th rowspan="2" style="${_thStk}${LD}${WDs}${TB}">Diseño<span class="iv-crs" data-ivk="d" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido" style="position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;z-index:9"></span></th>`;
-  th1+=`<th rowspan="2" style="${_thStk}${LC}${WCs}${TB}border-right:${THK};box-shadow:2px 0 6px rgba(0,0,0,.5)">Color<span class="iv-crs" data-ivk="c" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido" style="position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;z-index:9"></span></th>`;
+  th1+=`<th rowspan="2" style="${_thStk}${LK}${WKs}${TB}">Categoría<span class="iv-crs" data-ivk="k" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido"></span></th>`;
+  th1+=`<th rowspan="2" style="${_thStk}${LP}${WPs}${TB}">Prenda<span class="iv-crs" data-ivk="p" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido"></span></th>`;
+  th1+=`<th rowspan="2" style="${_thStk}${LD}${WDs}${TB}">Diseño<span class="iv-crs" data-ivk="d" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido"></span></th>`;
+  th1+=`<th rowspan="2" style="${_thStk}${LC}${WCs}${TB}border-right:${THK};box-shadow:2px 0 6px rgba(0,0,0,.5)">Color<span class="iv-crs" data-ivk="c" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido"></span></th>`;
   VIS.forEach((bidx,vi)=>{ const b=IVBLK[bidx]; const last=vi===VIS.length-1; th1+=`<th colspan="${NT}" style="background:${b.hbg};color:${b.hc};font-weight:700;font-size:12px;text-align:center;padding:4px 7px;${TB}${last?'':'border-right:'+THK}">${b.lbl}</th>`; });
   th1+='</tr>';
 
@@ -20434,7 +20465,7 @@ function renderInv(el){
     // nada visible en varios segundos — parecia que el arrastre habia fallado.
     try{ toast('Orden actualizado · guardando...','ok'); }catch(_e){}
     try{
-      await apiSend('vistas.stock.guardar',{nombre:nombre, orden:orden, coloresOrden:coloresOrden});
+      await apiSend('vistas.stock.guardar',{nombre:nombre, orden:orden, coloresOrden:_ivAnchosParaGuardar(coloresOrden)});
       // 4-sep-2026 — SIN ESTO EL REORDEN NO SE VE. `cargarVistasStock` lee por
       // `_vistasStockRapido`, que primero mira el espejo (`espejo_cache`). Apps Script
       // guardaba bien —comprobado contra el servidor— pero el espejo devolvia la copia
@@ -20444,8 +20475,11 @@ function renderInv(el){
       try{ _espejoDudar(['vistas.stock.listar']); }catch(_e){}
       await cargarVistasStock();
       stOrden='view:'+nombre; _stOrdenSave(stOrden);
-      renderInv(el);
-    }catch(err){ toast('Error al reordenar: '+esc(err.message),'err'); }
+      window._ivVistaAnchos=nombre;   // los anchos de esta vista son los que ya estan puestos
+      // 4-sep-2026 — NO se vuelve a pintar la tabla. Al soltar ya quedo en su sitio
+      // (movimiento optimista); repintarla aca, segundos despues y con el aviso todavia
+      // en pantalla, era lo que hacia "saltar" las filas y las celdas.
+    }catch(err){ toast('Error al reordenar: '+esc(err.message),'err'); renderInv(el); }
   }
   // ══ Reordenar inline — v6 (4-sep-2026) ═══════════════════════════════════════
   // Historial: v1 drag nativo mal hecho (sin dataTransfer.setData), v2 arrastre manual
@@ -21312,10 +21346,10 @@ function _stAbrirOrdenar(el, groups, repintar){
     const orden=[...listEl.querySelectorAll('.st-ord-it')].map(x=>x.dataset.key);
     // Solo se manda coloresOrden de diseños que SIGUEN en la lista (por si alguno se eliminó/no vino esta vez).
     const clavesVivas=new Set(orden);
-    const coloresOrden={}; Object.keys(coloresOrdenWorking).forEach(k=>{ if(clavesVivas.has(k)) coloresOrden[k]=coloresOrdenWorking[k]; });
+    const coloresOrden={}; Object.keys(coloresOrdenWorking).forEach(k=>{ if(clavesVivas.has(k)||k==='__anchos') coloresOrden[k]=coloresOrdenWorking[k]; });
     this.disabled=true;
     try{
-      await apiSend('vistas.stock.guardar',{nombre,orden,coloresOrden});
+      await apiSend('vistas.stock.guardar',{nombre,orden,coloresOrden:_ivAnchosParaGuardar(coloresOrden)});
       try{ _espejoDudar(['vistas.stock.listar']); }catch(_e){}   // ver nota en _ivOrdInlineGuardar
       await cargarVistasStock();
       stOrden='view:'+nombre; _stOrdenSave(stOrden);
