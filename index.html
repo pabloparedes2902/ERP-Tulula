@@ -20170,7 +20170,7 @@ function renderInv(el){
       const _ivGrip=(cls,sz)=>`<span class="st-drag-handle ${cls}" style="cursor:grab;opacity:.55;flex:0 0 auto;display:inline-flex;align-items:center;user-select:none" title="Arrastrar para reordenar"><svg width="${sz[0]}" height="${sz[1]}" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.4"/><circle cx="7" cy="3" r="1.4"/><circle cx="3" cy="8" r="1.4"/><circle cx="7" cy="8" r="1.4"/><circle cx="3" cy="13" r="1.4"/><circle cx="7" cy="13" r="1.4"/></svg></span>`;
       let tr=`<tr data-gkey="${esc(gkey)}">`;
       if(isFirst){
-        tr+=`<td rowspan="${span}" data-gkey="${esc(gkey)}" class="iv-dis-cell" style="position:sticky;${LK}z-index:3;${grpSt}${TB}${P}${WKs}${_gc}font-weight:700;text-transform:uppercase;font-size:13px;cursor:grab;user-select:none;-webkit-user-drag:element;">`
+        tr+=`<td rowspan="${span}" data-gkey="${esc(gkey)}" class="iv-dis-cell" style="position:sticky;${LK}z-index:3;${grpSt}${TB}${P}${WKs}${_gc}font-weight:700;text-transform:uppercase;font-size:13px;cursor:grab;user-select:none;-webkit-user-drag:none;-khtml-user-drag:none;">`
            +`<div style="display:flex;align-items:center;justify-content:center;gap:6px">`
            +_ivGrip('iv-drag-dis',[10,16])
            +`<span>${esc(d.cat||'')}</span>`
@@ -20182,7 +20182,7 @@ function renderInv(el){
       const _ndIcon = _ndTot>0 ? `<span class="iv-nodisp-info" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-col="${esc(d.color)}" title="${_ndTot} no disponible(s) — ver motivos" style="cursor:pointer;color:#f87171;font-weight:800;margin-left:4px">ⓘ</span>` : '';
       const _kIcon = `<span class="iv-kardex" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-col="${esc(d.color)}" title="Ver historial (kardex)" style="cursor:pointer;margin-left:4px;opacity:.75">🕑</span>`;
       tr+=`<td style="position:sticky;${LC}z-index:3;background:${rowBg};color:${rowTx};${TB}${P}${WCs}border-right:${THK};overflow:hidden;box-shadow:2px 0 6px rgba(0,0,0,.4)">`
-         +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none;-webkit-user-drag:element;">`
+         +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none;-webkit-user-drag:none;-khtml-user-drag:none;">`
          +_ivGrip('iv-drag-color',[8,14])
          +`${stDot(d.color)}<span style="white-space:normal;word-break:break-word">${esc(d.color)}</span></span>${_ndIcon}${_kIcon}</div></td>`;
       // Bloques visibles (VIS)
@@ -20301,98 +20301,114 @@ function renderInv(el){
       renderInv(el);
     }catch(err){ toast('Error al reordenar: '+esc(err.message),'err'); }
   }
-  // Handlers globales de mousemove/mouseup — se registran UNA SOLA VEZ en toda la
-  // sesión (si no, cada render de esta pantalla apilaría otro par de listeners en
-  // document y nunca se liberarían). mousedown SÍ se re-engancha en cada render
-  // (sobre las celdas nuevas), y ahí mismo guarda en window._ivDrag todo lo que el
-  // arrastre necesita — incluido "groups" de ESTE render — así mousemove/mouseup
-  // nunca trabajan con datos de un render viejo.
-  if(!window._ivDragBound){
-    window._ivDragBound=true;
-    const IV_UMBRAL=4; // px de movimiento antes de considerarlo arrastre y no un click
-    document.addEventListener('mousemove', function(e){
-      const d=window._ivDrag; if(!d) return;
+  // ══ Reordenar inline — v5 (4-sep-2026) ═══════════════════════════════════════
+  // Historial: v1 drag nativo HTML5 (no arrancaba), v2 arrastre manual con
+  // mousedown/mousemove/mouseup (tampoco: las celdas seguían con
+  // -webkit-user-drag:element, que en Chrome/Safari de macOS vuelve al elemento
+  // arrastrable a nivel navegador aunque draggable sea false — el navegador se queda
+  // con el gesto y el mouseup nunca llega). v5 usa Pointer Events con
+  // setPointerCapture: una vez capturado el puntero, TODOS los pointermove y el
+  // pointerup se entregan al elemento origen sí o sí — aunque el DOM se re-renderice,
+  // aunque el cursor salga de la tabla o de la ventana. Es la forma robusta; no depende
+  // de que el navegador coopere.
+  //
+  // El contexto del render vive en window._ivCtx y se pisa en cada render, así los
+  // handlers (montados UNA sola vez en toda la sesión) siempre trabajan con los datos
+  // frescos y no se apilan listeners.
+  window._ivCtx = {
+    el: el,
+    dropDis: function(srcKey, targetKey){
+      if(!srcKey||!targetKey||srcKey===targetKey) return;
+      const allKeys=groups.map(g=>_stGrpKey(g));
+      const i=allKeys.indexOf(srcKey), j=allKeys.indexOf(targetKey);
+      if(i<0||j<0) return;
+      allKeys.splice(j,0, allKeys.splice(i,1)[0]);
+      const { nombre, vAct }=_ivVistaActual();
+      const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
+      _ivOrdInlineGuardar(nombre, allKeys, coloresOrden);
+    },
+    dropColor: function(key, srcColor, targetColor){
+      if(!key||!targetColor||targetColor===srcColor) return;
+      const g=groups.find(gg=>_stGrpKey(gg)===key);
+      if(!g) return;
+      const { nombre, vAct }=_ivVistaActual();
+      const orden=(vAct&&Array.isArray(vAct.orden)&&vAct.orden.length)?vAct.orden.slice():groups.map(gg=>_stGrpKey(gg));
+      const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
+      const cur=[...new Set(g.map(x=>String(x.color||'').toUpperCase()))];
+      let arr=(Array.isArray(coloresOrden[key])&&coloresOrden[key].length)?coloresOrden[key].slice():cur.slice();
+      arr=arr.filter(c=>cur.indexOf(c)>=0);
+      cur.forEach(c=>{ if(arr.indexOf(c)<0) arr.push(c); });
+      const ii=arr.indexOf(srcColor), jj=arr.indexOf(targetColor);
+      if(ii<0||jj<0) return;
+      arr.splice(jj,0, arr.splice(ii,1)[0]);
+      coloresOrden[key]=arr;
+      _ivOrdInlineGuardar(nombre, orden, coloresOrden);
+    }
+  };
+  if(!window._ivPtrBound){
+    window._ivPtrBound=true;
+    const UMBRAL=4;                       // px antes de considerarlo arrastre y no click
+    const limpiar=(d)=>{
+      if(!d) return;
+      try{ d.srcEl.style.opacity=''; }catch(e){}
+      document.querySelectorAll('.iv-dis-cell,.iv-color-edit').forEach(c=>{ c.style.boxShadow=''; c.style.outline=''; });
+    };
+    document.addEventListener('pointerdown', function(e){
+      if(e.button!==0) return;
+      if(e.pointerType==='touch') return;  // en táctil no se secuestra el scroll
+      const ctx=window._ivCtx; if(!ctx||!ctx.el) return;
+      const t=e.target.closest ? e.target : e.target.parentElement;
+      if(!t) return;
+      const dis=t.closest('.iv-dis-cell'), col=t.closest('.iv-color-edit');
+      const src=dis||col; if(!src||!ctx.el.contains(src)) return;
+      e.preventDefault();                  // corta selección de texto y drag nativo
+      const d={ tipo: dis?'dis':'color', sel: dis?'.iv-dis-cell':'.iv-color-edit',
+                srcEl:src, x0:e.clientX, y0:e.clientY, moved:false, pid:e.pointerId };
+      d.key = dis ? (src.dataset.gkey||null) : (src.closest('tr')||{dataset:{}}).dataset.gkey;
+      if(!dis) d.color=String(src.dataset.col||'').toUpperCase();
+      window._ivDrag=d;
+      // Con la captura, pointermove/pointerup se entregan a src pase lo que pase.
+      try{ src.setPointerCapture(e.pointerId); }catch(err){}
+    }, true);
+    document.addEventListener('pointermove', function(e){
+      const d=window._ivDrag; if(!d||e.pointerId!==d.pid) return;
       if(!d.moved){
-        if(Math.abs(e.clientX-d.x0)<IV_UMBRAL && Math.abs(e.clientY-d.y0)<IV_UMBRAL) return;
+        if(Math.abs(e.clientX-d.x0)<UMBRAL && Math.abs(e.clientY-d.y0)<UMBRAL) return;
         d.moved=true; d.srcEl.style.opacity='.45';
       }
       document.querySelectorAll(d.sel).forEach(c=>{ if(c!==d.srcEl){ c.style.boxShadow=''; c.style.outline=''; } });
       const under=document.elementFromPoint(e.clientX,e.clientY);
-      const tgt=under && under.closest(d.sel);
+      const tgt=under && under.closest && under.closest(d.sel);
       if(!tgt || tgt===d.srcEl) return;
-      if(d.type==='color' && tgt.closest('tr')?.dataset.gkey!==d.key) return;
-      if(d.type==='dis') tgt.style.boxShadow='inset 0 0 0 2px #8b5cf6';
+      if(d.tipo==='color' && ((tgt.closest('tr')||{dataset:{}}).dataset.gkey)!==d.key) return;
+      if(d.tipo==='dis') tgt.style.boxShadow='inset 0 0 0 2px #8b5cf6';
       else { tgt.style.outline='2px solid #8b5cf6'; tgt.style.outlineOffset='-2px'; }
-    });
-    document.addEventListener('mouseup', function(e){
-      const d=window._ivDrag; window._ivDrag=null;
-      if(!d) return;
-      d.srcEl.style.opacity='';
-      document.querySelectorAll(d.sel).forEach(c=>{ c.style.boxShadow=''; c.style.outline=''; });
-      if(!d.moved) return; // fue un click, no un arrastre — no hacer nada
-      if(d.type==='color') d.srcEl.dataset.ivArrastrado='1'; // que el click que sigue no abra el editor
+    }, true);
+    const soltar=function(e){
+      const d=window._ivDrag;
+      if(!d || (e.pointerId!==undefined && e.pointerId!==d.pid)) return;
+      window._ivDrag=null;
+      try{ d.srcEl.releasePointerCapture(d.pid); }catch(err){}
+      limpiar(d);
+      if(!d.moved) return;                 // fue un click, no un arrastre
+      const ctx=window._ivCtx; if(!ctx) return;
       const under=document.elementFromPoint(e.clientX,e.clientY);
-      const tgt=under && under.closest(d.sel);
+      const tgt=under && under.closest && under.closest(d.sel);
       if(!tgt || tgt===d.srcEl) return;
-      d.onDrop(tgt);
-    });
+      if(d.tipo==='dis') ctx.dropDis(d.key, tgt.dataset.gkey);
+      else{
+        d.srcEl.dataset.ivArrastrado='1'; // que el click siguiente no abra el editor de color
+        const tgtKey=(tgt.closest('tr')||{dataset:{}}).dataset.gkey;
+        if(tgtKey!==d.key) return;
+        ctx.dropColor(d.key, d.color, String(tgt.dataset.col||'').toUpperCase());
+      }
+    };
+    document.addEventListener('pointerup', soltar, true);
+    document.addEventListener('pointercancel', function(e){
+      const d=window._ivDrag; if(!d) return;
+      window._ivDrag=null; limpiar(d);
+    }, true);
   }
-  // -- Diseños: mousedown en la celda Categoría (⋮⋮ es solo el aviso visual, la celda
-  // ENTERA es el handle) arma el arrastre.
-  el.querySelectorAll('.iv-dis-cell').forEach(h=>{
-    h.addEventListener('mousedown', function(e){
-      if(e.button!==0) return;
-      const srcKey=this.dataset.gkey||null;
-      window._ivDrag={
-        type:'dis', sel:'.iv-dis-cell', key:srcKey, srcEl:this,
-        x0:e.clientX, y0:e.clientY, moved:false,
-        onDrop:(tgt)=>{
-          const targetKey=tgt.dataset.gkey;
-          if(!srcKey||!targetKey||srcKey===targetKey) return;
-          const allKeys=groups.map(g=>_stGrpKey(g));
-          const i=allKeys.indexOf(srcKey), j=allKeys.indexOf(targetKey);
-          if(i<0||j<0) return;
-          allKeys.splice(j,0, allKeys.splice(i,1)[0]);
-          const { nombre, vAct }=_ivVistaActual();
-          const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
-          _ivOrdInlineGuardar(nombre, allKeys, coloresOrden);
-        }
-      };
-    });
-  });
-  // -- Colores: mousedown en la píldora completa arma el arrastre; solo se puede
-  // soltar dentro de la misma fila de diseño (mismo data-gkey).
-  el.querySelectorAll('.iv-color-edit').forEach(h=>{
-    h.addEventListener('mousedown', function(e){
-      if(e.button!==0) return;
-      const key=this.closest('tr')?.dataset.gkey;
-      const srcColor=String(this.dataset.col||'').toUpperCase();
-      window._ivDrag={
-        type:'color', sel:'.iv-color-edit', key, color:srcColor, srcEl:this,
-        x0:e.clientX, y0:e.clientY, moved:false,
-        onDrop:(tgt)=>{
-          const tgtKey=tgt.closest('tr')?.dataset.gkey;
-          if(tgtKey!==key) return;
-          const targetColor=String(tgt.dataset.col||'').toUpperCase();
-          if(!targetColor||targetColor===srcColor) return;
-          const g=groups.find(gg=>_stGrpKey(gg)===key);
-          if(!g) return;
-          const { nombre, vAct }=_ivVistaActual();
-          const orden=(vAct&&Array.isArray(vAct.orden)&&vAct.orden.length)?vAct.orden.slice():groups.map(gg=>_stGrpKey(gg));
-          const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
-          const cur=[...new Set(g.map(x=>String(x.color||'').toUpperCase()))];
-          let arr=(Array.isArray(coloresOrden[key])&&coloresOrden[key].length)?coloresOrden[key].slice():cur.slice();
-          arr=arr.filter(c=>cur.indexOf(c)>=0);
-          cur.forEach(c=>{ if(arr.indexOf(c)<0) arr.push(c); });
-          const ii=arr.indexOf(srcColor), jj=arr.indexOf(targetColor);
-          if(ii<0||jj<0) return;
-          arr.splice(jj,0, arr.splice(ii,1)[0]);
-          coloresOrden[key]=arr;
-          _ivOrdInlineGuardar(nombre, orden, coloresOrden);
-        }
-      };
-    });
-  });
   const clrBtn=document.getElementById('iv-clr');
   if(clrBtn) clrBtn.addEventListener('click',()=>{ stFiltroTxt=''; stCatActiva=''; renderInv(el); });
   const yayBtn=document.getElementById('iv-yay');
