@@ -20170,7 +20170,7 @@ function renderInv(el){
       const _ivGrip=(cls,sz)=>`<span class="st-drag-handle ${cls}" style="cursor:grab;opacity:.55;flex:0 0 auto;display:inline-flex;align-items:center;user-select:none" title="Arrastrar para reordenar"><svg width="${sz[0]}" height="${sz[1]}" viewBox="0 0 10 16" fill="currentColor"><circle cx="3" cy="3" r="1.4"/><circle cx="7" cy="3" r="1.4"/><circle cx="3" cy="8" r="1.4"/><circle cx="7" cy="8" r="1.4"/><circle cx="3" cy="13" r="1.4"/><circle cx="7" cy="13" r="1.4"/></svg></span>`;
       let tr=`<tr data-gkey="${esc(gkey)}">`;
       if(isFirst){
-        tr+=`<td rowspan="${span}" data-gkey="${esc(gkey)}" class="iv-dis-cell" style="position:sticky;${LK}z-index:3;${grpSt}${TB}${P}${WKs}${_gc}font-weight:700;text-transform:uppercase;font-size:13px;cursor:grab;user-select:none;-webkit-user-drag:none;-khtml-user-drag:none;">`
+        tr+=`<td rowspan="${span}" data-gkey="${esc(gkey)}" class="iv-dis-cell" draggable="true" style="position:sticky;${LK}z-index:3;${grpSt}${TB}${P}${WKs}${_gc}font-weight:700;text-transform:uppercase;font-size:13px;cursor:grab;user-select:none;">`
            +`<div style="display:flex;align-items:center;justify-content:center;gap:6px">`
            +_ivGrip('iv-drag-dis',[10,16])
            +`<span>${esc(d.cat||'')}</span>`
@@ -20182,7 +20182,7 @@ function renderInv(el){
       const _ndIcon = _ndTot>0 ? `<span class="iv-nodisp-info" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-col="${esc(d.color)}" title="${_ndTot} no disponible(s) — ver motivos" style="cursor:pointer;color:#f87171;font-weight:800;margin-left:4px">ⓘ</span>` : '';
       const _kIcon = `<span class="iv-kardex" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-col="${esc(d.color)}" title="Ver historial (kardex)" style="cursor:pointer;margin-left:4px;opacity:.75">🕑</span>`;
       tr+=`<td style="position:sticky;${LC}z-index:3;background:${rowBg};color:${rowTx};${TB}${P}${WCs}border-right:${THK};overflow:hidden;box-shadow:2px 0 6px rgba(0,0,0,.4)">`
-         +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none;-webkit-user-drag:none;-khtml-user-drag:none;">`
+         +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" draggable="true" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:grab;user-select:none;">`
          +_ivGrip('iv-drag-color',[8,14])
          +`${stDot(d.color)}<span style="white-space:normal;word-break:break-word">${esc(d.color)}</span></span>${_ndIcon}${_kIcon}</div></td>`;
       // Bloques visibles (VIS)
@@ -20301,20 +20301,29 @@ function renderInv(el){
       renderInv(el);
     }catch(err){ toast('Error al reordenar: '+esc(err.message),'err'); }
   }
-  // ══ Reordenar inline — v5 (4-sep-2026) ═══════════════════════════════════════
-  // Historial: v1 drag nativo HTML5 (no arrancaba), v2 arrastre manual con
-  // mousedown/mousemove/mouseup (tampoco: las celdas seguían con
-  // -webkit-user-drag:element, que en Chrome/Safari de macOS vuelve al elemento
-  // arrastrable a nivel navegador aunque draggable sea false — el navegador se queda
-  // con el gesto y el mouseup nunca llega). v5 usa Pointer Events con
-  // setPointerCapture: una vez capturado el puntero, TODOS los pointermove y el
-  // pointerup se entregan al elemento origen sí o sí — aunque el DOM se re-renderice,
-  // aunque el cursor salga de la tabla o de la ventana. Es la forma robusta; no depende
-  // de que el navegador coopere.
+  // ══ Reordenar inline — v6 (4-sep-2026) ═══════════════════════════════════════
+  // Historial: v1 drag nativo mal hecho (sin dataTransfer.setData), v2 arrastre manual
+  // con mouse events, v5 arrastre manual con pointer capture. NINGUNA funciono en el
+  // navegador real de Pablo, aunque las tres pasaban en pruebas de laboratorio.
   //
-  // El contexto del render vive en window._ivCtx y se pisa en cada render, así los
-  // handlers (montados UNA sola vez en toda la sesión) siempre trabajan con los datos
-  // frescos y no se apilan listeners.
+  // v6 deja de inventar: usa EXACTAMENTE el mismo mecanismo que el modal "Ordenar
+  // vista" (_stAbrirOrdenar), que es el unico reordenamiento que si funciona en su
+  // maquina. Ese modal ya tiene el comentario que explica por que: "Chrome cancela el
+  // arrastre en el acto si en 'dragstart' nadie llama a dataTransfer.setData()" —
+  // exactamente el sintoma de la grilla (el cursor cambia, se marca la celda, y no
+  // pasa nada mas). Las tres piezas obligatorias son:
+  //   1. dragstart -> dataTransfer.setData(...) + effectAllowed='move'
+  //   2. dragover  -> e.preventDefault() + dropEffect='move'   (sin esto no hay drop)
+  //   3. drop      -> e.preventDefault()
+  //
+  // Beneficios extra frente al arrastre manual: la sesion de arrastre la maneja el
+  // navegador, asi que un re-render de la tabla a mitad del gesto ya no la mata; y el
+  // auto-scroll del contenedor cuando el destino queda fuera de la vista lo hace Chrome
+  // solo, sin codigo nuestro.
+  //
+  // Los listeners van en `el` (el contenedor de la pantalla, que sobrevive a los
+  // re-render de setHTMLKeepScroll) y se montan UNA sola vez. El contexto del render
+  // vive en window._ivCtx y se pisa en cada render.
   window._ivCtx = {
     el: el,
     dropDis: function(srcKey, targetKey){
@@ -20345,69 +20354,110 @@ function renderInv(el){
       _ivOrdInlineGuardar(nombre, orden, coloresOrden);
     }
   };
-  if(!window._ivPtrBound){
-    window._ivPtrBound=true;
-    const UMBRAL=4;                       // px antes de considerarlo arrastre y no click
-    const limpiar=(d)=>{
-      if(!d) return;
-      try{ d.srcEl.style.opacity=''; }catch(e){}
-      document.querySelectorAll('.iv-dis-cell,.iv-color-edit').forEach(c=>{ c.style.boxShadow=''; c.style.outline=''; });
+  if(!el._ivDndBound){
+    el._ivDndBound=true;
+    const MOR='#8b5cf6';
+    const filasDe=(gkey)=>{
+      const c=window._ivCtx; if(!c||!gkey) return [];
+      return [...c.el.querySelectorAll('tr[data-gkey]')].filter(tr=>tr.dataset.gkey===gkey);
     };
-    document.addEventListener('pointerdown', function(e){
-      if(e.button!==0) return;
-      if(e.pointerType==='touch') return;  // en táctil no se secuestra el scroll
-      const ctx=window._ivCtx; if(!ctx||!ctx.el) return;
-      const t=e.target.closest ? e.target : e.target.parentElement;
-      if(!t) return;
+    // Resalta TODO lo que se esta moviendo: el grupo entero de filas si es un diseno,
+    // la fila completa si es un color. Antes solo se marcaba la celda agarrada y no se
+    // entendia que se estaba arrastrando.
+    const marcarOrigen=(d,on)=>{
+      const filas = d.tipo==='dis' ? filasDe(d.key) : [d.srcEl.closest('tr')].filter(Boolean);
+      filas.forEach(tr=>{ tr.style.opacity = on?'.4':''; });
+    };
+    const limpiarDestino=()=>{
+      const c=window._ivCtx; if(!c) return;
+      c.el.querySelectorAll('tr[data-gkey]').forEach(tr=>{
+        if(tr.dataset.ivMk){ delete tr.dataset.ivMk;
+          [...tr.children].forEach(td=>{ td.style.boxShadow=td.dataset.ivShadow||''; delete td.dataset.ivShadow; });
+        }
+      });
+    };
+    const pintarDestino=(d,tgtKey,arriba)=>{
+      limpiarDestino();
+      const filas=filasDe(tgtKey); if(!filas.length) return;
+      const borde = d.tipo==='dis'
+        ? (arriba?'inset 0 3px 0 0 '+MOR:'inset 0 -3px 0 0 '+MOR)
+        : 'inset 0 0 0 2px '+MOR;
+      filas.forEach((tr,ix)=>{
+        tr.dataset.ivMk='1';
+        [...tr.children].forEach(td=>{
+          if(td.dataset.ivShadow===undefined) td.dataset.ivShadow=td.style.boxShadow||'';
+          const primera=ix===0, ultima=ix===filas.length-1;
+          if(d.tipo==='dis'){ if((arriba&&primera)||(!arriba&&ultima)) td.style.boxShadow=borde; }
+          else td.style.boxShadow=borde;
+        });
+      });
+    };
+    const finArrastre=()=>{
+      const d=window._ivDnd;
+      if(d){ marcarOrigen(d,false); }
+      limpiarDestino();
+      window._ivDnd=null;
+    };
+    // 1. dragstart — SIN setData Chrome cancela el arrastre al instante.
+    el.addEventListener('dragstart', function(e){
+      const t=(e.target&&e.target.closest)?e.target:(e.target&&e.target.parentElement);
+      if(!t||!t.closest) return;
       const dis=t.closest('.iv-dis-cell'), col=t.closest('.iv-color-edit');
-      const src=dis||col; if(!src||!ctx.el.contains(src)) return;
-      e.preventDefault();                  // corta selección de texto y drag nativo
-      const d={ tipo: dis?'dis':'color', sel: dis?'.iv-dis-cell':'.iv-color-edit',
-                srcEl:src, x0:e.clientX, y0:e.clientY, moved:false, pid:e.pointerId };
-      d.key = dis ? (src.dataset.gkey||null) : (src.closest('tr')||{dataset:{}}).dataset.gkey;
+      const src=dis||col; if(!src) return;
+      const d={ tipo: dis?'dis':'color', srcEl:src };
+      d.key = dis ? (src.dataset.gkey||'') : ((src.closest('tr')||{dataset:{}}).dataset.gkey||'');
       if(!dis) d.color=String(src.dataset.col||'').toUpperCase();
-      window._ivDrag=d;
-      // Con la captura, pointermove/pointerup se entregan a src pase lo que pase.
-      try{ src.setPointerCapture(e.pointerId); }catch(err){}
-    }, true);
-    document.addEventListener('pointermove', function(e){
-      const d=window._ivDrag; if(!d||e.pointerId!==d.pid) return;
-      if(!d.moved){
-        if(Math.abs(e.clientX-d.x0)<UMBRAL && Math.abs(e.clientY-d.y0)<UMBRAL) return;
-        d.moved=true; d.srcEl.style.opacity='.45';
+      d.y0=e.clientY;
+      window._ivDnd=d;
+      try{
+        e.dataTransfer.setData('text/plain', d.key||'x');
+        e.dataTransfer.effectAllowed='move';
+      }catch(_){}
+      marcarOrigen(d,true);
+    });
+    // 2. dragover — el preventDefault es lo que habilita el drop.
+    el.addEventListener('dragover', function(e){
+      const d=window._ivDnd; if(!d) return;
+      e.preventDefault();
+      try{ e.dataTransfer.dropEffect='move'; }catch(_){}
+      const bajo=document.elementFromPoint(e.clientX,e.clientY);
+      const tr=bajo&&bajo.closest?bajo.closest('tr[data-gkey]'):null;
+      if(!tr){ limpiarDestino(); return; }
+      const tgtKey=tr.dataset.gkey;
+      if(d.tipo==='dis'){
+        if(!tgtKey||tgtKey===d.key){ limpiarDestino(); return; }
+        pintarDestino(d,tgtKey, e.clientY < d.y0);
+      }else{
+        if(tgtKey!==d.key){ limpiarDestino(); return; }   // color: solo dentro del mismo diseno
+        const pil=bajo.closest('.iv-color-edit');
+        if(!pil||pil===d.srcEl){ limpiarDestino(); return; }
+        limpiarDestino();
+        const f=pil.closest('tr');
+        if(f){ f.dataset.ivMk='1';
+          [...f.children].forEach(td=>{ if(td.dataset.ivShadow===undefined) td.dataset.ivShadow=td.style.boxShadow||'';
+            td.style.boxShadow='inset 0 0 0 2px '+MOR; }); }
       }
-      document.querySelectorAll(d.sel).forEach(c=>{ if(c!==d.srcEl){ c.style.boxShadow=''; c.style.outline=''; } });
-      const under=document.elementFromPoint(e.clientX,e.clientY);
-      const tgt=under && under.closest && under.closest(d.sel);
-      if(!tgt || tgt===d.srcEl) return;
-      if(d.tipo==='color' && ((tgt.closest('tr')||{dataset:{}}).dataset.gkey)!==d.key) return;
-      if(d.tipo==='dis') tgt.style.boxShadow='inset 0 0 0 2px #8b5cf6';
-      else { tgt.style.outline='2px solid #8b5cf6'; tgt.style.outlineOffset='-2px'; }
-    }, true);
-    const soltar=function(e){
-      const d=window._ivDrag;
-      if(!d || (e.pointerId!==undefined && e.pointerId!==d.pid)) return;
-      window._ivDrag=null;
-      try{ d.srcEl.releasePointerCapture(d.pid); }catch(err){}
-      limpiar(d);
-      if(!d.moved) return;                 // fue un click, no un arrastre
-      const ctx=window._ivCtx; if(!ctx) return;
-      const under=document.elementFromPoint(e.clientX,e.clientY);
-      const tgt=under && under.closest && under.closest(d.sel);
-      if(!tgt || tgt===d.srcEl) return;
-      if(d.tipo==='dis') ctx.dropDis(d.key, tgt.dataset.gkey);
-      else{
-        d.srcEl.dataset.ivArrastrado='1'; // que el click siguiente no abra el editor de color
-        const tgtKey=(tgt.closest('tr')||{dataset:{}}).dataset.gkey;
+    });
+    // 3. drop — preventDefault para que el navegador no se lleve el texto a otra parte.
+    el.addEventListener('drop', function(e){
+      const d=window._ivDnd; if(!d) return;
+      e.preventDefault(); e.stopPropagation();
+      const bajo=document.elementFromPoint(e.clientX,e.clientY);
+      const ctx=window._ivCtx;
+      finArrastre();
+      if(!bajo||!bajo.closest||!ctx) return;
+      if(d.tipo==='dis'){
+        const tr=bajo.closest('tr[data-gkey]'); if(!tr) return;
+        ctx.dropDis(d.key, tr.dataset.gkey);
+      }else{
+        const pil=bajo.closest('.iv-color-edit'); if(!pil||pil===d.srcEl) return;
+        const tgtKey=(pil.closest('tr')||{dataset:{}}).dataset.gkey;
         if(tgtKey!==d.key) return;
-        ctx.dropColor(d.key, d.color, String(tgt.dataset.col||'').toUpperCase());
+        d.srcEl.dataset.ivArrastrado='1';   // que el click siguiente no abra el editor de color
+        ctx.dropColor(d.key, d.color, String(pil.dataset.col||'').toUpperCase());
       }
-    };
-    document.addEventListener('pointerup', soltar, true);
-    document.addEventListener('pointercancel', function(e){
-      const d=window._ivDrag; if(!d) return;
-      window._ivDrag=null; limpiar(d);
-    }, true);
+    });
+    el.addEventListener('dragend', finArrastre);
   }
   const clrBtn=document.getElementById('iv-clr');
   if(clrBtn) clrBtn.addEventListener('click',()=>{ stFiltroTxt=''; stCatActiva=''; renderInv(el); });
