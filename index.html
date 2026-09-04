@@ -19853,6 +19853,13 @@ function renderStock(el) {
   async function _stOrdInlineGuardar(nombre, orden, coloresOrden){
     try{
       await apiSend('vistas.stock.guardar',{nombre:nombre, orden:orden, coloresOrden:coloresOrden});
+      // 4-sep-2026 — SIN ESTO EL REORDEN NO SE VE. `cargarVistasStock` lee por
+      // `_vistasStockRapido`, que primero mira el espejo (`espejo_cache`). Apps Script
+      // guardaba bien —comprobado contra el servidor— pero el espejo devolvia la copia
+      // anterior, la tabla se repintaba con el orden viejo y parecia que el arrastre no
+      // hacia nada. Se marca la clave EN DUDA, que es el mecanismo que ya usa el resto
+      // del ERP tras cada escritura (ver _espejoDudar / _stockEscrito).
+      try{ _espejoDudar(['vistas.stock.listar']); }catch(_e){}
       await cargarVistasStock();
       stOrden='view:'+nombre; _stOrdenSave(stOrden);
       renderStock(el);
@@ -20294,8 +20301,18 @@ function renderInv(el){
     return { nombre, vAct };
   }
   async function _ivOrdInlineGuardar(nombre, orden, coloresOrden){
+    // El guardado tarda ~6 s contra Apps Script. Sin aviso, Pablo soltaba y no pasaba
+    // nada visible en varios segundos — parecia que el arrastre habia fallado.
+    try{ toast('Orden actualizado · guardando...','ok'); }catch(_e){}
     try{
       await apiSend('vistas.stock.guardar',{nombre:nombre, orden:orden, coloresOrden:coloresOrden});
+      // 4-sep-2026 — SIN ESTO EL REORDEN NO SE VE. `cargarVistasStock` lee por
+      // `_vistasStockRapido`, que primero mira el espejo (`espejo_cache`). Apps Script
+      // guardaba bien —comprobado contra el servidor— pero el espejo devolvia la copia
+      // anterior, la tabla se repintaba con el orden viejo y parecia que el arrastre no
+      // hacia nada. Se marca la clave EN DUDA, que es el mecanismo que ya usa el resto
+      // del ERP tras cada escritura (ver _espejoDudar / _stockEscrito).
+      try{ _espejoDudar(['vistas.stock.listar']); }catch(_e){}
       await cargarVistasStock();
       stOrden='view:'+nombre; _stOrdenSave(stOrden);
       renderInv(el);
@@ -20324,6 +20341,39 @@ function renderInv(el){
   // Los listeners van en `el` (el contenedor de la pantalla, que sobrevive a los
   // re-render de setHTMLKeepScroll) y se montan UNA sola vez. El contexto del render
   // vive en window._ivCtx y se pisa en cada render.
+  // ── Reorden OPTIMISTA (4-sep-2026) ────────────────────────────────────────────
+  // El guardado contra Apps Script tarda ~6 s y a veces devuelve HTML en vez de JSON
+  // ("Respuesta no válida del servidor"). Mientras la tabla solo se repintaba con la
+  // respuesta, soltar una prenda no producia NINGUN efecto visible durante segundos y
+  // parecia que el arrastre no funcionaba. Ahora las filas se mueven en el acto y el
+  // guardado va detras; si falla, el siguiente render deja todo como estaba en el
+  // servidor y el toast avisa.
+  function _ivFilasGrupo(k){ return [...el.querySelectorAll('tr[data-gkey]')].filter(t=>t.dataset.gkey===k); }
+  function _ivMoverDisDOM(src,tgt){
+    const fS=_ivFilasGrupo(src), fT=_ivFilasGrupo(tgt);
+    if(!fS.length||!fT.length||src===tgt) return false;
+    const tb=fS[0].parentNode;
+    const todas=[...el.querySelectorAll('tr[data-gkey]')];
+    const baja=todas.indexOf(fS[0])<todas.indexOf(fT[0]);
+    const ref=baja?fT[fT.length-1].nextSibling:fT[0];
+    fS.forEach(f=>tb.insertBefore(f,ref));
+    return true;
+  }
+  function _ivMoverColorDOM(key,srcC,tgtC){
+    const filas=_ivFilasGrupo(key); if(filas.length<2) return false;
+    const col=f=>String(((f.querySelector('.iv-color-edit')||{dataset:{}}).dataset.col)||'').toUpperCase();
+    const fS=filas.find(f=>col(f)===srcC), fT=filas.find(f=>col(f)===tgtC);
+    if(!fS||!fT||fS===fT) return false;
+    const tb=fS.parentNode;
+    // Categoria, Prenda y Diseño son celdas con rowspan y viven en la 1ra fila del bloque:
+    // si la 1ra fila cambia, hay que moverlas a la nueva.
+    const rs=[...filas[0].children].filter(td=>td.hasAttribute('rowspan'));
+    const baja=filas.indexOf(fS)<filas.indexOf(fT);
+    tb.insertBefore(fS, baja?fT.nextSibling:fT);
+    const nuevas=_ivFilasGrupo(key);
+    if(nuevas[0]!==filas[0]) rs.slice().reverse().forEach(td=>nuevas[0].insertBefore(td, nuevas[0].firstChild));
+    return true;
+  }
   window._ivCtx = {
     el: el,
     dropDis: function(srcKey, targetKey){
@@ -20334,6 +20384,7 @@ function renderInv(el){
       allKeys.splice(j,0, allKeys.splice(i,1)[0]);
       const { nombre, vAct }=_ivVistaActual();
       const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
+      _ivMoverDisDOM(srcKey, targetKey);          // se ve AL INSTANTE; el guardado va detras
       _ivOrdInlineGuardar(nombre, allKeys, coloresOrden);
     },
     dropColor: function(key, srcColor, targetColor){
@@ -20351,6 +20402,7 @@ function renderInv(el){
       if(ii<0||jj<0) return;
       arr.splice(jj,0, arr.splice(ii,1)[0]);
       coloresOrden[key]=arr;
+      _ivMoverColorDOM(key, srcColor, targetColor);   // se ve AL INSTANTE
       _ivOrdInlineGuardar(nombre, orden, coloresOrden);
     }
   };
@@ -21159,7 +21211,9 @@ function _stAbrirOrdenar(el, groups, repintar){
   // Eliminar vista
   ov.querySelectorAll('.st-ord-del').forEach(b=>b.addEventListener('click',async ()=>{
     const n=b.dataset.n; if(!(await npConfirm('¿Eliminar la vista "'+n+'"? Desaparecerá para todos.'))) return;
-    try{ await apiSend('vistas.stock.eliminar',{nombre:n}); await cargarVistasStock();
+    try{ await apiSend('vistas.stock.eliminar',{nombre:n});
+      try{ _espejoDudar(['vistas.stock.listar']); }catch(_e){}   // ver nota en _ivOrdInlineGuardar
+      await cargarVistasStock();
       if(stOrden==='view:'+n){ stOrden='reciente'; _stOrdenSave(stOrden); }
       toast('Vista eliminada','ok'); close(); _render(el);
     }catch(e){ toast('Error: '+esc(e.message),'err'); }
@@ -21175,6 +21229,7 @@ function _stAbrirOrdenar(el, groups, repintar){
     this.disabled=true;
     try{
       await apiSend('vistas.stock.guardar',{nombre,orden,coloresOrden});
+      try{ _espejoDudar(['vistas.stock.listar']); }catch(_e){}   // ver nota en _ivOrdInlineGuardar
       await cargarVistasStock();
       stOrden='view:'+nombre; _stOrdenSave(stOrden);
       toast('✓ Vista "'+nombre+'" guardada','ok');
