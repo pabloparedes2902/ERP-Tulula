@@ -19994,6 +19994,132 @@ async function loadInv(){
   catch(e){ el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// MOVIMIENTO DE STOCK — ancho de columnas, separadores y animación (4-sep-2026)
+// ══════════════════════════════════════════════════════════════════════════
+function _ivColWKey(){ return 'erp_iv_colw_'+((typeof MY_EMAIL!=='undefined'&&MY_EMAIL)||''); }
+function _ivColW(){
+  if(!window._ivColWCache){
+    let v=null; try{ v=JSON.parse(localStorage.getItem(_ivColWKey())||'null'); }catch(e){}
+    // Color arranca en 175: es lo que necesita el nombre mas largo ("AZUL PRESIDENTE")
+    // para entrar en UNA sola linea. Con 130 se partia en dos y hasta tres renglones.
+    window._ivColWCache = (v && typeof v==='object' && v.k) ? v : {k:110,p:95,d:150,c:175};
+  }
+  return window._ivColWCache;
+}
+function _ivColWSave(){ try{ localStorage.setItem(_ivColWKey(), JSON.stringify(_ivColW())); }catch(e){} }
+function _ivTabla(){ const h=document.getElementById('inv-w'); return h?h.querySelector('table.stbl'):null; }
+function _ivSetAncho(k,px){ const t=_ivTabla(); _ivColW()[k]=px; if(t) t.style.setProperty('--iv'+k, px+'px'); }
+// Doble clic en el borde: ajusta la columna al texto mas largo que tenga.
+function _ivAutoAncho(k){
+  const h=document.getElementById('inv-w'); if(!h) return;
+  const conf={ k:{sel:'.iv-dis-cell',      f:'700 13px', extra:40},
+               p:{sel:'.iv-prenda-cell',   f:'600 14px', extra:22},
+               d:{sel:'.iv-diseno-cell',   f:'800 14px', extra:22},
+               c:{sel:'.iv-color-edit',    f:'600 13px', extra:52} }[k];
+  if(!conf) return;
+  const m=document.createElement('span');
+  m.style.cssText='position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;text-transform:uppercase;font:'+conf.f+' system-ui,-apple-system,sans-serif';
+  document.body.appendChild(m);
+  let max=0;
+  h.querySelectorAll(conf.sel).forEach(c=>{ m.textContent=(c.innerText||'').replace(/\s+/g,' ').trim(); const w=m.getBoundingClientRect().width; if(w>max) max=w; });
+  m.remove();
+  _ivSetAncho(k, Math.max(60, Math.min(420, Math.ceil(max)+conf.extra)));
+  _ivColWSave();
+}
+// Arrastrar el borde de la cabecera para cambiar el ancho; doble clic para ajustarlo.
+// Mismo gesto que en Pedidos, Cambios y Devoluciones. Se monta una sola vez.
+if(!window._ivCrsBound){
+  window._ivCrsBound=true;
+  document.addEventListener('mousedown', function(e){
+    const rs=e.target.closest && e.target.closest('.iv-crs'); if(!rs) return;
+    const h=document.getElementById('inv-w'); if(!h||!h.contains(rs)) return;
+    e.preventDefault(); e.stopPropagation();
+    const k=rs.dataset.ivk;
+    // El doble clic se atiende ACA: como este mismo handler llama a preventDefault en
+    // mousedown, Chrome ya no emite el evento 'dblclick' sobre el tirador.
+    if(e.detail>=2){ _ivAutoAncho(k); return; }
+    const x0=e.pageX, w0=_ivColW()[k]||110;
+    document.body.style.cursor='col-resize';
+    const mv=e2=>_ivSetAncho(k, Math.max(60, Math.round(w0+(e2.pageX-x0))));
+    const up=()=>{ document.body.style.cursor=''; _ivColWSave();
+      document.removeEventListener('mousemove',mv); document.removeEventListener('mouseup',up); };
+    document.addEventListener('mousemove',mv); document.addEventListener('mouseup',up);
+  }, true);
+  document.addEventListener('dblclick', function(e){
+    const rs=e.target.closest && e.target.closest('.iv-crs'); if(!rs) return;
+    e.preventDefault(); e.stopPropagation(); _ivAutoAncho(rs.dataset.ivk);
+  }, true);
+}
+function _ivFilasGrupo(k){
+  const h=document.getElementById('inv-w'); if(!h||!k) return [];
+  return [...h.querySelectorAll('tr[data-gkey]')].filter(t=>t.dataset.gkey===k);
+}
+// Entre bloques va una fila blanca de 6px. Al mover un bloque se quedaba atras y
+// aparecian DOS pegadas (12px de blanco, los "saltos de hoja") o ninguna. Se
+// recolocan todas despues de cada movimiento.
+function _ivNormalizarSeps(){
+  const t=_ivTabla(); if(!t) return;
+  const tb=t.tBodies[0]; if(!tb) return;
+  [...tb.children].forEach(tr=>{ if(tr.classList.contains('iv-sep')) tr.remove(); });
+  const nc=t.dataset.ncols||39;
+  let prev=null;
+  [...tb.children].forEach(f=>{
+    const k=f.dataset.gkey;
+    if(prev!==null && k!==prev){
+      const sep=document.createElement('tr'); sep.className='iv-sep';
+      sep.innerHTML='<td colspan="'+nc+'" style="height:6px;padding:0;background:#ffffff;border:0"></td>';
+      tb.insertBefore(sep,f);
+    }
+    prev=k;
+  });
+}
+// Deslizamiento en vez de salto: se anotan las posiciones, se mueve, y cada fila
+// se anima desde donde estaba hasta donde quedo (tecnica FLIP).
+function _ivAnimar(fn){
+  const h=document.getElementById('inv-w'); if(!h) return fn();
+  const vis=[...h.querySelectorAll('tr[data-gkey]')].filter(f=>{
+    const r=f.getBoundingClientRect(); return r.bottom>-40 && r.top<innerHeight+40; });
+  const antes=new Map(vis.map(f=>[f, f.getBoundingClientRect().top]));
+  fn();
+  const mov=[];
+  vis.forEach(f=>{ const d=antes.get(f)-f.getBoundingClientRect().top;
+    if(d){ f.style.transition='none'; f.style.transform='translateY('+d+'px)'; mov.push(f); } });
+  if(!mov.length) return;
+  requestAnimationFrame(()=>{ requestAnimationFrame(()=>{
+    mov.forEach(f=>{ f.style.transition='transform 240ms cubic-bezier(.22,.61,.36,1)'; f.style.transform=''; });
+    setTimeout(()=>mov.forEach(f=>{ f.style.transition=''; f.style.transform=''; }), 280);
+  }); });
+}
+function _ivMoverDisDOM(src,tgt,despues){
+  const fS=_ivFilasGrupo(src), fT=_ivFilasGrupo(tgt);
+  if(!fS.length||!fT.length||src===tgt) return false;
+  const tb=fS[0].parentNode;
+  _ivAnimar(()=>{
+    const ref = despues ? fT[fT.length-1].nextSibling : fT[0];
+    fS.forEach(f=>tb.insertBefore(f,ref));
+    _ivNormalizarSeps();
+  });
+  return true;
+}
+function _ivMoverColorDOM(key,srcC,tgtC,despues){
+  const filas=_ivFilasGrupo(key); if(filas.length<2) return false;
+  const col=f=>String(((f.querySelector('.iv-color-edit')||{dataset:{}}).dataset.col)||'').toUpperCase();
+  const fS=filas.find(f=>col(f)===srcC), fT=filas.find(f=>col(f)===tgtC);
+  if(!fS||!fT||fS===fT) return false;
+  const tb=fS.parentNode;
+  // Categoria, Prenda y Diseno son celdas con rowspan y viven en la 1ra fila del
+  // bloque: si la 1ra fila cambia, hay que llevarlas a la nueva.
+  const rs=[...filas[0].children].filter(td=>td.hasAttribute('rowspan'));
+  _ivAnimar(()=>{
+    tb.insertBefore(fS, despues ? fT.nextSibling : fT);
+    const nuevas=_ivFilasGrupo(key);
+    if(nuevas[0]!==filas[0]) rs.slice().reverse().forEach(td=>nuevas[0].insertBefore(td, nuevas[0].firstChild));
+  });
+  return true;
+}
+
 function renderInv(el){
   // 30-jul — se pinta lo que diga _stFuente(): stData en Stock, el montón en Yayitas.
   const _fuente=_stFuente();
@@ -20107,10 +20233,13 @@ function renderInv(el){
   const rowsCount=rows.length;
 
   const NT=TALLAS_STD.length;
-  // Columnas fijas (ancho fijo, sin resize en esta vista).
-  const WK=110,WP=95,WD=150,WC=130;
-  const LK='left:0;',LP='left:'+WK+'px;',LD='left:'+(WK+WP)+'px;',LC='left:'+(WK+WP+WD)+'px;';
-  const WKs='min-width:'+WK+'px;max-width:'+WK+'px;',WPs='min-width:'+WP+'px;max-width:'+WP+'px;',WDs='min-width:'+WD+'px;max-width:'+WD+'px;',WCs='min-width:'+WC+'px;max-width:'+WC+'px;';
+  // 4-sep-2026 — anchos ajustables (antes eran fijos y no se podían tocar acá). Van por
+  // variables CSS del <table>: el arrastre del borde y el doble clic los cambian en vivo
+  // sin volver a pintar la tabla. Se guardan por usuario en el equipo.
+  const _iw = _ivColW();
+  const ivVars=`--ivk:${_iw.k}px;--ivp:${_iw.p}px;--ivd:${_iw.d}px;--ivc:${_iw.c}px`;
+  const LK='left:0;',LP='left:var(--ivk);',LD='left:calc(var(--ivk) + var(--ivp));',LC='left:calc(var(--ivk) + var(--ivp) + var(--ivd));';
+  const WKs='min-width:var(--ivk);max-width:var(--ivk);',WPs='min-width:var(--ivp);max-width:var(--ivp);',WDs='min-width:var(--ivd);max-width:var(--ivd);',WCs='min-width:var(--ivc);max-width:var(--ivc);';
   const TB='border:1px solid rgba(0,0,0,.4);';
   const THK='3px solid #000';
   const BASEBG='rgba(125,130,145,.16)';
@@ -20132,10 +20261,10 @@ function renderInv(el){
   // Antes tenían una fila vacía debajo que se veía como un hueco.
   const _thStk='position:sticky;top:0;z-index:12;background:var(--bg2);text-align:center;vertical-align:middle;padding:4px 8px;font-size:11px;';
   let th1='<tr>';
-  th1+=`<th rowspan="2" style="${_thStk}${LK}${WKs}${TB}">Categoría</th>`;
-  th1+=`<th rowspan="2" style="${_thStk}${LP}${WPs}${TB}">Prenda</th>`;
-  th1+=`<th rowspan="2" style="${_thStk}${LD}${WDs}${TB}">Diseño</th>`;
-  th1+=`<th rowspan="2" style="${_thStk}${LC}${WCs}${TB}border-right:${THK};box-shadow:2px 0 6px rgba(0,0,0,.5)">Color</th>`;
+  th1+=`<th rowspan="2" style="${_thStk}${LK}${WKs}${TB}">Categoría<span class="iv-crs" data-ivk="k" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido" style="position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;z-index:9"></span></th>`;
+  th1+=`<th rowspan="2" style="${_thStk}${LP}${WPs}${TB}">Prenda<span class="iv-crs" data-ivk="p" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido" style="position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;z-index:9"></span></th>`;
+  th1+=`<th rowspan="2" style="${_thStk}${LD}${WDs}${TB}">Diseño<span class="iv-crs" data-ivk="d" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido" style="position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;z-index:9"></span></th>`;
+  th1+=`<th rowspan="2" style="${_thStk}${LC}${WCs}${TB}border-right:${THK};box-shadow:2px 0 6px rgba(0,0,0,.5)">Color<span class="iv-crs" data-ivk="c" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido" style="position:absolute;top:0;right:0;width:10px;height:100%;cursor:col-resize;z-index:9"></span></th>`;
   VIS.forEach((bidx,vi)=>{ const b=IVBLK[bidx]; const last=vi===VIS.length-1; th1+=`<th colspan="${NT}" style="background:${b.hbg};color:${b.hc};font-weight:700;font-size:12px;text-align:center;padding:4px 7px;${TB}${last?'':'border-right:'+THK}">${b.lbl}</th>`; });
   th1+='</tr>';
 
@@ -20153,7 +20282,7 @@ function renderInv(el){
   const STEMPTY='background:#26262c;';
   let tbody='';
   groups.forEach((g,gi)=>{
-    if(gi>0) tbody+=`<tr><td colspan="${NCOLS}" style="height:6px;padding:0;background:#ffffff;border:0"></td></tr>`;
+    if(gi>0) tbody+=`<tr class="iv-sep"><td colspan="${NCOLS}" style="height:6px;padding:0;background:#ffffff;border:0"></td></tr>`;
     const span=g.length;
     const gkey=_stGrpKey(g);
     g.forEach((d,ri)=>{
@@ -20182,8 +20311,8 @@ function renderInv(el){
            +_ivGrip('iv-drag-dis',[10,16])
            +`<span>${esc(d.cat||'')}</span>`
            +`</div></td>`;
-        tr+=`<td rowspan="${span}" style="position:sticky;${LP}z-index:3;${grpSt}${TB}${P}${WPs}${_gc}font-weight:600;font-size:14px">${esc(d.prenda||'')}</td>`;
-        tr+=`<td rowspan="${span}" style="position:sticky;${LD}z-index:3;${grpSt}${TB}${P}${WDs}${_gc}font-weight:800;font-size:14px">${esc(d.diseno||'')}</td>`;
+        tr+=`<td rowspan="${span}" class="iv-prenda-cell" style="position:sticky;${LP}z-index:3;${grpSt}${TB}${P}${WPs}${_gc}font-weight:600;font-size:14px">${esc(d.prenda||'')}</td>`;
+        tr+=`<td rowspan="${span}" class="iv-diseno-cell" style="position:sticky;${LD}z-index:3;${grpSt}${TB}${P}${WDs}${_gc}font-weight:800;font-size:14px">${esc(d.diseno||'')}</td>`;
       }
       const _ndTot=TALLAS_STD.reduce((s,t)=>s+((d.fallas&&d.fallas[t])||0),0);
       const _ndIcon = _ndTot>0 ? `<span class="iv-nodisp-info" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-col="${esc(d.color)}" title="${_ndTot} no disponible(s) — ver motivos" style="cursor:pointer;color:#f87171;font-weight:800;margin-left:4px">ⓘ</span>` : '';
@@ -20191,7 +20320,7 @@ function renderInv(el){
       tr+=`<td style="position:sticky;${LC}z-index:3;background:${rowBg};color:${rowTx};${TB}${P}${WCs}border-right:${THK};overflow:hidden;box-shadow:2px 0 6px rgba(0,0,0,.4)">`
          +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" draggable="true" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:grab;user-select:none;">`
          +_ivGrip('iv-drag-color',[8,14])
-         +`${stDot(d.color)}<span style="white-space:normal;word-break:break-word">${esc(d.color)}</span></span>${_ndIcon}${_kIcon}</div></td>`;
+         +`${stDot(d.color)}<span style="white-space:nowrap">${esc(d.color)}</span></span>${_ndIcon}${_kIcon}</div></td>`;
       // Bloques visibles (VIS)
       VIS.forEach(bi=>{
         TALLAS_STD.forEach((t,i)=>{
@@ -20222,7 +20351,7 @@ function renderInv(el){
   // un dato que no se usa. La plantilla gana ese alto.
 
   setHTMLKeepScroll(el, barra+ctrl
-    +'<div class="st-wrap"><table class="stbl">'
+    +'<div class="st-wrap"><table class="stbl" data-ncols="'+NCOLS+'" style="'+ivVars+'">'
     +'<thead>'+th1+th2+'</thead>'
     +'<tbody>'+tbody+'</tbody>'
     +'</table></div>');
@@ -20341,53 +20470,34 @@ function renderInv(el){
   // Los listeners van en `el` (el contenedor de la pantalla, que sobrevive a los
   // re-render de setHTMLKeepScroll) y se montan UNA sola vez. El contexto del render
   // vive en window._ivCtx y se pisa en cada render.
-  // ── Reorden OPTIMISTA (4-sep-2026) ────────────────────────────────────────────
-  // El guardado contra Apps Script tarda ~6 s y a veces devuelve HTML en vez de JSON
-  // ("Respuesta no válida del servidor"). Mientras la tabla solo se repintaba con la
-  // respuesta, soltar una prenda no producia NINGUN efecto visible durante segundos y
-  // parecia que el arrastre no funcionaba. Ahora las filas se mueven en el acto y el
-  // guardado va detras; si falla, el siguiente render deja todo como estaba en el
-  // servidor y el toast avisa.
-  function _ivFilasGrupo(k){ return [...el.querySelectorAll('tr[data-gkey]')].filter(t=>t.dataset.gkey===k); }
-  function _ivMoverDisDOM(src,tgt){
-    const fS=_ivFilasGrupo(src), fT=_ivFilasGrupo(tgt);
-    if(!fS.length||!fT.length||src===tgt) return false;
-    const tb=fS[0].parentNode;
-    const todas=[...el.querySelectorAll('tr[data-gkey]')];
-    const baja=todas.indexOf(fS[0])<todas.indexOf(fT[0]);
-    const ref=baja?fT[fT.length-1].nextSibling:fT[0];
-    fS.forEach(f=>tb.insertBefore(f,ref));
-    return true;
-  }
-  function _ivMoverColorDOM(key,srcC,tgtC){
-    const filas=_ivFilasGrupo(key); if(filas.length<2) return false;
-    const col=f=>String(((f.querySelector('.iv-color-edit')||{dataset:{}}).dataset.col)||'').toUpperCase();
-    const fS=filas.find(f=>col(f)===srcC), fT=filas.find(f=>col(f)===tgtC);
-    if(!fS||!fT||fS===fT) return false;
-    const tb=fS.parentNode;
-    // Categoria, Prenda y Diseño son celdas con rowspan y viven en la 1ra fila del bloque:
-    // si la 1ra fila cambia, hay que moverlas a la nueva.
-    const rs=[...filas[0].children].filter(td=>td.hasAttribute('rowspan'));
-    const baja=filas.indexOf(fS)<filas.indexOf(fT);
-    tb.insertBefore(fS, baja?fT.nextSibling:fT);
-    const nuevas=_ivFilasGrupo(key);
-    if(nuevas[0]!==filas[0]) rs.slice().reverse().forEach(td=>nuevas[0].insertBefore(td, nuevas[0].firstChild));
-    return true;
-  }
+  // ── Reordenar inline — v7 (4-sep-2026) ───────────────────────────────────────
+  // El movimiento se ve AL INSTANTE (el guardado contra Apps Script tarda ~6 s y a
+  // veces devuelve HTML en vez de JSON; mientras la tabla esperaba la respuesta,
+  // soltar una prenda no producia ningun efecto visible y parecia rota).
+  //
+  // Se suelta sobre CUALQUIER parte de la fila destino, no hay que acertarle a la
+  // pildora: antes el ultimo color no se podia elegir porque el puntero caia fuera
+  // de ella. Y la mitad superior/inferior del destino decide si va ANTES o DESPUES,
+  // que es lo que permite dejar algo en la ultima posicion.
+  const _ivRectGrupo=(k)=>{ const f=_ivFilasGrupo(k); if(!f.length) return null;
+    const a=f[0].getBoundingClientRect(), b=f[f.length-1].getBoundingClientRect();
+    return {top:a.top, bottom:b.bottom}; };
   window._ivCtx = {
     el: el,
-    dropDis: function(srcKey, targetKey){
+    dropDis: function(srcKey, targetKey, despues){
       if(!srcKey||!targetKey||srcKey===targetKey) return;
       const allKeys=groups.map(g=>_stGrpKey(g));
-      const i=allKeys.indexOf(srcKey), j=allKeys.indexOf(targetKey);
-      if(i<0||j<0) return;
-      allKeys.splice(j,0, allKeys.splice(i,1)[0]);
+      const i=allKeys.indexOf(srcKey);
+      if(i<0 || allKeys.indexOf(targetKey)<0) return;
+      allKeys.splice(i,1);
+      const j=allKeys.indexOf(targetKey);
+      allKeys.splice(despues?j+1:j, 0, srcKey);
       const { nombre, vAct }=_ivVistaActual();
       const coloresOrden=(vAct&&vAct.coloresOrden)?JSON.parse(JSON.stringify(vAct.coloresOrden)):{};
-      _ivMoverDisDOM(srcKey, targetKey);          // se ve AL INSTANTE; el guardado va detras
+      _ivMoverDisDOM(srcKey, targetKey, despues);
       _ivOrdInlineGuardar(nombre, allKeys, coloresOrden);
     },
-    dropColor: function(key, srcColor, targetColor){
+    dropColor: function(key, srcColor, targetColor, despues){
       if(!key||!targetColor||targetColor===srcColor) return;
       const g=groups.find(gg=>_stGrpKey(gg)===key);
       if(!g) return;
@@ -20398,59 +20508,53 @@ function renderInv(el){
       let arr=(Array.isArray(coloresOrden[key])&&coloresOrden[key].length)?coloresOrden[key].slice():cur.slice();
       arr=arr.filter(c=>cur.indexOf(c)>=0);
       cur.forEach(c=>{ if(arr.indexOf(c)<0) arr.push(c); });
-      const ii=arr.indexOf(srcColor), jj=arr.indexOf(targetColor);
-      if(ii<0||jj<0) return;
-      arr.splice(jj,0, arr.splice(ii,1)[0]);
+      const ii=arr.indexOf(srcColor);
+      if(ii<0 || arr.indexOf(targetColor)<0) return;
+      arr.splice(ii,1);
+      const jj=arr.indexOf(targetColor);
+      arr.splice(despues?jj+1:jj, 0, srcColor);
       coloresOrden[key]=arr;
-      _ivMoverColorDOM(key, srcColor, targetColor);   // se ve AL INSTANTE
+      _ivMoverColorDOM(key, srcColor, targetColor, despues);
       _ivOrdInlineGuardar(nombre, orden, coloresOrden);
     }
   };
   if(!el._ivDndBound){
     el._ivDndBound=true;
     const MOR='#8b5cf6';
-    const filasDe=(gkey)=>{
-      const c=window._ivCtx; if(!c||!gkey) return [];
-      return [...c.el.querySelectorAll('tr[data-gkey]')].filter(tr=>tr.dataset.gkey===gkey);
-    };
-    // Resalta TODO lo que se esta moviendo: el grupo entero de filas si es un diseno,
-    // la fila completa si es un color. Antes solo se marcaba la celda agarrada y no se
-    // entendia que se estaba arrastrando.
     const marcarOrigen=(d,on)=>{
-      const filas = d.tipo==='dis' ? filasDe(d.key) : [d.srcEl.closest('tr')].filter(Boolean);
+      const filas = d.tipo==='dis' ? _ivFilasGrupo(d.key) : [d.srcEl.closest('tr')].filter(Boolean);
       filas.forEach(tr=>{ tr.style.opacity = on?'.4':''; });
     };
     const limpiarDestino=()=>{
       const c=window._ivCtx; if(!c) return;
       c.el.querySelectorAll('tr[data-gkey]').forEach(tr=>{
         if(tr.dataset.ivMk){ delete tr.dataset.ivMk;
-          [...tr.children].forEach(td=>{ td.style.boxShadow=td.dataset.ivShadow||''; delete td.dataset.ivShadow; });
-        }
+          [...tr.children].forEach(td=>{ td.style.boxShadow=td.dataset.ivShadow||''; delete td.dataset.ivShadow; }); }
       });
     };
-    const pintarDestino=(d,tgtKey,arriba)=>{
-      limpiarDestino();
-      const filas=filasDe(tgtKey); if(!filas.length) return;
-      const borde = d.tipo==='dis'
-        ? (arriba?'inset 0 3px 0 0 '+MOR:'inset 0 -3px 0 0 '+MOR)
-        : 'inset 0 0 0 2px '+MOR;
-      filas.forEach((tr,ix)=>{
-        tr.dataset.ivMk='1';
-        [...tr.children].forEach(td=>{
-          if(td.dataset.ivShadow===undefined) td.dataset.ivShadow=td.style.boxShadow||'';
-          const primera=ix===0, ultima=ix===filas.length-1;
-          if(d.tipo==='dis'){ if((arriba&&primera)||(!arriba&&ultima)) td.style.boxShadow=borde; }
-          else td.style.boxShadow=borde;
-        });
-      });
+    const marcarFilas=(filas,borde)=>{
+      filas.forEach(tr=>{ tr.dataset.ivMk='1';
+        [...tr.children].forEach(td=>{ if(td.dataset.ivShadow===undefined) td.dataset.ivShadow=td.style.boxShadow||'';
+          td.style.boxShadow=borde; }); });
     };
-    const finArrastre=()=>{
-      const d=window._ivDnd;
-      if(d){ marcarOrigen(d,false); }
-      limpiarDestino();
-      window._ivDnd=null;
+    // Que hay bajo el cursor: fila destino y si el cursor esta en su mitad de abajo.
+    const destino=(d,x,y)=>{
+      const bajo=document.elementFromPoint(x,y);
+      const tr=bajo&&bajo.closest?bajo.closest('tr[data-gkey]'):null;
+      if(!tr) return null;
+      const k=tr.dataset.gkey;
+      if(d.tipo==='dis'){
+        if(!k||k===d.key) return null;
+        const r=_ivRectGrupo(k); if(!r) return null;
+        return {tipo:'dis', key:k, despues: y > (r.top+r.bottom)/2};
+      }
+      if(k!==d.key) return null;                    // color: solo dentro de su diseño
+      const pil=tr.querySelector('.iv-color-edit'); if(!pil) return null;
+      const c=String(pil.dataset.col||'').toUpperCase();
+      if(c===d.color) return null;
+      const r=tr.getBoundingClientRect();
+      return {tipo:'color', key:k, color:c, fila:tr, despues: y > r.top + r.height/2};
     };
-    // 1. dragstart — SIN setData Chrome cancela el arrastre al instante.
     el.addEventListener('dragstart', function(e){
       const t=(e.target&&e.target.closest)?e.target:(e.target&&e.target.parentElement);
       if(!t||!t.closest) return;
@@ -20459,58 +20563,41 @@ function renderInv(el){
       const d={ tipo: dis?'dis':'color', srcEl:src };
       d.key = dis ? (src.dataset.gkey||'') : ((src.closest('tr')||{dataset:{}}).dataset.gkey||'');
       if(!dis) d.color=String(src.dataset.col||'').toUpperCase();
-      d.y0=e.clientY;
       window._ivDnd=d;
-      try{
-        e.dataTransfer.setData('text/plain', d.key||'x');
-        e.dataTransfer.effectAllowed='move';
-      }catch(_){}
+      try{ e.dataTransfer.setData('text/plain', d.key||'x'); e.dataTransfer.effectAllowed='move'; }catch(_){}
       marcarOrigen(d,true);
     });
-    // 2. dragover — el preventDefault es lo que habilita el drop.
     el.addEventListener('dragover', function(e){
       const d=window._ivDnd; if(!d) return;
       e.preventDefault();
       try{ e.dataTransfer.dropEffect='move'; }catch(_){}
-      const bajo=document.elementFromPoint(e.clientX,e.clientY);
-      const tr=bajo&&bajo.closest?bajo.closest('tr[data-gkey]'):null;
-      if(!tr){ limpiarDestino(); return; }
-      const tgtKey=tr.dataset.gkey;
-      if(d.tipo==='dis'){
-        if(!tgtKey||tgtKey===d.key){ limpiarDestino(); return; }
-        pintarDestino(d,tgtKey, e.clientY < d.y0);
-      }else{
-        if(tgtKey!==d.key){ limpiarDestino(); return; }   // color: solo dentro del mismo diseno
-        const pil=bajo.closest('.iv-color-edit');
-        if(!pil||pil===d.srcEl){ limpiarDestino(); return; }
-        limpiarDestino();
-        const f=pil.closest('tr');
-        if(f){ f.dataset.ivMk='1';
-          [...f.children].forEach(td=>{ if(td.dataset.ivShadow===undefined) td.dataset.ivShadow=td.style.boxShadow||'';
-            td.style.boxShadow='inset 0 0 0 2px '+MOR; }); }
-      }
+      const t=destino(d, e.clientX, e.clientY);
+      limpiarDestino();
+      if(!t) return;
+      const linea='inset 0 '+(t.despues?'-3px':'3px')+' 0 0 '+MOR;
+      if(t.tipo==='dis'){
+        const filas=_ivFilasGrupo(t.key);
+        marcarFilas([t.despues?filas[filas.length-1]:filas[0]], linea);
+      } else marcarFilas([t.fila], linea);
     });
-    // 3. drop — preventDefault para que el navegador no se lleve el texto a otra parte.
     el.addEventListener('drop', function(e){
       const d=window._ivDnd; if(!d) return;
       e.preventDefault(); e.stopPropagation();
-      const bajo=document.elementFromPoint(e.clientX,e.clientY);
+      const t=destino(d, e.clientX, e.clientY);
       const ctx=window._ivCtx;
-      finArrastre();
-      if(!bajo||!bajo.closest||!ctx) return;
-      if(d.tipo==='dis'){
-        const tr=bajo.closest('tr[data-gkey]'); if(!tr) return;
-        ctx.dropDis(d.key, tr.dataset.gkey);
-      }else{
-        const pil=bajo.closest('.iv-color-edit'); if(!pil||pil===d.srcEl) return;
-        const tgtKey=(pil.closest('tr')||{dataset:{}}).dataset.gkey;
-        if(tgtKey!==d.key) return;
-        d.srcEl.dataset.ivArrastrado='1';   // que el click siguiente no abra el editor de color
-        ctx.dropColor(d.key, d.color, String(pil.dataset.col||'').toUpperCase());
-      }
+      marcarOrigen(d,false); limpiarDestino(); window._ivDnd=null;
+      if(!t||!ctx) return;
+      if(t.tipo==='dis') ctx.dropDis(d.key, t.key, t.despues);
+      else { d.srcEl.dataset.ivArrastrado='1'; ctx.dropColor(d.key, d.color, t.color, t.despues); }
     });
-    el.addEventListener('dragend', finArrastre);
+    el.addEventListener('dragend', function(){
+      const d=window._ivDnd; if(d) marcarOrigen(d,false);
+      limpiarDestino(); window._ivDnd=null;
+    });
   }
+  // La primera vez, las 4 columnas fijas se ajustan solas a su contenido.
+  if(!window._ivAutoHecho){ window._ivAutoHecho=1;
+    try{ if(!localStorage.getItem(_ivColWKey())) setTimeout(()=>['k','p','d','c'].forEach(_ivAutoAncho),0); }catch(_e){} }
   const clrBtn=document.getElementById('iv-clr');
   if(clrBtn) clrBtn.addEventListener('click',()=>{ stFiltroTxt=''; stCatActiva=''; renderInv(el); });
   const yayBtn=document.getElementById('iv-yay');
