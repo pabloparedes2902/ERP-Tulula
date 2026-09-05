@@ -20002,6 +20002,25 @@ async function loadInv(){
 // ══════════════════════════════════════════════════════════════════════════
 // MOVIMIENTO DE STOCK — ancho de columnas, separadores y animación (4-sep-2026)
 // ══════════════════════════════════════════════════════════════════════════
+// 5-sep-2026 — AUTOACTUALIZACION. El service worker sirve index.html con
+// stale-while-revalidate: la primera recarga entrega la copia guardada y refresca por
+// detras, asi que hacia falta recargar DOS veces para ver una version nueva. Pablo
+// probaba una y creia que el cambio no habia llegado. Ahora, a los 3 segundos, se
+// compara la marca del archivo del servidor con la que se esta ejecutando y, si
+// cambio, se recarga una sola vez (sessionStorage evita cualquier bucle).
+const ERP_BUILD='b2026090501';
+setTimeout(async function(){
+  try{
+    if(sessionStorage.getItem('erp_build_reload')===ERP_BUILD) return;
+    const r=await fetch(location.pathname.replace(/[^/]*$/,'')+'index.html',{cache:'reload'});
+    const t=await r.text();
+    const m=t.match(/const ERP_BUILD='([^']+)'/);
+    if(m && m[1] && m[1]!==ERP_BUILD){
+      sessionStorage.setItem('erp_build_reload', ERP_BUILD);
+      location.reload();
+    }
+  }catch(_e){}
+}, 3000);
 function _ivColWKey(){ return 'erp_iv_colw_'+((typeof MY_EMAIL!=='undefined'&&MY_EMAIL)||''); }
 function _ivColW(){
   if(!window._ivColWCache){
@@ -20023,13 +20042,16 @@ function _ivAutoAncho(k){
                d:{sel:'.iv-diseno-cell',   f:'800 14px', extra:22},
                c:{sel:'.iv-color-edit',    f:'600 13px', extra:52} }[k];
   if(!conf) return;
+  const ref=h.querySelector(conf.sel);
+  const fuente = ref ? getComputedStyle(ref).font : (conf.f+' system-ui,sans-serif');
   const m=document.createElement('span');
-  m.style.cssText='position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;text-transform:uppercase;font:'+conf.f+' system-ui,-apple-system,sans-serif';
+  m.style.cssText='position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap;text-transform:uppercase;font:'+fuente;
   document.body.appendChild(m);
   let max=0;
   h.querySelectorAll(conf.sel).forEach(c=>{ m.textContent=(c.innerText||'').replace(/\s+/g,' ').trim(); const w=m.getBoundingClientRect().width; if(w>max) max=w; });
   m.remove();
-  _ivSetAncho(k, Math.max(60, Math.min(420, Math.ceil(max)+conf.extra)));
+  const minimo = k==='c' ? 150 : 60;   // Color nunca por debajo de una linea
+  _ivSetAncho(k, Math.max(minimo, Math.min(420, Math.ceil(max)+conf.extra)));
   _ivColWSave();
 }
 // Arrastrar el borde de la cabecera para cambiar el ancho; doble clic para ajustarlo.
@@ -20134,19 +20156,25 @@ function _ivMoverDisDOM(src,tgt,despues){
   return true;
 }
 function _ivMoverColorDOM(key,srcC,tgtC,despues){
+  // 5-sep-2026 — antes se movia la FILA entera y, si cambiaba la primera del bloque,
+  // habia que trasladar las celdas de Categoria, Prenda y Diseno (las de rowspan).
+  // Ese traslado es lo que hacia saltar la tabla. Ahora las filas se quedan quietas y
+  // solo se intercambia su CONTENIDO: las celdas grandes no se tocan y no hay salto.
   const filas=_ivFilasGrupo(key); if(filas.length<2) return false;
   const col=f=>String(((f.querySelector('.iv-color-edit')||{dataset:{}}).dataset.col)||'').toUpperCase();
-  const fS=filas.find(f=>col(f)===srcC), fT=filas.find(f=>col(f)===tgtC);
-  if(!fS||!fT||fS===fT) return false;
-  const tb=fS.parentNode;
-  // Categoria, Prenda y Diseno son celdas con rowspan y viven en la 1ra fila del
-  // bloque: si la 1ra fila cambia, hay que llevarlas a la nueva.
-  const rs=[...filas[0].children].filter(td=>td.hasAttribute('rowspan'));
-  _ivAnimar(()=>{
-    tb.insertBefore(fS, despues ? fT.nextSibling : fT);
-    const nuevas=_ivFilasGrupo(key);
-    if(nuevas[0]!==filas[0]) rs.slice().reverse().forEach(td=>nuevas[0].insertBefore(td, nuevas[0].firstChild));
-  });
+  const orden=filas.map(col);
+  const i=orden.indexOf(srcC);
+  if(i<0 || orden.indexOf(tgtC)<0 || srcC===tgtC) return false;
+  const contenido={};
+  filas.forEach((f,ix)=>{ contenido[orden[ix]]=[...f.children].filter(td=>!td.hasAttribute('rowspan')); });
+  const nuevo=orden.slice(); nuevo.splice(i,1);
+  const j=nuevo.indexOf(tgtC); nuevo.splice(despues?j+1:j, 0, srcC);
+  filas.forEach((f,ix)=>{ (contenido[nuevo[ix]]||[]).forEach(td=>f.appendChild(td)); });
+  // un parpadeo corto para que se note el cambio sin que nada se desplace
+  filas.forEach(f=>{ f.style.transition='none'; f.style.opacity='.55';
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      f.style.transition='opacity 200ms ease'; f.style.opacity='';
+      setTimeout(()=>{ f.style.transition=''; f.style.opacity=''; },240); })); });
   return true;
 }
 
@@ -20572,22 +20600,39 @@ function renderInv(el){
           td.style.boxShadow=borde; }); });
     };
     // Que hay bajo el cursor: fila destino y si el cursor esta en su mitad de abajo.
+    // 5-sep-2026 — el destino se elige por CERCANIA, no por lo que haya justo debajo
+    // del cursor. Pidiendo que el cursor cayera sobre una fila, el primer y el ultimo
+    // color eran inalcanzables: arriba el cursor pisa el encabezado pegado y abajo la
+    // franja blanca de 6px, y ahi no hay ninguna fila.
     const destino=(d,x,y)=>{
+      const host=(window._ivCtx&&window._ivCtx.el)||document.getElementById('inv-w');
+      if(!host) return null;
+      if(d.tipo==='color'){
+        const filas=_ivFilasGrupo(d.key); if(filas.length<2) return null;
+        let mejor=null, dist=Infinity;
+        filas.forEach(f=>{ const r=f.getBoundingClientRect();
+          const dd=Math.abs(y-(r.top+r.bottom)/2); if(dd<dist){ dist=dd; mejor={f,r}; } });
+        if(!mejor) return null;
+        const pil=mejor.f.querySelector('.iv-color-edit'); if(!pil) return null;
+        const c=String(pil.dataset.col||'').toUpperCase();
+        if(c===d.color) return null;
+        return {tipo:'color', key:d.key, color:c, fila:mejor.f,
+                despues: y > (mejor.r.top+mejor.r.bottom)/2};
+      }
       const bajo=document.elementFromPoint(x,y);
       const tr=bajo&&bajo.closest?bajo.closest('tr[data-gkey]'):null;
-      if(!tr) return null;
-      const k=tr.dataset.gkey;
-      if(d.tipo==='dis'){
-        if(!k||k===d.key) return null;
-        const r=_ivRectGrupo(k); if(!r) return null;
-        return {tipo:'dis', key:k, despues: y > (r.top+r.bottom)/2};
+      let k=tr?tr.dataset.gkey:null;
+      if(!k){                       // sobre un separador o fuera: el bloque mas cercano
+        let dist=Infinity;
+        [...new Set([...host.querySelectorAll('tr[data-gkey]')].map(t=>t.dataset.gkey))].forEach(kk=>{
+          const r=_ivRectGrupo(kk); if(!r) return;
+          const dd = y<r.top ? r.top-y : (y>r.bottom ? y-r.bottom : 0);
+          if(dd<dist){ dist=dd; k=kk; }
+        });
       }
-      if(k!==d.key) return null;                    // color: solo dentro de su diseño
-      const pil=tr.querySelector('.iv-color-edit'); if(!pil) return null;
-      const c=String(pil.dataset.col||'').toUpperCase();
-      if(c===d.color) return null;
-      const r=tr.getBoundingClientRect();
-      return {tipo:'color', key:k, color:c, fila:tr, despues: y > r.top + r.height/2};
+      if(!k||k===d.key) return null;
+      const r=_ivRectGrupo(k); if(!r) return null;
+      return {tipo:'dis', key:k, despues: y > (r.top+r.bottom)/2};
     };
     el.addEventListener('dragstart', function(e){
       const t=(e.target&&e.target.closest)?e.target:(e.target&&e.target.parentElement);
@@ -20629,9 +20674,10 @@ function renderInv(el){
       limpiarDestino(); window._ivDnd=null;
     });
   }
-  // La primera vez, las 4 columnas fijas se ajustan solas a su contenido.
-  if(!window._ivAutoHecho){ window._ivAutoHecho=1;
-    try{ if(!localStorage.getItem(_ivColWKey())) setTimeout(()=>['k','p','d','c'].forEach(_ivAutoAncho),0); }catch(_e){} }
+  // 5-sep-2026 — se quita el ajuste automatico del primer render: medía con una fuente
+  // aproximada, calculaba de menos y GUARDABA ese ancho corto, con lo que la columna
+  // Color volvia a partirse en dos renglones. El ajuste ahora es solo manual (doble
+  // clic en el borde) y mide con la fuente real de la celda.
   const clrBtn=document.getElementById('iv-clr');
   if(clrBtn) clrBtn.addEventListener('click',()=>{ stFiltroTxt=''; stCatActiva=''; renderInv(el); });
   const yayBtn=document.getElementById('iv-yay');
