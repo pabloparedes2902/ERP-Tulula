@@ -20008,7 +20008,7 @@ async function loadInv(){
 // probaba una y creia que el cambio no habia llegado. Ahora, a los 3 segundos, se
 // compara la marca del archivo del servidor con la que se esta ejecutando y, si
 // cambio, se recarga una sola vez (sessionStorage evita cualquier bucle).
-const ERP_BUILD='b2026090501';
+const ERP_BUILD='b2026090502';
 setTimeout(async function(){
   try{
     if(sessionStorage.getItem('erp_build_reload')===ERP_BUILD) return;
@@ -20021,6 +20021,30 @@ setTimeout(async function(){
     }
   }catch(_e){}
 }, 3000);
+// ══ Filas sin SKU en el maestro ("huerfanas") — 5-sep-2026 ══════════════════
+// Stock se calcula desde los MOVIMIENTOS, no desde el maestro: una fila sigue
+// apareciendo mientras exista una confeccion, una venta o una falla que la nombre,
+// aunque el SKU ya se haya eliminado. Por eso se ocultan por defecto, pero se
+// CUENTAN y se avisa: esconderlas en silencio taparia descuadres reales.
+// OJO al comparar: en catalogo.maestrosSkus el campo `prenda` es el nombre completo
+// del SKU ("ANILLO ATENAS DORADO U"); el equivalente a la "prenda" de Stock es
+// `producto`. Comparar por `prenda` da cifras falsas.
+let _ivMaestroSet=null, _ivMaestroCargando=false;
+const _ivClave=(pr,di,co)=>[pr,di,co].map(x=>String(x||'').trim().toUpperCase()).join('|');
+function _ivCargarMaestro(){
+  if(_ivMaestroSet||_ivMaestroCargando) return;
+  _ivMaestroCargando=true;
+  api('catalogo.maestrosSkus').then(ms=>{
+    _ivMaestroSet=new Set((ms||[]).map(x=>_ivClave(x.producto,x.diseno,x.color)));
+    const el=document.getElementById('inv-w'); if(el&&el.offsetParent!==null) renderInv(el);
+  }).catch(()=>{}).finally(()=>{ _ivMaestroCargando=false; });
+}
+function _ivEsHuerfana(d){
+  if(!_ivMaestroSet) return false;
+  return !_ivMaestroSet.has(_ivClave(d.prenda,d.diseno,d.color));
+}
+function _ivVerHuerfanas(){ try{ return localStorage.getItem('erp_iv_verhuerf')==='1'; }catch(e){ return false; } }
+function _ivVerHuerfanasSet(v){ try{ localStorage.setItem('erp_iv_verhuerf', v?'1':'0'); }catch(e){} }
 function _ivColWKey(){ return 'erp_iv_colw_'+((typeof MY_EMAIL!=='undefined'&&MY_EMAIL)||''); }
 function _ivColW(){
   if(!window._ivColWCache){
@@ -20271,6 +20295,12 @@ function renderInv(el){
   if(stCatActiva) rows=rows.filter(d=>d.cat===stCatActiva);
   rows=_stFiltrarRows(rows);
   if(stHideNoStock) rows=rows.filter(d=>TALLAS_STD.some(t=>(d.stock&&d.stock[t]>0)));
+  _ivCargarMaestro();
+  let _huerfN=0;
+  if(_ivMaestroSet){
+    _huerfN=rows.filter(_ivEsHuerfana).length;
+    if(_huerfN && !_ivVerHuerfanas()) rows=rows.filter(d=>!_ivEsHuerfana(d));
+  }
 
   // Agrupar por Prenda+Diseño (colores como sub-filas)
   const gmap=new Map();
@@ -20410,6 +20440,10 @@ function renderInv(el){
   // un dato que no se usa. La plantilla gana ese alto.
 
   setHTMLKeepScroll(el, barra+ctrl
+    +(_huerfN?('<div style="display:flex;align-items:center;gap:10px;margin:0 0 6px;padding:6px 10px;border:1px solid #b45309;background:#2a1c07;color:#fbbf24;border-radius:8px;font-size:12px">'
+       +'<span>⚠ '+_huerfN+' fila'+(_huerfN===1?'':'s')+' sin SKU en el catálogo '+(_ivVerHuerfanas()?'(se están mostrando)':'(ocultas)')+'</span>'
+       +'<button id="iv-huerf-tog" class="btn bg bs" style="font-size:11px;padding:2px 8px">'+(_ivVerHuerfanas()?'Ocultarlas':'Verlas')+'</button>'
+       +'</div>'):'')
     +'<div class="st-wrap"><table class="stbl" data-ncols="'+NCOLS+'" style="'+ivVars+'">'
     +'<thead>'+th1+th2+'</thead>'
     +'<tbody>'+tbody+'</tbody>'
@@ -20678,6 +20712,8 @@ function renderInv(el){
   // aproximada, calculaba de menos y GUARDABA ese ancho corto, con lo que la columna
   // Color volvia a partirse en dos renglones. El ajuste ahora es solo manual (doble
   // clic en el borde) y mide con la fuente real de la celda.
+  const hufBtn=document.getElementById('iv-huerf-tog');
+  if(hufBtn) hufBtn.addEventListener('click',()=>{ _ivVerHuerfanasSet(!_ivVerHuerfanas()); renderInv(el); });
   const clrBtn=document.getElementById('iv-clr');
   if(clrBtn) clrBtn.addEventListener('click',()=>{ stFiltroTxt=''; stCatActiva=''; renderInv(el); });
   const yayBtn=document.getElementById('iv-yay');
