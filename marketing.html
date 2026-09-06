@@ -245,9 +245,27 @@
   .mkbar input,.mkbar select{background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:7px 10px;font-size:12px;font-weight:700;outline:none}
   .mkbar input:focus,.mkbar select:focus{border-color:var(--hover)}
 
-  /* la caja de la tabla ocupa exactamente lo que queda de pantalla:
-     el deslizador vertical va a su derecha y el horizontal a su pie */
-  .mkwrap{flex:1;min-height:0;overflow:auto;border:1.5px solid var(--bd);border-radius:14px;background:var(--card);margin-bottom:14px}
+  /* 6-sep-2026 — EL SCROLL, DE VERDAD. Antes #mkAnuncios era un div normal, así
+     que el `flex:1` de la caja de la tabla no tenía efecto: la tabla crecía hacia
+     abajo y había que achicar la ventana para ver el final. Ahora #mkAnuncios es
+     una columna flexible, la tabla se queda con todo el alto sobrante y desliza
+     sola: vertical a la derecha, horizontal al pie, y el encabezado y la fila de
+     totales quedan pegados arriba y abajo. */
+  #mkAnuncios{display:flex;flex-direction:column;flex:1;min-height:0}
+  .mkwrap{flex:1;min-height:0;overflow:auto;border:1.5px solid var(--bd);border-radius:14px;background:var(--card);margin-bottom:12px}
+  /* deslizadores visibles (en Mac se esconden y parecía que no había) */
+  .mkwrap::-webkit-scrollbar{width:12px;height:12px}
+  .mkwrap::-webkit-scrollbar-track{background:var(--bg);border-radius:8px}
+  .mkwrap::-webkit-scrollbar-thumb{background:var(--bd);border-radius:8px;border:2px solid var(--card)}
+  .mkwrap::-webkit-scrollbar-thumb:hover{background:var(--hover)}
+  .mkwrap{scrollbar-width:thin;scrollbar-color:var(--bd) var(--bg)}
+  /* ── FILA DE TOTALES, clavada al pie de la tabla ── */
+  table.mk tfoot td{position:sticky;bottom:0;z-index:4;background:var(--panel);
+    border-top:2px solid var(--bd);font-weight:900;font-size:12.5px;height:42px;
+    padding:0 8px;text-align:center;font-variant-numeric:tabular-nums;white-space:nowrap}
+  table.mk tfoot td.izq{left:0;z-index:5;text-align:left;border-right:1.5px solid var(--bd)}
+  table.mk tfoot .cual{font-size:9px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--txt2);display:block;line-height:1.1}
+  table.mk td.tex{text-align:left;font-size:11.5px;color:var(--txt2)}
   table.mk{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%;table-layout:fixed}
   table.mk th{font-size:9.5px;font-weight:900;letter-spacing:.07em;text-transform:uppercase;color:var(--txt2);padding:9px 8px;text-align:center;vertical-align:middle;white-space:nowrap;user-select:none;border-bottom:1.5px solid var(--bd);border-right:1px solid var(--bd);background:var(--card);position:sticky;top:0;z-index:3;overflow:hidden;text-overflow:ellipsis;position:relative}
   table.mk th.sticky{position:sticky;top:0;z-index:3}
@@ -413,6 +431,8 @@
 
   <div class="mkbar">
     <input id="mkQ" placeholder="Buscar anuncio, campaña o conjunto…" oninput="mkPintar()" style="flex:1;min-width:200px">
+    <select id="mkCampana" onchange="mkLlenarConjuntos(); mkPintar()"><option value="">Todas las campañas</option></select>
+    <select id="mkConjunto" onchange="mkPintar()"><option value="">Todos los conjuntos</option></select>
     <select id="mkEstado" onchange="mkPintar()">
       <option value="">Todos los estados</option>
       <option value="ACTIVE">Activos</option>
@@ -459,7 +479,7 @@
     </div>
     <div style="font-size:10px;color:var(--txt2);margin-top:6px;line-height:1.5">ROAS y CAC no se configuran aquí: salen del margen que pusiste en la barra.</div>
   </div>
-  <div class="mkwrap"><table class="mk" id="mkTabla"><thead id="mkHead"></thead><tbody id="mkBody"></tbody></table></div>
+  <div class="mkwrap"><table class="mk" id="mkTabla"><thead id="mkHead"></thead><tbody id="mkBody"></tbody><tfoot id="mkFoot"></tfoot></table></div>
   <div id="mkVacio" style="display:none;text-align:center;color:var(--txt2);padding:26px;font-size:12.5px">Sin anuncios con esos filtros.</div>
 </div>
 </div>
@@ -513,6 +533,9 @@ function mkCanalDe(r){
 }
 function mkCanal(c, btn){
   MKCANAL = c;
+  const sc = document.getElementById('mkCampana');
+  if (sc){ sc.value = ''; sc.dataset.canal = ''; }   /* otro canal, otras campañas */
+  const sj = document.getElementById('mkConjunto'); if (sj) sj.value = '';
   document.querySelectorAll('[data-mkc]').forEach(b => b.classList.toggle('on', b.dataset.mkc === c));
   /* el embudo de etapas solo existe en WhatsApp: fuera de WhatsApp se cae a la vista de siempre */
   const sel = document.getElementById('mkVista');
@@ -632,6 +655,10 @@ function mkSem(key, val, ctx){
    fórmula exacta y de dónde sale el dato, la columna no va.
    ══════════════════════════════════════════════════════════════════════════ */
 const MK_COLS = {
+  /* 6-sep-2026 — campaña y conjunto como columnas, para leer y filtrar por ellas.
+     Son texto: no suman en la fila de totales y no se ordenan por número. */
+  campana:{t:'Campaña',w:190,txt:1,f:v=>esc(v||'—'),h:'<b>Campaña</b> — el nombre de la campaña en Meta. De acá sale la clasificación WhatsApp / Página web de los botones de arriba.'},
+  conjunto:{t:'Conjunto',w:180,txt:1,f:v=>esc(v||'—'),h:'<b>Conjunto de anuncios</b> — el ad set de Meta: es donde vive el público y el presupuesto. Podés filtrar por uno solo con el desplegable de la barra.'},
   gasto:{t:'Gasto',w:104,f:v=>mkSol(v),h:'<b>Gasto</b> — lo que Meta cobró por este anuncio en el período.<br><b>Origen:</b> Meta, campo <i>amount_spent</i>.<br><b>Ojo:</b> Meta cierra el gasto de la última hora con retraso, así que el total de hoy siempre queda un poco por debajo del de Ads Manager.'},
   impresiones:{t:'Impr.',w:88,f:v=>mkNum(v),h:'<b>Impresiones</b> — cuántas veces apareció el anuncio en pantalla. Una misma persona puede sumar varias.<br><b>Origen:</b> Meta, campo <i>impressions</i>.'},
   alcance:{t:'Alcance',w:88,f:v=>mkNum(v),h:'<b>Alcance</b> — cuentas distintas que lo vieron al menos una vez.<br><b>Origen:</b> Meta, campo <i>reach</i>.'},
@@ -830,6 +857,34 @@ async function mkCargar(refrescarMeta){
   }
 }
 
+/* 6-sep-2026 — los desplegables de campaña y conjunto se arman con lo que
+   realmente hay en el canal elegido, no con una lista fija. El de conjuntos
+   se recorta a la campaña elegida, para no ofrecer combinaciones vacías. */
+function mkLlenarCampanas(){
+  const sel = document.getElementById('mkCampana');
+  if (!MK || !MK.filas || sel.dataset.canal === MKCANAL) return;
+  const previo = sel.value;
+  const lista = [...new Set(MK.filas.filter(r => MKCANAL === 'all' || mkCanalDe(r) === MKCANAL)
+    .map(r => String(r.campana||'')).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">Todas las campañas</option>'
+    + lista.map(c => '<option value="' + esc(c) + '">' + esc(c) + '</option>').join('');
+  sel.value = lista.indexOf(previo) >= 0 ? previo : '';
+  sel.dataset.canal = MKCANAL;
+  mkLlenarConjuntos();
+}
+function mkLlenarConjuntos(){
+  const sel = document.getElementById('mkConjunto');
+  if (!MK || !MK.filas) return;
+  const cam = document.getElementById('mkCampana').value;
+  const previo = sel.value;
+  const lista = [...new Set(MK.filas
+    .filter(r => (MKCANAL === 'all' || mkCanalDe(r) === MKCANAL) && (!cam || String(r.campana||'') === cam))
+    .map(r => String(r.conjunto||'')).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">Todos los conjuntos</option>'
+    + lista.map(c => '<option value="' + esc(c) + '">' + esc(c) + '</option>').join('');
+  sel.value = lista.indexOf(previo) >= 0 ? previo : '';
+}
+
 function mkTicketRef(r){
   const t = mkN(r.act.ticket);
   if (t) return t;
@@ -852,6 +907,9 @@ function mkPintar(){
   const q  = (document.getElementById('mkQ').value || '').trim().toLowerCase();
   const fe = document.getElementById('mkEstado').value;
   const ff = document.getElementById('mkFiltro').value;
+  const fcam = document.getElementById('mkCampana').value;
+  const fcon = document.getElementById('mkConjunto').value;
+  mkLlenarCampanas();
 
   let rows = MK.filas.map(r => {
     r._acc = mkAccion(r);
@@ -861,6 +919,8 @@ function mkPintar(){
     return r;
   }).filter(r => {
     if (MKCANAL !== 'all' && mkCanalDe(r) !== MKCANAL) return false;
+    if (fcam && String(r.campana||'') !== fcam) return false;
+    if (fcon && String(r.conjunto||'') !== fcon) return false;
     if (q && ((r.anuncio + ' ' + r.campana + ' ' + r.conjunto).toLowerCase().indexOf(q) === -1)) return false;
     if (fe && (r.estado_anuncio || '') !== fe) return false;
     if (ff === 'incoh'   && !r._enc) return false;
@@ -873,6 +933,8 @@ function mkPintar(){
 
   rows.sort((a, b) => {
     if (mkOrden === 'anuncio') return String(a.anuncio).localeCompare(String(b.anuncio)) * mkDir;
+    if (MK_COLS[mkOrden] && MK_COLS[mkOrden].txt)
+      return String(a[mkOrden]||'').localeCompare(String(b[mkOrden]||'')) * mkDir;
     const x = mkN(a.act[mkOrden]), y = mkN(b.act[mkOrden]);
     if (x === null && y === null) return 0;
     if (x === null) return 1;
@@ -883,9 +945,9 @@ function mkPintar(){
   /* 6-sep-2026 — los KPI de arriba ya no son los de toda la cuenta: se recalculan
      sobre los anuncios del canal elegido. Las tasas NUNCA se promedian entre
      anuncios: se rehacen desde las sumas crudas (mismo criterio que el Panel). */
-  const _mkAgg = (lado) => {
+  const _mkAgg = (lado, listaFilas) => {
     const K = ['gasto','impresiones','alcance','clics','link_clicks','v3s','thruplays','p100','conv_meta','conversaciones','frias','tibias','calientes','pedidos','pagados','ingreso'];
-    const base = MK.filas.filter(r => MKCANAL === 'all' || mkCanalDe(r) === MKCANAL);
+    const base = listaFilas || MK.filas.filter(r => MKCANAL === 'all' || mkCanalDe(r) === MKCANAL);
     const t = {}; K.forEach(k => t[k] = 0);
     let hayEtapas = false;
     base.forEach(r => { const o = r[lado] || {}; K.forEach(k => { if (o[k] != null) { t[k] += Number(o[k]) || 0; if (k==='frias'||k==='tibias'||k==='calientes') hayEtapas = true; } }); });
@@ -909,7 +971,10 @@ function mkPintar(){
     if (!hayEtapas){ t.frias = t.tibias = t.calientes = null; }
     return t;
   };
-  const A = _mkAgg('act'), P = _mkAgg('prev'), cob = MK.cobertura || {};
+  /* 6-sep-2026 — los KPI de arriba miran las MISMAS filas que la tabla: si filtrás
+     un conjunto de anuncios, todo el panel habla de ese conjunto. Así el número de
+     arriba y el de la fila de totales nunca se contradicen. */
+  const A = _mkAgg('act', rows), P = _mkAgg('prev', rows), cob = MK.cobertura || {};
   const margenG = Math.max(1, Math.min(95, Number(document.getElementById('mkMargen').value) || 60)) / 100;
   const ctxG = {roasEq: 1/margenG, cacMax: (mkN(A.ticket) || 150) * margenG};
   const kpi = (l, v, a, p, k) => {
@@ -960,6 +1025,8 @@ function mkPintar(){
     const chipAcc = '<span class="mkchip ' + r._enc + '" onmouseenter="mkTipIn(event, \''
         + r._acc.por.replace(/'/g, "\\'") + '\')" onmouseleave="mkTipOut()">' + r._acc.a + '</span>';
     const celdas = cols.map(c => {
+      /* campaña y conjunto viven en la fila, no en las métricas */
+      if (MK_COLS[c].txt) return '<td class="tex" title="' + String(r[c]||'').replace(/"/g,'') + '">' + MK_COLS[c].f(r[c]) + '</td>';
       let val = mkN(r.act[c]);
       /* frecuencia: no viene del servidor, se saca acá con impresiones y alcance */
       if (c === 'frecuencia'){
@@ -986,6 +1053,29 @@ function mkPintar(){
       + (r.campana || '—') + '<br><b>Conjunto:</b> ' + (r.conjunto || '—') + '</div></td></tr>';
     return html;
   }).join('');
+
+  /* ── FILA DE TOTALES (6-sep-2026) ────────────────────────────────────────
+     Se calcula sobre las filas que estás viendo, con los filtros puestos.
+     Lo que se puede sumar, se suma (gasto, impresiones, ventas...). Lo que es
+     una tasa NO se promedia entre anuncios: se rehace desde los totales
+     —ROAS = ingreso total ÷ gasto total—, que es como lo hace Ads Manager.
+     Debajo de cada número dice cuál de las dos cosas fue.                   */
+  const T = A;   /* mismo cálculo que los KPI de arriba: una sola verdad */
+  const SUMA = {gasto:1,impresiones:1,alcance:1,clics:1,link_clicks:1,v3s:1,thruplays:1,p100:1,
+                conversaciones:1,frias:1,tibias:1,calientes:1,pedidos:1,pagados:1,ingreso:1};
+  document.getElementById('mkFoot').innerHTML = '<tr>'
+    + '<td class="izq" style="width:' + anchoCre + 'px">TOTAL<span class="cual">' + rows.length + ' anuncio' + (rows.length===1?'':'s') + '</span></td>'
+    + cols.map(c => {
+        if (MK_COLS[c].txt) return '<td></td>';
+        const v = mkN(T[c]);
+        if (v === null) return '<td>—</td>';
+        let cuerpo;
+        if (c === 'roas')            cuerpo = v.toFixed(2) + 'x';
+        else if (c === 'frecuencia') cuerpo = v.toFixed(2);
+        else                         cuerpo = MK_COLS[c].f(v);
+        return '<td>' + cuerpo + '<span class="cual">' + (SUMA[c] ? 'suma' : 'sobre el total') + '</span></td>';
+      }).join('')
+    + '<td></td></tr>';
 
   document.getElementById('mkVacio').style.display = rows.length ? 'none' : 'block';
   mkEngancharCabecera();
