@@ -576,7 +576,10 @@ async function mkRefrescarMeta(){
   catch (e) { /* sin webhook o sin red: seguimos con lo guardado */ }
   finally { clearTimeout(corte); }
 }
-let MK = null, mkOrden = 'gasto', mkDir = -1, mkDias = 7, mkPers = null, mkAbiertos = {}, mkAncho = {};
+/* 6-sep-2026 — la tabla arranca ordenada por GANANCIA de menor a mayor: lo
+   primero que ves al abrir el módulo es lo que te está costando plata. Mientras
+   el costo real no llegue, no hay ganancia que ordenar y se cae a gasto. */
+let MK = null, mkOrden = 'ganancia', mkDir = 1, mkDias = 7, mkPers = null, mkAbiertos = {}, mkAncho = {};
 let _mkArranque = 1;   /* la primera apertura entra en "Mes hasta hoy" */
 
 const mkN   = v => (v === null || v === undefined || v === '') ? null : Number(v);
@@ -651,6 +654,7 @@ function mkSem(key, val, ctx){
     const eq = ctx && ctx.roasEq ? ctx.roasEq : 1.67;
     return val >= eq*1.5 ? 'sem-v' : val >= eq ? 'sem-a' : 'sem-r';
   }
+  if (key === 'ganancia') return val > 0 ? 'sem-v' : (val < 0 ? 'sem-r' : 'sem-a');
   if (key === 'cac'){
     const mx = ctx && ctx.cacMax ? ctx.cacMax : 100;
     return val <= mx*0.6 ? 'sem-v' : val <= mx ? 'sem-a' : 'sem-r';
@@ -709,7 +713,7 @@ const MK_COLS = {
 };
 
 const MK_PRESETS = {
-  embudo:   ['gasto','impresiones','hook_rate','hold_rate','ctr','conversaciones','costo_conv','pedidos','tasa_cierre','cac','roas'],
+  embudo:   ['gasto','ingreso','ganancia','roas','hook_rate','ctr','conversaciones','costo_conv','pedidos','tasa_cierre','cac'],
   /* 6-sep-2026 — la vista que pidio Pablo: el anuncio de punta a punta, desde
      que frena el scroll hasta que la clienta paga. */
   embudowa: ['gasto','hook_rate','ctr','conversaciones','costo_conv','frias','frias_p','tibias','tibias_p','calientes','calientes_p','pedidos','tasa_cierre','cac','roas'],
@@ -968,15 +972,29 @@ function mkPintar(){
     return true;
   });
 
+  /* si se pidió ordenar por ganancia pero todavía no hay costo, se ordena por gasto */
+  let orden = mkOrden;
+  if (orden === 'ganancia' && !rows.some(r => (mkN(r.act.costo) || 0) > 0)) orden = 'gasto';
+  const valOrden = (r) => {
+    if (orden === 'ganancia'){
+      const ing = mkN(r.act.ingreso), cos = mkN(r.act.costo);
+      return (ing > 0 && cos > 0) ? (ing - cos - (mkN(r.act.gasto) || 0)) : null;
+    }
+    if (orden === 'frecuencia'){
+      const im = mkN(r.act.impresiones), al = mkN(r.act.alcance);
+      return (im && al) ? im / al : null;
+    }
+    return mkN(r.act[orden]);
+  };
   rows.sort((a, b) => {
     if (mkOrden === 'anuncio') return String(a.anuncio).localeCompare(String(b.anuncio)) * mkDir;
     if (MK_COLS[mkOrden] && MK_COLS[mkOrden].txt)
       return String(a[mkOrden]||'').localeCompare(String(b[mkOrden]||'')) * mkDir;
-    const x = mkN(a.act[mkOrden]), y = mkN(b.act[mkOrden]);
+    const x = valOrden(a), y = valOrden(b);
     if (x === null && y === null) return 0;
     if (x === null) return 1;
     if (y === null) return -1;
-    return (x - y) * mkDir;
+    return (x - y) * (orden === mkOrden ? mkDir : -1);
   });
 
   /* 6-sep-2026 — los KPI de arriba ya no son los de toda la cuenta: se recalculan
@@ -1030,17 +1048,26 @@ function mkPintar(){
     return '<div class="mkkpi ' + d.cls + ' ' + s + '"' + tip + '><div class="l">' + l + '</div><div class="v">' + v + '</div>'
       + '<div class="d ' + d.cls + '">' + d.ico + ' ' + (d.txt || '—') + '</div></div>';
   };
+  /* ══════════════════════════════════════════════════════════════════════
+     LOS OCHO DE ARRIBA (6-sep-2026, orden que pidió Pablo)
+     Primero la plata, después el volumen, al final la eficiencia:
+       Ingreso → Inversión → Ganancia → ROAS → Ventas → Conversaciones
+       → Costo por conversación → Cierre.
+     Salieron de acá Hook, Frecuencia, CTR y CAC: los cuatro viven en la
+     tabla de abajo y arriba solo hacían ruido. La cobertura tampoco está:
+     es una alarma, no un número de todos los días.
+     ══════════════════════════════════════════════════════════════════════ */
+  const gan = mkN(A.ganancia);
   document.getElementById('mkKpis').innerHTML = [
-    kpi('Inversión',  mkSol(A.gasto), A.gasto, P.gasto, 'gasto'),
     kpi('Ingreso',    mkSol(A.ingreso), A.ingreso, P.ingreso, 'ingreso'),
+    kpi('Inversión',  mkSol(A.gasto), A.gasto, P.gasto, 'gasto'),
+    kpi(gan === null ? 'Ganancia' : (gan >= 0 ? 'Ganancia' : 'Pérdida'),
+        gan === null ? '—' : mkSol(Math.abs(gan)), A.ganancia, P.ganancia, 'ganancia'),
     kpi('ROAS',       A.roas === null ? '—' : A.roas.toFixed(2) + 'x', A.roas, P.roas, 'roas'),
-    kpi('Hook ⚠',     mkPct(A.hook_rate), A.hook_rate, P.hook_rate, 'hook_rate'),
-    kpi('Frecuencia', A.frecuencia === null ? '—' : A.frecuencia.toFixed(2), A.frecuencia, P.frecuencia, 'frecuencia'),
-    kpi('CTR enlace', mkPct(A.ctr, 2), A.ctr, P.ctr, 'ctr'),
-    kpi('Conversac.', mkNum(A.conversaciones), A.conversaciones, P.conversaciones, 'conversaciones'),
     kpi('Ventas',     mkNum(A.pedidos), A.pedidos, P.pedidos, 'pedidos'),
-    kpi('Cierre',     mkPct(A.tasa_cierre), A.tasa_cierre, P.tasa_cierre, 'tasa_cierre'),
-    kpi('CAC',        mkSol(A.cac), A.cac, P.cac, 'cac')
+    kpi('Conversac.', mkNum(A.conversaciones), A.conversaciones, P.conversaciones, 'conversaciones'),
+    kpi('Costo/conv', mkSol(A.costo_conv), A.costo_conv, P.costo_conv, 'costo_conv'),
+    kpi('Cierre',     mkPct(A.tasa_cierre), A.tasa_cierre, P.tasa_cierre, 'tasa_cierre')
   ].join('');
 
   /* 6-sep-2026 — La cobertura salió de los KPI. No es un número para mirar todos
