@@ -463,6 +463,17 @@
   <div id="mkVacio" style="display:none;text-align:center;color:var(--txt2);padding:26px;font-size:12.5px">Sin anuncios con esos filtros.</div>
 </div>
 </div>
+<!-- 6-sep-2026 — ESTOS DOS FALTABAN. Tenían su CSS y su JavaScript desde el
+     principio, pero nunca se habían creado en la página: getElementById
+     devolvía nada y las funciones se rompían sin avisar. Por eso el mensajito
+     de los encabezados no salía NUNCA, y el doble clic en la miniatura del
+     creativo tampoco abría la lupa. -->
+<div id="mkTip"></div>
+<div id="mkLupa" onclick="mkLupaCerrar(event)">
+  <img alt="" ondblclick="mkLupaAbrir()">
+  <div class="cap"></div>
+</div>
+
 <script>
 const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
@@ -531,7 +542,7 @@ function mkFechaLarga(d1, d2){
   return dd(a) + ' de ' + mes(a) + ' ' + a.getFullYear() + ' al ' + dd(b) + ' de ' + mes(b) + ' ' + b.getFullYear();
 }
 
-const MK_INVERSAS = {cac:1, cpm:1, cpc:1, costo_conv:1};
+const MK_INVERSAS = {cac:1, cpm:1, cpc:1, costo_conv:1, frecuencia:1};
 
 /* ---- parametros de semaforo (editables y guardados) ---- */
 const MK_PAR_DEF = {
@@ -542,7 +553,9 @@ const MK_PAR_DEF = {
   cobertura:{v:70, a:40, mas:1, u:'%',  t:'Cobertura de atribución'},
   costo_conv:{v:3, a:6,  mas:0, u:'S/', t:'Costo por conversación'},
   cpm:      {v:20, a:35, mas:0, u:'S/', t:'CPM'},
-  cpc:      {v:1,  a:2,  mas:0, u:'S/', t:'CPC'}
+  cpc:      {v:1,  a:2,  mas:0, u:'S/', t:'CPC'},
+  /* frecuencia: verde hasta 1.8, ámbar hasta 3.5, rojo arriba (umbrales de industria) */
+  frecuencia:{v:1.8, a:3.5, mas:0, u:'x', t:'Frecuencia'}
 };
 let MK_PAR = JSON.parse(JSON.stringify(MK_PAR_DEF));
 function mkCargarPar(){ try{ const g=JSON.parse(localStorage.getItem('tulula_mk_par')||'null'); if(g) Object.keys(g).forEach(k=>{ if(MK_PAR[k]){ MK_PAR[k].v=g[k].v; MK_PAR[k].a=g[k].a; } }); }catch(e){} }
@@ -593,39 +606,41 @@ function mkSem(key, val, ctx){
   return val <= p.v ? 'sem-v' : val <= p.a ? 'sem-a' : 'sem-r';
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   LAS COLUMNAS — qué es cada una, de dónde sale y cómo se calcula.
+   El texto de `h` es lo que aparece en el globito al pasar el mouse por el
+   encabezado (sin tocar nada: el globito no recibe clics, así que el clic
+   para ordenar sigue funcionando igual).
+   Regla que nos pusimos el 6-sep-2026: si el globito no puede decir la
+   fórmula exacta y de dónde sale el dato, la columna no va.
+   ══════════════════════════════════════════════════════════════════════════ */
 const MK_COLS = {
-  gasto:{t:'Gasto',w:104,f:v=>mkSol(v),h:'<b>Gasto</b> — lo invertido en este anuncio dentro del periodo. Viene directo de Meta.'},
-  impresiones:{t:'Impr.',w:88,f:v=>mkNum(v),h:'<b>Impresiones</b> — cuántas veces se mostró el anuncio. Una misma persona puede sumar varias.'},
-  alcance:{t:'Alcance',w:88,f:v=>mkNum(v),h:'<b>Alcance</b> — personas distintas que lo vieron. Si el alcance es mucho menor que las impresiones, le estás pegando repetido a la misma gente (fatiga creativa).'},
-  hook_rate:{t:'Hook',w:86,f:v=>mkPct(v),h:'<b>Hook rate</b> = reproducciones de 3 segundos ÷ impresiones.<br>Mide si el primer segundo frena el scroll. Hook bajo significa que el problema es el arranque del video, no la oferta.'},
-  hold_rate:{t:'Hold',w:80,f:v=>mkPct(v),h:'<b>Hold rate</b> = ThruPlays ÷ <b>impresiones</b>.<br>De toda la gente a la que le apareció el anuncio, qué porcentaje lo vio hasta el final. Mezcla enganche inicial y retención.'},
-  retencion:{t:'Retenc.',w:84,f:v=>mkPct(v),h:'<b>Retención</b> = vistas al 100% ÷ reproducciones de 3s.<br>Aquí el denominador es solo quien ya se quedó 3 segundos: responde "de los que entraron, cuántos aguantaron". Aísla la calidad del cuerpo del video.'},
-  ctr:{t:'CTR',w:78,f:v=>mkPct(v,2),h:'<b>CTR</b> = clics en el enlace ÷ impresiones. Mide si la oferta convence lo suficiente para dar el paso.'},
-  ctr_todos:{t:'CTR todos',w:88,f:v=>mkPct(v,2),h:'<b>CTR (todos)</b> — incluye clics en cualquier parte del anuncio, no solo el enlace. Siempre sale más alto.'},
-  cpm:{t:'CPM',w:88,f:v=>mkSol(v),h:'<b>CPM</b> — costo por cada mil impresiones. Sube cuando el anuncio se desgasta o la puja se encarece.'},
-  cpc:{t:'CPC',w:88,f:v=>mkSol(v),h:'<b>CPC</b> — costo por clic en el enlace. Gasto ÷ clics al enlace.'},
-  conversaciones:{t:'Convers.',w:88,f:v=>mkNum(v),h:'<b>Conversaciones</b> — clics a WhatsApp que registramos nosotros con el ctwa_clid. Es dato propio, no de Meta.'},
-  /* ── ETAPAS DEL EMBUDO DE WHATSAPP (6-sep-2026) ──────────────────────────
-     Mismas cinco escaleras que el modulo Ventas, pero por anuncio:
-       Conversaciones → Frias (respondio) → Tibias (2 datos) → Calientes (pidio
-       info de pago) → Compras. El % siempre se lee sobre CONVERSACIONES, para
-       que las columnas se comparen entre si de un vistazo.
-     La data la tiene que entregar el webhook /marketing2 en act.frias/tibias/
-     calientes. Mientras no venga, la celda dice "—" y no rompe nada.       */
-  frias:{t:'Frías',w:80,f:v=>mkNum(v),h:'<b>Frías</b> — de las que escribieron, cuántas contestaron algo más allá del primer mensaje. Es la primera señal de que el anuncio trajo gente de verdad y no un clic por error.'},
-  frias_p:{t:'% Frías',w:82,f:v=>mkPct(v),h:'<b>% Frías</b> = frías ÷ conversaciones. Si es bajo, el anuncio trae curiosos: el problema está en la promesa del anuncio, no en la venta.'},
-  tibias:{t:'Tibias',w:80,f:v=>mkNum(v),h:'<b>Tibias</b> — dieron al menos dos datos (talla, modelo, ciudad). Ya están evaluando comprar.'},
-  tibias_p:{t:'% Tibias',w:84,f:v=>mkPct(v),h:'<b>% Tibias</b> = tibias ÷ conversaciones. Mide si el anuncio trae gente con intención real de compra.'},
-  calientes:{t:'Calientes',w:88,f:v=>mkNum(v),h:'<b>Calientes</b> — pidieron información de pago. Están a un paso de comprar.'},
-  calientes_p:{t:'% Calientes',w:96,f:v=>mkPct(v),h:'<b>% Calientes</b> = calientes ÷ conversaciones. Si es alto y la tasa de cierre es baja, el anuncio hace su trabajo y se está perdiendo la venta en el cierre, no en la pauta.'},
-  costo_conv:{t:'Costo/conv',w:100,f:v=>mkSol(v),h:'<b>Costo por conversación</b> — gasto ÷ conversaciones. Cuánto cuesta que una clienta te escriba.'},
-  pedidos:{t:'Pedidos',w:80,f:v=>mkNum(v),h:'<b>Pedidos</b> — ventas atribuidas a este anuncio. Solo canal WhatsApp con origen ADS DIRECTO, y una sola compra por clienta por anuncio.'},
-  tasa_cierre:{t:'Cierre',w:82,f:v=>mkPct(v),h:'<b>Tasa de cierre</b> = pedidos ÷ conversaciones.<br>Separa el anuncio que trae gente del que trae compradoras. Con pocos pedidos es más estable que el ROAS.'},
-  pagados:{t:'Pagados',w:82,f:v=>mkNum(v),h:'<b>Pagados</b> — pedidos con pago COMPLETO. La diferencia contra Pedidos es lo que sigue pendiente de cobro.'},
-  ingreso:{t:'Ingreso',w:104,f:v=>mkSol(v),h:'<b>Ingreso atribuido</b> — suma del ticket de los pedidos atribuidos, sin envío. Es venta bruta, no margen.'},
-  ticket:{t:'Ticket',w:96,f:v=>mkSol(v),h:'<b>Ticket promedio</b> — ingreso ÷ pedidos de este anuncio.'},
-  cac:{t:'CAC',w:96,f:v=>mkSol(v),h:'<b>CAC</b> — gasto ÷ pedidos. Cuánto cuesta conseguir una clienta con este anuncio. Tiene que quedar debajo de ticket × margen.'},
-  roas:{t:'ROAS',w:88,f:v=>v===null?'—':Number(v).toFixed(2)+'x',h:'<b>ROAS</b> — ingreso ÷ gasto. El equilibrio es 1 ÷ margen: con 60% de margen necesitas 1.67x solo para no perder plata.'}
+  gasto:{t:'Gasto',w:104,f:v=>mkSol(v),h:'<b>Gasto</b> — lo que Meta cobró por este anuncio en el período.<br><b>Origen:</b> Meta, campo <i>amount_spent</i>.<br><b>Ojo:</b> Meta cierra el gasto de la última hora con retraso, así que el total de hoy siempre queda un poco por debajo del de Ads Manager.'},
+  impresiones:{t:'Impr.',w:88,f:v=>mkNum(v),h:'<b>Impresiones</b> — cuántas veces apareció el anuncio en pantalla. Una misma persona puede sumar varias.<br><b>Origen:</b> Meta, campo <i>impressions</i>.'},
+  alcance:{t:'Alcance',w:88,f:v=>mkNum(v),h:'<b>Alcance</b> — cuentas distintas que lo vieron al menos una vez.<br><b>Origen:</b> Meta, campo <i>reach</i>.'},
+  frecuencia:{t:'Frec.',w:76,f:v=>v===null?'—':Number(v).toFixed(2),h:'<b>Frecuencia</b> = impresiones ÷ alcance.<br>Cuántas veces vio el anuncio, en promedio, cada persona. Es <b>la señal de desgaste</b>: hasta 1.8 va tranquilo, de 2.5 para arriba conviene mirarlo, y arriba de 3.5 el anuncio ya está quemado — pero solo cuentalo como fatiga si al mismo tiempo se está cayendo el CTR.'},
+  hook_rate:{t:'Hook ⚠',w:92,f:v=>mkPct(v),h:'<b>⚠ Este número hoy NO sirve para comparar.</b><br>Está calculado como <i>reproducciones de video ÷ impresiones</i>, pero el campo que llega de Meta (<i>video_play_actions</i>) cuenta el arranque automático del video: casi toda impresión suma una reproducción, y por eso da 90% en todos.<br><b>Lo correcto</b> es reproducciones de <b>3 segundos</b> ÷ impresiones, que en esta cuenta anda por el 11%. Está pendiente de corregir en el origen de los datos (n8n).'},
+  hold_rate:{t:'Hold',w:80,f:v=>mkPct(v),h:'<b>Hold</b> = ThruPlays ÷ impresiones.<br>ThruPlay es de Meta: vio el video completo, o al menos 15 segundos. De toda la gente a la que le apareció el anuncio, qué parte se quedó hasta el final.<br><b>Origen:</b> Meta, <i>video_thruplay_watched_actions</i>.'},
+  retencion:{t:'Retenc.',w:84,f:v=>mkPct(v),h:'<b>Retención</b> = vistas al 100% ÷ reproducciones.<br>Acá el denominador es solo quien ya empezó a ver: responde "de los que entraron, cuántos aguantaron hasta el final". Arrastra el mismo problema del Hook mientras el denominador siga siendo el arranque automático.'},
+  ctr:{t:'CTR enlace',w:96,f:v=>mkPct(v,2),h:'<b>CTR del enlace</b> = clics en el ENLACE ÷ impresiones.<br>Solo cuenta el clic que lleva a WhatsApp o a la web. No cuenta likes, comentarios, ni clics en la foto o en el "ver más".<br><b>Origen:</b> Meta, <i>link_click</i>. Es el CTR que hay que mirar.'},
+  ctr_todos:{t:'CTR todos',w:88,f:v=>mkPct(v,2),h:'<b>CTR de todos los clics</b> = cualquier clic ÷ impresiones.<br>Incluye likes, comentarios, clic en la foto, en el nombre de la página y en "ver más". Siempre sale más alto que el del enlace y no dice nada sobre la venta.<br><b>Origen:</b> Meta, <i>clicks</i>.'},
+  cpm:{t:'CPM',w:88,f:v=>mkSol(v),h:'<b>CPM</b> = gasto ÷ impresiones × 1000.<br>Lo que cuesta que el anuncio aparezca mil veces. Sube cuando el anuncio se desgasta o cuando hay más competencia en la subasta.'},
+  cpc:{t:'CPC',w:88,f:v=>mkSol(v),h:'<b>CPC</b> = gasto ÷ clics en el enlace.<br>Cuánto cuesta cada clic que de verdad lleva a la clienta a WhatsApp o a la web.'},
+  conversaciones:{t:'Convers.',w:88,f:v=>mkNum(v),h:'<b>Conversaciones</b> — clientas que llegaron a WhatsApp desde este anuncio.<br><b>Origen:</b> dato nuestro, no de Meta. Se cuenta cruzando el <i>ctwa_clid</i> (la etiqueta que Meta le pega al clic) contra la bandeja de WhatsApp.<br><b>Ojo:</b> falta confirmar si cuenta el clic o la charla realmente iniciada. Es la primera escala del embudo y el 100% contra el que se miden las demás.'},
+  costo_conv:{t:'Costo/conv',w:100,f:v=>mkSol(v),h:'<b>Costo por conversación</b> = gasto ÷ conversaciones.<br>Cuánto cuesta que una clienta te escriba. <b>Es el número más confiable del tablero</b>: se estabiliza desde el primer día, mientras que el ROAS con una o dos ventas es puro ruido.'},
+  frias:{t:'Frías',w:80,f:v=>mkNum(v),h:'<b>Frías</b> — de las que escribieron, cuántas respondieron algo más allá del primer mensaje.<br>Es la primera prueba de que el anuncio trajo gente de verdad y no un clic por error.<br><b>Origen:</b> la misma escala del embudo del módulo Ventas, pero cortada por anuncio.'},
+  frias_p:{t:'% Frías',w:82,f:v=>mkPct(v),h:'<b>% Frías</b> = frías ÷ conversaciones.<br>Si es bajo, el anuncio trae curiosos: el problema está en lo que promete el anuncio, no en cómo vendemos.'},
+  tibias:{t:'Tibias',w:80,f:v=>mkNum(v),h:'<b>Tibias</b> — dieron al menos dos datos (talla, modelo, ciudad). Ya están evaluando comprar.<br><b>Origen:</b> escala del embudo del módulo Ventas, cortada por anuncio.'},
+  tibias_p:{t:'% Tibias',w:84,f:v=>mkPct(v),h:'<b>% Tibias</b> = tibias ÷ conversaciones.<br>Mide si el anuncio trae gente con intención real de comprar, no solo con curiosidad.'},
+  calientes:{t:'Calientes',w:88,f:v=>mkNum(v),h:'<b>Calientes</b> — pidieron información de pago. Están a un paso de comprar.<br><b>Origen:</b> escala del embudo del módulo Ventas, cortada por anuncio.'},
+  calientes_p:{t:'% Calientes',w:96,f:v=>mkPct(v),h:'<b>% Calientes</b> = calientes ÷ conversaciones.<br>Si este número está alto y la tasa de cierre baja, el anuncio hizo su trabajo y la venta se está perdiendo en el cierre, no en la pauta.'},
+  pedidos:{t:'Ventas',w:80,f:v=>mkNum(v),h:'<b>Ventas</b> — pedidos atribuidos a este anuncio.<br><b>Origen:</b> el ERP. Solo canal WhatsApp con origen ADS, y una sola compra por clienta por anuncio.'},
+  tasa_cierre:{t:'Cierre',w:82,f:v=>mkPct(v),h:'<b>Tasa de cierre</b> = ventas ÷ conversaciones.<br>Separa el anuncio que trae gente del que trae compradoras. Con pocas ventas es más estable que el ROAS.<br><b>Tu meta: 5%.</b>'},
+  pagados:{t:'Pagados',w:82,f:v=>mkNum(v),h:'<b>Pagados</b> — de esas ventas, cuántas ya están cobradas por completo. La diferencia contra Ventas es lo que sigue pendiente de cobro.'},
+  ingreso:{t:'Ingreso',w:104,f:v=>mkSol(v),h:'<b>Ingreso atribuido</b> — suma de lo que pagaron esas clientas, sin contar el envío. Es venta bruta, no ganancia.'},
+  ticket:{t:'Ticket',w:96,f:v=>mkSol(v),h:'<b>Ticket promedio</b> = ingreso ÷ ventas de este anuncio.'},
+  cac:{t:'CAC',w:96,f:v=>mkSol(v),h:'<b>CAC</b> = gasto ÷ ventas.<br>Cuánto cuesta conseguir una clienta con este anuncio. Para no perder plata tiene que quedar por debajo de <i>ticket × margen</i> (con el margen que pusiste en la barra de arriba).'},
+  roas:{t:'ROAS',w:88,f:v=>v===null?'—':Number(v).toFixed(2)+'x',h:'<b>ROAS</b> = ingreso ÷ gasto.<br>El punto de equilibrio es 1 ÷ margen: con 60% de margen necesitás 1.67x solo para no perder. Debajo de eso, cada sol invertido devuelve menos de lo que cuesta.<br><b>Ojo:</b> con una o dos ventas por anuncio el ROAS salta muchísimo; para decidir, mirá primero el costo por conversación y la tasa de cierre.'}
 };
 
 const MK_PRESETS = {
@@ -633,7 +648,7 @@ const MK_PRESETS = {
   /* 6-sep-2026 — la vista que pidio Pablo: el anuncio de punta a punta, desde
      que frena el scroll hasta que la clienta paga. */
   embudowa: ['gasto','hook_rate','ctr','conversaciones','costo_conv','frias','frias_p','tibias','tibias_p','calientes','calientes_p','pedidos','tasa_cierre','cac','roas'],
-  creativo: ['gasto','impresiones','alcance','hook_rate','hold_rate','retencion','ctr','cpc','cpm'],
+  creativo: ['gasto','impresiones','alcance','frecuencia','hook_rate','hold_rate','retencion','ctr','cpc','cpm'],
   plata:    ['gasto','conversaciones','pedidos','pagados','ingreso','ticket','cac','roas'],
   sabana:   ['gasto','impresiones','alcance','hook_rate','hold_rate','retencion','ctr','ctr_todos','cpm','cpc','conversaciones','costo_conv','pedidos','tasa_cierre','pagados','ingreso','ticket','cac','roas']
 };
@@ -703,7 +718,7 @@ function mkTipIn(ev, html){
     const w = t.offsetWidth, h = t.offsetHeight;
     t.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, x - w / 2)) + 'px';
     t.style.top  = (y + h + 24 > window.innerHeight ? y - h - 12 : y + 18) + 'px';
-  }, 1200);
+  }, 250);   /* 6-sep-2026: antes 1200 ms — nadie espera segundo y pico con el mouse quieto */
 }
 function mkTipOut(){ clearTimeout(mkTipT); document.getElementById('mkTip').style.display = 'none'; }
 
@@ -859,6 +874,7 @@ function mkPintar(){
     t.ctr_todos   = d(t.clics, t.impresiones) === null ? null : d(t.clics, t.impresiones) * 100;
     t.cpm         = d(t.gasto, t.impresiones) === null ? null : d(t.gasto, t.impresiones) * 1000;
     t.cpc         = d(t.gasto, t.link_clicks);
+    t.frecuencia  = d(t.impresiones, t.alcance);
     t.costo_conv  = d(t.gasto, t.conversaciones);
     t.tasa_cierre = d(t.pedidos, t.conversaciones) === null ? null : d(t.pedidos, t.conversaciones) * 100;
     t.cac         = d(t.gasto, t.pedidos);
@@ -876,18 +892,23 @@ function mkPintar(){
   const kpi = (l, v, a, p, k) => {
     const d = mkDelta(a, p, k);
     const s = mkSem(k, mkN(a), ctxG);
-    return '<div class="mkkpi ' + d.cls + ' ' + s + '"><div class="l">' + l + '</div><div class="v">' + v + '</div>'
+    /* 6-sep-2026 — el mismo globito de las columnas, también en los KPI de arriba */
+    const ayuda = (MK_COLS[k] && MK_COLS[k].h) ? MK_COLS[k].h : '';
+    const tip = ayuda
+      ? ' onmouseenter="mkTipIn(event, MK_COLS[\'' + k + '\'].h)" onmouseleave="mkTipOut()" style="cursor:help"'
+      : '';
+    return '<div class="mkkpi ' + d.cls + ' ' + s + '"' + tip + '><div class="l">' + l + '</div><div class="v">' + v + '</div>'
       + '<div class="d ' + d.cls + '">' + d.ico + ' ' + (d.txt || '—') + '</div></div>';
   };
   document.getElementById('mkKpis').innerHTML = [
     kpi('Inversión',  mkSol(A.gasto), A.gasto, P.gasto, 'gasto'),
     kpi('Ingreso',    mkSol(A.ingreso), A.ingreso, P.ingreso, 'ingreso'),
     kpi('ROAS',       A.roas === null ? '—' : A.roas.toFixed(2) + 'x', A.roas, P.roas, 'roas'),
-    kpi('Hook rate',  mkPct(A.hook_rate), A.hook_rate, P.hook_rate, 'hook_rate'),
-    kpi('Retención',  mkPct(A.retencion), A.retencion, P.retencion, 'retencion'),
-    kpi('CTR',        mkPct(A.ctr, 2), A.ctr, P.ctr, 'ctr'),
+    kpi('Hook ⚠',     mkPct(A.hook_rate), A.hook_rate, P.hook_rate, 'hook_rate'),
+    kpi('Frecuencia', A.frecuencia === null ? '—' : A.frecuencia.toFixed(2), A.frecuencia, P.frecuencia, 'frecuencia'),
+    kpi('CTR enlace', mkPct(A.ctr, 2), A.ctr, P.ctr, 'ctr'),
     kpi('Conversac.', mkNum(A.conversaciones), A.conversaciones, P.conversaciones, 'conversaciones'),
-    kpi('Pedidos',    mkNum(A.pedidos), A.pedidos, P.pedidos, 'pedidos'),
+    kpi('Ventas',     mkNum(A.pedidos), A.pedidos, P.pedidos, 'pedidos'),
     kpi('Cierre',     mkPct(A.tasa_cierre), A.tasa_cierre, P.tasa_cierre, 'tasa_cierre'),
     kpi('CAC',        mkSol(A.cac), A.cac, P.cac, 'cac'),
     kpi('Cobertura',  cob.act ? mkPct(cob.act.pct) : '—', cob.act && cob.act.pct, cob.prev && cob.prev.pct, 'cobertura')
@@ -917,6 +938,11 @@ function mkPintar(){
         + r._acc.por.replace(/'/g, "\\'") + '\')" onmouseleave="mkTipOut()">' + r._acc.a + '</span>';
     const celdas = cols.map(c => {
       let val = mkN(r.act[c]);
+      /* frecuencia: no viene del servidor, se saca acá con impresiones y alcance */
+      if (c === 'frecuencia'){
+        const im = mkN(r.act.impresiones), al = mkN(r.act.alcance);
+        val = (im && al) ? im / al : null;
+      }
       /* los porcentajes del embudo se derivan aca: el servidor solo manda los conteos */
       if (val === null && (c === 'frias_p' || c === 'tibias_p' || c === 'calientes_p')){
         const base = mkN(r.act.conversaciones), n = mkN(r.act[c.replace('_p','')]);
