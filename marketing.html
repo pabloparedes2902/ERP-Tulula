@@ -521,6 +521,23 @@ function mkCanal(c, btn){
   if (MKSUB === 'quefunciona') qfPintar();
 }
 const URL_MARKETING = 'https://n8n-production-4e716.up.railway.app/webhook/marketing2';
+/* ══════════════════════════════════════════════════════════════════════════
+   REFRESCO DE META BAJO DEMANDA (6-sep-2026, idea de Pablo)
+   El gasto no se actualizaba solo: el workflow de n8n corría una vez al día.
+   En vez de ponerlo a correr cada 15 minutos (gasto inútil de llamadas), el
+   módulo le pide a n8n que traiga el día de HOY justo cuando hace falta:
+   al abrir Marketing y cada vez que se toca el 🔄 de la barra del ERP.
+   Si el webhook todavía no existe, no pasa nada: se sigue mostrando lo que
+   haya en la base, sin errores ni esperas eternas.
+   ══════════════════════════════════════════════════════════════════════════ */
+const URL_META_REFRESCO = 'https://n8n-production-4e716.up.railway.app/webhook/meta-refrescar-hoy';
+async function mkRefrescarMeta(){
+  const ctl = new AbortController();
+  const corte = setTimeout(() => ctl.abort(), 25000);   /* nunca dejar la pantalla colgada */
+  try { await fetch(URL_META_REFRESCO, {signal: ctl.signal}); }
+  catch (e) { /* sin webhook o sin red: seguimos con lo guardado */ }
+  finally { clearTimeout(corte); }
+}
 let MK = null, mkOrden = 'gasto', mkDir = -1, mkDias = 7, mkPers = null, mkAbiertos = {}, mkAncho = {};
 let _mkArranque = 1;   /* la primera apertura entra en "Mes hasta hoy" */
 
@@ -752,7 +769,7 @@ function _mkFijar(desde, hasta){
   document.getElementById('mkHasta').value = hasta;
   mkPers = 1;
 }
-function mkPeriodoCambio(){
+function mkPeriodoCambio(refrescarMeta){
   const v = document.getElementById('mkPeriodo').value;
   const wrap = document.getElementById('mkCustomWrap');
   const h = new Date(), sv = x => x.toLocaleDateString('sv');
@@ -772,7 +789,7 @@ function mkPeriodoCambio(){
     const d2 = new Date(h.getFullYear(), h.getMonth(), 0);
     _mkFijar(sv(d1), sv(d2));
   } else { mkDias = Number(v); mkPers = null; }   /* 7 / 14 / 30 dias completos, sin hoy */
-  mkCargar();
+  mkCargar(refrescarMeta === true);
 }
 
 /* Fecha local YYYY-MM-DD. toISOString() usa UTC y en Lima adelantaba el dia. */
@@ -780,9 +797,15 @@ function _mkISO(offset){
   const a = new Date();
   return new Date(a.getFullYear(), a.getMonth(), a.getDate() + offset).toLocaleDateString('sv');
 }
-async function mkCargar(){
+async function mkCargar(refrescarMeta){
   const sub = document.getElementById('mkSub');
   sub.style.display = 'none';
+  if (refrescarMeta){
+    sub.style.display = ''; sub.style.color = 'var(--txt2)';
+    sub.textContent = 'Trayendo el gasto de hoy desde Meta…';
+    await mkRefrescarMeta();
+    sub.style.display = 'none';
+  }
   mkCargarPrefs(); mkCargarPar();
   let url = URL_MARKETING;
   if (mkPers){
@@ -1174,7 +1197,7 @@ document.addEventListener('DOMContentLoaded', function(){
   mkIrSub('anuncios');
   mkCanal('wa', null);
   document.getElementById('mkPeriodo').value = 'm';
-  mkPeriodoCambio();
+  mkPeriodoCambio(true);   /* al abrir el módulo, primero refrescamos Meta */
 });
 
 /* 6-sep-2026 — el 🔄 de la barra del ERP le habla al iframe. Si no contestamos
@@ -1182,7 +1205,7 @@ document.addEventListener('DOMContentLoaded', function(){
 window.addEventListener('message', function(e){
   if (e && e.data && e.data.tipo === 'erp-refrescar'){
     try { e.source.postMessage({tipo:'erp-refrescar-ok'}, '*'); } catch(_){}
-    mkCargar();
+    mkCargar(true);   /* el 🔄 del ERP sí va a buscar el gasto fresco a Meta */
   }
 });
 </script>
