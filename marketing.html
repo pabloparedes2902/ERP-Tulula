@@ -617,6 +617,15 @@ const URL_MARKETING = 'https://n8n-production-4e716.up.railway.app/webhook/marke
    que este seleccionado arriba: si no, el mismo anuncio diria "escalar" en un
    rango y "apagar" en otro. */
 const URL_ADS_HISTORIA = 'https://n8n-production-4e716.up.railway.app/webhook/ads-historia';
+/* 7-sep-2026 — el ⟳ de la barra del ERP dispara tambien el refresco del cache
+   de ventas (lee la vista oficial del ERP y la guarda en la base del bot). Sin
+   esto habia que esperar al ciclo de 15 minutos. */
+const URL_ADS_REFRESCO = 'https://n8n-production-4e716.up.railway.app/webhook/ads-refrescar';
+async function mkRefrescarHistoria(){
+  try { await fetch(URL_ADS_REFRESCO, {mode:'no-cors', keepalive:true}); } catch (e) {}
+  await new Promise(r => setTimeout(r, 2500));   /* el refresco tarda ~1 s */
+  return mkCargarHistoria(true);
+}
 let MKH = null;                 /* {ad_id: {...}} */
 let MKH_TS = 0;
 async function mkCargarHistoria(forzar){
@@ -812,7 +821,19 @@ function mkCargarPrefs(){
   try {
     const g = JSON.parse(localStorage.getItem('tulula_mk_cols') || 'null');
     if (g){
-      if (Array.isArray(g.cols) && g.cols.length) mkColsAct = g.cols.filter(c => MK_COLS[c]);
+      if (Array.isArray(g.cols) && g.cols.length){
+        mkColsAct = g.cols.filter(c => MK_COLS[c]);
+        /* 7-sep-2026 — "Mi vista" (la que Pablo se guardo) pisa a los presets,
+           asi que una columna NUEVA nunca aparecia. Se inserta una sola vez y
+           queda guardada; si despues la saca a mano, no vuelve. */
+        try {
+          if (!localStorage.getItem('tulula_mk_migra_spark')){
+            if (mkColsAct.indexOf('spark') === -1) mkColsAct.unshift('spark');
+            localStorage.setItem('tulula_mk_migra_spark', '1');
+            localStorage.setItem('tulula_mk_cols', JSON.stringify({cols: mkColsAct, anchos: g.anchos || {}}));
+          }
+        } catch (e) {}
+      }
       if (g.anchos) mkAncho = g.anchos;
       const s = document.getElementById('mkVista'); if (s) s.value = 'mia';
     }
@@ -1745,7 +1766,8 @@ window.addEventListener('message', function(e){
   if (e && e.data && e.data.tipo === 'mkt-ir-sub'){ mkIrSub(e.data.cual); return; }
   if (e && e.data && e.data.tipo === 'erp-refrescar'){
     try { e.source.postMessage({tipo:'erp-refrescar-ok'}, '*'); } catch(_){}
-    mkCargar(true);   /* el 🔄 del ERP sí va a buscar el gasto fresco a Meta */
+    mkRefrescarHistoria();   /* ventas frescas para la columna Acción */
+    mkCargar(true);          /* y el gasto fresco de Meta */
   }
 });
 </script>
