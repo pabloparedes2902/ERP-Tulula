@@ -17,7 +17,7 @@
     --bg:#12161f; --panel:#1a2130; --card:#232b3b; --bd:#37455f; --hover:#5b7ab0;
     --txt:#e8edf5; --txt2:#9db0cc; --etapa:#7f93b8;
     --bot:#4d8ae0; --bot-card:#17314f; --hum:#e09244; --hum-card:#3f2c10; --cli:#8fa3c0;
-    --ab:#9b7bff; --ok:#43c98a; --warn:#e0a63d; --bad:#ff5d5d; --morado:#8a63d2;
+    --ab:#9b7bff; --ok:#43c98a; --warn:#e0a63d; --bad:#ff5d5d; --morado:#8a63d2; --cel:#38e0ff;
     --fuego-bg:rgba(255,93,93,.14); --sel:#ffd766;
     --f-am:#e8c94a; --f-na:#e8853d; --f-ro:#e04848; --f-ve:#3dbb7e;
   }
@@ -25,7 +25,7 @@
     --bg:#eef1f6; --panel:#fff; --card:#fff; --bd:#c8d3e2; --hover:#3f6cb8;
     --txt:#1d2735; --txt2:#5d6d86; --etapa:#7285a3;
     --bot:#2d64b8; --bot-card:#e4eefc; --hum:#c07a1a; --hum-card:#fcefdc; --cli:#5d6d86;
-    --ab:#7452e0; --ok:#1f8f5f; --warn:#b8821f; --bad:#d93838; --morado:#7452e0;
+    --ab:#7452e0; --ok:#1f8f5f; --warn:#b8821f; --bad:#d93838; --morado:#7452e0; --cel:#0d7e9e;
     --fuego-bg:rgba(217,56,56,.10); --sel:#c78a00;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -325,11 +325,13 @@
   /* 7-sep-2026 — cápsulas de color, siempre encendidas */
   .mkchip.est-on{border-color:var(--ok);color:var(--ok);background:rgba(67,201,138,.14)}
   .mkchip.est-off{border-color:var(--bad);color:var(--bad);background:rgba(255,93,93,.14)}
-  .mkchip.acc-escalar{border-color:var(--ok);color:var(--ok);background:rgba(67,201,138,.14)}
-  .mkchip.acc-esperar{border-color:var(--warn);color:var(--warn);background:rgba(224,166,61,.14)}
-  .mkchip.acc-apagar{border-color:var(--bad);color:var(--bad);background:rgba(255,93,93,.14)}
-  /* 7-sep-2026 - sin accion pendiente: plomo, para que el color solo llame
-     la atencion cuando de verdad hay que mover algo. */
+  /* 7-sep-2026 (Pablo) - cuatro acciones, cada una con su color, y el plomo
+     para cuando esa accion NO se necesita o ya esta hecha:
+       APAGAR rojo · ESPERAR amarillo · ESCALAR celeste · ENCENDER verde. */
+  .mkchip.acc-escalar{color:var(--cel);background:rgba(56,224,255,.14)}
+  .mkchip.acc-esperar{color:var(--warn);background:rgba(224,166,61,.14)}
+  .mkchip.acc-apagar{color:var(--bad);background:rgba(255,93,93,.14)}
+  .mkchip.acc-encender{color:var(--ok);background:rgba(67,201,138,.14)}
   .mkchip.acc-nada{color:var(--txt2);background:rgba(140,140,140,.16)}
   .mkest{display:flex;flex-direction:column;gap:3px;align-items:flex-start}
   .mkchip.clic{cursor:pointer}
@@ -483,6 +485,8 @@
     <select id="mkFiltro" onchange="mkPintar()">
       <option value="">Toda la cuenta</option>
       <option value="incoh">⚠ Estado ≠ acción</option>
+      <option value="pide">🔔 Pide una acción</option>
+      <option value="encender">⏻ Encender</option>
       <option value="escalar">↑ Escalar</option>
       <option value="esperar">= Esperar</option>
       <option value="apagar">↓ Apagar</option>
@@ -997,6 +1001,28 @@ function mkAccion(r){
   return {a:'ESPERAR', por:'Está dentro de rango: ni para escalar ni para apagar.'};
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   LA ACCIÓN QUE DE VERDAD HAY QUE HACER (7-sep-2026, lógica de Pablo)
+   mkAccion() dice qué RECOMIENDAN los números. Esta función la cruza con el
+   estado real del anuncio y devuelve la acción concreta, más si está
+   PENDIENTE (se pinta con su color) o no (se pinta en plomo).
+     · Apagado + recomienda apagar   → APAGAR   en plomo: ya está hecho.
+     · Apagado + recomienda seguir   → ENCENDER en verde: hay que prenderlo.
+     · Prendido + recomienda apagar  → APAGAR   en rojo.
+     · Prendido + recomienda escalar → ESCALAR  en celeste.
+     · Prendido + recomienda esperar → ESPERAR  en plomo: no hay nada que mover.
+   ══════════════════════════════════════════════════════════════════════════ */
+function mkAccionFinal(r){
+  const rec = r._acc.a, por = r._acc.por;
+  if (!r._on){
+    if (rec === 'APAGAR') return {a:'APAGAR', pide:false, por:'Ya está apagado, no hay nada que hacer. ' + por};
+    return {a:'ENCENDER', pide:true,
+            por:'Está apagado y todavía debería estar corriendo. ' + por};
+  }
+  if (rec === 'ESPERAR') return {a:'ESPERAR', pide:false, por:por};
+  return {a:rec, pide:true, por:por};
+}
+
 function mkPintar(){
   if (!MK) return;
   const q  = (document.getElementById('mkQ').value || '').trim().toLowerCase();
@@ -1011,11 +1037,8 @@ function mkPintar(){
     r._on  = (r.estado_anuncio === 'ACTIVE');
     // la accion se enciende SOLO si obliga a cambiar el estado
     r._enc = (r._on && r._acc.a === 'APAGAR') ? 'enc-apa' : (!r._on && r._acc.a === 'ESCALAR') ? 'enc-esc' : '';
-    /* 7-sep-2026 (pedido de Pablo) - la capsula de Accion se pinta SOLO si hay
-       algo que hacer ahora: ESPERAR nunca pide accion; APAGAR solo si el
-       anuncio esta encendido (si ya esta apagado, no hay nada que hacer);
-       ESCALAR siempre (subir presupuesto, o encenderlo si esta apagado). */
-    r._pide = (r._acc.a === 'ESCALAR') || (r._acc.a === 'APAGAR' && r._on);
+    r._au  = mkAccionFinal(r);
+    r._pide = r._au.pide;
     return r;
   }).filter(r => {
     if (MKCANAL !== 'all' && mkCanalDe(r) !== MKCANAL) return false;
@@ -1024,9 +1047,11 @@ function mkPintar(){
     if (q && ((r.anuncio + ' ' + r.campana + ' ' + r.conjunto).toLowerCase().indexOf(q) === -1)) return false;
     if (fe && (r.estado_anuncio || '') !== fe) return false;
     if (ff === 'incoh'   && !r._enc) return false;
-    if (ff === 'escalar' && r._acc.a !== 'ESCALAR') return false;
-    if (ff === 'esperar' && r._acc.a !== 'ESPERAR') return false;
-    if (ff === 'apagar'  && r._acc.a !== 'APAGAR') return false;
+    if (ff === 'escalar'  && r._au.a !== 'ESCALAR') return false;
+    if (ff === 'esperar'  && r._au.a !== 'ESPERAR') return false;
+    if (ff === 'apagar'   && r._au.a !== 'APAGAR') return false;
+    if (ff === 'encender' && r._au.a !== 'ENCENDER') return false;
+    if (ff === 'pide'     && !r._pide) return false;
     if (ff === 'con' && !r.act.pedidos) return false;
     if (ff === 'sin' && (r.act.pedidos || !r.act.gasto)) return false;
     return true;
@@ -1187,17 +1212,19 @@ function mkPintar(){
       '<td class="fijo' + (borde ? ' borde' : '') + (ancho < 150 ? ' angosta' : '')
       + '" style="width:' + ancho + 'px;min-width:' + ancho + 'px;max-width:' + ancho + 'px;left:' + left + 'px">' + cuerpo + '</td>';
     /* 7-sep-2026 — cápsulas de color: el estado real del anuncio en verde o rojo,
-       y la acción sugerida en verde (escalar), amarillo (esperar) o rojo (apagar). */
+       y la accion que de verdad toca hacer (mkAccionFinal) con su color:
+       apagar rojo, esperar amarillo, escalar celeste, encender verde, y plomo
+       cuando esa accion no hace falta o ya esta hecha. */
     /* 7-sep-2026 — las cápsulas son botones: un clic deja en pantalla solo los
        anuncios de esa acción o ese estado; otro clic vuelve a mostrarlos todos. */
     const chipEst = '<span class="mkchip clic est-' + (r._on ? 'on' : 'off') + '" onclick="mkFiltrarPor(\'estado\',\''
       + (r._on ? 'ACTIVE' : 'PAUSED') + '\')" title="Ver solo los ' + (r._on ? 'activos' : 'inactivos') + '">'
       + (r._on ? 'ACTIVO' : 'INACTIVO') + '</span>';
-    const claseAcc = r._pide ? ('acc-' + String(r._acc.a).toLowerCase() + ' ' + r._enc) : 'acc-nada';
+    const claseAcc = r._pide ? ('acc-' + String(r._au.a).toLowerCase()) : 'acc-nada';
     const chipAcc = '<span class="mkchip clic ' + claseAcc + '"'
-        + ' onclick="mkFiltrarPor(\'accion\',\'' + String(r._acc.a).toLowerCase() + '\')"'
-        + ' title="Ver solo los de ' + r._acc.a + '"'
-        + ' onmouseenter="mkTipIn(event, \'' + r._acc.por.replace(/'/g, "\\'") + '\')" onmouseleave="mkTipOut()">' + r._acc.a + '</span>';
+        + ' onclick="mkFiltrarPor(\'accion\',\'' + String(r._au.a).toLowerCase() + '\')"'
+        + ' title="Ver solo los de ' + r._au.a + '"'
+        + ' onmouseenter="mkTipIn(event, \'' + r._au.por.replace(/'/g, "\\'") + '\')" onmouseleave="mkTipOut()">' + r._au.a + '</span>';
     const celdas = cols.map(c => {
       /* campaña y conjunto viven en la fila, no en las métricas */
       if (MK_COLS[c].txt) return '<td class="tex" title="' + String(r[c]||'').replace(/"/g,'') + '">' + MK_COLS[c].f(r[c]) + '</td>';
