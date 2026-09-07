@@ -320,8 +320,7 @@
   /* 7-sep-2026 — Estado y Accion pasan a verse como la capsula de ROAS:
      pildora sin borde, solo fondo tenue y color. */
   .mkchip{display:inline-block;font-size:11px;font-weight:900;letter-spacing:0;border-radius:999px;padding:2px 8px;border:0;color:var(--txt2);white-space:nowrap;flex-shrink:0}
-  .mkchip.enc-apa{border-color:var(--bad);color:var(--bad);background:rgba(255,93,93,.12)}
-  .mkchip.enc-esc{border-color:var(--ok);color:var(--ok);background:rgba(67,201,138,.12)}
+  .mkchip.enc-cam{font-weight:900}
   /* 7-sep-2026 — cápsulas de color, siempre encendidas */
   .mkchip.est-on{border-color:var(--ok);color:var(--ok);background:rgba(67,201,138,.14)}
   .mkchip.est-off{border-color:var(--bad);color:var(--bad);background:rgba(255,93,93,.14)}
@@ -595,6 +594,21 @@ function mkCanal(c, btn){
   if (MKSUB === 'quefunciona') qfPintar();
 }
 const URL_MARKETING = 'https://n8n-production-4e716.up.railway.app/webhook/marketing2';
+/* 7-sep-2026 — la historia de cada anuncio (toda su vida + ultimos 7 dias vs
+   los 7 anteriores). La columna Accion decide con ESTO, nunca con el periodo
+   que este seleccionado arriba: si no, el mismo anuncio diria "escalar" en un
+   rango y "apagar" en otro. */
+const URL_ADS_HISTORIA = 'https://n8n-production-4e716.up.railway.app/webhook/ads-historia';
+let MKH = null;                 /* {ad_id: {...}} */
+let MKH_TS = 0;
+async function mkCargarHistoria(forzar){
+  if (!forzar && MKH && (Date.now() - MKH_TS) < 10*60*1000) return MKH;
+  try {
+    const j = await (await fetch(URL_ADS_HISTORIA)).json();
+    if (j && j.ads){ MKH = j.ads; MKH_TS = Date.now(); }
+  } catch(e){ /* si falla, mkAccionFinal cae a la regla del periodo */ }
+  return MKH;
+}
 /* ══════════════════════════════════════════════════════════════════════════
    REFRESCO DE META BAJO DEMANDA (6-sep-2026, idea de Pablo)
    El gasto no se actualizaba solo: el workflow de n8n corría una vez al día.
@@ -934,7 +948,8 @@ async function mkCargar(refrescarMeta){
     url += '?desde=' + _mkISO(-(mkDias - 1)) + '&hasta=' + _mkISO(0);
   }
   try {
-    MK = await (await fetch(url)).json();
+    const [datos] = await Promise.all([ (await fetch(url)).json(), mkCargarHistoria() ]);
+    MK = datos;
     if (!MK || !MK.filas) throw new Error('respuesta vacía');
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar();
@@ -1002,25 +1017,135 @@ function mkAccion(r){
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   LA ACCIÓN QUE DE VERDAD HAY QUE HACER (7-sep-2026, lógica de Pablo)
-   mkAccion() dice qué RECOMIENDAN los números. Esta función la cruza con el
-   estado real del anuncio y devuelve la acción concreta, más si está
-   PENDIENTE (se pinta con su color) o no (se pinta en plomo).
-     · Apagado + recomienda apagar   → APAGAR   en plomo: ya está hecho.
-     · Apagado + recomienda seguir   → ENCENDER en verde: hay que prenderlo.
-     · Prendido + recomienda apagar  → APAGAR   en rojo.
-     · Prendido + recomienda escalar → ESCALAR  en celeste.
-     · Prendido + recomienda esperar → ESPERAR  en plomo: no hay nada que mover.
+   LA ACCIÓN QUE DE VERDAD HAY QUE HACER (7-sep-2026, doctrina de Pablo)
+   ─────────────────────────────────────────────────────────────────────────
+   No decide con el periodo de la pantalla: decide con la HISTORIA del anuncio
+   (todo lo que gastó desde el 9-may) cruzada con los ÚLTIMOS 7 DÍAS contra
+   los 7 anteriores, y con el estado real (encendido / apagado).
+
+   Doctrina ROAS aprobada (margen bruto 65.7%, fijos ≈35% del ingreso):
+     < 1.9  pierde caja  ·  1.9–5 no cubre fijos  ·  5–10 rentable  ·  ≥10 excepcional
+   Regla dura: ninguna decisión con menos de S/ 150 de gasto acumulado.
+
+   Cuatro acciones y cinco colores:
+     APAGAR 🔴 · ESPERAR 🟡 · ESCALAR 🔵 · ENCENDER 🟢 · plomo = no hay nada que hacer
    ══════════════════════════════════════════════════════════════════════════ */
+const ACC_MIN_GASTO = 150;   /* prueba justa */
+const ACC_ROAS_CAJA  = 1.9;  /* debajo de esto pierde plata */
+const ACC_ROAS_OK    = 5;    /* desde acá cubre fijos y se puede escalar */
+const ACC_ROAS_TOP   = 10;   /* excepcional */
+const ACC_FREC_MAX   = 3;    /* arriba de esto la audiencia se satura */
+const ACC_DIAS_APREND = 4;   /* aprendizaje de Meta: no tocar */
+const ACC_DIAS_REVIVE = 14;  /* apagado hace más de esto = ya es historia vieja */
+const ACC_CTR_OK     = 0.01; /* 1% de CTR de enlace: el piso verde del semáforo */
+
+function _accDiv(a,b){ return (b > 0) ? (a/b) : null; }
+function _accSol(v){ return 'S/ ' + (Math.round(v*100)/100).toFixed(0); }
+function _accDiasEntre(iso){
+  if (!iso) return null;
+  const d = new Date(iso + 'T00:00:00');
+  return Math.round((Date.now() - d.getTime()) / 86400000);
+}
+/* la frecuencia sale de sumar el alcance diario, así que queda POR DEBAJO de
+   la real (Meta deduplica personas en el periodo). Sirve como tendencia y como
+   piso: si acá ya da >3, de verdad está saturado. */
+function _accFrec(h, suf){ return _accDiv(h['imp'+suf], h['alc'+suf]); }
+function _accCtr(h, suf){ return _accDiv(h['clic'+suf], h['imp'+suf]); }
+
 function mkAccionFinal(r){
-  const rec = r._acc.a, por = r._acc.por;
-  if (!r._on){
-    if (rec === 'APAGAR') return {a:'APAGAR', pide:false, por:'Ya está apagado, no hay nada que hacer. ' + por};
-    return {a:'ENCENDER', pide:true,
-            por:'Está apagado y todavía debería estar corriendo. ' + por};
+  const on = r._on;
+  const h  = MKH && MKH[String(r.ad_id)];
+
+  /* sin historia todavía (primer pintado o endpoint caído): no invento nada */
+  if (!h) return {a: on ? 'ESPERAR' : 'APAGAR', pide:false,
+                  por:'Cargando la historia del anuncio…'};
+
+  const roasV = _accDiv(h.ing_vida, h.gasto_vida);
+  const roas7 = _accDiv(h.in7, h.g7);
+  const probado = h.gasto_vida >= ACC_MIN_GASTO;
+  const edad = _accDiasEntre(h.f1);
+  const frec7 = _accFrec(h,'7'), frecP = _accFrec(h,'7p');
+  const ctr7  = _accCtr(h,'7'),  ctrP  = _accCtr(h,'7p');
+  const cacMax = mkTicketRef(r) * mkMargenDe(r);
+  const vida = 'Vida: ' + _accSol(h.gasto_vida) + ' en ' + h.dias + ' días, '
+             + h.ventas_vida + ' venta' + (h.ventas_vida===1?'':'s')
+             + (roasV !== null ? ', ROAS ' + roasV.toFixed(2) + 'x' : '') + '.';
+
+  /* ── APAGADO ───────────────────────────────────────────────────────────── */
+  if (!on){
+    if (h.gasto_vida <= 0)
+      return {a:'APAGAR', pide:false, por:'Nunca llegó a gastar. No hay nada que decidir.'};
+    if (probado && roasV !== null && roasV >= ACC_ROAS_OK)
+      return {a:'ENCENDER', pide:true,
+              por:'Ganador apagado. ' + vida + ' Vale la pena volver a prenderlo.'};
+    if (probado)
+      return {a:'APAGAR', pide:false,
+              por:'Ya tuvo su oportunidad y no rindió. ' + vida + ' Correctamente apagado.'};
+    /* "apagado injustamente" no es solo haber gastado poco: tiene que haber
+       mostrado ALGO — una venta, o un CTR de enlace en verde. Si gastó poco y
+       además no enganchó, no hay nada que revivir. */
+    const ctrV = _accDiv(h.clic_vida, h.imp_vida);
+    const hubo = (h.ventas_vida > 0) || (ctrV !== null && ctrV >= ACC_CTR_OK);
+    if (h.dias_sin_gastar <= ACC_DIAS_REVIVE && hubo)
+      return {a:'ENCENDER', pide:true,
+              por:'Apagado sin prueba justa: ' + vida + ' No llegó a los ' + _accSol(ACC_MIN_GASTO)
+                  + ' que hacen falta para juzgarlo y venía enganchando'
+                  + (ctrV !== null ? ' (CTR ' + (ctrV*100).toFixed(2) + '%)' : '') + '.'};
+    if (h.dias_sin_gastar <= ACC_DIAS_REVIVE)
+      return {a:'APAGAR', pide:false,
+              por:'Gastó poco (' + _accSol(h.gasto_vida) + ') pero tampoco enganchó'
+                  + (ctrV !== null ? ': CTR ' + (ctrV*100).toFixed(2) + '%, debajo del 1%' : '')
+                  + '. No vale revivirlo.'};
+    return {a:'APAGAR', pide:false,
+            por:'Apagado hace ' + h.dias_sin_gastar + ' días con ' + _accSol(h.gasto_vida)
+                + '. Ya es historia vieja: mejor un creativo nuevo.'};
   }
-  if (rec === 'ESPERAR') return {a:'ESPERAR', pide:false, por:por};
-  return {a:rec, pide:true, por:por};
+
+  /* ── ENCENDIDO ─────────────────────────────────────────────────────────── */
+  if (h.g7 <= 0)
+    return {a:'ESPERAR', pide:false,
+            por:'Encendido pero sin gasto en los últimos 7 días (el conjunto no le está dando presupuesto). ' + vida};
+  /* aprendizaje y prueba van en PLOMO: la instrucción es justamente no tocar
+     nada. El amarillo queda reservado para cuando sí hay algo que hacer. */
+  if (edad !== null && edad < ACC_DIAS_APREND)
+    return {a:'ESPERAR', pide:false,
+            por:'En aprendizaje (' + edad + ' día' + (edad===1?'':'s') + ' desde el primer gasto). No lo toques todavía.'};
+  if (!probado)
+    return {a:'ESPERAR', pide:false,
+            por:'En prueba: lleva ' + _accSol(h.gasto_vida) + ' de los ' + _accSol(ACC_MIN_GASTO)
+                + ' que hacen falta para decidir. Dejalo correr.'};
+
+  /* ya está probado: acá sí mandan los números */
+  if (h.ventas_vida === 0 && h.gasto_vida >= cacMax * 2)
+    return {a:'APAGAR', pide:true,
+            por:'Gastó ' + _accSol(h.gasto_vida) + ', más del doble del CAC máximo ('
+                + _accSol(cacMax) + '), sin una sola venta en toda su vida.'};
+
+  const fatiga = (frec7 !== null && frecP !== null && frec7 > frecP * 1.15)
+              && (ctr7 !== null && ctrP !== null && ctr7 < ctrP * 0.85);
+
+  if (roas7 !== null && roas7 < ACC_ROAS_CAJA && h.g7 >= cacMax * 0.5)
+    return {a:'APAGAR', pide:true,
+            por:'ROAS ' + roas7.toFixed(2) + 'x en los últimos 7 días: debajo de 1.9 pierde caja. ' + vida};
+  if (fatiga && (roas7 === null || roas7 < ACC_ROAS_OK))
+    return {a:'APAGAR', pide:true,
+            por:'Fatiga: la frecuencia subió a ' + frec7.toFixed(1) + ' y el CTR cayó de '
+                + (ctrP*100).toFixed(2) + '% a ' + (ctr7*100).toFixed(2) + '%. El creativo se agotó, reemplazalo.'};
+  if (roas7 !== null && roas7 >= ACC_ROAS_OK){
+    if (frec7 !== null && frec7 >= ACC_FREC_MAX)
+      return {a:'ESPERAR', pide:true,
+              por:'ROAS ' + roas7.toFixed(2) + 'x, listo para escalar, PERO la frecuencia ya está en '
+                  + frec7.toFixed(1) + '. Ampliá el público antes de subirle presupuesto.'};
+    const agr = roas7 >= ACC_ROAS_TOP;
+    return {a:'ESCALAR', pide:true,
+            por:'ROAS ' + roas7.toFixed(2) + 'x en 7 días' + (agr ? ' (excepcional)' : '')
+                + '. Subile ' + (agr ? '30%' : '20%') + ' cada 3-4 días; duplicar reinicia el aprendizaje. ' + vida};
+  }
+  if (roas7 !== null)
+    return {a:'ESPERAR', pide:true,
+            por:'ROAS ' + roas7.toFixed(2) + 'x: contribuye pero no cubre los fijos (hace falta 5x). '
+                + 'No lo escales todavía; el próximo creativo debería iterar este hook. ' + vida};
+  return {a:'ESPERAR', pide:false, por:'Sin ventas ni señal clara en los últimos 7 días. ' + vida};
 }
 
 function mkPintar(){
@@ -1033,12 +1158,12 @@ function mkPintar(){
   mkLlenarCampanas();
 
   let rows = MK.filas.map(r => {
-    r._acc = mkAccion(r);
     r._on  = (r.estado_anuncio === 'ACTIVE');
-    // la accion se enciende SOLO si obliga a cambiar el estado
-    r._enc = (r._on && r._acc.a === 'APAGAR') ? 'enc-apa' : (!r._on && r._acc.a === 'ESCALAR') ? 'enc-esc' : '';
-    r._au  = mkAccionFinal(r);
+    r._acc = mkAccion(r);          /* recomendacion cruda del periodo (referencia) */
+    r._au  = mkAccionFinal(r);     /* la accion real: historia + estado */
     r._pide = r._au.pide;
+    /* "estado != accion" ahora es simplemente: pide prender o apagar */
+    r._enc = (r._pide && (r._au.a === 'APAGAR' || r._au.a === 'ENCENDER')) ? 'enc-cam' : '';
     return r;
   }).filter(r => {
     if (MKCANAL !== 'all' && mkCanalDe(r) !== MKCANAL) return false;
