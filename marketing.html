@@ -596,6 +596,20 @@ const URL_MARKETING = 'https://n8n-production-4e716.up.railway.app/webhook/marke
    haya en la base, sin errores ni esperas eternas.
    ══════════════════════════════════════════════════════════════════════════ */
 const URL_META_REFRESCO = 'https://n8n-production-4e716.up.railway.app/webhook/meta-refrescar-hoy';
+/* ── Refresco del embudo bajo demanda (7-sep-2026, aprobado por Pablo) ──
+   El embudo relee el historico de Chatwoot: tarda minutos. Por eso NO se
+   espera — se dispara y la pantalla sigue. Los datos nuevos entran en el
+   siguiente refresco. Tope: una vez cada 30 minutos, para no freir Chatwoot. */
+const URL_EMBUDO_REFRESCO = 'https://n8n-production-4e716.up.railway.app/webhook/embudo-refrescar';
+const MK_EMBUDO_ESPERA = 30 * 60 * 1000;
+function mkRefrescarEmbudo(){
+  let ult = 0;
+  try { ult = Number(localStorage.getItem('tulula_mk_embudo_ult')) || 0; } catch (e) {}
+  if (Date.now() - ult < MK_EMBUDO_ESPERA) return false;
+  try { localStorage.setItem('tulula_mk_embudo_ult', String(Date.now())); } catch (e) {}
+  try { fetch(URL_EMBUDO_REFRESCO, {mode:'no-cors', keepalive:true}); } catch (e) {}
+  return true;
+}
 async function mkRefrescarMeta(){
   const ctl = new AbortController();
   const corte = setTimeout(() => ctl.abort(), 25000);   /* nunca dejar la pantalla colgada */
@@ -721,7 +735,8 @@ const MK_COLS = {
   calientes:{t:'Calientes',w:88,f:v=>mkNum(v),h:'<b>Calientes</b> — pidieron información de pago. Están a un paso de comprar.<br><b>Origen:</b> escala del embudo del módulo Ventas, cortada por anuncio.'},
   calientes_p:{t:'% Calientes',w:96,f:v=>mkPct(v),h:'<b>% Calientes</b> = calientes ÷ conversaciones.<br>Si este número está alto y la tasa de cierre baja, el anuncio hizo su trabajo y la venta se está perdiendo en el cierre, no en la pauta.'},
   pedidos:{t:'Ventas',w:80,f:v=>mkNum(v),h:'<b>Ventas</b> — pedidos atribuidos a este anuncio.<br><b>Origen:</b> el ERP. Solo canal WhatsApp con origen ADS, y una sola compra por clienta por anuncio.'},
-  tasa_cierre:{t:'Cierre',w:82,f:v=>mkPct(v),h:'<b>Tasa de cierre</b> = ventas ÷ conversaciones.<br>Separa el anuncio que trae gente del que trae compradoras. Con pocas ventas es más estable que el ROAS.<br><b>Tu meta: 5%.</b>'},
+  personas:{t:'Personas',w:92,f:v=>mkNum(v),h:'<b>Personas</b> — clientas <b>distintas</b> que escribieron por este anuncio, contadas por teléfono.<br>Una misma clienta que vuelve a escribir tres veces suma <b>1</b> acá y <b>3</b> en Conversaciones.<br><b>Usa esta</b> para la tasa de cierre y para los % del embudo: una persona solo puede comprar una vez.<br><b>Origen:</b> tabla de contactos, teléfonos únicos.'},
+  tasa_cierre:{t:'Cierre',w:82,f:v=>mkPct(v),h:'<b>Tasa de cierre</b> = ventas ÷ <b>personas distintas</b> (no ÷ conversaciones: la misma clienta puede escribir tres veces y comprar una sola).<br>Separa el anuncio que trae gente del que trae compradoras. Con pocas ventas es más estable que el ROAS.<br><b>Tu meta: 5%.</b>'},
   pagados:{t:'Pagados',w:82,f:v=>mkNum(v),h:'<b>Pagados</b> — de esas ventas, cuántas ya están cobradas por completo. La diferencia contra Ventas es lo que sigue pendiente de cobro.'},
   ingreso:{t:'Ingreso',w:104,f:v=>mkSol(v),h:'<b>Ingreso atribuido</b> — suma de lo que pagaron esas clientas, sin contar el envío. Es venta bruta, no ganancia.'},
   /* ── PLATA REAL (6-sep-2026) ──────────────────────────────────────────────
@@ -743,10 +758,10 @@ const MK_PRESETS = {
   embudo:   ['gasto','ingreso','ganancia','roas','hook_rate','ctr','conversaciones','costo_conv','pedidos','tasa_cierre','cac'],
   /* 6-sep-2026 — la vista que pidio Pablo: el anuncio de punta a punta, desde
      que frena el scroll hasta que la clienta paga. */
-  embudowa: ['gasto','hook_rate','ctr','conversaciones','costo_conv','frias','frias_p','tibias','tibias_p','calientes','calientes_p','pedidos','tasa_cierre','cac','roas'],
+  embudowa: ['gasto','hook_rate','ctr','conversaciones','personas','costo_conv','frias','frias_p','tibias','tibias_p','calientes','calientes_p','pedidos','tasa_cierre','cac','roas'],
   creativo: ['gasto','impresiones','alcance','frecuencia','hook_rate','hold_rate','retencion','ctr','cpc','cpm'],
   plata:    ['gasto','conversaciones','pedidos','ingreso','costo','margen_bruto','ganancia','ticket','cac','roas'],
-  sabana:   ['gasto','impresiones','alcance','frecuencia','hook_rate','hold_rate','retencion','ctr','ctr_todos','cpm','cpc','conversaciones','costo_conv','frias','frias_p','tibias','tibias_p','calientes','calientes_p','pedidos','tasa_cierre','pagados','ingreso','costo','margen_bruto','ganancia','ticket','cac','roas']
+  sabana:   ['gasto','impresiones','alcance','frecuencia','hook_rate','hold_rate','retencion','ctr','ctr_todos','cpm','cpc','conversaciones','personas','costo_conv','frias','frias_p','tibias','tibias_p','calientes','calientes_p','pedidos','tasa_cierre','pagados','ingreso','costo','margen_bruto','ganancia','ticket','cac','roas']
 };
 let mkColsAct = MK_PRESETS.embudowa.slice();
 
@@ -875,7 +890,7 @@ function mkPeriodoCambio(refrescarMeta){
     const d1 = new Date(h.getFullYear(), h.getMonth()-1, 1);
     const d2 = new Date(h.getFullYear(), h.getMonth(), 0);
     _mkFijar(sv(d1), sv(d2));
-  } else { mkDias = Number(v); mkPers = null; }   /* 7 / 14 / 30 dias completos, sin hoy */
+  } else { mkDias = Number(v); mkPers = null; }   /* 7 / 14 / 30 dias, HOY incluido */
   mkCargar(refrescarMeta === true);
 }
 
@@ -890,8 +905,12 @@ async function mkCargar(refrescarMeta){
   if (refrescarMeta){
     sub.style.display = ''; sub.style.color = 'var(--txt2)';
     sub.textContent = 'Trayendo el gasto de hoy desde Meta…';
+    const pedido = mkRefrescarEmbudo();
     await mkRefrescarMeta();
-    sub.style.display = 'none';
+    if (pedido){
+      sub.textContent = 'Gasto al dia. El embudo se esta recalculando en segundo plano: vuelve a refrescar en unos minutos para verlo.';
+      setTimeout(() => { sub.style.display = 'none'; }, 9000);
+    } else sub.style.display = 'none';
   }
   mkCargarPrefs(); mkCargarPar();
   let url = URL_MARKETING;
@@ -900,8 +919,10 @@ async function mkCargar(refrescarMeta){
     if (!d || !h){ sub.textContent = 'Elige las dos fechas.'; return; }
     url += '?desde=' + d + '&hasta=' + h;
   } else {
-    /* Mismo criterio que el Embudo y el Panel: N dias COMPLETOS, sin hoy. */
-    url += '?desde=' + _mkISO(-mkDias) + '&hasta=' + _mkISO(-1);
+    /* 7-sep-2026 — regla de Pablo: "hasta hoy" es HASTA HOY, nunca hasta ayer.
+       Los ultimos N dias incluyen el dia en curso; el gasto de hoy llega vivo
+       por el webhook de Meta, asi que el dato esta al minuto. */
+    url += '?desde=' + _mkISO(-(mkDias - 1)) + '&hasta=' + _mkISO(0);
   }
   try {
     MK = await (await fetch(url)).json();
@@ -1030,7 +1051,7 @@ function mkPintar(){
      sobre los anuncios del canal elegido. Las tasas NUNCA se promedian entre
      anuncios: se rehacen desde las sumas crudas (mismo criterio que el Panel). */
   const _mkAgg = (lado, listaFilas) => {
-    const K = ['gasto','impresiones','alcance','clics','link_clicks','v3s','thruplays','p100','conv_meta','conversaciones','frias','tibias','calientes','pedidos','pagados','ingreso','costo'];
+    const K = ['gasto','impresiones','alcance','clics','link_clicks','v3s','thruplays','p100','conv_meta','conversaciones','personas','frias','tibias','calientes','pedidos','pagados','ingreso','costo'];
     const base = listaFilas || MK.filas.filter(r => MKCANAL === 'all' || mkCanalDe(r) === MKCANAL);
     const t = {}; K.forEach(k => t[k] = 0);
     let hayEtapas = false;
@@ -1045,7 +1066,11 @@ function mkPintar(){
     t.cpc         = d(t.gasto, t.link_clicks);
     t.frecuencia  = d(t.impresiones, t.alcance);
     t.costo_conv  = d(t.gasto, t.conversaciones);
-    t.tasa_cierre = d(t.pedidos, t.conversaciones) === null ? null : d(t.pedidos, t.conversaciones) * 100;
+    /* 7-sep-2026 — una clienta solo puede comprar una vez: el cierre se mide
+       contra PERSONAS distintas, no contra eventos de conversacion. Mientras
+       el dato de personas no llegue del origen, cae a conversaciones. */
+    const _base = (t.personas > 0) ? t.personas : t.conversaciones;
+    t.tasa_cierre = d(t.pedidos, _base) === null ? null : d(t.pedidos, _base) * 100;
     t.cac         = d(t.gasto, t.pedidos);
     t.roas        = d(t.ingreso, t.gasto);
     t.ticket      = d(t.ingreso, t.pedidos);
