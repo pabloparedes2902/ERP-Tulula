@@ -11284,6 +11284,116 @@ function renderPT(el, rows, total, hayMas) {
   // el mapa completo del color de la clienta. El color se cambia prenda por prenda, y la
   // fórmula del nombre se recalcula pedido por pedido (_cliColorRecalcNros).
   // Apply — paralelo para máxima velocidad
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // A — EL FRENO DEL MASIVO + EL AVISO QUE NO MIENTE (8-set-2026)
+  //
+  // QUE PASO (7-set): una asesora marco el checkbox de arriba en la pestana
+  // Activos (~1.430 pedidos) y aplico Estado = ENTREGADO. Su pantalla quedo con
+  // 29 activos. Los demas siguieron viendo los 1.430 — porque la escritura NUNCA
+  // llego al servidor: 1.430 pedidos en una sola llamada no los aguanta ni la
+  // base ni Apps Script. Lo que ella vio fue solo el optimismo de su navegador,
+  // y como el codigo tambien lo escribia en la cache local (lsSetPeds), la
+  // mentira sobrevivia al F5.
+  //
+  // TRES CAMBIOS, y el tercero es el importante:
+  //   1. FRENO: arriba de MASIVO_AVISA_DESDE hay que confirmar escribiendo el
+  //      numero. Arriba de MASIVO_TOPE_PEDIDOS no se deja, y punto.
+  //   2. FOTO PREVIA fila por fila ANTES de tocar nada (es la base del deshacer).
+  //   3. EL SERVIDOR MANDA: la pantalla ya no dice "actualizados" hasta que el
+  //      servidor lo confirma. Si falla, la pantalla VUELVE ATRAS sola y lo dice.
+  //      Y si el guardado se cae a la via lenta (Apps Script, medido hoy en 48 s)
+  //      el aviso lo dice en vez de fingir que ya esta.
+  // ══════════════════════════════════════════════════════════════════════════
+  const MASIVO_AVISA_DESDE  = 25;    // arriba de esto: confirmar escribiendo el numero
+  const MASIVO_TOPE_PEDIDOS = 300;   // arriba de esto: no se deja, hay que partirlo
+
+  const MASIVO_NOMBRE = { Estado:'Estado', EstadoPago:'Estado de pago', Canal:'Canal',
+    Origen:'Origen', Courier:'Courier', Asesora:'Asesora', FechaEnvio:'Fecha de envio',
+    FechaPedido:'Fecha de pedido' };
+
+  // Cartel propio del ERP (mismo estilo que _celdaAviso). Devuelve una promesa:
+  // true = seguir, false = cancelar. Con pocos pedidos no molesta: pasa derecho.
+  function _masivoConfirmar(n, campo, valor) {
+    if (n <= MASIVO_AVISA_DESDE) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const nom = MASIVO_NOMBRE[campo] || campo;
+      const ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6);'
+                       + 'display:flex;align-items:center;justify-content:center;padding:20px';
+      ov.innerHTML =
+        '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r2);'
+      + 'box-shadow:0 18px 50px rgba(0,0,0,.5);max-width:460px;width:100%;padding:26px 26px 20px;font-family:inherit">'
+      + '<div style="font-size:16px;font-weight:700;color:var(--tx);margin-bottom:14px">Vas a cambiar '
+      + n + ' pedidos de una sola vez</div>'
+      + '<div style="font-size:13.5px;color:var(--mu);line-height:1.65;margin-bottom:16px">'
+      + '<b style="color:var(--tx)">' + esc(nom) + '</b> pasa a <b style="color:var(--tx)">' + esc(String(valor)) + '</b> '
+      + 'en los <b style="color:var(--tx)">' + n + '</b> pedidos seleccionados.<br>'
+      + 'Esto afecta lo que ve TODO el equipo. Para confirmar, escribi el numero.</div>'
+      + '<input id="mas-conf-inp" inputmode="numeric" autocomplete="off" placeholder="' + n + '" '
+      + 'style="width:100%;box-sizing:border-box;padding:9px 12px;font-size:15px;font-family:inherit;'
+      + 'border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx);margin-bottom:16px">'
+      + '<div style="display:flex;gap:10px;justify-content:flex-end">'
+      + '<button id="mas-conf-no" class="btn bg bs" style="font-size:13px">Cancelar</button>'
+      + '<button id="mas-conf-si" class="btn bp bs" style="font-size:13px" disabled>Si, cambiar los ' + n + '</button>'
+      + '</div></div>';
+      document.body.appendChild(ov);
+      const inp = ov.querySelector('#mas-conf-inp');
+      const si  = ov.querySelector('#mas-conf-si');
+      const cerrar = (r) => { try { ov.remove(); } catch(_){} document.removeEventListener('keydown', onKey, true); resolve(r); };
+      const onKey = e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cerrar(false); } };
+      inp.addEventListener('input', () => { si.disabled = (inp.value.trim() !== String(n)); });
+      inp.addEventListener('keydown', e => { if (e.key === 'Enter' && !si.disabled) { e.preventDefault(); cerrar(true); } });
+      si.onclick = () => cerrar(true);
+      ov.querySelector('#mas-conf-no').onclick = () => cerrar(false);
+      ov.addEventListener('click', e => { if (e.target === ov) cerrar(false); });
+      document.addEventListener('keydown', onKey, true);
+      setTimeout(() => { try { inp.focus(); } catch(_){} }, 30);
+    });
+  }
+
+  // La foto previa, FILA POR FILA. Un pedido puede tener una prenda en SEPARAR y
+  // otra en ENVIAR: guardar "el valor del pedido" aplanaria el pedido al deshacer.
+  // Guarda la referencia viva (para revertir la pantalla al instante) y tambien
+  // el id de la base y el numero, que es lo que va a la bitacora del punto C.
+  function _masivoFotoPrevia(nrosSet, dataKey) {
+    const foto = [];
+    try {
+      (typeof pRaw !== 'undefined' ? pRaw : []).forEach(row => {
+        if (!nrosSet.has(String(row['NroPedido']))) return;
+        foto.push({ ref: row, nro: String(row['NroPedido']), sbId: (row._sbId == null ? null : row._sbId),
+                    previo: (row[dataKey] == null ? '' : String(row[dataKey])) });
+      });
+      (typeof pAll !== 'undefined' ? pAll : []).forEach(p => {
+        if (!nrosSet.has(String(p['NroPedido']))) return;
+        foto.push({ ref: p, nro: String(p['NroPedido']), sbId: null, agregado: 1,
+                    previo: (p[dataKey] == null ? '' : String(p[dataKey])) });
+      });
+    } catch (_) {}
+    return foto;
+  }
+
+  // Devolver la pantalla a como estaba. Solo memoria: no toca ni base ni hoja
+  // (se usa cuando el servidor NO acepto el cambio, asi que alla nunca paso nada).
+  function _masivoRestaurarPantalla(foto, dataKey) {
+    try {
+      foto.forEach(f => { if (f.ref) f.ref[dataKey] = f.previo; });
+      if (typeof _renderPedsDesde === 'function' && typeof pRaw !== 'undefined') _renderPedsDesde(pRaw, pEst);
+      else if (typeof pAply === 'function') pAply();
+    } catch (_) {}
+  }
+
+  // Instrumentacion (aprobada 8-set): queda anotado QUE VIA se uso y CUANTO tardo
+  // cada guardado masivo. _cronAnotar ya sube esto a Supabase, asi que Pablo ve
+  // la lentitud real de todo el equipo, no solo la suya.
+  function _masivoAnotar(campo, n, via, ms, ok) {
+    try {
+      if (typeof _cronAnotar !== 'function') return;
+      _cronAnotar({ q: 'masivo.' + via, det: campo + ' x' + n, ms: Math.max(0, ms|0),
+                    ok: ok ? 1 : 0, cortada: 0, ts: Date.now() - ms });
+    } catch (_) {}
+  }
+
   document.getElementById('bulk-apply').onclick = async () => {
     const campo = bulkCampo.value;
 
@@ -11464,8 +11574,22 @@ function renderPT(el, rows, total, hayMas) {
     if (!valor) { toast('Elige un valor para aplicar', 'err'); return; }
     const nros = [...(window._pBulkSelected || new Set())];
     if (!nros.length) return;
+
+    // ── A · EL FRENO (8-set-2026) ─────────────────────────────────────────
+    // El tope no es capricho: 1.430 pedidos en una llamada no los aguanta ni la
+    // base ni Apps Script, y hoy eso falla EN SILENCIO (medido: 48 s el camino
+    // largo). Mejor decirlo antes que fingir despues.
+    if (nros.length > MASIVO_TOPE_PEDIDOS) {
+      _celdaAviso('Son ' + nros.length + ' pedidos y el maximo por vez es ' + MASIVO_TOPE_PEDIDOS + '.\n\n'
+        + 'Un cambio tan grande no llega entero al servidor: se guarda a medias y nadie se entera. '
+        + 'Filtra y hacelo por tandas.');
+      return;
+    }
+    if (!(await _masivoConfirmar(nros.length, campo, valor))) return;
+
     const btn  = document.getElementById('bulk-apply');
-    btn.disabled = true; btn.textContent = 'Aplicando...';
+    btn.disabled = true; btn.textContent = 'Guardando...';
+    const _masT0 = Date.now();
 
     try {
       // B3 — el masivo de "Estado Pago" ajusta el override MANUAL (no la columna vieja).
@@ -11484,6 +11608,11 @@ function renderPT(el, rows, total, hayMas) {
       // ── Paso 1: actualización optimista — UI instantánea ──
       // Actualizar pRaw y las celdas del DOM sin esperar al servidor
       const nrosSet = new Set(nros);
+      // La foto previa va ANTES de tocar nada. Sin esto no hay con que volver.
+      const _masFoto = _masivoFotoPrevia(nrosSet, dataKey);
+      window._masivoUltimo = { cuando: Date.now(), campo: campoServidor, dataKey: dataKey,
+                               sheetKey: sheetKey, valor: valEfectivo, nros: nros.slice(),
+                               foto: _masFoto.filter(f => !f.agregado).map(f => ({ nro: f.nro, sbId: f.sbId, previo: f.previo })) };
       pRaw.forEach(row => {
         if (nrosSet.has(String(row['NroPedido']))) row[dataKey] = valEfectivo;
       });
@@ -11513,24 +11642,46 @@ function renderPT(el, rows, total, hayMas) {
           }
         });
       }
+      // ── Paso 2: EL SERVIDOR MANDA (8-set-2026) ──────────────────────────
+      // ANTES: se cantaba "N pedidos actualizados" y se escribia en la cache
+      // local ANTES de hablarle al servidor; si fallaba, un toast rojo y la
+      // pantalla se quedaba con el dato falso — hasta despues de recargar.
+      // AHORA: la pantalla muestra el cambio (para que se sienta instantaneo)
+      // pero NO lo da por bueno ni lo guarda en la cache hasta que el servidor
+      // confirma. Si falla, vuelve atras sola.
+      toast('Guardando ' + nros.length + ' pedido' + (nros.length>1?'s':'') + '...', '');
+      let _masVia = 'rapida', _masErr = '';
+      try {
+        if (await _sbRpcCampoMasivo(nros, campoServidor, valEfectivo)) {
+          _sbEspejarYa(nros);
+        } else {
+          // La via rapida no pudo. NO se finge: se avisa que esto tarda.
+          _masVia = 'lenta';
+          toast('Guardando por la via lenta — puede tardar hasta un minuto. No cierres esta pestana.', '');
+          await apiPost('pedidos.actualizarMasivo', { nros, campo: campoServidor, valor: valEfectivo });
+        }
+      } catch (e) { _masErr = (e && e.message) ? e.message : 'no contesto el servidor'; }
+
+      _masivoAnotar(campoServidor, nros.length, _masVia, Date.now() - _masT0, !_masErr);
       btn.disabled = false; btn.textContent = '✓ Aplicar';
-      toast(nros.length+' pedido'+(nros.length>1?'s':'')+' actualizados', 'ok');
-      // P1 — limpiar selección externa tras apply
+
+      if (_masErr) {
+        // No se guardo NADA: la pantalla vuelve a como estaba y lo dice claro.
+        _masivoRestaurarPantalla(_masFoto, dataKey);
+        _celdaAviso('NO se guardo nada.\n\nEl servidor no acepto el cambio de ' + nros.length
+          + ' pedido' + (nros.length>1?'s':'') + ':\n' + _masErr
+          + '\n\nLa pantalla volvio a como estaba. Proba de nuevo, o en tandas mas chicas.');
+        return;
+      }
+
+      // Recien ACA el cambio es de verdad: se canta y se guarda en la cache.
+      toast(nros.length + ' pedido' + (nros.length>1?'s':'') + ' guardados'
+            + (_masVia === 'lenta' ? ' (por la via lenta)' : ''), 'ok');
       window._pBulkSelected && window._pBulkSelected.clear();
       el.querySelectorAll('.row-chk').forEach(c => c.checked = false);
       if (chkAll) chkAll.checked = false;
       bulkBar.classList.remove('on');
-      // FIX cache-persist: refrescar la caché local para que el cambio masivo
-      // sobreviva a "Actualizar"/recargar (antes solo memoria+hoja → ventana ~15s).
       try { if (typeof lsSetPeds === 'function') lsSetPeds(pRaw, (typeof pLastSyncTs!=='undefined'&&pLastSyncTs)?pLastSyncTs:Date.now()); } catch(_) {}
-
-      // ── Paso 2: una sola llamada al servidor en background ──
-      // Si falla, avisa pero no revierte (el dato ya fue guardado optimistamente)
-      // SEMANA 2: vía rápida directo a la base (campos simples); caída automática a Apps Script.
-      (async () => {
-        if (await _sbRpcCampoMasivo(nros, campoServidor, valEfectivo)) { _sbEspejarYa(nros); return; }
-        return apiPost('pedidos.actualizarMasivo', { nros, campo: campoServidor, valor: valEfectivo });
-      })().catch(e => toast('⚠ Error al sincronizar: '+esc(e.message), 'err'));
 
     } catch(e) {
       toast('Error: '+e.message, 'err');
