@@ -1353,6 +1353,29 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <button class="btn bg cfg-tab" data-tab="auditoria">Auditoría</button>
           <button class="btn bg cfg-tab" data-tab="herramientas">Herramientas</button>
           <button class="btn bg cfg-tab" data-tab="blindaje">Blindaje</button>
+          <button class="btn bg cfg-tab" data-tab="masivos">Cambios masivos</button>
+        </div>
+      </div>
+      <!-- C · BITACORA DE CAMBIOS MASIVOS (8-set-2026) — la franja de "Deshacer"
+           dura 30 segundos; esto es lo mismo pero al dia siguiente. -->
+      <div id="cfg-masivos-wrap" class="cfg-panel" style="display:none">
+        <div class="card" style="padding:14px;margin-bottom:12px">
+          <h3 style="margin:0 0 6px 0;font-size:15px">Cambios masivos de los ultimos dias</h3>
+          <p style="font-size:12px;color:var(--mu);margin:0 0 12px 0">
+            Cada vez que alguien cambia un campo en varios pedidos a la vez, queda anotado aca con
+            la foto de como estaba cada fila ANTES. <b>Revertir</b> devuelve esos pedidos a su valor
+            anterior. No se tocan los pedidos que alguien edito despues del cambio masivo, ni los que
+            tenian valores distintos entre sus prendas: esos se listan aparte para verlos a mano.
+          </p>
+          <button class="btn bg bs" id="cfg-mas-refrescar" style="font-size:12.5px">Actualizar lista</button>
+          <div id="cfg-mas-msg" style="font-size:12.5px;color:var(--mu);margin-top:10px"></div>
+          <div style="overflow-x:auto;margin-top:10px">
+            <table class="pt" id="cfg-mas-tbl"><thead><tr>
+              <th>Cuando</th><th>Quien</th><th>Campo</th><th>Valor aplicado</th>
+              <th style="text-align:right">Pedidos</th><th style="text-align:right">Filas</th>
+              <th>Estado</th><th></th>
+            </tr></thead><tbody></tbody></table>
+          </div>
         </div>
       </div>
       <div id="cfg-seg-wrap" class="cfg-panel">
@@ -9138,6 +9161,172 @@ async function _sbRpcCampoMasivo(nros, campo, valor) {
   } catch (e) { return false; }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// B y C — LA BITACORA DE CAMBIOS MASIVOS (8-set-2026)
+//
+// POR QUE LA FOTO LA SACA LA BASE Y NO ESTA PANTALLA: el 7-set el navegador de
+// quien hizo el masivo mostraba 29 activos mientras el resto veia 1.430. Si la
+// foto previa la guardara el navegador, guardaria esa misma mentira. La saca la
+// base, dentro de la misma transaccion que aplica el cambio: o quedan las dos
+// cosas o no queda ninguna.
+//
+// `masivo_aplicar` hace lo mismo que `campo_masivo` (de hecho la llama por
+// dentro) y ademas anota la foto. Si todavia no esta creada en la base, o si el
+// campo no entra por la via rapida, devuelve null y quien llama sigue por el
+// camino de siempre. Nunca deja a nadie sin poder guardar.
+// ══════════════════════════════════════════════════════════════════════════
+async function _sbRpcMasivo(receta, cuerpo) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + receta, {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify(cuerpo),
+    });
+    if (!r.ok) {
+      // 404 = la receta todavia no esta pegada en Supabase. No es un error del
+      // usuario: quien llama se va por el camino de siempre, en silencio.
+      try { const t = await r.text(); if (r.status !== 404) console.warn('[masivo] ' + receta + ' HTTP ' + r.status + ' ' + t.slice(0, 200)); } catch (_) {}
+      return null;
+    }
+    return await r.json();
+  } catch (e) { return null; }
+}
+
+async function _sbRpcMasivoAplicar(nros, campo, clave, valor) {
+  if (!SB_PILOTO_CAMPOS) return null;
+  if (SB_CAMPOS_MASIVOS.indexOf(campo) < 0) return null;
+  const d = await _sbRpcMasivo('masivo_aplicar', {
+    p_nros: (nros || []).map(String), p_campo: String(campo),
+    p_clave: String(clave || ''), p_valor: String(valor === undefined || valor === null ? '' : valor) });
+  return (d && d.ok === true) ? d : null;
+}
+async function _sbRpcMasivoRevertir(id) { return await _sbRpcMasivo('masivo_revertir', { p_id: Number(id) }); }
+async function _sbRpcMasivoListar(n)    { return await _sbRpcMasivo('masivo_listar',   { p_limit: Number(n || 20) }); }
+
+// ── B · LA FRANJA DE DESHACER (30 segundos) ───────────────────────────────
+// No usa el aviso flotante de siempre porque ese dura 12 s y se va solo: para
+// darse cuenta de un masivo equivocado hacen falta mas. Esta se queda 30 s con
+// el reloj a la vista. Pasados los 30 s no se pierde nada: el mismo cambio se
+// puede deshacer desde Admin → Cambios masivos (punto C).
+function _masivoFranjaDeshacer(bitacoraId, nPedidos, nomCampo, valor) {
+  try {
+    const vieja = document.getElementById('masivo-franja'); if (vieja) vieja.remove();
+    const f = document.createElement('div');
+    f.id = 'masivo-franja';
+    f.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:26px;z-index:99998;'
+      + 'display:flex;align-items:center;gap:14px;background:var(--bg2);border:1px solid var(--bd);'
+      + 'border-radius:14px;box-shadow:0 12px 34px rgba(0,0,0,.42);padding:12px 14px 12px 18px;'
+      + 'font-family:inherit;font-size:13px;color:var(--tx);max-width:92vw';
+    f.innerHTML =
+        '<span><b>' + nPedidos + '</b> pedido' + (nPedidos > 1 ? 's' : '') + ' · ' + esc(nomCampo)
+      + ' &rarr; <b>' + esc(String(valor)) + '</b></span>'
+      + '<button id="masivo-undo" class="btn bp bs" style="font-size:12.5px;white-space:nowrap">'
+      + 'Deshacer <span id="masivo-undo-seg" style="opacity:.75">30</span>s</button>'
+      + '<button id="masivo-undo-x" class="btn bg bs" style="font-size:12.5px;padding:6px 10px" title="Cerrar">&times;</button>';
+    document.body.appendChild(f);
+
+    let seg = 30, reloj = null;
+    const cerrar = () => { try { clearInterval(reloj); } catch (_) {} try { f.remove(); } catch (_) {} };
+    reloj = setInterval(() => {
+      seg--;
+      const sp = document.getElementById('masivo-undo-seg');
+      if (sp) sp.textContent = String(seg);
+      if (seg <= 0) cerrar();
+    }, 1000);
+
+    f.querySelector('#masivo-undo-x').onclick = cerrar;
+    f.querySelector('#masivo-undo').onclick = async () => {
+      const b = f.querySelector('#masivo-undo');
+      b.disabled = true; b.textContent = 'Deshaciendo...';
+      try { clearInterval(reloj); } catch (_) {}
+      const r = await _sbRpcMasivoRevertir(bitacoraId);
+      cerrar();
+      _masivoContarRevertido(r);
+    };
+  } catch (_) {}
+}
+
+// El resultado del deshacer, dicho en castellano. Incluye lo que NO se pudo
+// deshacer y por que — callarlo seria repetir el error de fondo de todo esto.
+function _masivoContarRevertido(r) {
+  try {
+    if (!r) { _celdaAviso('No se pudo deshacer: la base no contesto.\n\nEl cambio sigue aplicado.'); return; }
+    if (r.ok !== true) { _celdaAviso('No se deshizo nada.\n\n' + (r.motivo || 'la base lo rechazo')); return; }
+    const mez = (r.mezclados || []), tar = (r.tocados_despues || []);
+    let msg = 'Listo: se devolvieron ' + (r.revertidos || 0) + ' pedido'
+            + ((r.revertidos || 0) === 1 ? '' : 's') + ' a como estaban.';
+    if (tar.length) {
+      msg += '\n\nNO se tocaron ' + tar.length + ' pedido' + (tar.length === 1 ? '' : 's')
+           + ' porque alguien los edito DESPUES del cambio masivo — deshacerlos borraria ese trabajo:\n'
+           + tar.slice(0, 12).join(', ') + (tar.length > 12 ? ' y ' + (tar.length - 12) + ' mas' : '');
+    }
+    if (mez.length) {
+      msg += '\n\nNO se tocaron ' + mez.length + ' pedido' + (mez.length === 1 ? '' : 's')
+           + ' porque sus prendas tenian valores distintos entre si; hay que arreglarlos a mano:\n'
+           + mez.slice(0, 12).join(', ') + (mez.length > 12 ? ' y ' + (mez.length - 12) + ' mas' : '');
+    }
+    _celdaAviso(msg);
+    try { if (typeof _recargaSilenciosa === 'function') _recargaSilenciosa(); } catch (_) {}
+  } catch (_) {}
+}
+
+// ── C · LA PANTALLA DE LA BITACORA (Configuracion → Cambios masivos) ──────
+// La franja de "Deshacer" dura 30 segundos. Esto es lo mismo, pero al dia
+// siguiente: es lo que hacia falta el 7-set, cuando el error se descubrio horas
+// despues.
+async function loadCfgMasivos() {
+  const tb  = document.querySelector('#cfg-mas-tbl tbody');
+  const msg = document.getElementById('cfg-mas-msg');
+  if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="8" style="color:var(--mu)">Cargando...</td></tr>';
+  if (msg) msg.textContent = '';
+  const d = await _sbRpcMasivoListar(30);
+  if (!d || d.ok !== true) {
+    tb.innerHTML = '';
+    if (msg) msg.textContent = 'Todavia no esta creada la bitacora en la base '
+      + '(falta pegar PEGAR_EN_SUPABASE_bitacora_masivos.sql en Supabase). '
+      + 'Hasta entonces los cambios masivos funcionan igual, pero no se pueden deshacer.';
+    return;
+  }
+  const filas = d.filas || [];
+  if (!filas.length) {
+    tb.innerHTML = '';
+    if (msg) msg.textContent = 'Todavia no hay ningun cambio masivo anotado.';
+    return;
+  }
+  const fmt = iso => { try { const x = new Date(iso);
+      return x.toLocaleString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: '2-digit',
+        hour: '2-digit', minute: '2-digit' }); } catch (_) { return String(iso || ''); } };
+  tb.innerHTML = filas.map(f => {
+    const rev = !!f.revertido_en;
+    const estado = rev
+      ? '<span style="color:var(--mu)">revertido ' + esc(fmt(f.revertido_en)) + '<br>por ' + esc(String(f.revertido_por || '')) + '</span>'
+      : (Number(f.valores_previos || 1) > 1
+          ? '<span title="Los pedidos no tenian todos el mismo valor antes">aplicado · ' + f.valores_previos + ' valores previos</span>'
+          : 'aplicado');
+    const boton = rev ? ''
+      : '<button class="btn bg bs cfg-mas-rev" data-id="' + f.id + '" style="font-size:12px">Revertir</button>';
+    return '<tr><td>' + esc(fmt(f.cuando)) + '</td><td>' + esc(String(f.email || '')) + '</td>'
+      + '<td>' + esc(String(f.campo || '')) + '</td><td><b>' + esc(String(f.valor || '')) + '</b></td>'
+      + '<td style="text-align:right">' + (f.pedidos || 0) + '</td>'
+      + '<td style="text-align:right">' + (f.filas || 0) + '</td>'
+      + '<td>' + estado + '</td><td>' + boton + '</td></tr>';
+  }).join('');
+  if (msg) msg.textContent = filas.length + ' cambio' + (filas.length > 1 ? 's' : '') + ' masivo' + (filas.length > 1 ? 's' : '') + ' anotado' + (filas.length > 1 ? 's' : '') + '.';
+  tb.querySelectorAll('.cfg-mas-rev').forEach(b => {
+    b.addEventListener('click', async () => {
+      const id = b.getAttribute('data-id');
+      b.disabled = true; b.textContent = 'Revirtiendo...';
+      const r = await _sbRpcMasivoRevertir(id);
+      _masivoContarRevertido(r);
+      loadCfgMasivos();
+    });
+  });
+}
+
 // ── SUBIDA RÁPIDA DE CONSTANCIAS (24-jul) — DIRECTO A SUPABASE STORAGE ──────
 // Medido en vivo: subir vía Apps Script+Drive toma 6-12s (solo el viaje al server
 // ya cuesta 2.5s) — imposible bajar de 2s por esa ruta. Esta sube el archivo
@@ -11650,9 +11839,17 @@ function renderPT(el, rows, total, hayMas) {
       // pero NO lo da por bueno ni lo guarda en la cache hasta que el servidor
       // confirma. Si falla, vuelve atras sola.
       toast('Guardando ' + nros.length + ' pedido' + (nros.length>1?'s':'') + '...', '');
-      let _masVia = 'rapida', _masErr = '';
+      let _masVia = 'rapida', _masErr = '', _masBitacora = null;
       try {
-        if (await _sbRpcCampoMasivo(nros, campoServidor, valEfectivo)) {
+        // Primero la via que ADEMAS deja la foto previa anotada en la base. Si
+        // todavia no esta pegada en Supabase, devuelve null y seguimos igual
+        // que antes: nadie se queda sin poder guardar por esto.
+        const _masReg = await _sbRpcMasivoAplicar(nros, campoServidor, sheetKey, valEfectivo);
+        if (_masReg) {
+          _masBitacora = _masReg.bitacora || null;
+          _sbEspejarYa(nros);
+        } else if (await _sbRpcCampoMasivo(nros, campoServidor, valEfectivo)) {
+          _masVia = 'rapida-sin-bitacora';
           _sbEspejarYa(nros);
         } else {
           // La via rapida no pudo. NO se finge: se avisa que esto tarda.
@@ -11682,6 +11879,11 @@ function renderPT(el, rows, total, hayMas) {
       if (chkAll) chkAll.checked = false;
       bulkBar.classList.remove('on');
       try { if (typeof lsSetPeds === 'function') lsSetPeds(pRaw, (typeof pLastSyncTs!=='undefined'&&pLastSyncTs)?pLastSyncTs:Date.now()); } catch(_) {}
+
+      // B — la franja de deshacer. Solo si quedo anotado en la bitacora: sin
+      // foto previa no hay con que volver, y ofrecer un boton que no funciona
+      // seria peor que no ofrecerlo.
+      if (_masBitacora) _masivoFranjaDeshacer(_masBitacora, nros.length, (MASIVO_NOMBRE[campo] || campo), valEfectivo);
 
     } catch(e) {
       toast('Error: '+e.message, 'err');
@@ -30002,10 +30204,17 @@ async function loadConfig() {
       document.getElementById('cfg-tools-wrap').style.display = tab==='herramientas'?'':'none';
       const _bw = document.getElementById('cfg-blindaje-wrap');
       if (_bw) _bw.style.display = tab==='blindaje'?'':'none';
+      const _mw = document.getElementById('cfg-masivos-wrap');
+      if (_mw) _mw.style.display = tab==='masivos'?'':'none';
       if(tab==='backup') loadCfgBackup();
       if(tab==='auditoria') loadCfgAuditoria();
       if(tab==='blindaje') loadCfgBlindaje();
+      if(tab==='masivos') loadCfgMasivos();
     }));
+    // C — la bitacora de cambios masivos
+    const _mr = document.getElementById('cfg-mas-refrescar');
+    if (_mr) _mr.addEventListener('click', loadCfgMasivos);
+
     // Herramientas
     document.getElementById('tool-refresh-maestros').addEventListener('click', refrescarMaestros);
 
