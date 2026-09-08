@@ -355,7 +355,7 @@
   #mkTip b{color:var(--sel)}
   /* lightbox del creativo */
   #mkLupa{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:210;display:none;align-items:center;justify-content:center;flex-direction:column;gap:12px;cursor:zoom-out}
-  #mkLupa img{max-width:76vw;max-height:74vh;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.6);cursor:pointer}
+  #mkLupa img{max-width:94vw;max-height:88vh;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.6);cursor:pointer}
   #mkLupa .cap{color:#fff;font-size:12.5px;font-weight:700;text-align:center;max-width:70vw}
   #mkLupa .cap small{display:block;color:#b9c4d6;font-weight:400;margin-top:4px}
   /* panel de columnas */
@@ -424,6 +424,8 @@
           padding:1px 6px;font-size:11px;font-weight:900;cursor:pointer;margin-left:5px;line-height:1.5;
           transition:all .12s ease;vertical-align:middle}
   .mkejec:hover{border-color:#6d8dff;color:#fff;background:#6d8dff}
+  /* resaltado solo cuando el ERP ademas lo recomienda */
+  .mkejec.pide{border-color:#6d8dff;color:#9fb4ff}
   .mkmodal{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9999;display:flex;
            align-items:center;justify-content:center;padding:20px}
   .mkmodal-in{background:var(--card);border:1.5px solid var(--bd);border-radius:16px;padding:20px 22px;
@@ -457,6 +459,8 @@
   .mkmodal-in .pres input{width:80px;background:var(--card);border:1.5px solid var(--bd);
         color:var(--txt);border-radius:8px;padding:6px 9px;font-size:12px;font-weight:700}
   .mkmodal-in button.si.azul{background:#6d8dff}
+  /* el boton que el ERP recomienda lleva un halo, pero los dos se pueden apretar */
+  .mkmodal-in button.si.reco{box-shadow:0 0 0 3px rgba(109,141,255,.45)}
   /* ── Qué funciona · reestructurado 8-sep-2026 ───────────────────────── */
   .qfsec{font-size:11px;font-weight:900;letter-spacing:.09em;text-transform:uppercase;color:var(--txt2);margin:18px 0 9px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
   .qfpills{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
@@ -591,8 +595,9 @@
       <option value="creativo">Vista creativo</option>
       <option value="plata">Vista plata</option>
       <option value="sabana">Sábana completa</option>
-      <option value="mia">★ Mi vista</option>
+      <option value="mia" id="mkOpMia">★ Mi vista</option>
     </select>
+    <span id="mkVistaAviso" style="display:none;font-size:11px;font-weight:800;color:var(--ok)"></span>
     <span style="display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--txt2);font-weight:700">
       <span title="Solo se usa cuando el anuncio todavía no tiene costo real de sus prendas.">Margen supuesto</span>
       <input id="mkMargen" type="number" min="1" max="95" value="60" style="width:58px" onchange="mkPintar()">%
@@ -679,11 +684,9 @@ function mkCanal(c, btn){
   if (sc){ sc.value = ''; sc.dataset.canal = ''; }   /* otro canal, otras campañas */
   const sj = document.getElementById('mkConjunto'); if (sj) sj.value = '';
   document.querySelectorAll('[data-mkc]').forEach(b => b.classList.toggle('on', b.dataset.mkc === c));
-  /* el embudo de etapas solo existe en WhatsApp: fuera de WhatsApp se cae a la vista de siempre */
-  const sel = document.getElementById('mkVista');
-  if (sel && c !== 'wa' && sel.value === 'embudowa'){ sel.value = 'embudo'; mkVistaPreset(); }
-  else if (sel && c === 'wa' && sel.value === 'embudo'){ sel.value = 'embudowa'; mkVistaPreset(); }
-  else mkPintar();
+  /* 8-sep-2026 — cada canal trae su propia vista guardada (o su preset). */
+  mkVistaDeCanal();
+  mkPintar();
   if (MKSUB === 'quefunciona') qfPintar();
 }
 const URL_MARKETING = 'https://n8n-production-4e716.up.railway.app/webhook/marketing2';
@@ -894,7 +897,7 @@ function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
         if (e && c === 'personas') return '<td>' + mkNum(e.personas) + '</td>';
         return '<td>—</td>';
       }).join('')
-    + '<td></td></tr>';
+    + '</tr>';
 }
 /* 7-sep-2026 — la historia de cada anuncio (toda su vida + ultimos 7 dias vs
    los 7 anteriores). La columna Accion decide con ESTO, nunca con el periodo
@@ -912,6 +915,49 @@ async function mkRefrescarHistoria(){
 }
 let MKH = null;                 /* {ad_id: {...}} */
 let MKH_TS = 0;
+/* ══════════════════════════════════════════════════════════════════════════
+   8-sep-2026 — LA HISTORIA TAMBIEN CON VENTAS DEL ERP. Bug encontrado por Pablo.
+
+   /ads-historia calcula ventas_vida e ing_vida con lo que ve META. La columna
+   Accion decide con esos numeros, asi que seguia recomendando APAGAR anuncios
+   rentables aunque la fila ya mostrara el ROAS corregido:
+
+     Bla Mirella  ->  Meta: 1 venta, S/278, ROAS 0.70x  ->  APAGAR
+                      ERP:  2 ventas, S/481 (solo en 8 dias)
+
+   Mismo principio de siempre: el GASTO es de Meta, las VENTAS son del ERP.
+   Se pisan los seis campos de venta de la historia con /ventas-periodo, que ya
+   es la fuente unica. El gasto, impresiones y clics de la historia no se tocan.
+   ══════════════════════════════════════════════════════════════════════════ */
+async function mkHistoriaVentasERP(){
+  if (!MKH) return MKH;
+  const hoy = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
+  const pide = (desde, hasta) =>
+    fetch(URL_VENTAS + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()).catch(() => []);
+  const mapa = (arr) => {
+    const o = {};
+    (Array.isArray(arr) ? arr : []).forEach(x => { o[String(x.anuncio)] = { p: +x.pedidos || 0, i: +x.ingreso || 0 }; });
+    return o;
+  };
+  try {
+    const [vida, s7, s7p] = await Promise.all([
+      pide('2025-01-01', hoy),                                   /* toda la vida */
+      pide(_mkDiaMenos(hoy, 6),  hoy),                           /* ultimos 7 dias */
+      pide(_mkDiaMenos(hoy, 13), _mkDiaMenos(hoy, 7))            /* los 7 anteriores */
+    ]);
+    const V = mapa(vida), A = mapa(s7), B = mapa(s7p);
+    Object.keys(MKH).forEach(id => {
+      const h = MKH[id], v = V[id], a = A[id], b = B[id];
+      /* se cuentan TODAS las ventas del anuncio, de cualquier canal: si un
+         anuncio de WhatsApp genero una venta en la web, sigue siendo suya. */
+      h.ventas_vida = v ? v.p : 0;   h.ing_vida = v ? v.i : 0;
+      h.vt7  = a ? a.p : 0;          h.in7  = a ? a.i : 0;
+      h.vt7p = b ? b.p : 0;          h.in7p = b ? b.i : 0;
+    });
+  } catch (e) { /* si falla, queda la historia de Meta: peor pero no vacia */ }
+  return MKH;
+}
+
 async function mkCargarHistoria(forzar){
   if (!forzar && MKH && (Date.now() - MKH_TS) < 10*60*1000) return MKH;
   try {
@@ -1101,9 +1147,46 @@ const MK_PRESETS = {
 };
 let mkColsAct = MK_PRESETS.embudowa.slice();
 
+/* ══════════════════════════════════════════════════════════════════════════
+   8-sep-2026 (pedido de Pablo) — UNA VISTA GUARDADA POR CANAL.
+
+   Antes habia una sola "Mi vista" para todo. Pero mirar WhatsApp y mirar Pagina
+   Web son dos trabajos distintos: en WhatsApp importan las etapas del embudo,
+   en Web importan las metricas del creativo. Ahora cada canal recuerda SUS
+   columnas, SUS anchos y SU orden, y se aplican solos al cambiar de canal.
+   ══════════════════════════════════════════════════════════════════════════ */
+function _mkClaveVista(canal){ return 'tulula_mk_vista_' + (canal || MKCANAL); }
+const _MK_NOMCANAL = { wa:'WhatsApp', web:'Página web', all:'Todo' };
+
+/* El preset con el que arranca un canal que todavia no tiene vista propia. */
+function _mkPresetCanal(c){ return (c === 'wa') ? 'embudowa' : 'embudo'; }
+
+/* Al cambiar de canal: si hay vista guardada para el nuevo, se aplica; si no,
+   el preset que le corresponde. Nunca se arrastra la vista del canal anterior. */
+function mkVistaDeCanal(){
+  const sel = document.getElementById('mkVista');
+  const op  = document.getElementById('mkOpMia');
+  if (op) op.textContent = '★ Mi vista ' + (_MK_NOMCANAL[MKCANAL] || '');
+  if (mkCargarPrefs()){ if (sel) sel.value = 'mia'; }
+  else {
+    const p = _mkPresetCanal(MKCANAL);
+    mkColsAct = MK_PRESETS[p].slice(); mkAncho = {};
+    if (sel) sel.value = p;
+  }
+  mkPintarCols();
+}
+
 function mkCargarPrefs(){
   try {
-    const g = JSON.parse(localStorage.getItem('tulula_mk_cols') || 'null');
+    let g = JSON.parse(localStorage.getItem(_mkClaveVista()) || 'null');
+    /* migracion suave: la vista unica vieja pasa a ser la del canal actual */
+    if (!g){
+      const viejo = JSON.parse(localStorage.getItem('tulula_mk_cols') || 'null');
+      if (viejo && Array.isArray(viejo.cols) && viejo.cols.length){
+        g = viejo;
+        localStorage.setItem(_mkClaveVista(), JSON.stringify(viejo));
+      }
+    }
     if (g){
       if (Array.isArray(g.cols) && g.cols.length){
         mkColsAct = g.cols.filter(c => MK_COLS[c]);
@@ -1118,20 +1201,26 @@ function mkCargarPrefs(){
           }
         } catch (e) {}
       }
-      if (g.anchos) mkAncho = g.anchos;
+      mkAncho = g.anchos || {};
       const s = document.getElementById('mkVista'); if (s) s.value = 'mia';
+      return true;
     }
   } catch (e) {}
+  return false;
 }
 function mkGuardarCols(){
-  localStorage.setItem('tulula_mk_cols', JSON.stringify({cols: mkColsAct, anchos: mkAncho}));
+  /* se guarda en la vista DEL CANAL que estas mirando, no en una global */
+  localStorage.setItem(_mkClaveVista(), JSON.stringify({cols: mkColsAct, anchos: mkAncho}));
   document.getElementById('mkVista').value = 'mia';
   document.getElementById('mkCols').style.display = 'none';
+  const av = document.getElementById('mkVistaAviso');
+  if (av){ av.textContent = 'Vista de ' + (_MK_NOMCANAL[MKCANAL] || '') + ' guardada';
+           av.style.display = 'inline'; setTimeout(() => { av.style.display = 'none'; }, 2600); }
   mkPintar();
 }
 function mkResetCols(){
-  localStorage.removeItem('tulula_mk_cols');
-  const _v0 = (MKCANAL === 'wa') ? 'embudowa' : 'embudo';
+  localStorage.removeItem(_mkClaveVista());
+  const _v0 = _mkPresetCanal(MKCANAL);
   mkColsAct = MK_PRESETS[_v0].slice(); mkAncho = {};
   document.getElementById('mkVista').value = _v0;
   mkPintarCols(); mkPintar();
@@ -1196,7 +1285,7 @@ function mkVerCreativo(url, nombre, link){
   mkLupaLink = link || '';
   const l = document.getElementById('mkLupa');
   l.querySelector('img').src = url;
-  l.querySelector('.cap').innerHTML = nombre + '<small>' + (mkLupaLink ? 'Doble clic en la imagen para abrir el anuncio en Meta' : 'Este anuncio no tiene enlace público') + '</small>';
+  l.querySelector('.cap').innerHTML = nombre + '<small>' + (mkLupaLink ? 'Doble clic en la imagen para abrir el anuncio en Meta \u2197' : 'Este anuncio no tiene enlace público') + '</small>';
   l.style.display = 'flex';
 }
 function mkLupaAbrir(){ if (mkLupaLink) window.open(mkLupaLink, '_blank', 'noopener'); }
@@ -1275,7 +1364,7 @@ async function mkCargar(refrescarMeta){
     url += '?desde=' + _mkISO(-(mkDias - 1)) + '&hasta=' + _mkISO(0);
   }
   try {
-    const [datos] = await Promise.all([ (await fetch(url)).json(), mkCargarHistoria(), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH) ]);
+    const [datos] = await Promise.all([ (await fetch(url)).json(), mkCargarHistoria().then(mkHistoriaVentasERP), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH) ]);
     MK = datos;
     if (!MK || !MK.filas) throw new Error('respuesta vacía');
     mkAplicarVentas();
@@ -1624,6 +1713,12 @@ function mkPintar(){
     return mkN(r.act[orden]);
   };
   rows.sort((a, b) => {
+    /* 8-sep-2026 (pedido de Pablo) — Estado y Accion tambien ordenan.
+       Estado: los activos de un lado y los apagados del otro.
+       Accion: alfabetico (APAGAR, ENCENDER, ESCALAR, ESPERAR). */
+    if (mkOrden === '__est') return ((a._on ? 0 : 1) - (b._on ? 0 : 1)) * mkDir;
+    if (mkOrden === '__acc')
+      return String((a._au && a._au.a) || '').localeCompare(String((b._au && b._au.a) || '')) * mkDir;
     if (mkOrden === 'anuncio') return String(a.anuncio).localeCompare(String(b.anuncio)) * mkDir;
     if (MK_COLS[mkOrden] && MK_COLS[mkOrden].txt)
       return String(a[mkOrden]||'').localeCompare(String(b[mkOrden]||'')) * mkDir;
@@ -1774,10 +1869,15 @@ function mkPintar(){
         anchoEst = mkAncho.__est || 96, anchoAcc = mkAncho.__acc || 132;
   const L1 = 0, L2 = anchoCam, L3 = anchoCam + anchoCon, L4 = anchoCam + anchoCon + anchoCre,
         L5 = L4 + anchoEst;
-  const thFijo = (cls, ancho, left, titulo, borde) =>
-    '<th class="izqfix' + (borde ? ' borde' : '') + '" data-col="' + cls + '"'
-    + ' style="width:' + ancho + 'px;min-width:' + ancho + 'px;left:' + left + 'px">'
-    + titulo + '<span class="mkgrip" data-rz="' + cls + '"></span></th>';
+  const thFijo = (cls, ancho, left, titulo, borde) => {
+    const ordena = (cls === '__est' || cls === '__acc');   /* estas dos si ordenan */
+    return '<th class="izqfix' + (borde ? ' borde' : '') + (ordena && mkOrden === cls ? ' act' : '') + '"'
+    + ' data-col="' + cls + '"'
+    + ' style="width:' + ancho + 'px;min-width:' + ancho + 'px;left:' + left + 'px'
+    + (ordena ? ';cursor:pointer' : '') + '">'
+    + titulo + (ordena && mkOrden === cls ? (mkDir < 0 ? ' \u2193' : ' \u2191') : '')
+    + '<span class="mkgrip" data-rz="' + cls + '"></span></th>';
+  };
   document.getElementById('mkHead').innerHTML = '<tr>'
     + thFijo('__cam', anchoCam, L1, 'Campaña')
     + thFijo('__con', anchoCon, L2, 'Conjunto de anuncios')
@@ -1792,11 +1892,11 @@ function mkPintar(){
           + MK_COLS[c].t + (mkOrden === c ? (mkDir < 0 ? ' ↓' : ' ↑') : '')
           + '<span class="mkgrip" data-rz="' + c + '"></span></th>';
       }).join('')
-    + '<th style="width:56px;min-width:56px"></th></tr>';
+    + '</tr>';
 
   document.getElementById('mkBody').innerHTML = rows.map(r => {
     const img = r.thumbnail_url
-      ? '<img src="' + r.thumbnail_url + '" loading="lazy" alt="" ondblclick="mkVerCreativo(\'' + r.thumbnail_url + '\',\'' + String(r.anuncio).replace(/'/g,"\\'").replace(/"/g,'') + '\',\'' + (r.permalink || '') + '\')">'
+      ? '<img src="' + r.thumbnail_url + '" loading="lazy" alt="" onclick="mkVerCreativo(\'' + r.thumbnail_url + '\',\'' + String(r.anuncio).replace(/'/g,"\\'").replace(/"/g,'') + '\',\'' + (r.permalink || '') + '\')">'
       : '<img alt="">';
     const tdFijo = (ancho, left, cuerpo, borde) =>
       '<td class="fijo' + (borde ? ' borde' : '') + (ancho < 150 ? ' angosta' : '')
@@ -1811,12 +1911,16 @@ function mkPintar(){
       + (r._on ? 'ACTIVE' : 'PAUSED') + '\')" title="Ver solo los ' + (r._on ? 'activos' : 'inactivos') + '">'
       + (r._on ? 'ACTIVO' : 'INACTIVO') + '</span>';
     const claseAcc = r._pide ? ('acc-' + String(r._au.a).toLowerCase()) : 'acc-nada';
-    /* 8-sep-2026 — el boton solo aparece donde el ERP pide prender o apagar.
-       No es un interruptor libre: es el remate de una recomendacion. */
-    const _puedeEjec = r._pide && (r._au.a === 'APAGAR' || r._au.a === 'ENCENDER') && r.ad_id;
+    /* 8-sep-2026 (pedido de Pablo) — el boton va en TODAS las filas, no solo
+       donde el ERP recomienda actuar. El ERP no sabe que te quedaste sin stock,
+       ni que una prenda salio de temporada: la recomendacion es una opinion,
+       no una reja. Lo que ofrece el boton es lo CONTRARIO al estado actual. */
+    const _puedeEjec = !!r.ad_id;
+    const _sugiere = r._on ? 'APAGAR' : 'ENCENDER';
     const btnEjec = _puedeEjec
-      ? '<button class="mkejec" title="Hacerlo ahora en Meta"'
-        + ' onclick="mkEjecPreg(\'' + String(r.ad_id) + '\', \'' + r._au.a + '\')">&#9211;</button>'
+      ? '<button class="mkejec' + (r._pide ? ' pide' : '') + '"'
+        + ' title="' + (r._on ? 'Apagar' : 'Encender') + ' este anuncio en Meta"'
+        + ' onclick="mkEjecPreg(\'' + String(r.ad_id) + '\', \'' + _sugiere + '\')">&#9211;</button>'
       : '';
     const chipAcc = '<span class="mkchip clic ' + claseAcc + '"'
         + ' onclick="mkFiltrarPor(\'accion\',\'' + String(r._au.a).toLowerCase() + '\')"'
@@ -1848,7 +1952,6 @@ function mkPintar(){
       if (c === 'ganancia' && val !== null) cuerpo = '<span class="mkpill ' + (val > 0 ? 'b' : 'r') + '">' + mkSol(val) + '</span>';
       return '<td>' + cuerpo + '</td>';
     }).join('');
-    const link = r.permalink ? '<a href="' + r.permalink + '" target="_blank" rel="noopener" style="font-size:11px;color:var(--bot);text-decoration:none">ver ↗</a>' : '';
     return '<tr>'
       + tdFijo(anchoCam, L1, '<div class="mktxt" title="' + String(r.campana||'').replace(/"/g,'') + '">' + esc(r.campana || '—') + '</div>')
       + tdFijo(anchoCon, L2, '<div class="mktxt" title="' + String(r.conjunto||'').replace(/"/g,'') + '">' + esc(r.conjunto || '—') + '</div>')
@@ -1856,7 +1959,7 @@ function mkPintar(){
           + '<div class="col"><div class="nom" title="' + String(r.anuncio).replace(/"/g,'') + '">' + r.anuncio + '</div></div></div>')
       + tdFijo(anchoEst, L4, '<div style="text-align:center">' + chipEst + '</div>')
       + tdFijo(anchoAcc, L5, '<div style="text-align:center;white-space:nowrap">' + chipAcc + btnEjec + '</div>', true)
-      + celdas + '<td>' + link + '</td></tr>';
+      + celdas + '</tr>';
   }).join('');
 
   /* ── FILA DE TOTALES (6-sep-2026) ────────────────────────────────────────
@@ -1884,7 +1987,7 @@ function mkPintar(){
         else                         cuerpo = MK_COLS[c].f(v);
         return '<td>' + cuerpo + '</td>';
       }).join('')
-    + '<td></td></tr>';
+    + '</tr>';
 
   document.getElementById('mkVacio').style.display = rows.length ? 'none' : 'block';
   mkEngancharCabecera();
@@ -2307,21 +2410,44 @@ function mkAccNivel(n){
   MKACC.nivel = n;
   document.querySelectorAll('[data-accn]').forEach(b => b.classList.toggle('on', b.dataset.accn === n));
   const esAd = (n === 'ad');
-  const apagar = (MKACC.accion === 'APAGAR');
+  const r = MKACC.fila;
+  const activo = !!r._on;
+  const reco = (r._au && r._au.a) || '';
   document.getElementById('mkAccTit').innerHTML = esAd
-    ? ((apagar ? '🔴 Apagar' : '🟢 Encender') + ' este anuncio en Meta')
+    ? ('⏻ Prender o apagar este anuncio en Meta')
     : ('⚙️ Actuar sobre el ' + MKACC_QUE[n] + ' completo');
-  /* aviso honesto: fuera del anuncio, el alcance es mayor que la recomendacion */
-  document.getElementById('mkAccAviso').style.display = esAd ? 'none' : 'block';
-  document.getElementById('mkAccAviso').innerHTML = '⚠️ Esto afecta <b>todos los anuncios</b> del '
-    + MKACC_QUE[n] + ', no solo este. El ERP recomendó a nivel anuncio.';
+
+  /* Dos avisos honestos, segun el caso:
+     · fuera del anuncio, el alcance es mayor que la recomendacion
+     · dentro del anuncio, se recuerda que dice el ERP — sin bloquear nada */
+  const av = document.getElementById('mkAccAviso');
+  if (!esAd){
+    av.style.display = 'block';
+    av.innerHTML = '⚠️ Esto afecta <b>todos los anuncios</b> del ' + MKACC_QUE[n]
+      + ', no solo este. El ERP recomendó a nivel anuncio.';
+  } else if (reco === 'ESPERAR' || reco === 'ESCALAR'){
+    av.style.display = 'block';
+    av.innerHTML = 'ℹ️ El ERP recomienda <b>' + reco + '</b> para este anuncio. Vos sabés cosas que él no '
+      + '(stock, temporada, una foto que ya no representa el producto): decidí con eso.';
+  } else { av.style.display = 'none'; }
+
   document.getElementById('mkAccPres').style.display = esAd ? 'none' : 'flex';
-  document.getElementById('mkAccUno').style.display = esAd ? 'inline-block' : 'none';
-  document.getElementById('mkAccDos').style.display = esAd ? 'none' : 'flex';
-  const ok = document.getElementById('mkAccUno');
-  ok.textContent = apagar ? 'Sí, apagarlo' : 'Sí, encenderlo';
-  ok.className = 'si ' + (apagar ? 'rojo' : 'verde');
-  ok.disabled = false;
+  document.getElementById('mkAccUno').style.display = 'none';
+  document.getElementById('mkAccDos').style.display = 'inline-flex';
+  /* el boton que coincide con el estado actual queda apagado: no tiene sentido
+     apagar algo ya apagado desde aca */
+  const bApa = document.getElementById('mkAccApagar');
+  const bEnc = document.getElementById('mkAccEncender');
+  if (bApa && bEnc){
+    bApa.disabled = esAd && !activo;
+    bEnc.disabled = esAd && activo;
+    bApa.classList.toggle('reco', esAd && reco === 'APAGAR');
+    bEnc.classList.toggle('reco', esAd && reco === 'ENCENDER');
+  }
+  document.getElementById('mkAccEstado').innerHTML = esAd
+    ? ('Ahora está <b>' + (activo ? 'ACTIVO' : 'INACTIVO') + '</b>'
+       + (reco ? ' · el ERP dice <b>' + reco + '</b>' : ''))
+    : '';
   document.getElementById('mkAccRes').innerHTML = '';
 }
 function mkAccCerrar(){ document.getElementById('mkAccBox').style.display = 'none'; MKACC = null; }
@@ -2397,6 +2523,7 @@ window.addEventListener('message', function(e){
     <div class="nom" id="mkAccNom"></div>
     <div class="por" id="mkAccPor"></div>
     <div class="dato" id="mkAccDato"></div>
+    <div class="dato" id="mkAccEstado" style="margin-top:-8px"></div>
     <div class="niv">
       <span>Actuar sobre:</span>
       <button class="accn on" data-accn="ad"       onclick="mkAccNivel('ad')">Este anuncio</button>
@@ -2413,8 +2540,8 @@ window.addEventListener('message', function(e){
       <button class="no" onclick="mkAccCerrar()">Cancelar</button>
       <button class="si" id="mkAccUno" onclick="mkAccHacer()">Confirmar</button>
       <span id="mkAccDos" style="display:none;gap:9px">
-        <button class="si rojo" onclick="mkAccHacer('PAUSED')">Apagar</button>
-        <button class="si verde" onclick="mkAccHacer('ACTIVE')">Encender</button>
+        <button class="si rojo"  id="mkAccApagar"   onclick="mkAccHacer('PAUSED')">Apagar</button>
+        <button class="si verde" id="mkAccEncender" onclick="mkAccHacer('ACTIVE')">Encender</button>
       </span>
     </div>
     <div class="res" id="mkAccRes"></div>
