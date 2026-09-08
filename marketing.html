@@ -685,7 +685,8 @@ function mkAplicarVentas(){
 const URL_EMBUDO_P = 'https://n8n-production-4e716.up.railway.app/webhook/embudo-periodo';
 let MKE = null;    /* embudo del periodo que se esta viendo */
 let MKEP = null;   /* embudo del periodo anterior, para las flechitas */
-let MK_RES = null; /* residuo: lo canonico menos lo que quedo visible en la tabla */
+let MK_RES = null;  /* residuo del embudo: lo canonico menos lo visible */
+let MK_RESV = null; /* residuo de ventas, mismo criterio */
 
 async function mkCargarEmbudo(desde, hasta){
   const arma = (arr) => {
@@ -759,10 +760,35 @@ function mkSinId(lado){
   return null;
 }
 
+/* ══ EL RESIDUO DE VENTAS ════════════════════════════════════════════════
+   8-sep-2026 — mkSinId solo veia las ventas SIN ad_id. Faltaba el otro caso:
+   la venta que SI tiene anuncio, pero cuyo anuncio no tiene fila en la tabla
+   (no gasto en el periodo, o su nombre no cae en el canal). Esa venta existia
+   en la base y no aparecia en ningun lado: Marketing 14 vs Embudo 15.
+   Ahora se calcula igual que el del embudo — lo canonico menos lo visible —
+   asi el TOTAL de ventas tampoco puede separarse de la base de datos.        */
+function mkResiduoVentas(lado, rows){
+  const src = (lado === 'prev') ? MKVP : MKV;
+  if (!src) return null;
+  const cam = (document.getElementById('mkCampana') || {}).value;
+  const con = (document.getElementById('mkConjunto') || {}).value;
+  if (cam || con) return null;
+  let tp = 0, tg = 0, ti = 0;
+  const suma = (f) => { const c = _mkVentaCanal(f); tp += c.pedidos || 0; tg += c.pagados || 0; ti += c.ingreso || 0; };
+  Object.keys(src.porAd).forEach(k => suma(src.porAd[k]));
+  if (src.sinId) suma(src.sinId);
+  let vp = 0, vg = 0, vi = 0;
+  (rows || []).forEach(r => { const o = r[lado] || {}; vp += +o.pedidos || 0; vg += +o.pagados || 0; vi += +o.ingreso || 0; });
+  const s = mkSinId(lado) || {};
+  const res = { pedidos: Math.max(0, tp - vp), pagados: Math.max(0, tg - vg),
+                ingreso: Math.max(0, ti - vi), web: s.web || 0, whatsapp: s.whatsapp || 0 };
+  return res.pedidos > 0 || res.ingreso > 0 ? res : null;
+}
+
 /* La fila fantasma, justo encima del TOTAL. Sin gasto y sin ROAS a proposito:
    poner 0 daria un ROAS infinito y ensuciaria los promedios. */
 function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
-  const s = mkSinId('act');
+  const s = MK_RESV;
   const e = MK_RES;
   if (!s && !e) return '';
   const detalle = [];
@@ -1521,6 +1547,7 @@ function mkPintar(){
      Se calcula una sola vez aca y la fila fantasma lo reusa, para que el numero
      de arriba, el de la fila y el de la base de datos no puedan separarse. */
   MK_RES = mkResiduo('act', rows);
+  MK_RESV = mkResiduoVentas('act', rows);
   (function(){
     const d = (a, b) => (b ? a / b : null);
     [['act', A], ['prev', P]].forEach(function(par){
@@ -1541,7 +1568,7 @@ function mkPintar(){
   (function(){
     const d = (a, b) => (b ? a / b : null);
     [['act', A, MKV], ['prev', P, MKVP]].forEach(function(par){
-      const s = mkSinId(par[0]); const T = par[1];
+      const s = mkResiduoVentas(par[0], rows); const T = par[1];
       if (!s) return;
       T.pedidos = (Number(T.pedidos) || 0) + s.pedidos;
       T.pagados = (Number(T.pagados) || 0) + s.pagados;
