@@ -443,6 +443,20 @@
   .mkmodal-in .res{font-size:11.5px;font-weight:800;margin-top:11px;text-align:right;min-height:16px}
   .mkmodal-in .res .bien{color:var(--ok)} .mkmodal-in .res .mal{color:var(--bad)}
   .mkmodal-in .res .esp{color:var(--txt2);font-weight:600}
+  /* Fase 2 — selector de alcance y presupuesto dentro del modal */
+  .mkmodal-in .niv{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 10px;font-size:11px;color:var(--txt2)}
+  .mkmodal-in .niv span{margin-right:2px;font-weight:700}
+  .mkmodal-in button.accn{background:transparent;border:1.5px solid var(--bd);color:var(--txt2);
+        border-radius:999px;padding:5px 12px;font-size:11.5px;font-weight:800;cursor:pointer}
+  .mkmodal-in button.accn:hover{border-color:#6d8dff;color:var(--txt)}
+  .mkmodal-in button.accn.on{background:#6d8dff;border-color:#6d8dff;color:#fff}
+  .mkmodal-in .aviso{font-size:11px;line-height:1.55;color:var(--warn);background:rgba(255,210,63,.1);
+        border-radius:9px;padding:7px 10px;margin-bottom:10px}
+  .mkmodal-in .pres{display:flex;align-items:center;gap:7px;margin-bottom:12px;font-size:11.5px}
+  .mkmodal-in .pres label{font-weight:800;color:var(--txt2)}
+  .mkmodal-in .pres input{width:80px;background:var(--card);border:1.5px solid var(--bd);
+        color:var(--txt);border-radius:8px;padding:6px 9px;font-size:12px;font-weight:700}
+  .mkmodal-in button.si.azul{background:#6d8dff}
   /* ── Qué funciona · reestructurado 8-sep-2026 ───────────────────────── */
   .qfsec{font-size:11px;font-weight:900;letter-spacing:.09em;text-transform:uppercase;color:var(--txt2);margin:18px 0 9px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
   .qfpills{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
@@ -2201,52 +2215,87 @@ function qfPintar(){
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   FASE 1 · PRENDER Y APAGAR EN META DESDE EL ERP (8-sep-2026)
+   FASE 2 · ANUNCIO / CONJUNTO / CAMPANA + PRESUPUESTO (8-sep-2026)
 
-   El boton ⏻ aparece SOLO en las filas donde la columna Accion pide prender
-   o apagar. No es un interruptor libre: es el remate de una recomendacion
-   que el ERP ya calculo con TUS ventas, no con las de Meta.
+   El boton ⏻ sigue apareciendo solo donde el ERP pide prender o apagar: es el
+   remate de una recomendacion, no un interruptor libre. Lo que cambia es que
+   adentro del modal ahora se elige SOBRE QUE actuar.
 
-   Los blindajes viven en el servidor (lista blanca contra bot.gasto_anuncios,
-   tope por hora, log de auditoria). Aca solo esta la confirmacion, que existe
-   para que nadie apague un anuncio de un clic distraido.
+   El frontend nunca manda un adset_id ni un campaign_id: manda el ad_id y el
+   nivel, y el servidor resuelve el resto contra Meta. Asi la lista blanca
+   (bot.gasto_anuncios) sigue cubriendo todo — es imposible tocar un objeto que
+   no cuelgue de un anuncio conocido.
+
+   No hay boton de deshacer a proposito: apagar y encender ya son el mismo boton
+   apretado dos veces. Para el presupuesto, que si necesita saber a que volver,
+   el valor previo queda guardado en bot.meta_acciones.
    ══════════════════════════════════════════════════════════════════════════ */
 const URL_META_ACCION = 'https://n8n-production-4e716.up.railway.app/webhook/meta-accion';
-let MKACC = null;   /* {adId, accion, fila} de lo que se esta por hacer */
+let MKACC = null;   /* {adId, accion, fila, nivel} de lo que se esta por hacer */
+
+const MKACC_QUE = { ad:'anuncio', adset:'conjunto', campaign:'campaña' };
 
 function mkEjecPreg(adId, accion){
   const r = (MK.filas || []).filter(x => String(x.ad_id) === String(adId))[0];
   if (!r) return;
-  MKACC = { adId: String(adId), accion: accion, fila: r };
-  const apagar = (accion === 'APAGAR');
-  document.getElementById('mkAccTit').innerHTML = (apagar ? '🔴 Apagar' : '🟢 Encender') + ' este anuncio en Meta';
+  MKACC = { adId: String(adId), accion: accion, fila: r, nivel: 'ad' };
   document.getElementById('mkAccNom').textContent = r.anuncio || adId;
   document.getElementById('mkAccPor').innerHTML = '<b>Por qué el ERP lo pide:</b> ' + esc(r._au.por || '');
-  document.getElementById('mkAccDato').innerHTML = 'Gasto S/ ' + mkSol(r.act.gasto).replace('S/ ','')
+  document.getElementById('mkAccDato').innerHTML = 'Gasto ' + mkSol(r.act.gasto)
     + ' · ' + mkNum(r.act.conversaciones) + ' conversaciones · ' + (r.act.pedidos || 0) + ' ventas'
     + (r.act.roas != null ? ' · ROAS ' + Number(r.act.roas).toFixed(2) + 'x' : '');
-  const ok = document.getElementById('mkAccOk');
-  ok.textContent = apagar ? 'Sí, apagarlo' : 'Sí, encenderlo';
-  ok.className = apagar ? 'si rojo' : 'si verde';
-  ok.disabled = false;
   document.getElementById('mkAccRes').innerHTML = '';
   document.getElementById('mkAccBox').style.display = 'flex';
+  mkAccNivel('ad');
+}
+
+/* Cambia el alcance: anuncio, conjunto o campana. */
+function mkAccNivel(n){
+  if (!MKACC) return;
+  MKACC.nivel = n;
+  document.querySelectorAll('[data-accn]').forEach(b => b.classList.toggle('on', b.dataset.accn === n));
+  const esAd = (n === 'ad');
+  const apagar = (MKACC.accion === 'APAGAR');
+  document.getElementById('mkAccTit').innerHTML = esAd
+    ? ((apagar ? '🔴 Apagar' : '🟢 Encender') + ' este anuncio en Meta')
+    : ('⚙️ Actuar sobre el ' + MKACC_QUE[n] + ' completo');
+  /* aviso honesto: fuera del anuncio, el alcance es mayor que la recomendacion */
+  document.getElementById('mkAccAviso').style.display = esAd ? 'none' : 'block';
+  document.getElementById('mkAccAviso').innerHTML = '⚠️ Esto afecta <b>todos los anuncios</b> del '
+    + MKACC_QUE[n] + ', no solo este. El ERP recomendó a nivel anuncio.';
+  document.getElementById('mkAccPres').style.display = esAd ? 'none' : 'flex';
+  document.getElementById('mkAccUno').style.display = esAd ? 'inline-block' : 'none';
+  document.getElementById('mkAccDos').style.display = esAd ? 'none' : 'flex';
+  const ok = document.getElementById('mkAccUno');
+  ok.textContent = apagar ? 'Sí, apagarlo' : 'Sí, encenderlo';
+  ok.className = 'si ' + (apagar ? 'rojo' : 'verde');
+  ok.disabled = false;
+  document.getElementById('mkAccRes').innerHTML = '';
 }
 function mkAccCerrar(){ document.getElementById('mkAccBox').style.display = 'none'; MKACC = null; }
 
-async function mkAccHacer(){
+/* accion: 'PAUSED' | 'ACTIVE' | 'PRESUPUESTO' */
+async function mkAccHacer(accion){
   if (!MKACC) return;
-  const ok  = document.getElementById('mkAccOk');
   const res = document.getElementById('mkAccRes');
-  ok.disabled = true;
+  const botones = document.querySelectorAll('#mkAccBox button.si');
+  let soles = 0;
+  if (accion === 'PRESUPUESTO'){
+    soles = Number((document.getElementById('mkAccSoles') || {}).value || 0);
+    if (!(soles > 0)){ res.innerHTML = '<span class="mal">Poné un monto mayor a cero.</span>'; return; }
+  }
+  if (!accion) accion = (MKACC.accion === 'APAGAR') ? 'PAUSED' : 'ACTIVE';
+
+  botones.forEach(b => b.disabled = true);
   res.innerHTML = '<span class="esp">Hablando con Meta…</span>';
   try {
     const r = await fetch(URL_META_ACCION, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
-        nivel: 'ad',
+        nivel: MKACC.nivel,
         id: MKACC.adId,
-        accion: MKACC.accion === 'APAGAR' ? 'PAUSED' : 'ACTIVE',
+        accion: accion,
+        presupuesto: soles,
         nombre: MKACC.fila.anuncio || '',
         quien: 'Pablo'
       })
@@ -2254,17 +2303,19 @@ async function mkAccHacer(){
     const d = Array.isArray(r) ? (r[0] || {}) : r;
     if (d.ok === true || d.ok === 'true'){
       res.innerHTML = '<span class="bien">✓ ' + esc(d.mensaje || 'Listo.') + '</span>';
-      /* el estado local se actualiza al toque; Meta tarda un rato en reflejarlo
-         en su API, asi que no vale la pena volver a preguntar ahora */
-      MKACC.fila.estado_anuncio = (MKACC.accion === 'APAGAR') ? 'PAUSED' : 'ACTIVE';
-      setTimeout(function(){ mkAccCerrar(); mkPintar(); }, 1200);
+      /* solo el estado del anuncio se refleja al toque; conjunto y campana
+         se ven en el proximo refresco de Meta, que tarda unos minutos */
+      if (MKACC.nivel === 'ad'){
+        MKACC.fila.estado_anuncio = (accion === 'PAUSED') ? 'PAUSED' : 'ACTIVE';
+      }
+      setTimeout(function(){ mkAccCerrar(); mkPintar(); }, 1600);
     } else {
-      res.innerHTML = '<span class="mal">✕ ' + esc(d.mensaje || 'No se pudo. Revisá el log en bot.meta_acciones.') + '</span>';
-      ok.disabled = false;
+      res.innerHTML = '<span class="mal">✕ ' + esc(d.mensaje || 'No se pudo. Revisá bot.meta_acciones.') + '</span>';
+      botones.forEach(b => b.disabled = false);
     }
   } catch (e) {
     res.innerHTML = '<span class="mal">✕ No hubo respuesta del servidor. No se cambió nada en Meta.</span>';
-    ok.disabled = false;
+    botones.forEach(b => b.disabled = false);
   }
 }
 
@@ -2294,9 +2345,25 @@ window.addEventListener('message', function(e){
     <div class="nom" id="mkAccNom"></div>
     <div class="por" id="mkAccPor"></div>
     <div class="dato" id="mkAccDato"></div>
+    <div class="niv">
+      <span>Actuar sobre:</span>
+      <button class="accn on" data-accn="ad"       onclick="mkAccNivel('ad')">Este anuncio</button>
+      <button class="accn"    data-accn="adset"    onclick="mkAccNivel('adset')">Su conjunto</button>
+      <button class="accn"    data-accn="campaign" onclick="mkAccNivel('campaign')">Su campaña</button>
+    </div>
+    <div class="aviso" id="mkAccAviso" style="display:none"></div>
+    <div class="pres" id="mkAccPres" style="display:none">
+      <label>Presupuesto diario</label>
+      <span>S/</span><input id="mkAccSoles" type="number" min="1" step="1" placeholder="50">
+      <button class="si azul" onclick="mkAccHacer('PRESUPUESTO')">Cambiar</button>
+    </div>
     <div class="btns">
       <button class="no" onclick="mkAccCerrar()">Cancelar</button>
-      <button class="si" id="mkAccOk" onclick="mkAccHacer()">Confirmar</button>
+      <button class="si" id="mkAccUno" onclick="mkAccHacer()">Confirmar</button>
+      <span id="mkAccDos" style="display:none;gap:9px">
+        <button class="si rojo" onclick="mkAccHacer('PAUSED')">Apagar</button>
+        <button class="si verde" onclick="mkAccHacer('ACTIVE')">Encender</button>
+      </span>
     </div>
     <div class="res" id="mkAccRes"></div>
   </div>
