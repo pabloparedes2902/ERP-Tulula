@@ -685,6 +685,11 @@ function mkAplicarVentas(){
 const URL_EMBUDO_P = 'https://n8n-production-4e716.up.railway.app/webhook/embudo-periodo';
 let MKE = null;    /* embudo del periodo que se esta viendo */
 let MKEP = null;   /* embudo del periodo anterior, para las flechitas */
+/* 8-sep-2026 — TITULAR Y CUERPO REALES del anuncio, tal como los reporta Meta
+   en el referral de la primera conversacion. No dependen del nombre que le
+   pusiste al anuncio: existen para los 60 anuncios, tengan o no nomenclatura.
+   Es lo que rescata el 74% del gasto que hoy cae en "Hotro" y no dice nada. */
+let MKTXT = {};     /* ad_id -> {headline, cuerpo, enlace} */
 let MK_RES = null;  /* residuo del embudo: lo canonico menos lo visible */
 let MK_RESV = null; /* residuo de ventas, mismo criterio */
 
@@ -694,6 +699,9 @@ async function mkCargarEmbudo(desde, hasta){
     /* 8-sep-2026 — el endpoint ahora devuelve tambien filas tipo 'asesora'
        (las usa el Embudo). Marketing solo mira las de anuncio: si sumara las
        dos, cada conversacion contaria dos veces. */
+    (Array.isArray(arr) ? arr : []).filter(x => x.tipo === 'texto').forEach(x => {
+      MKTXT[String(x.clave)] = { headline: x.headline || '', cuerpo: x.cuerpo || '', enlace: x.enlace || '' };
+    });
     (Array.isArray(arr) ? arr : []).filter(x => (x.tipo || 'ad') === 'ad').forEach(x => {
       const f = { conversaciones:+x.conversaciones||0, frias:+x.frias||0,
                   tibias:+x.tibias||0, calientes:+x.calientes||0, personas:+x.personas||0 };
@@ -1864,7 +1872,16 @@ function mkSort(k){ if (mkOrden === k) mkDir = -mkDir; else { mkOrden = k; mkDir
    Las etiquetas se comparan SIN tildes y sin mayusculas, asi "Estatico" y
    "Estático" no se parten en dos filas. Se muestra la forma mas usada.
    ══════════════════════════════════════════════════════════════════════════ */
+const QF_CORTE = 80;   /* cuanto copy entra en la celda antes de cortar */
 const QF_ATRIB = [
+  /* i = -1 no es una posicion del nombre: agrupa por el COPY REAL del anuncio,
+     el texto que Meta manda en el referral y que la clienta efectivamente leyo
+     antes de escribir. Funciona aunque el anuncio este mal nombrado, asi que
+     va primero.
+     OJO: el campo 'headline' del referral NO sirve para esto — solo trae la
+     etiqueta del boton ("Escribenos", "Tulula", "Chat with us"): 5 valores para
+     60 anuncios. El que distingue de verdad es el cuerpo: 32 textos distintos. */
+  {i:-1, t:'Copy real del anuncio (lo que de verdad lee la clienta)'},
   {i:1, t:'Producto'},
   {i:2, t:'Hook'},
   {i:3, t:'Ángulo'},
@@ -1896,11 +1913,20 @@ function _qfMetricas(v){
 function _qfAgrupar(filas, idx){
   const m = {};
   filas.forEach(r => {
-    const p = _qfPartes(r); if (!p) return;
-    const k = _qfClave(p[idx]) || '(vacío)';
+    let etiqueta;
+    if (idx === -1){
+      const t = MKTXT[String(r.ad_id || '')];
+      const txt = (t && t.cuerpo) ? String(t.cuerpo).replace(/\s+/g, ' ').trim() : '';
+      etiqueta = txt ? (txt.length > QF_CORTE ? txt.slice(0, QF_CORTE) + '\u2026' : txt)
+                     : '(Meta no reporto el texto del anuncio)';
+    } else {
+      const p = _qfPartes(r); if (!p) return;
+      etiqueta = p[idx];
+    }
+    const k = _qfClave(etiqueta) || '(vacío)';
     if (!m[k]) m[k] = {label:{}, ads:0, gasto:0, conv:0, pedidos:0, ingreso:0};
     const o = m[k], a = r.act || {};
-    o.label[p[idx]] = (o.label[p[idx]] || 0) + 1;
+    o.label[etiqueta] = (o.label[etiqueta] || 0) + 1;
     o.ads++; o.gasto += +a.gasto||0; o.conv += +a.conversaciones||0;
     o.pedidos += +a.pedidos||0; o.ingreso += +a.ingreso||0;
   });
@@ -1940,7 +1966,8 @@ function qfPintar(){
   let html = '';
   if (nSin) html += '<div class="qfsin"><b>' + nSin + ' anuncios (S/ ' + gSin.toFixed(0) + ', el '
     + (gTot ? (gSin/gTot*100).toFixed(0) : 0) + '% del gasto) no siguen la nomenclatura de ocho partes: '
-    + 'de esa plata no se aprende nada.</div>';
+    + 'de esa plata no se puede leer producto, angulo ni formato. '
+    + '<b>Si se puede leer su copy real</b>: mira la primera caja de abajo.</div>';
 
   /* ── receta del proximo anuncio ── */
   const mejores = [];
@@ -1990,8 +2017,10 @@ function qfPintar(){
   const gan = conGasto.filter(r => r.act.roas !== null).sort((a,b) => b.act.roas - a.act.roas).slice(0,5);
   const per = conGasto.filter(r => !r.act.pedidos).sort((a,b) => (+b.act.gasto||0) - (+a.act.gasto||0)).slice(0,5);
   const listar = (arr, tit, col, fmt) => '<div class="qfcaja"><h4>' + tit + '</h4><table class="qft"><tbody>'
-    + (arr.length ? arr.map(r => '<tr><td title="' + String(r.anuncio).replace(/"/g,'') + '">' + esc(r.anuncio) + '</td>'
-        + '<td>' + mkSol(r.act.gasto) + '</td><td>' + fmt(r) + '</td></tr>').join('')
+    + (arr.length ? arr.map(r => { const _t = MKTXT[String(r.ad_id||'')];
+        return '<tr><td title="' + String(r.anuncio).replace(/"/g,'') + '">' + esc(r.anuncio)
+        + (_t && _t.cuerpo ? '<div style="font-size:10.5px;color:var(--txt2);margin-top:2px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\u201c' + esc(String(_t.cuerpo).replace(/\s+/g,' ').trim()) + '\u201d</div>' : '') + '</td>'
+        + '<td>' + mkSol(r.act.gasto) + '</td><td>' + fmt(r) + '</td></tr>'; }).join('')
       : '<tr><td class="qfnota">Nada que mostrar.</td></tr>')
     + '</tbody></table></div>';
   html += '<div class="qfgrid" style="margin-top:12px">'
