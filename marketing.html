@@ -262,6 +262,11 @@
   .mkwrap::-webkit-scrollbar-thumb{background:var(--bd);border-radius:8px;border:2px solid var(--card)}
   .mkwrap::-webkit-scrollbar-thumb:hover{background:var(--hover)}
   .mkwrap{scrollbar-width:thin;scrollbar-color:var(--bd) var(--bg)}
+  /* 8-sep-2026 — la fila de ventas sin anuncio identificado, encima del TOTAL */
+  table.mk tfoot tr.mksinid td{ background:var(--bg2,#f7f7f8); color:var(--txt2,#666);
+    font-weight:500; border-top:1px dashed var(--bor,#ddd); }
+  table.mk tfoot tr.mksinid .acc.rev{ background:transparent; color:var(--txt2,#666);
+    border:1px solid var(--bor,#ddd); font-size:11px; padding:1px 6px; border-radius:10px; }
   /* ── FILA DE TOTALES, clavada al pie de la tabla ── */
   table.mk tfoot td{position:sticky;bottom:0;z-index:4;background:var(--panel);
     border-top:2px solid var(--bd);font-weight:900;font-size:13.5px;height:42px;
@@ -612,6 +617,96 @@ function mkCanal(c, btn){
   if (MKSUB === 'quefunciona') qfPintar();
 }
 const URL_MARKETING = 'https://n8n-production-4e716.up.railway.app/webhook/marketing2';
+
+/* ── 8-sep-2026 · FUENTE UNICA DE VENTAS ───────────────────────────────────
+   El GASTO lo sigue trayendo /marketing2 (es dato de Meta). Las VENTAS y el
+   INGRESO salen de /ventas-periodo, que lee el ERP con un solo criterio:
+   pedido con origen ADS DIRECTO o ADS INDIRECTO, contado una vez por pedido.
+   Asi el Embudo y Marketing no pueden contradecirse: leen lo mismo.        */
+const URL_VENTAS = 'https://n8n-production-4e716.up.railway.app/webhook/ventas-periodo';
+let MKV = null;    /* ventas del periodo que se esta viendo */
+let MKVP = null;   /* ventas del periodo anterior, para las flechitas */
+const MK_SINID_H = '<b>Sin anuncio identificado</b><br>Ventas que el equipo marco como ADS en el ERP pero a las que no se les pudo saber de que anuncio vinieron.<br>No tienen gasto ni ROAS propio porque no se sabe a que creativo cargarselos.<br><b>Cuentan en el TOTAL</b>: son ventas reales.';
+
+function _mkDiaMenos(fecha, dias){
+  const t = new Date(fecha + 'T12:00:00Z');
+  t.setUTCDate(t.getUTCDate() - dias);
+  return t.toISOString().slice(0, 10);
+}
+async function mkCargarVentas(desde, hasta){
+  const arma = (arr) => {
+    const o = { porAd: {}, sinId: null };
+    (Array.isArray(arr) ? arr : []).forEach(x => {
+      const f = { pedidos:+x.pedidos||0, pagados:+x.pagados||0, ingreso:+x.ingreso||0,
+                  web:+x.web||0, whatsapp:+x.whatsapp||0, otros:+x.otros||0,
+                  ingreso_web:+x.ingreso_web||0, ingreso_whatsapp:+x.ingreso_whatsapp||0 };
+      if (x.sin_id === true || x.sin_id === 'true' || String(x.anuncio) === 'SIN_ID') o.sinId = f;
+      else o.porAd[String(x.anuncio)] = f;
+    });
+    return o;
+  };
+  const dias = Math.max(1, Math.round((new Date(hasta+'T12:00:00Z') - new Date(desde+'T12:00:00Z')) / 86400000) + 1);
+  try {
+    const [a, b] = await Promise.all([
+      fetch(URL_VENTAS + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()),
+      fetch(URL_VENTAS + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1)).then(r => r.json())
+    ]);
+    MKV = arma(a); MKVP = arma(b);
+  } catch (e) { MKV = null; MKVP = null; }
+}
+
+/* Pisa ventas e ingreso de cada anuncio con el dato del ERP.
+   Si el endpoint no respondio no toca nada: la pantalla sigue como antes. */
+function mkAplicarVentas(){
+  if (!MKV || !MK || !MK.filas) return;
+  MK.filas.forEach(r => {
+    const id = String(r.ad_id || '');
+    const a = MKV.porAd[id], p = MKVP && MKVP.porAd[id];
+    if (r.act){  r.act.pedidos  = a ? a.pedidos : 0; r.act.pagados  = a ? a.pagados : 0; r.act.ingreso  = a ? a.ingreso : 0; }
+    if (r.prev){ r.prev.pedidos = p ? p.pedidos : 0; r.prev.pagados = p ? p.pagados : 0; r.prev.ingreso = p ? p.ingreso : 0; }
+  });
+}
+
+/* Las ventas sin anuncio identificado que le tocan al canal que estas viendo.
+   No aparece si filtraste una campana o un conjunto: no pertenece a ninguno. */
+function mkSinId(lado){
+  const src = (lado === 'prev') ? MKVP : MKV;
+  const s = src && src.sinId;
+  if (!s) return null;
+  const cam = (document.getElementById('mkCampana') || {}).value;
+  const con = (document.getElementById('mkConjunto') || {}).value;
+  if (cam || con) return null;
+  if (MKCANAL === 'wa')  return s.whatsapp ? { pedidos:s.whatsapp, pagados:s.whatsapp, ingreso:s.ingreso_whatsapp, web:0, whatsapp:s.whatsapp } : null;
+  if (MKCANAL === 'web') return s.web      ? { pedidos:s.web,      pagados:s.web,      ingreso:s.ingreso_web,      web:s.web, whatsapp:0 } : null;
+  if (MKCANAL === 'all') return s.pedidos  ? s : null;
+  return null;
+}
+
+/* La fila fantasma, justo encima del TOTAL. Sin gasto y sin ROAS a proposito:
+   poner 0 daria un ROAS infinito y ensuciaria los promedios. */
+function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
+  const s = mkSinId('act');
+  if (!s) return '';
+  const detalle = [];
+  if (s.web) detalle.push(s.web + ' de Pagina Web');
+  if (s.whatsapp) detalle.push(s.whatsapp + ' de WhatsApp');
+  const tip = MK_SINID_H + (detalle.length ? '<br><br><b>De donde vienen:</b> ' + detalle.join(' y ') + '.' : '');
+  return '<tr class="mksinid">'
+    + '<td class="fijo" style="width:' + aCam + 'px;left:' + L1 + 'px">—</td>'
+    + '<td class="fijo" style="width:' + aCon + 'px;left:' + L2 + 'px"></td>'
+    + '<td class="fijo" style="width:' + aCre + 'px;left:' + L3 + 'px;cursor:help"'
+    +   ' onmouseenter="mkTipIn(event, ' + JSON.stringify(tip).replace(/"/g, '&quot;') + ')" onmouseleave="mkTipOut()">'
+    +   '&#9888;&#65039; Sin anuncio identificado</td>'
+    + '<td class="fijo" style="width:' + aEst + 'px;left:' + L4 + 'px"></td>'
+    + '<td class="fijo borde" style="width:' + aAcc + 'px;left:' + L5 + 'px"><span class="acc rev">REVISAR</span></td>'
+    + cols.map(c => {
+        if (c === 'pedidos') return '<td>' + mkNum(s.pedidos) + '</td>';
+        if (c === 'pagados') return '<td>' + mkNum(s.pagados) + '</td>';
+        if (c === 'ingreso') return '<td>' + (s.ingreso ? mkSol(s.ingreso) : '—') + '</td>';
+        return '<td>—</td>';
+      }).join('')
+    + '<td></td></tr>';
+}
 /* 7-sep-2026 — la historia de cada anuncio (toda su vida + ultimos 7 dias vs
    los 7 anteriores). La columna Accion decide con ESTO, nunca con el periodo
    que este seleccionado arriba: si no, el mismo anuncio diria "escalar" en un
@@ -977,21 +1072,24 @@ async function mkCargar(refrescarMeta){
     } else sub.style.display = 'none';
   }
   mkCargarPrefs(); mkCargarPar();
-  let url = URL_MARKETING;
+  let url = URL_MARKETING, _mkD, _mkH;
   if (mkPers){
     const d = document.getElementById('mkDesde').value, h = document.getElementById('mkHasta').value;
     if (!d || !h){ sub.textContent = 'Elige las dos fechas.'; return; }
+    _mkD = d; _mkH = h;
     url += '?desde=' + d + '&hasta=' + h;
   } else {
     /* 7-sep-2026 — regla de Pablo: "hasta hoy" es HASTA HOY, nunca hasta ayer.
        Los ultimos N dias incluyen el dia en curso; el gasto de hoy llega vivo
        por el webhook de Meta, asi que el dato esta al minuto. */
+    _mkD = _mkISO(-(mkDias - 1)); _mkH = _mkISO(0);
     url += '?desde=' + _mkISO(-(mkDias - 1)) + '&hasta=' + _mkISO(0);
   }
   try {
-    const [datos] = await Promise.all([ (await fetch(url)).json(), mkCargarHistoria() ]);
+    const [datos] = await Promise.all([ (await fetch(url)).json(), mkCargarHistoria(), mkCargarVentas(_mkD, _mkH) ]);
     MK = datos;
     if (!MK || !MK.filas) throw new Error('respuesta vacía');
+    mkAplicarVentas();
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar();
   } catch (e) {
@@ -1333,6 +1431,25 @@ function mkPintar(){
      un conjunto de anuncios, todo el panel habla de ese conjunto. Así el número de
      arriba y el de la fila de totales nunca se contradicen. */
   const A = _mkAgg('act', rows), P = _mkAgg('prev', rows), cob = MK.cobertura || {};
+  /* 8-sep-2026 — las ventas sin anuncio identificado son ventas reales: entran
+     al TOTAL y a los KPI de arriba. No entran a ninguna fila de anuncio porque
+     no se sabe a cual. Sin esto, Marketing mostraba menos ventas que el Embudo. */
+  (function(){
+    const d = (a, b) => (b ? a / b : null);
+    [['act', A, MKV], ['prev', P, MKVP]].forEach(function(par){
+      const s = mkSinId(par[0]); const T = par[1];
+      if (!s) return;
+      T.pedidos = (Number(T.pedidos) || 0) + s.pedidos;
+      T.pagados = (Number(T.pagados) || 0) + s.pagados;
+      T.ingreso = (Number(T.ingreso) || 0) + (s.ingreso || 0);
+      T.roas   = d(T.ingreso, T.gasto);
+      T.cac    = d(T.gasto, T.pedidos);
+      T.ticket = d(T.ingreso, T.pedidos);
+      const _b = (T.personas > 0) ? T.personas : T.conversaciones;
+      T.tasa_cierre = d(T.pedidos, _b) === null ? null : d(T.pedidos, _b) * 100;
+      if (T.costo > 0) T.ganancia = T.ingreso - T.costo - T.gasto;
+    });
+  })();
   const margenG = Math.max(1, Math.min(95, Number(document.getElementById('mkMargen').value) || 60)) / 100;
   const ctxG = {roasEq: 1/margenG, cacMax: (mkN(A.ticket) || 150) * margenG};
   const kpi = (l, v, a, p, k) => {
@@ -1480,7 +1597,7 @@ function mkPintar(){
   const T = A;   /* mismo cálculo que los KPI de arriba: una sola verdad */
   const SUMA = {gasto:1,impresiones:1,alcance:1,clics:1,link_clicks:1,v3s:1,thruplays:1,p100:1,
                 conversaciones:1,frias:1,tibias:1,calientes:1,pedidos:1,pagados:1,ingreso:1,costo:1,ganancia:1};
-  document.getElementById('mkFoot').innerHTML = '<tr>'
+  document.getElementById('mkFoot').innerHTML = mkFilaSinId(cols, anchoCam, anchoCon, anchoCre, anchoEst, anchoAcc, L1, L2, L3, L4, L5) + '<tr>'
     + '<td class="fijo" style="width:' + anchoCam + 'px;left:' + L1 + 'px">TOTAL</td>'
     + '<td class="fijo" style="width:' + anchoCon + 'px;left:' + L2 + 'px"></td>'
     + '<td class="fijo" style="width:' + anchoCre + 'px;left:' + L3 + 'px">' + rows.length + ' anuncio' + (rows.length===1?'':'s') + '</td>'
