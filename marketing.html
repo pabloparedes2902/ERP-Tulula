@@ -1517,11 +1517,63 @@ function mkAccionFinal(r){
   return {a:'ESPERAR', pide:false, por:'Sin ventas ni señal clara en los últimos 7 días. ' + vida};
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   8-sep-2026 — RECALCULO POR FILA. Bug encontrado por Pablo.
+
+   /marketing2 manda cac, roas, ticket y tasa_cierre YA CALCULADOS con los
+   pedidos e ingresos que ve META. Nosotros despues pisamos pedidos/ingreso con
+   los del ERP (que son mas y son los reales), pero esas cuatro metricas
+   derivadas quedaban con el valor viejo.
+
+   Resultado: un anuncio con 2 ventas reales y 1 segun Meta mostraba el CAC
+   dividido entre 1. Peor: el ROAS quedaba bajo y la columna Accion recomendaba
+   APAGAR anuncios rentables. En el TOTAL si se recalculaba (por eso cuadraba),
+   pero fila por fila no.
+
+   Regla que queda: cualquier cosa que pise un numerador o un denominador tiene
+   que recalcular lo que dependa de el. Por eso esto vive en UNA funcion que
+   corre al final, y no repartido por ahi.
+   ══════════════════════════════════════════════════════════════════════════ */
+function _mkRecalcUno(o){
+  if (!o) return;
+  const d = (a, b) => (b ? a / b : null);
+  const n = (x) => { const v = Number(x); return isNaN(v) ? 0 : v; };
+  const gasto = n(o.gasto), ped = n(o.pedidos), ing = n(o.ingreso);
+  const conv = n(o.conversaciones), pers = n(o.personas), costo = n(o.costo);
+
+  o.costo_conv = d(gasto, conv);
+  o.cac        = d(gasto, ped);
+  o.roas       = d(ing, gasto);
+  o.ticket     = d(ing, ped);
+  /* una clienta compra una vez: el cierre se mide contra personas distintas.
+     Mientras el dato de personas no llegue, cae a conversaciones. */
+  const base = pers > 0 ? pers : conv;
+  o.tasa_cierre = d(ped, base) === null ? null : d(ped, base) * 100;
+
+  if (conv > 0){
+    o.frias_p     = d(n(o.frias), conv) * 100;
+    o.tibias_p    = d(n(o.tibias), conv) * 100;
+    o.calientes_p = d(n(o.calientes), conv) * 100;
+  }
+  /* margen y ganancia solo si de verdad llego el costo */
+  if (costo > 0){
+    o.margen_bruto = ing > 0 ? ((ing - costo) / ing) * 100 : null;
+    o.ganancia     = ing - costo - gasto;
+  }
+}
+function mkRecalcular(){
+  if (!MK || !MK.filas) return;
+  MK.filas.forEach(r => { _mkRecalcUno(r.act); _mkRecalcUno(r.prev); });
+}
+
 function mkPintar(){
   if (!MK) return;
   /* 8-sep-2026 — ventas y embudo se re-aplican en cada pintado porque dependen
      del canal elegido, que cambia sin volver a pedir datos al servidor. */
   mkAplicarVentas(); mkAplicarEmbudo();
+  /* y recalcular lo que depende de ellos: sin esto, CAC, ROAS, ticket y cierre
+     quedan con los numeros de Meta y la columna Accion decide mal. */
+  mkRecalcular();
   const q  = (document.getElementById('mkQ').value || '').trim().toLowerCase();
   const fe = document.getElementById('mkEstado').value;
   const ff = document.getElementById('mkFiltro').value;
