@@ -1050,9 +1050,24 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <!-- Precio y Envío -->
         <div class="ct" style="margin-bottom:12px">Precio y Envío</div>
         <div class="fr">
-          <div class="fg"><label>Diferencia en prendas (S/)</label><input id="cam-diferencia" type="number" step="0.01" placeholder="0"></div>
+          <div class="fg"><label>Diferencia en prendas (S/) <span style="color:var(--mu);font-weight:400">— se calcula sola</span></label><input id="cam-diferencia" type="number" step="0.01" placeholder="0" title="Se calcula: precio de las prendas nuevas menos precio de las devueltas. Para forzarlo a mano, escríbelo; doble clic lo devuelve a automático."></div>
           <div class="fg"><label>Envío (S/)</label><input id="cam-envio" type="number" min="0" step="1" placeholder="0"></div>
         </div>
+
+        <!-- 7-set-2026 — RESULTADO DEL CAMBIO. El formulario ya no deja que la
+             diferencia a favor de la clienta se pierda en silencio: si la prenda
+             nueva es más barata hay que decir QUÉ se hace con ese sobrante. -->
+        <div id="cam-resultado" style="margin-top:10px;padding:12px 14px;border-radius:var(--r);border:1px solid var(--bd);background:var(--bg3);font-size:13px;color:var(--tx)"></div>
+        <div id="cam-destino-wrap" style="display:none;margin-top:10px">
+          <label style="display:block;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--mu);margin-bottom:8px">¿Qué se hace con ese saldo? *</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn bg cam-dest-btn" data-dest="SALDO">💳 Queda a favor</button>
+            <button type="button" class="btn bg cam-dest-btn" data-dest="DEVOLVER">💸 Devolverle el dinero</button>
+            <button type="button" class="btn bg cam-dest-btn" data-dest="EMPRESA">🏢 La empresa lo asume</button>
+          </div>
+          <div id="cam-destino-hint" style="margin-top:8px;font-size:12px;color:var(--mu)"></div>
+        </div>
+        <input id="cam-destino" type="hidden" value="">
         <!-- Precios auxiliares ocultos (backend legacy) -->
         <input id="cam-precio-orig"  type="hidden">
         <input id="cam-precio-nueva" type="hidden">
@@ -6653,6 +6668,43 @@ async function _sbRpcCambioEditar(body) {
     return (d && d.ok === true) ? d : null;
   } catch (e) {
     try { console.warn('[cambio] RPC cambio_editar falló → vía Apps Script'); } catch (_) {}
+    return null;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 7-set-2026 — SALDO A FAVOR DEL CAMBIO
+//
+// Cuando la prenda nueva es MÁS BARATA, `cambio_registrar` y `cambio_editar`
+// hacen `greatest(diferencia, 0)`: no cobran nada (correcto) pero tampoco dejan
+// registrado que la empresa le debe esa plata a la clienta. El camino clásico
+// (Apps Script, `_c2SyncImpl_`) sí lo escribe desde el 2-set; esta llamada pone
+// a la vía rápida a la par SIN tocar esas dos recetas — que fueron redefinidas
+// varias veces (venta viva, devolución) y reescribirlas revertiría esos cambios.
+//
+// La receta `cambio_saldo_favor` es IDEMPOTENTE a propósito: editar o anular un
+// cambio borra sus filas de la base, así que hay que volver a llamarla después
+// de cada guardado y no debe duplicar nada.
+//
+// Si falla, no se corta nada: el cambio ya quedó guardado. Sólo se avisa.
+// ══════════════════════════════════════════════════════════════════════════
+async function _sbRpcCambioSaldoFavor(nc, destino) {
+  try {
+    if (!SB_ESCRITURA_CAMBIOS) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    if (!nc) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_saldo_favor', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_nc: String(nc), p_destino: String(destino || '') }),
+    });
+    if (!r.ok) { try { console.warn('[cambio] RPC cambio_saldo_favor HTTP ' + r.status); } catch (_) {} return null; }
+    const d = await r.json();
+    return (d && d.ok === true) ? d : null;
+  } catch (e) {
+    try { console.warn('[cambio] RPC cambio_saldo_favor falló'); } catch (_) {}
     return null;
   }
 }
@@ -23482,6 +23534,16 @@ function _camBindEvents() {
   document.getElementById('cam-envio').addEventListener('input', camCalc);
   const _dif = document.getElementById('cam-diferencia');
   if (_dif) _dif.addEventListener('input', () => { _dif.dataset.manual = '1'; camCalc(); });
+  // Doble clic en la Diferencia = volver al cálculo automático.
+  if (_dif) _dif.addEventListener('dblclick', () => { _dif.dataset.manual = ''; camCalc(); });
+  // 7-set-2026 — destino del saldo a favor (queda / se devuelve / lo asume la empresa)
+  document.querySelectorAll('.cam-dest-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      const d = document.getElementById('cam-destino');
+      if (d) d.value = b.dataset.dest || '';
+      _camPintarDestino();
+    });
+  });
 
   // Cambio responsabilidad → re-distribuir montos (legacy — puede no existir)
   const _respEl = document.getElementById('cam-responsabilidad');
@@ -23562,8 +23624,12 @@ function camAddPrendaNueva() {
   rm.addEventListener('click', () => { div.remove(); camCalc(); });
   hdr.append(lbl, rm); div.appendChild(hdr);
 
-  // Grid: prenda / cant  (precio se removió — ahora el subtotal viene de Diferencia)
-  const g = document.createElement('div'); g.style.cssText = 'display:grid;grid-template-columns:1fr 80px;gap:10px';
+  // Grid: prenda / cant / precio
+  // 7-set-2026 — el precio de la prenda nueva VUELVE a la pantalla. Estaba oculto
+  // en 0 y la única forma de reflejar la plata era escribir "Diferencia" a mano
+  // (en negativo si la nueva era más barata). Nadie escribe un número negativo:
+  // por eso el saldo a favor de la clienta se perdía. Ahora la resta la hace el ERP.
+  const g = document.createElement('div'); g.style.cssText = 'display:grid;grid-template-columns:1fr 70px 100px;gap:10px';
 
   // Prenda autocomplete
   const pFg = document.createElement('div'); pFg.className = 'fg';
@@ -23577,10 +23643,14 @@ function camAddPrendaNueva() {
   const cntInp = document.createElement('input'); cntInp.type = 'number'; cntInp.value = '1'; cntInp.min = '1'; cntInp.step = '1'; cntInp.className = 'cam-pnueva-cant';
   cntInp.addEventListener('input', camCalc); cntFg.innerHTML = '<label>Cant.</label>'; cntFg.appendChild(cntInp);
 
-  // Precio hidden (compat backend — precio por prenda nueva ya no se muestra, queda en 0)
-  const preInp = document.createElement('input'); preInp.type = 'hidden'; preInp.className = 'cam-pnueva-prec'; preInp.value = '';
+  // Precio de la prenda nueva (visible desde el 7-set-2026)
+  const preFg = document.createElement('div'); preFg.className = 'fg';
+  const preInp = document.createElement('input'); preInp.type = 'number'; preInp.step = '0.01'; preInp.min = '0';
+  preInp.placeholder = '0.00'; preInp.className = 'cam-pnueva-prec'; preInp.value = '';
+  preInp.addEventListener('input', camCalc);
+  preFg.innerHTML = '<label>Precio S/</label>'; preFg.appendChild(preInp);
 
-  g.append(pFg, cntFg); div.appendChild(g); div.appendChild(preInp);
+  g.append(pFg, cntFg, preFg); div.appendChild(g);
 
   // Autocomplete prendas — selección solo pone nombre y recalcula
   const onPrendaSel = v => {
@@ -23631,8 +23701,69 @@ function _devFechasCount(fSol, fRecep, fReemb) {
 //   Total            = Diferencia + Envío − (Empresa asume)
 //   Pagado           = suma Pago Cliente
 //   Saldo            = Total − Pagado
+// 7-set-2026 — LA DIFERENCIA SE CALCULA SOLA.
+// Σ (precio × cantidad) de las prendas nuevas − Σ precio de las devueltas.
+// Devuelve null cuando no hay con qué calcular (sin precio nuevo cargado, o
+// prendas devueltas sin precio porque el cambio no salió de un pedido): en ese
+// caso NO se pisa lo que la asesora haya escrito a mano.
+function _camDiffAuto() {
+  let dev = 0, nue = 0, hayNuevo = false;
+  document.querySelectorAll('.cam-pdev-chk:checked').forEach(c => { dev += parseFloat(c.dataset.precio) || 0; });
+  document.querySelectorAll('#cam-pnuevas-list .pbox').forEach(d => {
+    const p = parseFloat(d.querySelector('.cam-pnueva-prec')?.value);
+    const c = parseInt(d.querySelector('.cam-pnueva-cant')?.value) || 1;
+    if (!isNaN(p) && p > 0) { hayNuevo = true; nue += p * c; }
+  });
+  if (!hayNuevo || dev <= 0) return null;
+  return Math.round((nue - dev) * 100) / 100;
+}
+
+// El cartel que dice, en castellano, qué va a pasar con la plata — y, si la
+// clienta queda a favor, obliga a elegir el destino antes de poder guardar.
+function _camRenderResultado(diff, env) {
+  const box  = document.getElementById('cam-resultado');
+  const wrap = document.getElementById('cam-destino-wrap');
+  const dest = document.getElementById('cam-destino');
+  if (!box) return;
+  if (diff < -0.005) {
+    box.innerHTML = '<b style="color:var(--gn)">La prenda nueva es más barata.</b> '
+      + 'La clienta queda con <b>S/ ' + fmt(Math.abs(diff)) + '</b> a favor'
+      + (env > 0.005 ? ' (el envío de S/ ' + fmt(env) + ' se cobra aparte)' : '') + '.';
+    if (wrap) wrap.style.display = '';
+    if (dest && !dest.value) dest.value = 'SALDO';
+  } else if (diff > 0.005) {
+    box.innerHTML = '<b style="color:var(--am)">La clienta debe pagar S/ ' + fmt(diff) + '</b> de diferencia'
+      + (env > 0.005 ? ' + S/ ' + fmt(env) + ' de envío' : '') + '.';
+    if (wrap) wrap.style.display = 'none';
+    if (dest) dest.value = '';
+  } else {
+    box.innerHTML = 'Cambio parejo: no hay diferencia de precio'
+      + (env > 0.005 ? ', solo el envío de S/ ' + fmt(env) + '.' : '.');
+    if (wrap) wrap.style.display = 'none';
+    if (dest) dest.value = '';
+  }
+  _camPintarDestino();
+}
+
+function _camPintarDestino() {
+  const v = (document.getElementById('cam-destino') || {}).value || '';
+  document.querySelectorAll('.cam-dest-btn').forEach(b => {
+    const on = b.dataset.dest === v;
+    b.style.borderColor = on ? 'var(--ac)' : '';
+    b.style.color       = on ? 'var(--ac)' : '';
+    b.style.fontWeight  = on ? '600' : '';
+  });
+  const hint = document.getElementById('cam-destino-hint');
+  if (hint) hint.textContent =
+    v === 'SALDO'    ? 'Queda registrado a nombre de la clienta y se puede usar en cualquier pedido futuro.' :
+    v === 'DEVOLVER' ? 'Queda registrado como plata a devolver: aparece igual en sus saldos, con la nota de que se paga en efectivo.' :
+    v === 'EMPRESA'  ? 'No se le acredita nada a la clienta: la empresa absorbe la diferencia.' : '';
+}
+
 function camCalc() {
   const dfIn = document.getElementById('cam-diferencia');
+  const _auto = _camDiffAuto();
+  if (dfIn && dfIn.dataset.manual !== '1' && _auto !== null) dfIn.value = _auto ? String(_auto) : '';
   const diff = parseFloat(dfIn?.value) || 0;
   const env  = parseFloat(document.getElementById('cam-envio')?.value) || 0;
 
@@ -23665,6 +23796,7 @@ function camCalc() {
     se.textContent = 'S/ ' + fmt(Math.abs(sal));
     se.style.color = sal > 0.01 ? 'var(--am)' : sal < -0.01 ? 'var(--rd)' : 'var(--gn)';
   }
+  _camRenderResultado(diff, env);
 
   // Campos hidden backend
   const cliEl = document.getElementById('cam-monto-cli');
@@ -23735,7 +23867,10 @@ function camRecalcResponsabilidad() {
   const cliEl  = document.getElementById('cam-monto-cli');
   const empEl  = document.getElementById('cam-monto-emp');
   if (!respEl || !dfEl || !cliEl || !empEl) return;
-  const dif = Math.abs(parseFloat(dfEl.value) || 0);
+  // 7-set-2026 — ANTES DECÍA Math.abs(). Con la diferencia en -30 (prenda nueva
+  // más barata) guardaba "la clienta pagó 30" cuando la empresa le DEBE 30. Un
+  // sobrante nunca es un cobro: sólo se prellena lo que hay que cobrar de verdad.
+  const dif = Math.max(0, parseFloat(dfEl.value) || 0);
   const resp = respEl.value || 'CLIENTE';
   if (resp === 'CLIENTE') { cliEl.value = dif || ''; empEl.value = ''; }
   else if (resp === 'EMPRESA') { cliEl.value = ''; empEl.value = dif || ''; }
@@ -24478,6 +24613,17 @@ async function camRegistrar() {
   if (!devueltas.length) { toast('Selecciona al menos una prenda a devolver', 'err'); return; }
   if (!nuevas.length)    { toast('Agrega al menos una prenda nueva', 'err'); return; }
 
+  // 7-set-2026 — LA DIFERENCIA A FAVOR NO SE GUARDA EN SILENCIO.
+  // Si la prenda nueva es más barata, hay que decir qué se hace con ese sobrante
+  // antes de poder registrar. Antes se perdía sin que nadie se enterara (CAM-0122).
+  const _difReg  = parseFloat(getV('cam-diferencia')) || 0;
+  const _destReg = getV('cam-destino') || '';
+  if (_difReg < -0.005 && !_destReg) {
+    toast('La clienta queda con S/ ' + fmt(Math.abs(_difReg)) + ' a favor: elige qué se hace con ese saldo', 'err');
+    try { document.getElementById('cam-destino-wrap').scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+    return;
+  }
+
   // FIX 2-set-2026 (Pablo, aclarado) — "cambio sobre cambio": BLOQUEA, es por PRENDA
   // no por pedido. Prendas DISTINTAS del mismo pedido son carriles independientes (van
   // en envíos distintos) y no chocan nunca. Pero la MISMA prenda no puede tener un cambio
@@ -24527,7 +24673,8 @@ async function camRegistrar() {
     devueltas: devueltas,
     nuevas:    nuevas,
     PrecioEnvio: env,
-    Diferencia: parseFloat(getV('cam-diferencia')) || 0, 
+    Diferencia: _difReg,
+    DestinoDiferencia: (_difReg < -0.005 ? _destReg : ''),
     ResponsabilidadCosto: respCosto,
     MontoPagadoCliente: montoCli,
     MontoAsumidoEmpresa: montoEmp,
@@ -24575,6 +24722,15 @@ async function camRegistrar() {
 // ══════════════════════════════════════════════════════════
 let _camSaveQueue = [];
 let _camSaveActive = false;
+
+// 7-set-2026 — el saldo a favor, apenas la base creó el cambio y ANTES de
+// avisarle al Aplicador: así la hoja baja el cambio completo de una sola vez.
+// Va en su propia función a propósito: `regresion_escritura_cambios.js` mide
+// que la caída a Apps Script siga pegadita al `if (_r2)`, y un bloque largo
+// adentro de ese if rompe esa prueba.
+async function _camSaldoFavorTras(r2, job) {
+  try { await _sbRpcCambioSaldoFavor(r2.NroCambio, (job && job.payload && job.payload.DestinoDiferencia) || ''); } catch (_) {}
+}
 function _camEnqueueSave(job) {
   _camSaveQueue.push(job);
   _camUpdateSaveIndicator();
@@ -24590,7 +24746,7 @@ async function _camProcessSaveQueue() {
       // UNA sola llamada: crea el cambio completo (multi-prenda / multi-pedido)
       // Primero la base; si no contesta con un ok explícito, la vía de siempre.
       var _r2 = await _sbRpcCambioRegistrar(job.payload);
-      if (_r2) { try { _sbEspejarYa(_r2.NroCambio); } catch(_){} }
+      if (_r2) { await _camSaldoFavorTras(_r2, job); try { _sbEspejarYa(_r2.NroCambio); } catch(_){} }
       else { _r2 = await apiSend('cambios2.registrarYSync', job.payload); }
       try { _cronDesdeServidor('cambio.registrar', _r2 && _r2.ms); } catch(_){}
       // 29-ago · ETAPA 1 — un cambio MUEVE stock (vuelve una prenda, sale otra).
@@ -24680,7 +24836,7 @@ function camLimpiar() {
   ['cam-nro-badge','cam-hint'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = ''; });
   ['cam-input-busq','cam-nom','cam-dni','cam-cel','cam-dir','cam-ref','cam-dist','cam-prov','cam-reg',
    'cam-envio','cam-fenvio','cam-com','cam-motivo-det','cam-precio-orig','cam-precio-nueva',
-   'cam-diferencia','cam-monto-cli','cam-monto-emp','cam-constancia-dif',
+   'cam-diferencia','cam-monto-cli','cam-monto-emp','cam-constancia-dif','cam-destino',
    'cam-frecep-nueva','cam-fdev-orig','cam-frecep-orig'].forEach(clr);
   ['cam-estado','cam-courier','cam-courier-dev','cam-motivo','cam-fpago-dif'].forEach(id => {
     const el = document.getElementById(id); if (el) el.selectedIndex = 0;
@@ -24688,6 +24844,12 @@ function camLimpiar() {
   // Reset responsabilidad
   const resp = document.getElementById('cam-responsabilidad');
   if (resp) resp.value = 'CLIENTE';
+  // Reset del destino de la diferencia y del modo manual de la Diferencia
+  const _difEl = document.getElementById('cam-diferencia');
+  if (_difEl) _difEl.dataset.manual = '';
+  const _dw = document.getElementById('cam-destino-wrap');
+  if (_dw) _dw.style.display = 'none';
+  if (typeof _camPintarDestino === 'function') _camPintarDestino();
   document.getElementById('cam-sugerencias').style.display = 'none';
   const fp = document.getElementById('cam-fpedido');
   if (fp) fp.value = hoyLima();
@@ -25143,6 +25305,10 @@ async function _c2EditProcesar() {
       // Primero la base. Si no contesta con un ok explícito, la vía de siempre.
       let r = await _sbRpcCambioEditar(job.body);
       if (r) {
+        // 7-set-2026 — guardar un cambio BORRA y reescribe sus filas en la base,
+        // así que la línea de saldo a favor hay que volver a pedirla. Sin destino
+        // explícito, la receta respeta el que ya tenía guardado ese cambio.
+        try { await _sbRpcCambioSaldoFavor(job.nc, ''); } catch (_) {}
         // La base ya guardó. Se le avisa al Aplicador para que baje el cambio a
         // la hoja ahora y no en el próximo minuto. La nota de la cola está
         // guardada bajo el NroCambio, no bajo el número de pedido.
