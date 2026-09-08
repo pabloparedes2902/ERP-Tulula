@@ -657,6 +657,45 @@ const MODO_VIEWER = !/(^|[?&])edit=1(&|$)/.test(location.search.slice(1)); /* ed
 const BASE_N8N = 'https://n8n-production-4e716.up.railway.app/webhook';
 const URL_EMBUDO = BASE_N8N + '/embudo-rango-v2';
 const URL_EMBUDO_WEB = BASE_N8N + '/embudo-web-rango'; /* 3-sep-2026 — PENDIENTE: crear este nodo/endpoint JSON en el workflow n8n "📊 Embudo en vivo (panel)" */
+/* ── 8-sep-2026 · FUENTE UNICA ─────────────────────────────────────────────
+   El Embudo y Marketing leen EXACTAMENTE lo mismo:
+     · conversaciones y etapas -> /embudo-periodo  (bot.conversacion_clasificada)
+     · ventas e ingreso        -> /ventas-periodo  (el ERP, una vez por pedido)
+   Universo: solo ADS. Lo organico queda fuera a proposito, es etapa posterior.
+   Sin esto cada modulo tenia su propio criterio y nunca cuadraban.          */
+const URL_EMBUDO_P  = BASE_N8N + '/embudo-periodo';
+const URL_VENTAS_P  = BASE_N8N + '/ventas-periodo';
+
+/* Pisa el acumulado con el dato canonico. Si algun endpoint no responde,
+   deja lo que ya venia: la pantalla nunca se queda en blanco. */
+async function embPisarCanonico(d, desde, hasta){
+  if (!d) return d;
+  const ac = d.acumulado || (d.acumulado = {});
+  try {
+    const [emb, ven] = await Promise.all([
+      fetch(URL_EMBUDO_P + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()).catch(() => null),
+      fetch(URL_VENTAS_P + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()).catch(() => null)
+    ]);
+    const E = Array.isArray(emb) ? emb : [];
+    if (E.length){
+      const sum = (k) => E.reduce((a, x) => a + (Number(x[k]) || 0), 0);
+      ac.conversaciones = sum('conversaciones');
+      ac.frias = sum('frias'); ac.tibias = sum('tibias'); ac.calientes = sum('calientes');
+    }
+    const V = Array.isArray(ven) ? ven : [];
+    if (V.length){
+      /* solo WhatsApp: un pedido de Pagina Web no pertenece a este embudo */
+      const esSin = (x) => (x.sin_id === true || x.sin_id === 'true' || String(x.anuncio) === 'SIN_ID');
+      const wa = (f) => Number(f.whatsapp) || 0;
+      const con = V.filter(x => !esSin(x)).reduce((a, x) => a + wa(x), 0);
+      const sin = V.filter(esSin).reduce((a, x) => a + wa(x), 0);
+      ac.compras_con_clic = con;
+      ac.compras_sin_clic = sin;
+      ac.compras = con + sin;   /* el TOTAL, igual que la fila TOTAL de Marketing */
+    }
+  } catch (e) {}
+  return d;
+}
 const URL_CALIDAD  = BASE_N8N + '/objeciones-calidad';
 const URL_PERFORMANCE = BASE_N8N + '/performance-tula'; /* workflow 📈 Performance Tula */
 /* 27-ago-2026 — esta faltaba. Se usaba en cargarPerformance() y no estaba
@@ -2437,7 +2476,7 @@ function pintarEmbudo(ac, nota, acPrev, etapasDef, paletaDef){
   if (ac.compras_con_clic !== undefined)
     o+='<text x="'+cx+'" y="466" text-anchor="middle" class="epie"><tspan class="epieb">'+ac.compras_con_clic+
        '</tspan> con anuncio identificado · <tspan class="epieb">'+ac.compras_sin_clic+
-       '</tspan> marcadas ADS sin anuncio (fuera del embudo)</text>';
+       '</tspan> sin anuncio identificado (cuentan en el total)</text>';
   document.getElementById('embZona').innerHTML =
     '<div id="embCard"><svg id="embSvg" viewBox="0 0 '+W+' '+H+'">'+o+'</svg></div>';
   /* centrado exacto: horizontal medido en vivo; vertical con el desfase
@@ -2535,13 +2574,16 @@ function cargarEmbudo(){
        que es exactamente lo que suma la tabla de Marketing. Las marcadas como
        de anuncios pero sin ad_id se muestran aparte en el pie, no adentro del
        embudo: si entraran, los dos modulos nunca cuadrarian. */
+    /* 8-sep-2026 — las ventas ya no se deciden aca: las pisa embPisarCanonico
+       con /ventas-periodo. Esto queda solo como respaldo si ese endpoint falla. */
     if (d.compras_con_clic != null)          ac.compras = +d.compras_con_clic||0;
     else if (d.compras_clasificador != null) ac.compras = +d.compras_clasificador||0;
     return d;
   };
 
   /* 1) el embudo actual: apenas llega, se dibuja */
-  fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(_normEmb).then(d=>{
+  fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(_normEmb)
+    .then(d=>embPisarCanonico(d, r.desde, r.hasta)).then(d=>{
     embData = { d: d, dPrev: (embData && embData.dPrev) || null, lbl: r.lbl };
     pintarTodo(); _pintado = true; _guardar();
     document.getElementById('embEstado').textContent = '';
@@ -2551,7 +2593,8 @@ function cargarEmbudo(){
   });
 
   /* 2) el periodo anterior: solo agrega las capsulas de variacion */
-  fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).then(_normEmb).then(dp=>{
+  fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).then(_normEmb)
+    .then(dp=>embPisarCanonico(dp, pDesde, pHasta)).then(dp=>{
     if (!embData || !embData.d) return;
     embData.dPrev = dp; pintarTodo(); _guardar();
   }).catch(()=>{});

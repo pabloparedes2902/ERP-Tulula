@@ -657,14 +657,91 @@ async function mkCargarVentas(desde, hasta){
 
 /* Pisa ventas e ingreso de cada anuncio con el dato del ERP.
    Si el endpoint no respondio no toca nada: la pantalla sigue como antes. */
+/* 8-sep-2026 — un pedido de Pagina Web NO cuenta en el canal WhatsApp aunque
+   el anuncio se llame "Whatsapp / ...". El canal manda sobre el nombre. */
+function _mkVentaCanal(f){
+  if (!f) return { pedidos:0, pagados:0, ingreso:0 };
+  if (MKCANAL === 'wa')  return { pedidos:f.whatsapp, pagados:f.whatsapp, ingreso:f.ingreso_whatsapp };
+  if (MKCANAL === 'web') return { pedidos:f.web,      pagados:f.web,      ingreso:f.ingreso_web };
+  return { pedidos:f.pedidos, pagados:f.pagados, ingreso:f.ingreso };
+}
 function mkAplicarVentas(){
   if (!MKV || !MK || !MK.filas) return;
   MK.filas.forEach(r => {
     const id = String(r.ad_id || '');
-    const a = MKV.porAd[id], p = MKVP && MKVP.porAd[id];
-    if (r.act){  r.act.pedidos  = a ? a.pedidos : 0; r.act.pagados  = a ? a.pagados : 0; r.act.ingreso  = a ? a.ingreso : 0; }
-    if (r.prev){ r.prev.pedidos = p ? p.pedidos : 0; r.prev.pagados = p ? p.pagados : 0; r.prev.ingreso = p ? p.ingreso : 0; }
+    const a = _mkVentaCanal(MKV.porAd[id]), p = _mkVentaCanal(MKVP && MKVP.porAd[id]);
+    if (r.act){  r.act.pedidos  = a.pedidos; r.act.pagados  = a.pagados; r.act.ingreso  = a.ingreso; }
+    if (r.prev){ r.prev.pedidos = p.pedidos; r.prev.pagados = p.pagados; r.prev.ingreso = p.ingreso; }
   });
+}
+
+/* ── 8-sep-2026 · FUENTE UNICA DEL EMBUDO ──────────────────────────────────
+   Las CONVERSACIONES y las ETAPAS (frias/tibias/calientes) ya no se toman de
+   /marketing2: salen de /embudo-periodo, que lee bot.conversacion_clasificada
+   con un solo criterio — conversacion de ADS, contada una vez.
+   El gasto y las metricas de Meta siguen viniendo de /marketing2.
+   Lo ORGANICO queda fuera a proposito: es una etapa posterior.
+   Asi el Embudo y Marketing no pueden contradecirse: leen lo mismo.        */
+const URL_EMBUDO_P = 'https://n8n-production-4e716.up.railway.app/webhook/embudo-periodo';
+let MKE = null;    /* embudo del periodo que se esta viendo */
+let MKEP = null;   /* embudo del periodo anterior, para las flechitas */
+let MK_RES = null; /* residuo: lo canonico menos lo que quedo visible en la tabla */
+
+async function mkCargarEmbudo(desde, hasta){
+  const arma = (arr) => {
+    const o = { porAd: {}, tot: { conversaciones:0, frias:0, tibias:0, calientes:0, personas:0 } };
+    (Array.isArray(arr) ? arr : []).forEach(x => {
+      const f = { conversaciones:+x.conversaciones||0, frias:+x.frias||0,
+                  tibias:+x.tibias||0, calientes:+x.calientes||0, personas:+x.personas||0 };
+      Object.keys(o.tot).forEach(k => o.tot[k] += f[k]);
+      o.porAd[String(x.anuncio)] = f;   /* incluye la llave SIN_ID */
+    });
+    return o;
+  };
+  const dias = Math.max(1, Math.round((new Date(hasta+'T12:00:00Z') - new Date(desde+'T12:00:00Z')) / 86400000) + 1);
+  try {
+    const [a, b] = await Promise.all([
+      fetch(URL_EMBUDO_P + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()),
+      fetch(URL_EMBUDO_P + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1)).then(r => r.json())
+    ]);
+    MKE = arma(a); MKEP = arma(b);
+  } catch (e) { MKE = null; MKEP = null; }
+}
+
+/* Pisa conversaciones y etapas de cada anuncio con el dato canonico.
+   Si el endpoint no respondio no toca nada: la pantalla sigue como antes. */
+function mkAplicarEmbudo(){
+  if (!MKE || !MK || !MK.filas) return;
+  if (MKCANAL !== 'wa') return;   /* el embudo de conversaciones es de WhatsApp */
+  const K = ['conversaciones','frias','tibias','calientes','personas'];
+  MK.filas.forEach(r => {
+    const id = String(r.ad_id || '');
+    const a = MKE.porAd[id], p = MKEP && MKEP.porAd[id];
+    if (r.act)  K.forEach(k => r.act[k]  = a ? a[k] : 0);
+    if (r.prev) K.forEach(k => r.prev[k] = p ? p[k] : 0);
+  });
+}
+
+/* ══ EL RESIDUO ══════════════════════════════════════════════════════════
+   Lo canonico (545) menos lo que de verdad quedo visible en la tabla.
+   Cubre los tres agujeros de una sola vez, sin listarlos:
+     · conversaciones y ventas SIN ad_id (llave SIN_ID)
+     · anuncios que vendieron pero no gastaron en el periodo (no tienen fila)
+     · anuncios cuyo nombre no matchea el regex de canal
+   Por construccion: TOTAL de la tabla + residuo = numero de la base de datos.
+   No aparece si filtraste una campana o un conjunto: no pertenece a ninguno. */
+function mkResiduo(lado, rows){
+  const src = (lado === 'prev') ? MKEP : MKE;
+  if (!src || MKCANAL !== 'wa') return null;
+  const cam = (document.getElementById('mkCampana') || {}).value;
+  const con = (document.getElementById('mkConjunto') || {}).value;
+  if (cam || con) return null;
+  const K = ['conversaciones','frias','tibias','calientes','personas'];
+  const vis = {}; K.forEach(k => vis[k] = 0);
+  (rows || []).forEach(r => { const o = r[lado] || {}; K.forEach(k => vis[k] += Number(o[k]) || 0); });
+  const res = {}; let algo = false;
+  K.forEach(k => { res[k] = Math.max(0, (src.tot[k] || 0) - vis[k]); if (res[k] > 0) algo = true; });
+  return algo ? res : null;
 }
 
 /* Las ventas sin anuncio identificado que le tocan al canal que estas viendo.
@@ -686,11 +763,13 @@ function mkSinId(lado){
    poner 0 daria un ROAS infinito y ensuciaria los promedios. */
 function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
   const s = mkSinId('act');
-  if (!s) return '';
+  const e = MK_RES;
+  if (!s && !e) return '';
   const detalle = [];
-  if (s.web) detalle.push(s.web + ' de Pagina Web');
-  if (s.whatsapp) detalle.push(s.whatsapp + ' de WhatsApp');
-  const tip = MK_SINID_H + (detalle.length ? '<br><br><b>De donde vienen:</b> ' + detalle.join(' y ') + '.' : '');
+  if (s && s.web) detalle.push(s.web + ' de Pagina Web');
+  if (s && s.whatsapp) detalle.push(s.whatsapp + ' de WhatsApp');
+  const tip = MK_SINID_H + (detalle.length ? '<br><br><b>De donde vienen:</b> ' + detalle.join(' y ') + '.' : '')
+    + (e ? '<br><br><b>Conversaciones:</b> ' + e.conversaciones + ' que la base marca como ADS pero que no caen en ninguna fila de arriba (sin anuncio identificado, o de anuncios que no gastaron en este periodo).' : '');
   return '<tr class="mksinid">'
     + '<td class="fijo" style="width:' + aCam + 'px;left:' + L1 + 'px">—</td>'
     + '<td class="fijo" style="width:' + aCon + 'px;left:' + L2 + 'px"></td>'
@@ -700,9 +779,12 @@ function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
     + '<td class="fijo" style="width:' + aEst + 'px;left:' + L4 + 'px"></td>'
     + '<td class="fijo borde" style="width:' + aAcc + 'px;left:' + L5 + 'px"><span class="acc rev">REVISAR</span></td>'
     + cols.map(c => {
-        if (c === 'pedidos') return '<td>' + mkNum(s.pedidos) + '</td>';
-        if (c === 'pagados') return '<td>' + mkNum(s.pagados) + '</td>';
-        if (c === 'ingreso') return '<td>' + (s.ingreso ? mkSol(s.ingreso) : '—') + '</td>';
+        if (c === 'pedidos') return '<td>' + (s ? mkNum(s.pedidos) : '—') + '</td>';
+        if (c === 'pagados') return '<td>' + (s ? mkNum(s.pagados) : '—') + '</td>';
+        if (c === 'ingreso') return '<td>' + (s && s.ingreso ? mkSol(s.ingreso) : '—') + '</td>';
+        if (e && (c === 'conversaciones' || c === 'frias' || c === 'tibias' || c === 'calientes'))
+          return '<td>' + mkNum(e[c]) + '</td>';
+        if (e && c === 'personas') return '<td>' + mkNum(e.personas) + '</td>';
         return '<td>—</td>';
       }).join('')
     + '<td></td></tr>';
@@ -1086,10 +1168,11 @@ async function mkCargar(refrescarMeta){
     url += '?desde=' + _mkISO(-(mkDias - 1)) + '&hasta=' + _mkISO(0);
   }
   try {
-    const [datos] = await Promise.all([ (await fetch(url)).json(), mkCargarHistoria(), mkCargarVentas(_mkD, _mkH) ]);
+    const [datos] = await Promise.all([ (await fetch(url)).json(), mkCargarHistoria(), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH) ]);
     MK = datos;
     if (!MK || !MK.filas) throw new Error('respuesta vacía');
     mkAplicarVentas();
+    mkAplicarEmbudo();
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar();
   } catch (e) {
@@ -1329,6 +1412,9 @@ function mkAccionFinal(r){
 
 function mkPintar(){
   if (!MK) return;
+  /* 8-sep-2026 — ventas y embudo se re-aplican en cada pintado porque dependen
+     del canal elegido, que cambia sin volver a pedir datos al servidor. */
+  mkAplicarVentas(); mkAplicarEmbudo();
   const q  = (document.getElementById('mkQ').value || '').trim().toLowerCase();
   const fe = document.getElementById('mkEstado').value;
   const ff = document.getElementById('mkFiltro').value;
@@ -1431,6 +1517,24 @@ function mkPintar(){
      un conjunto de anuncios, todo el panel habla de ese conjunto. Así el número de
      arriba y el de la fila de totales nunca se contradicen. */
   const A = _mkAgg('act', rows), P = _mkAgg('prev', rows), cob = MK.cobertura || {};
+  /* 8-sep-2026 — el residuo del EMBUDO entra al TOTAL y a los KPI de arriba.
+     Se calcula una sola vez aca y la fila fantasma lo reusa, para que el numero
+     de arriba, el de la fila y el de la base de datos no puedan separarse. */
+  MK_RES = mkResiduo('act', rows);
+  (function(){
+    const d = (a, b) => (b ? a / b : null);
+    [['act', A], ['prev', P]].forEach(function(par){
+      const r = mkResiduo(par[0], rows); const T = par[1];
+      if (!r) return;
+      ['conversaciones','frias','tibias','calientes','personas'].forEach(function(k){
+        T[k] = (Number(T[k]) || 0) + r[k];
+      });
+      T.costo_conv  = d(T.gasto, T.conversaciones);
+      T.frias_p     = d(T.frias, T.conversaciones) === null ? null : d(T.frias, T.conversaciones) * 100;
+      T.tibias_p    = d(T.tibias, T.conversaciones) === null ? null : d(T.tibias, T.conversaciones) * 100;
+      T.calientes_p = d(T.calientes, T.conversaciones) === null ? null : d(T.calientes, T.conversaciones) * 100;
+    });
+  })();
   /* 8-sep-2026 — las ventas sin anuncio identificado son ventas reales: entran
      al TOTAL y a los KPI de arriba. No entran a ninguna fila de anuncio porque
      no se sabe a cual. Sin esto, Marketing mostraba menos ventas que el Embudo. */
