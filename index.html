@@ -3506,10 +3506,87 @@ function _sbVencerTok(){
         localStorage.setItem('erp_sb_sess', JSON.stringify(_sbTok)); } } catch(_){}
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   ETAPA 1.5 DEL MOVIMIENTO 2 (9-set-2026) — ROMPER EL CIRCULO DEL PASE
+
+   LO QUE MOSTRO LA TELEMETRIA (14 dias, todo el equipo):
+       api.auth.sbPase → 58 veces · promedio 372.509 ms · p95 y max 3.600.000
+   `sbPaseEmitir()` (SbPase.gs) lee UNA propiedad y firma un JWT. No toca la
+   hoja, no sale a internet: es trabajo de microsegundos. Los 6 minutos NO son
+   de la funcion — son del canal Apps Script.
+
+   EL CIRCULO:
+       Apps Script saturado → el pase tarda → el navegador se queda sin token
+       → TODA la via rapida cae a Apps Script → mas saturado → ...
+
+   DOS DEFECTOS CONCRETOS, los dos arreglados aca:
+
+   1. EL PASE SE PEDIA TARDE. `_sbTokenVigente()` devolvia null recien cuando el
+      pase YA habia vencido. En ese instante la operacion que lo descubrio ya
+      estaba sin token. Ahora se renueva EN SEGUNDO PLANO cuando le quedan menos
+      de 10 minutos de vida, y mientras tanto se sigue devolviendo el pase viejo,
+      que todavia sirve. Nadie espera nunca por el pase.
+
+   2. UNA LLAMADA COLGADA BLOQUEABA A TODOS. `_sbReauthEnCurso` guarda UNA
+      promesa compartida: si `api('auth.sbPase')` tardaba una hora (y la
+      telemetria dice que paso), TODAS las vias rapidas de esa persona esperaban
+      esa misma promesa durante esa hora. Ahora el pedido tiene un tope de 12 s:
+      si no llego, se devuelve null (esa accion cae a Apps Script UNA vez) y la
+      promesa se libera para reintentar despues.
+
+   REVERSA SIN PUBLICAR, desde la consola del navegador:
+       localStorage.setItem('erp_sb_pase_proactivo','NO')   ← vuelve al modo viejo
+       localStorage.removeItem('erp_sb_pase_proactivo')     ← lo devuelve
+   ══════════════════════════════════════════════════════════════════════════ */
+const SB_PASE_MARGEN_MS  = 10 * 60 * 1000;   // renovar 10 min antes de vencer
+const SB_PASE_TIMEOUT_MS = 12000;            // tope para pedirle el pase al ERP
+let _sbPaseRenovando = false;
+let _sbPaseUltFallo  = 0;
+
+function _sbPaseProactivo() {
+  try { return String(localStorage.getItem('erp_sb_pase_proactivo') || 'SI').toUpperCase() !== 'NO'; }
+  catch (_) { return true; }
+}
+
+// Renueva SIN que nadie espere. Nunca lanza, nunca bloquea, nunca se encima.
+function _sbPaseRenovarFondo(motivo) {
+  try {
+    if (!_sbPaseProactivo()) return;
+    if (_sbPaseRenovando || _sbReauthEnCurso) return;
+    if (SB_APAGADO || !SB_ANON) return;
+    if (!SESSION_TOKEN) return;                       // sin sesion de ERP no hay a quien pedirle
+    if (Date.now() - _sbPaseUltFallo < SB_REAUTH_ESPERA) return;   // no insistir en vano
+    _sbPaseRenovando = true;
+    _sbPaseDelBackend()
+      .then(function (t) {
+        if (t) { try { console.log('[SB] pase renovado en segundo plano (' + (motivo || '') + ')'); } catch (_) {} }
+        else   { _sbPaseUltFallo = Date.now(); }
+      })
+      .catch(function () { _sbPaseUltFallo = Date.now(); })
+      .then(function () { _sbPaseRenovando = false; });
+  } catch (_) { _sbPaseRenovando = false; }
+}
+
+// Al abrir el ERP: si el pase guardado no llega hasta dentro de un rato, se pide
+// AHORA en segundo plano. Asi la primera accion de la mañana no lo paga.
+function _sbPasePrecalentar() {
+  try {
+    if (!_sbPaseProactivo()) return;
+    var falta = _sbTok ? ((_sbTok.expires_at || 0) - Date.now()) : -1;
+    if (falta > SB_PASE_MARGEN_MS) return;            // todavia alcanza
+    _sbPaseRenovarFondo('arranque');
+  } catch (_) {}
+}
+
 async function _sbTokenVigente(){
   if (SB_APAGADO) return null;   // ver SB_APAGADO
   if (!SB_ANON || !_sbTok) return null;
-  if (Date.now() < (_sbTok.expires_at||0)) return _sbTok.access_token;
+  if (Date.now() < (_sbTok.expires_at||0)) {
+    // Etapa 1.5: si le queda poco, se renueva por atras y se devuelve el que
+    // todavia sirve. El que llama no espera nada.
+    if (((_sbTok.expires_at||0) - Date.now()) < SB_PASE_MARGEN_MS) _sbPaseRenovarFondo('por vencer');
+    return _sbTok.access_token;
+  }
   // Un pase emitido por el backend del ERP no se refresca: se vuelve a pedir.
   // Intentar refrescarlo sería una llamada condenada a fallar en cada lectura.
   if (!_sbTok.refresh_token) return null;
@@ -3590,7 +3667,17 @@ let _sbPaseBackendHay = null;      // null = no sé todavía · false = no está
 async function _sbPaseDelBackend(){
   if (_sbPaseBackendHay === false) return null;
   try {
-    const d = await api('auth.sbPase');
+    // Etapa 1.5 — TOPE DE 12 s. Sin esto, una llamada colgada (la telemetria vio
+    // una de 1 hora) deja `_sbReauthEnCurso` tomado y TODAS las vias rapidas de
+    // esa persona esperando la misma promesa durante todo ese rato.
+    const d = await Promise.race([
+      api('auth.sbPase'),
+      new Promise(function (res) { setTimeout(function () { res({ ok: false, motivo: 'timeout' }); }, SB_PASE_TIMEOUT_MS); })
+    ]);
+    if (d && d.motivo === 'timeout') {
+      try { console.warn('[SB] el pase tardo mas de ' + (SB_PASE_TIMEOUT_MS / 1000) + ' s: se sigue por Apps Script y se reintenta despues.'); } catch (_) {}
+      return null;
+    }
     if (!d || d.ok !== true || !d.access_token) {
       if (d && d.motivo === 'sin_secreto') _sbPaseBackendHay = false;
       return null;
@@ -3674,7 +3761,11 @@ function viaRapida(){
               haySesionErp: !!SESSION_TOKEN,
               fuente: hay ? (_sbTok.refresh_token ? 'Google' : 'backend del ERP') : '—',
               paseDelBackend: (_sbPaseBackendHay === false ? 'no configurado — correr sbPaseDiag() en Apps Script' : 'disponible'),
-              reintentoSilencioso: SB_REAUTH_SILENCIOSO };
+              reintentoSilencioso: SB_REAUTH_SILENCIOSO,
+              // Etapa 1.5
+              renovacionProactiva: _sbPaseProactivo() ? 'encendida' : 'APAGADA (localStorage erp_sb_pase_proactivo=NO)',
+              renovandoAhora: _sbPaseRenovando,
+              minutosDeVidaQueLeQuedan: hay ? Math.round(((_sbTok.expires_at||0) - Date.now()) / 60000) : 0 };
   console.log('── VÍA RÁPIDA A LA BASE ──');
   console.log(o.encendida ? '✅ ENCENDIDA — las lecturas y escrituras van directo a la base (~200-500 ms).'
                           : '❌ APAGADA — todo está yendo por Apps Script (~3 s por acción).');
@@ -31581,11 +31672,14 @@ async function startAuth(){
   if(SESSION_TOKEN && MY_ROLE){
     _hideLogin(); bootApp();
     apiSend('auth.ping', {}).catch(function(_e){ /* inválida→login vía _onSessionExpired; red→ignorar */ });
+    try { _sbPasePrecalentar(); } catch(_){}   // Etapa 1.5: el pase, antes de que haga falta
     return;
   }
   // Sin sesión guardada (o sin rol): flujo clásico con validación bloqueante.
   if(SESSION_TOKEN){
-    try{ await apiSend('auth.ping', {}); _hideLogin(); bootApp(); return; }
+    try{ await apiSend('auth.ping', {}); _hideLogin(); bootApp();
+          try { _sbPasePrecalentar(); } catch(_){}   // Etapa 1.5
+          return; }
     catch(e){ SESSION_TOKEN=''; localStorage.removeItem('erp_sess'); }
   }
   _showLogin();
