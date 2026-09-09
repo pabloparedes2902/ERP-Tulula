@@ -7832,6 +7832,12 @@ async function _alertasListarRapido() {
 // Si más adelante se quiere el buzón de alertas / lista de espera de verdad,
 // hay que crear esas vistas en Supabase primero — no es este fix.
 async function _sbBuzonAlertas() {
+  // 9-set-2026 — le faltaba la salida de emergencia. Habla con Supabase con la
+  // llave anónima (no pasa por _sbSesionAsegurar), así que con el simulacro de
+  // reversa corriendo seguía usando la base y el ERP habría "pasado" una prueba
+  // que en realidad no dio. La regresión de reversa la cazó y frenó la publicación
+  // del frontend — hizo exactamente su trabajo.
+  if (SB_APAGADO) return null;   // ver SB_APAGADO
   try {
     const r = await fetch(SB_URL + '/rest/v1/rpc/alertas_semaforo_escalado', {
       method: 'POST',
@@ -21971,7 +21977,7 @@ async function _ivCrearLoteRapido(items) {
     const d = await r.json();
     if (!(d && d.ok === true)) { _cronCerrar(_c, false); return null; }
     _cronCerrar(_c, true);
-    return { ok: true, lotes: d.lotes || [], filas: d.filas || 0, unidades: d.unidades || 0, via: 'base' };
+    return { ok: true, lotes: d.lotes || [], filas: d.filas || 0, unidades: d.unidades || 0, via: 'base', request: req };
   } catch (e) { _cronCerrar(_c, false); return null; }
 }
 
@@ -22078,7 +22084,29 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
       try{
         let res=await _ivCrearLoteRapido(items); const viaBase=!!res;
         if(!res) res=await apiSend('stock.crearLote',{items:items});
-        if(viaBase){ _espejoDudar(clavesEsc); apiSend('stock.colaAplicar',{items:items}).catch(()=>{}); }
+        // 9-set-2026 — LA CELDA TAMPOCO MIENTE MÁS. Acá vivía el mismo agujero que
+        // en Movimiento de stock: se pintaba la celda, se cerraba, y el empujón
+        // salía con .catch(()=>{}). Si la hoja rechazaba (diseño nuevo fuera de
+        // _Listas), la pantalla mostraba el número pintado y nadie se enteraba.
+        // Ahora se espera el veredicto y, si murió, se DESPINTA y se avisa.
+        if(viaBase){
+          _espejoDudar(clavesEsc);
+          let emp=null;
+          try{
+            emp=await Promise.race([
+              apiSend('stock.colaAplicar',{items:items, request:(res&&res.request)||''}),
+              new Promise(r=>setTimeout(()=>r({_lento:true}),15000))
+            ]);
+          }catch(e){ emp={_err:(e&&e.message)||String(e)}; }
+          const v = emp && emp.veredicto;
+          if(v && v.murio){
+            _ivTotMut(pren,dis,col,tal,{total:-n,conf:-n,stock:-n}); _stDataTs=0; repintar();
+            const ayuda=/valor no permitido/i.test(String(v.error||''))
+              ? ' — es un diseño/color que la hoja no acepta todavía; hay que correr listasSincronizar()' : '';
+            toast('✗ NO entró la producción. La hoja lo rechazó: '+esc(String(v.error||''))+ayuda,'err');
+            return;
+          }
+        }
         else _stockEscrito(clavesEsc,['stock.resumen','lotes.listar']);
         const lote=(res&&res.lotes&&res.lotes[0])||'';
         _ivToastDeshacer('+'+n+' '+esc(full)+(lote?' (lote '+esc(lote)+')':''),async()=>{
@@ -23204,7 +23232,7 @@ function _confAbrirIngresarStock(confEl) {
       const d = await r.json();
       if (!(d && d.ok === true)) { _cronCerrar(_c, false); return null; }
       _cronCerrar(_c, true);
-      return { ok: true, lotes: d.lotes || [], filas: d.filas || 0, unidades: d.unidades || 0, via: 'base' };
+      return { ok: true, lotes: d.lotes || [], filas: d.filas || 0, unidades: d.unidades || 0, via: 'base', request: req };
     } catch (e) { _cronCerrar(_c, false); try { console.warn('[stock] RPC fallo → via Apps Script'); } catch(_){} return null; }
   }
 
@@ -23268,31 +23296,65 @@ function _confAbrirIngresarStock(confEl) {
                       ['stock.resumen','lotes.listar']);
       }
 
+      // ══ 9-set-2026 · EL INGRESO YA NO MIENTE ═══════════════════════════════
+      // ANTES: apenas la RPC decía ok se cantaba "✓ Lote creado", se limpiaba el
+      // carrito y se cerraba la ventana. Pero la RPC valida contra maestros_skus
+      // y la que manda es la HOJA, que valida aparte y un minuto después, en otro
+      // proceso. El 9-set eso dio por bueno un lote de 294 und (BLUSA ALMA) que
+      // la hoja rechazó por "Valor no permitido" y murió en la cola en silencio.
+      // AHORA: por la vía base se ESPERA el empujón y su veredicto. Recién con la
+      // hoja escrita se canta ✓. Si murió, se muestra el error REAL, el carrito
+      // NO se limpia y la ventana NO se cierra: la vendedora puede reintentar.
+      // Mismo criterio que el freno del masivo (8-set).
+      let veredicto = null;
+      let empujon = null;
+      if (viaBase || viaBaseFal) {
+        this.textContent = 'Escribiendo en la hoja...';
+        try {
+          empujon = await Promise.race([
+            apiSend('stock.colaAplicar', { items: buenas, request: (res && res.request) || '' }),
+            new Promise(r => setTimeout(() => r({ _lento: true }), 15000))
+          ]);
+        } catch (e) { empujon = { _err: e && e.message ? e.message : String(e) }; }
+        veredicto = empujon && empujon.veredicto;
+      }
+
+      // La hoja lo RECHAZÓ: no se canta victoria, no se pierde lo cargado.
+      if (veredicto && veredicto.murio) {
+        const porque = String(veredicto.error || '');
+        const ayuda = /valor no permitido/i.test(porque)
+          ? '\n\nEs un diseño, color o prenda que la hoja todavía no acepta. Avisale a Pablo: hay que correr listasSincronizar().'
+          : '';
+        toast('✗ NO se registró. La hoja lo rechazó:\n' + porque + ayuda, 'err');
+        try { _refrescarInv(); } catch(e) {}
+        this.disabled = false; this.textContent = 'Registrar ingreso';
+        return;   // el carrito queda intacto y la ventana abierta, a propósito
+      }
+
       const lotes = (res && res.lotes && res.lotes.length) ? res.lotes.join(', ') : '';
       const partes = [];
       if (buenas.length)   partes.push('Lote'+((res.lotes||[]).length>1?'s':'')+' '+lotes+' — '+(res.filas||0)+' SKU / '+(res.unidades||0)+' und');
       if (falladas.length) partes.push((resFal && resFal.unidades || 0)+' und con falla → montón (fuera de producción)');
-      toast('✓ '+partes.join(' · '), 'ok');
+
+      // Verde solo si la hoja confirmó (o si fue por Apps Script, que escribe dentro
+      // del clic). Si el empujón se colgó o la tarea sigue en cola, va en ámbar: se
+      // registró, pero todavía no está escrito — que no parezca lo mismo.
+      const escrito = !(viaBase || viaBaseFal) || (veredicto && veredicto.aplicada === true);
+      if (escrito) {
+        toast('✓ '+partes.join(' · '), 'ok');
+      } else {
+        toast('⏳ '+partes.join(' · ')+'\nQuedó registrado y se está escribiendo en la hoja. Si en un minuto no aparece, avisá.', 'warn');
+      }
 
       // LOTES F3 — AVISO: prendas vendidas en PREVENTA que YA tienen stock con este ingreso
       if (res && Array.isArray(res.preventaListas)) _stkAvisoPreventa(res.preventaListas);
+      if (empujon && Array.isArray(empujon.preventaListas)) _stkAvisoPreventa(empujon.preventaListas);
       _stkCart = [];
       _close();
       // refrescar confección con datos frescos (limpia caché local; el backend ya invalidó el suyo)
       confData = null;
       try { _confLsDel(); } catch(e) {}
-      if (viaBase || viaBaseFal) {
-        // EL EMPUJÓN (molde de espejoAplicarNro): la hoja se pone al día en segundos
-        // (drena stock-crear Y falla-crear), el aviso de PREVENTA llega con la
-        // respuesta, y recién ahí se refresca la pantalla (antes del drenado, la
-        // hoja todavía mostraría el stock viejo).
-        apiSend('stock.colaAplicar', { items: buenas })
-          .then(r => { if (r && Array.isArray(r.preventaListas)) _stkAvisoPreventa(r.preventaListas); })
-          .catch(()=>{})
-          .finally(()=>{ try { _refrescarInv(); } catch(e) {} });
-      } else {
-        _refrescarInv();
-      }
+      _refrescarInv();
     } catch(e) {
       toast('Error al registrar el ingreso: '+esc(e.message),'err');
       this.disabled = false; this.textContent = 'Registrar ingreso';
