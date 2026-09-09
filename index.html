@@ -1354,6 +1354,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <button class="btn bg cfg-tab" data-tab="herramientas">Herramientas</button>
           <button class="btn bg cfg-tab" data-tab="blindaje">Blindaje</button>
           <button class="btn bg cfg-tab" data-tab="masivos">Cambios masivos</button>
+          <button class="btn bg cfg-tab" data-tab="lentitud">Lentitud</button>
         </div>
       </div>
       <!-- C · BITACORA DE CAMBIOS MASIVOS (8-set-2026) — la franja de "Deshacer"
@@ -1374,6 +1375,43 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
               <th>Cuando</th><th>Quien</th><th>Campo</th><th>Valor aplicado</th>
               <th style="text-align:right">Pedidos</th><th style="text-align:right">Filas</th>
               <th>Estado</th><th></th>
+            </tr></thead><tbody></tbody></table>
+          </div>
+        </div>
+      </div>
+      <!-- ETAPA 0 DEL MOVIMIENTO 2 (9-set-2026) — LO QUE SUFRE EL EQUIPO ENTERO,
+           no solo quien tiene el ERP abierto. `erp_lentos` existia desde el 6-set
+           y no habia forma de leerla. -->
+      <div id="cfg-lentos-wrap" class="cfg-panel" style="display:none">
+        <div class="card" style="padding:14px;margin-bottom:12px">
+          <h3 style="margin:0 0 6px 0;font-size:15px">Lo que mas demora, de todo el equipo</h3>
+          <p style="font-size:12px;color:var(--mu);margin:0 0 12px 0">
+            Cada operacion que tarda 3 segundos o mas queda anotada aca, de cualquier
+            computadora. La columna <b>sin sesion</b> es la importante: son las veces que el
+            ERP no pudo hablarle directo a la base y tuvo que ir por el camino lento.
+            <b>p95</b> es "lo que sufre 1 de cada 20 veces" — el promedio esconde la cola larga,
+            y la cola larga es la que se recuerda.
+          </p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select id="cfg-len-dias" class="btn bg bs" style="font-size:12.5px">
+              <option value="1">Ultimo dia</option>
+              <option value="7">Ultimos 7 dias</option>
+              <option value="14" selected>Ultimos 14 dias</option>
+              <option value="30">Ultimos 30 dias</option>
+            </select>
+            <button class="btn bg bs" id="cfg-len-refrescar" style="font-size:12.5px">Actualizar</button>
+          </div>
+          <div id="cfg-len-msg" style="font-size:12.5px;color:var(--mu);margin-top:10px"></div>
+          <div style="overflow-x:auto;margin-top:10px">
+            <table class="pt" id="cfg-len-tbl"><thead><tr>
+              <th>Proceso</th>
+              <th style="text-align:right">Veces</th>
+              <th style="text-align:right">Promedio</th>
+              <th style="text-align:right">p95</th>
+              <th style="text-align:right">Peor</th>
+              <th style="text-align:right">Personas</th>
+              <th style="text-align:right">Sin sesion</th>
+              <th style="text-align:right">Cortadas</th>
             </tr></thead><tbody></tbody></table>
           </div>
         </div>
@@ -3046,14 +3084,79 @@ function _cronAnotar(reg) {
   try { _lentoCentralizar(reg); } catch (_) {}
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   ETAPA 0 DEL MOVIMIENTO 2 (9-set-2026) — LA TELEMETRIA DEJA DE APAGARSE
+   JUSTO CUANDO IMPORTA.
+
+   EL AGUJERO: la version anterior hacia `if (!tok) return;`. Y "no hay sesion
+   Supabase" es EXACTAMENTE la condicion que dispara la via lenta de 6-9 s
+   (medido el 8-set). O sea: los lentos que mas duelen eran los unicos que NO
+   se registraban. Todo numero de `erp_lentos` anterior a hoy esta sesgado a
+   la baja, y por eso no se puede priorizar con el.
+
+   AHORA: si no hay sesion, el registro se guarda en el localStorage de quien
+   lo sufrio y se vuelca por Apps Script (que si tiene la llave de servicio)
+   como maximo UNA VEZ CADA 5 MINUTOS, en lotes de hasta 200. Un solo viaje
+   extra cada 5 minutos, en un navegador que ya estaba en el camino lento.
+
+   NUNCA BLOQUEA NI ROMPE NADA: todo va dentro de try, sin await en el camino
+   del usuario, y si el volcado falla los registros quedan en la cola.
+   ══════════════════════════════════════════════════════════════════════════ */
+const _LENTOS_PEND        = 'erp_lentos_pend_v1';   // cola local de lo no enviado
+const _LENTOS_VOLCADO_TS  = 'erp_lentos_volcado_ts';
+const _LENTOS_PEND_TOPE   = 300;                    // no crece para siempre
+const _LENTOS_CADA_MS     = 5 * 60 * 1000;          // un volcado cada 5 min como mucho
+const _LENTOS_LOTE        = 200;
+
+function _lentoGuardarPendiente(reg) {
+  try {
+    const l = _cronLeer(_LENTOS_PEND);
+    l.push({
+      proceso: String(reg.det || reg.q || ''),
+      ms: reg.ms || 0,
+      ok: reg.ok ? 1 : 0,
+      cortada: reg.cortada ? 1 : 0,
+      ts: reg.ts || Date.now(),
+      usuario: (typeof MY_EMAIL !== 'undefined' && MY_EMAIL) || '',
+      asesora: (typeof MY_ASESORA !== 'undefined' && MY_ASESORA) || '',
+      sinSesion: 1,
+    });
+    while (l.length > _LENTOS_PEND_TOPE) l.shift();
+    _cronGuardar(_LENTOS_PEND, l);
+  } catch (_) {}
+}
+
+let _lentosVolcando = false;
+async function _lentosVolcarPendientes(forzar) {
+  try {
+    if (_lentosVolcando) return;                       // freno 1: una a la vez
+    const l = _cronLeer(_LENTOS_PEND);
+    if (!l.length) return;
+    let ult = 0;
+    try { ult = parseInt(localStorage.getItem(_LENTOS_VOLCADO_TS) || '0', 10) || 0; } catch (_) {}
+    if (!forzar && (Date.now() - ult) < _LENTOS_CADA_MS) return;   // freno 2: cada 5 min
+    _lentosVolcando = true;
+    // Se marca el intento ANTES de llamar: si la llamada muere, no se reintenta
+    // en bucle. Los registros quedan igual en la cola para la proxima ventana.
+    try { localStorage.setItem(_LENTOS_VOLCADO_TS, String(Date.now())); } catch (_) {}
+    const lote = l.slice(0, _LENTOS_LOTE);
+    const r = await apiPost('lentos.volcar', { items: lote });
+    if (r && r.ok) {
+      const resto = _cronLeer(_LENTOS_PEND).slice(lote.length);
+      _cronGuardar(_LENTOS_PEND, resto);
+    }
+  } catch (_) {
+  } finally { _lentosVolcando = false; }
+}
+
 let _lentoTokCache = null, _lentoTokCacheTs = 0;
 async function _lentoCentralizar(reg) {
   try {
-    if (typeof SB_URL === 'undefined' || !SB_ANON) return;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) { _lentoGuardarPendiente(reg); return; }
     // Reusa el token de sesión Supabase que ya existe para todo lo demás
     // (libro directo, espejo, etc.) — no abre una sesión nueva para esto.
     const tok = await _sbSesionAsegurar();
-    if (!tok) return;
+    if (!tok) { _lentoGuardarPendiente(reg); _lentosVolcarPendientes(); return; }
     fetch(SB_URL + '/rest/v1/rpc/erp_lento_registrar', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: SB_ANON, Authorization: 'Bearer ' + tok },
@@ -3066,8 +3169,10 @@ async function _lentoCentralizar(reg) {
         p_cortada: !!reg.cortada,
         p_ocurrio: new Date(reg.ts || Date.now()).toISOString(),
       }),
-    }).catch(function () {});
-  } catch (_) {}
+    }).catch(function () { _lentoGuardarPendiente(reg); });
+    // Volvio la sesion: aprovechar para drenar lo que quedo de cuando no habia.
+    _lentosVolcarPendientes();
+  } catch (_) { try { _lentoGuardarPendiente(reg); } catch (__) {} }
 }
 
 let _cronLatido = null;
@@ -9284,6 +9389,56 @@ function _masivoContarRevertido(r) {
 // La franja de "Deshacer" dura 30 segundos. Esto es lo mismo, pero al dia
 // siguiente: es lo que hacia falta el 7-set, cuando el error se descubrio horas
 // despues.
+async function loadCfgLentos() {
+  const tb  = document.querySelector('#cfg-len-tbl tbody');
+  const msg = document.getElementById('cfg-len-msg');
+  if (!tb) return;
+  tb.innerHTML = '<tr><td colspan="8" style="color:var(--mu)">Cargando...</td></tr>';
+  if (msg) msg.textContent = '';
+  const dias = parseInt((document.getElementById('cfg-len-dias') || {}).value || 14, 10) || 14;
+  let d = null;
+  try { d = await apiPost('lentos.resumen', { dias }); } catch (e) { d = null; }
+  if (!d || d.ok !== true) {
+    tb.innerHTML = '';
+    if (msg) msg.textContent = (d && d.falta)
+      ? 'Todavia no esta creada la telemetria en la base (falta pegar '
+        + 'PEGAR_EN_SUPABASE_telemetria_lentos_etapa0.sql en Supabase). '
+        + 'Hasta entonces el ERP funciona igual, pero no se puede ver la lentitud del equipo.'
+      : 'No se pudo leer la telemetria' + ((d && d.error) ? ': ' + d.error : '.');
+    return;
+  }
+  const filas = d.filas || [];
+  if (!filas.length) {
+    tb.innerHTML = '';
+    if (msg) msg.textContent = 'Nadie sufrio ninguna operacion de 3 segundos o mas en este periodo.';
+    return;
+  }
+  const seg = ms => (ms >= 1000 ? (Math.round(ms / 100) / 10) + ' s' : Math.round(ms) + ' ms');
+  let totSin = 0, totN = 0;
+  filas.forEach(f => { totN += Number(f.n || 0); totSin += Number(f.sin_sesion_n || 0); });
+  tb.innerHTML = filas.map(f => {
+    const sin = Number(f.sin_sesion_n || 0);
+    const cor = Number(f.cortadas_n || 0);
+    return '<tr>'
+      + '<td>' + esc(String(f.proceso || '')) + '</td>'
+      + '<td style="text-align:right">' + f.n + '</td>'
+      + '<td style="text-align:right">' + seg(f.prom_ms) + '</td>'
+      + '<td style="text-align:right"><b>' + seg(f.p95_ms) + '</b></td>'
+      + '<td style="text-align:right">' + seg(f.max_ms) + '</td>'
+      + '<td style="text-align:right">' + f.personas + '</td>'
+      + '<td style="text-align:right' + (sin ? ';color:var(--rd);font-weight:600' : '') + '">' + (sin || '—') + '</td>'
+      + '<td style="text-align:right">' + (cor || '—') + '</td>'
+      + '</tr>';
+  }).join('');
+  if (msg) {
+    msg.innerHTML = totN + ' operaciones lentas en ' + dias + ' dias. '
+      + (totSin
+          ? '<b>' + totSin + ' (' + (Math.round(totSin * 1000 / totN) / 10) + '%) pasaron sin sesion con la base</b> '
+            + '— esas son las que antes del 9-set no quedaban registradas en ningun lado.'
+          : 'Ninguna paso por el camino de respaldo.');
+  }
+}
+
 async function loadCfgMasivos() {
   const tb  = document.querySelector('#cfg-mas-tbl tbody');
   const msg = document.getElementById('cfg-mas-msg');
@@ -30229,14 +30384,23 @@ async function loadConfig() {
       if (_bw) _bw.style.display = tab==='blindaje'?'':'none';
       const _mw = document.getElementById('cfg-masivos-wrap');
       if (_mw) _mw.style.display = tab==='masivos'?'':'none';
+      const _lw = document.getElementById('cfg-lentos-wrap');
+      if (_lw) _lw.style.display = tab==='lentitud'?'':'none';
       if(tab==='backup') loadCfgBackup();
       if(tab==='auditoria') loadCfgAuditoria();
       if(tab==='blindaje') loadCfgBlindaje();
       if(tab==='masivos') loadCfgMasivos();
+      if(tab==='lentitud') loadCfgLentos();
     }));
     // C — la bitacora de cambios masivos
     const _mr = document.getElementById('cfg-mas-refrescar');
     if (_mr) _mr.addEventListener('click', loadCfgMasivos);
+
+    // Etapa 0 — la pantalla de lentitud
+    const _lr = document.getElementById('cfg-len-refrescar');
+    if (_lr) _lr.addEventListener('click', loadCfgLentos);
+    const _ld = document.getElementById('cfg-len-dias');
+    if (_ld) _ld.addEventListener('change', loadCfgLentos);
 
     // Herramientas
     document.getElementById('tool-refresh-maestros').addEventListener('click', refrescarMaestros);
