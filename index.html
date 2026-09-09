@@ -10495,12 +10495,15 @@ async function _sbPedidosCambiosDesde() {
     _sbPollTs = d.serverTs;
     // La primera vuelta sólo fija la marca de agua. Lo anterior ya está en
     // pantalla: traerlo de nuevo sería repetir la carga inicial entera.
-    if (primeraVuelta) return { editados: [], eliminados: [] };
+    if (primeraVuelta) return { editados: [], eliminados: [], salidos: [] };
     if (d.refetch) return { refetch: true };
     return { editados: (d.editados || []).map(_sbFilaNativa),
              // v2: números de pedido que ya no tienen NINGUNA fila viva.
              // La receta se encarga de no avisar por una prenda suelta borrada.
-             eliminados: Array.isArray(d.eliminados) ? d.eliminados.map(String) : [] };
+             eliminados: Array.isArray(d.eliminados) ? d.eliminados.map(String) : [],
+             // v3 (9-sep): números de pedido que SIGUEN vivos pero dejaron de
+             // cumplir el filtro de Activos (ver cabecera de supabase_cambios_desde.sql).
+             salidos: Array.isArray(d.salidos) ? d.salidos.map(String) : [] };
   } catch (e) { try { _errLog('sb.poll.pedidos', e); } catch (_) {} return null; }
 }
 
@@ -10524,9 +10527,9 @@ async function _pollPedsOnce() {
         // v2: los borrados llegan por acá. Antes iba `[]` fijo y había que
         // esperar a la vuelta de Apps Script para que un pedido eliminado
         // desapareciera de la pantalla.
-        const _ed = sb.editados || [], _el = sb.eliminados || [];
-        if (_ed.length || _el.length) {
-          _mergePedsDelta(_ed, _el);
+        const _ed = sb.editados || [], _el = sb.eliminados || [], _sa = sb.salidos || [];
+        if (_ed.length || _el.length || _sa.length) {
+          _mergePedsDelta(_ed, _el, _sa);
           try { lsSetPeds(pRaw, pLastSyncTs); } catch (_) {}
         }
       }
@@ -10815,7 +10818,8 @@ function _colorConservarLocal(filasViejas, filasNuevas) {
   return filasNuevas;
 }
 
-function _mergePedsDelta(editados, eliminados) {
+function _mergePedsDelta(editados, eliminados, salidos) {
+  salidos = salidos || [];
   if (!pRaw || !pRaw.length) return;
   // Descartar cambios propios de pintado (ya aplicados in-place): evita re-render + reordenamiento
   // que hacía "saltar" la vista. Otros cambios (de otras personas) sí se procesan normal.
@@ -10854,7 +10858,7 @@ function _mergePedsDelta(editados, eliminados) {
       editados = editados.filter(r => nrosCambiados.has(String(r.NroPedido||'')));
     }
   } catch(e) { _errLog('mergeDelta.echoFilter', e); }
-  if ((!editados || !editados.length) && (!eliminados || !eliminados.length)) return;
+  if ((!editados || !editados.length) && (!eliminados || !eliminados.length) && !salidos.length) return;
   // Set de NroPedidos afectados para highlight
   const nrosAfectados = new Set();
   // 1. Eliminar tombstones
@@ -10863,6 +10867,17 @@ function _mergePedsDelta(editados, eliminados) {
     pRaw = pRaw.filter(r => !elSet.has(String(r.NroPedido||'')));
     // F1 23-jul: lápida local también para eliminados que avisó el servidor
     try { eliminados.forEach(n => _pedsTombAdd(n)); } catch(_){}
+  }
+  // v3 (9-sep) — SALIDOS DE ACTIVOS (incidente Stephanie, 7-sep): el pedido
+  // SIGUE vivo, solo dejó de cumplir el filtro de ESTA pantalla (scope
+  // Activos). Se saca de pRaw igual que un eliminado, pero SIN lápida: no
+  // está borrado, y en otra pestaña/scope tiene que poder verse con
+  // normalidad. Antes de esto, un pedido que salía de Activos (ej. pasaba a
+  // ENTREGADO) se quedaba fantasma en las pantallas que estaban mirando
+  // Activos hasta que alguien recargara entera.
+  if (salidos.length) {
+    const saSet = new Set(salidos.map(String));
+    pRaw = pRaw.filter(r => !saSet.has(String(r.NroPedido||'')));
   }
   // 2. Mergear editados/nuevos (un NroPedido puede tener varias filas: prendas + _PAGO_)
   if (editados.length) {
@@ -10886,6 +10901,7 @@ function _mergePedsDelta(editados, eliminados) {
     try { _cliColorRecalcNros([...nrosNuevos]); } catch(_) {}
   }
   eliminados.forEach(n => nrosAfectados.add(String(n)));
+  salidos.forEach(n => nrosAfectados.add(String(n)));
   // FIX PARPADEO (jul-2026) — Con un filtro de columna activo, NO redibujar si el cambio
   // de fondo es de pedidos que el filtro NO muestra. Antes, cualquier actividad de fondo
   // (otro pedido, otra persona, reconciliación de colores) redibujaba la vista filtrada
