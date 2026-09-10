@@ -16872,6 +16872,15 @@ async function npInit() {
 // ── CARGAR ÍNDICE DE CLIENTES ─────────────────────────────
 async function npCargarIndice() {
   if (NP.idxReady) return;
+  // 10-set-2026 — con el buscador por receta ya no hay nada que bajar: la
+  // búsqueda la hace la base. Se marca listo y se sigue.
+  if (SB_CLI_BUSCAR_RPC) {
+    NP.idxReady = true;
+    NP.idxData = NP.idxData || [];
+    NP.idxNuevas = NP.idxNuevas || [];
+    try { document.getElementById('np-bcargando').style.display = 'none'; } catch (_) {}
+    return;
+  }
   // Directo al backend — no hay clientes.json estático
   try {
     // 29-jul · VÍA RÁPIDA. Medido: 15.617 ms y 2,7 MB para abrir "Nuevo pedido".
@@ -17183,20 +17192,28 @@ function npBqUpdLabel() {
 let NP_bqTimer = null;
 let NP_bqBackendTimer = null;
 
-function npBqFiltrar(q) {
+async function npBqFiltrar(q) {
   const resEl = document.getElementById('np-bresultados');
   if (!q || q.length < 2) { resEl.innerHTML = ''; return; }
 
   const tipo = document.getElementById('np-btipo').value;
 
   if (NP.modo === 'existente') {
-    // 1. Buscar primero en el JSON local (instantáneo)
-    const locales = npBuscarLocal(q, tipo);
+    // 10-set: la búsqueda la hace la base. El pedido lleva número de orden: si
+    // la asesora siguió tecleando mientras viajaba, la respuesta vieja se tira
+    // en vez de pintar una lista que ya no corresponde a lo que está escrito.
+    const _tk = (NP._bqTok = (NP._bqTok || 0) + 1);
+    const locales = await npBuscarClientas(q, tipo, 8);
+    if (_tk !== NP._bqTok) return;
 
     if (locales.length > 0) {
-      // Encontró en JSON — mostrar y cancelar cualquier búsqueda backend pendiente
+      // Encontró — mostrar y cancelar cualquier búsqueda backend pendiente
       clearTimeout(NP_bqBackendTimer);
       npRenderClientes(locales.slice(0, 8), resEl);
+    } else if (SB_CLI_BUSCAR_RPC) {
+      // La base ya miró TODAS las clientas: no hay dónde seguir buscando.
+      clearTimeout(NP_bqBackendTimer);
+      resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontraron clientes.</div>';
     } else if (!NP.idxReady) {
       // JSON todavía cargando — mostrar spinner y buscar en backend directamente
       resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">⏳ Cargando índice...</div>';
@@ -17234,8 +17251,10 @@ function npBqFiltrar(q) {
       return;
     }
 
-    // Buscar candidatos en JSON local
-    const candidatos = npBuscarLocal(q, tipo);
+    // Buscar candidatos (10-set: los busca la base)
+    const _tk2 = (NP._bqTok = (NP._bqTok || 0) + 1);
+    const candidatos = await npBuscarClientas(q, tipo, 5);
+    if (_tk2 !== NP._bqTok) return;
 
     // 30-jul · Antes se cruzaba contra el mapa completo (745 KB). Ahora se le
     // pregunta a la base por las claves de esos candidatos, en un solo tirón.
@@ -17283,30 +17302,120 @@ function _npAgregarSinPendiente(candidatos, q, tipo, resEl) {
 }
 
 // Búsqueda local en el índice JSON
-function npBuscarLocal(q, tipo) {
-  if (!NP.idxData || !NP.idxData.length) return [];
-  const ql = q.toLowerCase();
-  if (tipo === 'nombre') {
-    const words = ql.split(/\s+/).filter(Boolean);
-    return NP.idxData.filter(c => words.every(w => c.n.toLowerCase().includes(w)));
-  } else if (tipo === 'telefono') {
-    // #3 — comparar solo dígitos: tolera espacios/guiones tanto en la búsqueda como en el dato guardado
-    const qd = q.replace(/\D/g, '');
-    return NP.idxData.filter(c => c.t && String(c.t).replace(/\D/g, '').includes(qd));
-  } else if (tipo === 'dni') {
-    return NP.idxData.filter(c => c.d && c.d.includes(q));
+// ══════════════════════════════════════════════════════════════════════════
+// EL BUSCADOR DE CLIENTAS LE PREGUNTA A LA BASE (10-set-2026)
+//
+// ANTES: cada carga de página se bajaba el índice ENTERO de clientas para poder
+// buscar — 9.220 clientas, 672.414 B comprimidos, **5,6 segundos medidos** —
+// y después filtraba en el navegador. Se usaba para mostrar 8.
+// Medido en los registros de Supabase: 31 bajadas en 24 h = ~21 MB/día.
+//
+// AHORA: se manda lo que la asesora escribió y vuelven 20 filas (~7 KB).
+// La cuenta del índice NO se tocó: la sigue haciendo Apps Script y guardándola
+// en `espejo_cache`; en la base hay una tabla que reparte ese mismo JSON en
+// filas (`erp.clientes_indice`, se rellena sola con un disparador) y la receta
+// `clientes_buscar` busca ahí.
+//
+// LAS REGLAS SON LAS DE SIEMPRE, modo por modo — no se "mejoraron":
+//   nombre        → todas las palabras contenidas, minúsculas, cualquier orden
+//   telefono      → dígitos contra dígitos, contiene
+//   dni           → contiene, tal cual
+//   dni_exacto    → igual (lo usa el cartel "Cliente existente detectado")
+//   dni_empieza   → empieza con (sugerencias de Cambios)
+//   celular_texto → contiene, sobre el texto crudo (Cambios y el cartel verde)
+// Cuadradas contra este mismo código sobre los mismos datos: 224 casos, 0 difs.
+//
+// REVERSA: SB_CLI_BUSCAR_RPC = false → vuelve a bajarse el índice entero y a
+// filtrar en el navegador. Todo el camino viejo sigue acá.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_CLI_BUSCAR_RPC = true;
+
+// EL FILTRO, UNA SOLA VEZ. Lo usan los dos caminos: el de la base (para el
+// puñado de clientas creadas en esta sesión, que todavía no están en el índice)
+// y el viejo (para el índice entero). Así no puede haber dos reglas distintas.
+function _cliFiltrarEn(arr, q, tipo) {
+  const lista = Array.isArray(arr) ? arr : [];
+  if (!lista.length) return [];
+  const ql = String(q == null ? '' : q).toLowerCase();
+  const norm = x => String(x == null ? '' : x).toLowerCase();
+  switch (tipo) {
+    case 'nombre': {
+      const words = ql.split(/\s+/).filter(Boolean);
+      return lista.filter(c => words.every(w => String(c.n || '').toLowerCase().includes(w)));
+    }
+    case 'telefono': {
+      const qd = String(q == null ? '' : q).replace(/\D/g, '');
+      return lista.filter(c => c.t && String(c.t).replace(/\D/g, '').includes(qd));
+    }
+    case 'dni':
+      return lista.filter(c => c.d && String(c.d).includes(String(q == null ? '' : q)));
+    case 'dni_exacto':
+      return lista.filter(c => String(c.d || '').trim() === String(q == null ? '' : q).trim());
+    case 'dni_empieza':
+      return lista.filter(c => c.d && norm(c.d).indexOf(ql) === 0);
+    case 'celular_texto':
+      return lista.filter(c => c.t && norm(c.t).indexOf(ql) >= 0);
+    default:
+      return [];
   }
-  return [];
+}
+
+// La llamada a la receta. Devuelve null si no se pudo (sin sesión, red caída,
+// permisos): quien llama decide qué hacer, nunca se inventa una lista vacía.
+async function _cliBuscarBase(q, tipo, limite) {
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/clientes_buscar', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_q: String(q == null ? '' : q), p_tipo: tipo, p_limite: limite || 20 })
+    });
+    if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
+    const j = await r.json();
+    return Array.isArray(j) ? j : null;
+  } catch (e) { try { _errLog('cli.buscar.rpc', e); } catch (_) {} return null; }
+}
+
+// LA ÚNICA PUERTA. Todo lo que busca clientas pasa por acá.
+async function npBuscarClientas(q, tipo, limite) {
+  const lim = limite || 20;
+  if (SB_CLI_BUSCAR_RPC) {
+    const base = await _cliBuscarBase(q, tipo, lim);
+    if (base) {
+      // Las clientas guardadas en ESTA sesión todavía no están en el índice
+      // (lo regenera Apps Script cada ~30-60 min). Van primero para que la
+      // asesora encuentre a quien acaba de cargar.
+      const nuevas = _cliFiltrarEn(NP.idxNuevas || [], q, tipo);
+      if (!nuevas.length) return base.slice(0, lim);
+      const vistas = new Set(base.map(c => (c.n || '') + '|' + (c.t || '')));
+      return nuevas.filter(c => !vistas.has((c.n || '') + '|' + (c.t || '')))
+                   .concat(base).slice(0, lim);
+    }
+    // La base no contestó: se sigue con lo que haya en memoria (normalmente
+    // solo las de esta sesión). Vale más poco que nada.
+  }
+  const fuente = (NP.idxData && NP.idxData.length) ? NP.idxData : (NP.idxNuevas || []);
+  return _cliFiltrarEn(fuente, q, tipo).slice(0, lim);
+}
+
+function npBuscarLocal(q, tipo) {
+  // #3 — el teléfono se compara SOLO por dígitos: tolera espacios y guiones
+  // tanto en lo que se escribe como en lo guardado. Todas las reglas viven
+  // ahora en `_cliFiltrarEn`, para que el camino de la base y éste no puedan
+  // separarse nunca.
+  return _cliFiltrarEn(NP.idxData || [], q, tipo);
 }
 
 // Búsqueda 100% local — sin llamada al backend
-function npBqBackend(q, tipo, resEl) {
+async function npBqBackend(q, tipo, resEl) {
   // Si el índice aún no cargó, mostrar mensaje y esperar
   if (!NP.idxReady || !NP.idxData) {
     resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">⏳ Cargando índice...</div>';
     return;
   }
-  const resultados = npBuscarLocal(q, tipo).slice(0, 8);
+  const resultados = await npBuscarClientas(q, tipo, 8);
   if (!resultados.length) {
     resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontraron clientes.</div>';
     return;
@@ -17320,7 +17429,7 @@ async function npBqBackendAgregar(q, tipo, resEl) {
     resEl.innerHTML = '<div style="font-size:12px;color:var(--mu)">⏳ Cargando índice...</div>';
     return;
   }
-  const filtrados = npBuscarLocal(q, tipo).slice(0, 5);
+  const filtrados = await npBuscarClientas(q, tipo, 5);
   if (!filtrados.length) {
     resEl.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:6px 0">No se encontraron clientes.</div>';
     return;
@@ -17614,7 +17723,7 @@ function npAutoDetect() {
   _npAutoDetectTimer = setTimeout(npAutoDetectDo, 250);
 }
 
-function npAutoDetectDo() {
+async function npAutoDetectDo() {
   if (NP.modo !== 'nuevo') return;            // solo en modo nuevo pedido
   if (!NP.idxReady || !NP.idxData) return;    // índice aún no cargado
   const banner = document.getElementById('np-autodetect');
@@ -17623,14 +17732,30 @@ function npAutoDetectDo() {
   const dtp = document.getElementById('np-dtp').value;
   const tels = [...document.querySelectorAll('#np-tels input')].map(i => (i.value||'').trim()).filter(Boolean);
 
+  // 10-set: se le pregunta a la base con las MISMAS dos reglas de siempre
+  // (documento IGUAL; si no, el celular CONTIENE lo tecleado). El número de
+  // orden evita que una respuesta vieja pinte el cartel de otra clienta.
+  const _tk = (NP._adTok = (NP._adTok || 0) + 1);
   let matches = [];
   // Match por documento (DNI: 8 dígitos, RUC: 11, CE: 9)
   if (dni && dtp !== 'NA' && ((dtp==='DNI' && dni.length===8) || (dtp==='RUC' && dni.length===11) || (dtp==='CE' && dni.length>=8))) {
-    matches = NP.idxData.filter(c => String(c.d||'').trim() === dni);
+    matches = await npBuscarClientas(dni, 'dni_exacto', 50);
+    if (_tk !== NP._adTok) return;
   }
-  // Si no, match por teléfono (9 dígitos)
+  // Si no, match por teléfono (9 dígitos). Puede haber varios teléfonos
+  // cargados: se junta lo de todos sin repetir, igual que el `some` de antes.
   if (!matches.length && tels.length) {
-    matches = NP.idxData.filter(c => tels.some(t => t.length>=9 && String(c.t||'').includes(t)));
+    const vistas = new Set(), acc = [];
+    for (const t of tels) {
+      if (t.length < 9) continue;
+      const r = await npBuscarClientas(t, 'celular_texto', 50);
+      if (_tk !== NP._adTok) return;
+      r.forEach(c => {
+        const k = (c.n||'') + '|' + (c.t||'') + '|' + (c.d||'');
+        if (!vistas.has(k)) { vistas.add(k); acc.push(c); }
+      });
+    }
+    matches = acc;
   }
 
   if (!matches.length) { banner.style.display='none'; banner.innerHTML=''; return; }
@@ -18904,10 +19029,19 @@ async function npGuardar() {
     };
 
     // Actualizar índice local de clientes para búsquedas inmediatas en esta sesión
-    if (NP.idxData && cliBase.NombreApellido) {
+    // La clienta recién guardada tiene que poder encontrarse YA, aunque el
+    // índice de la base lo regenere Apps Script recién dentro de media hora.
+    // Va a `idxNuevas`, la lista chica de esta sesión que `npBuscarClientas`
+    // pone adelante de lo que devuelve la base. (`idxData` sigue existiendo
+    // para la reversa: con SB_CLI_BUSCAR_RPC apagado, ahí está el índice entero.)
+    if (cliBase.NombreApellido) {
       const key = cliBase.NombreApellido.toUpperCase();
-      const existe = NP.idxData.find(c => c.n.toUpperCase() === key);
-      if (!existe) NP.idxData.push({n:cliBase.NombreApellido, t:tels.split('/')[0].trim(), d:cliBase.DNI, dir:cliBase.Direccion, dst:cliBase.Distrito, prv:cliBase.Provincia, reg:cliBase.Region, ref:cliBase.Referencia, can:cliBase.Canal, email:cliBase.Email||''});
+      const nueva = {n:cliBase.NombreApellido, t:tels.split('/')[0].trim(), d:cliBase.DNI,
+        dir:cliBase.Direccion, dst:cliBase.Distrito, prv:cliBase.Provincia, reg:cliBase.Region,
+        ref:cliBase.Referencia, can:cliBase.Canal, em:cliBase.Email||'', email:cliBase.Email||''};
+      NP.idxNuevas = NP.idxNuevas || [];
+      if (!NP.idxNuevas.find(c => String(c.n||'').toUpperCase() === key)) NP.idxNuevas.push(nueva);
+      if (NP.idxData && !NP.idxData.find(c => String(c.n||'').toUpperCase() === key)) NP.idxData.push(nueva);
     }
 
     // Reset estado de saldos
@@ -25087,25 +25221,21 @@ async function camCargarStock() {
 // ── FILTRO EN TIEMPO REAL — nombre / dni / celular ────────────
 // Mantengo el nombre legacy por si algo lo llama
 function camFiltrarNombre(q) { return camFiltrarSugerencias('nombre', q); }
-function camFiltrarSugerencias(tipo, q) {
+async function camFiltrarSugerencias(tipo, q) {
   const sugEl = document.getElementById('cam-sugerencias');
   if (!q || q.length < 2) { sugEl.style.display = 'none'; return; }
 
-  const idx = NP.idxData || [];
-  const ql = q.toLowerCase();
-  const norm = s => String(s||'').toLowerCase();
-
+  // 10-set: las tres reglas son las mismas, pero las aplica la base.
+  // ⚠️ OJO: acá el DNI EMPIEZA con lo tecleado y el celular se compara como
+  // TEXTO (no por dígitos). Es distinto de la búsqueda de Nuevo pedido, y así
+  // estaba: no se unificaron para no cambiar lo que ve la asesora.
+  const _tk = (NP._camTok = (NP._camTok || 0) + 1);
   let matches = [];
-  if (tipo === 'nombre') {
-    const words = ql.split(/\s+/).filter(Boolean);
-    matches = idx.filter(c => words.every(w => norm(c.n).includes(w))).slice(0, 10);
-  } else if (tipo === 'dni') {
-    matches = idx.filter(c => c.d && norm(c.d).indexOf(ql) === 0).slice(0, 10);
-  } else if (tipo === 'celular') {
-    matches = idx.filter(c => c.t && norm(c.t).indexOf(ql) >= 0).slice(0, 10);
-  } else {
-    sugEl.style.display = 'none'; return;
-  }
+  if (tipo === 'nombre')       matches = await npBuscarClientas(q, 'nombre', 10);
+  else if (tipo === 'dni')     matches = await npBuscarClientas(q, 'dni_empieza', 10);
+  else if (tipo === 'celular') matches = await npBuscarClientas(q, 'celular_texto', 10);
+  else { sugEl.style.display = 'none'; return; }
+  if (_tk !== NP._camTok) return;
 
   if (!matches.length) { sugEl.style.display = 'none'; return; }
 
@@ -28725,14 +28855,13 @@ function _devBindEvents() {
 }
 
 // Filtrado en tiempo real por nombre — sugerencias desde NP.idxData (mismo índice que Cambios)
-function devFiltrarNombre(q) {
+async function devFiltrarNombre(q) {
   const sugEl = document.getElementById('dev-sugerencias');
   if (!sugEl) return;
   if (!q || q.length < 2) { sugEl.style.display = 'none'; return; }
-  const idx = NP.idxData || [];
-  const ql = q.toLowerCase();
-  const words = ql.split(/\s+/).filter(Boolean);
-  const matches = idx.filter(c => words.every(w => (c.n||'').toLowerCase().includes(w))).slice(0, 10);
+  const _tk = (NP._devTok = (NP._devTok || 0) + 1);
+  const matches = await npBuscarClientas(q, 'nombre', 10);   // 10-set: lo busca la base
+  if (_tk !== NP._devTok) return;
   if (!matches.length) { sugEl.style.display = 'none'; return; }
   sugEl.innerHTML = '';
 
