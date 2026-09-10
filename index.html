@@ -2099,6 +2099,19 @@ function _dupSim(a, b) {
   return (ta + tb) ? (2 * inter) / (ta + tb) : 0;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// DUPLICADOS: LA CUENTA LA HACE LA BASE (10-set-2026)
+//
+// Antes, para avisar "esta clienta ya tiene un pedido de hace 2 horas", el
+// navegador se bajaba los 1.200 pedidos más recientes ENTEROS y los recorría
+// acá. Medido el 10-set en los registros de Supabase: 250 veces en 24 h ×
+// 103.932 B comprimidos = ~26 MB por día. Es el gasto más caro de toda la
+// tabla de pedidos: más que TODOS los barridos del historial juntos. Y la
+// respuesta útil son 0-10 pedidos, unos 2 KB.
+//
+// REVERSA: poner esto en false y publicar. El camino viejo sigue entero.
+const SB_DUP_RPC = true;
+
 async function _detectarDuplicadosRapido(p) {
   try {
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
@@ -2110,6 +2123,48 @@ async function _detectarDuplicadosRapido(p) {
 
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
+
+    // ── LA RECETA `pedidos_duplicados` (10-set-2026) ───────────────────────
+    // Hace EXACTAMENTE lo mismo que el código de abajo, pero del lado del
+    // servidor: mismas reglas (DNI exacto, el Celular de la fila CONTIENE el
+    // teléfono tecleado, nombre igual o parecido >= 0.82 por bigramas),
+    // mismo desempate y mismo tope de 10. Cuadrada contra ESTE mismo código
+    // en 180 casos reales sobre las mismas 1.200 filas: 0 diferencias.
+    //
+    // Si contesta {limite:true} es que ni ella llegó a cubrir la ventana →
+    // se cae a Apps Script, igual que antes. Un "no hay duplicados" sin
+    // haber mirado es indistinguible de uno bueno: por eso no se contesta.
+    if (SB_DUP_RPC) {
+      const _vent = parseFloat(p.ventanaHoras) || 48;
+      try {
+        const rr = await fetch(SB_URL + '/rest/v1/rpc/pedidos_duplicados', {
+          method: 'POST',
+          headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok,
+                     'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            p_dni: dni, p_tels: tels, p_nombre: String(p.nombre || ''),
+            p_ventana_horas: _vent,
+            p_prendas: (p.prendas || []).map(x => String(x || '').trim()).filter(Boolean)
+          })
+        });
+        if (!rr.ok) {
+          if (rr.status === 401 || rr.status === 403) _sbVencerTok();
+          throw new Error('HTTP ' + rr.status);
+        }
+        const jj = await rr.json();
+        if (jj && jj.limite) {
+          try { console.warn('[dup] la receta no cubrió la ventana → Apps Script'); } catch(_) {}
+          return null;
+        }
+        if (jj && Array.isArray(jj.candidatos)) {
+          return { candidatos: jj.candidatos, ventanaHoras: _vent, via: 'base' };
+        }
+        throw new Error('respuesta inesperada de pedidos_duplicados');
+      } catch (e) {
+        // No se deja a la asesora sin aviso: sigue por el camino viejo.
+        try { _errLog('dup.rpc', e); } catch(_) {}
+      }
+    }
 
     // ── POR QUÉ SE PIDE POR `id` Y NO POR FECHA ────────────────────────────
     // La primera versión filtraba con `row_json->>'Fecha Pedido' >= …`. Suena mejor
