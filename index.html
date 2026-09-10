@@ -19818,8 +19818,89 @@ function _cliLsGet() {
 function _cliLsSet(data) { try { localStorage.setItem('erp_' + CLI_LS_KEY, JSON.stringify({ts: Date.now(), data})); } catch(e) {} }
 function _cliLsDel() { try { localStorage.removeItem('erp_' + CLI_LS_KEY); } catch(e) {} }
 
+/* ══ FASE 8 · LA PANTALLA CLIENTES DEJA DE BAJARSE 1,2 MB · 10-set-2026 ══════
+   MEDIDO: bajaba `clientes.listar` entero — 2.000 clientas x 28 campos =
+   1.192 KB (610 bytes por clienta) para pintar una tabla de 11 columnas. Es la
+   lectura mas pesada del ERP. Con el egress de Supabase en 9,8 GB contra 5 GB
+   de limite —y restriccion el 2-oct— es el primer lugar donde hay que dejar de
+   bajar el reporte entero.
+
+   AHORA: la receta `clientes_pagina` devuelve 50 filas. Buscar, filtrar por
+   segmento o zona y ordenar viajan al servidor. Mismo patron que el buscador de
+   clientas (10-set), que paso de 672 KB por carga a 7 KB por busqueda.
+
+   ⚠️ DOS COSAS SIGUEN NECESITANDO EL CONJUNTO COMPLETO, y por eso NO se rompen:
+   el filtro por columna (junta los valores unicos de una columna) y exportar a
+   Excel. Las dos bajan el completo A DEMANDA con `_cliTodas()`, una sola vez por
+   sesion. Son acciones puntuales, no la carga de la pantalla: el ahorro se
+   conserva el 95% de las veces y el comportamiento no cambia.
+
+   REVERSA INMEDIATA: `SB_CLI_PAGINA = false` y publicar -> vuelve a bajar las
+   2.000 y filtrar en el navegador. El camino viejo queda ENTERO.
+   ══════════════════════════════════════════════════════════════════════════ */
+const SB_CLI_PAGINA = false;
+
+const CLIP = { q:'', tipo:'nombre', seg:'', zona:'', orden:'pedidos', desc:true,
+               off:0, lim:50, total:0, cargando:false };
+// Cuando el filtro por columna o el export trabajan sobre el conjunto COMPLETO,
+// `cliFiltered` tiene que volver a filtrar como siempre. Esta bandera lo dice.
+let _cliFiltrandoTodas = false;
+
+// La receta habla en columnas de base; la pantalla, en las suyas de siempre.
+// Este mapeo es el unico lugar donde se traducen: si manana cambia un nombre,
+// se cambia aca y no en veinte lugares.
+function _cliDeFila(f) {
+  return {
+    Clave: f.clave||'', Nombre: f.nombre||'', Email: f.email||'',
+    Telefono: f.telefono||'', DNI: f.dni||'', Cumpleanos: f.cumpleanos||'',
+    Distrito: f.distrito||'', Provincia: f.provincia||'', Region: f.region||'',
+    Segmento: f.segmento||'', SegmentoColor: f.segmento_col||'',
+    Problematica: !!f.problematica,
+    TotalPedidos: f.pedidos||0, TotalPrendas: f.prendas||0,
+    Saldo: Number(f.saldo||0), LTV: Number(f.ltv||0),
+    LTGP: (f.ltgp===null||f.ltgp===undefined) ? null : Number(f.ltgp),
+    TotalGastado: Number(f.gastado||0), Devoluciones: f.devoluciones||0
+  };
+}
+
+/** Pide UNA pagina. Devuelve null si la base no contesta (nunca lista vacia). */
+async function _cliPedirPagina() {
+  const d = await _sbRpcAjuste('clientes_pagina', {
+    p_q: CLIP.q, p_tipo: CLIP.tipo, p_seg: CLIP.seg, p_zona: CLIP.zona,
+    p_orden: CLIP.orden, p_desc: !!CLIP.desc, p_offset: CLIP.off, p_limite: CLIP.lim });
+  if (!d || !Array.isArray(d.filas)) return null;
+  CLIP.total = parseInt(d.total, 10) || 0;
+  return d.filas.map(_cliDeFila);
+}
+
+/** El conjunto COMPLETO, solo para exportar y para el filtro por columna.
+ *  Se baja una vez por sesion y queda en memoria. */
+let _cliTodasCache = null;
+async function _cliTodas() {
+  if (_cliTodasCache && _cliTodasCache.length) return _cliTodasCache;
+  _cliTodasCache = await _clientesListarRapido();
+  return _cliTodasCache || [];
+}
+
 async function loadClis(force) {
   const el=document.getElementById('cli-w');
+
+  if (SB_CLI_PAGINA) {
+    // Sin cache de localStorage: una pagina se pide y llega en ~200 ms, y
+    // guardar paginas sueltas confunde mas de lo que ahorra.
+    el.innerHTML=spin();
+    try {
+      CLIP.cargando = true;
+      const filas = await _cliPedirPagina();
+      CLIP.cargando = false;
+      if (filas) { cliData = filas; renderClis(); initCliEvents(); return; }
+      // la base no contesto: cae al camino de siempre, abajo
+    } catch(e) {
+      CLIP.cargando = false;
+      el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; return;
+    }
+  }
+
   // PERF v10 — usar caché (memoria o localStorage) en vez de re-fetchear siempre
   if (!force) {
     if (cliData && cliData.length) { renderClis(); initCliEvents(); return; }
@@ -19940,6 +20021,10 @@ function _cliCeldaSaldo(v) {
 }
 
 function cliFiltered() {
+  // FASE 8 — con la pagina del servidor, `cliData` YA viene filtrada y ordenada.
+  // Volver a filtrar aca la recortaria una segunda vez (y ordenar 50 filas por
+  // encima del orden del servidor cambiaria lo que ve la asesora).
+  if (SB_CLI_PAGINA && !_cliFiltrandoTodas) return cliData.slice();
   const tipo=document.getElementById('cli-btipo').value;
   const q=(document.getElementById('cli-bq').value||'').trim().toLowerCase();
   const segSel=(document.getElementById('cli-bseg')||{}).value||'';
@@ -20047,7 +20132,19 @@ function renderClis() {
   const activeCount = Object.values(cliColFilters).filter(s=>s&&s.size).length;
   const sortTxt = cliSort.col ? ' · ordenado por <b>'+esc(CLI_COLS.find(c=>c.k===cliSort.col)?.label||cliSort.col)+'</b> '+(cliSort.dir===1?'↑':'↓') : '';
   const filtTxt = activeCount ? ' · <span style="color:var(--ac)">'+activeCount+' filtro'+(activeCount!==1?'s':'')+' de columna</span> <button class="btn bg bs" id="cli-clear-col-filters" style="font-size:10px;padding:2px 8px;margin-left:4px">Limpiar</button>' : '';
-  h+='<div style="font-size:11px;color:var(--mu);margin-top:8px">'+rows.length+' cliente'+(rows.length!==1?'s':'')+filtradoMsg+sortTxt+filtTxt+'</div>';
+  if (SB_CLI_PAGINA) {
+    // FASE 8 — el total lo sabe el servidor, no `rows` (que son 50).
+    const _d=CLIP.off+1, _h=Math.min(CLIP.off+rows.length, CLIP.total);
+    const _hayAnt=CLIP.off>0, _haySig=(CLIP.off+CLIP.lim)<CLIP.total;
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--mu);margin-top:8px">'
+      +'<span>'+(CLIP.total?(_d+'–'+_h+' de '+CLIP.total+' cliente'+(CLIP.total!==1?'s':'')):'0 clientes')+sortTxt+filtTxt+'</span>'
+      +'<span style="display:flex;gap:6px">'
+      +'<button class="btn bg bs cli-pag-btn" data-d="-1" style="font-size:11px"'+(_hayAnt?'':' disabled')+'>‹ Anteriores</button>'
+      +'<button class="btn bg bs cli-pag-btn" data-d="1" style="font-size:11px"'+(_haySig?'':' disabled')+'>Siguientes ›</button>'
+      +'</span></div>';
+  } else {
+    h+='<div style="font-size:11px;color:var(--mu);margin-top:8px">'+rows.length+' cliente'+(rows.length!==1?'s':'')+filtradoMsg+sortTxt+filtTxt+'</div>';
+  }
   setHTMLKeepScroll(el, h);   // SCROLL-FIX Fase C
   // Bind edit/delete/historial
   el.querySelectorAll('.cli-btn-edit').forEach(b=>b.addEventListener('click',()=>cliOpenEdit(b.dataset.key)));
@@ -20098,14 +20195,22 @@ function _cliBindResize(handle) {
 }
 
 // Popup de filtro múltiple para una columna
-function cliOpenColFilter(colKey, anchor) {
+async function cliOpenColFilter(colKey, anchor) {
   // Cerrar popups existentes
   document.querySelectorAll('.cli-col-filter-pop').forEach(p => p.remove());
   // Valores únicos visibles (después de otros filtros — recalcula sin el filtro de esta columna)
   const backup = cliColFilters[colKey];
   delete cliColFilters[colKey];
   const valores = new Map();
-  cliFiltered().forEach(c => {
+  // FASE 8 — necesita TODAS las clientas, no la página que se ve. Se baja el
+  // conjunto completo a demanda (una vez por sesión) y se filtra como siempre.
+  let _base;
+  if (SB_CLI_PAGINA) {
+    const _g = cliData;
+    try { cliData = await _cliTodas(); _cliFiltrandoTodas = true; _base = cliFiltered(); }
+    finally { _cliFiltrandoTodas = false; cliData = _g; }
+  } else { _base = cliFiltered(); }
+  _base.forEach(c => {
     const v = String(cliColValue(c, colKey) || '—');
     valores.set(v, (valores.get(v)||0) + 1);
   });
@@ -20193,12 +20298,36 @@ function cliOpenColFilter(colKey, anchor) {
 let _cliEventsInit=false;
 function initCliEvents() {
   if(_cliEventsInit)return;_cliEventsInit=true;
-  document.getElementById('cli-bq').addEventListener('input',renderClis);
-  document.getElementById('cli-btipo').addEventListener('change',()=>{document.getElementById('cli-bq').value='';renderClis();});
+  // ── FASE 8 · buscar y filtrar viajan al servidor ────────────────────────
+  // Con la página, `cliData` son 50 filas: filtrar sobre eso mostraría "sin
+  // resultados" para una clienta que sí existe. Cada cambio vuelve a la página 1
+  // y pide de nuevo. Se espera 250 ms desde la última tecla para no disparar un
+  // viaje por letra.
+  let _cliTeclaT = null;
+  const _cliRecargar = () => {
+    if (!SB_CLI_PAGINA) { renderClis(); return; }
+    CLIP.q    = (document.getElementById('cli-bq').value||'').trim();
+    CLIP.tipo = document.getElementById('cli-btipo').value || 'nombre';
+    CLIP.seg  = ((document.getElementById('cli-bseg')||{}).value)||'';
+    CLIP.zona = ((document.getElementById('cli-bzona')||{}).value)||'';
+    CLIP.off  = 0;
+    loadClis(true);
+  };
+  document.getElementById('cli-bq').addEventListener('input', () => {
+    if (!SB_CLI_PAGINA) { renderClis(); return; }
+    clearTimeout(_cliTeclaT); _cliTeclaT = setTimeout(_cliRecargar, 250);
+  });
+  document.getElementById('cli-btipo').addEventListener('change',()=>{document.getElementById('cli-bq').value='';_cliRecargar();});
   const segEl=document.getElementById('cli-bseg');
-  if(segEl) segEl.addEventListener('change',renderClis);
+  if(segEl) segEl.addEventListener('change',_cliRecargar);
   const zonaEl=document.getElementById('cli-bzona');   // 26-jul: filtro por zona
-  if(zonaEl) zonaEl.addEventListener('change',renderClis);
+  if(zonaEl) zonaEl.addEventListener('change',_cliRecargar);
+  // Los botones de página (los pinta renderClis)
+  document.querySelectorAll('.cli-pag-btn').forEach(b => b.addEventListener('click', () => {
+    const d = parseInt(b.dataset.d, 10) || 0;
+    CLIP.off = Math.max(0, CLIP.off + d * CLIP.lim);
+    loadClis(true);
+  }));
   document.getElementById('cli-exportar').addEventListener('click',()=>{
     document.getElementById('cli-exp-desde').value='';
     document.getElementById('cli-exp-hasta').value='';
@@ -20761,10 +20890,18 @@ function _cliHistRenderTab(t) {
   }
 }
 
-function cliExportXlsx() {
+async function cliExportXlsx() {
   const desde=document.getElementById('cli-exp-desde').value;
   const hasta=document.getElementById('cli-exp-hasta').value;
-  let rows=cliFiltered();
+  // FASE 8 — necesita TODAS las clientas, no la página que se ve. Se baja el
+  // conjunto completo a demanda (una vez por sesión) y se filtra como siempre.
+  let rows;
+  if (SB_CLI_PAGINA) {
+    const _g = cliData;
+    try { cliData = await _cliTodas(); _cliFiltrandoTodas = true; rows = cliFiltered(); }
+    finally { _cliFiltrandoTodas = false; cliData = _g; }
+  } else { rows = cliFiltered(); }
+  // (rows ya quedó armado arriba)
   // Filtrar por rango de fechas (última fecha del pedido)
   if(desde||hasta){
     const dDesde=desde?new Date(desde+'T00:00:00'):null;
