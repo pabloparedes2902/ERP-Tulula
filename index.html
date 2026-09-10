@@ -3716,6 +3716,9 @@ async function _sbPaseDelBackend(){
 // PARA EL SIMULACRO: poner true, publicar. Para volver: false, publicar.
 // ══════════════════════════════════════════════════════════════════════════
 const SB_APAGADO = false;
+// 10-set FASE 4.3 — el catálogo sale de erp.catalogo_sku (tabla viva) en vez del
+// espejo de 30 minutos. Apagarlo devuelve al espejo, que sigue funcionando igual.
+const SB_CAT_VIVO = true;
 
 async function _sbSesionAsegurar(){
   if (SB_APAGADO) return null;   // simulacro: sin token, todo se va por Apps Script
@@ -7629,10 +7632,49 @@ async function _productosListarRapido() {
   if (Array.isArray(d) && d.length) return d;
   return api('productos.listar', { force: '1' });
 }
+// ══ FASE 4.3 (10-set-2026) · EL CATÁLOGO SALE DE LA TABLA VIVA ═══════════════
+// MEDIDO esta noche, con la sesión real de Pablo:
+//    tabla viva (rpc catalogo_listar) ... 795 ms
+//    espejo_cache ..................... 444 ms  pero hasta 30 min de atraso
+//    Apps Script ...................... 40.000 ms  (el respaldo, casi nunca se usa)
+// El espejo es más rápido, pero es una FOTO que Apps Script regenera cada 30
+// minutos: un SKU creado recién no aparece en los otros dispositivos hasta la
+// próxima vuelta. La tabla viva cuesta 350 ms más y no tiene atraso — y de paso
+// le saca a Apps Script una de las 31 claves que recalcula todo el día.
+// Las tres vías quedan encadenadas: viva → espejo → Apps Script. Si la primera
+// no puede, la siguiente responde y nadie se entera.
+async function _catalogoVivoRapido() {
+  try {
+    if (typeof SB_CAT_VIVO === 'undefined' || !SB_CAT_VIVO) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/catalogo_listar', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_solo_activos: true }),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (!Array.isArray(d) || !d.length) return null;
+    // al formato de siempre: el resto del ERP espera `prenda` como nombre completo
+    return d.map(x => ({
+      prenda:    String(x.sku_texto || ''),
+      categoria: String(x.categoria || ''),
+      producto:  String(x.producto || ''),
+      diseno:    String(x.diseno || ''),
+      color:     String(x.color || ''),
+      talla:     String(x.talla || ''),
+    }));
+  } catch (e) { return null; }
+}
+
 async function _maestrosSkusRapido() {
-  const d = await _sbCacheLeer('catalogo.maestrosSkus');
+  const v = await _catalogoVivoRapido();          // la tabla viva: sin atraso
+  if (Array.isArray(v) && v.length) return v;
+  const d = await _sbCacheLeer('catalogo.maestrosSkus');   // el espejo: hasta 30 min
   if (Array.isArray(d) && d.length) return d;
-  return api('catalogo.maestrosSkus', {});
+  return api('catalogo.maestrosSkus', {});        // Apps Script: el último recurso
 }
 async function _lotesRapido() {
   const d = await _sbCacheLeer('lotes.listar');
