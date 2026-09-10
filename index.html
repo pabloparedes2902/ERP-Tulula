@@ -9200,11 +9200,65 @@ async function _ajustarLote(body) {
 // de la base (STOCK_VIVO) se respeta y NO se reintenta por la via vieja.
 const SB_PILOTO_SKU = true;
 
+// ══ UNA SOLA PUERTA PARA CREAR SKU · 10-set-2026 ══════════════════════════
+// EL PROBLEMA QUE RESUELVE (medido hoy, no supuesto). Habia DOS puertas y la
+// creacion daba DOS vueltas por la cola para una sola cosa:
+//   navegador -> RPC `sku_crear` -> cola `sku-crear` -> Aplicador -> `skuCrear`
+//   -> (4.4) escribe la base -> cola `catalogo-crear` -> Aplicador -> la hoja.
+// Dos pasadas del Aplicador, y encima el SKU no llegaba a la base "al toque"
+// —que es TODO el sentido de la 4.4— sino recien despues de la primera pasada.
+//
+// LA PUERTA UNICA es `catalogo_crear`: escribe `erp.catalogo_sku` (la fuente
+// unica desde la 4.3, o sea: la asesora ve la prenda en el buscador YA) y deja
+// UN item `catalogo-crear` en la cola para que la hoja se ponga al dia.
+//
+// MEDIDO EL 10-set, por eso el empujon usa el primer `sku_texto`: una llamada
+// con DOS items dejo UN solo item de cola (7052) con `nro` = el `sku_texto`
+// del PRIMER item. No es una suposicion sobre como arma el `nro` la RPC.
+//
+// REVERSA INMEDIATA: `SB_SKU_UNA_PUERTA = false` y publicar -> vuelve al camino
+// de `sku_crear` de siempre, que queda entero. Nace APAGADA a proposito: se
+// enciende junto con `cat44Encender()`, y con la 4.4 apagada NO debe usarse
+// (escribir la base antes que la hoja solo es correcto con la 4.4 encendida).
+const SB_SKU_UNA_PUERTA = false;
+
 /** Crear SKU(s): encola y devuelve al instante. `listo` resuelve cuando el
  *  empujon ya bajo los SKU a la hoja: ahi recien conviene refrescar la vista. */
 async function _skuCrearRapido(items) {
   try {
-    if (!SB_PILOTO_SKU || !items || !items.length) return await apiSend('sku.crear', { items });
+    if (!items || !items.length) return await apiSend('sku.crear', { items });
+
+    if (SB_SKU_UNA_PUERTA) {
+      const reqC = 'cat-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+      const pit = items.map(it => ({
+        sku_texto: String(it._full || [it.producto, it.diseno, it.color, it.talla].join(' ')).trim().toUpperCase(),
+        categoria: String(it.categoria || '').trim().toUpperCase(),
+        producto:  String(it.producto  || '').trim().toUpperCase(),
+        diseno:    String(it.diseno    || '').trim().toUpperCase(),
+        color:     String(it.color     || '').trim().toUpperCase(),
+        talla:     String(it.talla     || '').trim().toUpperCase(),
+        beneficio: '',
+        cantidad:  parseInt(it.cantidad, 10) || 0
+      }));
+      const dc = await _sbRpcAjuste('catalogo_crear',
+        { p_items: pit, p_quien: String((typeof MY_EMAIL !== 'undefined' && MY_EMAIL) || ''), p_request: reqC });
+      if (dc && dc.ok) {
+        const nCre = parseInt(dc.nCreados, 10) || 0;
+        const yaEr = dc.yaExistian || [];
+        // ⚠️ EL SILENCIO PELIGROSO. Si un item no cumple la forma que pide la
+        // RPC, la descarta y contesta `ok:true` con `nCreados:0`. Sin esto la
+        // pantalla diria "✓ creado" sin haber creado nada — el mismo cartel
+        // verde que mentia el 10-set a la manana.
+        if (!nCre && !yaEr.length) throw new Error('La base no acepto ningun SKU (nCreados: 0). No se creo nada; avisa a Claude.');
+        const nro = pit[0].sku_texto.slice(0, 60);
+        const listo = apiSend('espejo.aplicarNro', { nro }).catch(() => {});
+        return { ok: true, via: 'base-catalogo', encolado: true, items: nCre, yaExistian: yaEr,
+                 unidades: pit.reduce((s, i) => s + (i.cantidad || 0), 0), listo };
+      }
+      // la base no contesto: cae al camino de siempre, abajo
+    }
+
+    if (!SB_PILOTO_SKU) return await apiSend('sku.crear', { items });
     const req = 'skc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     const d = await _sbRpcAjuste('sku_crear', { p_items: items, p_request: req });
     if (d) {
