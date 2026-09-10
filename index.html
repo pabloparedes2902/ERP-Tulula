@@ -16496,8 +16496,12 @@ async function _guardarPedidoModal(nro, body) {
         + (_hayCam && _hayDev ? 'un CAMBIO y una DEVOLUCIÓN' : _hayCam ? 'un CAMBIO' : 'una DEVOLUCIÓN')
         + ' asociado.\n\nSi lo eliminas, el cambio/devolución queda sin su pedido y este desaparece de todas las vistas.\n\n¿Eliminar de todas formas? Pasará a la Papelera.';
     }
-    const ok = await npConfirm(_msg);
-    if (!ok) return;
+    // 10-set-2026 — antes acá había un "¿está seguro?" y nada más: el motivo se
+    // mandaba vacío SIEMPRE. Ahora se pregunta por qué, y esa respuesta viaja al
+    // backend y queda escrita en la fila (MotivoEliminacion / FusionadoEn).
+    if (_hayCam || _hayDev) { const _adv = await npConfirm(_msg); if (!_adv) return; }
+    const _mot = await npMotivoEliminar(nro);
+    if (!_mot) return;
     // OPTIMISTA: quitar del pRaw local AL INSTANTE + disparar backend en background
     document.getElementById('modal-ped').classList.remove('on');
     // FIX QA: capturar las filas del pedido ANTES de quitarlo → overlay de Papelera
@@ -16516,9 +16520,12 @@ async function _guardarPedidoModal(nro, body) {
     // PASO 6b — primero la base (decimas de segundo). Si no se puede, Apps Script.
     (async () => {
       const _forz = !!(_hayCam || _hayDev);
-      const _base = await _sbRpcEliminar('pedido_eliminar', { p_nro: String(nro), p_motivo: '', p_force: _forz });
+      // El motivo viaja por LAS DOS vías con una sola llamada: la RPC lo guarda en el
+      // payload de la cola y el Aplicador se lo pasa tal cual a `pedidosEliminar`
+      // (Aplicador.gs ya hacía eso; lo que faltaba era que alguien lo mandara).
+      const _base = await _sbRpcEliminar('pedido_eliminar', { p_nro: String(nro), p_motivo: _mot.motivo, p_force: _forz });
       if (_base) return _base;
-      return apiSend('pedidos.eliminar', {NroPedido:nro, Force:_forz});
+      return apiSend('pedidos.eliminar', {NroPedido:nro, Force:_forz, motivo:_mot.motivo, fusionadoEn:_mot.fusionadoEn});
     })()
       .then(() => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){}
         // 23-ago — eliminar un pedido DEVUELVE stock (venta viva): misma duda que al crear.
@@ -19254,6 +19261,75 @@ function _npRecojoToggle() {
   });
   const cour = document.getElementById('np-courier');
   if (cour && on && [...cour.options].some(o => o.value === 'RECOJO')) cour.value = 'RECOJO';
+}
+
+// ══ 10-set-2026 · POR QUÉ SE ELIMINA UN PEDIDO ══════════════════════════════
+// Hasta hoy la pantalla mandaba `p_motivo: ''` fijo: nunca preguntaba nada, y la
+// hoja ni siquiera tenía columna donde guardarlo. Resultado: 477 filas eliminadas
+// desde junio, TODAS "(sin motivo)". Nadie puede saber hoy si el pedido 21431 se
+// eliminó porque estaba duplicado, porque la clienta canceló, o por un error.
+// Regla acordada con Pablo: nada que ya existió se borra en silencio.
+// Devuelve {motivo, fusionadoEn} o null si el usuario cancela.
+const _NP_MOTIVOS_ELIM = [
+  { k: 'FUSION',    t: 'Se fusiona con otro pedido', pideNro: true,
+    ay: 'Las prendas van al pedido que ya estaba abierto. Ese es el número que queda.' },
+  { k: 'DUPLICADO', t: 'Pedido duplicado', ay: 'Se cargó dos veces lo mismo.' },
+  { k: 'CANCELADO', t: 'La clienta canceló', ay: 'Ya no quiere el pedido.' },
+  { k: 'ERROR',     t: 'Cargado por error', ay: 'Datos equivocados desde el inicio.' },
+  { k: 'OTRO',      t: 'Otro motivo', pideTexto: true, ay: '' },
+];
+function npMotivoEliminar(nro) {
+  return new Promise(resolve => {
+    const o = document.createElement('div');
+    o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:600;display:flex;align-items:center;justify-content:center;padding:20px';
+    const opts = _NP_MOTIVOS_ELIM.map(m =>
+      '<button class="npme-op" data-k="'+m.k+'" style="display:block;width:100%;text-align:left;padding:10px 12px;margin-bottom:7px;'
+      + 'background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;cursor:pointer">'
+      + '<div style="font-weight:600">'+esc(m.t)+'</div>'
+      + (m.ay ? '<div style="font-size:11px;color:var(--mu);margin-top:2px">'+esc(m.ay)+'</div>' : '')
+      + '</button>').join('');
+    o.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);padding:20px;max-width:440px;width:100%">'
+      + '<div style="font-size:15px;font-weight:600;margin-bottom:4px">Enviar el pedido #'+esc(String(nro))+' a la Papelera</div>'
+      + '<div style="font-size:12px;color:var(--mu);margin-bottom:14px">¿Por qué? Queda anotado para poder rastrearlo después.</div>'
+      + opts
+      + '<div id="npme-extra" style="display:none;margin:4px 0 10px">'
+      +   '<input id="npme-txt" type="text" autocomplete="off" style="width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px">'
+      +   '<div id="npme-hint" style="font-size:11px;color:var(--mu);margin-top:4px"></div>'
+      + '</div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px">'
+      +   '<button id="npme-no" class="btn bg bs">Cancelar</button>'
+      +   '<button id="npme-ok" class="btn bp bs" disabled>Enviar a Papelera</button>'
+      + '</div></div>';
+    document.body.appendChild(o);
+    let elegido = null;
+    const extra = o.querySelector('#npme-extra'), txt = o.querySelector('#npme-txt');
+    const hint = o.querySelector('#npme-hint'), ok = o.querySelector('#npme-ok');
+    const cerrar = v => { o.remove(); resolve(v); };
+    o.querySelectorAll('.npme-op').forEach(b => b.addEventListener('click', () => {
+      o.querySelectorAll('.npme-op').forEach(x => x.style.borderColor = 'var(--bd)');
+      b.style.borderColor = 'var(--ac)';
+      elegido = _NP_MOTIVOS_ELIM.filter(m => m.k === b.dataset.k)[0];
+      if (elegido.pideNro) {
+        extra.style.display = 'block'; txt.placeholder = 'Número del pedido que queda (ej: 21649)';
+        hint.textContent = 'Las prendas y los pagos de este pedido pasan a ese número.'; txt.value = ''; txt.focus();
+      } else if (elegido.pideTexto) {
+        extra.style.display = 'block'; txt.placeholder = 'Escribí el motivo';
+        hint.textContent = ''; txt.value = ''; txt.focus();
+      } else { extra.style.display = 'none'; }
+      ok.disabled = false;
+    }));
+    ok.addEventListener('click', () => {
+      if (!elegido) return;
+      const v = String(txt.value || '').trim();
+      if (elegido.pideNro && !v) { txt.focus(); hint.textContent = 'Falta el número del pedido que queda.'; return; }
+      if (elegido.pideTexto && !v) { txt.focus(); hint.textContent = 'Escribí el motivo.'; return; }
+      cerrar(elegido.k === 'FUSION' ? { motivo: 'Fusionado en el pedido '+v, fusionadoEn: v }
+           : elegido.k === 'OTRO'   ? { motivo: v, fusionadoEn: '' }
+           : { motivo: elegido.t, fusionadoEn: '' });
+    });
+    o.querySelector('#npme-no').addEventListener('click', () => cerrar(null));
+    o.addEventListener('click', e => { if (e.target === o) cerrar(null); });
+  });
 }
 
 function npConfirm(msg) {
@@ -31225,10 +31301,11 @@ async function papEscanearDuplicados(){
   ov.querySelector('#pdup-close').addEventListener('click',()=>ov.remove());
   ov.querySelectorAll('.pdup-del').forEach(btn=>btn.addEventListener('click',async function(){
     const nro=this.dataset.nro;
-    if(!await npConfirm('¿Enviar el pedido #'+nro+' a la Papelera? (recuperable desde Papelera)')) return;
+    const _mot = await npMotivoEliminar(nro);
+    if(!_mot) return;
     this.disabled=true; this.textContent='Eliminando…';
     try{
-      await apiSend('pedidos.eliminar',{NroPedido:nro});
+      await apiSend('pedidos.eliminar',{NroPedido:nro, motivo:_mot.motivo, fusionadoEn:_mot.fusionadoEn});
       try{ _pedsTombAdd(nro); }catch(_){}
       pRaw=pRaw.filter(r=>String(r['NroPedido']||'').trim()!==String(nro));
       try{ lsSetPeds(pRaw.filter(r=>!r._extraCamDev&&!r._reciente&&!r._provisional), pLastSyncTs||Date.now()); }catch(_){}
