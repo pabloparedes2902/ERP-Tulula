@@ -2089,6 +2089,15 @@ function _dupNorm(s) {
   return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
+// 10-set-2026 — EL DOCUMENTO TIENE QUE PARECER UN DOCUMENTO.
+// Encontrado midiendo la receta nueva contra este código: hay pedidos con
+// DNI = 'N/A'. Como la regla es "DNI exacto", TODOS los 'N/A' se marcaban
+// entre sí como duplicados: en la prueba salieron BESSY QUERZOLA y TENA VAN
+// LAMOEN listadas como duplicado de ANA MARIA CARLLS, con motivo "DNI".
+// Ahora el documento solo cuenta si son 8 dígitos o más, sin letras (DNI son
+// 8, RUC 11). Un carné de extranjería con letras deja de calzar POR DOCUMENTO,
+// pero sigue calzando por teléfono y por nombre, que es como se detecta igual.
+function _dupDocOk(d) { const x = String(d || '').trim(); return x.length >= 8 && !/[^0-9]/.test(x); }
 function _dupSim(a, b) {
   if (!a || !b) return 0; if (a === b) return 1;
   if (a.length < 2 || b.length < 2) return 0;
@@ -2207,7 +2216,7 @@ async function _detectarDuplicadosRapido(p) {
       const nro = String(f['NroPedido'] || '').trim(); if (!nro) return;
       const telFila = String(f['Celular'] || '').trim();
       const dniFila = String(f['DNI'] || '').trim();
-      const matchDNI = !!(dni && dniFila && dniFila === dni);
+      const matchDNI = !!(dni && dniFila && dniFila === dni && _dupDocOk(dni));
       const matchTel = tels.some(t => t && telFila && telFila.indexOf(t) >= 0);
       let matchNom = false;
       if (nombreN) {
@@ -5608,7 +5617,15 @@ async function loadDash() {
   // K-3: SIEMPRE mostrar cached al instante (sin importar antigüedad).
   // Solo refrescar en background si está stale (>TTL) o si no hay nada.
   const cached = lsGetDash();
-  const prefetchPedidos = () => {
+  const prefetchPedidos = async () => {
+    // 10-set-2026 — ESTE PREFETCH PODÍA TAPAR EL SNAPSHOT BUENO. Corre en el
+    // arranque, cuando IndexedDB TODAVÍA se está leyendo (con 23-45k filas tarda
+    // más de 2,5 s). `lsGetPeds()` mira localStorage primero, lo encontraba vacío
+    // y bajaba 2.000 filas... que por ser menos de 6.000 se guardan en
+    // localStorage. Y localStorage GANA sobre IndexedDB. Resultado: el historial
+    // completo quedaba tapado por 2.000 filas y la próxima apertura de Pedidos
+    // barría desde ahí. Se arregla esperando a que termine de leerse la copia.
+    try { if (!lsGetPeds() && _idbHydratePedsPromise) await _idbHydratePedsPromise; } catch (e) {}
     if (!lsGetPeds()) {
       // 29-jul · Esto corre al abrir el ERP, antes de que nadie toque nada:
       // es lo primero que el usuario "paga" sin saberlo. Sólo limit/offset,
@@ -6145,7 +6162,14 @@ try { ['activos','ultimomes','ultimos3meses','6meses'].forEach(function(s){ loca
 // TTL: para el historial completo, 24h — al abrir se muestra el snapshot local y el
 // delta (pedidos.cambiosDesde) lo pone al día; si el changelog no alcanza, el server
 // manda refetch (recarga completa). Para lo demás se mantiene el TTL corto.
-function _pedsTtl(){ return pScope === 'todo' ? 24*60*60*1000 : PEDS_LS_TTL; }
+// 10-set-2026 — DE 24 h A 30 DÍAS. Medido en los registros de Supabase: ~19
+// arranques EN FRÍO por día, cada uno barriendo las 23.700 filas del historial
+// (~2 MB). Con 10 dispositivos, eso es casi exactamente "uno por aparato por
+// día": el TTL venciendo. Y el TTL no aportaba nada — la frescura NO la da él,
+// la dan el latido (`pedidos.cambiosDesde`, cada 15 s) y `_sbReconciliarTope()`
+// (las 50 filas más nuevas, cada ~60 s). Con 30 días se muestra exactamente el
+// mismo dato de hoy, sin volver a bajar el historial cada mañana.
+function _pedsTtl(){ return pScope === 'todo' ? 30*24*60*60*1000 : PEDS_LS_TTL; }
 // Borde morado en el selector de Período cuando está en un rango distinto al default liviano
 // (= "filtro activo"). En "Último mes" (default) no tiene borde morado.
 function _pScopePintarSelector(){
@@ -6246,7 +6270,7 @@ function lsGetPeds() {
 }
 const PEDS_BIG_ROWS = 6000;  // desde aquí, el snapshot va DIRECTO a IndexedDB (LS/LZ no aguantan)
 let _pedsBigSaveTimer = null, _pedsBigSavePending = null;
-function lsSetPeds(data, serverTs) {
+function lsSetPeds(data, serverTs, ya) {
   const ts = Date.now(), st = serverTs || ts;
   const obj = {ts, serverTs: st, data};
   if (st) pLastSyncTs = st;
@@ -6257,7 +6281,16 @@ function lsSetPeds(data, serverTs) {
   if (Array.isArray(data) && data.length > PEDS_BIG_ROWS) {
     _idbPedsMem = Object.assign({}, obj, {scope: pScope});
     try { localStorage.removeItem('erp_' + _pedsLsKeyForScope()); } catch(_){}
-    if (!_pedsBigSaveTimer) {
+    // 10-set-2026 — EL HUECO DE LOS 20 SEGUNDOS. Si la foto COMPLETA caía dentro
+    // de la ventana de coalescido y la pestaña se cerraba antes, en IndexedDB
+    // quedaba una foto PARCIAL de una escritura anterior y el arranque siguiente
+    // barría de nuevo desde la mitad. Firma en los registros: escaleras que
+    // arrancan en offset=11 y offset=5004. `ya=true` (la escritura final de
+    // _pedsCargarRestoProgresivo) salta la cola y escribe en el momento.
+    if (ya) {
+      _pedsBigSavePending = null;
+      idbSet('peds_'+pScope, obj).catch(err => _errLog('idb.set.peds', err));
+    } else if (!_pedsBigSaveTimer) {
       idbSet('peds_'+pScope, obj).catch(err => _errLog('idb.set.peds', err));
       _pedsBigSaveTimer = setTimeout(() => {
         _pedsBigSaveTimer = null;
@@ -6291,6 +6324,22 @@ function lsSetPeds(data, serverTs) {
   if (st) pLastSyncTs = st;
   return lsOk;
 }
+// Volcar lo que quedó esperando en la cola de 20 s. Se llama cuando la pestaña
+// se va (cerrarla, cambiar de app, bloquear el teléfono): es el único momento en
+// que perder la foto completa cuesta un barrido entero al volver.
+function _pedsVolcarPendiente() {
+  try {
+    const o = _pedsBigSavePending;
+    if (!o) return;
+    _pedsBigSavePending = null;
+    idbSet('peds_' + pScope, o).catch(err => _errLog('idb.set.peds.volcado', err));
+  } catch (e) {}
+}
+try {
+  window.addEventListener('pagehide', _pedsVolcarPendiente);
+  document.addEventListener('visibilitychange', function(){ if (document.hidden) _pedsVolcarPendiente(); });
+} catch (e) {}
+
 // Boot hidratación: leer pRaw desde IDB para tener fallback listo si LS está vacío
 // (ej. quota explotó en la última sesión). Se llama una vez al cargar el script.
 let _idbHydratePedsPromise = null;
@@ -13451,7 +13500,8 @@ async function _pedsCargarRestoProgresivo() {
       // IndexedDB) → la próxima apertura del ERP muestra todo al instante, como Excel.
       try {
         if (!window._pedsCargaIncompleta) {
-          lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now());
+          // `true` = escribir YA, sin pasar por la cola de 20 s (ver lsSetPeds).
+          lsSetPeds(pRaw.filter(r => !r._extraCamDev && !r._reciente && !r._provisional), pLastSyncTs || Date.now(), true);
         }
       } catch(_){}
     }
