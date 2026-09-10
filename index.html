@@ -19955,8 +19955,53 @@ function _cliDeFila(f) {
 }
 
 /** Pide UNA pagina. Devuelve null si la base no contesta (nunca lista vacia). */
+/*═══════════════════════════════════════════════════════════════════════════
+  RPC DE LECTURA · 10-set-2026 — POR QUE EXISTE ESTA SEGUNDA PUERTA
+  ─────────────────────────────────────────────────────────────────────────
+  `_sbRpcAjuste` termina con `return (d && d.ok === true) ? d : null;`. Eso esta
+  BIEN para lo que fue hecha —los AJUSTES, que escriben, y donde no alcanza con
+  que el servidor conteste 200: tiene que decir explicitamente que salio bien—
+  pero es una trampa para una RPC de LECTURA, que devuelve datos y no un
+  veredicto.
+
+  ASI SE ROMPIO LA PANTALLA CLIENTES (10-set): `clientes_pagina` devuelve
+  `{total, filas}` y NO trae `ok`. La RPC contestaba 200 con las 50 clientas
+  adentro, `_sbRpcAjuste` miraba `d.ok`, no lo encontraba, y devolvia null.
+  `_cliPedirPagina` traducia ese null a "no hay pagina" y la pantalla se quedaba
+  en "Cargando..." PARA SIEMPRE. Verificado en vivo: la misma llamada por fetch
+  directo devuelve HTTP 200 con datos, y por `_sbRpcAjuste` devuelve null.
+
+  El fallo era MUDO: 200 en la pestaña de red, sin error en consola, sin nada
+  rojo. Por eso ayer se vio como "no aparece la numeracion" y no como una falla.
+
+  `_sbRpcLeer` es la misma cañeria (sesion, token vencido, 401/403) pero juzga
+  por el HTTP, que es lo correcto cuando lo que viene son datos.
+═══════════════════════════════════════════════════════════════════════════*/
+async function _sbRpcLeer(fn, params) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify(params || {}),
+    });
+    if (!r.ok) {
+      if (r.status === 401 || r.status === 403) _sbVencerTok();
+      try { console.warn('[lectura] RPC ' + fn + ' HTTP ' + r.status + ' → vía Apps Script'); } catch (_) {}
+      return null;
+    }
+    const d = await r.json();
+    return (d == null) ? null : d;   // los datos mandan: acá NO se exige `ok`
+  } catch (e) {
+    try { console.warn('[lectura] ' + fn + ' falló → vía Apps Script'); } catch (_) {}
+    return null;
+  }
+}
+
 async function _cliPedirPagina() {
-  const d = await _sbRpcAjuste('clientes_pagina', {
+  const d = await _sbRpcLeer('clientes_pagina', {
     p_q: CLIP.q, p_tipo: CLIP.tipo, p_seg: CLIP.seg, p_zona: CLIP.zona,
     p_orden: CLIP.orden, p_desc: !!CLIP.desc, p_offset: CLIP.off, p_limite: CLIP.lim });
   if (!d || !Array.isArray(d.filas)) return null;
