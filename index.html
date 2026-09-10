@@ -7470,10 +7470,49 @@ function _stockEscrito(claves, refrescarYa){
   } catch(e) {}
 }
 
+/*═══════════════════════════════════════════════════════════════════════════
+  FASE 8 · PASO 2 — EL ESPEJO EN DOS PASOS (10-set-2026)
+  ─────────────────────────────────────────────────────────────────────────
+  MEDIDO, NO SUPUESTO. En `pg_stat_statements`: la lectura de `espejo_cache`
+  lleva **53.045 llamadas**, y cada una bajaba la columna `datos` ENTERA. Los
+  dos copias mas pesadas (bytes reales de la base, no del texto):
+
+      clientes.index ....... 3.200 KB de texto · 1.219 KB comprimidos
+      archivo.resumen ...... 2.998 KB de texto ·   957 KB comprimidos
+      clientes.listar ...... 1.331 KB de texto ·   349 KB comprimidos
+      (los 28 restantes juntos no llegan a 300 KB comprimidos)
+
+  53.045 llamadas x ese peso = los 9,8 GB de egress que restringen el proyecto
+  el 2-oct. NO era `cambios.listar`: medido hoy pesa 103 KB de texto / 17 KB
+  comprimidos, puesto 11 de 31. Atacarlo habria sido trabajo tirado.
+
+  DOS DESPERDICIOS, los dos aca adentro:
+
+   1. Se bajaba la copia entera y RECIEN DESPUES se miraba la fecha. Si la
+      copia estaba vencida se tiraba a la basura — 1,2 MB bajados para nada, y
+      encima se le preguntaba lo mismo a Apps Script.
+   2. Se volvia a bajar la MISMA copia en cada recarga aunque no hubiera
+      cambiado ni un byte. El espejo se recalcula cada 5-30 min; el ERP se
+      recarga muchas mas veces que eso.
+
+  LA VUELTA: primero se pregunta solo el SELLO (`generado`, ~60 bytes). Con el
+  sello ya se sabe si esta vencida (no se baja nada) y si es la misma version
+  que ya tengo guardada en el navegador (no se baja nada). Solo se baja cuando
+  de verdad cambio.
+
+  QUE NO CAMBIA: lo que devuelve la funcion, cuando devuelve null, la duda por
+  escritura propia, el sello "actualizado hace X" y el 🔄. Es la misma puerta,
+  solo que deja de traer lo que ya tiene.
+
+  REVERSA INMEDIATA: `SB_ESPEJO_2PASOS = false` y publicar → vuelve exacto al
+  camino viejo (una sola consulta que baja `datos` siempre).
+═══════════════════════════════════════════════════════════════════════════*/
+const SB_ESPEJO_2PASOS = true;
+
 // Trae de la base el resultado ya calculado de una pantalla.
 // Devuelve null si no se puede o si está vencido → quien llama usa Apps Script.
 async function _sbCacheLeer(clave, venceMs) {
-  // venceMs: cuanto se tolera que este vieja esa clave. Por defecto 30 min (lo
+  // venceMs: cuanto se tolera que este vieja esa clave. Por defecto 45 min (lo
   // que tarda la vuelta mas lenta del espejo). Las claves del ARCHIVO cambian
   // solo cuando Pablo corre el archivador a mano, asi que esas piden 24 h.
   const _vence = (typeof venceMs === 'number' && venceMs > 0) ? venceMs : SB_PESADOS_VENCE_MS;
@@ -7483,30 +7522,76 @@ async function _sbCacheLeer(clave, venceMs) {
   try {
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
-    const r = await fetch(SB_URL + '/rest/v1/espejo_cache?clave=eq.' + encodeURIComponent(clave) +
-                          '&select=datos,filas,generado&limit=1',
-      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
-    if (!r.ok) return null;
-    const j = await r.json();
-    if (!Array.isArray(j) || !j.length || j[0].datos == null) return null;
-    const edad = Date.now() - new Date(j[0].generado).getTime();
+    const _hdr  = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
+    const _base = SB_URL + '/rest/v1/espejo_cache?clave=eq.' + encodeURIComponent(clave);
+
+    // ── CAMINO VIEJO (reversa) ────────────────────────────────────────────
+    if (!SB_ESPEJO_2PASOS) {
+      const r = await fetch(_base + '&select=datos,filas,generado&limit=1', { headers: _hdr });
+      if (!r.ok) return null;
+      const j = await r.json();
+      if (!Array.isArray(j) || !j.length || j[0].datos == null) return null;
+      const edad = Date.now() - new Date(j[0].generado).getTime();
+      if (!(edad >= 0) || edad > _vence) {
+        try { _errLog('sb.cache.vencida', new Error(clave + ' con ' + Math.round(edad / 60000) + ' min')); } catch (_) {}
+        return null;
+      }
+      const _d = _espejoDudaMap()[clave];
+      if (_d) {
+        const _g = new Date(j[0].generado).getTime();
+        if (_g > _d || (Date.now() - _d) > 40 * 60 * 1000) _espejoConfiar(clave);
+        else return null;
+      }
+      try { (window._espejoGen = window._espejoGen || {})[clave] = new Date(j[0].generado).getTime(); } catch (_) {}
+      return j[0].datos;
+    }
+
+    // ── PASO 1 · SOLO EL SELLO (~60 bytes) ────────────────────────────────
+    const rSello = await fetch(_base + '&select=generado&limit=1', { headers: _hdr });
+    if (!rSello.ok) return null;
+    const jS = await rSello.json();
+    if (!Array.isArray(jS) || !jS.length || !jS[0].generado) return null;
+    const _gen  = new Date(jS[0].generado).getTime();
+    const edad  = Date.now() - _gen;
+
+    // Vencida: se corta ACA. Antes se bajaba 1,2 MB para tirarlos.
     if (!(edad >= 0) || edad > _vence) {
       try { _errLog('sb.cache.vencida', new Error(clave + ' con ' + Math.round(edad / 60000) + ' min')); } catch (_) {}
       return null;
     }
+
     // 05-ago — LEER LO QUE ACABAS DE ESCRIBIR: si esta clave quedó EN DUDA por
     // una escritura nuestra, la copia solo sirve si se generó DESPUES de esa
     // escritura. La válvula de 40 min cubre un reloj local desfasado: para
     // entonces el espejo ya dio dos vueltas completas y seguro la alcanzó.
     const _duda = _espejoDudaMap()[clave];
     if (_duda) {
-      const _gen = new Date(j[0].generado).getTime();
       if (_gen > _duda || (Date.now() - _duda) > 40 * 60 * 1000) _espejoConfiar(clave);
       else return null;   // copia anterior a la escritura → quien llama va a Apps Script
     }
+
+    // ── PASO 2 · ¿ES LA MISMA VERSION QUE YA TENGO? ───────────────────────
+    // El sello manda: mismo `generado` = mismo contenido, byte por byte. No se
+    // baja nada. Esto es lo que corta los 9,8 GB.
+    try {
+      const _loc = await idbGet('espejo:' + clave);
+      if (_loc && _loc.gen === _gen && _loc.datos != null) {
+        try { (window._espejoGen = window._espejoGen || {})[clave] = _gen; } catch (_) {}
+        try { const _a = (window._espejoAhorro = window._espejoAhorro || {}); _a[clave] = (_a[clave] || 0) + 1; } catch (_) {}
+        return _loc.datos;
+      }
+    } catch (_) { /* sin IndexedDB se baja igual: el ERP no se cae por esto */ }
+
+    // ── PASO 3 · CAMBIO DE VERDAD → se baja UNA vez y se guarda ───────────
+    const r = await fetch(_base + '&select=datos&limit=1', { headers: _hdr });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j) || !j.length || j[0].datos == null) return null;
     // 29-ago — se anota CUANDO se genero esta copia (no cuando la leimos):
     // es lo que pinta el sello "actualizado hace X" en Stock.
-    try { (window._espejoGen = window._espejoGen || {})[clave] = new Date(j[0].generado).getTime(); } catch (_) {}
+    try { (window._espejoGen = window._espejoGen || {})[clave] = _gen; } catch (_) {}
+    try { idbSet('espejo:' + clave, { gen: _gen, datos: j[0].datos }); } catch (_) {}
+    try { const _b = (window._espejoBajado = window._espejoBajado || {}); _b[clave] = (_b[clave] || 0) + 1; } catch (_) {}
     return j[0].datos;
   } catch (e) { try { _errLog('sb.cache.' + clave, e); } catch (_) {} return null; }
 }
