@@ -23582,15 +23582,66 @@ function _confLsGet() {
 }
 function _confLsSet(data) { try { localStorage.setItem('erp_' + CONF_LS_KEY, JSON.stringify({ts: Date.now(), data})); } catch(e) {} }
 function _confLsDel() { try { localStorage.removeItem('erp_' + CONF_LS_KEY); } catch(e) {} }
+function _confLsTs(){ try{ const raw=localStorage.getItem('erp_'+CONF_LS_KEY); if(!raw) return 0; const o=JSON.parse(raw); return o.ts||0; }catch(e){ return 0; } }
+
+// ═══════════════════════════════════════════════════════════════════════
+// CONFECCIÓN SE REVALIDA SOLA (11-set-2026)
+//
+// EL HUECO. `loadConf` salía por `if (confData) { renderConf(el); return; }`:
+// con los datos ya en memoria, la pantalla NO VOLVÍA A PREGUNTAR NUNCA. La
+// caché se invalida en 8 puntos del ERP, pero todos son "cuando VOS tocás
+// algo". Si el cambio lo hacía OTRA persona, tu pantalla seguía mostrando las
+// unidades de hace horas y no había forma de enterarse. Es el mismo defecto
+// que tenía Pedidos, pero entre personas — y acá son unidades de inventario.
+//
+// CUESTA CASI NADA: `_confeccionListarRapido` pasa por `_sbCacheLeer`, que con
+// el espejo en dos pasos (fase 8) primero pide SOLO EL SELLO (~60 bytes) y solo
+// baja los datos si cambiaron. Revalidar no es bajarse la lista.
+//
+// SOLO REDIBUJA SI CAMBIÓ ALGO, y nunca encima de alguien escribiendo.
+// REVERSA: poner CONF_REVAL_MS = 0 → vuelve a no revalidar.
+// ═══════════════════════════════════════════════════════════════════════
+let _confDataTs = 0;                        // cuándo se obtuvo confData (0 = desconocido → revalida)
+const CONF_REVAL_MS = 45 * 1000;            // edad máxima tolerada antes de releer en segundo plano
+let _confRevalidando = false;
+
+// ¿Hay alguien escribiendo dentro de esta pantalla? Entonces no se toca.
+// Confección tiene celdas editables (Conf. Total): un redibujado a destiempo
+// se lleva puesto lo que la persona está tipeando.
+function _confEditando(el) {
+  try {
+    const a = document.activeElement;
+    if (!a || !el) return false;
+    if (!el.contains(a)) return false;
+    const t = (a.tagName || '').toUpperCase();
+    return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || a.isContentEditable === true;
+  } catch (e) { return false; }
+}
+
+function _confRevalidar(el, renderFn) {
+  if (!CONF_REVAL_MS) return;                              // reversa
+  if (_confRevalidando) return;
+  if (Date.now() - _confDataTs < CONF_REVAL_MS) return;    // todavía fresco
+  _confRevalidando = true;
+  _confeccionListarRapido().then(fresco => {
+    if (!Array.isArray(fresco) || !fresco.length) return;  // nunca pisar con vacío
+    const cambio = JSON.stringify(fresco) !== JSON.stringify(confData);
+    confData = fresco; _confDataTs = Date.now(); _confLsSet(fresco);
+    if (cambio && el && document.body.contains(el) && !_confEditando(el)) {
+      try { renderFn(el); } catch (e) {}
+    }
+  }).catch(() => {}).finally(() => { _confRevalidando = false; });
+}
 
 async function loadConf() {
   const el = document.getElementById('conf-w');
-  if (confData) { renderConf(el); return; }
+  if (confData) { renderConf(el); _confRevalidar(el, renderConf); return; }
   const cached = _confLsGet();
-  if (cached) { confData = cached; renderConf(el); return; }
+  if (cached) { confData = cached; _confDataTs = _confLsTs(); renderConf(el); _confRevalidar(el, renderConf); return; }
   el.innerHTML = spin('Cargando confección...');
   try {
     confData = await _confeccionListarRapido();
+    _confDataTs = Date.now();
     _confLsSet(confData);
     renderConf(el);
   } catch(e) { el.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
