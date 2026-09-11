@@ -21444,7 +21444,9 @@ function _stRevalidar(el, renderFn){
     if (!Array.isArray(fresco) || !fresco.length) return;
     const cambio = JSON.stringify(fresco) !== JSON.stringify(stData);
     stData = fresco; _stDataTs = Date.now(); _stLsSet(fresco);
-    if (cambio && el && document.body.contains(el) && !_stYayMode) { try { renderFn(el); } catch(e){} }
+    // 11-set-2026 — misma guarda que Confección: Stock tiene celdas editables y
+    // un redibujado a destiempo se lleva puesto lo que la persona está tipeando.
+    if (cambio && el && document.body.contains(el) && !_stYayMode && !_confEditando(el)) { try { renderFn(el); } catch(e){} }
   }).catch(()=>{}).finally(()=>{ _stRevalidando = false; });
 }
 // El latido: con Stock o Inventario a la vista, revalida cada 60 s.
@@ -29785,17 +29787,23 @@ function _hdLsDel() { try { localStorage.removeItem('erp_' + HD_LS_KEY); } catch
 async function loadDevoluciones(forceReload) {
   const el = document.getElementById('histdev-w');
 
-  const refreshBg = async () => {
+  // 11-set-2026 — showBadge: la revalidación silenciosa (la que corre SIEMPRE al
+  // entrar, aunque los datos ya estén en memoria) no muestra el cartel; la que
+  // se dispara porque la copia venció, sí. Igual que en Historial de Cambios.
+  const refreshBg = async (showBadge) => {
     const badge = document.createElement('span');
     badge.id = 'hd-refresh-badge';
     badge.style.cssText = 'font-size:11px;color:var(--tx2);margin-left:8px;opacity:0.7';
     badge.textContent = '↻ actualizando...';
     const ptit = document.getElementById('ptit');
-    if (ptit && !document.getElementById('hd-refresh-badge')) ptit.appendChild(badge);
+    if (showBadge !== false && ptit && !document.getElementById('hd-refresh-badge')) ptit.appendChild(badge);
     try {
-      histDevData = await _devListarRapido();
+      const fresco = await _devListarRapido();
+      if (!Array.isArray(fresco) || !fresco.length) return;   // nunca pisar con vacío
+      const cambio = JSON.stringify(fresco) !== JSON.stringify(histDevData);
+      histDevData = fresco;
       _hdLsSet(histDevData);
-      renderDevoluciones(el, histDevData);
+      if (cambio && el && document.body.contains(el)) renderDevoluciones(el, histDevData);
     } catch(e) { /* cached sigue válido */ }
     finally {
       const b = document.getElementById('hd-refresh-badge');
@@ -29804,7 +29812,13 @@ async function loadDevoluciones(forceReload) {
   };
 
   // 1. Memoria
-  if (histDevData && !forceReload) { renderDevoluciones(el, histDevData); return; }
+  // 11-set-2026 — EL HUECO: esta línea salía sin revalidar. Con los datos ya en
+  // memoria, una devolución registrada por OTRA persona no aparecía nunca en tu
+  // pantalla. Mismo defecto que tenía Confección. Ahora se pinta al instante
+  // desde memoria y se comprueba contra la base en segundo plano — barato,
+  // porque _devListarRapido pasa por el espejo en dos pasos (pide primero el
+  // sello de ~60 bytes y solo baja datos si cambiaron).
+  if (histDevData && !forceReload) { renderDevoluciones(el, histDevData); refreshBg(false); return; }
   // 2. localStorage — SIEMPRE renderizar lo que tengamos
   if (!forceReload) {
     const cached = _hdLsGet();
