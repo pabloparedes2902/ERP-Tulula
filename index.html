@@ -10697,6 +10697,132 @@ function _renderPedsDesde(rawRows, estVal) {
   _updateTabCounts(pRaw, _incompletosSet, _activosSet, _nCambio, _nDevol, _cutoffTs);
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// FUENTE ÚNICA DE LOS CONTADORES (11-set-2026)
+//
+// POR QUÉ: hasta hoy cada navegador contaba sobre SU copia de las ~23.800
+// filas, mantenida al día por "delta". Dos máquinas con copias en distinto
+// estado daban dos números distintos — por diseño, no por un bug suelto.
+// MEDIDO el 11-set: una pantalla mostraba 278 activos con la base en 81, y
+// RECARGAR NO LO ARREGLABA: el reloj de sincronización (pLastSyncTs) viaja
+// DENTRO de la foto de IndexedDB, así que el F5 restaura la foto vieja Y su
+// reloj viejo, y le pide al servidor "solo lo posterior" a un momento que ya
+// pasó. Los cambios de ese hueco no vuelven nunca.
+//
+// AHORA: los números los responde la BASE en una sola llamada
+// (pedidos_contadores, ~300 bytes, ~200 ms). Iguales en toda máquina POR
+// CONSTRUCCIÓN. Si la base no contesta, se siguen mostrando los locales:
+// nunca una pantalla en blanco ni ceros falsos.
+//
+// REVERSA: poner CNT_BASE_ON = false y publicar. Vuelve a contar como antes.
+// ═══════════════════════════════════════════════════════════════════════
+const CNT_BASE_ON = true;
+const CNT_TTL = 90000;          // los números de la base valen 90 s
+let _cntBase = null;            // {datos, ts}
+let _cntPidiendo = null;        // promesa en vuelo (nunca dos a la vez)
+
+// data-e de cada pestaña → clave que devuelve la base
+const CNT_MAPA = {
+  '_ACTIVOS':'activos', '':'todos', '_INCOMPLETOS':'incompletos', '_PAGOPEND':'pagopend',
+  'EN CAMINO':'encamino', 'ENTREGADO':'entregados', 'SEPARAR':'separados',
+  'ENVIAR':'enviar', '_SHOWROOM':'showroom', 'CAMBIO':'cambio', '_DEVOLUCIONES':'devoluciones'
+};
+
+function _cntFresco() {
+  return (CNT_BASE_ON && _cntBase && (Date.now() - _cntBase.ts) < CNT_TTL) ? _cntBase.datos : null;
+}
+
+async function _contadoresBase(forzar) {
+  if (!CNT_BASE_ON) return null;
+  if (!forzar && _cntFresco()) return _cntBase.datos;
+  if (_cntPidiendo) return _cntPidiendo;
+  _cntPidiendo = (async function () {
+    try {
+      const tok = await _sbSesionAsegurar();
+      if (!tok) return null;
+      const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_contadores', {
+        method: 'POST',
+        headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: '{}'
+      });
+      if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
+      const d = await r.json();
+      if (!d || typeof d !== 'object' || d.todos == null) return null;
+      _cntBase = { datos: d, ts: Date.now() };
+      return d;
+    } catch (e) { return null; }
+    finally { _cntPidiendo = null; }
+  })();
+  return _cntPidiendo;
+}
+
+// Pinta en las pestañas los números que vinieron de la base.
+function _pintarContadoresBase(b) {
+  if (!b) return;
+  try {
+    document.querySelectorAll('#ped-tabs .tab').forEach(function (t) {
+      const e = t.getAttribute('data-e') || '';
+      const k = CNT_MAPA[e];
+      if (!k || b[k] == null) return;
+      const c = t.querySelector('.cnt'); if (!c) return;
+      const n = Number(b[k]);
+      c.textContent = '(' + n + ')';
+      if (e === '_PAGOPEND') {
+        const l = t.querySelector('.lbl'); const on = n > 0;
+        if (l) l.style.color = on ? '#f87171' : '';
+        c.style.color = on ? '#f87171' : '';
+        t.style.fontWeight = on ? '700' : '';
+      }
+    });
+    try { _pedMasSync(); } catch (_) {}
+  } catch (_) {}
+}
+
+// ── DETECTOR DE DERIVA + AUTOCURACIÓN ────────────────────────
+// Si lo que cuenta ESTA pantalla no coincide con lo que dice la base, su copia
+// se desvió. La única vía que repara es rehacerla desde cero (loadPeds con
+// force): un F5 normal NO alcanza — ver la nota de arriba.
+let _curaUltima = 0, _curaVeces = 0;
+const CURA_ESPERA = 180000;     // como mucho una cada 3 minutos
+const CURA_TOPE   = 6;          // y no más de 6 por sesión (freno anti-bucle)
+
+function _pedsAvisoCura(on) {
+  try {
+    const a = document.getElementById('cura-aviso');
+    if (!on) { if (a) a.remove(); return; }
+    if (a) return;
+    const s = document.querySelector('#ped-w > div:first-child span');
+    if (!s) return;
+    const sp = document.createElement('span');
+    sp.id = 'cura-aviso';
+    sp.style.color = 'var(--am)';
+    sp.textContent = ' · actualizando…';
+    s.appendChild(sp);
+  } catch (_) {}
+}
+
+function _pedsVerificarDeriva(locales, b) {
+  if (!CNT_BASE_ON || !b || !locales) return false;
+  const difs = [];
+  Object.keys(locales).forEach(function (e) {
+    const k = CNT_MAPA[e]; if (!k || b[k] == null) return;
+    if (Number(locales[e]) !== Number(b[k])) difs.push(e + ' ' + locales[e] + '≠' + b[k]);
+  });
+  if (!difs.length) return false;
+  _pedMarca('DERIVA detectada', difs.join(' | '));
+  try { console.warn('[contadores] deriva: ' + difs.join(' | ')); } catch (_) {}
+  if (window._pedsCargaEnCurso) return true;          // ya se está rehaciendo
+  if (_curaVeces >= CURA_TOPE) return true;           // freno duro
+  if (Date.now() - _curaUltima < CURA_ESPERA) return true;
+  _curaUltima = Date.now(); _curaVeces++;
+  _pedsAvisoCura(true);
+  setTimeout(function () {
+    try { loadPeds(pEst, true); } catch (_) {}
+    setTimeout(function () { _pedsAvisoCura(false); }, 3000);
+  }, 50);
+  return true;
+}
+
 // Cuenta pedidos únicos por estado y actualiza el span.cnt de cada tab.
 function _updateTabCounts(rawRows, incompletosSet, activosSet, nCambio, nDevol, cutoffTs) {
   const tabs = document.querySelectorAll('#ped-tabs .tab');
@@ -10721,6 +10847,12 @@ function _updateTabCounts(rawRows, incompletosSet, activosSet, nCambio, nDevol, 
     byEst[est].add(nro);
     if (enPeriodo(r)) { all.add(nro); if (est === 'ENTREGADO') entregadosPeriodo.add(nro); }
   });
+  // 11-set-2026 — el número LOCAL se sigue calculando igual que siempre, pero
+  // ahora se guarda aparte: es lo que se compara contra la base para detectar
+  // que esta copia se desvió. Lo que se PINTA es el número de la base cuando
+  // está fresco; si la base no contestó, se pinta el local (nunca vacío).
+  const _locales = {};
+  const _b = _cntFresco();
   tabs.forEach(t => {
     const e = t.getAttribute('data-e') || '';
     const cntEl = t.querySelector('.cnt');
@@ -10735,16 +10867,29 @@ function _updateTabCounts(rawRows, incompletosSet, activosSet, nCambio, nDevol, 
     else if (e === '_DEVOLUCIONES')n = nDevol || 0;
     else if (e === 'ENTREGADO')    n = entregadosPeriodo.size;   // Entregados = período
     else                           n = (byEst[e.toUpperCase()] || new Set()).size;
-    cntEl.textContent = '(' + n + ')';
+    _locales[e] = n;
+    const _k = CNT_MAPA[e];
+    const _n = (_b && _k && _b[_k] != null) ? Number(_b[_k]) : n;
+    cntEl.textContent = '(' + _n + ')';
     // Alerta de cobranza: la pestaña se pinta en rojo mientras haya entregados sin cobrar.
     if (e === '_PAGOPEND') {
       const _lbl = t.querySelector('.lbl');
-      const _on  = n > 0;
+      const _on  = _n > 0;
       if (_lbl) _lbl.style.color = _on ? '#f87171' : '';
       cntEl.style.color  = _on ? '#f87171' : '';
       t.style.fontWeight = _on ? '700' : '';
     }
   });
+  window._cntLocales = _locales;
+  // Pedirle los números a la base (si ya están frescos, resuelve al toque) y,
+  // cuando lleguen, repintar y comprobar si esta copia se desvió.
+  try {
+    _contadoresBase().then(function (bb) {
+      if (!bb) return;
+      _pintarContadoresBase(bb);
+      _pedsVerificarDeriva(window._cntLocales || {}, bb);
+    });
+  } catch (_) {}
   // 21-ago: si la pestaña elegida vive dentro del menú "Más", que el botón lo diga.
   try { _pedMasSync(); } catch(_) {}
 }
@@ -10926,6 +11071,17 @@ document.addEventListener('visibilitychange', () => {
     _stopPedsPolling();
   } else if (typeof curPg !== 'undefined' && curPg === 'pedidos') {
     _startPedsPolling();
+    // 11-set-2026 — AL VOLVER AL FRENTE, NO CONFIAR EN EL DELTA. Mientras la
+    // pestaña dormía el latido estuvo apagado; su reloj de sincronización puede
+    // haber quedado atrás y el changelog ya no tener esos cambios. Se le pregunta
+    // a la base de una: si los números no cuadran, la copia se rehace sola.
+    try {
+      _contadoresBase(true).then(function (bb) {
+        if (!bb) return;
+        _pintarContadoresBase(bb);
+        _pedsVerificarDeriva(window._cntLocales || {}, bb);
+      });
+    } catch (_) {}
   }
 });
 function _stopPedsPolling() {
@@ -10940,6 +11096,14 @@ function _schedulePedsPoll(delay) {
   _stopPedsPolling();
   _pedsPollTimer = setTimeout(async () => {
     await _pollPedsOnce();
+    // 11-set-2026 — LA COMPROBACIÓN BARATA. En cada vuelta se le preguntan los
+    // contadores a la base (~300 bytes) y se comparan con los de esta copia. Es
+    // lo que hace imposible que una pantalla se quede con números viejos sin que
+    // nadie se entere: si no cuadran, la copia se rehace sola.
+    try {
+      const _bb = await _contadoresBase(true);
+      if (_bb) { _pintarContadoresBase(_bb); _pedsVerificarDeriva(window._cntLocales || {}, _bb); }
+    } catch (_) {}
     // Reprogramar SOLO después de que terminó (nunca antes) → imposible acumular
     // 23-ago: el intervalo se decide EN CADA vuelta (60s con RT vivo, 15s sin él).
     _schedulePedsPoll(_pedsPollDelay());
