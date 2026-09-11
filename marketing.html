@@ -912,8 +912,8 @@ function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
     + '<td class="fijo" style="width:' + aCre + 'px;left:' + L3 + 'px;cursor:help"'
     +   ' onmouseenter="mkTipIn(event, ' + JSON.stringify(tip).replace(/"/g, '&quot;') + ')" onmouseleave="mkTipOut()">'
     +   '&#9888;&#65039; Sin anuncio identificado</td>'
-    + '<td class="fijo" style="width:' + aEst + 'px;left:' + L4 + 'px"></td>'
-    + '<td class="fijo borde" style="width:' + aAcc + 'px;left:' + L5 + 'px"><span class="acc rev">REVISAR</span></td>'
+    + '<td class="fijo borde" style="width:' + aEst + 'px;left:' + L4 + 'px"></td>'
+    + '<td><span class="acc rev">REVISAR</span></td>'
     + cols.map(c => {
         if (c === 'pedidos') return '<td>' + (s ? mkNum(s.pedidos) : '—') + '</td>';
         if (c === 'pagados') return '<td>' + (s ? mkNum(s.pagados) : '—') + '</td>';
@@ -1177,7 +1177,7 @@ const MK_COLS = {
      módulo sigue usando el margen de la barra como antes. */
   costo:{t:'Costo prendas',w:110,f:v=>mkSol(v),h:'<b>Costo de las prendas</b> — lo que costó producir lo que vendió este anuncio.'},
   margen_bruto:{t:'Margen %',w:92,f:v=>mkPct(v),h:'<b>Margen bruto real</b> = (ingreso − costo de prendas) ÷ ingreso.'},
-  ganancia:{t:'Ganancia',w:110,f:v=>mkSol(v),h:'<b>Ganancia</b> = ingreso − costo de prendas − gasto del anuncio. Lo que quedó después de pagar la tela y la pauta.'},
+  ganancia:{t:'Profit',w:110,f:v=>mkSol(v),h:'<b>Profit</b> = ingreso − costo de prendas − gasto del anuncio. Si no hubo ventas, es directamente el gasto en rojo: la plata que se fue sin volver.'},
   ticket:{t:'Ticket',w:96,f:v=>mkSol(v),h:'<b>Ticket promedio</b> = ingreso ÷ ventas de este anuncio.'},
   cac:{t:'CAC',w:96,f:v=>mkSol(v),h:'<b>CAC</b> = gasto ÷ ventas.<br>Cuánto cuesta conseguir una clienta con este anuncio. Para no perder plata tiene que quedar por debajo de <i>ticket × margen</i> (con el margen que pusiste en la barra de arriba).'},
   /* 7-sep-2026 — no es una metrica: es la historia del anuncio dibujada. */
@@ -1217,9 +1217,9 @@ function mkValorFiltro(r, col){
   if (cd.txt) return r[col] || '—';
   let val = mkN(r.act[col]);
   if (col === 'margen_bruto' || col === 'ganancia'){
-    const ing = mkN(r.act.ingreso), cos = mkN(r.act.costo);
-    const hay = (ing > 0 && cos > 0);
-    val = !hay ? null : (col === 'margen_bruto' ? ((ing - cos) / ing) * 100 : (ing - cos - (mkN(r.act.gasto) || 0)));
+    const ing = mkN(r.act.ingreso), cos = mkN(r.act.costo), ped = mkN(r.act.pedidos);
+    const hay = (cos > 0) || (ped === 0);
+    val = !hay ? null : (col === 'margen_bruto' ? (ing > 0 ? ((ing - cos) / ing) * 100 : null) : (ing - cos - (mkN(r.act.gasto) || 0)));
   }
   if (col === 'frecuencia'){
     const im = mkN(r.act.impresiones), al = mkN(r.act.alcance);
@@ -1874,8 +1874,12 @@ function _mkRecalcUno(o){
     o.tibias_p    = d(n(o.tibias), conv) * 100;
     o.calientes_p = d(n(o.calientes), conv) * 100;
   }
-  /* margen y ganancia solo si de verdad llego el costo */
-  if (costo > 0){
+  /* margen y ganancia solo si de verdad llego el costo — 11-sep-2026: si NO
+     hubo ventas (ped === 0) el costo de prenda es 0 porque no se vendio nada,
+     no porque falte el dato. Ahi el Profit SI se puede calcular: es la
+     perdida (-gasto). Si hubo ventas pero el costo no llego (costo === 0 con
+     ped > 0), se sigue sin mostrar nada: ese cero no es confiable. */
+  if (costo > 0 || ped === 0){
     o.margen_bruto = ing > 0 ? ((ing - costo) / ing) * 100 : null;
     o.ganancia     = ing - costo - gasto;
   }
@@ -1994,9 +1998,11 @@ function mkPintar(){
     t.cac         = d(t.gasto, t.pedidos);
     t.roas        = d(t.ingreso, t.gasto);
     t.ticket      = d(t.ingreso, t.pedidos);
-    /* margen y ganancia reales: solo si de verdad llegó el costo */
-    const hayCosto = t.costo > 0;
-    t.margen_bruto = hayCosto ? ((t.ingreso - t.costo) / t.ingreso) * 100 : null;
+    /* margen y ganancia reales: solo si de verdad llegó el costo — o si
+       directamente no hubo ventas (t.pedidos === 0), donde el costo real
+       de prenda es 0 sin ambigüedad y el Profit es la pérdida (-gasto). */
+    const hayCosto = t.costo > 0 || t.pedidos === 0;
+    t.margen_bruto = (hayCosto && t.ingreso > 0) ? ((t.ingreso - t.costo) / t.ingreso) * 100 : null;
     t.ganancia     = hayCosto ? (t.ingreso - t.costo - t.gasto) : null;
     if (!hayCosto) t.costo = null;
     t.frias_p     = hayEtapas ? (d(t.frias, t.conversaciones) === null ? null : d(t.frias, t.conversaciones) * 100) : null;
@@ -2044,7 +2050,7 @@ function mkPintar(){
       T.ticket = d(T.ingreso, T.pedidos);
       const _b = (T.personas > 0) ? T.personas : T.conversaciones;
       T.tasa_cierre = d(T.pedidos, _b) === null ? null : d(T.pedidos, _b) * 100;
-      if (T.costo > 0) T.ganancia = T.ingreso - T.costo - T.gasto;
+      if (T.costo > 0 || T.pedidos === 0) T.ganancia = T.ingreso - T.costo - T.gasto;
     });
   })();
   const margenG = Math.max(1, Math.min(95, Number(document.getElementById('mkMargen').value) || 60)) / 100;
@@ -2076,7 +2082,7 @@ function mkPintar(){
   document.getElementById('mkKpis').innerHTML = [
     kpi('Ingreso',    mkSol(A.ingreso), A.ingreso, P.ingreso, 'ingreso'),
     kpi('Inversión',  mkSol(A.gasto), A.gasto, P.gasto, 'gasto'),
-    kpi(gan === null ? 'Ganancia' : (gan >= 0 ? 'Ganancia' : 'Pérdida'),
+    kpi(gan === null ? 'Profit' : (gan >= 0 ? 'Profit' : 'Pérdida'),
         gan === null ? '—' : mkSol(Math.abs(gan)), A.ganancia, P.ganancia, 'ganancia'),
     kpi('ROAS',       A.roas === null ? '—' : A.roas.toFixed(2) + 'x', A.roas, P.roas, 'roas'),
     kpi('Ventas',     mkNum(A.pedidos), A.pedidos, P.pedidos, 'pedidos'),
@@ -2121,12 +2127,16 @@ function mkPintar(){
     + '<span class="mkfbtn" onclick="mkFiltroAbrir(event,\'' + cls + '\')" title="Filtrar esta columna">' + (fon ? '\u29e9' : '\u25be') + '</span>'
     + '<span class="mkgrip" data-rz="' + cls + '"></span></th>';
   };
+  const fonAcc = mkFiltroActivoEn('__acc');
+  const thAccion = '<th' + (fonAcc ? ' class="mkfon"' : '') + ' data-col="__acc" style="width:' + anchoAcc + 'px;min-width:' + anchoAcc + 'px">Acción'
+    + '<span class="mkfbtn" onclick="mkFiltroAbrir(event,\'__acc\')" title="Filtrar esta columna">' + (fonAcc ? '\u29e9' : '\u25be') + '</span>'
+    + '<span class="mkgrip" data-rz="__acc"></span></th>';
   document.getElementById('mkHead').innerHTML = '<tr>'
     + thFijo('__cam', anchoCam, L1, 'Campaña')
     + thFijo('__con', anchoCon, L2, 'Conjunto de anuncios')
     + thFijo('__cre', anchoCre, L3, 'Anuncio')
-    + thFijo('__est', anchoEst, L4, 'Estado')
-    + thFijo('__acc', anchoAcc, L5, 'Acción', true)
+    + thFijo('__est', anchoEst, L4, 'Estado', true)
+    + thAccion
     + cols.map(c => {
         const w = mkAncho[c] || MK_COLS[c].w;
         const fon = mkFiltroActivoEn(c);
@@ -2178,9 +2188,9 @@ function mkPintar(){
       if (c === 'spark') return '<td>' + mkSpark(r) + '</td>';
       let val = mkN(r.act[c]);
       if (c === 'margen_bruto' || c === 'ganancia'){
-        const ing = mkN(r.act.ingreso), cos = mkN(r.act.costo);
-        const hay = (ing > 0 && cos > 0);
-        val = !hay ? null : (c === 'margen_bruto' ? ((ing - cos) / ing) * 100 : (ing - cos - (mkN(r.act.gasto) || 0)));
+        const ing = mkN(r.act.ingreso), cos = mkN(r.act.costo), ped = mkN(r.act.pedidos);
+        const hay = (cos > 0) || (ped === 0);
+        val = !hay ? null : (c === 'margen_bruto' ? (ing > 0 ? ((ing - cos) / ing) * 100 : null) : (ing - cos - (mkN(r.act.gasto) || 0)));
       }
       /* frecuencia: no viene del servidor, se saca acá con impresiones y alcance */
       if (c === 'frecuencia'){
@@ -2203,10 +2213,10 @@ function mkPintar(){
       + tdFijo(anchoCon, L2, '<div class="mktxt" title="' + String(r.conjunto||'').replace(/"/g,'') + '">' + esc(r.conjunto || '—') + '</div>')
       + tdFijo(anchoCre, L3, '<div class="mkcre">' + img
           + '<div class="col"><div class="nom" title="' + String(r.anuncio).replace(/"/g,'') + '">' + r.anuncio + '</div></div></div>')
-      + tdFijo(anchoEst, L4, '<div style="text-align:center">' + chipEst + '</div>')
-      + tdFijo(anchoAcc, L5, '<div style="position:relative;display:flex;align-items:center;justify-content:center;width:100%;white-space:nowrap">'
+      + tdFijo(anchoEst, L4, '<div style="text-align:center">' + chipEst + '</div>', true)
+      + '<td><div style="position:relative;display:flex;align-items:center;justify-content:center;width:100%;white-space:nowrap">'
           + chipAcc + (btnEjec ? '<span style="position:absolute;right:2px;top:50%;transform:translateY(-50%)">' + btnEjec + '</span>' : '')
-          + '</div>', true)
+          + '</div></td>'
       + celdas + '</tr>';
   }).join('');
 
@@ -2223,8 +2233,8 @@ function mkPintar(){
     + '<td class="fijo" style="width:' + anchoCam + 'px;left:' + L1 + 'px">TOTAL</td>'
     + '<td class="fijo" style="width:' + anchoCon + 'px;left:' + L2 + 'px"></td>'
     + '<td class="fijo" style="width:' + anchoCre + 'px;left:' + L3 + 'px">' + rows.length + ' anuncio' + (rows.length===1?'':'s') + '</td>'
-    + '<td class="fijo" style="width:' + anchoEst + 'px;left:' + L4 + 'px"></td>'
-    + '<td class="fijo borde" style="width:' + anchoAcc + 'px;left:' + L5 + 'px"></td>'
+    + '<td class="fijo borde" style="width:' + anchoEst + 'px;left:' + L4 + 'px"></td>'
+    + '<td></td>'
     + cols.map(c => {
         if (MK_COLS[c].txt) return '<td></td>';
         const v = mkN(T[c]);
@@ -2302,9 +2312,9 @@ document.addEventListener('mouseup', () => {
    Solo toca estilos: no vuelve a armar la tabla, así el arrastre va suave. */
 function mkRecolocarFijas(){
   const aCam = mkAncho.__cam || 150, aCon = mkAncho.__con || 150, aCre = mkAncho.__cre || 236,
-        aEst = mkAncho.__est || 96, aAcc = mkAncho.__acc || 100;
+        aEst = mkAncho.__est || 96;
   const pos = {__cam:[aCam, 0], __con:[aCon, aCam], __cre:[aCre, aCam + aCon],
-               __est:[aEst, aCam + aCon + aCre], __acc:[aAcc, aCam + aCon + aCre + aEst]};
+               __est:[aEst, aCam + aCon + aCre]};
   Object.keys(pos).forEach((col, i) => {
     const [w, left] = pos[col];
     const th = document.querySelector('#mkHead th[data-col="' + col + '"]');
