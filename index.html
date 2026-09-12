@@ -15202,35 +15202,36 @@ async function _rtAplicar() {
 
 async function _rtConectar() {
   try {
-    if (!SB_REALTIME || _rtCanal) return;
+    if (!SB_REALTIME || _rtCanalPul) return;   // 12-sep: el guardia pasa a ser el canal del pulso (ya no existe 'pedidos-rt')
     if (typeof SB_URL === 'undefined' || !SB_ANON) return;
     if (typeof supabase === 'undefined' || !supabase.createClient) { setTimeout(_rtConectar, 10000); return; }   // CDN aún cargando
     const tok = await _sbSesionAsegurar();
     if (!tok) { setTimeout(_rtConectar, 15000); return; }   // aún sin sesión SB → reintentar
     _rtCliente = supabase.createClient(SB_URL, SB_ANON, { auth: { persistSession: false } });
     _rtCliente.realtime.setAuth(tok); _rtUltTok = tok;
-    // 29-ago-2026 · EL TIMBRE POR BORRADO. Antes se escuchaba solo INSERT y UPDATE.
-    // MEDIDO EN VIVO ese dia, con dos ventanas y el pedido 20301: de 8 avisos que
-    // mando la base, los 8 fueron DELETE y NINGUNO INSERT ni UPDATE. Sin errores y
-    // con el canal en SUBSCRIBED. O sea: el tiempo real "conectado" no entregaba
-    // NADA util, y lo unico que actualizaba la pantalla era el radar de 60 s.
-    // Cada guardado hace DELETE + INSERT en la base; el borrado SI llega siempre.
-    // Asi que se escucha '*' y el borrado se usa como CAMPANADA: no hace falta su
-    // contenido, basta con saber que algo paso para que el radar averigue que fue.
-    _rtCanal = _rtCliente.channel('pedidos-rt')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos' }, p => _rtCampanada(p))
-      .subscribe(st => { try { console.log('[RT] canal pedidos:', st); } catch (_) {}
-        // 29-ago — LA BANDERA YA NO MIENTE. Antes se encendia con solo CONECTAR, y
-        // con ella el poll de respaldo se relajaba de 15 s a 60 s. Como el canal
-        // conectaba pero no entregaba, el resultado fue dejar Pedidos 4 veces mas
-        // lento que antes y que nadie se enterara. Ahora conectar solo apaga la
-        // bandera si el canal se cayo: encenderla es trabajo de la primera
-        // campanada REAL (ver _rtCampanada).
-        try { if (st !== 'SUBSCRIBED') window._rtVivo = false; } catch (_) {} });
+    // 12-sep-2026 · SE RETIRA EL CANAL 'pedidos-rt' (escuchaba public.pedidos).
+    // POR QUE. public.pedidos es la tabla gorda (23.800 filas) y cada guardado del
+    // ERP la reescribe con DELETE + INSERT de varias filas. MEDIDO el 12-sep sobre
+    // 9 h de produccion: 7.131 avisos de public.pedidos de 11.400 totales = 66 %
+    // de todo el trabajo de tiempo real de la base. Ese trabajo se paga en CPU del
+    // Nano (821 s en esas 9 h, ~2,5 % de un nucleo las 24 h) — el mismo Nano que el
+    // 11-sep se cayo 2,5 h por falta de recursos.
+    // POR QUE SE PUEDE QUITAR SIN PERDER NADA. El disparador pedidos_pulso_tg de la
+    // base corre AFTER INSERT OR DELETE OR UPDATE sobre public.pedidos, NO mira
+    // TG_OP y escribe coalesce(NEW.nro_pedido, OLD.nro_pedido) en pedidos_pulso,
+    // agrupando por 1 segundo (verificado el 12-sep leyendo el disparador en vivo).
+    // O sea: TODO cambio de pedidos — alta, edicion y baja — ya suena por
+    // 'pedidos-pulso-rt', con el numero de pedido y en una fila de 60 bytes en vez
+    // de la fila gorda. 'pedidos-rt' no entregaba NADA que el pulso no entregue.
+    // ADEMAS hay que sacar la tabla de la publicacion, si no el costo sigue:
+    //   alter publication supabase_realtime drop table public.pedidos;
+    //   (reversa: alter publication supabase_realtime add table public.pedidos;)
+    // _rtCampanada() se mantiene: la sigue llamando _rtPulsoPedido cuando el aviso
+    // llega sin numero.
 
     // 30-ago-2026 · EL TIMBRE DE PEDIDOS (ver el bloque grande de _rtPulsoPedido).
-    // Este es el canal PRINCIPAL: suena en todo cambio de pedidos, sea alta,
-    // edicion o baja. El canal 'pedidos-rt' de arriba queda como segundo camino.
+    // Este es el canal PRINCIPAL — y desde el 12-sep, el UNICO de pedidos: suena en
+    // todo cambio, sea alta, edicion o baja.
     try {
       _rtCanalPul = _rtCliente.channel('pedidos-pulso-rt')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'pedidos_pulso' },
@@ -15238,6 +15239,12 @@ async function _rtConectar() {
         .subscribe(st => { try { console.log('[RT] canal pulso pedidos:', st); } catch (_) {}
           try {
             window._rtPulsoVivo = (st === 'SUBSCRIBED');
+            // 29-ago — LA BANDERA NO MIENTE (vivia en 'pedidos-rt' hasta el 12-sep).
+            // _rtVivo relaja el radar de 15 s a 60 s. Conectar NO la enciende: eso
+            // es trabajo de la primera campanada REAL. Lo que si hace conectar es
+            // APAGARLA si el canal se cayo, para que el radar vuelva a 15 s y nadie
+            // se quede mirando datos viejos sin enterarse.
+            if (st !== 'SUBSCRIBED') window._rtVivo = false;
             // Al (re)conectar, ponerse al dia con lo que paso mientras no habia canal.
             if (st === 'SUBSCRIBED') _rtPulsoAlcanzar();
           } catch (_) {} });
