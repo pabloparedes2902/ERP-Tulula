@@ -6867,6 +6867,19 @@ async function _sbRpcEnvioPedido(nro, valor) {
 // NUNCA se pierde por culpa de este atajo.
 const SB_PILOTO_PAGOS = true;
 
+// ══════════════════════════════════════════════════════════════════════════
+// 13-set-2026 · A1 — EL CODIGO DEL PAGO NACE EN LA PANTALLA.
+// Antes lo generaba cada camino por su cuenta: la base uno, la hoja otro. Si el
+// pago entraba a la base y la respuesta se perdia (timeout, red), el ERP lo
+// reintentaba por Apps Script y salia un SEGUNDO pago con otro codigo — el mismo
+// dinero cobrado dos veces (medido en vivo en el pedido 20301 el 13-set).
+// Con el codigo generado aca y mandado a los dos caminos, el reintento se
+// reconoce: la base responde `yaExistia` y la hoja tambien.
+// Mismo formato que `_nuevoPagoId_` de Code.js (Apps Script): PG-<tiempo>-<azar>.
+function _nuevoPagoIdCliente() {
+  return 'PG-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+}
+
 async function _sbRpcPago(fn, params) {
   try {
     if (!SB_PILOTO_PAGOS) return null;
@@ -8461,10 +8474,23 @@ async function _pagosAgregarMasivo(items) {
   const lista = (items || []).filter(x => x && x.NroPedido && x.Monto);
   if (!lista.length) return { agregados: 0, fallos: [] };
 
-  const unoPorUno = async () => {
+  // 13-set-2026 · A1 — cada pago viaja con SU codigo (`PagoId`). Si el pago ya
+  // habia entrado a la base y la respuesta se perdio, la hoja lo reconoce por ese
+  // codigo y responde "ya estaba" en vez de agregarlo de nuevo.
+  const unoPorUno = async (items) => {
     let ok = 0; const fallos = [];
-    for (const it of lista) {
-      try { await apiSend('pago.agregar', it); ok++; }
+    for (const it of (items || lista)) {
+      try {
+        // POST, no la direccion web: el body (constancia incluida) no viaja en la URL.
+        await apiPost('pago.agregar', {
+          NroPedido: it.NroPedido, Monto: it.Monto,
+          FormaPago: it.FormaPago || it['Forma pago'] || '',
+          FechaPago: it.FechaPago || it['Fecha Pago'] || '',
+          Constancia: it.Constancia || '', AsesoraPago: it.AsesoraPago || '',
+          PagoId: it._pagoId,
+        });
+        ok++;
+      }
       catch (e) { fallos.push({ nro: String(it.NroPedido), error: e.message }); }
     }
     return { agregados: ok, fallos: fallos };
@@ -8501,39 +8527,55 @@ async function _pagosAgregarMasivo(items) {
   if (lista.length > MASIVO_TOPE_FRONT) {
     throw new Error('Máximo ' + MASIVO_TOPE_FRONT + ' pagos por vez (llegaron ' + lista.length + ')');
   }
+  /*═════════════════════════════════════════════════════════════════════════
+    13-set-2026 · A1 — SE ACABO EL "TODOS O NINGUNO".
+    ───────────────────────────────────────────────────────────────────────
+    Antes: si 1 de 5 pagos fallaba, se cortaba la tanda y se reenviaba el LOTE
+    ENTERO por Apps Script. Los 4 que SI habian entrado a la base quedaban
+    cobrados DOS VECES, porque cada camino generaba su propio codigo de pago y
+    la guarda del robot (`_pagoYaEnLaHoja_`) busca por codigo — nunca coincidian.
+    Esto es lo que usa "aplicar saldo a favor": el saldo se descontaba dos veces.
+
+    Ahora: cada pago lleva SU codigo, generado aca antes de salir. Los que
+    entraron NO se reenvian. Los que fallaron se reintentan de a uno con el
+    MISMO codigo: si en realidad si habian entrado, la base responde `yaExistia`
+    y la hoja tambien — no se agrega nada.
+  ═════════════════════════════════════════════════════════════════════════*/
+  lista.forEach(it => { if (!it._pagoId) it._pagoId = _nuevoPagoIdCliente(); });
+  const okBase = [], pendientes = [];
+  // Interruptor de reversa: SB_MASIVO = false manda TODO por el camino viejo
+  // (Apps Script, de a uno) sin tocar nada mas.
+  if (!SB_MASIVO) return unoPorUno(lista);
   try {
     const TANDA = 5;
-    const rs = [];
     for (let i = 0; i < lista.length; i += TANDA) {
-      const grupo = await Promise.all(lista.slice(i, i + TANDA).map(it =>
+      const grupo = lista.slice(i, i + TANDA);
+      const rs = await Promise.all(grupo.map(it =>
         _sbRpcPago('pago_agregar', {
           p_nro: String(it.NroPedido), p_monto: parseFloat(it.Monto),
           p_forma: String(it.FormaPago || it['Forma pago'] || ''),
           p_fecha: String(it.FechaPago || it['Fecha Pago'] || ''),
           p_constancia: String(it.Constancia || ''),
           p_asesora: String(it.AsesoraPago || ''),
+          p_pago_id: it._pagoId,
         }).catch(() => null)));
-      rs.push.apply(rs, grupo);
-      if (grupo.some(r => !(r && r.pagoId))) break;   // uno falló: no seguir
+      rs.forEach((r, k) => { if (r && r.pagoId) okBase.push(grupo[k]); else pendientes.push(grupo[k]); });
     }
-    // Todos o ninguno: si alguno vino en null, se rehace el lote entero por el
-    // camino de siempre. Los que sí entraron los frena la guarda anti-duplicado
-    // del robot (`_pagoYaEnLaHoja_`), que ya está en producción.
-    if (rs.length && rs.every(r => r && r.pagoId)) {
-      return { agregados: rs.length, fallos: [], via: 'base' };
-    }
-  } catch (e) { try { _errLog('masivo.pagos.base', e); } catch (_) {} }
-
-  if (!SB_MASIVO) return unoPorUno();
-  try {
-    const r = await apiPost('pago.agregarMasivo', { items: lista });
-    if (r && typeof r.agregados === 'number') return { agregados: r.agregados, fallos: r.fallos || [] };
-    return unoPorUno();
   } catch (e) {
-    if (e && /Máximo/i.test(String(e.message || ''))) throw e;
-    try { _errLog('masivo.pagos', e); } catch (_) {}
-    return unoPorUno();
+    try { _errLog('masivo.pagos.base', e); } catch (_) {}
+    lista.forEach(it => {
+      if (okBase.indexOf(it) === -1 && pendientes.indexOf(it) === -1) pendientes.push(it);
+    });
   }
+  if (!pendientes.length) return { agregados: okBase.length, fallos: [], via: 'base' };
+
+  // Solo los que NO entraron van por Apps Script, cada uno con su codigo.
+  const _rec = await unoPorUno(pendientes);
+  return {
+    agregados: okBase.length + _rec.agregados,
+    fallos: _rec.fallos,
+    via: okBase.length ? 'mixto' : 'appsscript',
+  };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -16913,11 +16955,15 @@ async function _guardarPedidoModal(nro, body) {
         });
         pRaw.push(_newRow);
         // PASO 4 — primero la BASE (instantáneo y transaccional); si no se puede, Apps Script.
+        // 13-set-2026 · A1 — un solo codigo para los dos caminos (ver _nuevoPagoIdCliente).
+        const _pidCliente = _nuevoPagoIdCliente();
+        _newRow['PagoId'] = _pidCliente;
         _saveP = (async () => {
           const _rpc = await _sbRpcPago('pago_agregar', {
             p_nro: String(nro), p_monto: monto,
             p_forma: String(forma || ''), p_fecha: String(fecha || ''),
             p_constancia: String(constanciaUrl || ''), p_asesora: String(asesoraPago || ''),
+            p_pago_id: _pidCliente,
           });
           if (_rpc && _rpc.pagoId) {
             _newRow['PagoId'] = _rpc.pagoId;
@@ -16931,7 +16977,7 @@ async function _guardarPedidoModal(nro, body) {
              en pantalla diga COMPLETO. Fue lo que paso con el 21428 y con 7 mas.
              Ahora la asesora se entera en el momento. */
           try { toast('⚠️ El pago se guardo en la hoja pero NO llego a la base — avisale a Pablo (pedido ' + nro + ')', 'err'); } catch (_) {}
-          return apiPost('pago.agregar', {NroPedido: nro, Monto: monto, FormaPago: forma, FechaPago: fecha, Constancia: constanciaUrl, AsesoraPago: asesoraPago});
+          return apiPost('pago.agregar', {NroPedido: nro, Monto: monto, FormaPago: forma, FechaPago: fecha, Constancia: constanciaUrl, AsesoraPago: asesoraPago, PagoId: _pidCliente});
         })()
           .then(res => {
             if (typeof res === 'string' && res) return res;               // ya vino el PagoId de la base
