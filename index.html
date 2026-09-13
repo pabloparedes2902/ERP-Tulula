@@ -7111,29 +7111,80 @@ function _corregirLoteAgregada(nro, prenda, loteAdivinado, loteReal) {
   } catch (e) {}
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// 13-set-2026 · A4 — ¿SE CREO O NO SE CREO?
+//
+// Cuando el pedido sale hacia la Base y la respuesta NO vuelve (timeout, red que
+// se corta, error 5xx despues del commit), la pantalla no sabe si el pedido
+// existe. Hasta hoy asumia que NO y lo creaba de nuevo por el camino viejo: dos
+// pedidos reales, dos numeros, los dos descontando stock.
+//
+// Ahora se pregunta. La Base guarda el resultado de cada creacion bajo el codigo
+// de la solicitud (`requestId`), y `pedido_por_request` lo devuelve. Se consulta
+// hasta 4 veces en ~5 segundos porque la escritura puede estar terminando justo
+// en ese momento. Si aparece, se usa ESE pedido. Si no aparece, recien ahi se
+// cae al camino viejo — y ahi el backend tiene su propia red (`pedidosCrear`
+// tambien consulta la Base por el mismo codigo).
+// ══════════════════════════════════════════════════════════════════════════
+async function _crearRescatarPorRequest(req) {
+  req = String(req || '').trim();
+  if (!req) return null;
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  for (let i = 0; i < 4; i++) {
+    await new Promise(r => setTimeout(r, i === 0 ? 400 : 1500));
+    try {
+      const tok = await _sbSesionAsegurar();
+      if (!tok) continue;
+      const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_por_request', {
+        method: 'POST',
+        headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_request: req }),
+      });
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d && d.ok === true && d.NroPedido) {
+        try { console.warn('[crear] la respuesta se perdio pero el pedido SI se habia creado: ' + d.NroPedido); } catch (_) {}
+        try { _errLog('crear.rescatado', new Error('pedido ' + d.NroPedido + ' rescatado por requestId')); } catch (_) {}
+        return { ok: true, NroPedido: String(d.NroPedido), filas: d.filas, pagos: d.pagos,
+                 pagosIds: d.pagosIds || [], via: 'base-rescatado' };
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
 async function _crearPedidoRapido(body) {
   // 30-jul — medido: sin cronómetro acá no se podía saber si el pedido se guardó por la
   // base (décimas) o se cayó a Apps Script (3-4 s) sin decir nada. Sale en verLentos()
   // como `pedido.crear.base`; si NO aparece y sí aparece `api.pedidos.crear`, es que se
   // está cayendo por el camino lento todos los días y nadie lo estaba viendo.
   const _c = _cronAbrir('pedido.crear.base');
+  const _req = String(body && body.requestId || '').trim();
+  let _salio = false;   // ¿el pedido llego a salir hacia la Base?
   try {
     if (!SB_PILOTO_CREAR) { _cronCerrar(_c, false); return null; }
     if (!String(body && body.FechaPedido || '').trim()) { _cronCerrar(_c, false); return null; }   // reserva → via clasica
     if (typeof SB_URL === 'undefined' || !SB_ANON) { _cronCerrar(_c, false); return null; }
     const tok = await _sbSesionAsegurar();
     if (!tok) { _cronCerrar(_c, false); return null; }
+    // 13-set-2026 · A4 — desde la linea de abajo el pedido PUDO haberse creado: si
+    // algo falla, NO se puede asumir que no entro (ver _crearRescatarPorRequest).
+    _salio = true;
     const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_crear', {
       method: 'POST',
       headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
       body: JSON.stringify({ p_payload: body }),
     });
-    if (!r.ok) { _cronCerrar(_c, false); try { console.warn('[crear] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+    if (!r.ok) { _cronCerrar(_c, false); try { console.warn('[crear] RPC HTTP ' + r.status + ' → reviso si igual se creo'); } catch(_){} return await _crearRescatarPorRequest(_req); }
     const d = await r.json();
-    if (!(d && d.ok === true && d.NroPedido)) { _cronCerrar(_c, false); return null; }
+    if (!(d && d.ok === true && d.NroPedido)) { _cronCerrar(_c, false); return await _crearRescatarPorRequest(_req); }
     _cronCerrar(_c, true);
     return { ok: true, NroPedido: String(d.NroPedido), filas: d.filas, pagos: d.pagos, pagosIds: d.pagosIds || [], via: 'base' };
-  } catch (e) { _cronCerrar(_c, false); try { console.warn('[crear] RPC fallo → via Apps Script'); } catch(_){} return null; }
+  } catch (e) {
+    _cronCerrar(_c, false);
+    try { console.warn('[crear] RPC fallo → ' + (_salio ? 'reviso si igual se creo' : 'via Apps Script')); } catch(_){}
+    return _salio ? await _crearRescatarPorRequest(_req) : null;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
