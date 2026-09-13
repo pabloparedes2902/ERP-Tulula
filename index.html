@@ -10046,14 +10046,32 @@ function pEnrichPagos(rows) {
     if (pago > 0) {
       const key = pago+'|'+forma+'|'+String(fecha instanceof Date ? fecha.toISOString() : fecha).split('T')[0];
       if (isPagoRow) {
-        // Filas _PAGO_: pago adicional — nunca deduplicar. Constancia propia e independiente.
-        map[nro].total += pago;
-        if (forma) map[nro].formas.add(forma);
-        map[nro].pagos.push({monto:pago, forma, fecha, _key:key, _id:pagoIdRow, _prenda:prenda, _isPagoRow:true, constancia: constRaw, asesora: String(r['AsesoraPago']||'').trim()});
+        // Filas _PAGO_: pago adicional — en general NO se deduplica (dos pagos reales
+        // pueden coincidir en monto+forma+fecha sin ser el mismo). PERO si el PagoId es
+        // EXACTAMENTE igual a uno ya visto en este pedido, es matemáticamente el MISMO
+        // pago repetido dos veces como fila (no una coincidencia) — eso sí se colapsa.
+        // 13-set-2026 — hallazgo al revisar los 29 casos de pago duplicado histórico
+        // (project_31_filas_eran_pagos_duplicados_12sep): al menos 4 pedidos (20359,
+        // 20871, 20879, 21312) tienen el MISMO PagoId en 2 filas de la Hoja — sin este
+        // colapso, pEnrichPagos los sumaba dos veces sin ninguna red.
+        const dupPorId = pagoIdRow && map[nro].pagos.find(p => p._isPagoRow && p._id === pagoIdRow);
+        if (dupPorId) {
+          if (!dupPorId.constancia && constRaw) dupPorId.constancia = constRaw;
+        } else {
+          map[nro].total += pago;
+          if (forma) map[nro].formas.add(forma);
+          map[nro].pagos.push({monto:pago, forma, fecha, _key:key, _id:pagoIdRow, _prenda:prenda, _isPagoRow:true, constancia: constRaw, asesora: String(r['AsesoraPago']||'').trim()});
+        }
       } else {
         // Filas de prenda: pago original — deduplicar por ID (si existe) o por key.
         // Constancia = primera no vacía DEL MISMO GRUPO (no global del pedido).
-        const dup = map[nro].pagos.find(p => !p._isPagoRow && (pagoIdRow && p._id ? p._id===pagoIdRow : p._key===key));
+        // 13-set-2026 — TANDA 1(a): deduplicar SIEMPRE por monto|forma|fecha, igual que
+      // clientesSaldosVigentes (Code.js) y el migrador (MigracionERP.gs). Antes, si ambas
+      // filas tenían PagoId, se comparaba por PagoId en vez de por monto|forma|fecha — y un
+      // PagoId distinto por fila (aunque el pago real fuera el mismo) rompía la deduplicación.
+      // Caso real: pedido 20497, mismo pago de S/219 repetido en 3-4 filas de prenda, cada
+      // una con un PagoId distinto → se sumaba 2-3 veces de más (saldo a favor falso de S/438).
+      const dup = map[nro].pagos.find(p => !p._isPagoRow && p._key===key);
         if (!dup) {
           map[nro].total += pago;
           if (forma) map[nro].formas.add(forma);
