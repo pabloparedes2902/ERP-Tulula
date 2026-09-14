@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20260914-151641';
+const SW_VERSION = 'tulula-20260914-155536';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 
@@ -79,9 +79,19 @@ self.addEventListener('fetch', event => {
   //    Si la de la red es distinta (ETag/Last-Modified), avisa a la página para que
   //    muestre el banner "Hay versión nueva — Recargar". Combina apertura instantánea
   //    con "nunca quedarse en versión vieja sin saberlo".
+  //    14-set-2026 — CAMBIADO A NETWORK-FIRST. Medido en vivo: tras publicar el
+  //    arreglo del PagoId, el ERP siguio sirviendo el index.html VIEJO aun despues
+  //    de dos recargas. La pantalla mostraba 177 pagos pendientes y la base 154
+  //    (los 23 de la regresion) y el ERP se recargaba solo cada 3 minutos buscando
+  //    cuadrarlos. Con stale-while-revalidate el HTML viejo siempre gana la primera
+  //    carga, y si la revalidacion de fondo no llega a tiempo, tambien la segunda.
+  //    El ERP es una herramienta de trabajo: importa MUCHO mas que este al dia que
+  //    que abra 200 ms antes. Misma decision que ya se habia tomado para flujo.html
+  //    el 27-ago por exactamente el mismo motivo. El cache queda de red de seguridad
+  //    para cuando no hay internet.
   const isHtml = req.mode === 'navigate' || req.destination === 'document';
   if (isHtml) {
-    event.respondWith(htmlSWRNotify(req, CACHE_STATIC));
+    event.respondWith(networkFirst(req, CACHE_STATIC));
     return;
   }
 
