@@ -10205,7 +10205,14 @@ function pEnrichPagos(rows) {
         // (project_31_filas_eran_pagos_duplicados_12sep): al menos 4 pedidos (20359,
         // 20871, 20879, 21312) tienen el MISMO PagoId en 2 filas de la Hoja — sin este
         // colapso, pEnrichPagos los sumaba dos veces sin ninguna red.
-        const dupPorId = pagoIdRow && map[nro].pagos.find(p => p._isPagoRow && p._id === pagoIdRow);
+        // 14-set-2026 · SE QUITA EL FILTRO `p._isPagoRow` DE ESTA BUSQUEDA.
+        // Medido en vivo sobre 9.981 pedidos: 42 pedidos (S/5.167,86) tienen el
+        // MISMO PagoId en una fila de PRENDA y en una fila _PAGO_. La dedup de
+        // arriba solo miraba entre filas _PAGO_, y la de abajo solo entre filas
+        // de prenda: eran DOS SILOS que nunca se cruzaban, asi que ese pago se
+        // sumaba dos veces. El mismo PagoId es matematicamente el mismo pago,
+        // este en la fila que este — no hay interpretacion posible.
+        const dupPorId = pagoIdRow && map[nro].pagos.find(p => p._id === pagoIdRow);
         if (dupPorId) {
           if (!dupPorId.constancia && constRaw) dupPorId.constancia = constRaw;
         } else {
@@ -10222,7 +10229,18 @@ function pEnrichPagos(rows) {
       // PagoId distinto por fila (aunque el pago real fuera el mismo) rompía la deduplicación.
       // Caso real: pedido 20497, mismo pago de S/219 repetido en 3-4 filas de prenda, cada
       // una con un PagoId distinto → se sumaba 2-3 veces de más (saldo a favor falso de S/438).
-      const dup = map[nro].pagos.find(p => !p._isPagoRow && p._key===key);
+      // 14-set-2026 · PRIMERO por PagoId CRUZANDO los dos grupos (mismo motivo que
+      // arriba: 42 pedidos con el mismo id en una fila de prenda y en una _PAGO_).
+      // Si no hay id o no coincide, se cae a la regla de siempre: monto|forma|fecha
+      // SOLO entre filas de prenda.
+      //
+      // ⚠️ LO QUE NO SE HACE ACA, A PROPOSITO: cruzar monto|forma|fecha entre una
+      // fila de prenda y una _PAGO_. Eso son otros 153 pedidos (S/39.383,35) y
+      // NO se puede decidir por codigo: un segundo abono del mismo monto, el mismo
+      // dia y por la misma via es posible. Esos hay que verificarlos contra la
+      // constancia o el banco, uno por uno. Ver el entregable del 14-set.
+      const dup = (pagoIdRow && map[nro].pagos.find(p => p._id === pagoIdRow))
+               || map[nro].pagos.find(p => !p._isPagoRow && p._key===key);
         if (!dup) {
           map[nro].total += pago;
           if (forma) map[nro].formas.add(forma);
