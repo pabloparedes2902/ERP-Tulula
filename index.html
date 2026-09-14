@@ -10237,16 +10237,44 @@ function pEnrichPagos(rows) {
         // si alguna vez esta mal. No se esconde plata: se deja de contar de mas.
         // ══════════════════════════════════════════════════════════════════
         const _accion = String(r['UltimaAccion']||'').trim().toLowerCase();
+        // ══════════════════════════════════════════════════════════════════
+        // 14-set-2026 · EL PAGO DE UN CAMBIO LLEVA EL CODIGO DEL CAMBIO ADENTRO.
+        // La forma de pago de estas filas es "PAGO CAMBIO CAM-0073": ese codigo
+        // identifica UN cambio, y un cambio tiene UNA diferencia a pagar. Dos filas
+        // con el MISMO codigo, el MISMO monto y la MISMA fecha no son dos pagos:
+        // son el mismo, cargado dos veces. El codigo hace de PagoId.
+        // CASO QUE LO DESTAPO — pedido 20918: Subtotal 254, Pagado 259, dos filas
+        // "PAGO CAMBIO CAM-0073" de S/5 del 17/07 (una con constancia y otra sin).
+        // Sacando una: 254 = 254 clavado.
+        // ⚠️ SOLO aplica si la forma trae un codigo de cambio. Dos YAPE de S/50 el
+        // mismo dia SI pueden ser dos abonos reales y se siguen contando los dos —
+        // eso lo vigila regresion_pago_dedupe_lectura.js desde el 13-set.
+        // ══════════════════════════════════════════════════════════════════
+        const _codCambio = (forma.toUpperCase().match(/\bCAM-[A-Z0-9-]+/) || [''])[0];
+        //  Aca NO se pide `!p._dupUsado` a proposito: el codigo del cambio es unico,
+        //  asi que la TERCERA y la CUARTA fila del mismo CAM-XXXX tambien tienen que
+        //  colapsar contra la primera. (En el caso prenda<->_PAGO_ si se pide, porque
+        //  alli cada pago de prenda solo puede explicar UN duplicado.)
+        const dupCambio = (!dupPorId && _codCambio)
+          ? map[nro].pagos.find(p => p._key === key
+              && String(p.forma||'').toUpperCase().indexOf(_codCambio) >= 0)
+          : null;
         //  `!p._dupUsado`: un pago de prenda solo puede explicar UN duplicado.
         //  Sin eso, un pedido con DOS filas _PAGO_ del mismo monto y una sola fila
         //  de prenda colapsaba las dos contra la misma y descontaba de mas — o sea
         //  le borraba a la clienta un pago que si hizo. Lo cazo su propia prueba.
-        const dupFuerte = (!dupPorId && _accion.indexOf('pago-agregar') >= 0)
-          ? map[nro].pagos.find(p => !p._isPagoRow && p._key === key && !p._dupUsado)
-          : null;
+        //  OJO CON LOS PARENTESIS: sin ellos, `a || b ? x : null` se lee
+        //  `(a || b) ? x : null` y el pago de cambio terminaba buscandose entre las
+        //  filas de PRENDA, donde nunca esta. Se escapo en la primera version.
+        const dupFuerte = dupCambio
+          || ((!dupPorId && _accion.indexOf('pago-agregar') >= 0)
+                ? map[nro].pagos.find(p => !p._isPagoRow && p._key === key && !p._dupUsado)
+                : null);
         if (dupFuerte) {
           dupFuerte._dupUsado = true;
-          map[nro].dups.push({monto:pago, forma, fecha, motivo:'figura tambien en la fila de la prenda'});
+          map[nro].dups.push({monto:pago, forma, fecha, motivo: dupCambio
+            ? ('el cambio ' + _codCambio + ' ya tiene esa diferencia cargada')
+            : 'figura tambien en la fila de la prenda'});
           if (!dupFuerte.constancia && constRaw) dupFuerte.constancia = constRaw;
         } else if (dupPorId) {
           if (!dupPorId.constancia && constRaw) dupPorId.constancia = constRaw;
