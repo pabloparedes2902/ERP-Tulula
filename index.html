@@ -10184,7 +10184,7 @@ function pEnrichPagos(rows) {
   const map = {};
   rows.forEach(r => {
     const nro = String(r['NroPedido']||'');
-    if (!map[nro]) map[nro] = {total:0, formas:new Set(), pagos:[], allUrls:new Set()};
+    if (!map[nro]) map[nro] = {total:0, formas:new Set(), pagos:[], allUrls:new Set(), dups:[]};
     const pago      = parseFloat(r['Pago'])||0;
     const forma     = String(r['Forma pago']||'').trim();
     const fecha     = r['Fecha Pago']||'';
@@ -10213,7 +10213,42 @@ function pEnrichPagos(rows) {
         // sumaba dos veces. El mismo PagoId es matematicamente el mismo pago,
         // este en la fila que este — no hay interpretacion posible.
         const dupPorId = pagoIdRow && map[nro].pagos.find(p => p._id === pagoIdRow);
-        if (dupPorId) {
+        // ══════════════════════════════════════════════════════════════════
+        // 14-set-2026 · EL DUPLICADO SIN PagoId COMUN (los "FUERTES").
+        // Medido con SQL sobre las 9.981 filas de la base (ANALISIS_PAGO_DOBLE_14sep.sql),
+        // no sobre lo que la pantalla alcance a cargar. 155 pedidos, S/39.712,35.
+        // De SEIS señales probadas contra un GRUPO DE CONTROL (pares del mismo
+        // pedido con montos DISTINTOS, o sea pagos distintos con seguridad),
+        // CINCO resultaron humo y UNA separa:
+        //     misma constancia .......  97% sospechosos vs 30% control -> HUMO
+        //     tanda del 24-jul .......  86% vs 28% ...................... HUMO
+        //     creada despues ......... 100% vs 100% ..................... HUMO
+        //     sin asesora / sin id ... casi no aparecen ................. no sirve
+        //  >> UltimaAccion = pago-agregar ... 97% (151/156) vs 2% (18/766) -> SEPARA
+        // Que quiere decir esa señal: UltimaAccion es la ULTIMA accion sobre la
+        // fila, asi que 'pago-agregar' = la fila se creo con el boton de agregar
+        // pago y NADIE la volvio a tocar. Los pagos de verdad se editan (se les
+        // sube constancia, se corrige la fecha); el duplicado queda muerto ahi.
+        //
+        // ⚠️ ESTO NO BORRA NADA. La fila sigue en la hoja y en la base: lo unico
+        // que cambia es que el ERP deja de SUMARLA dos veces. Es reversible con
+        // un `bash publicar.sh` de la version anterior. Y el pago que no se cuenta
+        // se MUESTRA en el detalle del pedido, marcado, para que se pueda reclamar
+        // si alguna vez esta mal. No se esconde plata: se deja de contar de mas.
+        // ══════════════════════════════════════════════════════════════════
+        const _accion = String(r['UltimaAccion']||'').trim().toLowerCase();
+        //  `!p._dupUsado`: un pago de prenda solo puede explicar UN duplicado.
+        //  Sin eso, un pedido con DOS filas _PAGO_ del mismo monto y una sola fila
+        //  de prenda colapsaba las dos contra la misma y descontaba de mas — o sea
+        //  le borraba a la clienta un pago que si hizo. Lo cazo su propia prueba.
+        const dupFuerte = (!dupPorId && _accion.indexOf('pago-agregar') >= 0)
+          ? map[nro].pagos.find(p => !p._isPagoRow && p._key === key && !p._dupUsado)
+          : null;
+        if (dupFuerte) {
+          dupFuerte._dupUsado = true;
+          map[nro].dups.push({monto:pago, forma, fecha, motivo:'figura tambien en la fila de la prenda'});
+          if (!dupFuerte.constancia && constRaw) dupFuerte.constancia = constRaw;
+        } else if (dupPorId) {
           if (!dupPorId.constancia && constRaw) dupPorId.constancia = constRaw;
         } else {
           map[nro].total += pago;
@@ -10257,7 +10292,7 @@ function pEnrichPagos(rows) {
   });
   rows.forEach(r => {
     const nro = String(r['NroPedido']||'');
-    const info = map[nro]||{total:0, formas:new Set(), pagos:[], constancias:[]};
+    const info = map[nro]||{total:0, formas:new Set(), pagos:[], constancias:[], dups:[]};
     r._totalPagado  = info.total;
     r._formasPago   = [...info.formas].join(', ')||'—';
     /* 19-ago-2026 — FECHA DE PAGO visible en la tabla. Es la del ULTIMO pago, que
@@ -10273,6 +10308,7 @@ function pEnrichPagos(rows) {
       return f;
     })();
     r._pagosDetalle = info.pagos;
+    r._pagosDuplicados = info.dups || [];   // 14-set: pagos que NO se cuentan, para mostrarlos marcados
     r._constancias  = info.constancias;
     r._constancia   = info.constancias[0] || '';
   });
@@ -16083,6 +16119,23 @@ function verPed(p) {
     +'<span style="font-family:monospace;font-size:14px;font-weight:600;color:var(--tl)">Pagado: S/'+fmt(totalPagado)+'</span>'
     +'</div>'
     +'</div>';
+  // 14-set-2026 · EL PAGO QUE NO SE CUENTA SE MUESTRA, NO SE ESCONDE.
+  // Si un pago quedo fuera del total por estar repetido (la misma plata en la fila
+  // de la prenda y en una fila _PAGO_ que nadie volvio a tocar), se avisa aca con
+  // el monto y la fecha, para que cualquiera pueda reclamarlo si esta mal.
+  // Ver ANALISIS_PAGO_DOBLE_14sep.sql y project_pago_doble_14sep.
+  const _dups = p._pagosDuplicados || [];
+  if (_dups.length) {
+    h += '<div style="border:1px solid var(--brd);border-left:3px solid var(--am,#e0a800);'
+      + 'border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px;line-height:1.5">'
+      + '<b>' + _dups.length + (_dups.length === 1 ? ' pago repetido no se cuenta' : ' pagos repetidos no se cuentan') + '</b><br>'
+      + _dups.map(function(d){
+          var _f = d.fecha instanceof Date ? d.fecha.toISOString().slice(0,10) : String(d.fecha||'').slice(0,10);
+          return 'S/' + fmt(d.monto) + (d.forma ? ' · ' + d.forma : '') + (_f ? ' · ' + _f : '') + ' — ' + d.motivo;
+        }).join('<br>')
+      + '<br><span style="opacity:.75">La fila sigue guardada; solo se dejo de sumar dos veces. '
+      + 'Si este pago es real y falta, avisá.</span></div>';
+  }
   // Estado Pago: calculado automáticamente según saldo
   const _epInfo = calcEstadoPago(totalPagado, p['Subtotal']||0);
   // B3 — ajuste manual del Estado de Pago. Vacío = automático por saldo.
