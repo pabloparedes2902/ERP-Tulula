@@ -6965,6 +6965,21 @@ async function _sbRpcCambioRegistrar(payload) {
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
+    // ══════════════════════════════════════════════════════════════════════
+    // A6·2 (14-set-2026) — CODIGO UNICO PARA QUE UN CAMBIO NO SE REGISTRE DOS VECES.
+    //
+    // Si la receta de la base COMMITEA y la respuesta se pierde en el camino (red,
+    // pestaña cerrada), la cola de guardado reintenta con el MISMO `job.payload` —
+    // y hasta hoy eso creaba un SEGUNDO CAM con su cargo, su pago y su stock.
+    //
+    // Se estampa el codigo UNA SOLA VEZ sobre el payload del job. Como el job es
+    // el mismo objeto en cada reintento, el codigo viaja igual y la receta
+    // responde "ya existia" con el CAM original en vez de crear otro.
+    // Ver `cambio_registrar` + tabla `cambio_request` en la base.
+    // ══════════════════════════════════════════════════════════════════════
+    if (payload && !payload._request) {
+      payload._request = 'c2r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    }
     const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_registrar', {
       method: 'POST',
       headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
@@ -16583,11 +16598,54 @@ function verPed(p) {
     Object.entries(campos).forEach(([k,id])=>{
       const el=qId(id); if(el) body[k]=el.value;
     });
-    // Atribución por lote: NO pisar Canal ni Comentario de envío de las prendas (que viven por fila)
-    // salvo que el usuario los haya cambiado a propósito en el header. Así no se borra el dato del bono
-    // ni el comentario del 2º lote al guardar una edición cualquiera del pedido.
-    if (String(body.Canal||'') === String(p['CANAL']||'')) delete body.Canal;
-    if (String(body.ComentariosEnvio||'') === String(p['Comentarios Envio']||'')) delete body.ComentariosEnvio;
+    // ══════════════════════════════════════════════════════════════════════
+    // A9·4 (14-set-2026) — SOLO SE MANDA LO QUE CAMBIO, Y SE DICE QUE HABIA ANTES.
+    //
+    // ANTES: este guardado mandaba los 18 campos del formulario SIEMPRE, con la
+    // foto que la pantalla tenia al ABRIR el modal. Si otra persona cambiaba el
+    // Estado mientras vos tenias el modal abierto, tu guardado le devolvia el
+    // Estado viejo — sin error y sin aviso. Es la causa raiz del pedido 20386.
+    //
+    // AHORA: se comparan los campos contra el pedido tal como esta en `p` y solo
+    // viajan los que de verdad cambiaste. Ademas se manda `_antes` con el valor
+    // que la pantalla creia que habia: el servidor compara campo por campo y no
+    // pisa el que otro ya cambio (ver `pedidosActualizar` en Code.js).
+    //
+    // ⚠️ REGLA DE SEGURIDAD: ANTE LA DUDA, SE MANDA. Un campo solo se descarta
+    // cuando los dos valores son inequivocamente iguales como texto. Si algo no
+    // se puede comparar con confianza, viaja igual. Descartar de mas seria perder
+    // tu edicion en silencio: peor que el bug que esto arregla.
+    // ══════════════════════════════════════════════════════════════════════
+    const _colDe = {
+      NombreApellido:'Nombres y Apellidos', Celular:'Celular', DNI:'DNI',
+      Canal:'CANAL', Direccion:'Direccion', Distrito:'Distrito',
+      Provincia:'Provincia', Region:'Region', Referencia:'Referencia',
+      Email:'Email', Estado:'Estado', Courier:'Courier',
+      FechaPedido:'Fecha Pedido', FechaEnvio:'Fecha Envio',
+      EstadoPago:'Estado Pago', ComentariosEnvio:'Comentarios Envio',
+    };
+    // Devuelve null cuando NO se puede comparar con confianza.
+    const _normCmp = (v) => {
+      if (v === undefined || v === null) return '';
+      if (v instanceof Date) return isNaN(v.getTime()) ? null
+        : (v.getFullYear() + '-' + String(v.getMonth()+1).padStart(2,'0') + '-' + String(v.getDate()).padStart(2,'0'));
+      if (typeof v === 'object') return null;
+      const t = String(v).trim();
+      const m = t.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/);
+      return m ? (m[1] + '-' + m[2] + '-' + m[3]) : t;
+    };
+    const _antes = {};
+    Object.keys(_colDe).forEach(k => {
+      if (body[k] === undefined) return;
+      const viejo = p[_colDe[k]];
+      const a = _normCmp(viejo), b = _normCmp(body[k]);
+      if (a !== null && b !== null && a === b) { delete body[k]; return; }   // no cambio → no viaja
+      _antes[k] = (viejo === undefined || viejo === null) ? ''
+                : (viejo instanceof Date ? _normCmp(viejo) : String(viejo));
+    });
+    if (Object.keys(_antes).length) body._antes = _antes;
+    // (Las dos reglas viejas de Canal y ComentariosEnvio quedan cubiertas por el
+    // diff de arriba: si no cambiaron, ya se borraron del body.)
     // Envío: el campo muestra el TOTAL del pedido (suma por lote). Si no se cambió a propósito,
     // NO reenviarlo (evita escribir ese total en cada fila y multiplicar el envío por lote).
     if (String(body.Envio||'') === String(envioTotalDisp||0)) delete body.Envio;
@@ -16652,7 +16710,18 @@ function verPed(p) {
     document.getElementById('modal-ped').classList.remove('on');
     toast('Pedido #'+nro+' actualizado', 'ok');
     // 3. Enviar al servidor en background — si falla, avisa y recarga
-    _guardarPedidoModal(nro, body).catch(e => {
+    _guardarPedidoModal(nro, body).then(r => {
+      // A9·4 — el servidor avisa si algun campo NO se piso porque otra persona lo
+      // cambio primero. Se avisa fuerte y se recarga el pedido: si te callas esto,
+      // la pantalla queda mostrando un valor que la hoja no tiene.
+      const ch = (r && r.choques) || [];
+      if (ch.length) {
+        toast('⚠️ ' + ch.length + ' campo(s) del #' + nro + ' NO se guardaron porque otra persona ' +
+              'los cambio primero: ' + esc(ch.map(c => c.campo).join(', ')) + '. Se recarga el pedido.', 'err');
+        try { console.warn('[choque] #' + nro, ch); } catch (_) {}
+        try { _pedsRefrescarNros([nro]); } catch (_) { loadPeds(pEst, true); }
+      }
+    }).catch(e => {
       toast('Error al guardar #'+nro+': '+esc(e.message)+'. Recargando...', 'err');
       stData=null; confData=null; pRawEst=null; _invalidarPrefetch();
       loadPeds(pEst, true);
