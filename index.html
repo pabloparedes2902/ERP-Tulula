@@ -26642,7 +26642,21 @@ async function _camProcessSaveQueue() {
       // Primero la base; si no contesta con un ok explícito, la vía de siempre.
       var _r2 = await _sbRpcCambioRegistrar(job.payload);
       if (_r2) { await _camSaldoFavorTras(_r2, job); try { _sbEspejarYa(_r2.NroCambio); } catch(_){} }
-      else { _r2 = await apiSend('cambios2.registrarYSync', job.payload); }
+      else {
+        _r2 = await apiSend('cambios2.registrarYSync', job.payload);
+        // A14 · 14-set-2026 — ANTES ESTA RESPUESTA SE LEIA A MEDIAS.
+        // `cambios2.registrarYSync` hace DOS cosas: crea el CAM-#### y despues
+        // lo aplica al pedido (cobra la diferencia, agrega la prenda nueva,
+        // mueve el stock). Si la SEGUNDA fallaba, el servidor lo anotaba en
+        // `syncError`... y aca nadie lo miraba: la cola hacia shift() y la
+        // asesora veia el ✓. El cambio quedaba con SyncProcesado=FALSE, sin
+        // cobrar y sin stock movido, en silencio.
+        // OJO: no se tira el error. El cambio EXISTE; tirar error haria que se
+        // vuelva a registrar y quedarian DOS CAM-####, peor que el bug.
+        if (_r2 && (_r2.syncPendiente || _r2.syncError)) {
+          try { _camShowSyncPendiente(_r2.NroCambio, _r2.syncError); } catch (_) {}
+        }
+      }
       try { _cronDesdeServidor('cambio.registrar', _r2 && _r2.ms); } catch(_){}
       // 29-ago · ETAPA 1 — un cambio MUEVE stock (vuelve una prenda, sale otra).
       // Sin este aviso la pantalla de Stock de las demas personas seguia con el
@@ -26704,6 +26718,44 @@ function _camUpdateSaveIndicator() {
   }
   el.innerHTML = '<span class="sp" style="width:13px;height:13px;border-width:2px"></span>Guardando ' + n + ' cambio' + (n>1?'s':'') + '...';
 }
+// A14 · 14-set-2026 — el aviso de "se registro pero NO se aplico".
+// Es DISTINTO de `_camShowSaveError`: ahi el cambio no se guardo y reintentar
+// es lo correcto. Aca el cambio SI existe y lo que falta es la segunda mitad,
+// asi que el boton reintenta SOLO esa mitad (`cambios2.sync`) — nunca el
+// registro, que crearia un segundo CAM-####.
+function _camShowSyncPendiente(nc, motivo) {
+  const o = document.createElement('div');
+  o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:801;display:flex;align-items:center;justify-content:center;padding:20px';
+  o.innerHTML = '<div style="background:var(--bg2);border:2px solid var(--rd);border-radius:var(--r2);padding:28px 24px;max-width:460px;width:100%;text-align:center">'
+    + '<div style="font-size:34px;margin-bottom:10px">⚠️</div>'
+    + '<div style="font-size:15px;font-weight:700;color:var(--rd);margin-bottom:8px">El cambio se registró, pero NO se aplicó al pedido</div>'
+    + '<div style="font-size:13px;color:var(--tx);margin-bottom:8px">Número: <b>' + esc(String(nc || '')) + '</b></div>'
+    + '<div style="font-size:13px;color:var(--tx);margin-bottom:10px;line-height:1.5">Todavía <b>no se cobró la diferencia</b>, <b>no se agregó la prenda nueva</b> y <b>no se movió el stock</b>.</div>'
+    + '<div style="font-size:11px;color:var(--mu);margin-bottom:18px">' + esc(String(motivo || 'sin detalle')) + '</div>'
+    + '<div id="cam-sync-estado" style="font-size:12px;color:var(--mu);margin-bottom:12px;min-height:16px"></div>'
+    + '<div style="display:flex;gap:10px;justify-content:center">'
+    + '<button id="cam-sync-luego" style="padding:9px 18px;border-radius:var(--r);background:var(--bg3);color:var(--mu);font-size:13px;border:1px solid var(--bd);cursor:pointer;font-family:inherit">Lo veo después</button>'
+    + '<button id="cam-sync-reintentar" style="padding:9px 24px;border-radius:var(--r);background:var(--ac2);color:#fff;font-weight:700;font-size:13px;border:none;cursor:pointer;font-family:inherit">Aplicarlo ahora</button>'
+    + '</div></div>';
+  document.body.appendChild(o);
+  const est = o.querySelector('#cam-sync-estado');
+  const btn = o.querySelector('#cam-sync-reintentar');
+  o.querySelector('#cam-sync-luego').addEventListener('click', () => { o.remove(); });
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; est.textContent = 'Aplicando…';
+    try {
+      await apiSend('cambios2.sync', { nc: nc });
+      est.textContent = '✅ Listo: ya se aplicó al pedido.';
+      try { _c2Hist = null; _c2List = null; } catch (_) {}
+      try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch (_) {}
+      setTimeout(() => o.remove(), 1400);
+    } catch (e) {
+      btn.disabled = false;
+      est.textContent = '❌ Volvió a fallar: ' + (e && e.message ? e.message : 'error de conexión');
+    }
+  });
+}
+
 function _camShowSaveError(job, err) {
   const o = document.createElement('div');
   o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:800;display:flex;align-items:center;justify-content:center;padding:20px';
