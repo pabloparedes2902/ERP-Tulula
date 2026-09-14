@@ -16352,13 +16352,27 @@ function verPed(p) {
         newRow.querySelector('.medit-pr-del').addEventListener('click', async function() {
           if (!await npConfirm('¿Eliminar la prenda "'+prenda+'" del pedido #'+nro+'?')) return;
           // #8 Optimistic UI: aplicar AL INSTANTE; backend en background con rollback en fallo
-          const idx = pRaw.findIndex(r => String(r['NroPedido']||'').trim()===nro && String(r['Prenda']||'').trim()===prenda);
+          // A10 · 14-set-2026 — ACA SE BORRABAN TODAS LAS UNIDADES IGUALES.
+          // `pedidos.eliminarPrenda` junta TODAS las filas del pedido con ese
+          // nombre de prenda y, si NO le llega `_prendaOcc`, las borra a todas
+          // (Code.js, `pedidosEliminarPrenda`). Un pedido con dos unidades de la
+          // misma prenda perdia las dos de un clic. La otra llamada del archivo
+          // (la del modal) si mandaba `_prendaOcc`; esta no.
+          // Y habia un segundo desfase: `findIndex` sacaba de la pantalla la
+          // PRIMERA coincidencia, no la que se acaba de agregar. Ahora las dos
+          // puntas apuntan a la MISMA unidad: la ultima.
+          const _idxs = [];
+          pRaw.forEach(function (r, k) {
+            if (String(r['NroPedido']||'').trim()===nro && String(r['Prenda']||'').trim()===prenda) _idxs.push(k);
+          });
+          const _occDelFresh = Math.max(0, _idxs.length - 1);
+          const idx = _idxs.length ? _idxs[_idxs.length - 1] : -1;
           const _backupRow = idx !== -1 ? pRaw[idx] : null;
           if (idx !== -1) pRaw.splice(idx, 1);
           newRow.remove();
           toast('Prenda eliminada del pedido #'+nro, 'ok');
           stData = null; confData = null; pRawEst = null; _invalidarPrefetch();
-          apiPost('pedidos.eliminarPrenda', { NroPedido: nro, _prendaTarget: prenda })
+          apiPost('pedidos.eliminarPrenda', { NroPedido: nro, _prendaTarget: prenda, _prendaOcc: _occDelFresh })
             .catch(e => {
               // Rollback in-memory (el DOM ya removido — el polling lo restaurará)
               if (_backupRow && idx !== -1) pRaw.splice(idx, 0, _backupRow);
