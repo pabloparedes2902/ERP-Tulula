@@ -6093,7 +6093,7 @@ const PCOLS = [
   // el 20918 mostraba Precio 244 + Envio 25 = 269 al lado de un Subtotal 254, y
   // los 15 del descuento no aparecian en ninguna parte. Ahora la cuenta se puede
   // seguir con el dedo: prendas + envio - descuento = subtotal.
-  {k:'Precio',l:'Precio'},{k:'Envio',l:'Envío'},{k:'_descuento',l:'Desc.'},{k:'Subtotal',l:'Subtotal'},
+  {k:'Precio',l:'Precio'},{k:'Envio',l:'Envío'},{k:'Subtotal',l:'Subtotal'},
   {k:'_totalPagado',l:'Pagado',lib:1},{k:'_formasPago',l:'F.Pago'},{k:'_fechaPago',l:'Fec.Pago',lib:1},
   {k:'Fecha Envio',l:'Fec.Envío',lib:1},{k:'Estado',l:'Estado'},{k:'Estado Pago',l:'Est.Pago'},
   {k:'Courier',l:'Courier'},{k:'Comentarios Envio',l:'C.Envío',lib:1},
@@ -6105,9 +6105,9 @@ const PCOLS = [
    y la celda nunca pasaba por fmtD(). El valor crudo sigue en ISO para que
    el filtro por rango (linea ~10708) y el orden por fecha no se rompan. */
 const PF = new Set(['Fecha Pedido','Fecha Pago','_fechaPago','Fecha Envio','UltimaModif']);
-const PN = new Set(['Precio','Envio','_descuento','Subtotal','_totalPagado','Transferido']);
+const PN = new Set(['Precio','Envio','Subtotal','_totalPagado','Transferido']);
 // Columnas a centrar en la tabla de Pedidos (resto queda a la izquierda).
-const CENTER_COLS = new Set(['NroPedido','Fecha Pedido','DNI','Celular','Distrito','Provincia','Region','CANAL','ORIGEN','Asesora','Prenda','Precio','Envio','_descuento','Subtotal','_totalPagado','_formasPago','_fechaPago','Fecha Envio','Estado','Estado Pago','Courier']);
+const CENTER_COLS = new Set(['NroPedido','Fecha Pedido','DNI','Celular','Distrito','Provincia','Region','CANAL','ORIGEN','Asesora','Prenda','Precio','Envio','Subtotal','_totalPagado','_formasPago','_fechaPago','Fecha Envio','Estado','Estado Pago','Courier']);
 
 // Sticky column definitions — widths baked at render time (no JS timing needed)
 const STICKY_DEFS = (() => {
@@ -10544,6 +10544,39 @@ function pGroupByPedido(rows) {
     ped._reembolsado = _reembolsado;
     ped._descuento = Object.values(ped._descFechas||{}).reduce((s,v)=>s+(parseFloat(v)||0),0); // FIX jul-2026: descuento total (una vez por lote)
     ped['Subtotal'] = Math.max(0, (ped._subtotalPrendas - _reembolsado - ped._descuento)) + envio; // FIX jul-2026: restar descuento
+    // 14-set-2026 · EL DESCUENTO SE REPARTE ENTRE LAS PRENDAS (pedido de Pablo).
+    // El descuento se guarda una sola vez por lote, suelto del pedido. Para sacar
+    // el MARGEN DE CONTRIBUCION POR PRODUCTO hay que ver cuanto costo REALMENTE
+    // cada prenda, no el precio de lista. Se reparte A PRORRATA DEL PRECIO: la
+    // prenda de S/105 absorbe mas descuento que la de S/5, que es como se hace
+    // la rebaja en la practica (un % sobre el total).
+    // El redondeo se va A LA PRENDA MAS CARA para que la suma de los netos de
+    // EXACTAMENTE el subtotal de prendas menos el descuento — ni un centavo de
+    // diferencia, porque esa diferencia despues aparece como "no cuadra".
+    (function _prorratearDescuento(){
+      const _prs = ped._prendas || [];
+      const _desc = parseFloat(ped._descuento) || 0;
+      const _base = _prs.reduce((s2,x)=> s2 + (parseFloat(x.precio)||0), 0);
+      if (!_prs.length) return;
+      if (!(_desc > 0) || !(_base > 0)) {
+        _prs.forEach(x => { x._desc = 0; x._precioNeto = parseFloat(x.precio)||0; });
+        return;
+      }
+      const _repartir = Math.min(_desc, _base);   // nunca dejar precios negativos
+      let _acum = 0, _iMax = 0, _pMax = -1;
+      _prs.forEach((x, i) => {
+        const _pv = parseFloat(x.precio)||0;
+        const _cuota = Math.round((_repartir * _pv / _base) * 100) / 100;
+        x._desc = _cuota; _acum += _cuota;
+        if (_pv > _pMax) { _pMax = _pv; _iMax = i; }
+      });
+      const _resto = Math.round((_repartir - _acum) * 100) / 100;
+      if (_resto !== 0) _prs[_iMax]._desc = Math.round((_prs[_iMax]._desc + _resto) * 100) / 100;
+      _prs.forEach(x => {
+        x._precioNeto = Math.round(((parseFloat(x.precio)||0) - (x._desc||0)) * 100) / 100;
+        if (x._precioNeto < 0) x._precioNeto = 0;
+      });
+    })();
     if (_reembolsado > 0) ped._totalPagado = Math.max(0, (parseFloat(ped._totalPagado)||0) - _reembolsado);
     // Comentario de envío consolidado: une los comentarios distintos de cada lote (p/ despacho)
     ped['Comentarios Envio'] = [...ped._comentSet].join(' | '); // string p/ el campo editable del modal
@@ -10645,7 +10678,13 @@ function pExpandFlat(grouped) {
           // FIX 25-jul-2026 (pedido 21095): la 1ª fila visible debe mostrar la PRENDA de la
           // lista consolidada, no el valor crudo de la fila base (que podía ser "_PAGO_").
           Prenda: (pr && pr.prenda !== undefined) ? pr.prenda : ped['Prenda'],
-          Precio: (pr && pr.precio !== undefined) ? pr.precio : ped['Precio'],
+          // La grilla muestra el precio YA con su parte del descuento (ver
+          // _prorratearDescuento). El precio de lista queda en _precioBruto y el
+          // formulario sigue editando el valor guardado, no este.
+          Precio: (pr && pr._precioNeto !== undefined) ? pr._precioNeto
+                : (pr && pr.precio !== undefined) ? pr.precio : ped['Precio'],
+          _precioBruto: (pr && pr.precio !== undefined) ? pr.precio : ped['Precio'],
+          _descPrenda: (pr && pr._desc) || 0,
           Cambio: cambioPrenda,  // sobreescribe el de la base con el de la prenda
           Estado: estadoPrenda,
           ColorPrenda: (pr && pr.colorPrenda) || String(ped['ColorPrenda']||'').trim().toUpperCase() || '',
@@ -10659,7 +10698,9 @@ function pExpandFlat(grouped) {
         flat.push({
           NroPedido: ped['NroPedido'],
           Prenda: pr.prenda,
-          Precio: pr.precio,
+          Precio: (pr._precioNeto !== undefined) ? pr._precioNeto : pr.precio,
+          _precioBruto: pr.precio,
+          _descPrenda: pr._desc || 0,
           Cambio: cambioPrenda,
           Estado: estadoPrenda,
           Courier: ped['Courier'] || '',   // bug-6: para colorear TODAS las filas del pedido por courier
@@ -15983,7 +16024,15 @@ function verPed(p) {
     return '<tr class="medit-prenda-row" data-pi="'+pi+'" data-prenda="'+piKey+'" data-precio="'+pr.precio+'" style="border-top:1px solid var(--bd)">'
       +'<td style="padding:8px 12px;font-size:13px;font-weight:500">'+esc(pr.prenda||'—')
       +'<div style="margin-top:2px;display:flex;gap:6px;align-items:center">'+estBadge+loteSel+'</div></td>'
-      +'<td style="padding:8px 12px;font-size:13px;text-align:right;font-family:monospace">S/'+fmt(pr.precio)+'</td>'
+      // El precio de ARRIBA es el GUARDADO (el que se edita). Debajo, en gris, la
+      // parte del descuento que le toca y el precio real — para el margen por
+      // producto. NO se toca pr.precio: si se editara el neto, el descuento se
+      // guardaria dos veces.
+      +'<td style="padding:8px 12px;font-size:13px;text-align:right;font-family:monospace">S/'+fmt(pr.precio)
+        + ((pr._desc > 0)
+            ? '<div style="font-size:10px;color:var(--mu);font-weight:400">− S/'+fmt(pr._desc)+' desc.<br>= S/'+fmt(pr._precioNeto)+'</div>'
+            : '')
+      +'</td>'
       +'<td style="padding:6px 8px;text-align:center;white-space:nowrap">'
       +'<button class="medit-pr-edit btn bg bs" data-pi="'+pi+'" style="font-size:11px;padding:3px 8px;margin-right:4px" title="Editar">✎</button>'
       +'<button class="medit-pr-del btn bg bs" data-pi="'+pi+'" style="font-size:11px;padding:3px 8px;color:var(--rd);border-color:var(--rd)22" title="Eliminar">✕</button>'
