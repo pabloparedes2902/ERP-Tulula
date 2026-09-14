@@ -7032,6 +7032,20 @@ async function _sbRpcCambioEditar(body) {
       body: JSON.stringify({ p_body: body }),
     });
     if (!r.ok) {
+      // 14-set-2026 — ANTES ACA SE DEVOLVIA `null` PARA TODO, Y ESO ERA EL BUG.
+      // `null` significa "no se pudo, proba por Apps Script". Pero un HTTP 4xx
+      // NO es "no se pudo": es el servidor diciendo QUE NO (por ejemplo, que
+      // otra persona edito el cambio mientras vos lo tenias abierto). Caer al
+      // otro camino ante un rechazo es peligroso: Apps Script valida la version
+      // contra la HOJA, que va atrasada respecto de la Base, asi que puede
+      // ACEPTAR lo que la Base acababa de rechazar — y la edicion entra dos
+      // veces, moviendo stock y plata dos veces.
+      let __msg = '';
+      try { const __e = await r.json(); __msg = String((__e && (__e.message || __e.error || __e.hint)) || ''); } catch (_) {}
+      if (r.status >= 400 && r.status < 500) {
+        try { console.warn('[cambio] cambio_editar RECHAZADO por la base: ' + __msg); } catch (_) {}
+        return { __rechazo: __msg || ('La base rechazo la edicion (HTTP ' + r.status + ')') };
+      }
       try { console.warn('[cambio] RPC cambio_editar HTTP ' + r.status + ' → vía Apps Script'); } catch (_) {}
       return null;
     }
@@ -7266,6 +7280,35 @@ function _sbFilasEspejo(tabla) {
   p.then(function () { delete _sbEspejoEnVuelo[tabla]; },
          function () { delete _sbEspejoEnVuelo[tabla]; });
   return p;
+}
+
+// 14-set-2026 — ¿LA EDICION ENTRO AUNQUE NO HAYA LLEGADO LA RESPUESTA?
+//
+// `cambio_editar` en Supabase puede haber guardado (borrado filas, reescrito,
+// movido stock y plata) y perderse la respuesta por un corte de red. Ahi el
+// front creia "no se guardo" y lo reintentaba por Apps Script, que valida la
+// version contra la HOJA — y la hoja todavia tiene la version VIEJA, porque el
+// cambio baja por la cola. Resultado: la edicion entraba DOS VECES.
+//
+// Cada guardado genera una `C2Version` nueva. Asi que preguntarle a la Base
+// "¿que version tiene ahora este cambio?" alcanza: si ya no es la que yo tenia
+// en pantalla, mi guardado SI entro.
+//
+// ANTE LA DUDA, SE DEVUELVE null y el flujo sigue como siempre: no poder
+// comprobar nunca puede convertirse en "doy por hecho que entro".
+async function _c2VersionEnLaBase(nc) {
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/cambios2?select=row_json&nro_cambio=eq.'
+      + encodeURIComponent(String(nc || '')) + '&limit=1',
+      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j) || !j.length) return null;
+    return String((j[0].row_json && j[0].row_json.C2Version) || '').trim();
+  } catch (e) { return null; }
 }
 
 async function _sbFilasEspejoAhora(tabla) {
@@ -27251,6 +27294,25 @@ async function _c2EditProcesar() {
     try {
       // Primero la base. Si no contesta con un ok explícito, la vía de siempre.
       let r = await _sbRpcCambioEditar(job.body);
+      // 14-set-2026 · GUARDA 1 — la base DIJO QUE NO. No se prueba por el otro
+      // camino: Apps Script valida contra la HOJA (atrasada) y podria aceptar
+      // justo lo que la base rechazo. La persona ve el motivo y decide.
+      if (r && r.__rechazo) throw new Error(r.__rechazo);
+      // 14-set-2026 · GUARDA 2 — la base NO CONTESTO. Puede haber guardado igual.
+      // Se le pregunta que version tiene ahora: si ya no es la que teniamos en
+      // pantalla, el guardado entro y reintentarlo lo duplicaria.
+      if (!r) {
+        // En try/catch a proposito: si comprobar falla, se sigue por el camino
+        // de siempre. Una comprobacion rota no puede frenar un guardado.
+        let _vBase = null;
+        try { _vBase = await _c2VersionEnLaBase(job.nc); } catch (_) {}
+        const _vVista = String((job.body && job.body._versionVista) || '').trim();
+        if (_vBase && _vVista && _vBase !== _vVista) {
+          try { console.warn('[cambio] ' + job.nc + ': la respuesta se perdio pero la edicion SI entro (version ' + _vBase + ')'); } catch (_) {}
+          r = { ok: true, NroCambio: job.nc, version: _vBase, yaEntro: true };
+          try { _sbEspejarYa(job.nc); } catch (_) {}
+        }
+      }
       if (r) {
         // 7-set-2026 — guardar un cambio BORRA y reescribe sus filas en la base,
         // así que la línea de saldo a favor hay que volver a pedirla. Sin destino
