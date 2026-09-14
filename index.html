@@ -10216,7 +10216,16 @@ function pEnrichPagos(rows) {
         // de prenda: eran DOS SILOS que nunca se cruzaban, asi que ese pago se
         // sumaba dos veces. El mismo PagoId es matematicamente el mismo pago,
         // este en la fila que este — no hay interpretacion posible.
-        const dupPorId = pagoIdRow && map[nro].pagos.find(p => p._id === pagoIdRow);
+        // 14-set-2026 · EL MISMO PagoId NO ALCANZA: TIENE QUE SER EL MISMO MONTO.
+        // El arreglo de esta mañana colapsaba por PagoId a secas, dando por hecho que
+        // "el mismo id es el mismo pago". ES FALSO: el backfill (A13) estampo el MISMO
+        // PagoId en filas con montos DISTINTOS. Medido en vivo: 23 pedidos ENTREGADOS
+        // pasaron a mostrar saldo teniendo todo pagado — 20618 tenia 10 y 203,75 bajo
+        // el mismo id y el ERP se comio los 203,75.
+        // Exigir tambien el monto conserva el caso CERTEZA (mismo id Y mismo monto = el
+        // mismo pago repetido) y deja de borrar abonos reales.
+        const dupPorId = pagoIdRow && map[nro].pagos.find(p => p._id === pagoIdRow
+                                                            && Math.abs((p.monto||0) - pago) < 0.005);
         // ══════════════════════════════════════════════════════════════════
         // 14-set-2026 · EL DUPLICADO SIN PagoId COMUN (los "FUERTES").
         // Medido con SQL sobre las 9.981 filas de la base (ANALISIS_PAGO_DOBLE_14sep.sql),
@@ -10306,7 +10315,10 @@ function pEnrichPagos(rows) {
       // NO se puede decidir por codigo: un segundo abono del mismo monto, el mismo
       // dia y por la misma via es posible. Esos hay que verificarlos contra la
       // constancia o el banco, uno por uno. Ver el entregable del 14-set.
-      const dup = (pagoIdRow && map[nro].pagos.find(p => p._id === pagoIdRow))
+      // 14-set: el PagoId cruza los dos grupos SOLO si coincide tambien el monto
+      // (ver el comentario largo en la rama de arriba).
+      const dup = (pagoIdRow && map[nro].pagos.find(p => p._id === pagoIdRow
+                                                      && Math.abs((p.monto||0) - pago) < 0.005))
                || map[nro].pagos.find(p => !p._isPagoRow && p._key===key);
         if (!dup) {
           map[nro].total += pago;
