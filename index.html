@@ -10338,6 +10338,42 @@ function pGroupByPedido(rows) {
       order.push(nro);
     }
     const ped = map.get(nro);
+    // ══════════════════════════════════════════════════════════════════════
+    // 14-set-2026 · EL ENVIO SE REGISTRA DESDE CUALQUIER FILA DEL PEDIDO.
+    //
+    // EL CASO QUE LO DESTAPO: al pedido 20218 se le puso Envio 12 y el Subtotal
+    // siguio en 34.90 (Pagado 46.90). No era un dato mal cargado: este bloque
+    // vivia DENTRO del `if` de prenda, asi que un envio guardado en una fila que
+    // no fuera de prenda — una fila de pago, una fila vacia, o un lote sin
+    // prendas — no se registraba NUNCA y el Subtotal salia sin el.
+    //
+    // El FIX del 25-jul (tomar el MAYOR del lote) ya resolvia "el envio esta en
+    // otra fila DE PRENDA". Lo que faltaba era el otro caso: "el envio esta en
+    // una fila QUE NO ES de prenda". Medido: 101 pedidos, S/1.097,70 de envio
+    // que no se contaba, entre 2025-03 y 2026-06.
+    //
+    // Sigue cobrandose UNA sola vez por lote (se guarda el MAYOR del lote), asi
+    // que esto no puede inflar un pedido donde el envio ya estaba bien.
+    // ══════════════════════════════════════════════════════════════════════
+    // ACOTACION IMPORTANTE (14-set, misma tarde): la primera version de este
+    // arreglo tomaba el envio de CUALQUIER fila, y dos pruebas viejas la
+    // frenaron con razon. Las dos defienden la MISMA regla de negocio:
+    //   · `regresion_envio_lote.js` — "la fila de PAGO no aporta envio aunque
+    //     tenga un numero: una fila de pago no es un despacho". Las filas _PAGO_
+    //     se crean copiando la fila del pedido y arrastran el envio; contarlo
+    //     seria cobrar un despacho que no existe.
+    //   · `regresion_pedidos.js` — un pedido al que le faltan las filas de
+    //     prenda tiene que verse ROTO (sin subtotal), no con un subtotal
+    //     inventado a partir del envio de su fila de pago.
+    // Asi que se toma el envio de cualquier fila QUE NO SEA _PAGO_. Eso cubre el
+    // caso que faltaba (envio en una fila sin prenda, o en un lote sin prendas)
+    // sin romper la regla que ya estaba escrita.
+    if (!_esPago(String(r['Prenda']||''))) {
+      const _fkAny = String(r['Lote']||'').trim() || String(r['Fecha Pedido']||r['FechaPedido']||'').slice(0,10);
+      const _envAny = parseFloat(r['Envio'])||0;
+      if (!(_fkAny in ped._envioFechas) || _envAny > ped._envioFechas[_fkAny]) ped._envioFechas[_fkAny] = _envAny;
+      if (!(_fkAny in ped._descFechas)) ped._descFechas[_fkAny] = parseFloat(r['Descuento'])||0;
+    }
     const prenda = String(r['Prenda']||'').trim();
     const precio = parseFloat(r['Precio'])||0;
     const camb   = String(r['Cambio']||'').trim();
@@ -10367,9 +10403,6 @@ function pGroupByPedido(rows) {
       // 20 pedidos al azar: los 20 cuadran con lo pagado al recuperar el envío).
       // Tomar el MAYOR del lote no cambia nada cuando todas las filas coinciden,
       // y encuentra el monto cuando está escondido en cualquier fila.
-      const _envRow = parseFloat(r['Envio'])||0;
-      if (!(_fk in ped._envioFechas) || _envRow > ped._envioFechas[_fk]) ped._envioFechas[_fk] = _envRow;
-      if (!(_fk in ped._descFechas)) ped._descFechas[_fk] = parseFloat(r['Descuento'])||0; // FIX jul-2026: descuento una vez por lote
       const _cv = String(r['CANAL']||r['Canal']||'').trim(); if (_cv) ped._canalSet.add(_cv);
       const _ov = String(r['ORIGEN']||r['Origen']||'').trim(); if (_ov) ped._origenSet.add(_ov);
       const _av = String(r['Asesora']||r['ASESORA']||'').trim(); if (_av) ped._asesoraSet.add(_av);
