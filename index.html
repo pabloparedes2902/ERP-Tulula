@@ -10253,6 +10253,8 @@ function pEnrichPagos(rows) {
         // se MUESTRA en el detalle del pedido, marcado, para que se pueda reclamar
         // si alguna vez esta mal. No se esconde plata: se deja de contar de mas.
         // ══════════════════════════════════════════════════════════════════
+        // R2 (15-set-2026): `_accion` ya NO decide nada. Se deja leida a proposito
+        // porque el medidor de patrones de la consola la mira; ver el bloque de abajo.
         const _accion = String(r['UltimaAccion']||'').trim().toLowerCase();
         // ══════════════════════════════════════════════════════════════════
         // 14-set-2026 · EL PAGO DE UN CAMBIO LLEVA EL CODIGO DEL CAMBIO ADENTRO.
@@ -10283,10 +10285,44 @@ function pEnrichPagos(rows) {
         //  OJO CON LOS PARENTESIS: sin ellos, `a || b ? x : null` se lee
         //  `(a || b) ? x : null` y el pago de cambio terminaba buscandose entre las
         //  filas de PRENDA, donde nunca esta. Se escapo en la primera version.
-        const dupFuerte = dupCambio
-          || ((!dupPorId && _accion.indexOf('pago-agregar') >= 0)
-                ? map[nro].pagos.find(p => !p._isPagoRow && p._key === key && !p._dupUsado)
-                : null);
+        // ══════════════════════════════════════════════════════════════════
+        // R2 (15-set-2026) — SE SACO EL COLAPSO POR `UltimaAccion`.
+        //
+        // QUE HABIA ACA: si la fila traia `UltimaAccion` con 'pago-agregar', esto
+        // la colapsaba contra una fila de PRENDA con el mismo monto|forma|fecha.
+        //
+        // POR QUE SE SACA (hallazgo R2 de la re-auditoria del 14-set):
+        // 1. `pago-agregar` NO significa "fila recien creada". `Code.js` (~4086) y
+        //    el RPC lo re-estampan en TODAS las filas del pedido cada vez que entra
+        //    CUALQUIER pago. Una fila vieja puede terminar con ese sello.
+        // 2. Cruzar monto|forma|fecha entre una fila de PRENDA y una `_PAGO_` es
+        //    exactamente lo que el arreglo del 14-set prohibio por escrito, y tiene
+        //    su propio assert: esos son los "153 FUERTES", donde un segundo abono
+        //    del mismo monto, el mismo dia y por la misma via ES POSIBLE.
+        //    Colapsarlos por codigo BORRA un pago que la clienta si hizo, muestra
+        //    cobrado de menos, y termina en cobrarle dos veces.
+        // 3. Caso que lo prueba: prenda 100 YAPE 01/09 + abono real `_PAGO_` 100
+        //    YAPE 01/09 + un tercer pago de 50 -> la pantalla mostraba 150 en vez
+        //    de 250, con un saldo pendiente falso.
+        //
+        // MEDIDO EN VIVO ANTES DE TOCAR (15-set, sobre las 24.112 filas de la
+        // vista): de 909 filas `_PAGO_`, solo 50 traian 'pago-agregar' y NINGUNA
+        // de esas tenia gemela de prenda -> el colapso no estaba escondiendo ni un
+        // sol HOY. Pero hay 5 filas `_PAGO_` con gemela de prenda esperando: el dia
+        // que un pago nuevo les re-estampe el sello, se empiezan a esconder. Se
+        // saca por eso, no por la plata de hoy.
+        //
+        // LO QUE SE QUEDA: `dupCambio`. Ese colapsa por el codigo `CAM-XXXX` que
+        // viene DENTRO de la forma de pago. Ese codigo identifica UN cambio y un
+        // cambio tiene UNA diferencia a pagar: es un identificador de verdad, no
+        // una señal blanda. Sacarlo haria reaparecer las diferencias de cambio
+        // contadas dos veces (caso 20918, S/5 repetidos).
+        //
+        // Y el PATRON sigue medido donde corresponde: en
+        // `pruebas-consola/PATRONES_PAGO_DOBLE_14sep.js.txt`, que es un medidor de
+        // SOLO LECTURA. Medir un patron esta bien; decidir la plata con el, no.
+        // ══════════════════════════════════════════════════════════════════
+        const dupFuerte = dupCambio;
         if (dupFuerte) {
           dupFuerte._dupUsado = true;
           map[nro].dups.push({monto:pago, forma, fecha, motivo: dupCambio
