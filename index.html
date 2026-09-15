@@ -20353,14 +20353,45 @@ async function _npAplicarSaldosOrigenImpl(job, targetNro, fechaPago) {
   // ademas entran bajo UN solo candado en el servidor: o se aplican todos los
   // movimientos de esta operacion, o se sabe exactamente cual falto.
   const _movs = [];
-  (job.saldosFavor || []).forEach(item => _movs.push({
+  /* ══════════════════════════════════════════════════════════════════════════
+     15-set-2026 — UN SALDO NO SE PUEDE TRASLADAR A SI MISMO.
+     MEDIDO EN PRODUCCION: de 14 traslados vivos, 3 decian "Trasladado a #N"
+     estando EN el pedido N — 20474 (2-jul), 20585 (11-jul), 20929 (25-jul).
+     Cada uno deja al pedido figurando pagado de mas y ensucia toda auditoria
+     de sobrepago, porque la misma plata aparece en dos pedidos.
+     CAUSA: en el flujo de CAMBIOS el destino se toma como `nroPedidos[0]`
+     (mas abajo en este archivo, ~26928), que son los pedidos de las prendas
+     DEVUELTAS — o sea el ORIGEN. Si el saldo pendiente es de ese mismo pedido,
+     origen y destino coinciden. El flujo de PEDIDO NUEVO no tiene el problema
+     (ahi el destino es el pedido recien creado).
+     EL FRENO VIVE ACA Y NO ALLA A PROPOSITO: es una sola puerta que protege a
+     los DOS flujos, y la regla es universal. Tambien frena el destino vacio,
+     que generaba la forma "Trasladado a #" sin numero.
+     ══════════════════════════════════════════════════════════════════════════ */
+  const _dest = String(targetNro || '').trim();
+  const _salteados = [];
+  const _mismoPedido = (item) => {
+    const _o = String((item && item.nro) || '').trim();
+    if (!_dest || _o === _dest) {
+      _salteados.push({ nro: _o, monto: (item && item.monto) || 0 });
+      return true;
+    }
+    return false;
+  };
+  (job.saldosFavor || []).filter(i => !_mismoPedido(i)).forEach(item => _movs.push({
     NroPedido: item.nro, Monto: -Math.abs(item.monto),
     FormaPago: 'Saldo aplicado a #'+targetNro, FechaPago: fecha, _que: 'favor', _monto: item.monto,
   }));
-  (job.saldosPendiente || []).forEach(item => _movs.push({
+  (job.saldosPendiente || []).filter(i => !_mismoPedido(i)).forEach(item => _movs.push({
     NroPedido: item.nro, Monto: Math.abs(item.monto),
     FormaPago: 'Trasladado a #'+targetNro, FechaPago: fecha, _que: 'pendiente', _monto: item.monto,
   }));
+  if (_salteados.length) {
+    const _det = _salteados.map(x => '#' + (x.nro || '?') + ' S/' + fmt(Math.abs(x.monto))).join(', ');
+    console.warn('[saldos origen] no se escribieron ' + _salteados.length +
+      ' movimiento(s): el destino es el mismo pedido de origen o esta vacio — ' + _det);
+    try { toast('⚠ ' + _salteados.length + ' saldo(s) no se trasladaron: el pedido destino es el mismo de origen (' + _det + ')', 'err'); } catch(_) {}
+  }
   if (_movs.length) {
     try {
       const r = await _pagosAgregarMasivo(_movs);
