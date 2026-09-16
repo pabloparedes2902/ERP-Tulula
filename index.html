@@ -11435,13 +11435,58 @@ function _cuadreAnotar(hayDeriva, detalle) {
   } catch (_) {}
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// 16-set-2026 — POR QUE LAS DERIVAS NO PARABAN NUNCA.
+//
+// El detector comparaba TODOS los contadores locales contra `pedidos_contadores()`.
+// Pero no todos miden el mismo universo:
+//   · `_PAGOPEND` local sale de `_pagoPendSet`, que se arma SOLO con los pedidos
+//     que estan cargados en esta pantalla. La base cuenta TODOS los entregados
+//     con saldo abierto. Medido en vivo: 34 contra 153.
+//   · `CAMBIO` y `_DEVOLUCIONES` locales se cruzan contra la lista cargada
+//     (`_allNrosFull`). La base cuenta todos. Medido: 0 contra 6.
+//   · `Todos` y `ENTREGADO` locales son DEL PERIODO cuando hay filtro de periodo
+//     puesto. `pedidos_contadores()` no recibe periodo. Medido: 1.024 contra 10.006.
+//
+// Esas cuatro no pueden coincidir jamas. Y cada vez que no coincidian, el
+// detector disparaba una RECARGA COMPLETA de Pedidos (autocuracion) — hasta
+// CURA_TOPE veces por sesion. 1.267 derivas anotadas en 10 dias, la mayoria de
+// estas cuatro. No era el sistema desviandose: era la regla de comparacion.
+//
+// Ahora se comparan solo las que miden lo mismo. Las otras se siguen ANOTANDO
+// (una vez por hora, para no inundar) con etiqueta `marca.cuadre.incomparable`,
+// para no quedarnos ciegos — pero NO disparan recarga.
+// ══════════════════════════════════════════════════════════════════════════
+const CNT_NUNCA_COMPARABLE = {
+  '_PAGOPEND': 'local = solo los pedidos cargados; la base = todos los entregados con saldo',
+  'CAMBIO': 'local = cruzado contra la lista cargada; la base = todos',
+  '_DEVOLUCIONES': 'local = cruzado contra la lista cargada; la base = todas'
+};
+const CNT_SOLO_SIN_PERIODO = { '': 1, 'ENTREGADO': 1 };
+const CUADRE_INC_MS = 60 * 60 * 1000;
+let _cuadreIncUlt = 0;
+
 function _pedsVerificarDeriva(locales, b) {
   if (!CNT_BASE_ON || !b || !locales) return false;
-  const difs = [];
+  const difs = [], incomparables = [];
+  const _perOn = !!window._cntPeriodoOn;
   Object.keys(locales).forEach(function (e) {
     const k = CNT_MAPA[e]; if (!k || b[k] == null) return;
-    if (Number(locales[e]) !== Number(b[k])) difs.push(e + ' ' + locales[e] + '≠' + b[k]);
+    if (Number(locales[e]) === Number(b[k])) return;
+    const _dif = e + ' ' + locales[e] + '≠' + b[k];
+    if (CNT_NUNCA_COMPARABLE[e] || (CNT_SOLO_SIN_PERIODO[e] && _perOn)) {
+      incomparables.push(_dif);
+      return;
+    }
+    difs.push(_dif);
   });
+  if (incomparables.length && (Date.now() - _cuadreIncUlt) >= CUADRE_INC_MS) {
+    _cuadreIncUlt = Date.now();
+    try {
+      const _ci = _cronAbrir('marca.cuadre.incomparable', incomparables.join(' | ').slice(0, 60));
+      _cronCerrar(_ci, true);
+    } catch (_) {}
+  }
   // 11-set, del rodaje: la PRIMERA comprobación tras abrir Pedidos siempre
   // difiere — `_c2List` (cambios) y `histDevData` (devoluciones) llegan después
   // que la lista, así que Cambio y Devoluciones valen 0 por unos segundos, y la
@@ -11524,6 +11569,11 @@ function _updateTabCounts(rawRows, incompletosSet, activosSet, nCambio, nDevol, 
     }
   });
   window._cntLocales = _locales;
+  // 16-set — hace falta para el detector de deriva: con un periodo activo, los
+  // contadores "Todos" y "Entregados" SON del periodo (lo dicen dos lineas mas
+  // arriba), y `pedidos_contadores()` no recibe periodo: cuenta todo. Comparar
+  // esos dos con un periodo puesto es comparar cosas distintas.
+  try { window._cntPeriodoOn = !!cutoffTs; } catch (_) {}
   // Pedirle los números a la base (si ya están frescos, resuelve al toque) y,
   // cuando lleguen, repintar y comprobar si esta copia se desvió.
   try {
