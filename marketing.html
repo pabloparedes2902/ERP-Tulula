@@ -651,7 +651,7 @@
      de los encabezados no salía NUNCA, y el doble clic en la miniatura del
      creativo tampoco abría la lupa. -->
 <div id="mkPopSpark" class="mkmodal" style="display:none" onclick="if(event.target.id==='mkPopSpark')mkPopSparkCerrar()">
-  <div class="mkmodal-in" style="max-width:780px;width:96vw">
+  <div class="mkmodal-in" style="max-width:960px;width:96vw">
     <h3 style="display:flex;justify-content:space-between;align-items:center;gap:10px">
       <span>&#128200; Últimos 30 días &middot; <span id="mkPopSparkNom" style="font-weight:700"></span></span>
       <button class="btn" style="padding:3px 9px" onclick="mkPopSparkCerrar()">&#10005;</button>
@@ -1691,6 +1691,94 @@ function mkSpark(r){
 }
 /* ── Pop-up de indicadores día por día (11-sep-2026) ─────────────────────── */
 function mkPopSparkCerrar(){ const m = document.getElementById('mkPopSpark'); if (m) m.style.display = 'none'; }
+
+/* 16-sep-2026 — grafica multi-indicador del popup de 30 dias. Cada metrica
+   se calcula al vuelo desde los mismos campos crudos que ya traia el
+   endpoint (gasto, impresiones, link_clicks, v3s, ventas, ingreso, alcance).
+   "Frecuencia" existe en el codigo pero bot.gasto_anuncios todavia no trae
+   el dato de alcance de Meta (siempre llega en 0) — por eso puede salir en
+   blanco hasta que se arregle esa sincronizacion aparte. */
+const MK_METRICAS = [
+  { key:'hook',       label:'Hook',       color:'#22c55e', calc:d => { const im=+d.impresiones||0, v3=+d.v3s||0; return im ? v3/im*100 : null; }, fmt:v => v.toFixed(1)+'%' },
+  { key:'cpm',        label:'CPM',        color:'#3b82f6', calc:d => { const im=+d.impresiones||0, g=+d.gasto||0; return im ? g/im*1000 : null; }, fmt:v => mkSol(v) },
+  { key:'cpc',        label:'CPC',        color:'#f59e0b', calc:d => { const lc=+d.link_clicks||0, g=+d.gasto||0; return lc ? g/lc : null; }, fmt:v => mkSol(v) },
+  { key:'roas',       label:'ROAS',       color:'#a855f7', calc:d => { const g=+d.gasto||0, ing=+d.ingreso||0; return g ? ing/g : null; }, fmt:v => v.toFixed(2)+'x' },
+  { key:'frecuencia', label:'Frecuencia', color:'#ef4444', calc:d => { const im=+d.impresiones||0, al=+d.alcance||0; return al ? im/al : null; }, fmt:v => v.toFixed(2)+'x' },
+];
+let mkPopSel = new Set(['hook','roas']);
+let mkPopDias = null;
+let mkPopChart = null;
+
+function _mkCargarChartJs(cb){
+  if (window.Chart){ cb(); return; }
+  if (window._mkChartCbs){ window._mkChartCbs.push(cb); return; }
+  window._mkChartCbs = [cb];
+  const s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';
+  s.onload = () => { (window._mkChartCbs||[]).forEach(f => f()); window._mkChartCbs = []; };
+  document.head.appendChild(s);
+}
+
+function mkPopSparkToggle(key){
+  if (mkPopSel.has(key)) mkPopSel.delete(key); else mkPopSel.add(key);
+  if (mkPopSel.size === 0) mkPopSel.add(key); /* siempre al menos uno prendido */
+  mkPopSparkPintarBotones();
+  mkPopSparkDibujar();
+}
+
+function mkPopSparkPintarBotones(){
+  const cont = document.getElementById('mkPopSparkBtns');
+  if (!cont) return;
+  cont.innerHTML = MK_METRICAS.map(m =>
+    '<button class="accn' + (mkPopSel.has(m.key) ? ' on' : '') + '" style="border-color:' + m.color
+    + (mkPopSel.has(m.key) ? ';background:' + m.color : '') + '" onclick="mkPopSparkToggle(\'' + m.key + '\')">' + m.label + '</button>'
+  ).join('');
+}
+
+function mkPopSparkDibujar(){
+  if (!mkPopDias) return;
+  _mkCargarChartJs(() => {
+    const canvasEl = document.getElementById('mkPopChart');
+    if (!canvasEl) return;
+    const dias = mkPopDias;
+    const labels = dias.map(d => d.fecha.slice(5));
+    const activas = MK_METRICAS.filter(m => mkPopSel.has(m.key));
+    const normalizar = activas.length > 1;
+    const datasets = activas.map(m => {
+      const raw = dias.map(d => m.calc(d));
+      const nums = raw.filter(v => v != null && isFinite(v));
+      const max = nums.length ? Math.max(...nums, 0.0001) : 1;
+      return {
+        label: m.label,
+        data: raw.map(v => v == null ? null : (normalizar ? v / max * 100 : v)),
+        _raw: raw, _fmt: m.fmt,
+        borderColor: m.color, backgroundColor: m.color,
+        tension: .3, spanGaps: true, pointRadius: 2, borderWidth: 2,
+      };
+    });
+    if (mkPopChart) mkPopChart.destroy();
+    mkPopChart = new Chart(canvasEl.getContext('2d'), {
+      type: 'line',
+      data: { labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#9db0cc' } },
+          tooltip: { callbacks: { label: (ctx) => {
+            const ds = ctx.dataset, raw = ds._raw[ctx.dataIndex];
+            return ' ' + ds.label + ': ' + (raw == null ? '—' : ds._fmt(raw));
+          } } }
+        },
+        scales: {
+          x: { ticks: { color: '#9db0cc' }, grid: { color: 'rgba(157,176,204,.12)' } },
+          y: { ticks: { color: '#9db0cc', callback: v => normalizar ? v + '%' : v }, grid: { color: 'rgba(157,176,204,.12)' } }
+        }
+      }
+    });
+  });
+}
+
 function mkPopSparkAbrir(adId){
   const r = (MK && MK.filas || []).filter(x => String(x.ad_id) === String(adId))[0];
   const dd = MKD && MKD[String(adId)];
@@ -1699,25 +1787,16 @@ function mkPopSparkAbrir(adId){
   const cuerpo = document.getElementById('mkPopSparkBody');
   if (!cuerpo) return;
   if (!dd || !dd.dias || !dd.dias.length){
+    mkPopDias = null;
     cuerpo.innerHTML = '<div style="padding:16px 4px;color:var(--txt2);font-size:12px;line-height:1.6">'
-      + 'Todavía no tengo el detalle día por día de este anuncio — falta pegar en n8n el webhook nuevo '
-      + '<b>ads-historia-dia</b>. Mientras tanto, la mini-gráfica de la tabla sigue mostrando lo que ya tenía.</div>';
+      + 'Todavía no tengo el detalle día por día de este anuncio. Intenta recargar el módulo en unos segundos.</div>';
   } else {
-    const dias = dd.dias.slice().sort((a, b) => a.fecha < b.fecha ? 1 : -1);
-    cuerpo.innerHTML = '<div style="overflow:auto;max-height:60vh"><table class="qft" style="width:100%">'
-      + '<thead><tr><th>Día</th><th>Gasto</th><th>Impr.</th><th>CPM</th><th>Clics enlace</th><th>CPC</th>'
-      + '<th>Hook</th><th>Ventas ERP</th><th>Ingreso ERP</th><th>ROAS</th></tr></thead><tbody>'
-      + dias.map(d => {
-          const g = +d.gasto || 0, im = +d.impresiones || 0, lc = +d.link_clicks || 0, v3 = +d.v3s || 0,
-                ve = +d.ventas || 0, ing = +d.ingreso || 0;
-          const cpm = im ? (g / im * 1000) : null, cpc = lc ? (g / lc) : null,
-                hook = im ? (v3 / im * 100) : null, roas = g ? (ing / g) : null;
-          return '<tr><td style="text-align:left">' + d.fecha + '</td><td>' + mkSol(g) + '</td><td>' + mkNum(im)
-            + '</td><td>' + (cpm === null ? '—' : mkSol(cpm)) + '</td><td>' + mkNum(lc) + '</td><td>' + (cpc === null ? '—' : mkSol(cpc))
-            + '</td><td>' + (hook === null ? '—' : hook.toFixed(1) + '%') + '</td><td>' + ve + '</td><td>' + mkSol(ing)
-            + '</td><td>' + (roas === null ? '—' : roas.toFixed(2) + 'x') + '</td></tr>';
-        }).join('')
-      + '</tbody></table></div>';
+    mkPopDias = dd.dias.slice().sort((a, b) => a.fecha < b.fecha ? -1 : 1);
+    cuerpo.innerHTML = '<div id="mkPopSparkBtns" style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px"></div>'
+      + '<div style="position:relative;height:320px"><canvas id="mkPopChart"></canvas></div>'
+      + '<div style="font-size:10px;color:var(--txt2);margin-top:8px">Con más de un indicador seleccionado, cada línea se muestra en escala relativa (0-100%) de su propio máximo para poder compararlas — el valor real siempre sale al pasar el mouse.</div>';
+    mkPopSparkPintarBotones();
+    mkPopSparkDibujar();
   }
   const modal = document.getElementById('mkPopSpark');
   if (modal) modal.style.display = 'flex';
