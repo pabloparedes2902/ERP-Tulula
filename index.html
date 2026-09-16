@@ -3121,7 +3121,7 @@ function _pillConn(ok, msg){
 // Script: nada falla, sólo que cada acción pasa de ~300 ms a ~3 s. Ese día
 // nadie se enteró durante horas porque no había ningún síntoma visible.
 // Este chip lo hace visible sin asustar: dice "modo lento", no "error".
-function _pillViaRapida(encendida){
+function _pillViaRapida(encendida, motivo){
   try{
     const ref = document.getElementById('conn-txt');
     if (!ref || !ref.parentNode) return;
@@ -3130,10 +3130,16 @@ function _pillViaRapida(encendida){
     if (el) return;
     el = document.createElement('span');
     el.id = 'via-lenta';
-    el.textContent = 'modo lento';
-    el.title = 'El ERP está andando por la vía lenta: cada acción tarda unos 3 segundos en vez de medio. '
-             + 'Los datos son correctos, no se pierde nada. Se reintenta solo cada minuto. '
-             + 'Si no vuelve, cerrá sesión y volvé a entrar.';
+    const esReversa = (motivo === 'reversa');
+    el.textContent = esReversa ? 'modo lento · base apagada' : 'modo lento';
+    el.title = esReversa
+      ? 'La base está apagada a propósito (simulacro de reversa) o caída, y el ERP está corriendo '
+      + 'contra la Hoja. Medido el 15-set-2026: cada acción tarda entre 15 y 40 segundos. '
+      + 'Los datos son correctos y NO se pierde nada: si un guardado avisa que no pudo leer la '
+      + 'respuesta, igual guardó. Para volver a la vía rápida hay que recargar DOS veces (Cmd+Shift+R).'
+      : 'El ERP está andando por la vía lenta: cada acción tarda unos 3 segundos en vez de medio. '
+      + 'Los datos son correctos, no se pierde nada. Se reintenta solo cada minuto. '
+      + 'Si no vuelve, cerrá sesión y volvé a entrar.';
     el.style.cssText = 'margin-left:8px;padding:1px 7px;border-radius:9px;font-size:11px;'
                      + 'background:#78350f;color:#fcd34d;cursor:help;white-space:nowrap;';
     ref.parentNode.appendChild(el);
@@ -3489,7 +3495,23 @@ async function _fetchJsonCrudo(buildReq, action) {
       try {
         d = JSON.parse(raw);   // si vino HTML (backend frío) esto lanza → reintentamos
       } catch (parseErr) {
-        ultimoError = new Error('Respuesta no válida del servidor (posible backend ocupado).');
+        // 16-set-2026 — EL MENSAJE QUE ASUSTABA. Cuando Apps Script tarda mucho
+        // devuelve HTML (su pagina de redireccion) en vez de JSON, y esto saltaba
+        // con "Respuesta no valida del servidor". Suena a que se perdio el cambio,
+        // y casi siempre NO se perdio: el servidor termina de escribir igual.
+        // Pasado real del simulacro del 15-set: Pablo guardo un pago, vio este
+        // mensaje, y el pago estaba guardado (verificado despues con
+        // migracion.repararNro: 9 filas en la hoja contra 5 en la base).
+        // Cada llamada lleva su _reqId, asi que un reintento NO duplica nada.
+        // Lo peligroso no era el mensaje: era que invita a apretar Guardar de nuevo.
+        var _lento = false;
+        try { _lento = (typeof SB_APAGADO !== 'undefined' && SB_APAGADO)
+                       || !!document.getElementById('via-lenta'); } catch(_){}
+        ultimoError = new Error(_lento
+          ? 'El servidor tardó demasiado en contestar. Tu cambio MUY PROBABLEMENTE sí se guardó: '
+            + 'recargá dentro de un minuto y fijate antes de volver a intentar. '
+            + '(El ERP está en modo lento: cada acción tarda entre 15 y 40 segundos.)'
+          : 'Respuesta no válida del servidor (posible backend ocupado).');
         if (intento < _API_REINTENTOS) { await _sleep(600 * intento); continue; }  // 600ms,1200ms
         _connMark(false);
         throw ultimoError;
@@ -3836,6 +3858,11 @@ const SB_CAT_VIVO = true;
 
 async function _sbSesionAsegurar(){
   if (SB_APAGADO) return null;   // simulacro: sin token, todo se va por Apps Script
+  // 16-set-2026 — el aviso de "modo lento" NO va aca: el corte tiene que ser lo
+  // primero y nada mas (regresion_reversa.js lo exige, y tiene razon). El chip
+  // se enciende una sola vez en bootApp(), que es donde corresponde: con
+  // SB_APAGADO el modo lento dura toda la sesion, no es algo que cambie.
+
   const v = await _sbTokenVigente();
   if (v) { _pillViaRapida(true); return v; }
   if (!SB_REAUTH_SILENCIOSO || !SB_ANON) return null;
@@ -6937,7 +6964,33 @@ const SB_PILOTO_PAGOS = true;
 // reconoce: la base responde `yaExistia` y la hoja tambien.
 // Mismo formato que `_nuevoPagoId_` de Code.js (Apps Script): PG-<tiempo>-<azar>.
 function _nuevoPagoIdCliente() {
-  return 'PG-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  // 16-set-2026 — EL SUFIJO ERA DE 4 CARACTERES, Y A VECES MENOS.
+  // Era: Math.random().toString(36).slice(2, 6). Dos problemas:
+  //   1. 4 caracteres base36 = 1,7 millones de combinaciones. Dos pagos creados
+  //      en el MISMO milisegundo con el mismo sufijo quedan con el MISMO PagoId.
+  //      Medido: 78 colisiones cada 200.000 codigos.
+  //   2. Math.random() puede dar 0.5 -> "0.i" -> slice(2,6) devuelve UN caracter.
+  // POR QUE IMPORTA: public.pagos tiene indice unico (pago_id, nro_pedido) y el
+  // insert va con "on conflict do nothing". Dos pagos con el mismo codigo =
+  // EL SEGUNDO SE PIERDE EN SILENCIO. Eso es plata, no es un detalle de estilo.
+  // El caso peligroso es _pagosAgregarMasivo: hasta 60 codigos en un ciclo
+  // apretado, todos dentro del mismo milisegundo o casi.
+  // COMO SE ENCONTRO: tests/regresion_a1a2 fallaba A VECES en la Mac de Pablo
+  // (Node v25) y nunca en el shell de Claude (v22). No era Node: el mas rapido
+  // mete mas llamadas por milisegundo y las colisiones aparecen. Un test
+  // "intermitente" era el sintoma de un bug de verdad, no ruido para silenciar.
+  var s = '';
+  try {
+    var b = new Uint8Array(8);
+    (self.crypto || window.crypto).getRandomValues(b);
+    for (var i = 0; i < b.length; i++) s += (b[i] + 256).toString(36).slice(1);
+  } catch (_) {
+    // Sin crypto (o dentro de un vm de pruebas): dos tiradas rellenadas a largo
+    // fijo, para que un Math.random() corto no deje el codigo pelado.
+    s = (Math.random().toString(36) + '0000000000').slice(2, 10)
+      + (Math.random().toString(36) + '0000000000').slice(2, 10);
+  }
+  return 'PG-' + Date.now().toString(36) + '-' + s;
 }
 
 async function _sbRpcPago(fn, params) {
@@ -33518,6 +33571,14 @@ function _applyRoleUI(){
 // ── ARRANQUE REAL DE LA APP (solo después del login) ──
 function bootApp(){
   window._appBooted = true;   // FIX jul-2026 (QA): renovaciones de sesión posteriores NO re-bootean
+  // 16-set-2026 — AVISAR QUE LA BASE ESTA APAGADA. El chip "modo lento" existe
+  // desde el 29-jul justamente porque "nadie se entero durante horas" el dia que
+  // la via rapida se cayo. Pero con SB_APAGADO nunca aparecia: _sbSesionAsegurar
+  // corta antes de encenderlo, y tiene que cortar antes. Se enciende aca, una
+  // sola vez, porque con el simulacro corriendo el modo lento dura toda la sesion.
+  // Medido en vivo el 15-set: 15 a 36 s por accion, un guardado de 162 s, y la
+  // pantalla sin decir nada.
+  try { if (SB_APAGADO) _pillViaRapida(false, 'reversa'); } catch(_){}
   const _le = document.getElementById('me-email'); if(_le) _le.textContent = MY_EMAIL || '';
   const _rb = document.getElementById('role-badge');
   if(_rb){ const _m={'Administrador':'ADMIN','Logistica':'LOGISTICA','Ventas':'VENTAS'}; _rb.textContent = _m[MY_ROLE] || (MY_ROLE||'').toUpperCase(); }
