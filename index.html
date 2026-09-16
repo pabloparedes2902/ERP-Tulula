@@ -3008,7 +3008,15 @@ window.addEventListener('keydown', e => {
 const MOPT_BASE = {
   'Courier':             ['INDRIVER','N/A','OLVA','RECOJO','SALVA','SHALOM'],
   'Estado':              ['ENVIAR','EN CAMINO','ENTREGADO','SEPARAR','DEVOLUCION'],
-  'FORMA PAGO':          ['ANA','ANA EMPRESA','BBVA','BCP','EFECTIVO','IBK','N/A','PABLO','PABLO EMPRESA','TARJETA CREDITO'],
+  // 16-set-2026 — 'N/A' SALE DE FORMA DE PAGO. Ninguna forma de pago del negocio
+  // se llama asi: era una opcion del desplegable que alguien podia elegir, y el
+  // formulario NO validaba la forma (solo el monto), asi que entraba sin freno.
+  // Un pago con forma 'N/A' no se puede cuadrar contra ningun banco ni contra el
+  // Drive de Logistica. En Courier (arriba) 'N/A' SI tiene sentido — envio que no
+  // se despacha — y por eso ahi se queda.
+  // OJO: sacarla de aca no alcanza. Hay que sacarla tambien de la hoja Maestros,
+  // columna FORMA PAGO (ver el aviso de mas arriba en este mismo bloque).
+  'FORMA PAGO':          ['ANA','ANA EMPRESA','BBVA','BCP','EFECTIVO','IBK','PABLO','PABLO EMPRESA','TARJETA CREDITO'],
   'Canal':               ['TIKTOK','WHATSAPP','CONTACTO','PAGINA WEB','SHOWROOM','INSTAGRAM','OTROS','MARKETPLACE','FACEBOOK'],
   'Origen':              ['ADS DIRECTO','ADS INDIRECTO','ORGANICO DIRECTO','ORGANICO INDIRECTO','LIVE','PRESENCIAL','VIRTUAL','SAGA','ANA','PABLO','PAGINA WEB','OTROS'],
   'Motivo Cambio':       ['TALLA INCORRECTA','NO LE GUSTO','PRENDA DEFECTUOSA','ERROR DEL OPERADOR','CLIENTE CAMBIO DE OPINION','OTRO'],
@@ -9951,7 +9959,19 @@ function _sbEspejarYa(nros) {
   try {
     const arr = (Array.isArray(nros) ? nros : [nros]).map(String).filter(Boolean);
     if (!arr.length) return;
-    apiSend('espejo.aplicarNro', arr.length === 1 ? { nro: arr[0] } : { nros: arr }).catch(() => {});
+    // 16-set-2026 — SIGUE SIENDO "si falla, no pasa nada": el barrido de 1 minuto
+    // lo cubre igual, y por eso esto NO lanza ni molesta a la asesora.
+    // LO QUE CAMBIA: ahora QUEDA ANOTADO. El `catch(() => {})` mudo nos dejo todo
+    // el dia sin saber cuantas veces falla, que es justamente el numero que
+    // necesitaba la vigilancia de la via rapida. Un fallo silencioso repetido no
+    // es "inofensivo": es invisible, que es peor.
+    // La etiqueta empieza con `rapido.` a proposito: _CRON_SIEMPRE la anota SIEMPRE,
+    // no solo cuando tarda mas de 3 segundos.
+    const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.espejarYa', arr.join(',')) : null;
+    const _fin = (ok) => { try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, ok); } catch (_) {} };
+    apiSend('espejo.aplicarNro', arr.length === 1 ? { nro: arr[0] } : { nros: arr })
+      .then(() => _fin(true))
+      .catch(() => _fin(false));
   } catch (_) {}
 }
 
@@ -14489,7 +14509,8 @@ const MAESTROS_OPTS = {
   'CANAL':        ['TIKTOK','WHATSAPP','CONTACTO','PAGINA WEB','SHOWROOM','INSTAGRAM','OTROS','MARKETPLACE','FACEBOOK'],
   'ORIGEN':       ['ADS DIRECTO','ADS INDIRECTO','ORGANICO DIRECTO','ORGANICO INDIRECTO','LIVE','PRESENCIAL','VIRTUAL','SAGA','ANA','PABLO','PAGINA WEB','OTROS'],
   'Courier':      ['INDRIVER','N/A','OLVA','RECOJO','SALVA','SHALOM'],
-  '_formasPago':  ['ANA','ANA EMPRESA','BBVA','BCP','EFECTIVO','IBK','N/A','PABLO','PABLO EMPRESA','TARJETA CREDITO'],
+  // 16-set-2026 — segunda copia de la lista: 'N/A' sale de aca tambien (ver MOPT_BASE).
+  '_formasPago':  ['ANA','ANA EMPRESA','BBVA','BCP','EFECTIVO','IBK','PABLO','PABLO EMPRESA','TARJETA CREDITO'],
   'Asesora':      [],  // dinámico desde datos
   'Distrito':     [], 'Provincia': [], 'Region': [],
 };
@@ -17541,6 +17562,13 @@ async function _guardarPedidoModal(nro, body) {
     const asesoraPago = (qId('pago-f-asesora') ? qId('pago-f-asesora').value.trim() : '') ||
       (typeof MY_ASESORA !== 'undefined' ? MY_ASESORA : '');
     if (!monto || monto <= 0) { toast('Ingresa un monto válido', 'err'); return; }
+    // 16-set-2026 — la forma de pago tambien se valida. Sacarla del desplegable no
+    // alcanza: el valor puede llegar de la hoja Maestros, de un pedido viejo que se
+    // esta editando, o de una pestana con la version anterior cacheada.
+    if (!forma || /^n\/?a$/i.test(forma)) {
+      toast('Elegí una forma de pago: sin eso el pago no se puede cuadrar contra el banco', 'err');
+      return;
+    }
     this.disabled = true; this.textContent = 'Guardando...';
 
     // K-16 (reforma jul-2026): Voucher upload EN PARALELO al guardado de pago (no bloquea).
