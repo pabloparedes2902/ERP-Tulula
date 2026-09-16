@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20260915-200736';
+const SW_VERSION = 'tulula-20260915-202749';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 
@@ -127,11 +127,40 @@ async function cacheFirst(req, cacheName) {
 }
 
 // Network-first: la red manda; si falla (sin internet), cae al caché.
+//
+// 16-set-2026 — ACA SE RECONECTO EL AVISO DE VERSION NUEVA.
+// index.html tiene un banner bien hecho ("Hay una version nueva del ERP" con
+// botones Recargar y Despues) que se dispara con el mensaje {type:'HTML_UPDATED'}.
+// El UNICO lugar que mandaba ese mensaje era htmlSWRNotify(), y el 14-set el HTML
+// paso a networkFirst: desde entonces htmlSWRNotify no se llama nunca y el banner
+// quedo siendo codigo muerto. Resultado practico, medido en vivo durante el
+// simulacro del 15-set: al volver de la reversa la primera recarga seguia sirviendo
+// la version vieja, nadie avisaba nada, y habia que decirle al equipo a mano
+// "recarguen dos veces". Quien no lo hacia se quedaba en modo lento sin saberlo.
+//
+// NO se recarga sola a proposito: esa decision ya estaba tomada en index.html
+// ("solo recargamos si el usuario explicitamente lo pidio") y es la correcta —
+// una recarga automatica le puede borrar a una asesora lo que esta escribiendo.
+// Lo que se arregla es que el aviso APAREZCA; apretar Recargar sigue siendo de ella.
 async function networkFirst(req, cacheName) {
   const cache = await caches.open(cacheName);
   try {
     const res = await fetch(req);
-    if (res && res.ok) cache.put(req, res.clone()).catch(()=>{});
+    if (res && res.ok) {
+      const esHtml = req.mode === 'navigate' || req.destination === 'document';
+      if (esHtml) {
+        const hit = await cache.match(req).catch(() => null);
+        if (hit) {
+          const viejo = hit.headers.get('etag') || hit.headers.get('last-modified') || '';
+          const nuevo = res.headers.get('etag') || res.headers.get('last-modified') || '';
+          if (viejo && nuevo && viejo !== nuevo) {
+            const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+            clients.forEach(c => c.postMessage({ type: 'HTML_UPDATED' }));
+          }
+        }
+      }
+      cache.put(req, res.clone()).catch(()=>{});
+    }
     return res;
   } catch (e) {
     const hit = await cache.match(req);
