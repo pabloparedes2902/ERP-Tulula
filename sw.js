@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20260916-152156';
+const SW_VERSION = 'tulula-20260916-160455';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 
@@ -127,11 +127,35 @@ async function cacheFirst(req, cacheName) {
 }
 
 // Network-first: la red manda; si falla (sin internet), cae al caché.
+// 16-set-2026 — el aviso "Hay una version nueva del ERP" (banner con Recargar/
+// Despues, ya construido en index.html) dependia de htmlSWRNotify(), pero el
+// 14-set el HTML paso a networkFirst y htmlSWRNotify dejo de llamarse: el aviso
+// quedo desconectado. Sin el, una pestaña que queda abierta todo el dia se
+// queda en la version vieja para siempre y nadie se entera (se vio en vivo:
+// pedido de Mirella Paredes con el ERP estampado "v 16/09 10:23" horas despues
+// de publicado el arreglo). Esto reconecta el aviso DENTRO de networkFirst, sin
+// tocar la estrategia (la red sigue mandando, el cache sigue siendo solo la
+// red de seguridad sin internet) y sin recargar sola — eso ya lo decide la
+// persona con el boton Recargar.
 async function networkFirst(req, cacheName) {
   const cache = await caches.open(cacheName);
+  const esHtml = req.mode === 'navigate' || req.destination === 'document';
   try {
     const res = await fetch(req);
-    if (res && res.ok) cache.put(req, res.clone()).catch(()=>{});
+    if (res && res.ok) {
+      if (esHtml) {
+        const hit = await cache.match(req);
+        if (hit) {
+          const viejo = hit.headers.get('etag') || hit.headers.get('last-modified') || '';
+          const nuevo = res.headers.get('etag') || res.headers.get('last-modified') || '';
+          if (viejo && nuevo && viejo !== nuevo) {
+            const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+            clients.forEach(c => c.postMessage({ type: 'HTML_UPDATED' }));
+          }
+        }
+      }
+      cache.put(req, res.clone()).catch(()=>{});
+    }
     return res;
   } catch (e) {
     const hit = await cache.match(req);

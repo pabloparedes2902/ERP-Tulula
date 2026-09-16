@@ -6950,7 +6950,27 @@ const SB_PILOTO_PAGOS = true;
 // reconoce: la base responde `yaExistia` y la hoja tambien.
 // Mismo formato que `_nuevoPagoId_` de Code.js (Apps Script): PG-<tiempo>-<azar>.
 function _nuevoPagoIdCliente() {
-  return 'PG-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  // 16-set-2026 — EL AZAR SOLO NO ALCANZA. El sufijo de 4 caracteres base36 son
+  // 36^4 = 1.679.616 valores, y el tramo de tiempo solo cambia cada milisegundo.
+  // "Aplicar saldo a favor" pide los 60 codigos del lote en el MISMO milisegundo
+  // (ver _pagosAgregarMasivo), y el cumpleanos pega ~25 repetidos cada 50.000.
+  // Un repetido dentro del mismo pedido lo come el indice unico
+  // (pago_id, nro_pedido) con "on conflict do nothing": un pago que se pierde
+  // EN SILENCIO. Medido: ~1.600 codigos por milisegundo, 24-31 colisiones/50.000.
+  // AHORA: un contador que NUNCA repite dentro de esta pestana, mas una "sal" de
+  // arranque que separa una pestana de otra. Nada de crypto: index.html no lo usa
+  // en ningun lado y el banco de pruebas corre esta funcion con Date, Math y
+  // String solamente. El estado cuelga de la funcion a proposito: los tests la
+  // recortan sola, asi que una variable de modulo quedaria afuera del recorte.
+  // Formato INTACTO ('PG-' + tiempo base36 + '-' + base36); solo cambia el largo
+  // del ultimo tramo, de 4 a 8. Ningun consumidor parsea ese tramo.
+  var f = _nuevoPagoIdCliente;
+  if (!f._sal) {
+    f._sal = ('0000' + Math.floor(Math.random() * 1679616).toString(36)).slice(-4);
+    f._n = 0;
+  }
+  f._n = (f._n + 1) % 1679616;
+  return 'PG-' + Date.now().toString(36) + '-' + f._sal + ('0000' + f._n.toString(36)).slice(-4);
 }
 
 async function _sbRpcPago(fn, params) {
@@ -20434,14 +20454,46 @@ async function _npAplicarSaldosOrigenImpl(job, targetNro, fechaPago) {
   // ademas entran bajo UN solo candado en el servidor: o se aplican todos los
   // movimientos de esta operacion, o se sabe exactamente cual falto.
   const _movs = [];
-  (job.saldosFavor || []).forEach(item => _movs.push({
+  /* ══════════════════════════════════════════════════════════════════════════
+     R12 (15-set-2026, REPUESTO el 16-set) — UN SALDO NO SE TRASLADA A SI MISMO.
+     MEDIDO EN PRODUCCION: de 14 traslados vivos, 3 decian "Trasladado a #N"
+     estando EN el pedido N — 20474 (2-jul), 20585 (11-jul), 20929 (25-jul).
+     Cada uno deja al pedido figurando pagado de mas: la misma plata aparece en
+     dos lugares y ensucia toda auditoria de sobrepago.
+     CAUSA: en el flujo de CAMBIOS el destino se toma como `nroPedidos[0]`, que
+     son los pedidos de las prendas DEVUELTAS — o sea el ORIGEN. Si el saldo
+     pendiente es de ese mismo pedido, origen y destino coinciden.
+     EL FRENO VIVE ACA Y NO EN CADA LLAMADOR A PROPOSITO: es una sola puerta
+     para los tres, y la regla es universal. Tambien frena el destino vacio,
+     que generaba la forma "Trasladado a #" sin numero.
+     ESTE ARREGLO SE ESCRIBIO EL 15-set DE NOCHE Y SE PERDIO: vivio solo en el
+     archivo de trabajo, nunca entro a git, y el 16-set se retomo desde el
+     archivo commiteado. Solo sobrevivio en index.html.bak_pilllento_16sep.
+     ══════════════════════════════════════════════════════════════════════════ */
+  const _dest = String(targetNro || '').trim();
+  const _salteados = [];
+  const _mismoPedido = (item) => {
+    const _o = String((item && item.nro) || '').trim();
+    if (!_dest || _o === _dest) {
+      _salteados.push({ nro: _o, monto: (item && item.monto) || 0 });
+      return true;
+    }
+    return false;
+  };
+  (job.saldosFavor || []).filter(i => !_mismoPedido(i)).forEach(item => _movs.push({
     NroPedido: item.nro, Monto: -Math.abs(item.monto),
     FormaPago: 'Saldo aplicado a #'+targetNro, FechaPago: fecha, _que: 'favor', _monto: item.monto,
   }));
-  (job.saldosPendiente || []).forEach(item => _movs.push({
+  (job.saldosPendiente || []).filter(i => !_mismoPedido(i)).forEach(item => _movs.push({
     NroPedido: item.nro, Monto: Math.abs(item.monto),
     FormaPago: 'Trasladado a #'+targetNro, FechaPago: fecha, _que: 'pendiente', _monto: item.monto,
   }));
+  if (_salteados.length) {
+    const _det = _salteados.map(x => '#' + (x.nro || '?') + ' S/' + Math.abs(Number(x.monto) || 0).toFixed(2)).join(', ');
+    console.warn('[saldos origen] no se escribieron ' + _salteados.length +
+      ' movimiento(s): el destino es el mismo pedido de origen o esta vacio — ' + _det);
+    try { toast('⚠ ' + _salteados.length + ' saldo(s) no se trasladaron: el pedido destino es el mismo de origen (' + _det + ')', 'err'); } catch(_) {}
+  }
   if (_movs.length) {
     try {
       const r = await _pagosAgregarMasivo(_movs);
