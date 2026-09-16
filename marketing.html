@@ -1709,10 +1709,10 @@ let mkPopSel = new Set(['hook','roas']);
 let mkPopDias = null;
 let mkPopChart = null;
 
-/* 16-sep-2026 â cdnjs a veces devuelve 404/503 para este archivo puntual
+/* 16-sep-2026 — cdnjs a veces devuelve 404/503 para este archivo puntual
    (intermitente, no es problema de Pablo ni de su red): antes, si esa carga
-   fallaba, no pasaba nada â ni error ni reintento, la grÃ¡fica quedaba en
-   blanco para siempre. Ahora prueba jsdelivr primero (mÃ¡s estable) y si
+   fallaba, no pasaba nada — ni error ni reintento, la gráfica quedaba en
+   blanco para siempre. Ahora prueba jsdelivr primero (más estable) y si
    igual falla, cae a cdnjs; si los dos fallan, avisa en vez de quedar muda. */
 const MK_CHARTJS_FUENTES = [
   'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js',
@@ -1757,8 +1757,8 @@ function mkPopSparkDibujar(){
     if (!canvasEl) return;
     if (falloTotal || !window.Chart){
       canvasEl.outerHTML = '<div style="padding:20px 4px;color:var(--bad);font-size:12px;line-height:1.6">'
-        + 'No se pudo cargar la librerÃ­a de grÃ¡ficas (fallÃ³ la conexiÃ³n a los dos servidores que la sirven). '
-        + 'No es un problema de tus datos â reintentÃ¡ en unos segundos o recargÃ¡ la pÃ¡gina.</div>';
+        + 'No se pudo cargar la librería de gráficas (falló la conexión a los dos servidores que la sirven). '
+        + 'No es un problema de tus datos — reintentá en unos segundos o recargá la página.</div>';
       return;
     }
     const dias = mkPopDias;
@@ -2750,6 +2750,11 @@ const URL_META_ACCION = 'https://n8n-production-4e716.up.railway.app/webhook/met
    nunca escribia ahí, así que el chip volvía a mostrar lo viejo. Este
    webhook nuevo escribe el estado real apenas Meta confirma el cambio. */
 const URL_MARCAR_ESTADO = 'https://n8n-production-4e716.up.railway.app/webhook/marcar-estado';
+/* 16-sep-2026 — endpoint de SOLO LECTURA: dado un ad_id, Meta le pega a Graph
+   API pidiendo el ad-set y la campaña juntos, y devuelve en cuál de los dos
+   vive de verdad el presupuesto (CBO puede tenerlo en cualquiera de los dos
+   aunque el ERP muestre "conjunto" o "campaña"). No escribe nada en Meta. */
+const URL_META_PRESUPUESTO = 'https://n8n-production-4e716.up.railway.app/webhook/meta-presupuesto';
 let MKACC = null;   /* {adId, accion, fila, nivel} de lo que se esta por hacer */
 
 const MKACC_QUE = { ad:'anuncio', adset:'conjunto', campaign:'campaña' };
@@ -2764,6 +2769,8 @@ function mkEjecPreg(adId, accion){
     + ' · ' + mkNum(r.act.conversaciones) + ' conversaciones · ' + (r.act.pedidos || 0) + ' ventas'
     + (r.act.roas != null ? ' · ROAS ' + Number(r.act.roas).toFixed(2) + 'x' : '');
   document.getElementById('mkAccRes').innerHTML = '';
+  const soles = document.getElementById('mkAccSoles'); if (soles) soles.value = '';
+  const presInfo = document.getElementById('mkAccPresInfo'); if (presInfo) presInfo.innerHTML = '';
   document.getElementById('mkAccBox').style.display = 'flex';
   mkAccNivel('ad');
 }
@@ -2796,6 +2803,7 @@ function mkAccNivel(n){
   } else { av.style.display = 'none'; }
 
   document.getElementById('mkAccPres').style.display = esAd ? 'none' : 'flex';
+  if (!esAd) mkAccConsultarPresupuesto(n); else { const pi = document.getElementById('mkAccPresInfo'); if (pi) pi.innerHTML = ''; }
   document.getElementById('mkAccUno').style.display = 'none';
   document.getElementById('mkAccDos').style.display = 'inline-flex';
   /* el boton que coincide con el estado actual queda apagado: no tiene sentido
@@ -2813,6 +2821,53 @@ function mkAccNivel(n){
        + (reco ? ' · el ERP dice <b>' + reco + '</b>' : ''))
     : '';
   document.getElementById('mkAccRes').innerHTML = '';
+}
+/* 16-sep-2026 — al elegir "Su conjunto" o "Su campaña", le preguntamos a Meta
+   (solo lectura, nunca escribe) dónde vive de verdad el presupuesto y cuánto
+   es hoy, para no dejar el campo vacío obligando a adivinar. Si Meta dice que
+   el presupuesto está en el otro nivel (CBO), se ajusta el botón solo y se
+   avisa — el campo siempre queda editable igual, esto es solo un punto de
+   partida. Si falla la consulta, no rompe nada: el campo sigue vacío con el
+   placeholder de antes y se puede escribir el monto a mano. */
+let mkAccPresReqId = 0;
+async function mkAccConsultarPresupuesto(nivelPedido){
+  if (!MKACC) return;
+  const miReq = ++mkAccPresReqId;
+  const info = document.getElementById('mkAccPresInfo');
+  const input = document.getElementById('mkAccSoles');
+  if (info) info.innerHTML = '<span class="esp">Consultando presupuesto actual en Meta…</span>';
+  try {
+    const r = await fetch(URL_META_PRESUPUESTO, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        nivel: nivelPedido,
+        id: MKACC.adId,
+        accion: 'PRESUPUESTO',
+        presupuesto: 1,
+        nombre: MKACC.fila.anuncio || '',
+        quien: 'Pablo'
+      })
+    }).then(x => x.json());
+    if (miReq !== mkAccPresReqId || !MKACC) return;   /* llegó tarde o ya se cerró el modal */
+    const d = Array.isArray(r) ? (r[0] || {}) : r;
+    if (d.ok === true || d.ok === 'true'){
+      if (input && !input.value) input.value = d.presupuesto_actual != null ? d.presupuesto_actual : '';
+      let msg = 'Presupuesto actual: <b>' + mkSol(d.presupuesto_actual) + '</b> (' + (d.tipo === 'lifetime' ? 'de por vida' : 'diario') + ')'
+        + ' · ' + esc(d.objeto_nombre || '');
+      if (d.nivel && d.nivel !== nivelPedido){
+        MKACC.nivel = d.nivel;
+        document.querySelectorAll('[data-accn]').forEach(b => b.classList.toggle('on', b.dataset.accn === d.nivel));
+        msg = '⚠️ En Meta el presupuesto está a nivel <b>' + MKACC_QUE[d.nivel] + '</b>, no ' + MKACC_QUE[nivelPedido]
+          + ' — ajustado automáticamente. ' + msg;
+      }
+      if (info) info.innerHTML = msg;
+    } else {
+      if (info) info.innerHTML = '<span class="mal">No se pudo detectar el presupuesto actual' + (d.motivo ? ' (' + esc(d.motivo) + ')' : '') + ' — ingresalo a mano.</span>';
+    }
+  } catch (e) {
+    if (miReq !== mkAccPresReqId || !MKACC) return;
+    if (info) info.innerHTML = '<span class="mal">No se pudo detectar el presupuesto actual — ingresalo a mano.</span>';
+  }
 }
 function mkAccCerrar(){ document.getElementById('mkAccBox').style.display = 'none'; MKACC = null; }
 
@@ -2904,6 +2959,7 @@ window.addEventListener('message', function(e){
       <span>S/</span><input id="mkAccSoles" type="number" min="1" step="1" placeholder="50">
       <button class="si azul" onclick="mkAccHacer('PRESUPUESTO')">Cambiar</button>
     </div>
+    <div class="dato" id="mkAccPresInfo" style="margin-top:-6px;font-size:11px"></div>
     <div class="btns">
       <button class="no" onclick="mkAccCerrar()">Cancelar</button>
       <button class="si" id="mkAccUno" onclick="mkAccHacer()">Confirmar</button>
