@@ -1709,14 +1709,29 @@ let mkPopSel = new Set(['hook','roas']);
 let mkPopDias = null;
 let mkPopChart = null;
 
+/* 16-sep-2026 â cdnjs a veces devuelve 404/503 para este archivo puntual
+   (intermitente, no es problema de Pablo ni de su red): antes, si esa carga
+   fallaba, no pasaba nada â ni error ni reintento, la grÃ¡fica quedaba en
+   blanco para siempre. Ahora prueba jsdelivr primero (mÃ¡s estable) y si
+   igual falla, cae a cdnjs; si los dos fallan, avisa en vez de quedar muda. */
+const MK_CHARTJS_FUENTES = [
+  'https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js'
+];
 function _mkCargarChartJs(cb){
   if (window.Chart){ cb(); return; }
   if (window._mkChartCbs){ window._mkChartCbs.push(cb); return; }
   window._mkChartCbs = [cb];
-  const s = document.createElement('script');
-  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js';
-  s.onload = () => { (window._mkChartCbs||[]).forEach(f => f()); window._mkChartCbs = []; };
-  document.head.appendChild(s);
+  const listo = (falloTotal) => { (window._mkChartCbs||[]).forEach(f => f(falloTotal)); window._mkChartCbs = []; };
+  const intentar = (i) => {
+    if (i >= MK_CHARTJS_FUENTES.length){ listo(true); return; }
+    const s = document.createElement('script');
+    s.src = MK_CHARTJS_FUENTES[i];
+    s.onload = () => listo(false);
+    s.onerror = () => { s.remove(); intentar(i + 1); };
+    document.head.appendChild(s);
+  };
+  intentar(0);
 }
 
 function mkPopSparkToggle(key){
@@ -1737,9 +1752,15 @@ function mkPopSparkPintarBotones(){
 
 function mkPopSparkDibujar(){
   if (!mkPopDias) return;
-  _mkCargarChartJs(() => {
+  _mkCargarChartJs((falloTotal) => {
     const canvasEl = document.getElementById('mkPopChart');
     if (!canvasEl) return;
+    if (falloTotal || !window.Chart){
+      canvasEl.outerHTML = '<div style="padding:20px 4px;color:var(--bad);font-size:12px;line-height:1.6">'
+        + 'No se pudo cargar la librerÃ­a de grÃ¡ficas (fallÃ³ la conexiÃ³n a los dos servidores que la sirven). '
+        + 'No es un problema de tus datos â reintentÃ¡ en unos segundos o recargÃ¡ la pÃ¡gina.</div>';
+      return;
+    }
     const dias = mkPopDias;
     const labels = dias.map(d => d.fecha.slice(5));
     const activas = MK_METRICAS.filter(m => mkPopSel.has(m.key));
