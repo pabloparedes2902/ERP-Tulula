@@ -8405,8 +8405,18 @@ async function _serieDiariaRapido(mes) {
   try { if (r && typeof r === 'object') _sdMemo[k] = { d: r, ts: Date.now() }; } catch (_) {}
   return r;
 }
+// 18-set-2026 · CONFECCION TOLERA COPIAS VIEJAS, Y NO ES UN DESCUIDO.
+// Desde F2 la copia se rehace SOLO cuando la base tiene filas nuevas (ver
+// ConfDesdeBase.gs). Los lotes de produccion son 2 o 3 por semana: entre uno y
+// otro la copia envejece a proposito, porque no cambio nada.
+// Con los 45 minutos de siempre, el navegador la descartaba y se iba a Apps
+// Script en vivo — el viaje lento — por un dato que estaba perfecto.
+// 72 HORAS, no mas: cubre un fin de semana largo sin produccion, y si el espejo
+// se rompiera de verdad, a los tres dias el ERP vuelve al camino lento y se
+// nota. Una tolerancia infinita esconderia esa rotura para siempre.
+const CONF_VENCE_MS = 72 * 60 * 60 * 1000;
 async function _confeccionListarRapido() {
-  const d = await _sbCacheLeer('confeccion.listar');
+  const d = await _sbCacheLeer('confeccion.listar', CONF_VENCE_MS);
   if (Array.isArray(d) && d.length) return d;
   return api('confeccion.listar', {});
 }
@@ -26916,6 +26926,23 @@ function _camInstallToggleEditDir() {
 }
 
 // ── RELLENAR FORMULARIO ──────────────────────────────────────
+// 18-set-2026 — SALDO A FAVOR: precio POR UNIDAD, no por nombre.
+// Antes, cuando dos prendas devueltas se llamaban igual (mismo modelo+talla)
+// pero costaban distinto (precio de campaña, descuento puntual, etc.), el
+// precio se buscaba en un mapa {nombre -> precio} que solo guarda UNO de los
+// dos - el otro queda con el precio equivocado y el saldo a favor sale mal
+// o en 0 sin avisar. Esta funcion mira PRIMERO el precio de ESA unidad en
+// particular (por posicion, ped.precios[i]), y solo si no hay esa info cae
+// al mapa por nombre (pedidos viejos o listas resumidas sin detalle).
+function _camPrecioUnidad(ped, precioMapGlobal, prenda, indice) {
+  if (ped && Array.isArray(ped.precios) && ped.precios[indice] != null) {
+    return parseFloat(ped.precios[indice]) || 0;
+  }
+  if (precioMapGlobal && precioMapGlobal[prenda] != null) return parseFloat(precioMapGlobal[prenda]) || 0;
+  if (ped && ped.precioMap && ped.precioMap[prenda] != null) return parseFloat(ped.precioMap[prenda]) || 0;
+  return 0;
+}
+
 function camRellenar(d, allPeds) {
   CAM.nro     = d.NroPedido;
   CAM.prendas = d.Prendas || [];
@@ -26946,11 +26973,18 @@ function camRellenar(d, allPeds) {
 
   // Prendas a devolver: checkboxes con prendas de los últimos 3 pedidos
   const area = document.getElementById('cam-pdev-area');
-  // Mapa prenda → precio (C7: mostrar precio pagado, no editable)
+  // Mapa prenda → precio (C7: mostrar precio pagado, no editable) — SOLO
+  // como respaldo cuando no hay precio por unidad (ver _camPrecioUnidad arriba).
   const _precioMap = {};
   if (d.PrendasConPrecio && Array.isArray(d.PrendasConPrecio)) {
     d.PrendasConPrecio.forEach(pp => { _precioMap[pp.prenda] = parseFloat(pp.precio)||0; });
   }
+  // 18-set-2026: precio de CADA unidad física, en el mismo orden que
+  // PrendasUnidadesNombres — esto es lo que corrige el saldo a favor cuando
+  // hay dos prendas iguales de nombre con precio distinto.
+  const _precios = (d.PrendasUnidades && Array.isArray(d.PrendasUnidades))
+    ? d.PrendasUnidades.map(u => parseFloat(u.precio) || 0)
+    : null;
 
   // [FIX-2] Fuente de prendas: 1) allPeds (API), 2) pRaw, 3) solo pedido actual
   let _pedsParaMostrar = null;
@@ -26960,8 +26994,9 @@ function camRellenar(d, allPeds) {
       const pm = {};
       if (ped.PrendasConPrecio) ped.PrendasConPrecio.forEach(pp => { pm[pp.prenda] = parseFloat(pp.precio)||0; });
       const _u = (ped.PrendasUnidadesNombres && ped.PrendasUnidadesNombres.length) ? ped.PrendasUnidadesNombres : (ped.Prendas || []);
+      const _pu = (ped.PrendasUnidades && Array.isArray(ped.PrendasUnidades)) ? ped.PrendasUnidades.map(u => parseFloat(u.precio)||0) : null;
       // prendas null = se cargan bajo demanda al revelar (la lista del API viene SIN prendas)
-      return { nro: String(ped.NroPedido), fecha: ped.FechaPedido || ped.Fecha || '', prendas: (_u && _u.length) ? _u : null, precioMap: pm };
+      return { nro: String(ped.NroPedido), fecha: ped.FechaPedido || ped.Fecha || '', prendas: (_u && _u.length) ? _u : null, precioMap: pm, precios: _pu };
     }); // NO filtrar por prendas: se cargan al revelar cada pedido
   }
   if (!_pedsParaMostrar || !_pedsParaMostrar.length) {
@@ -26972,7 +27007,7 @@ function camRellenar(d, allPeds) {
     // FIX cambios: preferir unidades (1 por prenda física, incluye duplicados)
     const _unid = (d.PrendasUnidadesNombres && d.PrendasUnidadesNombres.length) ? d.PrendasUnidadesNombres : d.Prendas;
     _pedsParaMostrar = _unid && _unid.length
-      ? [{ nro: d.NroPedido, fecha: d.FechaPedido||'', prendas: _unid, precioMap: _precioMap }]
+      ? [{ nro: d.NroPedido, fecha: d.FechaPedido||'', prendas: _unid, precioMap: _precioMap, precios: _precios }]
       : null;
   }
   // Fusionar precioMap del pedido actual (más preciso) sobre cualquier fuente
@@ -26991,8 +27026,8 @@ function camRellenar(d, allPeds) {
         + '<span style="font-size:11px;font-weight:600;color:' + (_esActual ? 'var(--ac)' : 'var(--mu)') + ';text-transform:uppercase;letter-spacing:.4px">Pedido #' + esc(String(ped.nro)) + (_esActual ? ' · actual' : '') + '</span>'
         + (ped.fecha ? '<span style="font-size:10px;color:var(--mu)">' + esc(ped.fecha) + '</span>' : '')
         + '</div><div style="display:flex;flex-direction:column;gap:6px">';
-      ped.prendas.forEach(p => {
-        const _precio = _precioMap[p] || (ped.precioMap && ped.precioMap[p]) || 0;
+      ped.prendas.forEach((p, _i) => {
+        const _precio = _camPrecioUnidad(ped, _precioMap, p, _i);
         const _precioTxt = _precio > 0
           ? '<span style="margin-left:auto;font-family:monospace;font-size:12px;color:var(--ac);font-weight:600">S/ ' + _precio.toFixed(2) + '</span>'
           : '';
@@ -27030,6 +27065,7 @@ function camRellenar(d, allPeds) {
         try {
           const _full = await _pedDatosRapido({ nro: _ped.nro, tipo: 'nro' });
           _ped.prendas = (_full && _full.PrendasUnidadesNombres && _full.PrendasUnidadesNombres.length) ? _full.PrendasUnidadesNombres : ((_full && _full.Prendas) || []);
+          _ped.precios = (_full && _full.PrendasUnidades && Array.isArray(_full.PrendasUnidades)) ? _full.PrendasUnidades.map(u => parseFloat(u.precio)||0) : null;
           _ped.precioMap = _ped.precioMap || {};
           if (_full && _full.PrendasConPrecio) _full.PrendasConPrecio.forEach(pp => { _ped.precioMap[pp.prenda] = parseFloat(pp.precio)||0; });
         } catch(e) { _ped.prendas = []; }
@@ -27138,6 +27174,7 @@ function camObtenerUltimosPedidos(d, limite) {
         nro,
         fecha: String(r['FechaPedido'] || r['Fecha Pedido'] || r['Fecha'] || '').trim(),
         prendas: [],
+        precios: [],
         precioMap: {},
       };
       pedOrder.push(nro);
@@ -27148,7 +27185,8 @@ function camObtenerUltimosPedidos(d, limite) {
     if (prenda && !_esPago(prenda)) {
       pedMap[nro].prendas.push(prenda);
       const precio = parseFloat(r['Precio'])||0;
-      if (precio) pedMap[nro].precioMap[prenda] = precio;
+      pedMap[nro].precios.push(precio);              // por unidad, en el mismo orden que prendas
+      if (precio) pedMap[nro].precioMap[prenda] = precio;   // respaldo por nombre (pedidos viejos)
     }
   });
 
