@@ -23525,6 +23525,8 @@ function renderInv(el){
             : '';
           const _edCur=_edT?'cursor:cell;':'';
           if(dash) tr+=`<td${_edT} style="${STEMPTY}${TB}${P}${sep}${C}${_edCur}color:#6b7280">–</td>`;
+          else if(bi===0){ const _ndCel=(d.fallas&&d.fallas[t])||0;   /* 20-set · ndui: Total = disponibles + no disponibles */
+            tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_capsula(v)}${_ivTotDesg(v,_ndCel)}</td>`; }
           else { tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_capsula(v)}</td>`; }
         });
       });
@@ -23835,6 +23837,16 @@ function renderInv(el){
 // movimiento CONTRARIO — libro contable: nada se borra, todo queda trazado.
 // ══════════════════════════════════════════════════════════════════════════
 
+// 20-set · ndui · «Conf. Total» = disponibles + no disponibles. Marcar una unidad como
+// «No disponible» NO baja el Total: la mueve de Conf. Real a No disp. Se leia como un error
+// (el numero no se movia), asi que ahora la celda lo dice sola: 20 (19 + 1 🚫).
+var ND_TOT_AYUDA = 'Conf. Total = disponibles + no disponibles. Marcar «No disponible» no baja el Total: mueve unidades de Conf. Real a No disp.';
+function _ivTotDesg(v, nd){
+  var t=parseInt(v,10), n=parseInt(nd,10);
+  if(isNaN(t)||isNaN(n)||n<=0) return '';
+  return '<span class="iv-tot-desg" title="'+ND_TOT_AYUDA+'" style="font-size:10px;font-weight:700;color:#fca5a5;margin-left:3px;white-space:nowrap">('+(t-n)+' + '+n+' 🚫)</span>';
+}
+
 // Muta la copia local (stData) de UN SKU+talla. m = deltas {total,fallas,conf,stock}.
 function _ivTotMut(pren, dis, col, tal, m){
   try{
@@ -23904,6 +23916,9 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
       +'<button id="ivt-x" class="btn bg bs" style="font-size:12px">✕</button></div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'
       +chip('Total',tot0,'#8ec3ff')+chip('No disp.',nd0,'#fca5a5')+chip('Real',real0,'#86efac')+chip('Ventas',vt0,'#c4b5fd')+chip('Stock',stk0,'#fcd34d')+'</div>'
+    /* 20-set · ndui */
+    +'<div style="font-size:11px;color:var(--mu);margin:-6px 0 10px">'+(nd0>0?('Total '+tot0+' = '+real0+' disponibles + '+nd0+' no disponible(s) 🚫. '):'')
+      +'Marcar «No disponible» NO baja el Total: mueve unidades de Conf. Real a No disp.</div>'
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px">'
       +'<button class="btn bg bs ivt-tab" data-acc="prod" style="font-size:12px">➕ Entró producción</button>'
       +'<button class="btn bg bs ivt-tab" data-acc="conteo" style="font-size:12px">✏️ Corrección de conteo</button>'
@@ -24032,7 +24047,10 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
       const mot=String((panel.querySelector('#ivt-mot')||{}).value||'').trim();
       const dst=String((panel.querySelector('#ivt-dst')||{}).value||'').trim();
       const items=[{prenda:full,cantidad:n,motivo:mot,destino:dst}];
-      _ivTotMut(pren,dis,col,tal,{fallas:n,conf:-n,stock:-n}); repintar(); cerrar();
+      // 20-set · ndui · total:0 A PROPOSITO: marcar «No disponible» mueve unidades de Real a
+      // No disp., no las saca del Total. Si esto pusiera un delta en `total`, la pantalla
+      // mostraria un numero que el servidor no va a confirmar.
+      _ivTotMut(pren,dis,col,tal,{total:0,fallas:n,conf:-n,stock:-n}); repintar(); cerrar();
       try{
         _yayOlvidar();
         let rf=await _fallasIngresarRapido(items); const viaBase=!!rf;
@@ -24040,7 +24058,7 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
         rf=_yayEspejoConfirmar(rf);
         if(viaBase) _espejoDudar(clavesEsc); else _stockEscrito(clavesEsc,['stock.resumen']);
         const fid=(rf&&rf.ids&&rf.ids[0])||'';
-        _ivToastDeshacer(n+' → No disponible ('+esc(mot)+') · '+esc(full),async()=>{
+        _ivToastDeshacer(n+' → No disponible ('+esc(mot)+') · '+esc(full)+' · Conf. Total sigue en '+tot0+' (Real −'+n+' · No disp. +'+n+')',async()=>{
           _ivTotMut(pren,dis,col,tal,{fallas:-n,conf:n,stock:n}); _stDataTs=0; repintar();
           try{ _yayOlvidar(); const rd=await apiSend('fallas.deshacer',fid?{fallaId:fid}:{}); _yayEspejoConfirmar(rd); _stockEscrito(clavesEsc,['stock.resumen']); toast('↩ Deshecho','ok'); }
           catch(e){ toast('No se pudo deshacer: '+esc(e.message),'err'); _stDataTs=0; }
@@ -24107,6 +24125,8 @@ async function _invNoDispDetalle(pren, dis, col){
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-weight:700;color:#f87171">No disponible</span><button id="nd-x" class="btn bg bs" style="font-size:12px">✕</button></div>'
       +'<div style="font-size:13px;font-weight:600;margin-bottom:2px">'+esc(pren+' '+dis+' '+col)+'</div>'
       +'<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Total: <b style="color:var(--tx)">'+tot+'</b> unidad(es)</div>'
+      /* 20-set · ndui */
+      +'<div style="font-size:11px;color:var(--mu);margin:-4px 0 8px">Estas unidades SIGUEN contadas en «Conf. Total»: Total = disponibles + no disponibles.</div>'
       +'<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--mu);margin:4px 0 2px">Por qué salieron</div>'
       +filas
       +_ndDestinosHtml(r)+'</div>';
