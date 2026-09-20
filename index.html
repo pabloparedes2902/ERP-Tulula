@@ -9601,6 +9601,40 @@ async function _sbRpcAjuste(fn, params) {
 
   REVERSA: SB_PILOTO_DEVREG = false y publicar.
 ═══════════════════════════════════════════════════════════════════════════*/
+// ══ STOCK INMEDIATO · 20-set-2026 (InmediatoStock.gs) ════════════════════
+// Con STOCK_DIRECTO=SI en el servidor, apenas la RPC encola se pide
+// `stock.aplicarYa` con el MISMO request y se ESPERA el veredicto: la
+// operacion queda aplicada (base + libro de stock) en el acto. Idempotente:
+// mismo request = mismo item de la cola, nunca se aplica dos veces. Si el
+// servidor dice "apagado" no se vuelve a preguntar por 10 minutos. Si tarda o
+// falla, queda en la cola como antes (no se reintenta por Apps Script: la RPC
+// ya guardo). Un rechazo DEFINITIVO se muestra como error de negocio.
+// REVERSA: SB_STOCK_INMEDIATO = false y publicar (o stockDirectoApagar()).
+const SB_STOCK_INMEDIATO = true;
+let _inmApagadoHasta = 0;
+async function _inmAplicarYa(req) {
+  if (!SB_STOCK_INMEDIATO || !req || Date.now() < _inmApagadoHasta) return null;
+  let r = null;
+  try {
+    r = await Promise.race([
+      apiSend('stock.aplicarYa', { request: req }),
+      new Promise(res => setTimeout(() => res({ _lento: true }), 30000))
+    ]);
+  } catch (e) { return null; }
+  if (!r || r._lento) return null;
+  if (r.directo === false && r.motivo === 'apagado') { _inmApagadoHasta = Date.now() + 600000; return null; }
+  if (r.directo && r.definitivo) {
+    const err = new Error('No se aplicó: ' + (r.error || 'la operación fue rechazada'));
+    err._negocio = true; err._inmediato = true;
+    throw err;
+  }
+  if (r.directo && r.enCola && r.error) {
+    try { toast('⚠ Guardado; se aplicará en minutos (' + String(r.error).slice(0, 140) + ')', 'warn'); } catch (_) {}
+  }
+  return r;
+}
+// ══ fin STOCK INMEDIATO ══
+
 const SB_PILOTO_DEVREG = true;
 
 async function _registrarDevolucion(body) {
@@ -9611,7 +9645,8 @@ async function _registrarDevolucion(body) {
     const req = 'dvr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     const d = await _sbRpcAjuste('devolucion_registrar', { p_body: body, p_request: req });
     if (d && d.NroDevolucion) {
-      return { ok: true, NroDevolucion: d.NroDevolucion, IDs: d.IDs || [], via: 'base' };
+      const inm = await _inmAplicarYa(req);
+      return { ok: true, NroDevolucion: d.NroDevolucion, IDs: d.IDs || [], via: 'base', inmediato: inm };
     }
   } catch (e) {
     if (e && e._negocio) throw e;
@@ -9644,7 +9679,7 @@ async function _recuperarFalla(body) {
                                   cantidad: parseInt(it.cantidad, 10) || 0,
                                   lote: String(it.lote || '') })),
       p_request: req });
-    if (d) return { ok: true, items: items.length, via: 'base' };
+    if (d) { const inm = await _inmAplicarYa(req); return { ok: true, items: items.length, via: 'base', inmediato: inm }; }
   } catch (e) {
     // Un "no" de la base (no hay tantas fallas disponibles) es una respuesta
     // válida, no una falla de red: se le muestra a la persona en vez de
@@ -9660,7 +9695,7 @@ async function _ajustarConteo(body) {
   const d = await _sbRpcAjuste('conteo_ajustar', {
     p_prenda: String(body.prenda || ''), p_delta: parseInt(body.delta, 10),
     p_comentario: String(body.comentario || ''), p_request: req });
-  if (d) return { ok: true, delta: parseInt(body.delta, 10), via: 'base' };
+  if (d) { const inm = await _inmAplicarYa(req); return { ok: true, delta: parseInt(body.delta, 10), via: 'base', inmediato: inm }; }
   return apiSend('stock.ajustarConteo', body);
 }
 
@@ -9671,7 +9706,7 @@ async function _ajustarLote(body) {
     p_codigo: String(body.codigo || ''), p_prenda: String(body.prenda || ''),
     p_dis: String(body.dis || ''), p_col: String(body.col || ''),
     p_talla: String(body.talla || ''), p_nueva: parseInt(body.nueva, 10), p_request: req });
-  if (d) return { ok: true, nueva: parseInt(body.nueva, 10), via: 'base' };
+  if (d) { const inm = await _inmAplicarYa(req); return { ok: true, nueva: parseInt(body.nueva, 10), via: 'base', inmediato: inm }; }
   return apiSend('lote.ajustar', body);
 }
 
@@ -9746,8 +9781,9 @@ async function _skuCrearRapido(items) {
     const req = 'skc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     const d = await _sbRpcAjuste('sku_crear', { p_items: items, p_request: req });
     if (d) {
-      const listo = apiSend('espejo.aplicarNro', { nro: req.slice(0, 60) }).catch(() => {});
-      return { ok: true, via: 'base', encolado: true, items: items.length,
+      const inm = await _inmAplicarYa(req);
+      const listo = (inm && inm.aplicado) ? Promise.resolve(inm) : apiSend('espejo.aplicarNro', { nro: req.slice(0, 60) }).catch(() => {});
+      return { ok: true, via: 'base', encolado: !(inm && inm.aplicado), inmediato: inm, items: items.length,
                unidades: items.reduce((s, i) => s + (parseInt(i.cantidad, 10) || 0), 0), listo };
     }
   } catch (e) { if (e && e._negocio) throw e; }
@@ -9762,8 +9798,9 @@ async function _skuEliminarRapido(pr, dis, col) {
     const req = 'ske-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     const d = await _sbRpcAjuste('sku_eliminar', { p_prenda: pr, p_dis: dis, p_col: col, p_request: req });
     if (d) {
-      const listo = apiSend('espejo.aplicarNro', { nro: (String(pr).trim() + ' ' + String(dis).trim() + ' ' + String(col).trim()).toUpperCase().slice(0, 60) }).catch(() => {});
-      return { ok: true, via: 'base', encolado: true, listo };
+      const inm = await _inmAplicarYa(req);
+      const listo = (inm && inm.aplicado) ? Promise.resolve(inm) : apiSend('espejo.aplicarNro', { nro: (String(pr).trim() + ' ' + String(dis).trim() + ' ' + String(col).trim()).toUpperCase().slice(0, 60) }).catch(() => {});
+      return { ok: true, via: 'base', encolado: !(inm && inm.aplicado), inmediato: inm, listo };
     }
   } catch (e) { if (e && e._negocio) throw e; }
   return apiSend('sku.eliminar', { prenda: pr, dis: dis, col: col });
@@ -25406,6 +25443,9 @@ async function _fallasIngresarRapido(items) {
     const d = await r.json();
     if (!(d && d.ok === true)) { _cronCerrar(_c, false); return null; }
     _cronCerrar(_c, true);
+    // 20-set STOCK INMEDIATO: se espera el veredicto. Un rechazo NO devuelve null
+    // (null = ir por Apps Script = duplicar lo que la RPC ya guardo): se avisa.
+    try { d.inmediato = await _inmAplicarYa(req); } catch (eI) { d.inmediato = { aplicado: false, definitivo: true, error: eI.message }; try { toast('✗ ' + eI.message, 'err'); } catch (_) {} }
     return d;
   } catch (e) { _cronCerrar(_c, false); try { console.warn('[falla] RPC fallo → via Apps Script'); } catch(_){} return null; }
 }
