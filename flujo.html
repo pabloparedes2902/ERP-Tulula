@@ -2654,13 +2654,54 @@ function cargarEmbudo(){
     return d;
   };
 
-  /* 1) el embudo actual: apenas llega, se dibuja */
-  fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(_normEmb)
-    .then(d=>embPisarCanonico(d, r.desde, r.hasta)).then(d=>{
+  /* ══════════════════════════════════════════════════════════════════════
+     1) EL EMBUDO · YA NO SE ESPERAN 8 SEGUNDOS PARA PINTAR
+
+     Medido contra n8n el 21-set, endpoint por endpoint:
+         /embudo-rango-v2 ... 8131 ms
+         /ventas-periodo  ....  623 ms
+         /embudo-periodo  ....  472 ms
+     Antes la cadena era: esperar los 8 s de /embudo-rango-v2, y RECIEN
+     entonces pedir las dos rapidas — que le pisaban casi todos los numeros.
+     O sea: 9 segundos de espera por datos que despues se descartaban.
+
+     De /embudo-rango-v2 lo unico que pintarTodo usa de verdad es `dio_talla`
+     (conversaciones, frias, tibias, calientes, ventas y las cajas por asesora
+     salen todas de las fuentes canonicas). La serie diaria la pide aparte
+     cargarSerieEmbudo(), no esta pantalla.
+
+     Ahora las dos corren EN PARALELO y se funden con _fundir(): se pinta
+     apenas llega lo rapido (~1 s) y, cuando llega lo lento, se repinta con
+     `dio_talla` adentro. Si lo lento llega primero, _fundir igual lo muestra y
+     despues lo canonico lo corrige. El orden de llegada no cambia el
+     resultado final, solo cuanto se tarda en ver algo.
+     ══════════════════════════════════════════════════════════════════════ */
+  let _canon = null, _lento = null;
+  const _fundir = () => {
+    /* La base es el payload lento cuando ya llego (trae dio_talla y el resto de
+       la forma que espera pintarTodo); encima van SIEMPRE los numeros
+       canonicos, que son los que mandan. */
+    const d = _lento || { acumulado: {}, serie: [] };
+    if (_canon) {
+      d.acumulado = Object.assign(d.acumulado || {}, _canon.acumulado || {});
+      if (_canon.asesoras) d.asesoras = _canon.asesoras;
+      d.__canon = true;
+    }
     embData = { d: d, dPrev: (embData && embData.dPrev) || null, lbl: r.lbl };
     pintarTodo(); _pintado = true; _guardar();
-    document.getElementById('embEstado').textContent = '';
-  }).catch(()=>{
+    document.getElementById('embEstado').textContent =
+      _lento ? '' : 'Completando \u201cdio talla\u201d\u2026';
+  };
+
+  /* lo rapido: ~1 s, y trae TODO lo que decide los numeros del embudo */
+  embPisarCanonico({ acumulado: {}, serie: [] }, r.desde, r.hasta)
+    .then(d => { _canon = d; _fundir(); })
+    .catch(()=>{});
+
+  /* lo lento: 8 s, y solo aporta dio_talla. Ya no bloquea a nadie. */
+  fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(_normEmb)
+    .then(d=>{ _lento = d; _fundir(); })
+    .catch(()=>{
     if (!_pintado) pintarEmbudo({frias:375, tibias:198, dio_talla:120, calientes:64, compras:12, compras_con_clic:12, compras_sin_clic:0},
       '\u26a0\ufe0f Sin conexi\u00f3n con el servicio. Datos de EJEMPLO.');
   });
