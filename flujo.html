@@ -666,6 +666,35 @@ const URL_EMBUDO_WEB = BASE_N8N + '/embudo-web-rango'; /* 3-sep-2026 — PENDIEN
 const URL_EMBUDO_P  = BASE_N8N + '/embudo-periodo';
 const URL_VENTAS_P  = BASE_N8N + '/ventas-periodo';
 
+/* ══════════════════════════════════════════════════════════════════════════
+   21-set-2026 · LOS ENDPOINTS NO HABLAN EL MISMO IDIOMA DE FECHAS
+   Medido contra n8n, uno por uno:
+     /embudo-rango-v2 -> quiere EPOCH. Con 'YYYY-MM-DD' devuelve todo en 0.
+     /embudo-periodo  -> acepta los dos.
+     /ventas-periodo  -> quiere 'YYYY-MM-DD'. Con EPOCH devuelve ARRAY VACIO,
+                         con status 200, sin ningun error: se ve como si no
+                         hubiera ventas.
+   rango() arma epoch (segundos), y embPisarCanonico se lo pasaba igual a los
+   dos. Resultado: /ventas-periodo contestaba [] siempre, V.length era 0, y el
+   total del embudo nunca se escribia -> la pantalla Ventas mostraba 0.
+   Antes esto no se veia porque _normEmb tapaba el hueco poniendo las de
+   anuncio identificado (59); al sacarle ese parche quedo el 0 a la vista.
+   Arreglo: a /ventas-periodo se le manda SIEMPRE fecha. La conversion es en
+   hora LOCAL (Lima), no UTC: rango() armo el epoch desde fechas locales, y con
+   getUTCDate() una venta de las 20h de Lima caeria en el dia siguiente.
+   ══════════════════════════════════════════════════════════════════════════ */
+function _embFecha(v){
+  if (v == null) return v;
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;      /* ya venia como fecha */
+  const n = Number(v);
+  if (!isFinite(n) || !n) return s;
+  const d = new Date(s.length > 10 ? n : n * 1000);  /* 10 digitos = segundos */
+  if (isNaN(d.getTime())) return s;
+  const p = (x) => String(x).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
 /* Pisa el acumulado con el dato canonico. Si algun endpoint no responde,
    deja lo que ya venia: la pantalla nunca se queda en blanco. */
 async function embPisarCanonico(d, desde, hasta){
@@ -674,7 +703,7 @@ async function embPisarCanonico(d, desde, hasta){
   try {
     const [emb, ven] = await Promise.all([
       fetch(URL_EMBUDO_P + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()).catch(() => null),
-      fetch(URL_VENTAS_P + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()).catch(() => null)
+      fetch(URL_VENTAS_P + '?desde=' + _embFecha(desde) + '&hasta=' + _embFecha(hasta)).then(r => r.json()).catch(() => null)
     ]);
     const TODO = Array.isArray(emb) ? emb : [];
     const E = TODO.filter(x => (x.tipo || 'ad') === 'ad');
@@ -2611,11 +2640,14 @@ function cargarEmbudo(){
        embudo: si entraran, los dos modulos nunca cuadrarian. */
     /* 8-sep-2026 — las ventas ya no se deciden aca: las pisa embPisarCanonico
        con /ventas-periodo. Esto queda solo como respaldo si ese endpoint falla. */
-    /* 21-set · ESTE RESPALDO YA NO PUEDE PISAR EL TOTAL. Corre DESPUES de
-       embPisarCanonico y ponia ac.compras = compras_con_clic, o sea SOLO las
-       ventas con anuncio identificado: el embudo mostraba 59 en vez de 66.
-       Las 7 sin anuncio son ventas reales y tienen que sumar. Si el endpoint
-       canonico si contesto (deja la marca __canon), aca no se toca nada. */
+    /* 21-set · ESTE RESPALDO NO PUEDE DECIDIR EL TOTAL. Ponia
+       ac.compras = compras_con_clic, o sea SOLO las ventas con anuncio
+       identificado: el embudo mostraba 59 en vez de 66. Las 7 sin anuncio son
+       ventas reales y tienen que sumar.
+       ORDEN REAL DE LA CADENA (importa): _normEmb corre PRIMERO y
+       embPisarCanonico DESPUES, asi que lo canonico pisa a este respaldo de
+       todas formas. La marca __canon queda como cinturon por si algun dia se
+       invierte el orden: entonces este respaldo no tocaria nada. */
     if (d.__canon) { /* el dato bueno ya vino de /ventas-periodo: no pisar */ }
     else if (d.compras_con_clic != null)     ac.compras = +d.compras_con_clic||0;
     else if (d.compras_clasificador != null) ac.compras = +d.compras_clasificador||0;
