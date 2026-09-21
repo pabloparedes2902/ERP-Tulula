@@ -601,6 +601,13 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
     #pg-margen .mg-card .mg-card-value { font-size: 22px; font-weight: 700; text-align: center; }
     #pg-margen .mg-card .mg-card-value.pos { color: var(--mg-verde); }
     #pg-margen .mg-card .mg-card-value.neg { color: var(--mg-rojo); }
+    /* 20-set · la linea chica que dice QUE esta contando la tarjeta. Pablo se
+       confundio justo por eso: el Embudo y el Margen contaban cosas distintas
+       y ninguna pantalla lo decia. */
+    #pg-margen .mg-card .mg-card-nota { font-size: 10px; color: var(--mg-text-dim); text-align: center; margin-top: 5px; line-height: 1.35; }
+    /* 20-set · la fila del pie que junta toda la inversion que no es de ningun producto */
+    #pg-margen tr.mg-fila-noatrib td { font-style: italic; }
+    #pg-margen tr.mg-fila-noatrib-detalle td { font-size: 11px; color: var(--mg-text-dim); padding-top: 0; font-style: italic; }
 
     #pg-margen table { width: 100%; border-collapse: collapse; background: var(--mg-panel); border-radius: 10px; overflow: hidden; }
     #pg-margen thead th {
@@ -673,6 +680,8 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
     <div class="mg-card">
       <div class="mg-card-label">Ventas #</div>
       <div class="mg-card-value" id="mg-card-ventas">—</div>
+      <!-- 20-set · igual que el pie del Embudo: la tarjeta dice en una linea QUE cuenta. -->
+      <div class="mg-card-nota" id="mg-card-ventas-nota"></div>
     </div>
     <div class="mg-card">
       <div class="mg-card-label">Costos S/</div>
@@ -4604,6 +4613,11 @@ function _flujoLazy(){
     var mgOrdenColumna = 'MargenTotalProducto';
     var mgOrdenAsc = false;
     var mgGastoAdminPeriodo = 0;
+    // 20-set · los tres baldes de inversion que manda margenCalcular
+    // ({total, conVentas, sinVentas, noAtribuido, detalle...}). Si el backend es
+    // viejo (o el cache guardo una respuesta vieja) queda null y la pantalla se
+    // comporta exactamente como antes.
+    var mgBaldesInversion = null;
 
     // ============================================================
     // INIT: mismo selector de período que Marketing (17-set-2026)
@@ -4714,7 +4728,14 @@ function _flujoLazy(){
     // ============================================================
     function mgClasificar(row) {
       if (row.Ventas === 0 && row.InversionMetaAds > 0) {
-        return { clase: 'mg-rojo', etiqueta: '🚨 Gastando sin ventas' };
+        // 20-set · antes TODAS estas filas decian lo mismo y no eran lo mismo.
+        // Un producto real que gasto y no vendio es una campaña para revisar;
+        // un nombre que no es ningun producto (VARIOS, TOPS, PANTALONES, BLUSAS)
+        // es plata que no se le puede pegar a nadie y va junta en la fila del pie.
+        if (row.BaldeInversion === 'NO_ATRIBUIBLE') {
+          return { clase: 'mg-rojo', etiqueta: '🚫 No atribuible' };
+        }
+        return { clase: 'mg-rojo', etiqueta: '🚨 Producto real: gastó y no vendió' };
       }
       if (row.Margen >= 0) {
         return { clase: 'mg-verde', etiqueta: '✅ Rentable' };
@@ -4735,6 +4756,8 @@ function _flujoLazy(){
       // extra a través de JSON.stringify — se perdía en cada cache-hit).
       var productos = (data && data.productos) || [];
       mgGastoAdminPeriodo = (data && data.gastoAdminTotalPeriodo) || 0;
+      // 20-set · los tres baldes de inversion, tal como los manda el backend.
+      mgBaldesInversion = (data && data.inversionBaldes) || null;
 
       // 06-sep-2026 · Pablo: solo interesan productos con inversión en Ads
       // dentro del período — si no tuvo inversión, no tuvo ventas ni costos
@@ -4781,6 +4804,17 @@ function _flujoLazy(){
 
       document.getElementById('mg-card-ventas-soles').textContent = mgSoles(ingresoTot);
       document.getElementById('mg-card-ventas').textContent = ventasTot;
+      // 20-set · la linea de abajo de «Ventas #», al estilo del pie del Embudo:
+      // dice cuantas ventas se estan contando y cuanta inversion NO se le puede
+      // pegar a ningun producto. Sin esto, dos pantallas con numeros distintos
+      // no se explican solas (fue exactamente lo que confundio a Pablo).
+      var elNota = document.getElementById('mg-card-ventas-nota');
+      if (elNota) {
+        var noAtrib = mgBaldesInversion ? Number(mgBaldesInversion.noAtribuido || 0) : 0;
+        var txt = ventasTot + (ventasTot === 1 ? ' venta con producto identificado' : ' ventas con producto identificado');
+        if (noAtrib > 0) txt += ' · ' + mgSoles(noAtrib) + ' de inversión no atribuible';
+        elNota.textContent = txt;
+      }
       document.getElementById('mg-card-costos').textContent = mgSoles(costoTot);
       document.getElementById('mg-card-inversion').textContent = mgSoles(inversionTot);
 
@@ -4842,6 +4876,19 @@ function _flujoLazy(){
 
       var tbody = document.getElementById('mg-tbody');
       tbody.innerHTML = '';
+      // ══════════════════════════════════════════════════════════════════
+      // 20-set-2026 · UNA SOLA FILA «NO ATRIBUIDO» EN VEZ DE CUATRO ENGAÑOSAS.
+      // Antes, cada nombre de campaña que no es ningun producto (VARIOS,
+      // PANTALONES, BLUSAS, TOPS) ocupaba su propia fila «Gastando sin ventas»,
+      // como si fuera un producto que fallo. No lo es: es plata que no se le
+      // puede pegar a ningun producto nunca. Ahora van todas juntas al pie, con
+      // el detalle de los nombres en una segunda linea y en el globito.
+      // OJO: se filtran SOLO para dibujar. mgUltimaData sigue entero, asi que
+      // las tarjetas de arriba (inversion total, margen total) NO cambian de
+      // numero: inversion total = con ventas + real sin ventas + no atribuido.
+      // ══════════════════════════════════════════════════════════════════
+      var noAtribFilas = data.filter(function (r) { return r.BaldeInversion === 'NO_ATRIBUIBLE'; });
+      data = data.filter(function (r) { return r.BaldeInversion !== 'NO_ATRIBUIBLE'; });
       data.forEach(function (row) {
         var cls = mgClasificar(row);
         var tr = document.createElement('tr');
@@ -4861,6 +4908,44 @@ function _flujoLazy(){
           '<td><span class="mg-badge">' + cls.etiqueta + '</span></td>';
         tbody.appendChild(tr);
       });
+
+      // 20-set · la fila del pie: toda la inversion que no es de ningun producto,
+      // junta y con nombre propio. El margen que muestra es el de siempre para
+      // esas filas (Ventas 0 y Costos 0 → el margen es la inversion en negativo),
+      // asi la columna sigue sumando lo mismo que antes.
+      if (noAtribFilas.length) {
+        var naInv = noAtribFilas.reduce(function (a, r) { return a + (Number(r.InversionMetaAds) || 0); }, 0);
+        var naMargen = noAtribFilas.reduce(function (a, r) { return a + (Number(r.MargenTotalProducto) || 0); }, 0);
+        var naNombres = noAtribFilas.slice().sort(function (x, y) { return y.InversionMetaAds - x.InversionMetaAds; })
+          .map(function (r) { return r.Producto + ' ' + mgSoles(r.InversionMetaAds); });
+        var naGlobo = 'Inversión en Ads que no corresponde a ningún producto del catálogo ni de '
+          + 'Config_Productos: categorías (PANTALONES, BLUSAS) o nombres genéricos de campaña '
+          + '(VARIOS, TOPS). Ninguna venta se le va a pegar nunca, así que no se le descuenta a '
+          + 'ningún producto real — pero sí está en la inversión total de arriba. Detalle: '
+          + naNombres.join(' · ');
+        var trNA = document.createElement('tr');
+        trNA.className = 'mg-rojo mg-fila-noatrib';
+        trNA.title = naGlobo;
+        trNA.innerHTML =
+          '<td><strong>🚫 NO ATRIBUIDO</strong></td>' +
+          '<td>0</td>' +
+          '<td>' + mgSoles(0) + '</td>' +
+          '<td>' + mgSoles(0) + '</td>' +
+          '<td>' + mgSoles(naInv) + '</td>' +
+          '<td>' + mgSoles(naMargen) + '</td>' +
+          '<td>' + mgSoles(0) + '</td>' +
+          '<td>' + mgSoles(0) + '</td>' +
+          '<td>' + mgRoas(0) + '</td>' +
+          '<td>' + mgSoles(0) + '</td>' +
+          '<td><span class="mg-badge">🚫 No atribuible</span></td>';
+        tbody.appendChild(trNA);
+        var trDet = document.createElement('tr');
+        trDet.className = 'mg-fila-noatrib-detalle';
+        trDet.title = naGlobo;
+        trDet.innerHTML = '<td colspan="11">No es ningún producto (categoría o nombre de campaña): '
+          + naNombres.join(' · ') + '</td>';
+        tbody.appendChild(trDet);
+      }
     }
 
     function mgSoles(n) {
