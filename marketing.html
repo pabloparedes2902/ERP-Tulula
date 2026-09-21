@@ -643,6 +643,8 @@
   </div>
   <div class="mkwrap"><table class="mk" id="mkTabla"><thead id="mkHead"></thead><tbody id="mkBody"></tbody><tfoot id="mkFoot"></tfoot></table></div>
   <div id="mkVacio" style="display:none;text-align:center;color:var(--txt2);padding:26px;font-size:12.5px">Sin anuncios con esos filtros.</div>
+  <!-- 21-set - el pie que dice que se esta contando (ventas cobradas vs. adelantos) -->
+  <div id="mkPieCobradas" style="display:none;text-align:right;color:var(--txt2);padding:2px 8px 10px;font-size:11.5px"></div>
 </div>
 </div>
 <!-- 6-sep-2026 — ESTOS DOS FALTABAN. Tenían su CSS y su JavaScript desde el
@@ -739,19 +741,44 @@ async function mkCargarVentas(desde, hasta){
       const f = { pedidos:+x.pedidos||0, pagados:+x.pagados||0, ingreso:+x.ingreso||0,
                   web:+x.web||0, whatsapp:+x.whatsapp||0, otros:+x.otros||0,
                   ingreso_web:+x.ingreso_web||0, ingreso_whatsapp:+x.ingreso_whatsapp||0 };
+      /* 21-set - LO COBRADO. erp.v_compras_ads solo trae pedidos con pago COMPLETO:
+         son 66, no 72. Si el webhook todavia no manda estos campos, valen los de antes
+         y la pantalla se comporta igual que hoy (se puede publicar antes de tocar n8n). */
+      f.whatsapp_pagados        = (x.whatsapp_pagados        != null) ? (+x.whatsapp_pagados        || 0) : f.whatsapp;
+      f.ingreso_whatsapp_pagado = (x.ingreso_whatsapp_pagado != null) ? (+x.ingreso_whatsapp_pagado || 0) : f.ingreso_whatsapp;
+      f.web_pagados             = (x.web_pagados             != null) ? (+x.web_pagados             || 0) : f.web;
+      f.ingreso_web_pagado      = (x.ingreso_web_pagado      != null) ? (+x.ingreso_web_pagado      || 0) : f.ingreso_web;
       if (x.sin_id === true || x.sin_id === 'true' || String(x.anuncio) === 'SIN_ID') o.sinId = f;
       else o.porAd[String(x.anuncio)] = f;
     });
     return o;
   };
   const dias = Math.max(1, Math.round((new Date(hasta+'T12:00:00Z') - new Date(desde+'T12:00:00Z')) / 86400000) + 1);
-  try {
-    const [a, b] = await Promise.all([
-      fetch(URL_VENTAS + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()),
-      fetch(URL_VENTAS + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1)).then(r => r.json())
-    ]);
-    MKV = arma(a); MKVP = arma(b);
-  } catch (e) { MKV = null; MKVP = null; }
+  /* 21-set · CADA PERIODO POR SU CUENTA. Antes iban en un Promise.all con un solo
+     try: si CUALQUIERA de las dos lecturas fallaba, se perdian las DOS y Marketing
+     mostraba 0 ventas. Pasa de verdad: la vista erp.v_compras_ads puede tardar
+     demasiado en un rango largo y Supabase corta la consulta (statement timeout).
+     Ahora el periodo anterior es opcional: si no llega, el actual se muestra igual
+     y solo se pierde la comparacion. */
+  /* 21-set · DOS INTENTOS. El webhook de n8n devuelve 500 de vez en cuando
+     (se vio en la consola de Pablo: cinco 500 seguidos y al rato la misma URL
+     contestaba bien). Es intermitente, no es que el dato no exista. Un solo
+     intento dejaba la pantalla en cero por un tropiezo de un segundo. */
+  const leer = async (d1, d2) => {
+    for (let intento = 0; intento < 2; intento++) {
+      try {
+        const r = await fetch(URL_VENTAS + '?desde=' + d1 + '&hasta=' + d2);
+        if (r.ok) {
+          const j = await r.json();
+          if (Array.isArray(j)) return arma(j);
+        }
+      } catch (e) { /* reintentamos abajo */ }
+      if (intento === 0) await new Promise(ok => setTimeout(ok, 1200));
+    }
+    return null;
+  };
+  MKV  = await leer(desde, hasta);
+  MKVP = await leer(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1));
 }
 
 /* Pisa ventas e ingreso de cada anuncio con el dato del ERP.
@@ -760,8 +787,9 @@ async function mkCargarVentas(desde, hasta){
    el anuncio se llame "Whatsapp / ...". El canal manda sobre el nombre. */
 function _mkVentaCanal(f){
   if (!f) return { pedidos:0, pagados:0, ingreso:0 };
-  if (MKCANAL === 'wa')  return { pedidos:f.whatsapp, pagados:f.whatsapp, ingreso:f.ingreso_whatsapp };
-  if (MKCANAL === 'web') return { pedidos:f.web,      pagados:f.web,      ingreso:f.ingreso_web };
+  /* 21-set - el canal cuenta VENTAS COBRADAS (pago completo), no pedidos con algun pago. */
+  if (MKCANAL === 'wa')  return { pedidos:f.whatsapp_pagados, pagados:f.whatsapp_pagados, ingreso:f.ingreso_whatsapp_pagado };
+  if (MKCANAL === 'web') return { pedidos:f.web_pagados,      pagados:f.web_pagados,      ingreso:f.ingreso_web_pagado };
   return { pedidos:f.pedidos, pagados:f.pagados, ingreso:f.ingreso };
 }
 function mkAplicarVentas(){
@@ -864,8 +892,9 @@ function mkSinId(lado){
   const cam = (document.getElementById('mkCampana') || {}).value;
   const con = (document.getElementById('mkConjunto') || {}).value;
   if (cam || con) return null;
-  if (MKCANAL === 'wa')  return s.whatsapp ? { pedidos:s.whatsapp, pagados:s.whatsapp, ingreso:s.ingreso_whatsapp, web:0, whatsapp:s.whatsapp } : null;
-  if (MKCANAL === 'web') return s.web      ? { pedidos:s.web,      pagados:s.web,      ingreso:s.ingreso_web,      web:s.web, whatsapp:0 } : null;
+  /* 21-set - la fila fantasma tambien cuenta lo COBRADO, para que ella y el TOTAL digan lo mismo */
+  if (MKCANAL === 'wa')  return s.whatsapp_pagados ? { pedidos:s.whatsapp_pagados, pagados:s.whatsapp_pagados, ingreso:s.ingreso_whatsapp_pagado, web:0, whatsapp:s.whatsapp_pagados } : null;
+  if (MKCANAL === 'web') return s.web_pagados      ? { pedidos:s.web_pagados,      pagados:s.web_pagados,      ingreso:s.ingreso_web_pagado,      web:s.web_pagados, whatsapp:0 } : null;
   if (MKCANAL === 'all') return s.pedidos  ? s : null;
   return null;
 }
@@ -2348,7 +2377,27 @@ function mkPintar(){
     + '</tr>';
 
   document.getElementById('mkVacio').style.display = rows.length ? 'none' : 'block';
+  mkPieCobradasPintar();
   mkEngancharCabecera();
+}
+
+/* -- 21-set . EL PIE DICE QUE SE ESTA CONTANDO ---------------------------
+   Las ventas salen de erp.v_compras_ads: pedidos con pago COMPLETO (cobrados).
+   Los que solo pagaron un adelanto NO cuentan, y aca se dice cuantos son, para
+   que nadie tenga que adivinar por que el numero paso de 72 a 66.           */
+function mkPieCobradasPintar(){
+  const el = document.getElementById('mkPieCobradas');
+  if (!el) return;
+  if (MKCANAL !== 'wa' || !MKV){ el.style.display = 'none'; return; }
+  let cob = 0, ped = 0;
+  const suma = (f) => { if (!f) return; cob += +f.whatsapp_pagados || 0; ped += +f.whatsapp || 0; };
+  Object.keys(MKV.porAd).forEach(k => suma(MKV.porAd[k]));
+  suma(MKV.sinId);
+  const adel = Math.max(0, ped - cob);
+  el.innerHTML = '<b>' + cob + '</b> ventas cobradas (pago completo)' +
+                 (adel ? ' · <b>' + adel + '</b> con adelanto, que no cuentan' : '') +
+                 ' — fuente: erp.v_compras_ads';
+  el.style.display = 'block';
 }
 
 /* ---- arrastrar para reordenar + tirar del borde para ensanchar ---- */

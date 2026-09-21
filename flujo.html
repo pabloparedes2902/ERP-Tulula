@@ -704,12 +704,25 @@ async function embPisarCanonico(d, desde, hasta){
     if (V.length){
       /* solo WhatsApp: un pedido de Pagina Web no pertenece a este embudo */
       const esSin = (x) => (x.sin_id === true || x.sin_id === 'true' || String(x.anuncio) === 'SIN_ID');
-      const wa = (f) => Number(f.whatsapp) || 0;
-      const con = V.filter(x => !esSin(x)).reduce((a, x) => a + wa(x), 0);
-      const sin = V.filter(esSin).reduce((a, x) => a + wa(x), 0);
+      /* 21-set - SE CUENTAN LAS VENTAS COBRADAS, NO LOS PEDIDOS.
+         Antes se sumaba `whatsapp` = pedidos de WhatsApp con algun pago: daba 72.
+         Cobrado (pago COMPLETO) son 66, que es lo que cuenta el Margen leyendo la
+         vista erp.v_compras_ads. Ahora se suma `whatsapp_pagados`, el mismo criterio.
+         Si el webhook todavia no manda ese campo, cae solito al de antes: la pantalla
+         no se rompe y este cambio se puede publicar antes de tocar n8n. */
+      const wa   = (f) => Number(f.whatsapp) || 0;
+      const waPg = (f) => (f && f.whatsapp_pagados != null) ? (Number(f.whatsapp_pagados) || 0) : wa(f);
+      const con = V.filter(x => !esSin(x)).reduce((a, x) => a + waPg(x), 0);
+      const sin = V.filter(esSin).reduce((a, x) => a + waPg(x), 0);
       ac.compras_con_clic = con;
       ac.compras_sin_clic = sin;
       ac.compras = con + sin;   /* el TOTAL, igual que la fila TOTAL de Marketing */
+      /* cuantas pagaron solo un adelanto = pedidos - cobradas. Queda en 0 cuando la
+         fuente ya trae unicamente cobradas, y entonces el pie no lo menciona. */
+      ac.compras_adelanto = Math.max(0, V.reduce((a, x) => a + wa(x), 0) - (con + sin));
+      /* 21-set · marca de que el total salio de la fuente canonica: sin esto,
+         _normEmb lo pisaba mas abajo con solo las de anuncio identificado. */
+      d.__canon = true;
     }
   } catch (e) {}
   return d;
@@ -2492,7 +2505,11 @@ function pintarEmbudo(ac, nota, acPrev, etapasDef, paletaDef){
        '<text x="'+F(lx)+'" y="11" text-anchor="end" class="eln">'+filas[i].c+'</text></g>';
   }
   if (ac.compras_con_clic !== undefined)
-    o+='<text x="'+cx+'" y="466" text-anchor="middle" class="epie"><tspan class="epieb">'+ac.compras_con_clic+
+    /* 21-set - el pie dice QUE se esta contando: ventas cobradas y, si hay, las que
+       solo pagaron un adelanto y por eso no cuentan. */
+    o+='<text x="'+cx+'" y="466" text-anchor="middle" class="epie"><tspan class="epieb">'+(ac.compras||0)+
+       '</tspan> cobradas'+(ac.compras_adelanto ? ' · <tspan class="epieb">'+ac.compras_adelanto+'</tspan> con adelanto' : '')+
+       ' · <tspan class="epieb">'+ac.compras_con_clic+
        '</tspan> con anuncio identificado · <tspan class="epieb">'+ac.compras_sin_clic+
        '</tspan> sin anuncio identificado (cuentan en el total)</text>';
   document.getElementById('embZona').innerHTML =
@@ -2594,7 +2611,13 @@ function cargarEmbudo(){
        embudo: si entraran, los dos modulos nunca cuadrarian. */
     /* 8-sep-2026 — las ventas ya no se deciden aca: las pisa embPisarCanonico
        con /ventas-periodo. Esto queda solo como respaldo si ese endpoint falla. */
-    if (d.compras_con_clic != null)          ac.compras = +d.compras_con_clic||0;
+    /* 21-set · ESTE RESPALDO YA NO PUEDE PISAR EL TOTAL. Corre DESPUES de
+       embPisarCanonico y ponia ac.compras = compras_con_clic, o sea SOLO las
+       ventas con anuncio identificado: el embudo mostraba 59 en vez de 66.
+       Las 7 sin anuncio son ventas reales y tienen que sumar. Si el endpoint
+       canonico si contesto (deja la marca __canon), aca no se toca nada. */
+    if (d.__canon) { /* el dato bueno ya vino de /ventas-periodo: no pisar */ }
+    else if (d.compras_con_clic != null)     ac.compras = +d.compras_con_clic||0;
     else if (d.compras_clasificador != null) ac.compras = +d.compras_clasificador||0;
     return d;
   };
@@ -2983,7 +3006,9 @@ function cajasGrupo(d, dp, cfg){
            El conteo pasa a secundario: depende del volumen de cada uno. */
         `<b style="width:48px;text-align:right;font-size:13.5px">${idx===0?'\u2014':pc}</b>` +
         `<span style="width:38px;text-align:right;font-size:11.5px;font-weight:800;color:var(--txt2)">${v}</span>` +
-        `<span style="width:58px;text-align:right">${idx===0?'':capsulaDelta(v, acp && acp[k], base, (acp&&(acp[denomK]||acp[FIL[0][0]]))||0)}</span></div>`;
+        `<span style="width:58px;text-align:right">${(idx===0||k==='frias')?'':capsulaDelta(v, acp && acp[k], base, (acp&&(acp[denomK]||acp[FIL[0][0]]))||0)}</span></div>`;
+      /* 8-sep-2026 (pedido de Pablo) — FRIAS no lleva capsula de variacion:
+         el % principal ya dice todo y el globito al costado confundia. */
     });
     if (cfg.mostrarMejora) h += bloqueMejora(a, d);
     h += `</div>`;
