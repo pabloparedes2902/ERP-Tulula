@@ -718,6 +718,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <th data-key="IngresoTotal">Ventas S/</th>
         <th data-key="CostoTotal">Costos S/</th>
         <th data-key="InversionMetaAds">Inversión Ads S/</th>
+        <th data-key="InversionAtribuida" title="De dónde viene la inversión de este producto: «propia» es la que vino con el nombre de su propia campaña; «atribuida» es la que se le pasó porque una campaña genérica (TOPS, BLUSAS, VARIOS…) vendió este producto. Solo se llena con ADS_ATRIBUIR_POR_COMPRA encendido.">Ads propia / atribuida</th>
         <th data-key="MargenTotalProducto">Margen Contribución S/</th>
         <th data-key="CPA">CPA Real S/</th>
         <th data-key="CPAMax" title="Ingreso Prom. − Costo Prom. de este producto: el máximo que se puede pagar en Ads por pedido antes de perder plata en él (no incluye el gasto administrativo del negocio: ver tarjetas de resumen)">CPA Máximo S/</th>
@@ -731,6 +732,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <th><input type="text" class="mg-col-filter" data-filter-key="IngresoTotal" placeholder="Filtrar…"></th>
         <th><input type="text" class="mg-col-filter" data-filter-key="CostoTotal" placeholder="Filtrar…"></th>
         <th><input type="text" class="mg-col-filter" data-filter-key="InversionMetaAds" placeholder="Filtrar…"></th>
+        <th><input type="text" class="mg-col-filter" data-filter-key="InversionAtribuida" placeholder="Filtrar…"></th>
         <th><input type="text" class="mg-col-filter" data-filter-key="MargenTotalProducto" placeholder="Filtrar…"></th>
         <th><input type="text" class="mg-col-filter" data-filter-key="CPA" placeholder="Filtrar…"></th>
         <th><input type="text" class="mg-col-filter" data-filter-key="CPAMax" placeholder="Filtrar…"></th>
@@ -4732,6 +4734,13 @@ function _flujoLazy(){
         // Un producto real que gasto y no vendio es una campaña para revisar;
         // un nombre que no es ningun producto (VARIOS, TOPS, PANTALONES, BLUSAS)
         // es plata que no se le puede pegar a nadie y va junta en la fila del pie.
+        // 20-set · una fila con 0 ventas propias pero con plata ATRIBUIDA no es
+        // una campaña que fallo: es un producto que se compro dentro de un pedido
+        // que el Margen conto en otro producto. Decirle «gasto y no vendio» seria
+        // mentir, y es justo el error que este cambio vino a arreglar.
+        if (Number(row.InversionAtribuida || 0) > 0) {
+          return { clase: 'mg-amarillo', etiqueta: '↪️ Inversión atribuida por compra' };
+        }
         if (row.BaldeInversion === 'NO_ATRIBUIBLE') {
           return { clase: 'mg-rojo', etiqueta: '🚫 No atribuible' };
         }
@@ -4811,7 +4820,12 @@ function _flujoLazy(){
       var elNota = document.getElementById('mg-card-ventas-nota');
       if (elNota) {
         var noAtrib = mgBaldesInversion ? Number(mgBaldesInversion.noAtribuido || 0) : 0;
-        var txt = ventasTot + (ventasTot === 1 ? ' venta con producto identificado' : ' ventas con producto identificado');
+        // 21-set · la tarjeta dice QUE cuenta y CON QUE FECHA (Pablo lo aprobo): la lista de
+        // ventas del Margen es la de erp.v_compras_ads — WhatsApp + Ads, con el pago COMPLETO —
+        // y cada venta se fecha por su DIA DE PAGO, igual que Ventas y Marketing. Antes decia
+        // «con producto identificado», que ya no es cierto: la venta cuya prenda no esta en
+        // Config_Productos cuenta igual, en la fila OTROS (SIN PRODUCTO).
+        var txt = ventasTot + (ventasTot === 1 ? ' venta' : ' ventas') + ' \u00b7 WhatsApp + Ads, pagadas \u00b7 por d\u00eda de pago';
         if (noAtrib > 0) txt += ' · ' + mgSoles(noAtrib) + ' de inversión no atribuible';
         elNota.textContent = txt;
       }
@@ -4836,6 +4850,14 @@ function _flujoLazy(){
         case 'CostoProm':                  return mgSoles(row.CostoProm);
         case 'MargenBrutoPct':             return row.Ventas ? mgPct(row.MargenBrutoPct) : '—';
         case 'InversionMetaAds':           return mgSoles(row.InversionMetaAds);
+        // 20-set · de donde viene la plata de este producto. Con el interruptor
+        // ADS_ATRIBUIR_POR_COMPRA apagado el backend no manda el desglose y la
+        // celda dice «—»: la tabla queda con los MISMOS numeros de siempre.
+        case 'InversionAtribuida': {
+          if (row.InversionPropia === undefined || row.InversionPropia === null) return '—';
+          var _at = Number(row.InversionAtribuida || 0);
+          return mgSoles(row.InversionPropia) + (_at > 0 ? ' + ' + mgSoles(_at) + ' atrib.' : '');
+        }
         case 'CPA':                        return mgSoles(row.CPA);
         case 'CPAMax':                     return mgSoles(row.CPAMax);
         case 'ROAS':                       return mgRoas(row.ROAS);
@@ -4900,6 +4922,7 @@ function _flujoLazy(){
           '<td>' + mgSoles(row.IngresoTotal) + '</td>' +
           '<td>' + mgSoles(row.CostoTotal) + '</td>' +
           '<td>' + mgSoles(row.InversionMetaAds) + '</td>' +
+          '<td>' + mgTextoColumna(row, 'InversionAtribuida') + '</td>' +
           '<td>' + mgSoles(row.MargenTotalProducto) + '</td>' +
           '<td>' + mgSoles(row.CPA) + '</td>' +
           '<td>' + mgSoles(row.CPAMax) + '</td>' +
@@ -4932,6 +4955,7 @@ function _flujoLazy(){
           '<td>' + mgSoles(0) + '</td>' +
           '<td>' + mgSoles(0) + '</td>' +
           '<td>' + mgSoles(naInv) + '</td>' +
+          '<td>— / —</td>' +
           '<td>' + mgSoles(naMargen) + '</td>' +
           '<td>' + mgSoles(0) + '</td>' +
           '<td>' + mgSoles(0) + '</td>' +
@@ -4942,7 +4966,7 @@ function _flujoLazy(){
         var trDet = document.createElement('tr');
         trDet.className = 'mg-fila-noatrib-detalle';
         trDet.title = naGlobo;
-        trDet.innerHTML = '<td colspan="11">No es ningún producto (categoría o nombre de campaña): '
+        trDet.innerHTML = '<td colspan="12">No es ningún producto (categoría o nombre de campaña): '
           + naNombres.join(' · ') + '</td>';
         tbody.appendChild(trDet);
       }
