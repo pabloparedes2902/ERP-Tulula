@@ -3790,8 +3790,30 @@ function _sbVencerTok(){
        localStorage.setItem('erp_sb_pase_proactivo','NO')   ← vuelve al modo viejo
        localStorage.removeItem('erp_sb_pase_proactivo')     ← lo devuelve
    ══════════════════════════════════════════════════════════════════════════ */
-const SB_PASE_MARGEN_MS  = 10 * 60 * 1000;   // renovar 10 min antes de vencer
-const SB_PASE_TIMEOUT_MS = 12000;            // tope para pedirle el pase al ERP
+// ══════════════════════════════════════════════════════════════════════════
+// B6 · 23-set-2026 · POR QUE EL PASE SE PERDIA (medido, no supuesto)
+//
+// Telemetria de 30 dias: `api.auth.sbPase` n=2171, fallidas=276, p95=359.994 ms.
+// SEIS MINUTOS de cola. Por dentro el pase no hace casi nada (props + un global
+// + un SHA-256): todo ese tiempo es esperar turno, porque Apps Script atiende
+// de a uno.
+//
+// EL ERROR QUE HABIA: la renovacion de FONDO usaba el MISMO tope de 12 s que la
+// peticion con alguien esperando. Pero en la de fondo NO ESPERA NADIE — se
+// dispara 10 minutos antes de que el pase venza. Tirarla a los 12 s no le ahorra
+// la espera a nadie: solo garantiza que, con la cola cargada, el pase NUNCA
+// llegue a tiempo. Y entonces: la via rapida se apaga → todo se va por Apps
+// Script → la cola crece → el pase tarda mas. Circulo vicioso.
+//
+// EL ARREGLO, dos numeros:
+//   · margen 10 → 25 min: se pide con tiempo de sobra para una cola de 6 min.
+//   · tope de fondo 12 s → 90 s: la de fondo puede esperar, la otra no.
+// El tope de 12 s se queda EXACTO donde importa: cuando alguien esta esperando.
+// Reversa: volver los dos numeros a 10*60*1000 y 12000.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_PASE_MARGEN_MS  = 25 * 60 * 1000;   // B6: 10 → 25 min. La cola tarda hasta 6.
+const SB_PASE_TIMEOUT_MS = 12000;            // tope CON alguien esperando (no se toca)
+const SB_PASE_TIMEOUT_FONDO_MS = 90000;      // B6: tope SIN nadie esperando
 let _sbPaseRenovando = false;
 let _sbPaseUltFallo  = 0;
 
@@ -3809,7 +3831,7 @@ function _sbPaseRenovarFondo(motivo) {
     if (!SESSION_TOKEN) return;                       // sin sesion de ERP no hay a quien pedirle
     if (Date.now() - _sbPaseUltFallo < SB_REAUTH_ESPERA) return;   // no insistir en vano
     _sbPaseRenovando = true;
-    _sbPaseDelBackend()
+    _sbPaseDelBackend(SB_PASE_TIMEOUT_FONDO_MS)   // B6: nadie espera, puede aguantar la cola
       .then(function (t) {
         if (t) { try { console.log('[SB] pase renovado en segundo plano (' + (motivo || '') + ')'); } catch (_) {} }
         else   { _sbPaseUltFallo = Date.now(); }
@@ -3916,18 +3938,19 @@ function _googleCredSilenciosa(){
 // le vuelve a preguntar en toda la sesión: no tiene sentido gastar 3 s por vez.
 let _sbPaseBackendHay = null;      // null = no sé todavía · false = no está configurado
 
-async function _sbPaseDelBackend(){
+async function _sbPaseDelBackend(topeMs){
   if (_sbPaseBackendHay === false) return null;
+  var _tope = (typeof topeMs === 'number' && topeMs > 0) ? topeMs : SB_PASE_TIMEOUT_MS;
   try {
     // Etapa 1.5 — TOPE DE 12 s. Sin esto, una llamada colgada (la telemetria vio
     // una de 1 hora) deja `_sbReauthEnCurso` tomado y TODAS las vias rapidas de
     // esa persona esperando la misma promesa durante todo ese rato.
     const d = await Promise.race([
       api('auth.sbPase'),
-      new Promise(function (res) { setTimeout(function () { res({ ok: false, motivo: 'timeout' }); }, SB_PASE_TIMEOUT_MS); })
+      new Promise(function (res) { setTimeout(function () { res({ ok: false, motivo: 'timeout' }); }, _tope); })
     ]);
     if (d && d.motivo === 'timeout') {
-      try { console.warn('[SB] el pase tardo mas de ' + (SB_PASE_TIMEOUT_MS / 1000) + ' s: se sigue por Apps Script y se reintenta despues.'); } catch (_) {}
+      try { console.warn('[SB] el pase tardo mas de ' + (_tope / 1000) + ' s: se sigue por Apps Script y se reintenta despues.'); } catch (_) {}
       return null;
     }
     if (!d || d.ok !== true || !d.access_token) {
@@ -17701,7 +17724,7 @@ function verPed(p) {
     +'<div class="fg"><label>Forma de pago</label><select id="pago-f-forma" style="'+inpSt+'">'+formasOpts+'</select></div>'
     +'</div>'
     +'<div class="fr">'
-    +'<div class="fg"><label>Fecha de pago</label><input id="pago-f-fecha" type="date" style="'+inpSt+'"></div>'
+    +'<div class="fg"><label>Fecha de pago</label><input id="pago-f-fecha" type="date" max="'+hoyLima()+'" style="'+inpSt+'"></div>'   /* 23-set · no se puede elegir futuro */
     +'<div class="fg"><label>Asesora de este pago</label><select id="pago-f-asesora" style="'+inpSt+'"><option value="">— Elegir asesora —</option>'+ASESORAS.map(a=>'<option value="'+esc(a)+'">'+esc(a)+'</option>').join('')+'</select></div>'
     +'</div>'
     +'<div class="fr1"><div class="fg"><label style="margin-bottom:5px;display:block">Constancia (opcional)</label>'
@@ -18712,6 +18735,14 @@ async function _guardarPedidoModal(nro, body) {
     const monto = parseFloat(qId('pago-f-monto').value);
     const forma = qId('pago-f-forma').value.trim();
     const fecha = qId('pago-f-fecha').value;
+    // 23-set · EL CANDADO, LADO NAVEGADOR. El de verdad esta en el servidor
+    // (`_fechaPagoValidar_`, Code.js); este es para que el error ni siquiera
+    // llegue a pasar. Origen: 11 pagos fechados 2026-09-30, S/1.801,00, que se
+    // contaban en el mes equivocado y movian la comision de asesora de mes.
+    if (fecha && fecha > hoyLima()) {
+      toast('La fecha de pago no puede ser futura (' + fecha + '). Hoy es ' + hoyLima() + '.', 'err');
+      return;
+    }
     // Fix raíz (2-ago): si nadie eligió en el selector, el pago queda a nombre
     // de la asesora logueada — nunca más pagos huérfanos por vacío.
     const asesoraPago = (qId('pago-f-asesora') ? qId('pago-f-asesora').value.trim() : '') ||
