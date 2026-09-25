@@ -12571,6 +12571,19 @@ const CNT_SOLO_SIN_PERIODO = { '': 1, 'ENTREGADO': 1 };
 const CUADRE_INC_MS = 60 * 60 * 1000;
 let _cuadreIncUlt = 0;
 
+// 25-set · diferencias que una recarga no arregla (ver _pedsVerificarDeriva).
+const CUADRE_ESTRUCTURAL_ON = true;
+const _curaFirmas = {};
+// La firma es «contador:cuanto difiere», no los numeros: si entra un pedido
+// nuevo, 316≠318 pasa a 317≠319 y sigue siendo la MISMA diferencia.
+function _cuadreFirma(locales, b, difs) {
+  try {
+    return Object.keys(locales).filter(function (e) {
+      const k = CNT_MAPA[e]; return k && b[k] != null && Number(locales[e]) !== Number(b[k]) && difs.some(function (d) { return d.indexOf(e + ' ') === 0; });
+    }).map(function (e) { return e + ':' + (Number(locales[e]) - Number(b[CNT_MAPA[e]])); }).sort().join('|');
+  } catch (_) { return difs.join('|'); }
+}
+
 function _pedsVerificarDeriva(locales, b) {
   if (!CNT_BASE_ON || !b || !locales) return false;
   const difs = [], incomparables = [];
@@ -12601,6 +12614,32 @@ function _pedsVerificarDeriva(locales, b) {
   const _arrancando = !!window._pedsCargaEnCurso
                       || !Array.isArray(_c2List) || !Array.isArray(histDevData);
   if (!difs.length) { if (!_arrancando) _cuadreAnotar(false); return false; }
+
+  // 25-set-2026 · LA DIFERENCIA QUE UNA RECARGA NO ARREGLA.
+  // Medido (viaRapidaEstado7Dias, ViaRapida.gs): en 7 dias la MISMA diferencia
+  // se repitio cientos de veces — `_ACTIVOS 316≠318` x148, `336≠341` x146...
+  // Si la recarga completa la arreglara, no volveria identica. Vuelve porque
+  // la pantalla no tiene cargados todos los pedidos que la base cuenta (ej. un
+  // pedido viejo que sigue Activo solo por un cambio o una devolucion abierta):
+  // no es una copia desviada, es una diferencia de ALCANCE.
+  // Ahora: se recarga UNA vez por cada diferencia (contador + cuanto difiere).
+  // Si despues de esa recarga vuelve la misma, se marca «estructural», se anota
+  // una vez por hora como `marca.cuadre.estructural` y NO se recarga mas.
+  // Una desviacion de verdad se arregla con la primera recarga y no vuelve.
+  // REVERSA: CUADRE_ESTRUCTURAL_ON = false y publicar.
+  if (!_arrancando && CUADRE_ESTRUCTURAL_ON) {
+    const _firma = _cuadreFirma(locales, b, difs);
+    const _fi = _curaFirmas[_firma] || (_curaFirmas[_firma] = { recargas: 0, estructural: false });
+    if (!_fi.estructural && _fi.recargas >= 1 && !window._pedsCargaEnCurso) _fi.estructural = true;
+    if (_fi.estructural) {
+      if ((Date.now() - (_fi.ultAnota || 0)) >= CUADRE_INC_MS) {
+        _fi.ultAnota = Date.now();
+        try { const _ce = _cronAbrir('marca.cuadre.estructural', difs.join(' | ').slice(0, 60)); _cronCerrar(_ce, true); } catch (_) {}
+      }
+      return false;   // no es deriva: no se anota como tal ni se recarga
+    }
+  }
+
   if (!_arrancando) _cuadreAnotar(true, difs.join(' | '));
   _pedMarca('DERIVA detectada', difs.join(' | '));
   try { console.warn('[contadores] deriva: ' + difs.join(' | ')); } catch (_) {}
@@ -12608,6 +12647,9 @@ function _pedsVerificarDeriva(locales, b) {
   if (_curaVeces >= CURA_TOPE) return true;           // freno duro
   if (Date.now() - _curaUltima < CURA_ESPERA) return true;
   _curaUltima = Date.now(); _curaVeces++;
+  if (!_arrancando && CUADRE_ESTRUCTURAL_ON) {
+    try { const _f = _cuadreFirma(locales, b, difs); (_curaFirmas[_f] = _curaFirmas[_f] || { recargas: 0, estructural: false }).recargas++; } catch (_) {}
+  }
   _pedsAvisoCura(true);
   setTimeout(function () {
     try { loadPeds(pEst, true); } catch (_) {}
