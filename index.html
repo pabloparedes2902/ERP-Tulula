@@ -13011,6 +13011,8 @@ function _saludBanner(msg, esCaida, esCuota) {
 // ══════════════════════════════════════════════════════════════════════════
 const SB_LECTURA_POLL = true;
 const POLL_APPS_CADA  = 12;     // 1 de cada 12 vueltas (≈3 min) va a Apps Script
+const SB_LATIDO_ESPEJO = true;  // 25-set: el aviso de salud sale del espejo (ver _pollPedsOnce)
+const POLL_APPS_RED    = 48;    // 25-set: Apps Script como red, 1 de cada 48 vueltas (≈12 min)
 let _pollVuelta = 0;
 let _sbPollTs   = 0;            // marca de agua en el reloj de Postgres
 
@@ -13084,6 +13086,21 @@ async function _pollPedsOnce() {
     // igual que antes de este cambio. Nunca se degrada la frescura en silencio.
     _pollVuelta++;
     if (baseOk && (_pollVuelta % POLL_APPS_CADA) !== 0) return;
+
+    // 25-set · con la base andando, el AVISO DE SALUD sale del espejo
+    // ('latido.avisos', EspejoDatos.gs) y Apps Script queda como red: 1 de cada
+    // POLL_APPS_RED vueltas (≈12 min). Medido: api.pedidos.cambiosDesde tenia
+    // 463 fallas en 30 dias (p95 77 s) — eran estas vueltas esperando turno.
+    // Si el espejo no contesta o esta vencido, se va a Apps Script como antes.
+    // REVERSA: SB_LATIDO_ESPEJO = false y publicar.
+    if (baseOk && SB_LATIDO_ESPEJO && (_pollVuelta % POLL_APPS_RED) !== 0) {
+      let _av = null;
+      try { _av = await _sbCacheLeer('latido.avisos', 20 * 60 * 1000); } catch (_) { _av = null; }
+      if (_av) {
+        try { _saludBanner(_av.baseCaida || _av.saludSync || '', !!_av.baseCaidaGrave, !!_av.baseCaida); } catch (_) {}
+        return;
+      }
+    }
 
     const params = Object.assign({ desde: pLastSyncTs }, _pedsScopeParams());
     delete params.limit; delete params.offset;
