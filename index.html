@@ -3345,7 +3345,32 @@ function _lentoGuardarPendiente(reg) {
 }
 
 let _lentosVolcando = false;
-async function _lentosVolcarPendientes(forzar) {
+// 25-set-2026 · SI YA HAY SESION, LA COLA SE VACIA DIRECTO A LA BASE.
+// Medido (viaRapidaEstado7Dias, ViaRapida.gs): `api.lentos.volcar` es lo que MAS
+// falla del ERP — 322 de 408 en 7 dias, p95 138 s. Y se llamaba justo cuando la
+// sesion ya habia vuelto (`_lentoCentralizar` lo dispara despues de un registro
+// directo OK): tenia el pase en la mano y aun asi hacia cola en Apps Script.
+// Ahora, con pase, cada registro pendiente va por la MISMA puerta directa que usa
+// `_lentoCentralizar` (rpc/erp_lento_registrar). Apps Script queda solo para cuando
+// de verdad no hay sesion. Unico costo: esos registros ya no quedan marcados
+// «sin sesion» en la base (esa puerta no tiene la columna).
+// REVERSA: LENTOS_VOLCADO_DIRECTO = false y publicar.
+const LENTOS_VOLCADO_DIRECTO = true;
+const _LENTOS_LOTE_DIRECTO   = 50;
+async function _lentosVolcarDirecto(tok, lote) {
+  if (SB_APAGADO) return false;   // simulacro de reversa: nada a la base
+  const rs = await Promise.all(lote.map(function (x) {
+    return fetch(SB_URL + '/rest/v1/rpc/erp_lento_registrar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: SB_ANON, Authorization: 'Bearer ' + tok },
+      body: JSON.stringify({ p_usuario: x.usuario || '', p_asesora: x.asesora || '',
+        p_proceso: String(x.proceso || '').slice(0, 200), p_ms: x.ms || 0, p_ok: !!x.ok,
+        p_cortada: !!x.cortada, p_ocurrio: new Date(x.ts || Date.now()).toISOString() })
+    }).then(function (r) { return r.ok; }).catch(function () { return false; });
+  }));
+  return rs.every(Boolean);
+}
+async function _lentosVolcarPendientes(forzar, tok) {
   try {
     if (_lentosVolcando) return;                       // freno 1: una a la vez
     const l = _cronLeer(_LENTOS_PEND);
@@ -3357,6 +3382,13 @@ async function _lentosVolcarPendientes(forzar) {
     // Se marca el intento ANTES de llamar: si la llamada muere, no se reintenta
     // en bucle. Los registros quedan igual en la cola para la proxima ventana.
     try { localStorage.setItem(_LENTOS_VOLCADO_TS, String(Date.now())); } catch (_) {}
+    if (tok && LENTOS_VOLCADO_DIRECTO && typeof SB_URL !== 'undefined' && SB_ANON) {
+      const loteD = l.slice(0, _LENTOS_LOTE_DIRECTO);
+      if (await _lentosVolcarDirecto(tok, loteD)) {
+        _cronGuardar(_LENTOS_PEND, _cronLeer(_LENTOS_PEND).slice(loteD.length));
+      }
+      return;   // con pase NUNCA se va a Apps Script; lo que fallo queda para la proxima
+    }
     const lote = l.slice(0, _LENTOS_LOTE);
     const r = await apiPost('lentos.volcar', { items: lote });
     if (r && r.ok) {
@@ -3399,7 +3431,8 @@ async function _lentoCentralizar(reg) {
       }),
     }).catch(function () { _lentoGuardarPendiente(reg); });
     // Volvio la sesion: aprovechar para drenar lo que quedo de cuando no habia.
-    _lentosVolcarPendientes();
+    // 25-set: con el pase en la mano, directo a la base (no a Apps Script).
+    _lentosVolcarPendientes(false, tok);
   } catch (_) { try { _lentoGuardarPendiente(reg); } catch (__) {} }
 }
 
