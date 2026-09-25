@@ -586,6 +586,11 @@
   <div id="mkAviso" class="mkaviso" style="display:none"></div>
 
   <div class="mkbar">
+    <span style="display:flex;align-items:center;gap:4px" title="Agrupar la tabla por campaña, por conjunto o ver cada anuncio">
+      <button class="btn" data-mkn="campana" onclick="mkNivel('campana')">Campañas</button>
+      <button class="btn" data-mkn="conjunto" onclick="mkNivel('conjunto')">Conjuntos</button>
+      <button class="btn on" data-mkn="anuncio" onclick="mkNivel('anuncio')">Anuncios</button>
+    </span>
     <input id="mkQ" placeholder="Buscar anuncio, campaña o conjunto…" oninput="mkPintar()" style="flex:1;min-width:200px">
     <select id="mkCampana" onchange="mkLlenarConjuntos(); mkPintar()"><option value="">Todas las campañas</option></select>
     <select id="mkConjunto" onchange="mkPintar()"><option value="">Todos los conjuntos</option></select>
@@ -699,6 +704,10 @@ function mkIrSub(cual){
    si el nombre menciona los dos, gana WhatsApp.
    ══════════════════════════════════════════════════════════════════════ */
 let MKCANAL = 'wa';   /* arranque en WhatsApp, que es donde se vende hoy */
+/* 25-set-2026 (pedido de Pablo, diseño aprobado en el lienzo) — VER POR:
+   agrupar la misma tabla por Conjunto o por Campaña, sin salir de esta
+   pantalla. No pide datos nuevos: agrupa lo que ya está cargado. */
+let MKNIVEL = 'anuncio';   /* 'anuncio' | 'conjunto' | 'campana' */
 function _mkNorm(t){ return String(t||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,''); }
 function mkCanalDe(r){
   const s = _mkNorm(r.campana) + ' ' + _mkNorm(r.conjunto) + ' ' + _mkNorm(r.anuncio);
@@ -2039,6 +2048,92 @@ function mkRecalcular(){
   MK.filas.forEach(r => { _mkRecalcUno(r.act); _mkRecalcUno(r.prev); });
 }
 
+/* 25-set-2026 — Ver por Conjuntos / Campañas: cambia el botón "on" y repinta.
+   No toca MK.filas ni pide nada a Meta: agrupa las mismas filas ya cargadas. */
+function mkNivel(v){
+  MKNIVEL = v;
+  document.querySelectorAll('[data-mkn]').forEach(b => b.classList.toggle('on', b.dataset.mkn === v));
+  mkPintar();
+}
+/* Clic en un grupo ("12 anuncios" de un conjunto o campaña): vuelve a la vista
+   por Anuncios ya filtrada a ESE conjunto/campaña, usando los mismos
+   desplegables de arriba (no hace falta un filtro nuevo). */
+function mkVerGrupo(campana, conjunto){
+  mkNivel('anuncio');
+  document.getElementById('mkCampana').value = campana || '';
+  mkLlenarConjuntos();
+  document.getElementById('mkConjunto').value = conjunto || '';
+  mkPintar();
+}
+/* Mismo cálculo que _mkAgg (la suma de KPI de arriba, adentro de mkPintar),
+   copiado aparte: agrupar por Conjunto o Campaña necesita sumar ANTES de que
+   _mkAgg exista todavía en esta función. Si mañana cambia una fórmula ahí,
+   hay que copiarla acá también. */
+function mkAggFilas(filas, campo){
+  campo = campo || 'act';
+  const K = ['gasto','impresiones','alcance','clics','link_clicks','v3s','thruplays','p100','conv_meta',
+             'conversaciones','personas','frias','tibias','calientes','pedidos','pagados','ingreso','costo'];
+  const t = {}; K.forEach(k => t[k] = 0);
+  let hayEtapas = false;
+  filas.forEach(r => { const o = r[campo] || {}; K.forEach(k => { if (o[k] != null) { t[k] += Number(o[k]) || 0; if (k==='frias'||k==='tibias'||k==='calientes') hayEtapas = true; } }); });
+  const d = (a, b) => (b ? a / b : null);
+  t.hook_rate   = d(t.v3s, t.impresiones) === null ? null : d(t.v3s, t.impresiones) * 100;
+  t.hold_rate   = d(t.thruplays, t.impresiones) === null ? null : d(t.thruplays, t.impresiones) * 100;
+  t.retencion   = d(t.p100, t.v3s) === null ? null : d(t.p100, t.v3s) * 100;
+  t.ctr         = d(t.link_clicks, t.impresiones) === null ? null : d(t.link_clicks, t.impresiones) * 100;
+  t.ctr_todos   = d(t.clics, t.impresiones) === null ? null : d(t.clics, t.impresiones) * 100;
+  t.cpm         = d(t.gasto, t.impresiones) === null ? null : d(t.gasto, t.impresiones) * 1000;
+  t.cpc         = d(t.gasto, t.link_clicks);
+  t.frecuencia  = d(t.impresiones, t.alcance);
+  t.costo_conv  = d(t.gasto, t.conversaciones);
+  const _base = (t.personas > 0) ? t.personas : t.conversaciones;
+  t.tasa_cierre = d(t.pedidos, _base) === null ? null : d(t.pedidos, _base) * 100;
+  t.cac         = d(t.gasto, t.pedidos);
+  t.roas        = d(t.ingreso, t.gasto);
+  t.ticket      = d(t.ingreso, t.pedidos);
+  const hayCosto = t.costo > 0 || t.pedidos === 0;
+  t.margen_bruto = (hayCosto && t.ingreso > 0) ? ((t.ingreso - t.costo) / t.ingreso) * 100 : null;
+  t.ganancia     = hayCosto ? (t.ingreso - t.costo - t.gasto) : null;
+  if (!hayCosto) t.costo = null;
+  t.frias_p     = hayEtapas ? (d(t.frias, t.conversaciones) === null ? null : d(t.frias, t.conversaciones) * 100) : null;
+  t.tibias_p    = hayEtapas ? (d(t.tibias, t.conversaciones) === null ? null : d(t.tibias, t.conversaciones) * 100) : null;
+  t.calientes_p = hayEtapas ? (d(t.calientes, t.conversaciones) === null ? null : d(t.calientes, t.conversaciones) * 100) : null;
+  if (!hayEtapas){ t.frias = t.tibias = t.calientes = null; }
+  return t;
+}
+/* Agrupa filas de ANUNCIO (ya con ._on/._au calculados) en filas de Conjunto
+   o de Campaña. No inventa una "acción" nueva para el grupo: cuenta cuántos
+   de sus anuncios piden cada acción (fiel a lo que ya calcula mkAccionFinal
+   por anuncio) y deja que Pablo entre a decidir anuncio por anuncio. */
+function mkAgruparNivel(filas, nivel){
+  const clave = (nivel === 'campana') ? (r => String(r.campana||'')) : (r => String(r.conjunto||''));
+  const grupos = new Map();
+  filas.forEach(r => { const k = clave(r); if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(r); });
+  return [...grupos.values()].map(hijos => {
+    const activos = hijos.filter(h => h._on).length;
+    const accCount = {};
+    hijos.forEach(h => { const a = (h._au && h._au.a) || 'ESPERAR'; accCount[a] = (accCount[a]||0) + 1; });
+    return {
+      campana: hijos[0].campana,
+      conjunto: nivel === 'campana' ? '' : hijos[0].conjunto,
+      anuncio: hijos.length + ' anuncio' + (hijos.length === 1 ? '' : 's'),
+      thumbnail_url: null,
+      ad_id: null,
+      estado_anuncio: null,
+      act: mkAggFilas(hijos, 'act'),
+      prev: mkAggFilas(hijos, 'prev'),
+      _grupo: true,
+      _nivelGrupo: nivel,
+      _activos: activos,
+      _inactivos: hijos.length - activos,
+      _accCount: accCount,
+      _on: activos > 0,
+      _au: { a: 'GRUPO', pide: false, por: '' },
+      _pide: false
+    };
+  });
+}
+
 function mkPintar(){
   if (!MK) return;
   mkFiltroCerrar();
@@ -2080,6 +2175,10 @@ function mkPintar(){
     if (!mkPasaFiltroCol(r)) return false;
     return true;
   });
+  /* 25-set-2026 — Ver por Conjuntos/Campañas: se agrupa DESPUÉS de filtrar,
+     así "Activos", la búsqueda y los chips de acción siguen recortando
+     primero, igual que en Anuncios. */
+  if (MKNIVEL !== 'anuncio') rows = mkAgruparNivel(rows, MKNIVEL);
   (function(){
     const av = document.getElementById('mkFAviso');
     const n = mkContarFiltrosCol();
@@ -2313,9 +2412,11 @@ function mkPintar(){
        cuando esa accion no hace falta o ya esta hecha. */
     /* 7-sep-2026 — las cápsulas son botones: un clic deja en pantalla solo los
        anuncios de esa acción o ese estado; otro clic vuelve a mostrarlos todos. */
-    const chipEst = '<span class="mkchip clic est-' + (r._on ? 'on' : 'off') + '" onclick="mkFiltrarPor(\'estado\',\''
+    const chipEst = r._grupo
+      ? '<span style="font-size:11px;font-weight:800;color:var(--txt2)">' + r._activos + ' activos · ' + r._inactivos + ' inactivos</span>'
+      : ('<span class="mkchip clic est-' + (r._on ? 'on' : 'off') + '" onclick="mkFiltrarPor(\'estado\',\''
       + (r._on ? 'ACTIVE' : 'PAUSED') + '\')" title="Ver solo los ' + (r._on ? 'activos' : 'inactivos') + '">'
-      + (r._on ? 'ACTIVO' : 'INACTIVO') + '</span>';
+      + (r._on ? 'ACTIVO' : 'INACTIVO') + '</span>');
     const claseAcc = r._pide ? ('acc-' + String(r._au.a).toLowerCase()) : 'acc-nada';
     /* 8-sep-2026 (pedido de Pablo) — el boton va en TODAS las filas, no solo
        donde el ERP recomienda actuar. El ERP no sabe que te quedaste sin stock,
@@ -2328,10 +2429,14 @@ function mkPintar(){
         + ' title="' + (r._on ? 'Apagar' : 'Encender') + ' este anuncio en Meta"'
         + ' onclick="mkEjecPreg(\'' + String(r.ad_id) + '\', \'' + _sugiere + '\')">&#9211;</button>'
       : '';
-    const chipAcc = '<span class="mkchip clic ' + claseAcc + '"'
+    const chipAcc = r._grupo
+      ? (['ESCALAR','ENCENDER','ESPERAR','APAGAR'].filter(a => r._accCount[a])
+          .map(a => '<span class="mkchip acc-' + a.toLowerCase() + '" style="margin:0 2px">' + r._accCount[a] + ' ' + a + '</span>').join('')
+        || '<span class="mkchip acc-nada">—</span>')
+      : ('<span class="mkchip clic ' + claseAcc + '"'
         + ' onclick="mkFiltrarPor(\'accion\',\'' + String(r._au.a).toLowerCase() + '\')"'
         + ' title="Ver solo los de ' + r._au.a + '"'
-        + ' onmouseenter="mkTipIn(event, \'' + r._au.por.replace(/'/g, "\\'") + '\')" onmouseleave="mkTipOut()">' + r._au.a + '</span>';
+        + ' onmouseenter="mkTipIn(event, \'' + r._au.por.replace(/'/g, "\\'") + '\')" onmouseleave="mkTipOut()">' + r._au.a + '</span>');
     const celdas = cols.map(c => {
       /* campaña y conjunto viven en la fila, no en las métricas */
       if (MK_COLS[c].txt) return '<td class="tex" title="' + String(r[c]||'').replace(/"/g,'') + '">' + MK_COLS[c].f(r[c]) + '</td>';
@@ -2358,11 +2463,16 @@ function mkPintar(){
       if (c === 'ganancia' && val !== null) cuerpo = '<span class="mkpill ' + (val > 0 ? 'b' : 'r') + '">' + mkSol(val) + '</span>';
       return '<td>' + cuerpo + '</td>';
     }).join('');
-    return '<tr>'
+    const celdaAnuncio = r._grupo
+      ? ('<div class="mkcre" style="cursor:pointer" onclick="mkVerGrupo(\'' + String(r.campana||'').replace(/'/g,"\\'").replace(/"/g,'') + '\',\'' + String(r.conjunto||'').replace(/'/g,"\\'").replace(/"/g,'') + '\')"'
+          + ' title="Ver los anuncios de ' + (r._nivelGrupo === 'campana' ? 'esta campaña' : 'este conjunto') + '">'
+          + '<div class="col"><div class="nom" style="font-weight:800;color:var(--bot)">' + r.anuncio + ' \u203a</div></div></div>')
+      : ('<div class="mkcre">' + img
+          + '<div class="col"><div class="nom" title="' + String(r.anuncio).replace(/"/g,'') + '">' + r.anuncio + '</div></div></div>');
+    return '<tr' + (r._grupo ? ' style="background:var(--panel)"' : '') + '>'
       + tdFijo(anchoCam, L1, '<div class="mktxt" title="' + String(r.campana||'').replace(/"/g,'') + '">' + esc(r.campana || '—') + '</div>')
       + tdFijo(anchoCon, L2, '<div class="mktxt" title="' + String(r.conjunto||'').replace(/"/g,'') + '">' + esc(r.conjunto || '—') + '</div>')
-      + tdFijo(anchoCre, L3, '<div class="mkcre">' + img
-          + '<div class="col"><div class="nom" title="' + String(r.anuncio).replace(/"/g,'') + '">' + r.anuncio + '</div></div></div>')
+      + tdFijo(anchoCre, L3, celdaAnuncio)
       + tdFijo(anchoEst, L4, '<div style="text-align:center">' + chipEst + '</div>', true)
       + '<td><div style="position:relative;display:flex;align-items:center;justify-content:center;width:100%;white-space:nowrap">'
           + chipAcc + (btnEjec ? '<span style="position:absolute;right:2px;top:50%;transform:translateY(-50%)">' + btnEjec + '</span>' : '')
@@ -2382,7 +2492,8 @@ function mkPintar(){
   document.getElementById('mkFoot').innerHTML = mkFilaSinId(cols, anchoCam, anchoCon, anchoCre, anchoEst, anchoAcc, L1, L2, L3, L4, L5) + '<tr>'
     + '<td class="fijo" style="width:' + anchoCam + 'px;left:' + L1 + 'px">TOTAL</td>'
     + '<td class="fijo" style="width:' + anchoCon + 'px;left:' + L2 + 'px"></td>'
-    + '<td class="fijo" style="width:' + anchoCre + 'px;left:' + L3 + 'px">' + rows.length + ' anuncio' + (rows.length===1?'':'s') + '</td>'
+    + '<td class="fijo" style="width:' + anchoCre + 'px;left:' + L3 + 'px">' + rows.length + ' '
+        + (MKNIVEL === 'campana' ? 'campaña' : MKNIVEL === 'conjunto' ? 'conjunto' : 'anuncio') + (rows.length===1?'':'s') + '</td>'
     + '<td class="fijo borde" style="width:' + anchoEst + 'px;left:' + L4 + 'px"></td>'
     + '<td></td>'
     + cols.map(c => {
@@ -2398,7 +2509,10 @@ function mkPintar(){
     + '</tr>';
 
   document.getElementById('mkVacio').style.display = rows.length ? 'none' : 'block';
-  mkPieCobradasPintar();
+  /* 25-set-2026 (pedido de Pablo) — se deja de mostrar la línea "N ventas
+     cobradas (pago completo) — fuente: erp.v_compras_ads" debajo de la tabla.
+     El cálculo sigue vivo en mkPieCobradasPintar() por si se vuelve a pedir;
+     solo se dejó de llamar. */
   mkEngancharCabecera();
 }
 
