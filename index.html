@@ -9486,9 +9486,13 @@ async function _confeccionListarRapido() {
   if (Array.isArray(d) && d.length) return d;
   return api('confeccion.listar', {});
 }
-async function _alertasListarRapido() {
+async function _alertasListarRapido(soloEspejo) {
   const d = await _sbCacheLeer('alertas.listar');
   if (d && typeof d === 'object' && d.totales) return d;
+  // 26-set · B — el globito de fondo con la pestaña oculta NO va a Apps Script:
+  // medido, esas llamadas tardaban 12-130 s (hasta 1 h con la compu dormida) y
+  // nadie las estaba mirando. Se reintenta en la próxima vuelta.
+  if (soloEspejo) throw new Error('espejo no disponible (pestaña oculta)');
   return api('alertas.listar');
 }
 // ══════════════════════════════════════════════════════════════════════
@@ -9684,10 +9688,35 @@ async function _pedDatosRapido(p) {
     // define los datos de la clienta y la lista de prendas sale en ese orden.
     // Se detectó el 26-jul comparando 12 pedidos: uno salió con las prendas
     // barajadas. `id.asc` es el orden en que se escribieron en la hoja.
-    const r = await fetch(SB_URL + '/rest/v1/pedidos_con_pagos?select=row_json&' + filtro + '&eliminado=is.null&order=id.asc&limit=3000',
-      { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
-    if (!r.ok) return porApps();
-    const j = await r.json();
+    const _H = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
+    let j;
+    if (tipo === 'nro') {
+      const r = await fetch(SB_URL + '/rest/v1/pedidos_con_pagos?select=row_json&' + filtro + '&eliminado=is.null&order=id.asc&limit=3000', { headers: _H });
+      if (!r.ok) return porApps();
+      j = await r.json();
+    } else {
+      // 26-set · B — LA BUSQUEDA POR DNI / CELULAR / NOMBRE NUNCA FUE RAPIDA.
+      // La vista pedidos_con_pagos NO tiene las columnas dni, celular ni nombres:
+      // la base contestaba 400 ("column does not exist") y TODAS estas busquedas
+      // caian a Apps Script (medido: 10-60 s, mediana 37 s). Ahora en dos pasos:
+      // (1) los numeros de pedido desde la tabla pedidos, que SI tiene esas
+      // columnas; (2) esos pedidos completos (con pagos) desde la vista.
+      // Medido en vivo: 0,4-1 s en total.
+      const r1 = await fetch(SB_URL + '/rest/v1/pedidos?select=nro_pedido&' + filtro + '&eliminado=is.null&order=id.desc&limit=2000', { headers: _H });
+      if (!r1.ok) return porApps();
+      const j1 = await r1.json();
+      if (!Array.isArray(j1)) return porApps();
+      // Los 40 pedidos mas nuevos alcanzan: se muestran 8 candidatos (o el ultimo).
+      const nros = [...new Set(j1.map(x => String(x.nro_pedido || '').trim()).filter(Boolean))].slice(0, 40);
+      if (!nros.length) return unoSolo ? null : [];
+      const tandas = [];
+      for (let i = 0; i < nros.length; i += 150) tandas.push(nros.slice(i, i + 150));
+      const partes = await Promise.all(tandas.map(t => fetch(SB_URL + '/rest/v1/pedidos_con_pagos?select=id,row_json&nro_pedido=in.(' +
+        t.map(n => encodeURIComponent('"' + n.replace(/"/g, '') + '"')).join(',') + ')&eliminado=is.null&order=id.asc&limit=5000', { headers: _H })
+        .then(r => r.ok ? r.json() : null)));
+      if (partes.some(x => !Array.isArray(x))) return porApps();
+      j = [].concat(...partes).sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+    }
     if (!Array.isArray(j)) return porApps();
     const filas = j.map(x => x.row_json).filter(Boolean);
     if (!filas.length) return unoSolo ? null : [];
@@ -11225,6 +11254,34 @@ async function _sbRpcCampoMasivo(nros, campo, valor) {
 // campo no entra por la via rapida, devuelve null y quien llama sigue por el
 // camino de siempre. Nunca deja a nadie sin poder guardar.
 // ══════════════════════════════════════════════════════════════════════════
+// 26-set · B — PAGO EN FILA DE PRENDA (sin PagoId) DIRECTO A LA BASE.
+// Antes: apiSend('pedidos.actualizar', {_prendaTarget, Pago...}) → Apps Script
+// (~7-10 s) que hacia EXACTAMENTE esto en el servidor (_pagoPrendaSinIdBase_,
+// Code.js): si la prenda es UNA sola fila, le estampa PagoId y edita por
+// pago_editar. Ahora lo hace el navegador (~0,5 s). Con prenda repetida, o si la
+// base no contesta ok, el camino de siempre.
+async function _pagoPrendaRapido(nro, prenda, monto, forma, fecha) {
+  const _lento = () => apiSend('pedidos.actualizar', {NroPedido:nro, _prendaTarget:prenda, Pago:monto, FormaPago:forma, FechaPago:fecha});
+  try {
+    const filas = (typeof pRaw !== 'undefined' ? pRaw : []).filter(r =>
+      String(r['NroPedido']||'').trim() === String(nro) && String(r['Prenda']||'').trim() === String(prenda).trim());
+    if (filas.length !== 1 || typeof _sbRpcPago !== 'function' || typeof _sbRpcMasivo !== 'function') return _lento();
+    let pid = String(filas[0]['PagoId'] || '').trim();
+    if (!pid) {
+      pid = _nuevoPagoIdCliente();
+      const s = await _sbRpcMasivo('pedido_fila_editar', { p_nro: String(nro), p_prenda_ref: String(prenda).trim(),
+        p_occ: 0, p_campos: { PagoId: pid }, p_accion: 'pago-id', p_solo_prendas: false });
+      if (!(s && s.ok === true)) return _lento();
+      filas[0]['PagoId'] = pid;
+    }
+    const r = await _sbRpcPago('pago_editar', { p_nro: String(nro), p_pago_id: pid,
+      p_monto: parseFloat(monto) || 0, p_forma: String(forma || ''), p_fecha: String(fecha || ''), p_asesora: '' });
+    if (!r) return _lento();
+    try { _sbEspejarYa([String(nro)]); } catch (_) {}
+    return { ok: true, via: 'base', pagoId: pid };
+  } catch (_) { return _lento(); }
+}
+
 async function _sbRpcMasivo(receta, cuerpo) {
   try {
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
@@ -18868,7 +18925,7 @@ async function _guardarPedidoModal(nro, body) {
           Object.assign(r, {Pago:0, 'Forma pago':'', 'Fecha Pago':''});
         }
       });
-      apiSend('pedidos.actualizar', {NroPedido:nro, _prendaTarget:pagoEditState.prenda, Pago:0, FormaPago:'', FechaPago:''})
+      _pagoPrendaRapido(nro, pagoEditState.prenda, 0, '', '')
         .catch(e => {
           // Rollback
           _backups.forEach(b => Object.assign(b.row, {Pago:b.Pago, 'Forma pago':b.FP, 'Fecha Pago':b.FE}));
@@ -19003,7 +19060,7 @@ async function _guardarPedidoModal(nro, body) {
             Object.assign(r, {Pago:monto, 'Forma pago':forma, 'Fecha Pago':fecha});
           }
         });
-        _saveP = apiSend('pedidos.actualizar', {NroPedido:nro, _prendaTarget:pagoEditState.prenda, Pago:monto, FormaPago:forma, FechaPago:fecha})
+        _saveP = _pagoPrendaRapido(nro, pagoEditState.prenda, monto, forma, fecha)
           .then(() => pagoEditState.pagoId || true)
           .catch(e => {
             _backups.forEach(b => Object.assign(b.row, {Pago:b.Pago, 'Forma pago':b.FP, 'Fecha Pago':b.FE}));
@@ -34843,7 +34900,7 @@ function _updateAlertBadge(n) {
 async function _pollAlertBadge() {
   try {
     const [r, buzon, espera] = await Promise.all([
-      _alertasListarRapido(), _sbBuzonAlertas(), _sbEsperaStock()
+      _alertasListarRapido(!!document.hidden), _sbBuzonAlertas(), _sbEsperaStock()
     ]);
     const extra = (Array.isArray(buzon) ? buzon.length : 0) + (Array.isArray(espera) ? espera.length : 0);
     _updateAlertBadge((r.total || 0) + extra);
@@ -34882,18 +34939,20 @@ async function _pollMetaCapiBadge(){
   // 0 diría "está todo bien" cuando en realidad no se pudo preguntar, que es
   // justo el error que costaría dinero no ver.
   let n = null;
-  try { n = _mcErrores(await _metaCapiPanelRapido()); } catch(_) {}
-  if (n === null) { try { n = _mcErrores(await api('metacapi.badge')); } catch(_) {} }
+  const _oculta = !!document.hidden;   // 26-set · B — pestaña oculta: solo el espejo
+  try { n = _mcErrores(await _metaCapiPanelRapido(_oculta)); } catch(_) {}
+  if (n === null && !_oculta) { try { n = _mcErrores(await api('metacapi.badge')); } catch(_) {} }
   if (n !== null) _updateMetaCapiBadge(n);
 }
 // 29-jul · El panel de Meta al espejo. Se abre de vez en cuando, pero cuando
 // se abre hay que esperarlo entero. Su cuenta ya estaba cacheada 120 s del
 // lado de Apps Script: lo único que sobraba era el viaje.
-async function _metaCapiPanelRapido(){
+async function _metaCapiPanelRapido(soloEspejo){
   try {
     const d = await _sbCacheLeer('metacapi.panel', SB_ADMIN_VENCE_MS);
     if (d && typeof d === 'object' && d.errores) return d;
   } catch(_) {}
+  if (soloEspejo) return null;
   return api('metacapi.panel');
 }
 async function metaCapiPanelAbrir(){
