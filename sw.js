@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20260925-161423';
+const SW_VERSION = 'tulula-20260925-190841';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 
@@ -141,7 +141,11 @@ async function networkFirst(req, cacheName) {
   const cache = await caches.open(cacheName);
   const esHtml = req.mode === 'navigate' || req.destination === 'document';
   try {
-    const res = await fetch(req);
+    /* 25-set-2026 — sin esto, fetch(req) puede resolverse contra el cache HTTP
+       del propio navegador (GitHub Pages manda max-age=600), y "network-first"
+       en realidad seguia sirviendo una version de hasta 10 min de antiguedad.
+       Se vio en vivo: Marketing publicado y sin aparecer tras recargar. */
+    const res = await fetch(req.url, { cache: 'no-store', credentials: 'same-origin' });
     if (res && res.ok) {
       if (esHtml) {
         const hit = await cache.match(req);

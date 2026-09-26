@@ -31202,7 +31202,8 @@ async function hcAbrirEditor(r, containerEl) {
         card.dataset.url = url;
         card.style.cssText = 'position:relative;width:100px;height:100px;border:2px solid var(--gn);border-radius:var(--r);overflow:hidden;background:var(--bg3);cursor:pointer';
         card.innerHTML = '<img src="' + esc(url) + '" style="width:100%;height:100%;object-fit:cover" alt="constancia">';
-        card.addEventListener('click', () => window.open(url, '_blank'));
+        if (_CONST_SB_RE.test(url)) _constanciaFirmada(url).then(u => { const im = card.querySelector('img'); if (im) im.src = u; card.dataset.ver = u; });   // C3b
+        card.addEventListener('click', () => window.open(card.dataset.ver || url, '_blank'));
         const rm = document.createElement('button');
         rm.style.cssText = 'position:absolute;top:2px;right:2px;background:rgba(0,0,0,.7);border:none;color:#fff;cursor:pointer;font-size:12px;border-radius:3px;padding:2px 4px;line-height:1;z-index:2';
         rm.textContent = '✕';
@@ -33329,6 +33330,34 @@ let _constanciaNro = null;
 let _constanciaItems = [];   // [{url, pagoKey}] — pagoKey null = legacy sin pago identificable (solo ver)
 let _constanciaIdx = 0;
 
+// ── C3b (25-set): constancias en bucket PRIVADO → se ven con ENLACE FIRMADO (1 h) ──
+// La URL guardada sigue siendo .../object/public/constancias/NOMBRE (es el identificador);
+// al MOSTRARLA se cambia por un enlace firmado. Si algo falla, devuelve la URL original.
+const _CONST_SB_RE = /\/storage\/v1\/object\/public\/constancias\/([^?#]+)/;
+const _constFirmaCache = {};
+async function _constanciaFirmada(url) {
+  try {
+    const m = String(url || '').match(_CONST_SB_RE);
+    if (!m || typeof SB_URL === 'undefined' || !SB_ANON) return url;
+    const c = _constFirmaCache[m[1]];
+    if (c && c.hasta > Date.now()) return c.url;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return url;
+    const r = await fetch(SB_URL + '/storage/v1/object/sign/constancias/' + m[1], {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expiresIn: 3600 }),
+    });
+    if (!r.ok) return url;
+    const j = await r.json();
+    const sg = j && (j.signedURL || j.signedUrl);
+    if (!sg) return url;
+    const full = SB_URL + '/storage/v1' + (sg.charAt(0) === '/' ? '' : '/') + sg;
+    _constFirmaCache[m[1]] = { url: full, hasta: Date.now() + 50 * 60 * 1000 };
+    return full;
+  } catch (e) { return url; }
+}
+
 function _constanciaPreviewUrl(url) {
   const m = url.match(/\/d\/([^/?]+)/);
   return m ? 'https://drive.google.com/file/d/'+m[1]+'/preview' : url;
@@ -33345,6 +33374,15 @@ function _showConstanciaAt(idx) {
   const it = items[_constanciaIdx];
   document.getElementById('constancia-iframe').src = _constanciaPreviewUrl(it.url);
   document.getElementById('constancia-download').href = _constanciaDownloadUrl(it.url);
+  if (_CONST_SB_RE.test(it.url)) {   // C3b: bucket privado → enlace firmado
+    const _i0 = _constanciaIdx;
+    document.getElementById('constancia-iframe').src = 'about:blank';
+    _constanciaFirmada(it.url).then(u => {
+      if (_constanciaIdx !== _i0 || _constanciaItems[_i0] !== it) return;
+      document.getElementById('constancia-iframe').src = u;
+      document.getElementById('constancia-download').href = u;
+    });
+  }
   const nav = document.getElementById('constancia-nav');
   nav.textContent = items.length > 1 ? (_constanciaIdx+1)+' / '+items.length : '';
   document.getElementById('constancia-prev').style.display = (items.length>1 && _constanciaIdx>0) ? '' : 'none';
