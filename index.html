@@ -15980,6 +15980,15 @@ function _celdaGuardar(nro, col, valor, esDeshacer){
 
   (async () => {
     if (def.via === 'pedido') {
+      // 25-set noche · B — los datos de la clienta estan en la lista blanca de la
+      // via rapida (SB_CAMPOS_MASIVOS): van DIRECTO a la base (<1 s). Apps Script
+      // queda solo de respaldo si la base no contesta.
+      const _vM = (typeof SB_CAMPOS_MAYUSCULA !== 'undefined' && SB_CAMPOS_MAYUSCULA.indexOf(def.campo) >= 0 &&
+                   valor != null && String(valor).trim() !== '') ? String(valor).toUpperCase() : valor;
+      if (typeof _sbRpcCampoMasivo === 'function' && await _sbRpcCampoMasivo([nro], def.campo, _vM)) {
+        try { _sbEspejarYa([nro]); } catch (_) {}
+        return;
+      }
       // Datos de la clienta: misma llamada que usa el modal de edición.
       const body = { NroPedido: nro }; body[def.campo] = valor;
       return apiSend('pedidos.actualizar', body);
@@ -18270,7 +18279,26 @@ function verPed(p) {
         })
         .catch(() => _porAppsScript());
     } else {
-      _porAppsScript();
+      // 25-set noche · B — RENOMBRE de prenda: directo a la base (pedido_fila_editar,
+      // la fila exacta: prenda + ocurrencia). Antes iba a Apps Script y, con la hoja
+      // congelada, fallaba (5 veces en 3 dias). Subtotal = Precio + Envio de esa fila.
+      (async () => {
+        const _t0 = Date.now();
+        let _ok = false;
+        try {
+          const _env = _filaEd ? (parseFloat(_filaEd['Envio']) || 0) : 0;
+          const d = (typeof _sbRpcMasivo === 'function')
+            ? await _sbRpcMasivo('pedido_fila_editar', { p_nro: String(nro), p_prenda_ref: String(originalNombre),
+                p_occ: _occSel, p_campos: { Prenda: nuevaPrend, Precio: nuevoPrecio, Subtotal: nuevoPrecio + _env },
+                p_accion: 'prenda-editar', p_solo_prendas: false })
+            : null;
+          _ok = !!(d && d.ok === true);
+        } catch (_) { _ok = false; }
+        if (!_ok) return _porAppsScript();
+        try { _sbEspejarYa([nro]); } catch (_) {}
+        try { window._ultimoGuardadoMs = Date.now() - _t0; } catch (_) {}
+        try { console.log('[prenda] #' + nro + ' por la via rapida en ' + (Date.now() - _t0) + ' ms'); } catch (_) {}
+      })();
     }
   });
 
