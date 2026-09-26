@@ -4204,6 +4204,35 @@ async function _sbFilasDePedidos(nros){
   } catch (e) { return null; }
 }
 
+// 25-set noche · B — busqueda en el historial directo en la base (RPC pedidos_buscar).
+// Devuelve las filas (como las da la base, con _sbId) o null → quien llama usa Apps Script.
+async function _sbBuscarHistorial(params) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const filtros = {};
+    for (const k of Object.keys(params || {})) {
+      if (!k.startsWith('f_')) continue;
+      const col = k.substring(2).replace(/_/g, ' ');
+      if (/fecha/i.test(col)) return null;          // fechas: formato distinto en la base → Apps Script
+      const v = String(params[k] || '').trim();
+      if (!v) continue;
+      filtros[col] = { t: (params['ft_' + k.substring(2)] === 'multi') ? 'multi' : 'libre', v: v };
+    }
+    if (!Object.keys(filtros).length) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_buscar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_filtros: filtros, p_limit: 2000 }),
+    });
+    if (!r.ok) return null;
+    const arr = await r.json();
+    if (!Array.isArray(arr)) return null;
+    return arr.map(x => { const o = (x && x.row_json) || {}; if (x && x.id != null && o._sbId == null) o._sbId = x.id; return o; });
+  } catch (e) { return null; }
+}
+
 // Wrapper del listado plano (sin filtros ni estado): directo si hay sesión SB, si no Apps Script.
 async function _pedListarPagina(params){
   params = params || {};
@@ -17191,7 +17220,12 @@ function _pedsRescateServidor() {
       });
       if (!alguno) return;
       toast('🔍 Buscando en todo el historial…', '');
-      const res = await api('pedidos.listar', params);
+      // 25-set noche · B — la busqueda con filtros va DIRECTO a la base (RPC
+      // pedidos_buscar, medido 0,27 s) en vez de Apps Script (6 s). Misma regla:
+      // 'libre' = contiene (sin mayusculas), 'multi' = igual a alguno. Si la base
+      // no contesta, o hay un filtro de fecha, sigue por el camino de siempre.
+      const _rB = (typeof _sbBuscarHistorial === 'function') ? await _sbBuscarHistorial(params) : null;
+      const res = _rB ? { rows: _rB } : await api('pedidos.listar', params);
       const rows = Array.isArray(res) ? res : (res.rows||[]);
       _pRescLastSig = sig;
       if (rows.length) {
