@@ -415,9 +415,19 @@ function cargar(forzar) {
   COM.cargando = true;
   pintarCargando();
 
-  traer(COM.year, COM.q)
-    .then(function () { COM.cargando = false; pintarHome(); })
-    .catch(function (e) { COM.cargando = false; pintarError(e); });
+  // 26-set · B · 2.5) La foto guardada en la base (ComisionesFoto.gs): 0,2 s
+  // en vez de 7-60 s. Si es de hace mas de 15 min se refresca por detras.
+  var yF = COM.year, qF = COM.q;
+  comFotoLeer('bootstrap|' + yF + '|' + qF).then(function (f) {
+    if (f && COM.year === yF && COM.q === qF) {
+      aplicarBoot(f.datos, yF, qF, f.t, true);
+      COM.cargando = false;
+      pintarHome();
+      if (!f.fresca) refrescarDetras();
+      return;
+    }
+    return traer(yF, qF).then(function () { COM.cargando = false; pintarHome(); });
+  }).catch(function (e) { COM.cargando = false; pintarError(e); });
 }
 
 /** Consulta al servidor y actualiza estado + caché. */
@@ -429,10 +439,17 @@ function cargar(forzar) {
 function traer(year, q) {
   var t0 = Date.now();
   return comApi('bootstrap', { year: year, q: q }).then(function (b) {
-    COM.data = b.admin;
-    COM.traidoEn = Date.now();
     COM.ms = Date.now() - t0;
-    cacheGuardar(year, q, b.admin);
+    return aplicarBoot(b, year, q, Date.now(), false);
+  });
+}
+
+/** Aplica una respuesta de 'bootstrap' (del servidor o de la foto en la base). */
+function aplicarBoot(b, year, q, t, desdeFoto) {
+  {
+    COM.data = b.admin;
+    COM.traidoEn = t;
+    if (!desdeFoto) cacheGuardar(year, q, b.admin);
 
     // Las otras pestañas ya vienen resueltas
     if (b.asesoras) { ASE.data = b.asesoras; ASE.year = year; }
@@ -463,7 +480,7 @@ function traer(year, q) {
     // El histórico va aparte: alimenta la alerta de desviaciones
     setTimeout(precargarPestanas, 1200);
     return b.admin;
-  });
+  }
 }
 
 /**
@@ -477,7 +494,14 @@ function refrescarDetras() {
 
   var year = COM.year, q = COM.q;
 
-  traer(year, q)
+  comFotoLeer('bootstrap|' + year + '|' + q).then(function (f) {
+    if (f && f.t > (COM.traidoEn || 0) && COM.year === year && COM.q === q && !COM.comoEmail) {
+      aplicarBoot(f.datos, year, q, f.t, true);
+      if (COM.vista === 'home') pintarHome();
+    }
+    if (f && f.fresca) return 'foto';
+    return traer(year, q);
+  })
     .then(function () {
       COM.refrescando = false;
       // Si el usuario cambió de período —o entró a "Ver como" una asesora—
@@ -1770,8 +1794,22 @@ function cargarPeriodo(modo, desde, hasta) {
       }
     } catch (e) {}
 
-    comApi('resumen', { year: year, q: q })
+    var conFoto = false;
+    comFotoLeer('resumen|' + year + '|' + q).then(function (f) {
+      if (seq !== PER.seq) return 'foto';
+      if (f && f.datos && f.datos.perf) {
+        conFoto = true;
+        PER.perf = f.datos.perf; PER.perfPrev = f.datos.perfPrev || null;
+        PER.hist = f.datos.histRango || null;
+        if (f.datos.rango) PER.rango = f.datos.rango;
+        PER.cargando = false;
+        pintarPerf(); pintarHist();
+        if (f.fresca) return 'foto';
+      }
+      return comApi('resumen', { year: year, q: q });
+    })
       .then(function (d) {
+        if (d === 'foto') return;
         if (seq !== PER.seq) return;
         PER.perf = d.perf;
         PER.perfPrev = d.perfPrev || null;
@@ -1785,6 +1823,7 @@ function cargarPeriodo(modo, desde, hasta) {
       .catch(function (e) {
         if (seq !== PER.seq) return;
         PER.cargando = false;
+        if (conFoto) return;   // ya se ve la foto de la base: no taparla con el error
         if (zonaPerf) zonaPerf.innerHTML = '<div class="card" style="border-color:var(--rd)">' +
           '<div class="ct" style="color:var(--rd)">Resumen del período</div>' +
           '<div style="font-size:13px">' + esc((e && e.message) || e) + '</div>' +
@@ -2193,13 +2232,28 @@ function vendCargar(forzar) {
                    conDia: vendEsActual() };
   if (pv) { argsFull.asesora = pv.email; argsFull.nombre = pv.nombre; }
 
-  comApi('vendedoraFull', argsFull).then(function (r) {
+  // 26-set · B · la asesora mirando SU vista: primero la foto de la base
+  // (ComisionesFoto.gs, solo ella la puede leer). El "Ver como" no tiene foto.
+  var conFotoV = false, yV = VEND.year, qV = VEND.q;
+  (pv ? Promise.resolve(null) : comFotoLeer('vend|' + yV + '|' + qV)).then(function (f) {
+    if (f && f.datos && f.datos.vend && VEND.year === yV && VEND.q === qV) {
+      conFotoV = true;
+      VEND.data = f.datos.vend;
+      VEND.hist = f.datos.hist || VEND.hist;
+      VEND.dia  = f.datos.dia;
+      pintarVerComo(VEND.data, true);
+      if (f.fresca) return 'foto';
+    }
+    return comApi('vendedoraFull', argsFull);
+  }).then(function (r) {
     VEND.cargando = false;
+    if (r === 'foto') return;
+    if (VEND.year !== yV || VEND.q !== qV) return;
     VEND.data = r.vend;
     VEND.hist = r.hist || VEND.hist;
     VEND.dia  = r.dia;
     pintarVerComo(VEND.data, true);
-  }).catch(function (e) { VEND.cargando = false; pintarError(e); });
+  }).catch(function (e) { VEND.cargando = false; if (!conFotoV) pintarError(e); });
 }
 
 window.comVendPeriodo = function (val) {
@@ -3025,13 +3079,23 @@ function precargarPestanas() {
   // El histórico alimenta la alerta de desviaciones. Recorre todo el año,
   // así que va aparte y sin bloquear: cuando llega, se repinta.
   if (!COM.historico) {
-    comApi('historico', { year: COM.year || new Date().getFullYear() })
+    var yH = COM.year || new Date().getFullYear();
+    comFotoLeer('historico|' + yH).then(function (f) {
+      if (f && f.datos) {
+        COM.historico = f.datos;
+        if (COM.vista === 'home' && !COM.comoEmail) pintarHome();
+        if (f.fresca) return 'foto';
+      }
+      return comApi('historico', { year: yH });
+    })
       .then(function (h) {
+        if (h === 'foto') return;
         COM.historico = h || {};
         COM.historicoError = null;
         if (COM.vista === 'home' && !COM.comoEmail) pintarHome();
       })
       .catch(function (e) {
+        if (COM.historico && Object.keys(COM.historico).length) return;   // quedo la foto
         // Antes se callaba y la alerta no aparecía nunca sin explicación
         COM.historicoError = (e && e.message) || String(e);
         COM.historico = {};
@@ -3426,6 +3490,36 @@ window.comAplicarCustom = function () {
 var SBC = { full: null, t: 0, cargando: null };
 var EXTRA = { cfgFull: null };   // respaldo de config (tiers/sueldos) desde el disco
 var SBC_TTL = 5 * 60 * 1000;   // 5 min: el espejo se refresca cada minuto
+
+/* ── FOTO EN LA BASE (26-set · Proyecto B · ComisionesFoto.gs) ─────────
+   El servidor guarda cada respuesta grande del motor en public.com_foto
+   (solo la puede leer el correo dueño). Leerla cuesta 0,2 s; recalcularla
+   en Apps Script, 7-60 s. Fresca (<15 min, sin escrituras despues) = no se
+   llama a Apps Script. Mas vieja (hasta 7 dias) = se pinta y se refresca
+   por detras. Apagar: COM_FOTO_ON = false aca, window.COM_FOTO_OFF = true
+   desde la consola, o COM_FOTO=NO en el servidor. */
+var COM_FOTO_ON = true;
+var COM_FOTO_FRESCA_MS = 15 * 60 * 1000;
+var COM_FOTO_MAX_MS = 7 * 24 * 60 * 60 * 1000;
+
+function comFotoLeer(clave) {
+  if (!COM_FOTO_ON || window.COM_FOTO_OFF || !sbDisponible()) return Promise.resolve(null);
+  return _sbSesionAsegurar().then(function (tok) {
+    if (!tok) return null;
+    return fetch(SB_URL + '/rest/v1/com_foto?clave=eq.' + encodeURIComponent(clave) +
+                 '&select=datos,generado,vencida&limit=1',
+                 { headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok } })
+      .then(function (r) { return (r && r.ok) ? r.json() : null; });
+  }).then(function (j) {
+    if (!Array.isArray(j) || !j.length || !j[0] || j[0].datos == null) return null;
+    var t = new Date(j[0].generado).getTime();
+    if (!(t > 0)) return null;
+    var edad = Date.now() - t;
+    if (edad > COM_FOTO_MAX_MS) return null;
+    return { datos: j[0].datos, t: t,
+             fresca: !j[0].vencida && edad > -60000 && edad < COM_FOTO_FRESCA_MS };
+  }).catch(function () { return null; });
+}
 
 function sbDisponible() {
   // OJO: SB_URL es un `const` del index.html — NO cuelga de window. Hay que
