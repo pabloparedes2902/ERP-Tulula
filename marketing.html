@@ -1077,6 +1077,47 @@ const URL_EMBUDO_ANUNCIO_REFRESCO = 'https://n8n-production-4e716.up.railway.app
 function mkRefrescarEmbudoAnuncio(){
   try { fetch(URL_EMBUDO_ANUNCIO_REFRESCO, {mode:'no-cors', keepalive:true}); } catch (e) {}
 }
+/* ── Embudo WEB por anuncio: LECTURA (26-set-2026) ── Trae, para el periodo
+   que se esta viendo, cuantas vistas de producto / agregados al carrito /
+   checkouts inicio / sesiones tuvo cada anuncio, sumado desde
+   erp.meta_embudo_anuncio. Mismo patron que mkCargarEmbudo (Chatwoot) pero
+   para el canal Web: MKEW = periodo actual, MKEWP = periodo anterior (para
+   las flechitas). Si el endpoint todavia no existe, no rompe nada. */
+let MKEW = null, MKEWP = null;
+const URL_EMBUDO_ANUNCIO_P = 'https://n8n-production-4e716.up.railway.app/webhook/embudo-anuncio-periodo';
+async function mkCargarEmbudoAnuncio(desde, hasta){
+  const arma = (arr) => {
+    const o = { porAd: {}, tot: { vista_producto:0, agregado_carrito:0, checkout_iniciado:0, sesiones:0 } };
+    (Array.isArray(arr) ? arr : []).forEach(x => {
+      const f = { vista_producto:+x.vista_producto||0, agregado_carrito:+x.agregado_carrito||0,
+                  checkout_iniciado:+x.checkout_iniciado||0, sesiones:+x.sesiones||0 };
+      Object.keys(o.tot).forEach(k => o.tot[k] += f[k]);
+      o.porAd[String(x.ad_id)] = f;
+    });
+    return o;
+  };
+  const dias = Math.max(1, Math.round((new Date(hasta+'T12:00:00Z') - new Date(desde+'T12:00:00Z')) / 86400000) + 1);
+  try {
+    const [a, b] = await Promise.all([
+      fetch(URL_EMBUDO_ANUNCIO_P + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()),
+      fetch(URL_EMBUDO_ANUNCIO_P + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1)).then(r => r.json())
+    ]);
+    MKEW = arma(a); MKEWP = arma(b);
+  } catch (e) { MKEW = null; MKEWP = null; }
+}
+/* Pisa vista/carrito/checkout/sesiones de cada anuncio con el dato de Meta.
+   Si el endpoint no respondio no toca nada: la pantalla sigue como antes. */
+function mkAplicarEmbudoAnuncio(){
+  if (!MKEW || !MK || !MK.filas) return;
+  if (MKCANAL !== 'web') return;   /* este embudo es solo del canal Web */
+  const K = ['vista_producto','agregado_carrito','checkout_iniciado','sesiones'];
+  MK.filas.forEach(r => {
+    const id = String(r.ad_id || '');
+    const a = MKEW.porAd[id], p = MKEWP && MKEWP.porAd[id];
+    if (r.act)  K.forEach(k => r.act[k]  = a ? a[k] : 0);
+    if (r.prev) K.forEach(k => r.prev[k] = p ? p[k] : 0);
+  });
+}
 async function mkRefrescarMeta(){
   const ctl = new AbortController();
   const corte = setTimeout(() => ctl.abort(), 25000);   /* nunca dejar la pantalla colgada */
@@ -1202,6 +1243,13 @@ const MK_COLS = {
   cpc:{t:'CPC',w:88,f:v=>mkSol(v),h:'<b>CPC</b> = gasto ÷ clics en el enlace.<br>Cuánto cuesta cada clic que de verdad lleva a la clienta a WhatsApp o a la web.'},
   conversaciones:{t:'Convers.',w:88,f:v=>mkNum(v),h:'<b>Conversaciones</b> — clientas que llegaron a WhatsApp desde este anuncio.<br><b>Origen:</b> dato nuestro, no de Meta. Se cuenta cruzando el <i>ctwa_clid</i> (la etiqueta que Meta le pega al clic) contra la bandeja de WhatsApp.<br><b>Ojo:</b> falta confirmar si cuenta el clic o la charla realmente iniciada. Es la primera escala del embudo y el 100% contra el que se miden las demás.'},
   costo_conv:{t:'Costo/Msje',w:100,f:v=>mkSol(v),h:'<b>Costo por mensaje</b> = gasto ÷ conversaciones.<br>Cuánto cuesta que una clienta te escriba. <b>Es el número más confiable del tablero</b>: se estabiliza desde el primer día, mientras que el ROAS con una o dos ventas es puro ruido.'},
+  /* 26-set-2026 (pedido de Pablo) — el equivalente de Costo/Msje y del embudo
+     de conversaciones, pero para Página Web: sesiones, vista de producto,
+     carrito y checkout. Vienen de erp.meta_embudo_anuncio (ver mkAplicarEmbudoAnuncio). */
+  sesiones:{t:'Sesiones',w:92,f:v=>mkNum(v),h:'<b>Sesiones</b> — visitas a la web que salieron de este anuncio.<br><b>Origen:</b> Meta, acción <i>landing_page_view</i> (si la cuenta no la manda, cae a <i>link_click</i>). Es, en Página Web, el equivalente a "Costo por mensaje" en WhatsApp: la primera escala del embudo.'},
+  vista_producto:{t:'Vista prod.',w:96,f:v=>mkNum(v),h:'<b>Vista de producto</b> — veces que se abrió la página de un producto viniendo de este anuncio.<br><b>Origen:</b> Meta, acción <i>view_content</i> del píxel de la tienda.'},
+  agregado_carrito:{t:'Carrito',w:92,f:v=>mkNum(v),h:'<b>Agregó al carrito</b> — veces que se sumó un producto al carrito viniendo de este anuncio.<br><b>Origen:</b> Meta, acción <i>add_to_cart</i>.'},
+  checkout_iniciado:{t:'Checkout',w:96,f:v=>mkNum(v),h:'<b>Checkout iniciado</b> — veces que se llegó a la pantalla de pago viniendo de este anuncio.<br><b>Origen:</b> Meta, acción <i>initiate_checkout</i>.'},
   frias:{t:'Frías',w:80,f:v=>mkNum(v),h:'<b>Frías</b> — de las que escribieron, cuántas respondieron algo más allá del primer mensaje.<br>Es la primera prueba de que el anuncio trajo gente de verdad y no un clic por error.<br><b>Origen:</b> la misma escala del embudo del módulo Ventas, pero cortada por anuncio.'},
   frias_p:{t:'% Frías',w:82,f:v=>mkPct(v),h:'<b>% Frías</b> = frías ÷ conversaciones.<br>Si es bajo, el anuncio trae curiosos: el problema está en lo que promete el anuncio, no en cómo vendemos.'},
   tibias:{t:'Tibias',w:80,f:v=>mkNum(v),h:'<b>Tibias</b> — dieron al menos dos datos (talla, modelo, ciudad). Ya están evaluando comprar.<br><b>Origen:</b> escala del embudo del módulo Ventas, cortada por anuncio.'},
@@ -1240,7 +1288,7 @@ const MK_PRESETS = {
      para este canal). En su lugar, lo que si tiene Web: eficiencia del
      anuncio (CPC/CPM, no hay 'conversacion' que medir antes del clic) y
      el resultado en plata con costo real de prenda (igual que 'plata'). */
-  embudoweb: ['spark','gasto','impresiones','ctr','cpc','cpm','pedidos','pagados','ingreso','costo','margen_bruto','ganancia','ticket','cac','roas'],
+  embudoweb: ['spark','gasto','impresiones','ctr','cpc','cpm','vista_producto','agregado_carrito','checkout_iniciado','pedidos','pagados','ingreso','costo','margen_bruto','ganancia','ticket','cac','roas'],
   creativo: ['gasto','impresiones','alcance','frecuencia','hook_rate','hold_rate','retencion','ctr','cpc','cpm'],
   plata:    ['gasto','conversaciones','pedidos','ingreso','costo','margen_bruto','ganancia','ticket','roas'],
   sabana:   ['gasto','impresiones','alcance','frecuencia','hook_rate','hold_rate','retencion','ctr','ctr_todos','cpm','cpc','conversaciones','personas','costo_conv','frias','frias_p','tibias','tibias_p','calientes','calientes_p','pedidos','tasa_cierre','pagados','ingreso','costo','margen_bruto','ganancia','ticket','roas']
@@ -1608,11 +1656,12 @@ async function mkCargar(refrescarMeta){
        `fetch(url).then(r => r.json())` no espera nada aca: devuelve la promesa
        y las cinco salen juntas, que es lo que Promise.all promete.
        ══════════════════════════════════════════════════════════════════ */
-    const [datos] = await Promise.all([ fetch(url).then(r => r.json()), mkCargarHistoria().then(mkHistoriaVentasERP), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH), mkCargarHistoriaDia() ]);
+    const [datos] = await Promise.all([ fetch(url).then(r => r.json()), mkCargarHistoria().then(mkHistoriaVentasERP), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH), mkCargarEmbudoAnuncio(_mkD, _mkH), mkCargarHistoriaDia() ]);
     MK = datos;
     if (!MK || !MK.filas) throw new Error('respuesta vacía');
     mkAplicarVentas();
     mkAplicarEmbudo();
+    mkAplicarEmbudoAnuncio();
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar();
   } catch (e) {
@@ -2124,7 +2173,7 @@ function mkPintar(){
   mkFiltroCerrar();
   /* 8-sep-2026 — ventas y embudo se re-aplican en cada pintado porque dependen
      del canal elegido, que cambia sin volver a pedir datos al servidor. */
-  mkAplicarVentas(); mkAplicarEmbudo();
+  mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
   /* y recalcular lo que depende de ellos: sin esto, CAC, ROAS, ticket y cierre
      quedan con los numeros de Meta y la columna Accion decide mal. */
   mkRecalcular();
@@ -2191,7 +2240,7 @@ function mkPintar(){
      sobre los anuncios del canal elegido. Las tasas NUNCA se promedian entre
      anuncios: se rehacen desde las sumas crudas (mismo criterio que el Panel). */
   const _mkAgg = (lado, listaFilas) => {
-    const K = ['gasto','impresiones','alcance','clics','link_clicks','v3s','thruplays','p100','conv_meta','conversaciones','personas','frias','tibias','calientes','pedidos','pagados','ingreso','costo'];
+    const K = ['gasto','impresiones','alcance','clics','link_clicks','v3s','thruplays','p100','conv_meta','conversaciones','personas','frias','tibias','calientes','pedidos','pagados','ingreso','costo','vista_producto','agregado_carrito','checkout_iniciado','sesiones'];
     const base = listaFilas || MK.filas.filter(r => MKCANAL === 'all' || mkCanalDe(r) === MKCANAL);
     const t = {}; K.forEach(k => t[k] = 0);
     let hayEtapas = false;
@@ -2295,6 +2344,12 @@ function mkPintar(){
      es una alarma, no un número de todos los días.
      ══════════════════════════════════════════════════════════════════════ */
   const gan = mkN(A.ganancia);
+  /* 26-set-2026 (pedido de Pablo) — "Costo por mensaje" no existe en Página
+     Web (ahí no hay conversación que medir): en ese canal el KPI equivalente
+     es Sesiones (la primera escala del embudo web). En WhatsApp sigue igual. */
+  const kpiEmbudo = (MKCANAL === 'web')
+    ? kpi('Sesiones', mkNum(A.sesiones), A.sesiones, P.sesiones, 'sesiones')
+    : kpi('Costo/Msje', mkSol(A.costo_conv), A.costo_conv, P.costo_conv, 'costo_conv');
   document.getElementById('mkKpis').innerHTML = [
     kpi('Ingreso',    mkSol(A.ingreso), A.ingreso, P.ingreso, 'ingreso'),
     kpi('Inversión',  mkSol(A.gasto), A.gasto, P.gasto, 'gasto'),
@@ -2303,7 +2358,7 @@ function mkPintar(){
     kpi('ROAS',       A.roas === null ? '—' : A.roas.toFixed(2) + 'x', A.roas, P.roas, 'roas'),
     kpi('Ventas',     mkNum(A.pedidos), A.pedidos, P.pedidos, 'pedidos'),
     kpi('CAC',        mkSol(A.cac), A.cac, P.cac, 'cac'),
-    kpi('Costo/Msje', mkSol(A.costo_conv), A.costo_conv, P.costo_conv, 'costo_conv'),
+    kpiEmbudo,
     kpi('CVR',        mkPct(A.tasa_cierre), A.tasa_cierre, P.tasa_cierre, 'tasa_cierre')
   ].join('');
 
