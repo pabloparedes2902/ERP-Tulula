@@ -3768,6 +3768,60 @@ function _sbGuardarTok(t){
                  expires_at: Date.now() + Math.max(60, (t.expires_in||3600) - 60)*1000 } : null;
   try { if (_sbTok) localStorage.setItem('erp_sb_sess', JSON.stringify(_sbTok));
         else localStorage.removeItem('erp_sb_sess'); } catch(_){}
+  // 26-set · B — la llave de renovacion de Google se guarda APARTE (ver _sbRefrescarGoogle).
+  try { if (t && t.refresh_token) localStorage.setItem(SB_REFRESH_KEY, JSON.stringify({ rt: t.refresh_token,
+        email: String((t.user && t.user.email) || (typeof MY_EMAIL !== 'undefined' && MY_EMAIL) || '').toLowerCase() })); } catch(_){}
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   26-set-2026 · B — EL PASE SIN APPS SCRIPT (7-9 s → ~0,3 s)
+
+   Medido hoy: api('auth.sbPase') = 7-9 s, y es lo que paga la PRIMERA accion
+   de la mañana (el pase de 12 h ya vencio de noche). El pase del backend no se
+   puede renovar: hay que volver a pedirselo a Apps Script, que tarda 7 s solo
+   en arrancar.
+
+   Pero quien entra con Google recibe de Supabase una LLAVE DE RENOVACION
+   (refresh_token) que se canjea directo con Supabase en ~0,3 s. Antes se perdia:
+   el primer pase del backend pisaba la sesion de Google y la llave se iba con
+   ella. Ahora se guarda aparte (atada al correo de quien entro) y se usa
+   PRIMERO; Apps Script queda de respaldo.
+
+   Mismos permisos: la base decide por el correo y el rol 'authenticated', que
+   los dos pases traen igual (verificado: 0 politicas y 0 funciones miran el
+   proveedor o auth.uid). Al cerrar sesion se borra.
+   ══════════════════════════════════════════════════════════════════════════ */
+const SB_REFRESH_KEY = 'erp_sb_refresh_google';
+let _sbRefrescando = null;
+function _sbRefreshLeer(){
+  try {
+    const o = JSON.parse(localStorage.getItem(SB_REFRESH_KEY) || 'null');
+    if (!o || !o.rt) return '';
+    const yo = String((typeof MY_EMAIL !== 'undefined' && MY_EMAIL) || '').toLowerCase();
+    if (o.email && yo && o.email !== yo) { localStorage.removeItem(SB_REFRESH_KEY); return ''; }   // era de otra persona
+    return String(o.rt);
+  } catch(_) { return ''; }
+}
+async function _sbRefrescarGoogle(){
+  if (SB_APAGADO || !SB_ANON) return null;
+  if (_sbRefrescando) return _sbRefrescando;
+  const rt = _sbRefreshLeer();
+  if (!rt) return null;
+  _sbRefrescando = (async function(){
+    try {
+      const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST', headers: {'Content-Type':'application/json','apikey':SB_ANON},
+        body: JSON.stringify({ refresh_token: rt })
+      });
+      const j = await r.json().catch(()=>({}));
+      if (r.ok && j.access_token) { _sbGuardarTok(j); try { console.log('[SB] pase renovado directo con Supabase (sin Apps Script)'); } catch(_){} return j.access_token; }
+      const _mot = String((j && (j.error || j.error_code || j.msg)) || '');
+      if (r.status === 400 || /invalid[_ ]grant|refresh[_ ]token/i.test(_mot)) { try { localStorage.removeItem(SB_REFRESH_KEY); } catch(_){} }
+      return null;
+    } catch(_) { return null; }
+    finally { _sbRefrescando = null; }
+  })();
+  return _sbRefrescando;
 }
 // Con el "pase" de Google (el mismo del login del ERP) abrimos sesión en Supabase.
 async function _sbAuthConCredencial(cred){
@@ -3864,7 +3918,8 @@ function _sbPaseRenovarFondo(motivo) {
     if (!SESSION_TOKEN) return;                       // sin sesion de ERP no hay a quien pedirle
     if (Date.now() - _sbPaseUltFallo < SB_REAUTH_ESPERA) return;   // no insistir en vano
     _sbPaseRenovando = true;
-    _sbPaseDelBackend(SB_PASE_TIMEOUT_FONDO_MS)   // B6: nadie espera, puede aguantar la cola
+    _sbRefrescarGoogle()                                // 26-set: primero Supabase directo (~0,3 s)
+      .then(function (g) { return g || _sbPaseDelBackend(SB_PASE_TIMEOUT_FONDO_MS); })   // B6: nadie espera, puede aguantar la cola
       .then(function (t) {
         if (t) { try { console.log('[SB] pase renovado en segundo plano (' + (motivo || '') + ')'); } catch (_) {} }
         else   { _sbPaseUltFallo = Date.now(); }
@@ -3887,7 +3942,8 @@ function _sbPasePrecalentar() {
 
 async function _sbTokenVigente(){
   if (SB_APAGADO) return null;   // ver SB_APAGADO
-  if (!SB_ANON || !_sbTok) return null;
+  if (!SB_ANON) return null;
+  if (!_sbTok) return await _sbRefrescarGoogle();   // 26-set: sin pase pero con llave de Google
   if (Date.now() < (_sbTok.expires_at||0)) {
     // Etapa 1.5: si le queda poco, se renueva por atras y se devuelve el que
     // todavia sirve. El que llama no espera nada.
@@ -3896,7 +3952,7 @@ async function _sbTokenVigente(){
   }
   // Un pase emitido por el backend del ERP no se refresca: se vuelve a pedir.
   // Intentar refrescarlo sería una llamada condenada a fallar en cada lectura.
-  if (!_sbTok.refresh_token) return null;
+  if (!_sbTok.refresh_token) return await _sbRefrescarGoogle();   // 26-set: pase del backend vencido → llave de Google
   try {
     const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
       method: 'POST', headers: {'Content-Type':'application/json','apikey':SB_ANON},
@@ -11490,6 +11546,22 @@ async function loadCfgMasivos() {
 // DIRECTO del navegador a Supabase Storage (<1s típico). Devuelve la URL pública
 // o null si Storage no está disponible (bucket sin crear, sin sesión SB) — en ese
 // caso el que llama usa el camino clásico por Apps Script como respaldo.
+// 26-set · B — AGREGAR / REEMPLAZAR CONSTANCIA DESDE EL VISOR, SIN APPS SCRIPT.
+// Eran los dos ultimos apiPost('voucher.subir') directos (6-24 s: Drive + asociar).
+// Ahora: el archivo va directo a Supabase Storage (<1 s) y se asocia al pago por
+// la base (_constanciaAsociar → constancia_set). Mismo contrato de respuesta
+// {url, urls}. Si Storage no esta, el camino de siempre por Apps Script.
+async function _voucherSubirRapido(nro, cmp, pagoId, pagoKey, urlsPrevias) {
+  let url = null;
+  try { url = await _subirConstanciaRapida(nro, cmp); } catch (_) { url = null; }
+  if (!url) return apiPost('voucher.subir', { NroPedido: nro, imageBase64: cmp.base64, mimeType: cmp.mimeType,
+                                              _pagoId: pagoId || '', _pagoKey: pagoKey, urlsPrevias: urlsPrevias || '' });
+  const prev = String(urlsPrevias || '').trim();
+  const urls = prev ? (prev + '\n' + url) : url;
+  await _constanciaAsociar(nro, pagoId || '', pagoKey, urls);   // base primero; rechaza solo si fallan las dos vias
+  return { ok: true, url: url, urls: urls, via: 'storage' };
+}
+
 async function _subirConstanciaRapida(nro, cmp) {
   try {
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
@@ -19061,7 +19133,7 @@ async function _guardarPedidoModal(nro, body) {
           }
         });
         _saveP = _pagoPrendaRapido(nro, pagoEditState.prenda, monto, forma, fecha)
-          .then(() => pagoEditState.pagoId || true)
+          .then(r => pagoEditState.pagoId || (r && r.pagoId) || true)   // 26-set: el PagoId recien estampado sirve para asociar la constancia (antes se perdia → 22 fallas en 4 dias)
           .catch(e => {
             _backups.forEach(b => Object.assign(b.row, {Pago:b.Pago, 'Forma pago':b.FP, 'Fecha Pago':b.FE}));
             try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
@@ -19095,7 +19167,7 @@ async function _guardarPedidoModal(nro, body) {
           }
           return apiSend('pedidos.actualizar', {NroPedido:nro, _pagoId:_pidEd, _pagoKey:pagoEditState.pagoKey, Pago:monto, FormaPago:forma, FechaPago:fecha});
         })()
-          .then(() => pagoEditState.pagoId || true)
+          .then(r => pagoEditState.pagoId || (r && r.pagoId) || true)   // 26-set: el PagoId recien estampado sirve para asociar la constancia (antes se perdia → 22 fallas en 4 dias)
           .catch(e => {
             _backups.forEach(b => Object.assign(b.row, {Pago:b.Pago, 'Forma pago':b.FP, 'Fecha Pago':b.FE}));
             try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
@@ -33671,7 +33743,7 @@ document.getElementById('constancia-add').addEventListener('click', function() {
       _showConstanciaAt(_constanciaItems.length-1);
       btn.disabled=false; btn.textContent='➕ Agregar'; try{ document.body.removeChild(inp); }catch(_){}
       toast('Constancia agregada — terminando de subirla', 'ok');
-      apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, _pagoId:dest.id, _pagoKey:dest.key, urlsPrevias:_previas.join('\n')})
+      _voucherSubirRapido(_constanciaNro, cmp, dest.id, dest.key, _previas.join('\n'))
         .then(res => {
           if (!res || !res.url) throw new Error('No se obtuvo URL del servidor');
           _it.url = res.url; _it._subiendo = false;
@@ -33709,7 +33781,7 @@ document.getElementById('constancia-edit').addEventListener('click', function() 
       // PERF 24-jul: UN solo viaje — urlsPrevias = las existentes SIN la que se reemplaza;
       // el servidor le agrega la nueva. Si la subida falla, la anterior queda intacta.
       const _rest = _constanciaUrlsDePago(it.pagoKey, it.pagoId).filter(u => u !== it.url);
-      const res = await apiPost('voucher.subir', {NroPedido:_constanciaNro, imageBase64:cmp.base64, mimeType:cmp.mimeType, _pagoId:it.pagoId||'', _pagoKey:it.pagoKey, urlsPrevias:_rest.join('\n')});
+      const res = await _voucherSubirRapido(_constanciaNro, cmp, it.pagoId||'', it.pagoKey, _rest.join('\n'));
       if (!res.url) throw new Error('No se obtuvo URL del servidor');
       const nuevas = _rest.concat([res.url]);
       it.url = res.url;
@@ -35126,6 +35198,9 @@ function logout(){
   try { _stLsDel(); } catch(e){}
   try { _confLsDel(); } catch(e){}
   try { localStorage.removeItem('erp_espejo_duda'); } catch(e){}
+  // 26-set · el pase a la base y la llave de renovacion tambien se van: si no,
+  // quien entra despues en esta compu hereda el acceso a la base de la anterior.
+  try { localStorage.removeItem('erp_sb_sess'); localStorage.removeItem(SB_REFRESH_KEY); } catch(e){}
   location.reload();
 }
 
