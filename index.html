@@ -19172,13 +19172,26 @@ async function cambiarEst(nro, est) {
   document.getElementById('modal-ped').classList.remove('on');
   // FASE 3 (Jul-2026) — unflash por DOM, sin re-render completo
   setTimeout(() => { pHighlight.delete(nroStr); _pedsUnflashDom([nroStr]); }, 3000);
-  apiSend('pedidos.actualizar',{NroPedido:nro,Estado:est})
+  _estadoRapido(nro, est)
     .catch(e => {
       // Rollback
       _backups.forEach(b => { b.row['Estado'] = b.Estado; });
       try { lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
       _errLog('pedidos.actualizar.estado', e, {toast:'No se pudo cambiar el estado a '+est+' — se restauró'});
     });
+}
+
+// 26-sep (B) · CAMBIAR EL ESTADO: base primero (~0,3 s), Apps Script solo de respaldo (~8 s).
+// Antes el cambio rapido de estado y el estado que pone un cambio iban SIEMPRE por Apps Script:
+// 38 de las llamadas lentas de las ultimas 30 h eran esto. Misma regla que el modal (campo_masivo).
+async function _estadoRapido(nro, est) {
+  try {
+    if (typeof _sbRpcCampoMasivo === 'function' && await _sbRpcCampoMasivo([String(nro)], 'Estado', est)) {
+      try { _sbEspejarYa([String(nro)]); } catch (_) {}
+      return { ok: true, via: 'base' };
+    }
+  } catch (_) {}
+  return apiSend('pedidos.actualizar', { NroPedido: nro, Estado: est });
 }
 
 // ══════════════════════════════════════════════════════════
@@ -28688,7 +28701,7 @@ async function _camProcessSaveQueue() {
       // Estado del pedido → a CADA pedido involucrado
       if (job.estadoPedido && job.nroPedidos && job.nroPedidos.length) {
         job.nroPedidos.forEach(np => {
-          apiSend('pedidos.actualizar', { NroPedido: np, Estado: job.estadoPedido })
+          _estadoRapido(np, job.estadoPedido)
             .catch(e => { try { _errLog('cambios.update-pedido-estado', e); } catch (_) {} });
         });
       }
