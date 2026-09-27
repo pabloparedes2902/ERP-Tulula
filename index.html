@@ -9208,9 +9208,27 @@ async function _sbLibroDirecto(forzar) {
       });
     } catch (_) {}
 
+    // 27-set-2026 (Pablo) · LA TALLA CON SU NOMBRE REAL. El libro guarda la columna
+    // (S/M va en S, como el Drive); el catalogo sabe el nombre real. Se arma, por SKU:
+    //   tlab  = { S:'S/M', M:'M/L', L:'L/XL' }  -> la celda muestra el nombre arriba
+    //   unica = true si todas sus tallas son U/STD  -> una sola celda que abarca
+    //           S..XL (correas) o XS..3XL (el resto de accesorios).
+    const _raw = {};
+    try {
+      const catR = await pCat;
+      (Array.isArray(catR) ? catR : []).forEach(function (sk) {
+        const k = String(sk.producto||'').trim() + '|' + String(sk.diseno||'').trim() + '|' + String(sk.color||'').trim();
+        const r = String(sk.talla||'').trim().toUpperCase(); if (!r) return;
+        (_raw[k] = _raw[k] || []).push(r);
+      });
+    } catch (_) {}
+    const _UNI = ['U', 'STD', 'ESTANDAR', 'ESTÁNDAR', 'UNICA', 'ÚNICA'];
     const out = [];
     Object.keys(libro).forEach(function (k) {
       const d = libro[k], conf = {}, fallas = {}, total = {}, vtas = {}, stock = {};
+      const _rs = _raw[k] || [], tlab = {};
+      _rs.forEach(function (r) { const t = TMAP_STOCK[r] || r; if (t !== r && _UNI.indexOf(r) < 0) tlab[t] = r; });
+      const unica = _rs.length > 0 && _rs.every(function (r) { return _UNI.indexOf(r) >= 0; });
       LIBRO_TSTD.forEach(function (t) {
         const x = d.tallas[t];
         const c  = (x && x.conf !== null && x.conf !== undefined) ? x.conf : undefined;
@@ -9224,7 +9242,8 @@ async function _sbLibroDirecto(forzar) {
       });
       out.push({ diseno:d.dis, color:d.col, cat:d.cat || '', prenda:d.prenda,
                  tallas:LIBRO_TSTD, conf:conf, fallas:fallas, total:total,
-                 vtas:vtas, stock:stock, fechaMs:d.fechaMs || 0 });
+                 vtas:vtas, stock:stock, fechaMs:d.fechaMs || 0,
+                 tlab:tlab, unica:unica });
     });
     out.sort(function (a, b) { return b.fechaMs - a.fechaMs; });
     return out;
@@ -24834,10 +24853,36 @@ function renderInv(el){
          +_ivGrip('iv-drag-color',[8,14])
          +`${stDot(d.color)}<span style="white-space:nowrap">${esc(d.color)}</span></span>${_ndIcon}${_kIcon}</div></td>`;
       // Bloques visibles (VIS)
+      // 27-set-2026 (Pablo) · talla unica = UNA celda que abarca varias columnas
+      // (correas S..XL; el resto de accesorios XS..3XL). Suma lo que haya en todas.
+      const _uni = !!d.unica;
+      const _uniCorrea = /^CORREA\b/i.test(String(d.prenda||''));
+      const _uIni = _uni ? (_uniCorrea ? 1 : 0) : -1, _uFin = _uni ? (_uniCorrea ? 4 : NT-1) : -1;
+      const _uSum = (o)=>{ if(!o) return undefined; let s, hay=false; TALLAS_STD.forEach(t=>{ const x=o[t]; if(x!==undefined&&x!==null){ hay=true; s=(s||0)+x; } }); return hay?s:undefined; };
       VIS.forEach(bi=>{
         TALLAS_STD.forEach((t,i)=>{
           const last=i===NT-1, sep=last?`border-right:${THK};`:'';
+          if(_uni && i>_uIni && i<=_uFin) return;   // ya la cubre la celda que abarca
+          const _span = (_uni && i===_uIni) ? (_uFin-_uIni+1) : 1;
+          const _cs = _span>1 ? ` colspan="${_span}"` : '';
+          const _sepU = (_uni && i===_uIni && _uFin===NT-1) ? `border-right:${THK};` : sep;
           let v, dash=false;
+          if(_span>1){
+            const tot=_uSum(d.total), cf=_uSum(d.conf);
+            if(bi===0){ v=tot; dash=(v===undefined); }
+            else if(bi===1){ if(tot===undefined) dash=true; else v=_uSum(d.fallas)||0; }
+            else if(bi===2){ v=cf; dash=(v===undefined); }
+            else if(bi===3){ if(cf===undefined) dash=true; else v=_uSum(d.vtas)||0; }
+            else { v=_uSum(d.stock); dash=(v===undefined); }
+            const _tU = (d.total&&d.total.M!==undefined)?'M':(TALLAS_STD.find(x=>d.total&&d.total[x]!==undefined)||'M');
+            const _edU=(bi===0 && !_stYayMode)
+              ? ` class="iv-tot-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="${_tU}" title="Talla única · doble clic: mover stock"`
+              : '';
+            if(dash) tr+=`<td${_edU}${_cs} style="${STEMPTY}${TB}${P}${_sepU}${C}color:#6b7280">–</td>`;
+            else tr+=`<td${_edU}${_cs} style="${dataSt}${TB}${P}${_sepU}${C}"><span style="font-size:9px;opacity:.75;margin-right:4px">U</span>${_capsula(v)}</td>`;
+            return;
+          }
+          const _lab = (d.tlab && d.tlab[t]) ? `<div style="font-size:9px;line-height:1;opacity:.8;margin-bottom:1px">${esc(d.tlab[t])}</div>` : '';
           if(bi===0){ v=d.total?d.total[t]:undefined; dash=(v===undefined||v===null); }
           else if(bi===1){ const base=d.total?d.total[t]:undefined; if(base===undefined||base===null){dash=true;} else v=(d.fallas&&d.fallas[t])||0; }
           else if(bi===2){ v=d.conf?d.conf[t]:undefined; dash=(v===undefined||v===null); }
@@ -24858,8 +24903,8 @@ function renderInv(el){
                numero estaba mal. La explicacion sigue estando donde se
                necesita — dentro del editor de la talla, cuando hay unidades
                no disponibles — que es el momento en que la pregunta aparece. */
-            tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_capsula(v)}</td>`; }
-          else { tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_capsula(v)}</td>`; }
+            tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_lab}${_capsula(v)}</td>`; }
+          else { tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_lab}${_capsula(v)}</td>`; }
         });
       });
       tr+='</tr>';
