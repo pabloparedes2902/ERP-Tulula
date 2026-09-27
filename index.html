@@ -19379,12 +19379,13 @@ function _npPrecheckDuplicados() {
     if (NP.modo !== 'nuevo') return;
     const dni = _npDocBuscable(document.getElementById('np-dnum')?.value);
     const tels = [...document.querySelectorAll('#np-tels input')].map(i => (i.value||'').trim()).filter(Boolean);
-    if (!dni && !tels.length) return;
+    const _nomPre = ((document.getElementById('np-nom')||{}).value||'').trim();
+    if (!dni && !tels.length && _nomPre.length < 5) return;
     const prendas = [...document.querySelectorAll('#np-prendas .np-prenda')].map(i => i.value.trim()).filter(Boolean);
     const key = dni + '|' + tels.join(',') + '|' + prendas.join(',');
     if (NP.dupCheck.key === key && (Date.now() - NP.dupCheck.ts) < 120000) return; // ya chequeado
     try {
-      const res = await _detectarDuplicados({dni:dni, tels:tels, ventanaHoras:48, prendas:prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
+      const res = await _detectarDuplicados({dni:dni, tels:tels, ventanaHoras:NP_DUP_VENTANA_H, prendas:prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
       NP.dupCheck = { key: key, candidatos: (res && Array.isArray(res.candidatos)) ? res.candidatos : [], ts: Date.now() };
     } catch(e) { /* silencioso — si falla, npGuardar hará el chequeo bloqueante como fallback */ }
   }, 700);
@@ -20238,11 +20239,21 @@ function npRellenar(c, resEl) {
 // - Agregar al pedido existente (setea NP.modo='agregar' y NP.nroPedBase)
 // - Continuar creando un pedido nuevo de todos modos
 // - Cancelar
+// 27-set · FRENO de duplicados (Pablo): ventana de 7 dias y regla de prenda repetida.
+const NP_DUP_VENTANA_H = 168;
+function _npDupHayRepetida(candidatos, prendasNuevas) {
+  const nuevas = (prendasNuevas || []).map(p => String(p || '').trim().toUpperCase()).filter(Boolean);
+  return (candidatos || []).some(c => (c.Prendas || []).some(p => nuevas.indexOf(String(p || '').trim().toUpperCase()) >= 0));
+}
 function npConfirmDuplicados(candidatos, prendasNuevas) {
   return new Promise(resolve => {
     const o = document.createElement('div');
     o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px';
     const prendNuevasUp = (prendasNuevas||[]).map(p=>String(p).toUpperCase());
+    // 27-set · FRENO (Pablo): misma clienta + MISMA prenda y talla en 7 dias = duplicado.
+    // No se puede crear de un clic: hay que escribir por que es otro pedido.
+    const _freno = _npDupHayRepetida(candidatos, prendasNuevas);
+    NP.dupMotivo = '';
     const rows = candidatos.map((c,i)=>{
       const fechaTxt = c.FechaISO ? new Date(c.FechaISO).toLocaleString('es-PE',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
       const compPrend = (c.Prendas||[]).filter(p=>prendNuevasUp.includes(String(p).toUpperCase()));
@@ -20266,19 +20277,29 @@ function npConfirmDuplicados(candidatos, prendasNuevas) {
       +'<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">'
         +'<div style="font-size:28px">⚠️</div>'
         +'<div>'
-          +'<div style="font-size:15px;font-weight:700;color:var(--am)">Posible pedido duplicado</div>'
-          +'<div style="font-size:12px;color:var(--mu)">'+candidatos.length+' pedido'+(candidatos.length!==1?'s':'')+' reciente'+(candidatos.length!==1?'s':'')+' con mismo DNI o teléfono (últimas 48h).</div>'
+          +'<div style="font-size:15px;font-weight:700;color:'+(_freno?'var(--rd)':'var(--am)')+'">'+(_freno?'Pedido DUPLICADO: esta clienta ya pidió la misma prenda':'Posible pedido duplicado')+'</div>'
+          +'<div style="font-size:12px;color:var(--mu)">'+candidatos.length+' pedido'+(candidatos.length!==1?'s':'')+' reciente'+(candidatos.length!==1?'s':'')+' de la misma clienta (últimos 7 días).</div>'
         +'</div>'
       +'</div>'
       +'<div style="margin:14px 0">'+rows+'</div>'
       +'<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;border-top:1px solid var(--bd);padding-top:12px">'
-        +'<button class="btn bg bs" id="np-dup-cancel">Cancelar</button>'
-        +'<button class="btn bg" id="np-dup-continuar">Crear pedido nuevo de todas formas</button>'
+        +(_freno
+          ? '<div style="flex-basis:100%;font-size:12px;color:var(--mu)">Si de verdad es OTRO pedido, escribe por qué (queda guardado en el pedido):</div>'
+            +'<input id="np-dup-motivo" type="text" maxlength="120" placeholder="Ej.: pidió una segunda unidad para regalo" style="flex-basis:100%;padding:8px;border-radius:var(--r);border:1px solid var(--bd);background:var(--bg3);color:var(--tx)">'
+            +'<button class="btn bg" id="np-dup-continuar" disabled>Es otro pedido, crear igual</button>'
+            +'<button class="btn bp" id="np-dup-cancel">Es el mismo, no crear</button>'
+          : '<button class="btn bg bs" id="np-dup-cancel">Cancelar</button>'
+            +'<button class="btn bg" id="np-dup-continuar">Crear pedido nuevo de todas formas</button>')
       +'</div>'
     +'</div>';
     document.body.appendChild(o);
     o.querySelector('#np-dup-cancel').addEventListener('click', () => { o.remove(); resolve('cancelar'); });
-    o.querySelector('#np-dup-continuar').addEventListener('click', () => { o.remove(); resolve('continuar'); });
+    const _mInp = o.querySelector('#np-dup-motivo'), _bCont = o.querySelector('#np-dup-continuar');
+    if (_mInp) _mInp.addEventListener('input', () => { _bCont.disabled = _mInp.value.trim().length < 5; });
+    _bCont.addEventListener('click', () => {
+      if (_freno) { const m = (_mInp ? _mInp.value : '').trim(); if (m.length < 5) return; NP.dupMotivo = m; }
+      o.remove(); resolve('continuar');
+    });
     o.querySelectorAll('.np-dup-agregar').forEach(b=>b.addEventListener('click', (ev) => {
       ev.stopPropagation();
       NP.modo = 'agregar';
@@ -21501,7 +21522,8 @@ async function npGuardar() {
     const _dni = _npDocBuscable(document.getElementById('np-dnum').value);
     const _tels = [...document.querySelectorAll('#np-tels input')].map(i => i.value.trim()).filter(Boolean);
     const _prendas = [...document.querySelectorAll('#np-prendas .np-prenda')].map(i => i.value.trim()).filter(Boolean);
-    if (_dni || _tels.length) {
+    const _nomDup = ((document.getElementById('np-nom')||{}).value||'').trim();
+    if (_dni || _tels.length || _nomDup.length >= 5) {
       try {
         // PERF v11 — usar el resultado del pre-chequeo en background si está fresco.
         // Solo si no hay cache válido se hace la llamada bloqueante (fallback).
@@ -21510,7 +21532,7 @@ async function npGuardar() {
         if (NP.dupCheck && NP.dupCheck.key === _dupKey && (Date.now() - NP.dupCheck.ts) < 120000) {
           cand = NP.dupCheck.candidatos || [];
         } else {
-          const res = await _detectarDuplicados({dni:_dni, tels:_tels, ventanaHoras:48, prendas:_prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
+          const res = await _detectarDuplicados({dni:_dni, tels:_tels, ventanaHoras:NP_DUP_VENTANA_H, prendas:_prendas, nombre:(document.getElementById('np-nom')||{}).value||''});
           cand = (res && Array.isArray(res.candidatos)) ? res.candidatos : [];
         }
         if (cand.length) {
@@ -21529,6 +21551,12 @@ async function npGuardar() {
             // NP.nroPedBase y NP.modo ya están configurados
           }
           // Si eligió 'continuar' → sigue el flujo normal (crear pedido nuevo)
+          // 27-set · FRENO: si habia prenda repetida, el motivo queda escrito en el pedido.
+          if (accion === 'continuar' && NP.dupMotivo) {
+            const _obsD = document.getElementById('np-obs');
+            if (_obsD) _obsD.value = ('[Repetido confirmado: ' + NP.dupMotivo + '] ' + (_obsD.value || '')).trim();
+            NP.dupMotivo = '';
+          }
         }
       } catch(e) {
         console.warn('Detección de duplicados falló:', e.message);
