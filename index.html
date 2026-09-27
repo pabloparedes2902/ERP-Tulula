@@ -19073,6 +19073,13 @@ async function _guardarPedidoModal(nro, body) {
       toast('Elegí una forma de pago: sin eso el pago no se puede cuadrar contra el banco', 'err');
       return;
     }
+    // 27-set · FOTO OBLIGATORIA en todo pago NUEVO (salvo EFECTIVO). En una
+    // edicion no se exige: el pago ya puede tener su constancia guardada.
+    const _cfOblig = qId('pago-f-const-file');
+    if (pagoEditState.esNuevo && !_pagoEsEfectivo(forma) && !(_cfOblig && _cfOblig.files && _cfOblig.files[0])) {
+      toast('Adjunta la foto de la constancia: es obligatoria para guardar el pago (salvo EFECTIVO).', 'err');
+      return;
+    }
     this.disabled = true; this.textContent = 'Guardando...';
 
     // K-16 (reforma jul-2026): Voucher upload EN PARALELO al guardado de pago (no bloquea).
@@ -21340,6 +21347,21 @@ function npCalc() {
 }
 
 // ── VALIDAR Y GUARDAR ─────────────────────────────────────
+// 27-set · Pagos del formulario "nuevo pedido" que no tienen foto de constancia.
+// Regla: monto > 0 y forma distinta de EFECTIVO => foto obligatoria.
+function _pagosSinConstancia() {
+  const out = [];
+  [...document.querySelectorAll('#np-pagos .pbox')].forEach((d, i) => {
+    const monto = parseFloat((d.querySelector('.np-pm') || {}).value) || 0;
+    const forma = String((d.querySelector('.np-pf') || {}).value || '').trim().toUpperCase();
+    if (monto <= 0 || _pagoEsEfectivo(forma)) return;
+    const fotos = [...d.querySelectorAll('.np-vcard img')].filter(img => img.src && img.src.startsWith('data:'));
+    if (!fotos.length) out.push('pago ' + (i + 1) + (forma ? ' (' + forma + ')' : ''));
+  });
+  return out;
+}
+function _pagoEsEfectivo(forma) { return /^EFECTIVO/i.test(String(forma || '').trim()); }
+
 async function npGuardar() {
   const prendas = [...document.querySelectorAll('#np-prendas .pbox')];
   const pagos   = [...document.querySelectorAll('#np-pagos .np-pm')].filter(i => parseFloat(i.value) > 0);
@@ -21351,6 +21373,14 @@ async function npGuardar() {
   }
   if (!pagos.length) {
     if (!await npConfirm('¿Estás seguro que quieres generar un pedido sin registrar un pago?')) return;
+  }
+  // 27-set · FOTO OBLIGATORIA (pedido de Pablo): todo pago con monto > 0 lleva su
+  // constancia adjunta, salvo EFECTIVO (no hay voucher bancario que fotografiar).
+  const _sinFoto = _pagosSinConstancia();
+  if (_sinFoto.length) {
+    const _vbF = document.getElementById('np-vbox');
+    _vbF.innerHTML = '<div class="vbox"><p>⚠️ Falta adjuntar la foto de la constancia en: ' + esc(_sinFoto.join(', ')) + '. Es obligatoria (salvo EFECTIVO).</p></div>';
+    _vbF.style.display = 'block'; _vbF.scrollIntoView({behavior:'smooth', block:'start'}); return;
   }
 
   const errs = npValidar();
