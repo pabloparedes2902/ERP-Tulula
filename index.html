@@ -2678,7 +2678,16 @@ function badgeCourier(v, estado, noColor) {
   return '<span style="display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;background:'+col+'22;color:'+col+';white-space:nowrap;letter-spacing:.4px">'+esc(v)+'</span>';
 }
 let _toastTimer = null;
+// 29-set-2026 · toast pinta con textContent, asi que un esc() previo se veia
+// literal («&quot;PANTALON…&quot;»). Hay ~97 llamadas toast(...esc(...)): se
+// arregla aca, en un solo lugar, para todo el ERP.
+function _toastPlano_(m) {
+  return String(m == null ? '' : m).replace(/&(quot|lt|gt|#39|#x27|amp);/g, function (x, k) {
+    return ({ quot: '"', lt: '<', gt: '>', '#39': "'", '#x27': "'", amp: '&' })[k];
+  });
+}
 function toast(msg, t, action) {
+  msg = _toastPlano_(msg);
   const el = document.getElementById('toast');
   if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
   el.className = 'toast '+(t==='ok'?'ts':t==='err'?'te':'');
@@ -2715,7 +2724,10 @@ function _errLog(ctx, e, opts) {
     if (opts && opts.toast) {
       // opts.retry = función → el toast muestra botón "Reintentar".
       const _action = (opts && typeof opts.retry === 'function') ? {label:'Reintentar', fn:opts.retry} : null;
-      try { toast('⚠ '+opts.toast+(opts.includeMsg!==false ? ': '+msg : ''), 'err', _action); } catch(_) {}
+      // 29-set-2026 · si el texto del toast ya trae el mensaje, no se repite
+      // (antes salia dos veces: «...primero. — se restauró: No se puede...»).
+      const _yaLoTrae = _toastPlano_(opts.toast).indexOf(_toastPlano_(msg)) >= 0;
+      try { toast('⚠ '+opts.toast+(opts.includeMsg!==false && !_yaLoTrae ? ': '+msg : ''), 'err', _action); } catch(_) {}
     }
   } catch(_) {}
 }
@@ -18301,7 +18313,15 @@ function verPed(p) {
           newRow.remove();
           toast('Prenda eliminada del pedido #'+nro, 'ok');
           stData = null; confData = null; pRawEst = null; _invalidarPrefetch();
-          apiPost('pedidos.eliminarPrenda', { NroPedido: nro, _prendaTarget: prenda, _prendaOcc: _occDelFresh })
+          // 29-set-2026 · primero la base (igual que el boton de las prendas
+          // existentes). Antes iba directo a Apps Script, que con la hoja
+          // Pedidos congelada desde el 19-set no puede borrar: la prenda volvia.
+          (async () => {
+            const _b = await _sbRpcEliminar('pedido_eliminar_prenda', {
+              p_nro: String(nro), p_prenda: String(prenda), p_occ: parseInt(_occDelFresh, 10), p_force: false });
+            if (_b) return _b;
+            return apiPost('pedidos.eliminarPrenda', { NroPedido: nro, _prendaTarget: prenda, _prendaOcc: _occDelFresh });
+          })()
             .catch(e => {
               // Rollback in-memory (el DOM ya removido — el polling lo restaurará)
               if (_backupRow && idx !== -1) pRaw.splice(idx, 0, _backupRow);
