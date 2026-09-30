@@ -770,11 +770,12 @@ async function mkCargarVentas(desde, hasta){
   const leer = async (d1, d2) => {
     for (let intento = 0; intento < 2; intento++) {
       try {
-        const r = await fetch(URL_VENTAS + '?desde=' + d1 + '&hasta=' + d2);
-        if (r.ok) {
-          const j = await r.json();
-          if (Array.isArray(j)) return arma(j);
-        }
+        const u = URL_VENTAS + '?desde=' + d1 + '&hasta=' + d2;
+        /* via rapida si esta cargada; si no (o en las pruebas), n8n directo como antes */
+        const j = await (typeof _mkGetJSON === 'function'
+          ? _mkGetJSON(u, intento > 0)
+          : fetch(u).then(r => (r.ok ? r.json() : null)));
+        if (Array.isArray(j)) return arma(j);
       } catch (e) { /* reintentamos abajo */ }
       if (intento === 0) await new Promise(ok => setTimeout(ok, 1200));
     }
@@ -851,8 +852,8 @@ async function mkCargarEmbudo(desde, hasta){
   const dias = Math.max(1, Math.round((new Date(hasta+'T12:00:00Z') - new Date(desde+'T12:00:00Z')) / 86400000) + 1);
   try {
     const [a, b] = await Promise.all([
-      fetch(URL_EMBUDO_P + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()),
-      fetch(URL_EMBUDO_P + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1)).then(r => r.json())
+      _mkGetJSON(URL_EMBUDO_P + '?desde=' + desde + '&hasta=' + hasta),
+      _mkGetJSON(URL_EMBUDO_P + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1))
     ]);
     /* 30-set-2026 · si n8n contesta 500 devuelve {message:"Error in workflow"},
        NO un arreglo. arma() lo tomaba como "cero conversaciones" y PISABA las
@@ -980,7 +981,7 @@ let MKD = null, MKD_TS = 0;
 async function mkCargarHistoriaDia(forzar){
   if (!forzar && MKD && (Date.now() - MKD_TS) < 10*60*1000) return MKD;
   try {
-    const j = await Promise.race([ fetch(URL_ADS_DIA).then(r=>r.json()), new Promise((_,rej)=>setTimeout(()=>rej(new Error('ads-historia-dia timeout')),4000)) ]);
+    const j = await Promise.race([ _mkGetJSON(URL_ADS_DIA), new Promise((_,rej)=>setTimeout(()=>rej(new Error('ads-historia-dia timeout')),4000)) ]);
     if (j && j.ads){ MKD = j.ads; MKD_TS = Date.now(); }
   } catch (e) { /* sin el webhook todavia, sigue el spark de Meta como antes */ }
   return MKD;
@@ -1014,7 +1015,7 @@ async function mkHistoriaVentasERP(){
   if (!MKH) return MKH;
   const hoy = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
   const pide = (desde, hasta) =>
-    fetch(URL_VENTAS + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()).catch(() => []);
+    _mkGetJSON(URL_VENTAS + '?desde=' + desde + '&hasta=' + hasta).catch(() => []);
   const mapa = (arr) => {
     const o = {};
     (Array.isArray(arr) ? arr : []).forEach(x => { o[String(x.anuncio)] = { p: +x.pedidos || 0, i: +x.ingreso || 0 }; });
@@ -1042,7 +1043,7 @@ async function mkHistoriaVentasERP(){
 async function mkCargarHistoria(forzar){
   if (!forzar && MKH && (Date.now() - MKH_TS) < 10*60*1000) return MKH;
   try {
-    const j = await (await fetch(URL_ADS_HISTORIA)).json();
+    const j = await _mkGetJSON(URL_ADS_HISTORIA, !!forzar);
     if (j && j.ads){ MKH = j.ads; MKH_TS = Date.now(); }
   } catch(e){ /* si falla, mkAccionFinal cae a la regla del periodo */ }
   return MKH;
@@ -1121,8 +1122,8 @@ async function mkCargarEmbudoAnuncio(desde, hasta){
   };
   try {
     const [a, b] = await Promise.all([
-      fetch(URL_EMBUDO_WEB_PH + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()),
-      fetch(URL_EMBUDO_WEB_PH + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1)).then(r => r.json())
+      _mkGetJSON(URL_EMBUDO_WEB_PH + '?desde=' + desde + '&hasta=' + hasta),
+      _mkGetJSON(URL_EMBUDO_WEB_PH + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1))
     ]);
     const pa = armaPH(a);
     if (pa){ MKEW = pa; MKEWP = armaPH(b); return; }
@@ -1691,6 +1692,47 @@ function _mkSnapUsar(k){
   } catch (e) { return 0; }
 }
 
+/* ══ 30-set-2026 · VIA RAPIDA DE MARKETING ═══════════════════════════════
+   Cada lectura de n8n cuesta 0,5 s de piso (arranque de n8n en Railway) mas lo
+   que tarde Meta/PostHog/la base: 0,7 a 5 s. Ahora un flujo de n8n las
+   PRECALCULA cada 10 minutos y deja el resultado en public.espejo_cache
+   (clave 'mk:<ruta del webhook>'). La pantalla lee esa copia directo de
+   Supabase (~0,2 s) con el mismo pase del ERP. Si la copia no existe, tiene
+   mas de MK_CACHE_MAX_MS, o no hay pase, cae a n8n como antes: nunca queda sin
+   datos. `vivo` = true salta la copia (lo usa el repintado tras refrescar Meta). */
+const MK_SB_URL  = 'https://vlilvrxfppppzwyaeviu.supabase.co';
+const MK_SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsaWx2cnhmcHBwcHp3eWFldml1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2NDIwMTMsImV4cCI6MjEwMDIxODAxM30.Bmo4CNDDbSF7Vp9JpDm7ceKUlsKKdufKcKFDIGHS4Hs';
+const MK_CACHE_MAX_MS = 20 * 60 * 1000;
+function _mkSbTok(){
+  try {
+    const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
+    return (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
+  } catch (e) { return null; }
+}
+async function _mkGetJSON(url, vivo){
+  if (!vivo){
+    try {
+      const tok = _mkSbTok();
+      const k = url.indexOf('/webhook/') > -1 ? 'mk:' + url.split('/webhook/')[1] : null;
+      if (tok && k){
+        const r = await fetch(MK_SB_URL + '/rest/v1/espejo_cache?select=datos,generado&clave=eq.' + encodeURIComponent(k),
+                              { headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok } });
+        if (r.ok){
+          const a = await r.json();
+          if (a && a[0] && a[0].datos != null && (Date.now() - Date.parse(a[0].generado)) < MK_CACHE_MAX_MS){
+            MK_VIA.copia++; return a[0].datos;
+          }
+        }
+      }
+    } catch (e) { /* sin copia: vamos a n8n */ }
+  }
+  MK_VIA.n8n++;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+const MK_VIA = { copia: 0, n8n: 0 };   /* contador para medir cuantas lecturas salieron de la copia */
+
 async function mkCargar(refrescarMeta){
   const sub = document.getElementById('mkSub');
   sub.style.display = 'none';
@@ -1745,7 +1787,7 @@ async function mkCargar(refrescarMeta){
        `fetch(url).then(r => r.json())` no espera nada aca: devuelve la promesa
        y las cinco salen juntas, que es lo que Promise.all promete.
        ══════════════════════════════════════════════════════════════════ */
-    const [datos] = await Promise.all([ fetch(url).then(r => r.json()), mkCargarHistoria().then(mkHistoriaVentasERP), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH), mkCargarEmbudoAnuncio(_mkD, _mkH), mkCargarHistoriaDia() ]);
+    const [datos] = await Promise.all([ (_mkSbTok() ? _mkGetJSON(url) : fetch(url).then(r => r.json())), mkCargarHistoria().then(mkHistoriaVentasERP), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH), mkCargarEmbudoAnuncio(_mkD, _mkH), mkCargarHistoriaDia() ]);
     MK = datos;
     if (!MK || !MK.filas) throw new Error('respuesta vacía');
     mkAplicarVentas();
@@ -1765,7 +1807,7 @@ async function mkCargar(refrescarMeta){
     const miCarga = (window._mkCargaN = (window._mkCargaN || 0) + 1);
     if (refrescarMeta) mkRefrescoProm.then(async () => {
       try {
-        const d2 = await fetch(url).then(r => r.json());
+        const d2 = await _mkGetJSON(url, true);
         if (miCarga !== window._mkCargaN || !d2 || !d2.filas) return;
         MK = d2;
         mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
