@@ -1527,21 +1527,29 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           .up-ov.on{display:flex}
           .up-ov .up-mod{background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);padding:18px;max-width:420px;width:100%}
           .up-ov .up-mod p{color:var(--mu);font-size:12px}
+          #cfg-users-wrap .up-pmod{max-width:560px;max-height:86vh;overflow:auto}
+          #cfg-users-wrap .up-prow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd);font-size:13px}
+          #cfg-users-wrap .up-prow small{color:var(--mu);font-size:11px;display:block}
+          #cfg-users-wrap .up-pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 14px;margin-top:6px}
+          #cfg-users-wrap .up-pgrid label{display:flex;justify-content:space-between;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bd)}
+          #cfg-users-wrap .up-pgrid h5{grid-column:1/-1;margin:10px 0 0;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ac)}
         </style>
         <div class="card" style="padding:14px;margin-bottom:12px">
           <h3 style="margin:0 0 4px 0;font-size:15px">Usuarios y permisos</h3>
-          <div style="font-size:12px;color:var(--mu)">Mueve el punto de cada cápsula: <b>izquierda</b> sin acceso · <b>medio</b> solo ver · <b>derecha</b> ver y editar. Se guarda solo. Clic en el nombre de un módulo para ponerlo igual a todos · clic en la etiqueta bajo el nombre para aplicar una plantilla · 👁 para ver el ERP como esa persona.</div>
+          
           <div class="up-bar">
             <input id="up-q" class="up-in" placeholder="🔍 Buscar nombre o correo" style="min-width:200px">
             <div class="up-seg" id="up-fil"><button data-f="all" class="on">Todos</button><button data-f="on">Activos</button><button data-f="off">Inactivos</button></div>
             <button class="btn bp" id="cu-add-btn">+ Agregar usuario</button>
+            <button class="btn bg" id="up-plant-btn" title="Crear o editar roles propios (Contabilidad, Compras...)">Plantillas / roles</button>
             <div class="up-leg" id="up-leg"></div>
           </div>
           <div id="cu-add-msg" style="font-size:12px;margin-top:10px"></div>
         </div>
         <div class="up-wrap"><table class="up-t" id="up-tbl"><thead></thead><tbody></tbody></table></div>
         <div class="up-cards" id="up-cards"></div>
-        <div id="cfg-users-msg" style="font-size:11px;color:var(--mu);margin-top:8px">El servidor (Apps Script) ya respeta estas cápsulas; la vía rápida de Supabase se completa en la próxima entrega. Con la plantilla <b>Ventas</b>, "Edición" significa <b>crear</b> (pedidos, cambios, devoluciones, pagos), no editar ni borrar lo existente. En <b>Comisiones</b>: Vista = cada asesora ve solo lo suyo · Edición = ve todo el módulo.</div>
+        <div class="up-ov" id="up-pov"></div>
+        
       </div>
       <div id="cfg-seg-wrap" class="cfg-panel">
         <div class="card" style="padding:14px;margin-bottom:12px">
@@ -34351,6 +34359,7 @@ async function loadConfig() {
     document.getElementById('au-buscar').addEventListener('input',()=>{ clearTimeout(_auBuscaT); _auBuscaT = setTimeout(cfgAuListar, 600); });
   }
   loadCfgSegmentos();
+  _upPrecargar();   // 30-set · la pestaña Usuarios abre al toque
 }
 
 // ══════ USUARIOS Y PERMISOS (30-set-2026 · reemplaza el panel del 15-set) ══════
@@ -34380,25 +34389,52 @@ const PERM_LBL = ['sin acceso', 'vista', 'edición'];
 const _UP_EYE = '<svg class="eye" viewBox="0 0 24 24"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 const _UP_PEN = '<svg class="pen" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>';
 function _permEsDueno(email){ return PERM_DUENOS.indexOf(String(email||'').trim().toLowerCase()) >= 0; }
-function _permDeRol(rol){ return Object.assign({}, PERM_PLANTILLAS[rol] || _permMatriz(0)); }
+// 30-set · plantillas propias (Contabilidad, Compras...) que vienen del servidor (Permisos.gs)
+let _upPropias = [];
+function _permPropia(rol){ const r = String(rol||'').toLowerCase(); const p = _upPropias.find(x => x.nombre.toLowerCase() === r); return p ? p.permisos : null; }
+function _permDeRol(rol){ return Object.assign(_permMatriz(0), PERM_PLANTILLAS[rol] || _permPropia(rol) || {}); }
 function _permEfectiva(u){ return u.esOwner ? _permMatriz(2) : Object.assign(_permDeRol(u.rol), u.permisos || {}); }
 
 let _cfgUsersData = [];
 let _cfgUsersRoles = ['Administrador','Logistica','Ventas','Marketing'];
 let _upFiltro = 'all', _upQ = '', _upUndo = null, _upToastT = null, _upWired = false;
 
+// 30-set · CARGA INSTANTÁNEA. La lista viene de Apps Script (~6 s). Se pinta al toque
+// la última foto guardada en este equipo y la del servidor la reemplaza por detrás.
+// Si mientras tanto se movió una cápsula, la respuesta vieja NO pisa ese cambio.
+let _upGuardando = 0, _upUltimoCambio = 0;
+function _upAplicarRes(res){
+  _cfgUsersData = res.usuarios || [];
+  _cfgUsersRoles = res.roles || _cfgUsersRoles;
+  _upPropias = res.plantillas || [];
+}
+function _upGuardarFoto(){
+  try { localStorage.setItem('erp_up_foto', JSON.stringify({usuarios:_cfgUsersData, roles:_cfgUsersRoles, plantillas:_upPropias, t:Date.now()})); } catch (e) {}
+}
+function _upTraerDelServidor(){
+  const t0 = Date.now();
+  return api('config.usuarios.listar', {}).then(res => {
+    if (_upGuardando > 0 || _upUltimoCambio > t0) return false;   // hubo cambios durante el viaje: no pisar
+    _upAplicarRes(res); _upGuardarFoto(); return true;
+  });
+}
 async function loadCfgUsuarios() {
   _upWire();
   const tbody = document.querySelector('#up-tbl tbody');
-  tbody.innerHTML = '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="text-align:center;padding:20px;color:var(--mu)"><div class="sp" style="display:inline-block;margin-right:8px"></div>Cargando...</td></tr>';
+  let foto = null; try { foto = JSON.parse(localStorage.getItem('erp_up_foto') || 'null'); } catch (e) {}
+  if (foto && foto.usuarios) { _upAplicarRes(foto); cfgUsersRender(); }
+  else tbody.innerHTML = '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="text-align:center;padding:20px;color:var(--mu)"><div class="sp" style="display:inline-block;margin-right:8px"></div>Cargando...</td></tr>';
   try {
-    const res = await api('config.usuarios.listar', {});
-    _cfgUsersData = res.usuarios || [];
-    _cfgUsersRoles = res.roles || _cfgUsersRoles;
-    cfgUsersRender();
+    if (await _upTraerDelServidor()) cfgUsersRender();
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="text-align:center;padding:20px;color:var(--rd)">Error: ' + esc(e.message) + '</td></tr>';
+    if (!foto) tbody.innerHTML = '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="text-align:center;padding:20px;color:var(--rd)">Error: ' + esc(e.message) + '</td></tr>';
+    else toast('No se pudo actualizar la lista de usuarios: ' + e.message, 'warn');
   }
+}
+// Al entrar a Configuración (cualquier pestaña) se trae la lista por detrás: cuando
+// Pablo abre "Usuarios", ya está fresca. Solo el dueño.
+function _upPrecargar(){
+  try { if (!_permEsDueno(MY_EMAIL) || window._VER_COMO) return; _upTraerDelServidor().catch(() => {}); } catch (e) {}
 }
 
 function _upTri(u, m){
@@ -34493,11 +34529,14 @@ async function _upGuardar(cambios, msg, silencioso){
   const antes = cambios.map(c => ({u:c.u, p:c.u.permisos}));
   cambios.forEach(c => { c.u.permisos = c.permisos; });
   cfgUsersRender();
+  _upGuardando++; _upUltimoCambio = Date.now();
   try {
     await apiSend('config.usuarios.permisosGuardar', {lista: cambios.map(c => ({email:c.u.email, permisos:c.permisos}))});
+    _upGuardando--; _upGuardarFoto();
     if (!silencioso) _upToast('✓ ' + msg, () => _upGuardar(antes.map(a => ({u:a.u, permisos:a.p})), 'Deshecho', true));
     return true;
   } catch (e) {
+    _upGuardando--;
     antes.forEach(a => { a.u.permisos = a.p; });
     cfgUsersRender();
     toast('No se guardó: ' + e.message, 'err');
@@ -34516,9 +34555,9 @@ function _upSetCelda(email, k, v){
 async function _upToggleActivo(email){
   const u = _upUsuario(email); if (!u || u.esOwner) return;
   const nuevo = !u.activo;
-  u.activo = nuevo; cfgUsersRender();
+  u.activo = nuevo; cfgUsersRender(); _upUltimoCambio = Date.now();
   try {
-    await apiSend('config.usuarios.activar', {email:email, activo:nuevo});
+    await apiSend('config.usuarios.activar', {email:email, activo:nuevo}); _upGuardarFoto();
     _upToast(nuevo ? '✓ ' + (u.nombre||email) + ' vuelve a entrar al ERP' : (u.nombre||email) + ' ya no puede entrar (sus permisos se guardan)', () => _upToggleActivo(email));
   } catch (e) { u.activo = !nuevo; cfgUsersRender(); toast('Error: ' + e.message, 'err'); }
 }
@@ -34526,9 +34565,10 @@ async function _upAplicarPlantilla(email, rol){
   const u = _upUsuario(email); if (!u) return;
   const prevRol = u.rol, prevP = u.permisos;
   try {
+    _upUltimoCambio = Date.now();
     if (rol !== u.rol) { await apiSend('config.usuarios.editar', {email:email, rol:rol}); u.rol = rol; }
     if (u.permisos) await _upGuardar([{u:u, permisos:null}], '', true);
-    cfgUsersRender();
+    cfgUsersRender(); _upGuardarFoto();
     _upToast('✓ ' + (u.nombre||email) + ' ahora usa la plantilla ' + rol, async () => {
       try { if (prevRol !== u.rol) { await apiSend('config.usuarios.editar', {email:email, rol:prevRol}); u.rol = prevRol; }
             if (prevP) await _upGuardar([{u:u, permisos:prevP}], '', true); cfgUsersRender(); } catch (e) { toast('Error: ' + e.message, 'err'); }
@@ -34544,8 +34584,11 @@ function _upMenu(html, el, onClick){
 }
 function _upCerrarMenu(){ const mn = document.getElementById('up-menu'); if (mn) mn.style.display = 'none'; }
 function _upMenuPlantilla(email, el){
-  _upMenu('<div class="t">Aplicar plantilla (cambia el rol)</div>' + _cfgUsersRoles.map(r => '<button data-ap="' + r + '">' + r + '</button>').join(''), el, ev => {
-    const r = ev.target.dataset.ap; if (!r) return; _upCerrarMenu(); _upAplicarPlantilla(email, r);
+  _upMenu('<div class="t">Aplicar plantilla (cambia el rol)</div>' + _cfgUsersRoles.map(r => '<button data-ap="' + esc(r) + '">' + esc(r) + (_permPropia(r) ? ' <span style="color:var(--mu);font-size:10px">· propia</span>' : '') + '</button>').join('') +
+    '<div class="t" style="border-top:1px solid var(--bd);margin-top:4px">Nueva</div><button data-nueva="1">＋ Crear plantilla nueva…</button>', el, ev => {
+    const b = ev.target.closest('button'); if (!b) return;
+    if (b.dataset.nueva) { _upCerrarMenu(); _upEditarPlantilla(null); return; }
+    const r = b.dataset.ap; if (!r) return; _upCerrarMenu(); _upAplicarPlantilla(email, r);
   });
 }
 function _upMenuColumna(k, el){
@@ -34568,7 +34611,7 @@ function _upEliminar(email){
     ov.classList.remove('on');
     if (o === 'des') return _upToggleActivo(email);
     if (o !== 'si') return;
-    try { await apiSend('config.usuarios.eliminar', {email:email}); _cfgUsersData = _cfgUsersData.filter(x => x.email !== email); cfgUsersRender(); toast('Usuario eliminado', 'ok'); }
+    try { _upUltimoCambio = Date.now(); await apiSend('config.usuarios.eliminar', {email:email}); _cfgUsersData = _cfgUsersData.filter(x => x.email !== email); cfgUsersRender(); _upGuardarFoto(); toast('Usuario eliminado', 'ok'); }
     catch (e) { toast('Error: ' + e.message, 'err'); }
   };
 }
@@ -34612,6 +34655,79 @@ function _upWire(){
     document.querySelectorAll('#up-fil button').forEach(x => x.classList.toggle('on', x === b)); cfgUsersRender();
   });
   document.getElementById('up-q').addEventListener('input', e => { _upQ = e.target.value.trim().toLowerCase(); cfgUsersRender(); });
+  document.getElementById('up-plant-btn').addEventListener('click', () => _upListaPlantillas());
+}
+
+// ── 30-set · PLANTILLAS / ROLES PROPIOS ─────────────────────────────────────
+// Las 4 del sistema son fijas (el servidor las conoce por nombre). Las propias
+// (Contabilidad, Compras…) se crean aquí: nombre + cápsulas. Quien tiene un rol
+// propio usa esas cápsulas; lo que ninguna cubre se comporta como Logística.
+function _upResumenMatriz(p){ const e = PERM_MODULOS.filter(m => p[m.k] === 2).map(m => m.n), v = PERM_MODULOS.filter(m => p[m.k] === 1).map(m => m.n);
+  return (e.length ? 'Edita: ' + e.join(', ') : '') + (e.length && v.length ? ' · ' : '') + (v.length ? 'Ve: ' + v.join(', ') : '') || 'Sin módulos'; }
+function _upCuantos(rol){ return _cfgUsersData.filter(u => String(u.rol).toLowerCase() === String(rol).toLowerCase()).length; }
+function _upPov(html){ const ov = document.getElementById('up-pov'); ov.innerHTML = html; ov.classList.add('on'); return ov; }
+function _upListaPlantillas(){
+  const sys = Object.keys(PERM_PLANTILLAS).map(r => '<div class="up-prow"><div><b>' + esc(r) + '</b> <span style="font-size:10px;color:var(--mu)">· del sistema</span><small>' + esc(_upResumenMatriz(PERM_PLANTILLAS[r])) + '</small></div><span style="font-size:11px;color:var(--mu);white-space:nowrap">' + _upCuantos(r) + ' persona(s)</span></div>').join('');
+  const pro = _upPropias.map(p => '<div class="up-prow"><div><b>' + esc(p.nombre) + '</b><small>' + esc(_upResumenMatriz(p.permisos)) + '</small></div><div style="display:flex;gap:6px;align-items:center;white-space:nowrap"><span style="font-size:11px;color:var(--mu)">' + _upCuantos(p.nombre) + ' persona(s)</span><button class="btn bg" data-pe="' + esc(p.nombre) + '">Editar</button></div></div>').join('');
+  const ov = _upPov('<div class="up-mod up-pmod"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><h3 style="margin:0;font-size:15px">Plantillas / roles</h3><button class="btn bp" data-pn="1">＋ Nueva plantilla</button></div>' +
+    '<h5 style="margin:14px 0 2px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ac)">Propias</h5>' + (pro || '<p>Todavía no creaste ninguna. Ejemplo: Contabilidad, Compras.</p>') +
+    '<h5 style="margin:14px 0 2px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ac)">Del sistema (fijas)</h5>' + sys +
+    '<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn bg" data-pc="1">Cerrar</button></div></div>');
+  ov.onclick = ev => {
+    const b = ev.target.closest('button');
+    if (ev.target === ov || (b && b.dataset.pc)) { ov.classList.remove('on'); return; }
+    if (b && b.dataset.pn) return _upEditarPlantilla(null);
+    if (b && b.dataset.pe) return _upEditarPlantilla(b.dataset.pe);
+  };
+}
+function _upEditarPlantilla(nombre){
+  const orig = nombre ? _upPropias.find(p => p.nombre === nombre) : null;
+  let mat = Object.assign(_permMatriz(0), orig ? orig.permisos : {});
+  const copiar = ['<option value="">— empezar de cero —</option>'].concat(Object.keys(PERM_PLANTILLAS).concat(_upPropias.map(p => p.nombre)).map(r => '<option>' + esc(r) + '</option>')).join('');
+  const pintar = () => {
+    let g = '';
+    PERM_GRUPOS.forEach(G => { g += '<h5>' + G.g + '</h5>'; G.m.forEach(mm => { const m = PERM_MODULOS.find(x => x.k === mm[0]); const v = mat[m.k] || 0;
+      g += '<label>' + m.n + '<button type="button" class="up-tri" data-pm="' + m.k + '" data-v="' + v + '" title="' + m.n + ': ' + PERM_LBL[v] + '"><i class="k">' + _UP_EYE + _UP_PEN + '</i></button></label>'; }); });
+    document.getElementById('up-pgrid').innerHTML = g;
+  };
+  const usan = orig ? _upCuantos(orig.nombre) : 0;
+  const ov = _upPov('<div class="up-mod up-pmod"><h3 style="margin:0 0 10px;font-size:15px">' + (orig ? 'Editar plantilla' : 'Nueva plantilla') + '</h3>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><input id="up-pn" class="up-in" placeholder="Nombre (ej. Contabilidad)" maxlength="30" value="' + esc(orig ? orig.nombre : '') + '" style="flex:1;min-width:160px">' +
+    '<select id="up-pcop" class="up-in" title="Copiar las cápsulas de otra plantilla">' + copiar + '</select></div>' +
+    '<div id="up-pgrid" class="up-pgrid"></div>' +
+    (usan ? '<p style="margin-top:10px">La usan ' + usan + ' persona(s). Si cambias las cápsulas, se les actualiza a quienes no fueron ajustados a mano.</p>' : '') +
+    '<div style="display:flex;gap:8px;justify-content:space-between;margin-top:14px;flex-wrap:wrap">' +
+    (orig ? '<button class="btn" data-pdel="1" style="background:none;color:var(--rd);border:1px solid var(--rd)">Eliminar plantilla</button>' : '<span></span>') +
+    '<div style="display:flex;gap:8px"><button class="btn bg" data-pvol="1">Cancelar</button><button class="btn bp" data-pok="1">Guardar</button></div></div></div>');
+  pintar();
+  document.getElementById('up-pcop').onchange = e => { const r = e.target.value; if (!r) return; mat = Object.assign(_permMatriz(0), PERM_PLANTILLAS[r] || _permPropia(r) || {}); pintar(); };
+  ov.onclick = async ev => {
+    const t = ev.target.closest('.up-tri[data-pm]');
+    if (t) { const m = PERM_MODULOS.find(x => x.k === t.dataset.pm), max = m.solo1 ? 1 : 2; const r = t.getBoundingClientRect(), x = (ev.clientX - r.left) / r.width, cur = +t.dataset.v;
+      let z = max === 1 ? (x < .5 ? 0 : 1) : (x < .34 ? 0 : x < .67 ? 1 : 2); if (z === cur) z = cur + 1; if (z > max) z = 0; mat[m.k] = z; pintar(); return; }
+    const b = ev.target.closest('button'); if (!b) return;
+    if (b.dataset.pvol) return _upListaPlantillas();
+    if (b.dataset.pdel) {
+      if (usan) { toast('La usan ' + usan + ' persona(s): cámbiales la plantilla primero', 'warn'); return; }
+      try { b.disabled = true; await apiSend('config.usuarios.plantillaEliminar', {nombre: orig.nombre}); _upPropias = _upPropias.filter(p => p !== orig); _cfgUsersRoles = _cfgUsersRoles.filter(r => r !== orig.nombre); _upGuardarFoto(); toast('Plantilla eliminada', 'ok'); _upListaPlantillas(); }
+      catch (e) { b.disabled = false; toast('Error: ' + e.message, 'err'); }
+      return;
+    }
+    if (b.dataset.pok) {
+      const n = document.getElementById('up-pn').value.trim();
+      if (!n) { toast('Ponle un nombre a la plantilla', 'warn'); return; }
+      if (Object.keys(PERM_PLANTILLAS).some(r => r.toLowerCase() === n.toLowerCase())) { toast('"' + n + '" es una plantilla del sistema: elige otro nombre', 'warn'); return; }
+      b.disabled = true; b.textContent = 'Guardando...';
+      try {
+        const r = await apiSend('config.usuarios.plantillaGuardar', {nombre: n, permisos: mat, original: orig ? orig.nombre : ''});
+        if (orig) { _cfgUsersData.forEach(u => { if (u.rol === orig.nombre) u.rol = n; }); _upPropias = _upPropias.map(p => p === orig ? {nombre: n, permisos: Object.assign({}, mat)} : p); _cfgUsersRoles = _cfgUsersRoles.map(x => x === orig.nombre ? n : x); }
+        else { _upPropias.push({nombre: n, permisos: Object.assign({}, mat)}); _cfgUsersRoles.push(n); }
+        _upGuardarFoto(); cfgUsersRender();
+        toast('✓ Plantilla ' + n + ' guardada' + (r && r.actualizadas ? ' · actualizada en ' + r.actualizadas + ' persona(s)' : ''), 'ok');
+        _upListaPlantillas();
+      } catch (e) { b.disabled = false; b.textContent = 'Guardar'; toast('Error: ' + e.message, 'err'); }
+    }
+  };
 }
 
 // "+ Agregar usuario": formulario corto arriba de la tabla.
