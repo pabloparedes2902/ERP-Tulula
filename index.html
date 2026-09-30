@@ -1477,6 +1477,8 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           #cfg-users-wrap thead .up-stk,#cfg-users-wrap thead .up-end{z-index:3}
           #cfg-users-wrap .up-end{position:sticky;right:0;z-index:1;box-shadow:-1px 0 0 var(--bd2)}
           #cfg-users-wrap .up-who{display:flex;gap:10px;align-items:center}
+          #cfg-users-wrap .up-who{text-align:left;justify-content:flex-start}
+          #cfg-users-wrap .up-who > div{text-align:left}
           #cfg-users-wrap .up-who b{font-size:13px}
           #cfg-users-wrap .up-who small{display:block;color:var(--mu);font-size:11px}
           #cfg-users-wrap .up-tpl{margin-top:3px;font-size:10px;padding:1px 7px;border-radius:10px;background:var(--bg3);color:var(--mu);border:1px solid var(--bd);cursor:pointer;display:inline-block}
@@ -6748,6 +6750,8 @@ const PG_SOLO_ADMIN = {dashboard:1, panel:1, papelera:1, config:1, marketing:1, 
 // Embudo (flujo) y Marketing. Ni siquiera lo que ve Logistica.
 const PG_SOLO_MARKETING = {marketing:1, flujo:1};
 function _pgPermitida(pg){
+  // 30-set-2026 · si hay matriz de permisos (o "Ver como"), manda la matriz.
+  if (MY_PERMISOS) return (Number(MY_PERMISOS[pg]) || 0) >= 1;
   if (MY_ROLE === 'Marketing') return !!PG_SOLO_MARKETING[pg];
   return !(PG_SOLO_ADMIN[pg] && MY_ROLE !== 'Administrador');
 }
@@ -34348,111 +34352,282 @@ async function loadConfig() {
   loadCfgSegmentos();
 }
 
-// ══════ PANEL DE USUARIOS (agregado 15-set-2026) ══════
+// ══════ USUARIOS Y PERMISOS (30-set-2026 · reemplaza el panel del 15-set) ══════
+// Matriz por modulo: 0 sin acceso · 1 vista · 2 edicion. Se guarda en el servidor
+// (Permisos.gs). Un usuario SIN matriz guardada (permisos:null) se rige por su rol,
+// exactamente como antes; la matriz nace cuando se mueve una capsula.
+// Aplicar una plantilla = cambiar el rol y BORRAR la matriz (vuelve al rol puro).
+const PERM_GRUPOS = [
+  {g:'Principal', m:[['dashboard','Dashboard',1],['panel','Panel',1]]},
+  {g:'Marketing y ventas', m:[['clientes','Clientes'],['marketing','Marketing'],['flujo','Ventas'],['comisiones','Comisiones'],['costos','Costos'],['homologaciones','Homolog.'],['multimedia','Multimedia'],['margen','Margen',1]]},
+  {g:'Logística', m:[['pedidos','Pedidos'],['inventario','Stock'],['cambios2','Cambios'],['devoluciones','Devoluc.'],['envios','Envíos']]},
+  {g:'Control', m:[['alertas','Alertas']]},
+  {g:'Sistema', m:[['papelera','Papelera'],['config','Config.']]}
+];
+const PERM_MODULOS = PERM_GRUPOS.flatMap(g => g.m.map((m, i) => ({k:m[0], n:m[1], solo1:!!m[2], first:i===0})));
+function _permMatriz(v){ const o = {}; PERM_MODULOS.forEach(m => { o[m.k] = (m.solo1 && v > 1) ? 1 : v; }); return o; }
+function _permCon(o){ return Object.assign(_permMatriz(0), o); }
+// Plantillas = lo que cada rol ve HOY (_applyRoleUI + _pgPermitida), traducido a la matriz.
+const PERM_PLANTILLAS = {
+  'Administrador': _permMatriz(2),
+  'Logistica': _permCon({clientes:2, flujo:2, pedidos:2, inventario:2, cambios2:2, devoluciones:2, envios:2, alertas:2}),
+  'Ventas': _permCon({clientes:1, flujo:1, pedidos:2, inventario:1, cambios2:2, devoluciones:2, envios:1, alertas:1}),
+  'Marketing': _permCon({marketing:2, flujo:2})
+};
+const PERM_DUENOS = ['pabloparedes2902@gmail.com'];
+const PERM_LBL = ['sin acceso', 'vista', 'edición'];
+const _UP_EYE = '<svg class="eye" viewBox="0 0 24 24"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const _UP_PEN = '<svg class="pen" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>';
+function _permEsDueno(email){ return PERM_DUENOS.indexOf(String(email||'').trim().toLowerCase()) >= 0; }
+function _permDeRol(rol){ return Object.assign({}, PERM_PLANTILLAS[rol] || _permMatriz(0)); }
+function _permEfectiva(u){ return u.esOwner ? _permMatriz(2) : Object.assign(_permDeRol(u.rol), u.permisos || {}); }
+
 let _cfgUsersData = [];
 let _cfgUsersRoles = ['Administrador','Logistica','Ventas','Marketing'];
+let _upFiltro = 'all', _upQ = '', _upUndo = null, _upToastT = null, _upWired = false;
 
 async function loadCfgUsuarios() {
-  const tbody = document.querySelector('#cfg-users-tbl tbody');
-  tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--mu)"><div class="sp" style="display:inline-block;margin-right:8px"></div>Cargando...</td></tr>';
+  _upWire();
+  const tbody = document.querySelector('#up-tbl tbody');
+  tbody.innerHTML = '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="text-align:center;padding:20px;color:var(--mu)"><div class="sp" style="display:inline-block;margin-right:8px"></div>Cargando...</td></tr>';
   try {
     const res = await api('config.usuarios.listar', {});
     _cfgUsersData = res.usuarios || [];
     _cfgUsersRoles = res.roles || _cfgUsersRoles;
     cfgUsersRender();
   } catch (e) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--rd)">Error: ' + esc(e.message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="text-align:center;padding:20px;color:var(--rd)">Error: ' + esc(e.message) + '</td></tr>';
   }
 }
 
-function cfgUsersRender() {
-  const tbody = document.querySelector('#cfg-users-tbl tbody');
-  if (!_cfgUsersData.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:var(--mu)">Sin usuarios.</td></tr>'; return; }
+function _upTri(u, m){
+  const v = _permEfectiva(u)[m.k] || 0, dis = !u.activo || u.esOwner;
+  return '<button class="up-tri" data-e="' + esc(u.email) + '" data-m="' + m.k + '" data-v="' + v + '"' + (dis ? ' disabled' : '') +
+    ' role="slider" aria-valuemin="0" aria-valuemax="' + (m.solo1 ? 1 : 2) + '" aria-valuenow="' + v + '" aria-label="' + m.n + '" title="' + esc((u.nombre||u.email).split(' ')[0]) + ' · ' + m.n + ': ' + PERM_LBL[v] + (m.solo1 ? ' (este módulo solo se ve)' : '') + '"><i class="k">' + _UP_EYE + _UP_PEN + '</i></button>';
+}
+function _upEtiqueta(u){
+  if (u.esOwner) return {t:'Dueño · acceso total', c:false};
+  if (!u.permisos) return {t:u.rol || 'Sin rol', c:false};
+  const base = _permDeRol(u.rol), p = _permEfectiva(u);
+  const igual = PERM_MODULOS.every(m => (p[m.k]||0) === (base[m.k]||0));
+  return igual ? {t:u.rol, c:false} : {t:'Personalizado · base ' + (u.rol||'—'), c:true};
+}
+function _upResumen(u){ const p = _permEfectiva(u); const e = PERM_MODULOS.filter(m => p[m.k] === 2).length, v = PERM_MODULOS.filter(m => p[m.k] === 1).length; return e + ' edición · ' + v + ' vista'; }
+function _upVisible(u){
+  if (_upFiltro === 'on' && !u.activo) return false;
+  if (_upFiltro === 'off' && u.activo) return false;
+  return !_upQ || ((u.nombre||'') + ' ' + u.email).toLowerCase().indexOf(_upQ) >= 0;
+}
+const _UP_TRASH = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
+const _UP_VER = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+function _upQuien(u){
+  const et = _upEtiqueta(u);
+  return '<div class="up-who"><button class="up-act' + (u.activo ? ' on' : '') + '" data-act="' + esc(u.email) + '"' + (u.esOwner ? ' disabled' : '') +
+    ' title="' + (u.activo ? 'Activo — clic para desactivar' : 'Inactivo — clic para activar') + '" aria-label="Activo"></button>' +
+    '<div style="min-width:0"><b>' + esc(u.nombre || '(sin nombre)') + (u.esOwner ? ' 🔒' : '') + '</b>' +
+    (u.esOwner ? '' : ' <button class="up-ic" data-ver="' + esc(u.email) + '" title="Ver el ERP como esta persona">' + _UP_VER + '</button>') +
+    '<small>' + esc(u.email) + '</small>' +
+    '<span class="up-tpl' + (et.c ? ' custom' : '') + '" data-tpl="' + esc(u.email) + '">' + esc(et.t) + (u.esOwner ? '' : ' ▾') + '</span> <span class="up-sum">' + _upResumen(u) + '</span></div></div>';
+}
+function cfgUsersRender(){
+  const lista = _cfgUsersData.filter(_upVisible);
+  const leg = document.getElementById('up-leg');
+  if (leg && !leg.innerHTML) leg.innerHTML = [0,1,2].map(v => '<span><i class="up-tri" data-v="' + v + '" style="transform:scale(.8)"><i class="k">' + _UP_EYE + _UP_PEN + '</i></i>' + ['Sin acceso','Vista','Edición'][v] + '</span>').join('');
+  // tabla (escritorio)
+  let g = '<tr class="up-grp"><th class="up-stk"></th>', mh = '<tr class="up-mods"><th class="up-stk">Activo · Usuario</th>';
+  PERM_GRUPOS.forEach(G => { g += '<th class="up-gs" colspan="' + G.m.length + '">' + G.g + '</th>'; });
+  PERM_MODULOS.forEach(m => { mh += '<th class="' + (m.first ? 'up-gs' : '') + '" data-col="' + m.k + '" title="Clic: aplicar a todos los activos">' + m.n + '</th>'; });
+  document.querySelector('#up-tbl thead').innerHTML = g + '<th class="up-end"></th></tr>' + mh + '<th class="up-end">Eliminar</th></tr>';
   let h = '';
-  _cfgUsersData.forEach(u => {
-    if (u.esOwner) {
-      h += '<tr>'
-        + '<td>' + esc(u.nombre) + '</td>'
-        + '<td>' + esc(u.email) + '</td>'
-        + '<td>' + esc(u.rol) + ' <span style="color:var(--mu);font-size:11px">(dueño)</span></td>'
-        + '<td style="text-align:center">✓</td>'
-        + '<td style="color:var(--mu);font-size:11px">No editable</td>'
-      + '</tr>';
-      return;
-    }
-    const rolOptions = _cfgUsersRoles.map(r => '<option value="' + r + '"' + (r === u.rol ? ' selected' : '') + '>' + r + '</option>').join('');
-    h += '<tr data-email="' + esc(u.email) + '">'
-      + '<td><input type="text" class="cu-nombre" value="' + esc(u.nombre) + '" style="width:130px;padding:6px 8px;background:var(--bg3);border:1px solid var(--bd);border-radius:6px;color:var(--tx);font-family:inherit;font-size:12px"></td>'
-      + '<td style="font-size:12px">' + esc(u.email) + '</td>'
-      + '<td><select class="cu-rol" style="padding:6px 8px;background:var(--bg3);border:1px solid var(--bd);border-radius:6px;color:var(--tx);font-family:inherit;font-size:12px">' + rolOptions + '</select></td>'
-      + '<td style="text-align:center"><input type="checkbox" class="cu-activo"' + (u.activo ? ' checked' : '') + '></td>'
-      + '<td><button class="btn bg bs cu-del" style="color:var(--rd)">Eliminar</button></td>'
-    + '</tr>';
+  lista.forEach(u => {
+    h += '<tr class="' + (u.activo ? '' : 'up-off') + '"><td class="up-stk">' + _upQuien(u) + '</td>';
+    PERM_MODULOS.forEach(m => { h += '<td class="' + (m.first ? 'up-gs' : '') + '">' + _upTri(u, m) + '</td>'; });
+    h += '<td class="up-end"><button class="up-ic del" data-del="' + esc(u.email) + '"' + (u.esOwner ? ' disabled' : '') + ' title="Eliminar usuario">' + _UP_TRASH + '</button></td></tr>';
   });
-  tbody.innerHTML = h;
-  tbody.querySelectorAll('tr[data-email]').forEach(tr => {
-    const email = tr.dataset.email;
-    const nombreInput = tr.querySelector('.cu-nombre');
-    nombreInput.addEventListener('blur', async () => {
-      const val = nombreInput.value.trim();
-      const u = _cfgUsersData.find(x => x.email === email);
-      if (!val || (u && val === u.nombre)) return;
-      try { await apiSend('config.usuarios.editar', { email: email, nombre: val }); if (u) u.nombre = val; toast('Nombre actualizado', 'ok'); }
-      catch (e) { toast('Error: ' + e.message, 'err'); nombreInput.value = u ? u.nombre : ''; }
+  document.querySelector('#up-tbl tbody').innerHTML = h || '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="padding:24px;color:var(--mu)">Nadie coincide con el filtro.</td></tr>';
+  // tarjetas (celular)
+  let c = '';
+  lista.forEach(u => {
+    c += '<div class="up-card' + (u.activo ? '' : ' up-off') + '"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">' + _upQuien(u) +
+      '<button class="up-ic del" data-del="' + esc(u.email) + '"' + (u.esOwner ? ' disabled' : '') + ' title="Eliminar usuario">' + _UP_TRASH + '</button></div><div class="up-cmods">';
+    PERM_GRUPOS.forEach(G => {
+      c += '<h5>' + G.g + '</h5>';
+      G.m.forEach(mm => { const m = PERM_MODULOS.find(x => x.k === mm[0]); c += '<div class="up-crow"><span>' + m.n + '</span>' + _upTri(u, m) + '</div>'; });
     });
-    tr.querySelector('.cu-rol').addEventListener('change', async (ev) => {
-      const val = ev.target.value;
-      const prev = (_cfgUsersData.find(x => x.email === email) || {}).rol;
-      if (!confirm('¿Cambiar el rol de ' + email + ' a "' + val + '"?')) { ev.target.value = prev; return; }
-      try {
-        await apiSend('config.usuarios.editar', { email: email, rol: val });
-        const u = _cfgUsersData.find(x => x.email === email); if (u) u.rol = val;
-        toast('Rol actualizado', 'ok');
-      } catch (e) { toast('Error: ' + e.message, 'err'); ev.target.value = prev; }
-    });
-    tr.querySelector('.cu-activo').addEventListener('change', async (ev) => {
-      const activo = ev.target.checked;
-      try {
-        await apiSend('config.usuarios.activar', { email: email, activo: activo });
-        const u = _cfgUsersData.find(x => x.email === email); if (u) u.activo = activo;
-        toast(activo ? 'Usuario reactivado' : 'Usuario desactivado', 'ok');
-      } catch (e) { toast('Error: ' + e.message, 'err'); ev.target.checked = !activo; }
-    });
-    tr.querySelector('.cu-del').addEventListener('click', async () => {
-      const u = _cfgUsersData.find(x => x.email === email) || {};
-      if (!confirm('¿Eliminar DEFINITIVAMENTE a ' + (u.nombre || '') + ' (' + email + ')? No se puede deshacer.')) return;
-      try {
-        await apiSend('config.usuarios.eliminar', { email: email });
-        _cfgUsersData = _cfgUsersData.filter(x => x.email !== email);
-        cfgUsersRender();
-        toast('Usuario eliminado', 'ok');
-      } catch (e) { toast('Error: ' + e.message, 'err'); }
-    });
+    c += '</div></div>';
   });
+  document.getElementById('up-cards').innerHTML = c || '<div style="padding:16px;color:var(--mu)">Nadie coincide con el filtro.</div>';
 }
 
-async function cfgUsersAdd() {
-  const btn = document.getElementById('cu-add-btn');
-  const msg = document.getElementById('cu-add-msg');
-  const nombre = document.getElementById('cu-add-nombre').value.trim();
-  const email = document.getElementById('cu-add-email').value.trim().toLowerCase();
-  const rol = document.getElementById('cu-add-rol').value;
-  if (!nombre || !email) { msg.style.color = 'var(--rd)'; msg.textContent = 'Completa nombre y correo.'; return; }
-  btn.disabled = true; btn.textContent = 'Agregando...';
-  msg.style.color = 'var(--mu)'; msg.textContent = 'Agregando...';
+function _upToast(msg, undo){
+  let t = document.getElementById('up-toast');
+  if (!t) { t = document.createElement('div'); t.id = 'up-toast'; t.className = 'up-toast'; t.innerHTML = '<span></span><a>Deshacer</a>'; document.body.appendChild(t);
+    t.querySelector('a').onclick = () => { const f = _upUndo; _upUndo = null; t.classList.remove('on'); if (f) f(); }; }
+  _upUndo = undo || null;
+  t.querySelector('span').textContent = msg;
+  t.querySelector('a').style.display = undo ? '' : 'none';
+  t.classList.add('on'); clearTimeout(_upToastT); _upToastT = setTimeout(() => t.classList.remove('on'), 5000);
+}
+function _upUsuario(email){ return _cfgUsersData.find(x => x.email === email); }
+
+// Guarda una lista [{u, permisos}] (permisos null = volver al rol). Optimista: pinta
+// primero; si el servidor falla, devuelve todo a como estaba.
+async function _upGuardar(cambios, msg, silencioso){
+  const antes = cambios.map(c => ({u:c.u, p:c.u.permisos}));
+  cambios.forEach(c => { c.u.permisos = c.permisos; });
+  cfgUsersRender();
   try {
-    await apiSend('config.usuarios.crear', { nombre: nombre, email: email, rol: rol });
-    document.getElementById('cu-add-nombre').value = '';
-    document.getElementById('cu-add-email').value = '';
-    msg.style.color = 'var(--gn)';
-    msg.innerHTML = '✓ ' + esc(nombre) + ' agregada con rol ' + esc(rol) + '. <b>Falta un paso mas</b>: para que pueda entrar hay que sumarla a la lista de Google (Test users) — pidele a Claude que lo haga, o entra tu mismo aqui: <a href="https://console.cloud.google.com/auth/audience?project=tulula-erp-login" target="_blank" style="color:var(--ac)">Google Auth Platform</a>.';
-    toast('Usuario agregado', 'ok');
-    loadCfgUsuarios();
+    await apiSend('config.usuarios.permisosGuardar', {lista: cambios.map(c => ({email:c.u.email, permisos:c.permisos}))});
+    if (!silencioso) _upToast('✓ ' + msg, () => _upGuardar(antes.map(a => ({u:a.u, permisos:a.p})), 'Deshecho', true));
+    return true;
   } catch (e) {
-    msg.style.color = 'var(--rd)'; msg.textContent = 'Error: ' + e.message;
-  } finally {
-    btn.disabled = false; btn.textContent = '+ Agregar usuario';
+    antes.forEach(a => { a.u.permisos = a.p; });
+    cfgUsersRender();
+    toast('No se guardó: ' + e.message, 'err');
+    return false;
   }
+}
+function _upSetCelda(email, k, v){
+  const u = _upUsuario(email); if (!u || u.esOwner || !u.activo) return;
+  const m = PERM_MODULOS.find(x => x.k === k), max = m.solo1 ? 1 : 2;
+  v = Math.max(0, Math.min(max, v));
+  const p = _permEfectiva(u); if ((p[k]||0) === v) return;
+  p[k] = v;
+  _upGuardar([{u:u, permisos:p}], (u.nombre || u.email) + ' · ' + m.n + ': ' + PERM_LBL[v]);
+  const b = document.querySelector('.up-wrap .up-tri[data-e="' + CSS.escape(email) + '"][data-m="' + k + '"]'); if (b) b.focus();
+}
+async function _upToggleActivo(email){
+  const u = _upUsuario(email); if (!u || u.esOwner) return;
+  const nuevo = !u.activo;
+  u.activo = nuevo; cfgUsersRender();
+  try {
+    await apiSend('config.usuarios.activar', {email:email, activo:nuevo});
+    _upToast(nuevo ? '✓ ' + (u.nombre||email) + ' vuelve a entrar al ERP' : (u.nombre||email) + ' ya no puede entrar (sus permisos se guardan)', () => _upToggleActivo(email));
+  } catch (e) { u.activo = !nuevo; cfgUsersRender(); toast('Error: ' + e.message, 'err'); }
+}
+async function _upAplicarPlantilla(email, rol){
+  const u = _upUsuario(email); if (!u) return;
+  const prevRol = u.rol, prevP = u.permisos;
+  try {
+    if (rol !== u.rol) { await apiSend('config.usuarios.editar', {email:email, rol:rol}); u.rol = rol; }
+    if (u.permisos) await _upGuardar([{u:u, permisos:null}], '', true);
+    cfgUsersRender();
+    _upToast('✓ ' + (u.nombre||email) + ' ahora usa la plantilla ' + rol, async () => {
+      try { if (prevRol !== u.rol) { await apiSend('config.usuarios.editar', {email:email, rol:prevRol}); u.rol = prevRol; }
+            if (prevP) await _upGuardar([{u:u, permisos:prevP}], '', true); cfgUsersRender(); } catch (e) { toast('Error: ' + e.message, 'err'); }
+    });
+  } catch (e) { toast('Error: ' + e.message, 'err'); cfgUsersRender(); }
+}
+function _upMenu(html, el, onClick){
+  let mn = document.getElementById('up-menu');
+  if (!mn) { mn = document.createElement('div'); mn.id = 'up-menu'; mn.className = 'up-menu'; document.body.appendChild(mn); }
+  mn.innerHTML = html; mn.onclick = onClick;
+  const r = el.getBoundingClientRect();
+  mn.style.left = Math.max(8, Math.min(r.left, innerWidth - 220)) + 'px'; mn.style.top = (r.bottom + 4) + 'px'; mn.style.display = 'block';
+}
+function _upCerrarMenu(){ const mn = document.getElementById('up-menu'); if (mn) mn.style.display = 'none'; }
+function _upMenuPlantilla(email, el){
+  _upMenu('<div class="t">Aplicar plantilla (cambia el rol)</div>' + _cfgUsersRoles.map(r => '<button data-ap="' + r + '">' + r + '</button>').join(''), el, ev => {
+    const r = ev.target.dataset.ap; if (!r) return; _upCerrarMenu(); _upAplicarPlantilla(email, r);
+  });
+}
+function _upMenuColumna(k, el){
+  const m = PERM_MODULOS.find(x => x.k === k);
+  _upMenu('<div class="t">' + m.n + ' · para todos los activos</div><button data-cv="0">Nadie</button><button data-cv="1">Todos pueden ver</button>' + (m.solo1 ? '' : '<button data-cv="2">Todos pueden editar</button>'), el, ev => {
+    const v = ev.target.dataset.cv; if (v === undefined) return; _upCerrarMenu();
+    const cambios = _cfgUsersData.filter(u => u.activo && !u.esOwner).map(u => { const p = _permEfectiva(u); p[k] = +v; return {u:u, permisos:p}; });
+    if (cambios.length) _upGuardar(cambios, m.n + ': ' + PERM_LBL[+v] + ' para todos');
+  });
+}
+function _upEliminar(email){
+  const u = _upUsuario(email); if (!u || u.esOwner) return;
+  let ov = document.getElementById('up-ov');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'up-ov'; ov.className = 'up-ov'; document.body.appendChild(ov); }
+  ov.innerHTML = '<div class="up-mod"><h3 style="margin:0 0 6px;font-size:15px">Eliminar usuario</h3><p>Vas a borrar a <b>' + esc(u.nombre||'') + '</b> (' + esc(email) + ') y todos sus permisos. <b>No se puede deshacer.</b><br><br>Si solo quieres que no entre, <b>desactivar</b> es mejor: se puede volver atrás y conserva sus permisos.</p>' +
+    '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px"><button class="btn bg" data-o="no">Cancelar</button>' + (u.activo ? '<button class="btn bg" data-o="des">Mejor desactivar</button>' : '') + '<button class="btn" data-o="si" style="background:var(--rd);color:#fff">Eliminar</button></div></div>';
+  ov.classList.add('on');
+  ov.onclick = async ev => {
+    const o = ev.target.dataset.o; if (!o && ev.target !== ov) return;
+    ov.classList.remove('on');
+    if (o === 'des') return _upToggleActivo(email);
+    if (o !== 'si') return;
+    try { await apiSend('config.usuarios.eliminar', {email:email}); _cfgUsersData = _cfgUsersData.filter(x => x.email !== email); cfgUsersRender(); toast('Usuario eliminado', 'ok'); }
+    catch (e) { toast('Error: ' + e.message, 'err'); }
+  };
+}
+// "Ver como" (solo el dueno): se guarda en esta pestana del navegador y se recarga;
+// bootApp aplica esa matriz al menu y muestra la franja para salir.
+function _upVerComo(email){
+  const u = _upUsuario(email); if (!u) return;
+  try { sessionStorage.setItem('erp_ver_como', JSON.stringify({nombre:u.nombre||u.email, email:u.email, rol:u.rol, permisos:_permEfectiva(u)})); } catch (e) { toast('No se pudo activar "Ver como"', 'err'); return; }
+  try { localStorage.setItem('erp_last_pg', ''); } catch (e) {}
+  location.reload();
+}
+function _upWire(){
+  if (_upWired) return; _upWired = true;
+  const wrap = document.getElementById('cfg-users-wrap');
+  wrap.addEventListener('click', e => {
+    const t = e.target.closest('.up-tri');
+    if (t && !t.disabled && t.dataset.e) {
+      const r = t.getBoundingClientRect(), x = (e.clientX - r.left) / r.width;
+      const max = PERM_MODULOS.find(m => m.k === t.dataset.m).solo1 ? 1 : 2, cur = +t.dataset.v;
+      // clic en una zona = ir a esa posicion; clic sobre el punto actual = siguiente
+      let z = (e.clientX === 0 && e.clientY === 0) ? cur + 1 : (max === 1 ? (x < .5 ? 0 : 1) : (x < .34 ? 0 : x < .67 ? 1 : 2));
+      if (z === cur) z = cur + 1;
+      if (z > max) z = 0;
+      return _upSetCelda(t.dataset.e, t.dataset.m, z);
+    }
+    const a = e.target.closest('[data-act]'); if (a && !a.disabled) return _upToggleActivo(a.dataset.act);
+    const d = e.target.closest('[data-del]'); if (d && !d.disabled) return _upEliminar(d.dataset.del);
+    const vc = e.target.closest('[data-ver]'); if (vc) return _upVerComo(vc.dataset.ver);
+    const tp = e.target.closest('[data-tpl]'); if (tp) { const u = _upUsuario(tp.dataset.tpl); if (u && !u.esOwner) _upMenuPlantilla(u.email, tp); return; }
+    const th = e.target.closest('th[data-col]'); if (th) return _upMenuColumna(th.dataset.col, th);
+  });
+  wrap.addEventListener('keydown', e => {
+    const t = e.target.closest && e.target.closest('.up-tri'); if (!t || t.disabled) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); _upSetCelda(t.dataset.e, t.dataset.m, +t.dataset.v + 1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); _upSetCelda(t.dataset.e, t.dataset.m, +t.dataset.v - 1); }
+  });
+  document.addEventListener('click', e => { if (!e.target.closest('#up-menu') && !e.target.closest('[data-tpl]') && !e.target.closest('th[data-col]')) _upCerrarMenu(); });
+  document.getElementById('up-fil').addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return; _upFiltro = b.dataset.f;
+    document.querySelectorAll('#up-fil button').forEach(x => x.classList.toggle('on', x === b)); cfgUsersRender();
+  });
+  document.getElementById('up-q').addEventListener('input', e => { _upQ = e.target.value.trim().toLowerCase(); cfgUsersRender(); });
+}
+
+// "+ Agregar usuario": formulario corto arriba de la tabla.
+function cfgUsersAdd(){
+  _upWire();
+  if (document.getElementById('up-add')) { document.getElementById('up-add-n').focus(); return; }
+  const f = document.createElement('div');
+  f.id = 'up-add'; f.className = 'card';
+  f.style.cssText = 'padding:12px;margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;border-color:var(--ac2)';
+  f.innerHTML = '<input id="up-add-n" class="up-in" placeholder="Nombre" style="width:160px"><input id="up-add-e" class="up-in" type="email" placeholder="correo@gmail.com" style="width:220px">' +
+    '<select id="up-add-r" class="up-in">' + _cfgUsersRoles.map(r => '<option' + (r === 'Ventas' ? ' selected' : '') + '>' + r + '</option>').join('') + '</select>' +
+    '<button class="btn bp" id="up-add-ok">Crear</button><button class="btn bg" id="up-add-ko">Cancelar</button>' +
+    '<span style="font-size:11px;color:var(--mu);flex-basis:100%">La plantilla prende sus cápsulas; después ajustas módulo por módulo.</span>';
+  const wrap = document.getElementById('cfg-users-wrap');
+  wrap.insertBefore(f, wrap.querySelector('.up-wrap'));
+  document.getElementById('up-add-n').focus();
+  document.getElementById('up-add-ko').onclick = () => f.remove();
+  document.getElementById('up-add-ok').onclick = async function(){
+    const nombre = document.getElementById('up-add-n').value.trim();
+    const email = document.getElementById('up-add-e').value.trim().toLowerCase();
+    const rol = document.getElementById('up-add-r').value;
+    const msg = document.getElementById('cu-add-msg');
+    if (!nombre || email.indexOf('@') < 0) { toast('Falta el nombre o un correo válido', 'warn'); return; }
+    if (_upUsuario(email)) { toast('Ese correo ya existe', 'warn'); return; }
+    this.disabled = true; this.textContent = 'Creando...';
+    try {
+      await apiSend('config.usuarios.crear', {nombre:nombre, email:email, rol:rol});
+      f.remove();
+      msg.style.color = 'var(--gn)';
+      msg.innerHTML = '✓ ' + esc(nombre) + ' creado con plantilla ' + esc(rol) + '. <b>Falta un paso más</b> para que pueda entrar: sumarlo a la lista de Google (Test users) — pídele a Claude que lo haga, o entra aquí: <a href="https://console.cloud.google.com/auth/audience?project=tulula-erp-login" target="_blank" style="color:var(--ac)">Google Auth Platform</a>.';
+      toast('Usuario creado', 'ok');
+      loadCfgUsuarios();
+    } catch (e) { toast('Error: ' + e.message, 'err'); this.disabled = false; this.textContent = 'Crear'; }
+  };
 }
 
 async function loadCfgSegmentos() {
@@ -35280,6 +35455,8 @@ let MY_EMAIL      = localStorage.getItem('erp_email') || '';
 // Fix raíz AsesoraPago (2-ago): nombre canónico de la asesora logueada ('' si
 // no comisiona: Pablo/Roxana). Se usa como valor por defecto al registrar pagos.
 let MY_ASESORA    = localStorage.getItem('erp_asesora') || '';
+// 30-set-2026 · matriz de permisos por modulo (Permisos.gs). null = se rige por el rol, como antes.
+let MY_PERMISOS   = (function(){ try{ return JSON.parse(localStorage.getItem('erp_permisos') || 'null'); }catch(e){ return null; } })();
 
 function _showLogin(msg){
   const ov = document.getElementById('authOverlay');
@@ -35341,6 +35518,8 @@ async function _onGoogleCredential(resp){
     try { _sbAuthConCredencial(resp.credential); } catch(_){}
     SESSION_TOKEN = data.sessionToken; MY_ROLE = data.rol; MY_EMAIL = data.email;
     MY_ASESORA = data.asesora || '';
+    MY_PERMISOS = data.permisos || null;   // 30-set
+    try { localStorage.setItem('erp_permisos', JSON.stringify(MY_PERMISOS)); } catch(_p){}
     // FIX 07-ago — inicio de sesion NUEVO (no renovacion en caliente): la foto de
     // stock guardada puede ser de otro usuario o de antes de un movimiento hecho
     // desde otro equipo. Se suelta para que la primera pantalla ya venga fresca.
@@ -35391,6 +35570,7 @@ function logout(){
   try{ google.accounts.id.disableAutoSelect(); }catch(e){}
   SESSION_TOKEN=''; MY_ROLE=''; MY_EMAIL='';
   localStorage.removeItem('erp_sess'); localStorage.removeItem('erp_rol'); localStorage.removeItem('erp_email');
+  MY_PERMISOS = null; try { localStorage.removeItem('erp_permisos'); sessionStorage.removeItem('erp_ver_como'); } catch(_p){}   // 30-set
   // FIX 07-ago — al salir se sueltan las FOTOS DE DATOS guardadas en este equipo.
   // Antes sobrevivian al cambio de usuario: quien entraba despues heredaba el
   // stock (y la duda del espejo) de la sesion anterior y veia numeros viejos.
@@ -35455,9 +35635,99 @@ function _initVentasGuard(){
   tick();
 }
 
+// ── 30-set-2026 · PERMISOS POR MODULO EN EL NAVEGADOR (la matriz vive en Permisos.gs) ──
+// Menu: muestra solo los modulos con vista o edicion. Idempotente: se puede volver
+// a correr cuando la matriz cambia (primero devuelve todo a visible).
+function _applyPermisosUI(){
+  document.querySelectorAll('.sb .nb[data-pg]').forEach(function(b){
+    var pg = b.getAttribute('data-pg');
+    b.style.display = ((Number(MY_PERMISOS && MY_PERMISOS[pg]) || 0) >= 1) ? '' : 'none';
+  });
+  document.querySelectorAll('.sb .ns').forEach(function(ns){
+    var el = ns.nextElementSibling, alguno = false;
+    while(el && !(el.classList && el.classList.contains('ns'))){
+      if(el.classList && el.classList.contains('nb') && el.style.display !== 'none') alguno = true;
+      el = el.nextElementSibling;
+    }
+    ns.style.display = alguno ? '' : 'none';
+  });
+}
+// "Vista" = entra al modulo pero no ve los botones de escribir. Mismo criterio que
+// el guardian de Ventas (_hideWriteBtns), pero marca lo que esconde (data-upv) para
+// devolverlo si la misma ventana se abre despues desde un modulo con edicion.
+// Ventas conserva su guardian propio (_initVentasGuard), sin cambios.
+function _vistaEsconder(root){
+  if(!root) return;
+  root.querySelectorAll('button,.btn').forEach(function(b){
+    if(b.style.display==='none') return;
+    var t=(b.textContent||'').trim().toLowerCase(), id=(b.id||'').toLowerCase(), cls=(b.className||'').toLowerCase();
+    if( t.indexOf('editar')>=0 || t.indexOf('eliminar')>=0 || t.indexOf('guardar')>=0 || t.indexOf('agregar')>=0 || t.indexOf('borrar')>=0 ||
+        /(^|[\s-])(del|elim|edit|save|guardar|borrar|restaur)/.test(cls) || id==='hcb-apply' || id==='hce-eliminar' ){
+      b.style.display='none'; b.setAttribute('data-upv','1');
+    }
+  });
+}
+function _initVistaGuard(){
+  if(MY_ROLE === 'Ventas') return;   // Ventas tiene su propio guardian
+  var creacion = {nuevo:1, cambios:1, nuevadev:1};
+  function tick(){
+    if(!MY_PERMISOS) return;
+    var pg = (typeof curPg !== 'undefined') ? curPg : '';
+    var soloVista = !creacion[pg] && (Number(MY_PERMISOS[pg]) || 0) === 1;
+    if(soloVista){
+      _vistaEsconder(document.querySelector('.pg.on'));
+      document.querySelectorAll('.modal.on').forEach(_vistaEsconder);
+    } else {
+      document.querySelectorAll('.modal.on [data-upv]').forEach(function(b){ b.style.display=''; b.removeAttribute('data-upv'); });
+    }
+  }
+  var t=null;
+  try{ new MutationObserver(function(){ if(t)clearTimeout(t); t=setTimeout(tick,120); })
+        .observe(document.body,{childList:true, subtree:true}); }catch(e){}
+  tick();
+}
+// "Ver como" (solo el dueno): aplica en esta pestana la matriz de otra persona y
+// muestra una franja para salir. Los datos se siguen pidiendo con TU sesion.
+function _permVerComoAplicar(){
+  var vc = null; try{ vc = JSON.parse(sessionStorage.getItem('erp_ver_como') || 'null'); }catch(e){}
+  if(!vc) return;
+  if(typeof _permEsDueno === 'function' && !_permEsDueno(MY_EMAIL)){ try{ sessionStorage.removeItem('erp_ver_como'); }catch(e){} return; }
+  window._VER_COMO = vc;
+  MY_PERMISOS = vc.permisos || {};
+  var f = document.createElement('div');
+  f.id = 'ver-como-franja';
+  f.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:99999;background:var(--ac2);color:#fff;padding:7px 14px;border-radius:0 0 10px 10px;font-size:13px;display:flex;gap:12px;align-items:center;box-shadow:0 4px 14px rgba(0,0,0,.35)';
+  f.innerHTML = '👁 Viendo el ERP como <b>' + esc(vc.nombre || vc.email) + '</b>' +
+    '<button style="background:#fff;color:var(--ac2);border:0;border-radius:6px;padding:4px 10px;font-weight:700;cursor:pointer">Salir</button>';
+  f.querySelector('button').onclick = function(){
+    try{ sessionStorage.removeItem('erp_ver_como'); localStorage.setItem('erp_last_pg','config'); }catch(e){}
+    location.reload();
+  };
+  document.body.appendChild(f);
+}
+// Al arrancar, pregunta si Pablo cambio los permisos de esta persona: surte efecto
+// sin tener que cerrar sesion. Si falla la consulta, sigue todo como estaba.
+async function _permRefrescar(){
+  if(window._VER_COMO || (typeof _permEsDueno === 'function' && _permEsDueno(MY_EMAIL))) return;
+  try{
+    var r = await api('auth.permisos', {});
+    var nuevo = (r && r.permisos) || null;
+    if(JSON.stringify(nuevo) === JSON.stringify(MY_PERMISOS)) return;
+    MY_PERMISOS = nuevo;
+    try{ localStorage.setItem('erp_permisos', JSON.stringify(MY_PERMISOS)); }catch(e){}
+    document.querySelectorAll('.sb .nb, .sb .ns').forEach(function(e){ e.style.display=''; });
+    _applyRoleUI();
+    if(typeof curPg !== 'undefined' && !_pgPermitida(curPg)){
+      var b = Array.prototype.find.call(document.querySelectorAll('.sb .nb[data-pg]'), function(x){ return x.style.display !== 'none'; });
+      if(b) b.click();
+    }
+  }catch(e){}
+}
+
 // Oculta los módulos que el rol no puede ver (Logística/Ventas).
 function _applyRoleUI(){
   if(MY_ROLE === 'Ventas') document.body.classList.add('role-ventas');
+  if(MY_PERMISOS){ _applyPermisosUI(); return; }   // 30-set · la matriz manda (Permisos.gs)
   if(MY_ROLE === 'Administrador') return; // ve todo
   if(MY_ROLE === 'Marketing'){
     // Rol Marketing (15-sep-2026, pedido de Pablo para Paola): solo Embudo
@@ -35490,13 +35760,18 @@ function bootApp(){
   const _rb = document.getElementById('role-badge');
   if(_rb){ const _m={'Administrador':'ADMIN','Logistica':'LOGISTICA','Ventas':'VENTAS'}; _rb.textContent = _m[MY_ROLE] || (MY_ROLE||'').toUpperCase(); }
   const _lb = document.getElementById('btn-logout'); if(_lb && !_lb._wired){ _lb._wired = true; _lb.addEventListener('click', logout); }
+  _permVerComoAplicar();   // 30-set · "Ver como" (solo el dueno)
   _applyRoleUI();
+  // 30-set · la pestana Usuarios de Configuracion es solo del dueno (el servidor tambien lo exige)
+  try { var _ut = document.querySelector('.cfg-tab[data-tab="usuarios"]'); if(_ut && (!_permEsDueno(MY_EMAIL) || window._VER_COMO)) _ut.style.display='none'; } catch(_u){}
   // 16-set-2026 — si arrancamos con la base apagada, decirlo DESDE EL PRIMER
   // segundo. Antes el cartel solo aparecia cuando una llamada fallaba, asi que
   // en un simulacro de reversa el ERP quedaba mudo y lento a la vez.
   try { if (SB_APAGADO) _pillViaRapida(false, 'reversa'); } catch(_){}
   try{ _npQueueRestore(); }catch(e){} // 13/07: ofrecer reintentar guardados que quedaron pendientes
   if(MY_ROLE === 'Ventas') _initVentasGuard();   // guardián read-only en todos los módulos
+  _initVistaGuard();   // 30-set · modulos en "vista": sin botones de escribir
+  _permRefrescar();    // 30-set · trae cambios de permisos sin cerrar sesion
   // Restaurar el ÚLTIMO módulo visitado (persistido en localStorage). Si no hay historial
   // o el módulo está oculto para el rol, el default es Pedidos (decisión Pablo).
   var _lastPg=''; try{ _lastPg=localStorage.getItem('erp_last_pg')||''; }catch(e){}
@@ -35504,6 +35779,8 @@ function bootApp(){
   var _goPg = _lastPg || _pgPorDefecto;
   var _goBtn = document.querySelector('.nb[data-pg="'+_goPg+'"]');
   if(!_goBtn || _goBtn.style.display==='none'){ _goPg=_pgPorDefecto; _goBtn=document.querySelector('.nb[data-pg="'+_pgPorDefecto+'"]'); }
+  // 30-set · con matriz, la pagina por defecto puede estar apagada: ir al primer modulo visible
+  if(_goBtn && _goBtn.style.display==='none'){ _goBtn = Array.prototype.find.call(document.querySelectorAll('.sb .nb[data-pg]'), function(x){ return x.style.display!=='none'; }) || null; if(_goBtn) _goPg=_goBtn.getAttribute('data-pg'); }
   if(_goBtn){ _goBtn.click(); }
   else if(MY_ROLE==='Administrador'){ loadDash(); }   // fallback extremo
   try{ _topbarPorModulo(_goPg); }catch(e){}   // 6-sep-2026: "Nuevo pedido" solo en Pedidos, tambien en el arranque
