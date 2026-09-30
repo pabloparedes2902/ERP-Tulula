@@ -1658,7 +1658,7 @@ function mkPeriodoCambio(refrescarMeta){
     const d2 = new Date(h.getFullYear(), h.getMonth(), 0);
     _mkFijar(sv(d1), sv(d2));
   } else { mkDias = Number(v); mkPers = null; }   /* 7 / 14 / 30 dias, HOY incluido */
-  mkCargar(refrescarMeta === true);
+  mkCargar(refrescarMeta === true ? true : (refrescarMeta === 'auto' ? 'auto' : false));
 }
 
 /* Fecha local YYYY-MM-DD. toISOString() usa UTC y en Lima adelantaba el dia. */
@@ -1720,7 +1720,8 @@ async function _mkGetJSON(url, vivo){
         if (r.ok){
           const a = await r.json();
           if (a && a[0] && a[0].datos != null && (Date.now() - Date.parse(a[0].generado)) < MK_CACHE_MAX_MS){
-            MK_VIA.copia++; return a[0].datos;
+            MK_VIA.copia++; if (k.indexOf('mk:marketing2') === 0) MK_VIA.edad = Date.now() - Date.parse(a[0].generado);
+            return a[0].datos;
           }
         }
       }
@@ -1731,7 +1732,7 @@ async function _mkGetJSON(url, vivo){
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
-const MK_VIA = { copia: 0, n8n: 0 };   /* contador para medir cuantas lecturas salieron de la copia */
+const MK_VIA = { copia: 0, n8n: 0, edad: null };   /* edad = ms de la copia de marketing2 leida */   /* contador para medir cuantas lecturas salieron de la copia */
 
 async function mkCargar(refrescarMeta){
   const sub = document.getElementById('mkSub');
@@ -1741,7 +1742,7 @@ async function mkCargar(refrescarMeta){
      arrancan los dos a la vez, y se sigue esperando a que ambos terminen
      antes de pintar (mismos datos frescos de siempre, pero no se suman). */
   let mkRefrescoProm = Promise.resolve();
-  if (refrescarMeta){
+  if (refrescarMeta === true){   /* 🔄 = siempre fresco; 'auto' (abrir) decide despues de pintar */
     sub.style.display = ''; sub.style.color = 'var(--txt2)';
     sub.textContent = 'Trayendo el gasto de hoy desde Meta…';
     const pedido = mkRefrescarEmbudo();
@@ -1796,7 +1797,7 @@ async function mkCargar(refrescarMeta){
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar();
     _mkSnapGuardar(_snapK);
-    if (_snapTs && !refrescarMeta) sub.style.display = 'none';
+    if (_snapTs && refrescarMeta !== true) sub.style.display = 'none';
     /* 30-set-2026 · PINTAR PRIMERO, REFRESCAR DESPUES. Antes la tabla esperaba
        al refresco de Meta (2-4 s, hasta 25 s si Meta tarda) aunque /marketing2
        ya habia llegado. Ademas no servia: /marketing2 se pedia EN PARALELO con
@@ -1805,7 +1806,12 @@ async function mkCargar(refrescarMeta){
        a pedir /marketing2 y se repinta en silencio (solo si nadie cambio de
        periodo mientras tanto). */
     const miCarga = (window._mkCargaN = (window._mkCargaN || 0) + 1);
-    if (refrescarMeta) mkRefrescoProm.then(async () => {
+    /* 30-set T12 · al ABRIR: si la copia es de hace <10 min, ya trae el gasto de hoy (n8n refresca
+       Meta antes de precalcular). Pedirlo otra vez era trabajo doble (2,5 s de n8n + repintado). */
+    const _mkAuto = refrescarMeta === 'auto' && !(MK_VIA.edad != null && MK_VIA.edad < 10 * 60 * 1000);
+    if (refrescarMeta === 'auto') mkRefrescarEmbudo();   /* embudo de Chatwoot: igual que antes (ya tiene su tope de 30 min) */
+    if (_mkAuto){ mkRefrescarEmbudoAnuncio(); mkRefrescoProm = mkRefrescarMeta(); }
+    if (refrescarMeta === true || _mkAuto) mkRefrescoProm.then(async () => {
       try {
         const d2 = await _mkGetJSON(url, true);
         if (miCarga !== window._mkCargaN || !d2 || !d2.filas) return;
@@ -3295,7 +3301,7 @@ document.addEventListener('DOMContentLoaded', function(){
   try { _mkCanalInicial = localStorage.getItem('tulula_mk_canal') || 'wa'; } catch (e) {}
   mkCanal(_mkCanalInicial, null);
   document.getElementById('mkPeriodo').value = 'm';
-  mkPeriodoCambio(true);   /* al abrir el módulo, primero refrescamos Meta */
+  mkPeriodoCambio('auto');   /* 30-set T12: al abrir, Meta se refresca SOLO si la copia precalculada tiene mas de 10 min (n8n la renueva cada 10) */
 });
 
 /* 6-sep-2026 — el 🔄 de la barra del ERP le habla al iframe. Si no contestamos
