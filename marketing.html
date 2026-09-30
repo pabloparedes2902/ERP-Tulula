@@ -1102,6 +1102,29 @@ async function mkCargarEmbudoAnuncio(desde, hasta){
     return o;
   };
   const dias = Math.max(1, Math.round((new Date(hasta+'T12:00:00Z') - new Date(desde+'T12:00:00Z')) / 86400000) + 1);
+  /* 30-set-2026 · C9 · FUENTE UNICA DE LA WEB = PostHog. Sesiones, vistas,
+     carrito y pago iniciado por anuncio salen de PostHog (visitas que entraron
+     con utm_medium=paid; utm_content = nombre del anuncio). Meta queda solo para
+     el gasto. Si el endpoint de PostHog no responde, se usa el de Meta como antes. */
+  const armaPH = (o) => {
+    if (!o || !Array.isArray(o.filas) || o.error) return null;
+    const r = { porAd: {}, porNombre: {}, tot: { vista_producto:0, agregado_carrito:0, checkout_iniciado:0, sesiones:0 }, fuente: 'posthog' };
+    o.filas.forEach(x => {
+      const f = { vista_producto:+x.vista_producto||0, agregado_carrito:+x.agregado_carrito||0,
+                  checkout_iniciado:+x.checkout_iniciado||0, sesiones:+x.sesiones||0 };
+      Object.keys(r.tot).forEach(k => r.tot[k] += f[k]);
+      r.porNombre[String(x.anuncio || '')] = f;
+    });
+    return r;
+  };
+  try {
+    const [a, b] = await Promise.all([
+      fetch(URL_EMBUDO_WEB_PH + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()),
+      fetch(URL_EMBUDO_WEB_PH + '?desde=' + _mkDiaMenos(desde, dias) + '&hasta=' + _mkDiaMenos(desde, 1)).then(r => r.json())
+    ]);
+    const pa = armaPH(a);
+    if (pa){ MKEW = pa; MKEWP = armaPH(b); return; }
+  } catch (e) { /* sin PostHog: cae a Meta */ }
   try {
     const [a, b] = await Promise.all([
       fetch(URL_EMBUDO_ANUNCIO_P + '?desde=' + desde + '&hasta=' + hasta).then(r => r.json()),
@@ -1110,15 +1133,33 @@ async function mkCargarEmbudoAnuncio(desde, hasta){
     MKEW = arma(a); MKEWP = arma(b);
   } catch (e) { MKEW = null; MKEWP = null; }
 }
+const URL_EMBUDO_WEB_PH = 'https://n8n-production-4e716.up.railway.app/webhook/embudo-web-anuncio';
+/* Busca la fila de embudo de un anuncio: por ad_id (Meta) o por NOMBRE (PostHog).
+   Si dos anuncios de la tabla se llaman igual, el dato va solo al de mas gasto,
+   para no contar dos veces las mismas sesiones. */
+function _mkEWFila(src, r, dueno){
+  if (!src) return null;
+  if (src.porNombre){
+    const nom = String(r.anuncio || '');
+    if (!nom || dueno[nom] !== r) return null;
+    return src.porNombre[nom] || null;
+  }
+  return src.porAd[String(r.ad_id || '')] || null;
+}
 /* Pisa vista/carrito/checkout/sesiones de cada anuncio con el dato de Meta.
    Si el endpoint no respondio no toca nada: la pantalla sigue como antes. */
 function mkAplicarEmbudoAnuncio(){
   if (!MKEW || !MK || !MK.filas) return;
   if (MKCANAL !== 'web') return;   /* este embudo es solo del canal Web */
   const K = ['vista_producto','agregado_carrito','checkout_iniciado','sesiones'];
+  const dueno = {};
   MK.filas.forEach(r => {
-    const id = String(r.ad_id || '');
-    const a = MKEW.porAd[id], p = MKEWP && MKEWP.porAd[id];
+    const nom = String(r.anuncio || ''); if (!nom) return;
+    const g = Number((r.act || {}).gasto) || 0, d = dueno[nom];
+    if (!d || g > (Number((d.act || {}).gasto) || 0)) dueno[nom] = r;
+  });
+  MK.filas.forEach(r => {
+    const a = _mkEWFila(MKEW, r, dueno), p = _mkEWFila(MKEWP, r, dueno);
     if (r.act)  K.forEach(k => r.act[k]  = a ? a[k] : 0);
     if (r.prev) K.forEach(k => r.prev[k] = p ? p[k] : 0);
   });
