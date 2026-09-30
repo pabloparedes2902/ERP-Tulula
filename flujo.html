@@ -655,6 +655,29 @@
 'use strict';
 const MODO_VIEWER = !/(^|[?&])edit=1(&|$)/.test(location.search.slice(1)); /* editor solo con ?edit=1 (lo pasa el ERP si MY_ROLE es Administrador) */
 const BASE_N8N = 'https://n8n-production-4e716.up.railway.app/webhook';
+/* ══ 30-set-2026 · VIA RAPIDA DE VENTAS ══ mismo metodo que Marketing: el flujo
+   "Marketing - via rapida" de n8n precalcula el embudo cada 10 min y lo deja en
+   public.espejo_cache (clave 'mk:<ruta>'). Aca se lee esa copia directo de
+   Supabase (~0,2 s) con el pase del ERP; si no hay copia, tiene mas de 20 min o
+   no hay pase, se pide a n8n como siempre. */
+const FL_SB_URL  = 'https://vlilvrxfppppzwyaeviu.supabase.co';
+const FL_SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsaWx2cnhmcHBwcHp3eWFldml1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2NDIwMTMsImV4cCI6MjEwMDIxODAxM30.Bmo4CNDDbSF7Vp9JpDm7ceKUlsKKdufKcKFDIGHS4Hs';
+async function _flGetJSON(url){
+  try {
+    const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
+    const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
+    const k = url.indexOf('/webhook/') > -1 ? 'mk:' + url.split('/webhook/')[1] : null;
+    if (tok && k){
+      const r = await fetch(FL_SB_URL + '/rest/v1/espejo_cache?select=datos,generado&clave=eq.' + encodeURIComponent(k),
+                            { headers: { apikey: FL_SB_ANON, Authorization: 'Bearer ' + tok } });
+      if (r.ok){
+        const a = await r.json();
+        if (a && a[0] && a[0].datos != null && (Date.now() - Date.parse(a[0].generado)) < 20 * 60 * 1000) return a[0].datos;
+      }
+    }
+  } catch (e) { /* sin copia: vamos a n8n */ }
+  return fetch(url).then(x => x.json());
+}
 const URL_EMBUDO = BASE_N8N + '/embudo-rango-v2';
 const URL_EMBUDO_WEB = BASE_N8N + '/embudo-web-rango'; /* 3-sep-2026 — PENDIENTE: crear este nodo/endpoint JSON en el workflow n8n "📊 Embudo en vivo (panel)" */
 /* ── 8-sep-2026 · FUENTE UNICA ─────────────────────────────────────────────
@@ -2700,7 +2723,7 @@ function cargarEmbudo(){
     .catch(()=>{});
 
   /* lo lento: 8 s, y solo aporta dio_talla. Ya no bloquea a nadie. */
-  fetch(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(x=>x.json()).then(_normEmb)
+  _flGetJSON(`${URL_EMBUDO}?desde=${r.desde}&hasta=${r.hasta}`).then(_normEmb)
     .then(d=>{ _lento = d; _fundir(); })
     .catch(()=>{
     if (!_pintado) pintarEmbudo({frias:375, tibias:198, dio_talla:120, calientes:64, compras:12, compras_con_clic:12, compras_sin_clic:0},
@@ -2708,7 +2731,7 @@ function cargarEmbudo(){
   });
 
   /* 2) el periodo anterior: solo agrega las capsulas de variacion */
-  fetch(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(x=>x.json()).then(_normEmb)
+  _flGetJSON(`${URL_EMBUDO}?desde=${pDesde}&hasta=${pHasta}`).then(_normEmb)
     .then(dp=>embPisarCanonico(dp, pDesde, pHasta)).then(dp=>{
     if (!embData || !embData.d) return;
     embData.dPrev = dp; pintarTodo(); _guardar();
@@ -2772,7 +2795,7 @@ function cargarEmbudoWeb(){
   } catch(e){} };
   const inf = document.getElementById('embInfo');
   if (inf) inf.textContent = r.lbl;
-  fetch(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(r.desde))}&hasta=${encodeURIComponent(_fISO(r.hasta))}`).then(x=>x.json()).then(d=>{
+  _flGetJSON(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(r.desde))}&hasta=${encodeURIComponent(_fISO(r.hasta))}`).then(d=>{
     embDataWeb = { d: d, dPrev: (embDataWeb && embDataWeb.dPrev) || null, lbl: r.lbl };
     pintarTodo(); _pintado = true; _guardar();
     document.getElementById('embEstado').textContent = '';
@@ -2782,7 +2805,7 @@ function cargarEmbudoWeb(){
       '⚠️ Falta crear el endpoint web en n8n — sin conexión con el servicio.', null,
       EMB_ETAPAS_WEB, EMB_NEON_WEB);
   });
-  fetch(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(pDesde))}&hasta=${encodeURIComponent(_fISO(pHasta))}`).then(x=>x.json()).then(dp=>{
+  _flGetJSON(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(pDesde))}&hasta=${encodeURIComponent(_fISO(pHasta))}`).then(dp=>{
     if (!embDataWeb || !embDataWeb.d) return;
     embDataWeb.dPrev = dp; pintarTodo(); _guardar();
   }).catch(()=>{});
