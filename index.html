@@ -1484,6 +1484,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           #cfg-users-wrap .up-tpl{margin-top:3px;font-size:10px;padding:1px 7px;border-radius:10px;background:var(--bg3);color:var(--mu);border:1px solid var(--bd);cursor:pointer;display:inline-block}
           #cfg-users-wrap .up-tpl.custom{color:var(--ac);border-color:var(--ac2)}
           #cfg-users-wrap .up-sum{font-size:11px;color:var(--mu)}
+          #cfg-users-wrap .up-warn{font-size:10px;padding:1px 7px;border-radius:10px;background:color-mix(in srgb,var(--am) 18%,transparent);color:var(--am);cursor:pointer;white-space:nowrap}
           #cfg-users-wrap tr.up-off td:not(.up-stk):not(.up-end){opacity:.35}
           #cfg-users-wrap .up-t tbody tr:hover td{background:var(--bg3)}
           #cfg-users-wrap .up-act{width:34px;height:20px;border-radius:10px;background:#4a4a52;position:relative;cursor:pointer;border:0;flex:none;transition:.18s;padding:0}
@@ -1540,7 +1541,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         </div>
         <div class="up-wrap"><table class="up-t" id="up-tbl"><thead></thead><tbody></tbody></table></div>
         <div class="up-cards" id="up-cards"></div>
-        <div id="cfg-users-msg" style="font-size:11px;color:var(--mu);margin-top:8px">Hasta la próxima entrega: <b>quitar</b> módulos o pasar a solo vista funciona al 100%. <b>Dar</b> un módulo que el rol de esa persona no tenía se ve en su menú, pero el servidor todavía puede frenarla.</div>
+        <div id="cfg-users-msg" style="font-size:11px;color:var(--mu);margin-top:8px">El servidor (Apps Script) ya respeta estas cápsulas; la vía rápida de Supabase se completa en la próxima entrega. Con la plantilla <b>Ventas</b>, "Edición" significa <b>crear</b> (pedidos, cambios, devoluciones, pagos), no editar ni borrar lo existente. En <b>Comisiones</b>: Vista = cada asesora ve solo lo suyo · Edición = ve todo el módulo.</div>
       </div>
       <div id="cfg-seg-wrap" class="cfg-panel">
         <div class="card" style="padding:14px;margin-bottom:12px">
@@ -34412,6 +34413,20 @@ function _upEtiqueta(u){
   const igual = PERM_MODULOS.every(m => (p[m.k]||0) === (base[m.k]||0));
   return igual ? {t:u.rol, c:false} : {t:'Personalizado · base ' + (u.rol||'—'), c:true};
 }
+// Avisos de permisos que no cuadran (30-set, aprobado por Pablo). Solo avisan, no bloquean.
+function _upAvisos(u){
+  if (u.esOwner || !u.activo) return [];
+  const p = _permEfectiva(u), a = [], n = k => p[k] || 0, nom = k => PERM_MODULOS.find(m => m.k === k).n;
+  if (!PERM_MODULOS.some(m => n(m.k) >= 1)) a.push('Está activo pero no ve ningún módulo.');
+  ['cambios2','devoluciones','envios','alertas'].forEach(k => { if (n(k) >= 1 && n('pedidos') === 0) a.push('Ve ' + nom(k) + ' pero no Pedidos: no podrá abrir el pedido desde ahí.'); });
+  if (n('pedidos') === 2 && n('clientes') === 0) a.push('Edita Pedidos pero no ve Clientes: no podrá revisar la ficha de la clienta.');
+  if (n('margen') >= 1 && n('costos') === 0) a.push('Ve Margen pero no Costos: verá el margen sin poder revisar de dónde sale.');
+  if (u.rol === 'Ventas') {
+    const extra = PERM_MODULOS.filter(m => n(m.k) === 2 && ['pedidos','cambios2','devoluciones'].indexOf(m.k) < 0).map(m => m.n);
+    if (extra.length) a.push('Con plantilla Ventas, "Edición" solo permite CREAR (pedidos, cambios, devoluciones, pagos). En ' + extra.join(', ') + ' quedará como vista. Para editar de verdad, usa la plantilla Logística.');
+  }
+  return a;
+}
 function _upResumen(u){ const p = _permEfectiva(u); const e = PERM_MODULOS.filter(m => p[m.k] === 2).length, v = PERM_MODULOS.filter(m => p[m.k] === 1).length; return e + ' edición · ' + v + ' vista'; }
 function _upVisible(u){
   if (_upFiltro === 'on' && !u.activo) return false;
@@ -34427,7 +34442,9 @@ function _upQuien(u){
     '<div style="min-width:0"><b>' + esc(u.nombre || '(sin nombre)') + (u.esOwner ? ' 🔒' : '') + '</b>' +
     (u.esOwner ? '' : ' <button class="up-ic" data-ver="' + esc(u.email) + '" title="Ver el ERP como esta persona">' + _UP_VER + '</button>') +
     '<small>' + esc(u.email) + '</small>' +
-    '<span class="up-tpl' + (et.c ? ' custom' : '') + '" data-tpl="' + esc(u.email) + '">' + esc(et.t) + (u.esOwner ? '' : ' ▾') + '</span> <span class="up-sum">' + _upResumen(u) + '</span></div></div>';
+    '<span class="up-tpl' + (et.c ? ' custom' : '') + '" data-tpl="' + esc(u.email) + '">' + esc(et.t) + (u.esOwner ? '' : ' ▾') + '</span> <span class="up-sum">' + _upResumen(u) + '</span>' +
+    (function(){ const av = _upAvisos(u); return av.length ? ' <span class="up-warn" data-avisos="' + esc(u.email) + '" title="' + esc(av.join('\n')) + '">⚠ ' + av.length + (av.length === 1 ? ' aviso' : ' avisos') + '</span>' : ''; })() +
+    '</div></div>';
 }
 function cfgUsersRender(){
   const lista = _cfgUsersData.filter(_upVisible);
@@ -34580,6 +34597,7 @@ function _upWire(){
     const a = e.target.closest('[data-act]'); if (a && !a.disabled) return _upToggleActivo(a.dataset.act);
     const d = e.target.closest('[data-del]'); if (d && !d.disabled) return _upEliminar(d.dataset.del);
     const vc = e.target.closest('[data-ver]'); if (vc) return _upVerComo(vc.dataset.ver);
+    const aw = e.target.closest('[data-avisos]'); if (aw) { const u = _upUsuario(aw.dataset.avisos); if (u) _upToast('⚠ ' + _upAvisos(u).join('  ·  ')); return; }
     const tp = e.target.closest('[data-tpl]'); if (tp) { const u = _upUsuario(tp.dataset.tpl); if (u && !u.esOwner) _upMenuPlantilla(u.email, tp); return; }
     const th = e.target.closest('th[data-col]'); if (th) return _upMenuColumna(th.dataset.col, th);
   });
