@@ -9543,7 +9543,34 @@ async function _panelRoasRapido() {
   return api('panel.roas', { dias: 180 });
 }
 
+// 1-oct · F2 · DASHBOARD DESDE LA BASE. La base lo calcula cada 2 min (pg_cron dashboard-base-2min,
+// PEGAR_EN_SUPABASE_dashboard_base_1oct.sql) y lo deja en espejo_cache 'dashboard.base'. Costo/margen
+// y alertas de stock siguen viniendo de la copia de Apps Script (1 vez por hora) y se pegan aca.
+function _dashUnir(base, copia) {
+  if (!base || typeof base !== 'object' || !base.porMes || !Array.isArray(base.meses)) return null;
+  if (!copia || typeof copia !== 'object' || !copia.porMes) return null;   // sin costos no se muestra un margen inventado
+  const out = Object.assign({}, copia, base);
+  const MN = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const ult = String(base.meses[base.meses.length - 1] || '');
+  if (/^\d{4}-\d{2}$/.test(ult)) out.ventasMesLabel = MN[parseInt(ult.slice(5), 10) - 1] + ' ' + ult.slice(0, 4);
+  out.alertasStock = copia.alertasStock || [];
+  out.porMes = {};
+  Object.keys(base.porMes).forEach(function (mk) {
+    const m = Object.assign({}, base.porMes[mk]), c = copia.porMes[mk] || {};
+    const ing = Number(m.ingresoNeto) || 0, costo = Number(c.costo) || 0;
+    m.costo = Math.round(costo * 100) / 100;
+    m.utilidadBruta = Math.round((ing - costo) * 100) / 100;
+    m.margenPct = ing > 0 ? Math.round((ing - costo) / ing * 1000) / 10 : 0;
+    out.porMes[mk] = m;
+  });
+  out._fuente = 'base';
+  return out;
+}
 async function _dashboardTodoRapido() {
+  try {
+    const rr = await Promise.all([_sbCacheLeer('dashboard.base', 10 * 60 * 1000), _sbCacheLeer('dashboard.todo', 90 * 60 * 1000)]);   // la copia se rehace 1 vez por hora: 90 min no dispara refrescos
+    const u = _dashUnir(rr[0], rr[1]); if (u) return u;
+  } catch (_) {}
   const d = await _sbCacheLeer('dashboard.todo');
   if (d && typeof d === 'object' && !Array.isArray(d)) return d;
   return api('dashboard.todo');
