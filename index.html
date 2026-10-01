@@ -9071,10 +9071,17 @@ function _espejoConfiar(clave){ try { const m=_espejoDudaMap(); if (m[clave]!==u
 // _stockMovido = el aviso solo. _stockEscrito = el aviso + el webhook de la
 // lista de espera, que es exclusivo de los INGRESOS de stock.
 const _ESP_CLAVES_STOCK = ['stock.resumen','catalogo.stock','lotes.listar','confeccion.listar','fallas.resumen'];
+// 1-oct · F3 item 6: estas pantallas ya leen DIRECTO de la base (su copia es solo respaldo, la rehace el
+// espejo cada hora — ED_SOLO_RESPALDO en EspejoDatos.gs). Pedirle a Apps Script que la rehaga despues de
+// cada escritura costaba ~26 s de servidor y cuota, para una copia que nadie lee. Se dejan de pedir.
+const _ESP_LEE_BASE = { 'productos.listar':1, 'lotes.listar':1, 'fallas.resumen':1, 'cambios.listar':1, 'dashboard.todo':1,
+                        'clientes.index':1, 'confeccion.listar':1, 'catalogo.stock':1, 'reposicion.calc':1 };
+function _espRefrescables(arr) { return (arr || []).filter(c => !_ESP_LEE_BASE[c]).slice(0, 3); }
 function _stockMovido(claves, refrescarYa){
   _espejoDudar(claves);
   try {
-    apiSend('espejo.refrescar', { claves: (refrescarYa && refrescarYa.length ? refrescarYa : claves).slice(0,3) })
+    const _rf = _espRefrescables(refrescarYa && refrescarYa.length ? refrescarYa : claves);
+    if (_rf.length) apiSend('espejo.refrescar', { claves: _rf })
       .then(r => { try { ((r && r.hechas) || []).forEach(_espejoConfiar); } catch(e){}
                    try { _stRefrescarYa(); } catch(e){} })
       .catch(()=>{});   // si falla, el disparador de 5/30 min lo pone al dia igual
@@ -9136,7 +9143,8 @@ function _stockEscrito(claves, refrescarYa){
     }).catch(function(){});
   } catch (e) {}
   try {
-    apiSend('espejo.refrescar', { claves: (refrescarYa && refrescarYa.length ? refrescarYa : claves).slice(0,3) })
+    const _rf = _espRefrescables(refrescarYa && refrescarYa.length ? refrescarYa : claves);
+    if (_rf.length) apiSend('espejo.refrescar', { claves: _rf })
       .then(r => { try { ((r && r.hechas) || []).forEach(_espejoConfiar); } catch(e){} })
       .catch(()=>{});   // si falla, el disparador de 5/30 min lo pone al día igual
   } catch(e) {}
@@ -9196,7 +9204,7 @@ function _f1PedirRefresco(clave, edad) {
   if (_f1Pedidos[clave] && ahora - _f1Pedidos[clave] < SB_F1_ESPERA_MS) return false;
   _f1Pedidos[clave] = ahora;
   try { _f1Aviso(edad); } catch (_) {}
-  try { if (typeof apiSend === 'function') apiSend('espejo.refrescar', { claves: [clave], motivo: 'vencida' }).catch(function(){}); } catch (_) {}
+  try { if (typeof apiSend === 'function' && !(typeof _ESP_LEE_BASE !== 'undefined' && _ESP_LEE_BASE[clave])) apiSend('espejo.refrescar', { claves: [clave], motivo: 'vencida' }).catch(function(){}); } catch (_) {}
   return true;
 }
 function _f1Aviso(edad) {
@@ -9938,6 +9946,15 @@ async function _serieDiariaRapido(mes) {
       if (m && (Date.now() - m.ts) < 180000) return m.d;
     }
   } catch (_) {}
+  // 1-oct · el mes vigente lo deja listo la base cada 5 min (pg_cron serie-diaria-5min, ver
+  // PEGAR_EN_SUPABASE_serie_diaria_copia_1oct.sql): ~0,3 s en vez de ~1,2 s de recalcular en cada apertura.
+  // Tolera 15 min; si esta persona acaba de escribir, _sbCacheLeer da null y se recalcula en el momento.
+  if (!mes && !window._sbSaltarEspejo) {
+    try {
+      const c = await _sbCacheLeer('dashboard.serie.base', 15 * 60 * 1000);
+      if (c && Array.isArray(c.dias) && c.dias.length) { try { _sdMemo[k] = { d: c, ts: Date.now() }; } catch (_) {} return c; }
+    } catch (_) {}
+  }
   const directo = await _sbSerieDiaria(mes);
   if (directo) { try { _sdMemo[k] = { d: directo, ts: Date.now() }; } catch (_) {} return directo; }
   if (!mes) {
@@ -11203,7 +11220,7 @@ async function _inmAplicarYa(req) {
   try {
     r = await Promise.race([
       apiSend('stock.aplicarYa', { request: req }),
-      new Promise(res => setTimeout(() => res({ _lento: true }), 30000))
+      new Promise(res => setTimeout(() => res({ _lento: true }), 10000))   // 1-oct · F3: 30 s -> 10 s; si tarda, queda en la cola y se aplica en minutos
     ]);
   } catch (e) { return null; }
   if (!r || r._lento) return null;
@@ -11670,6 +11687,11 @@ function _sbEspejarYa(nros) {
     // Si el servidor ya dijo eso, no se vuelve a llamar por 30 min. Lo urgente
     // (devoluciones, stock) lo sigue cubriendo el barrido del Aplicador.
     try { if (window._espejarYaPausaHasta && Date.now() < window._espejarYaPausaHasta) return; } catch (_) {}
+    // 1-oct · F3 item 7: la pausa se RECUERDA 24 h en este navegador. Antes vivia solo en la pestaña:
+    // cada vez que se abria el ERP se volvia a preguntar (36 veces/dia, 11,8 s cada una en Apps Script)
+    // para escuchar lo mismo: hoja congelada, nada urgente. Lo urgente (devoluciones, stock) no pasa por
+    // aca: llama a espejo.aplicarNro directo y lo cubre el Aplicador cada 15 min.
+    try { const _p = parseInt(localStorage.getItem('erp_espejarYa_pausa') || '0', 10); if (_p && Date.now() < _p) return; } catch (_) {}
     // 16-set-2026 — SIGUE SIENDO "si falla, no pasa nada": el barrido de 1 minuto
     // lo cubre igual, y por eso esto NO lanza ni molesta a la asesora.
     // LO QUE CAMBIA: ahora QUEDA ANOTADO. El `catch(() => {})` mudo nos dejo todo
@@ -11681,7 +11703,7 @@ function _sbEspejarYa(nros) {
     const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.espejarYa', arr.join(',')) : null;
     const _fin = (ok) => { try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, ok); } catch (_) {} };
     apiSend('espejo.aplicarNro', arr.length === 1 ? { nro: arr[0] } : { nros: arr })
-      .then((r) => { try { if (r && r.congeladaSinUrgentes) window._espejarYaPausaHasta = Date.now() + 30 * 60 * 1000; } catch (_) {} _fin(true); })
+      .then((r) => { try { if (r && r.congeladaSinUrgentes) window._espejarYaPausaHasta = Date.now() + 30 * 60 * 1000; } catch (_) {} try { if (r && r.congeladaSinUrgentes) localStorage.setItem('erp_espejarYa_pausa', String(Date.now() + 24 * 60 * 60 * 1000)); } catch (_) {} _fin(true); })
       .catch(() => _fin(false));
   } catch (_) {}
 }
@@ -25259,7 +25281,8 @@ const _ivClave=(pr,di,co)=>[pr,di,co].map(x=>String(x||'').trim().toUpperCase())
 function _ivCargarMaestro(){
   if(_ivMaestroSet||_ivMaestroCargando) return;
   _ivMaestroCargando=true;
-  api('catalogo.maestrosSkus').then(ms=>{
+  // 1-oct · por la puerta rapida (tabla viva -> copia -> Apps Script). Antes iba directo a Apps Script: 9,2 s.
+  (typeof _maestrosSkusRapido==='function' ? _maestrosSkusRapido() : api('catalogo.maestrosSkus')).then(ms=>{
     _ivMaestroSet=new Set((ms||[]).map(x=>_ivClave(x.producto,x.diseno,x.color)));
     const el=document.getElementById('inv-w'); if(el&&el.offsetParent!==null) renderInv(el);
   }).catch(()=>{}).finally(()=>{ _ivMaestroCargando=false; });
@@ -34247,8 +34270,11 @@ function hdAbrirEditor(r, containerEl) {
   // 30-jul-2026 — ROBADA: la prenda no volvió y no va a volver. Gana sobre cualquier
   // "Reingresa como": no se repara, no se vende en Yayitas y no puede reaparecer como
   // disponible. La regla vive en _destinoPrendaDevuelta_ (Code.js), no acá.
-  const condOpts    = selOpts(['','EXCELENTE','DAÑADA','SUCIA','ROBADA'], r['CondicionPrenda']||'');
-  const stockOpts   = selOpts(['','NORMAL','OUTLET','REVISION','NO'], r['ReingresaStock']||'');
+  // 1-oct · #191 · el registro guarda "Excelente"/"Normal" (mayus/minus mezcladas) y las
+  // opciones son MAYUSCULAS: no coincidian, el select quedaba en "—" y al guardar se
+  // BORRABAN condicion y reingreso (sin condicion, el reembolso no mueve el stock).
+  const condOpts    = selOpts(['','EXCELENTE','DAÑADA','SUCIA','ROBADA'], String(r['CondicionPrenda']||'').trim().toUpperCase());
+  const stockOpts   = selOpts(['','NORMAL','OUTLET','REVISION','NO'], String(r['ReingresaStock']||'').trim().toUpperCase());
 
   overlay.innerHTML =
     '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);'
@@ -34339,17 +34365,19 @@ function hdAbrirEditor(r, containerEl) {
   // ── Eliminar devolución (2-set-2026) ──────────────────────
   document.getElementById('hde-eliminar').addEventListener('click', async function() {
     if (!confirm('¿Eliminar la devolución ' + id + '?\nEsta acción no se puede deshacer.')) return;
-    this.disabled = true; this.textContent = 'Eliminando...';
-    try {
-      await apiSend('devoluciones.eliminar', { ID: id });
+    // 1-oct · F3: borrar tarda ~11 s en el servidor (revierte stock y limpia el pedido). La asesora ya no
+    // espera: se cierra la ficha al instante y el borrado sigue por detras. Si falla, avisa y recarga la lista.
+    this.disabled = true;
+    overlay.remove();
+    toast('Eliminando devolución ' + id + '…', 'info');
+    apiSend('devoluciones.eliminar', { ID: id }).then(() => {
       toast('✓ Devolución ' + id + ' eliminada', 'ok');
-      overlay.remove();
-      histDevData = null; _hdLsDel();
-      await loadDevoluciones(true);
-    } catch(e) {
-      toast('Error: ' + esc(e.message), 'err');
-      this.disabled = false; this.textContent = '🗑 Eliminar devolución';
-    }
+    }).catch(e => {
+      toast('Error al eliminar ' + id + ': ' + esc(e.message) + ' · no se borró nada', 'err');
+    }).finally(() => {
+      histDevData = null; try { _hdLsDel(); } catch (_) {}
+      loadDevoluciones(true).catch(() => {});
+    });
   });
 
   document.getElementById('hde-guardar').addEventListener('click', async function() {
