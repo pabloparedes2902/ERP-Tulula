@@ -2360,6 +2360,7 @@ async function _detectarDuplicadosRapido(p) {
         NroPedido: nro, FechaMs: ms, FechaISO: new Date(ms).toISOString(),
         Cliente: String(f['Nombres y Apellidos'] || f['Nombre'] || ''),
         DNI: dniFila, Tel: telFila, Prendas: [], Total: 0,
+        Estado: String(f['Estado'] || '').trim().toUpperCase(),   // 1-oct: el freno no frena por un pedido ya entregado
         MotivoMatch: (matchDNI && matchTel) ? 'DNI+TEL' : (matchDNI ? 'DNI' : (matchTel ? 'TEL' : 'NOMBRE')),
       };
       const prenda = String(f['Prenda'] || '').trim();
@@ -3724,9 +3725,22 @@ async function _fetchJsonCrudo(buildReq, action) {
         if (d.error === 'SESION_INVALIDA') { _onSessionExpired(_tokUsado); }
         // M3 (2-set-2026) — tras el corte de Pedidos, el camino viejo esta cerrado
         // en el backend. Mensaje humano en vez del codigo crudo.
-        if (String(d.error || '').indexOf('MIGRADO_A_BASE') === 0) {
-          const _errM = new Error('Pedidos ya se guarda en la base y esta accion intento el camino viejo (' + (action || '?') + '). Reintenta; si sigue, avisar a Claude.');
+        // 1-oct-2026 · CAMINO VIEJO CERRADO = NUNCA MAS UN ERROR MUDO NI CRIPTICO.
+        // Si la via rapida (la base) no pudo y el respaldo cayo en una puerta cerrada
+        // (hoja congelada o modulo migrado), se dice CLARO que NO se guardo y, si la
+        // base dio un motivo en el ultimo minuto, cual fue. Queda anotado en
+        // verLentos() como `marca.viejoCerrado.<accion>` para medir cuantas veces pasa.
+        const _eTxt = String(d.error || '');
+        if (_eTxt.indexOf('MIGRADO_A_BASE') === 0 || _eTxt.indexOf('HOJA_CONGELADA') === 0) {
+          let _mot = '';
+          try {
+            const u = window._sbUltimoError;
+            if (u && (Date.now() - u.ts) < 60000) _mot = ' La base respondio: ' + u.msg + ' (' + u.fn + ').';
+          } catch (_) {}
+          try { const _cm = _cronAbrir('marca.viejoCerrado.' + (action || '?'), (_mot || _eTxt).slice(0, 60)); _cronCerrar(_cm, false); } catch (_) {}
+          const _errM = new Error('NO se guardo (' + (action || '?') + ').' + (_mot || ' La base no lo acepto y el camino viejo esta cerrado.') + ' No repitas cobros ni cambios; reintenta en un momento y si sigue, avisar a Pablo.');
           _errM.action = d.action || action;
+          _errM._viejoCerrado = true;
           throw _errM;
         }
         const _err = new Error(d.error || 'Error desconocido');
@@ -20419,10 +20433,17 @@ function npRellenar(c, resEl) {
 // - Cancelar
 // 27-set · FRENO de duplicados (Pablo): ventana de 7 dias y regla de prenda repetida.
 const NP_DUP_VENTANA_H = 168;
+// 1-oct-2026 · FALSO DUPLICADO (clienta del 22535): el freno saltaba por un pedido
+// ENTREGADO de hace 3 dias. La asesora no lo veia en Activos (los entregados no salen
+// ahi) y la clienta no podia volver a comprar la misma blusa. Un pedido que ya salio
+// (EN CAMINO / ENTREGADO) o que se cerro (DEVOLUCION / CANCELADO) no puede ser la
+// doble carga de uno nuevo: se sigue MOSTRANDO como aviso, pero no frena.
 function _npDupHayRepetida(candidatos, prendasNuevas) {
   const nuevas = (prendasNuevas || []).map(p => String(p || '').trim().toUpperCase()).filter(Boolean);
-  return (candidatos || []).some(c => (c.Prendas || []).some(p => nuevas.indexOf(String(p || '').trim().toUpperCase()) >= 0));
+  return (candidatos || []).some(c => _npDupFrena(c) && (c.Prendas || []).some(p => nuevas.indexOf(String(p || '').trim().toUpperCase()) >= 0));
 }
+const NP_DUP_NO_FRENA = ['EN CAMINO', 'ENTREGADO', 'DEVOLUCION', 'CANCELADO'];
+function _npDupFrena(c) { return NP_DUP_NO_FRENA.indexOf(String((c && c.Estado) || '').trim().toUpperCase()) < 0; }
 function npConfirmDuplicados(candidatos, prendasNuevas) {
   return new Promise(resolve => {
     const o = document.createElement('div');
@@ -20441,7 +20462,7 @@ function npConfirmDuplicados(candidatos, prendasNuevas) {
         +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">'
           +'<div style="flex:1">'
             +'<div style="font-size:13px;font-weight:600"><span style="color:var(--ac)">#'+esc(String(c.NroPedido))+'</span> · '+esc(c.Cliente||'')+'</div>'
-            +'<div style="font-size:11px;color:var(--mu);margin-top:3px">📅 '+esc(fechaTxt)+' · match por <b>'+motivo+'</b>'+compTxt+'</div>'
+            +'<div style="font-size:11px;color:var(--mu);margin-top:3px">📅 '+esc(fechaTxt)+' · match por <b>'+motivo+'</b>'+compTxt+(c.Estado?' · estado <b>'+esc(c.Estado)+'</b>'+(_npDupFrena(c)?'':' (ya salió: no es duplicado de este)'):'')+'</div>'
             +'<div style="font-size:11px;color:var(--mu);margin-top:3px">🏷 '+((c.Prendas||[]).slice(0,3).map(esc).join(', '))+((c.Prendas||[]).length>3?' +'+((c.Prendas||[]).length-3)+' más':'')+'</div>'
           +'</div>'
           +'<div style="text-align:right">'
@@ -27110,6 +27131,34 @@ async function _fallasIngresarRapido(items) {
   } catch (e) { _cronCerrar(_c, false); try { console.warn('[falla] RPC fallo → via Apps Script'); } catch(_){} return null; }
 }
 
+// ── 1-oct-2026 · EL MOTIVO DE LA BASE NO SE PIERDE ─────────────────────────
+// Cada via rapida llama a una funcion de la base (/rest/v1/rpc/...). Si la base
+// la rechaza (sin permiso, pago no encontrado, prenda inexistente...), la mayoria
+// devolvia null en silencio y caia al camino viejo — que hoy esta cerrado — y la
+// asesora veia un error sin sentido. Aca se guarda el ULTIMO rechazo (funcion,
+// motivo, hora) para que el aviso diga la causa real. No cambia ninguna respuesta.
+(function _sbMotivoEnganchar() {
+  try {
+    if (window._sbMotivoOn || typeof window.fetch !== 'function') return;
+    window._sbMotivoOn = true;
+    const _f = window.fetch.bind(window);
+    window.fetch = async function (u, o) {
+      const r = await _f(u, o);
+      try {
+        const url = String((u && u.url) || u || '');
+        if (!r.ok && url.indexOf('/rest/v1/rpc/') >= 0) {
+          const fn = url.split('/rest/v1/rpc/')[1].split('?')[0];
+          r.clone().text().then(t => {
+            let m = t; try { const j = JSON.parse(t); m = j.message || j.hint || j.details || t; } catch (_) {}
+            window._sbUltimoError = { fn: fn, msg: String(m || ('HTTP ' + r.status)).slice(0, 200), ts: Date.now(), status: r.status };
+          }).catch(() => {});
+        }
+      } catch (_) {}
+      return r;
+    };
+  } catch (_) {}
+})();
+
 // ── 1-oct-2026 · STOCK: LA BARRA HORIZONTAL SIEMPRE A LA VISTA (pedido de Pablo) ──
 // La tabla de Stock (.st-wrap) tenia su barra horizontal al FINAL de la tabla: con
 // el alto fijo `100dvh - 168px` el borde de abajo quedaba bajo el pliegue de la
@@ -30135,7 +30184,10 @@ function editarCambios2(nc){
     this.dataset.armado='';
     this.disabled=true; this.textContent='...';
     try{
-      await api('cambios2.eliminar',{nc:nc});
+      // 1-oct-2026 · 'cambios2.eliminar' NO EXISTE en el servidor (3 intentos, 30-set:
+      // "Accion no reconocida"). El borrado definitivo de un cambio se jubilo con el
+      // corte del 19-set; lo que existe es ANULAR (devuelve el stock). Se avisa claro.
+      throw new Error('Eliminar un cambio ya no existe. Usa "🗑 Anular cambio": devuelve el stock y lo deja anulado.');
       try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
       toast('Cambio '+nc+' eliminado','ok'); refresca(); }
     catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑🗑 Eliminar cambio (prueba)'; }
