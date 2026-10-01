@@ -4301,6 +4301,16 @@ async function _sbPaginaDirecto(pagina, orden, asc){
   }
 }
 
+// 1-oct-2026 · Una fila que viene de la BASE nunca es "provisional" ni "reciente":
+// esas son marcas del navegador para lo que todavia no se guardo. La base llego a
+// tener 104 filas con "_provisional" (la pone pedido_agregar_prenda y antes del
+// corte del 19-set la borraba el espejo) y la pantalla las escondia SIEMPRE:
+// 22610 sin el blazer, 22633 sin la blusa, 22535 sin las Toscana (listado 185-188).
+// Se limpian al leer, ademas del guardia en la tabla (PEGAR_EN_SUPABASE_prendas_invisibles_1oct.sql).
+function _sbSinMarcas(o) {
+  if (o && typeof o === 'object') { delete o._provisional; delete o._reciente; delete o._extraCamDev; }
+  return o;
+}
 async function _sbListarDirecto(offset, limit, orden, wantCount){
   const tok = await _sbSesionAsegurar();
   if (!tok) return null;
@@ -4316,7 +4326,7 @@ async function _sbListarDirecto(offset, limit, orden, wantCount){
   // _sbId = id de la fila en la base = ORDEN REAL DE CARGA (el de la hoja). La consulta
   // pide id.desc para que los pedidos nuevos salgan arriba, pero eso invierte las filas
   // DENTRO de cada pedido; _ordenarFilasDePedido lo endereza con este dato.
-  const rows = arr.map(x => { const o = x.row_json || {}; if (x.id != null && o._sbId == null) o._sbId = x.id; return o; });
+  const rows = arr.map(x => { const o = _sbSinMarcas(x.row_json || {}); if (x.id != null && o._sbId == null) o._sbId = x.id; return o; });
   let total, hayMas;
   if (wantCount) {
     const cr = r.headers.get('content-range') || '';
@@ -4353,6 +4363,7 @@ async function _sbFilasDePedidos(nros){
       const arr = await r.json();
       arr.forEach(x => {
         const o = x.row_json || {};
+        _sbSinMarcas(o);
         if (x.id != null && o._sbId == null) o._sbId = x.id;
         const nr = String(o['NroPedido'] || '').trim();
         if (!nr) return;
@@ -4388,7 +4399,7 @@ async function _sbBuscarHistorial(params) {
     if (!r.ok) return null;
     const arr = await r.json();
     if (!Array.isArray(arr)) return null;
-    return arr.map(x => { const o = (x && x.row_json) || {}; if (x && x.id != null && o._sbId == null) o._sbId = x.id; return o; });
+    return arr.map(x => { const o = _sbSinMarcas((x && x.row_json) || {}); if (x && x.id != null && o._sbId == null) o._sbId = x.id; return o; });
   } catch (e) { return null; }
 }
 
@@ -8174,7 +8185,7 @@ async function _sbRpcColorPintar(nro, prenda, occ, color, filaId) {
         p_color: String(color || ''),
       }),
     });
-    if (!r.ok) return false;
+    if (!r.ok) { try { window._colorUltimoError = String(await r.text()).slice(0, 200); } catch (_) {} return false; }
     const d = await r.json();
     return !!(d && d.ok === true);
   } catch (e) { return false; }
@@ -9542,6 +9553,8 @@ async function _dashboardTodoRapido() {
 // mismo que tardaba todo antes: el viaje a Apps Script. Mismo espejo, mismo
 // respaldo — si la base no contesta, se le pregunta al servidor como siempre.
 async function _productosListarRapido() {
+  // 1-oct · F2 bloque A2: la BASE calcula la lista (productos_listar_calc). Ensayo 1-oct: 631 = 631, identica a la copia.
+  try { const b = await _listaDeLaBase('productos_listar_calc', function (x) { return Array.isArray(x) && x.length > 0; }); if (b) return b; } catch (_) {}
   const d = await _sbCacheLeer('productos.listar');
   if (Array.isArray(d) && d.length) return d;
   return api('productos.listar', { force: '1' });
@@ -9590,7 +9603,99 @@ async function _maestrosSkusRapido() {
   if (Array.isArray(d) && d.length) return d;
   return api('catalogo.maestrosSkus', {});        // Apps Script: el último recurso
 }
+// 1-oct · F2 bloque A2 · LECTURA DIRECTA DE LA BASE (lotes y fallas). Tablas/vistas chicas que el
+// equipo ya puede leer (fallas_lectura_equipo; vistas erp.v_lotes_*). Se piden por paginas de 1000
+// para no cortar en silencio cuando crezcan. null = la base no contesto -> se sigue por la copia.
+async function _sbTablaLeer(ruta, perfil) {
+  try {
+    if (window._sbSaltarEspejo) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const h = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
+    if (perfil) h['Accept-Profile'] = perfil;
+    let out = [];
+    for (let pag = 0; pag < 20; pag++) {
+      const r = await fetch(SB_URL + '/rest/v1/' + ruta + (ruta.indexOf('?') >= 0 ? '&' : '?') + 'limit=1000&offset=' + (pag * 1000), { headers: h });
+      if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
+      const a = await r.json();
+      if (!Array.isArray(a)) return null;
+      out = out.concat(a);
+      if (a.length < 1000) return out;
+    }
+    return null;   // mas de 20.000 filas: no es una lista para leer entera
+  } catch (e) { return null; }
+}
+// Fecha en hora de Lima con el mismo formato que Utilities.formatDate de Apps Script.
+function _fmtLima(ms, patron) {
+  const p = {}; new Intl.DateTimeFormat('en-GB', { timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date(ms)).forEach(function (x) { p[x.type] = x.value; });
+  return patron.replace('yyyy', p.year).replace('yy', String(p.year).slice(-2)).replace('MM', p.month).replace('dd', p.day).replace('HH', p.hour).replace('mm', p.minute);
+}
+// Misma cuenta que _lotesDesdeBase_ (LotesBase.gs), en el navegador. Ensayo 1-oct: 48 lotes / 404 items iguales a la copia.
+function _lotesDeVistas(res, its) {
+  if (!Array.isArray(res) || !res.length || !Array.isArray(its)) return null;
+  const porLote = {};
+  its.forEach(function (o) { const c = String(o.codigo || ''); (porLote[c] = porLote[c] || []).push({ diseno: String(o.diseno || ''), color: String(o.color || ''), talla: String(o.talla || ''), cantidad: parseInt(o.cantidad, 10) || 0 }); });
+  const ing = {};
+  res.forEach(function (L) {
+    const cod = String(L.codigo || ''), usuario = String(L.usuario || '');
+    let fechaMs = 0, fechaStr = String(L.ddmmyy || ''), key = 'SIN|' + cod;
+    const fc = L.fecha_creacion ? new Date(L.fecha_creacion) : null;
+    if (fc && !isNaN(fc.getTime())) { fechaMs = fc.getTime(); fechaStr = _fmtLima(fechaMs, 'dd/MM/yyyy HH:mm'); key = _fmtLima(fechaMs, 'yyyyMMddHHmm') + '|' + usuario; }
+    const items = (porLote[cod] || []).slice();
+    // desempate por talla (XS..G): en Apps Script el orden de tallas dentro de un mismo diseño/color salia al azar
+    const _to = function (t) { const i = ['XS','S','M','L','XL','2XL','3XL','U','C','G'].indexOf(String(t || '').toUpperCase()); return i < 0 ? 99 : i; };
+    items.sort(function (a, b) { return String(a.diseno + a.color).localeCompare(String(b.diseno + b.color), 'es') || (_to(a.talla) - _to(b.talla)); });
+    if (!ing[key]) ing[key] = { fecha: fechaStr, fechaMs: fechaMs, creadora: usuario, prendas: {}, unidades: 0, nItems: 0, lotes: [], ultCorr: null };
+    const g = ing[key], producto = String(L.producto || '');
+    const mods = (L.modelos || []).filter(function (x) { return !!x; });
+    if (mods.length) mods.forEach(function (md) { g.prendas[(producto + ' ' + md).trim()] = 1; }); else if (producto) g.prendas[producto] = 1;
+    if (!g.creadora && usuario) g.creadora = usuario;
+    g.unidades += parseInt(L.unidades, 10) || 0; g.nItems += items.length;
+    if (L.ult_corr_fecha) { let um = new Date(L.ult_corr_fecha).getTime(); if (isNaN(um)) um = 0; if (!g.ultCorr || um > g.ultCorr.ms) g.ultCorr = { ms: um, por: String(L.ult_corr_por || '') }; }
+    g.lotes.push({ codigo: cod, producto: producto, categoria: String(L.categoria || ''), unidades: parseInt(L.unidades, 10) || 0, items: items });
+  });
+  const out = Object.keys(ing).map(function (k) {
+    const g = ing[k]; g.lotes.sort(function (a, b) { return String(a.codigo).localeCompare(String(b.codigo)); });
+    const ultCorr = g.ultCorr ? { por: String(g.ultCorr.por || '').split('@')[0], fecha: g.ultCorr.ms ? _fmtLima(g.ultCorr.ms, 'dd/MM/yy HH:mm') : '' } : null;
+    return { fecha: g.fecha, fechaMs: g.fechaMs, creadora: g.creadora, prendas: Object.keys(g.prendas).filter(Boolean).sort(), unidades: g.unidades, nItems: g.nItems,
+             codigos: g.lotes.map(function (l) { return l.codigo; }), lotes: g.lotes, ultCorr: ultCorr };
+  });
+  out.sort(function (a, b) { return b.fechaMs - a.fechaMs; });
+  return out;
+}
+// Misma cuenta que fallasResumen (Code.js), en el navegador. Ensayo 1-oct: 131 filas, totales/motivos/prendas/meses iguales.
+function _fallasResumenDeFilas(filas, desde, hasta) {
+  const dD = desde ? new Date(desde + 'T00:00:00') : null, dH = hasta ? new Date(hasta + 'T23:59:59') : null;
+  const porMotivo = {}, porPrenda = {}, porMes = {}; let totU = 0, totL = 0;
+  (filas || []).forEach(function (r) {
+    r = r || {};
+    if (String(r.Eliminado || '').trim().toUpperCase() === 'SI') return;
+    const dis = String(r.Diseno || '').trim(), col = String(r.Color || '').trim();
+    if (!dis || !col) return;
+    const fd = new Date(r.Fecha || 0);
+    if (dD && fd < dD) return;
+    if (dH && fd > dH) return;
+    const cant = parseInt(r.Cantidad, 10) || 1;
+    const ori = String(r.Origen || '').trim().toUpperCase();
+    let mot = String(r.Motivo || '').trim();
+    if (!mot) mot = (ori === 'MANUAL') ? '(sin motivo)' : 'Devolución/Cambio';
+    totU += cant; totL++;
+    porMotivo[mot] = (porMotivo[mot] || 0) + cant;
+    const pk = String(r.Prenda || '').trim() + ' ' + dis + ' ' + col + ' ' + String(r.Talla || '').trim();
+    porPrenda[pk] = (porPrenda[pk] || 0) + cant;
+    if (!isNaN(fd.getTime())) { const mk = fd.getFullYear() + '-' + String(fd.getMonth() + 1).padStart(2, '0'); porMes[mk] = (porMes[mk] || 0) + cant; }
+  });
+  const toArr = function (o) { return Object.keys(o).map(function (k) { return { k: k, v: o[k] }; }).sort(function (a, b) { return b.v - a.v; }); };
+  return { totalUnidades: totU, totalLineas: totL, porMotivo: toArr(porMotivo), porPrenda: toArr(porPrenda).slice(0, 50),
+           porMes: Object.keys(porMes).map(function (k) { return { k: k, v: porMes[k] }; }).sort(function (a, b) { return a.k < b.k ? 1 : -1; }) };
+}
 async function _lotesRapido() {
+  try {
+    const rr = await Promise.all([_sbTablaLeer('v_lotes_resumen?select=*&order=codigo.asc', 'erp'), _sbTablaLeer('v_lotes_items?select=*&order=codigo.asc', 'erp')]);
+    const b = _lotesDeVistas(rr[0], rr[1]); if (b && b.length) return b;
+  } catch (_) {}
   const d = await _sbCacheLeer('lotes.listar');
   if (Array.isArray(d) && d.length) return d;
   return api('lotes.listar', {});
@@ -9871,6 +9976,10 @@ async function _sbAlertaSemaforoAtender(conversacion) {
 }
 
 async function _fallasResumenRapido(desde, hasta) {
+  try {
+    const f = await _sbTablaLeer('fallas?select=row_json&order=id.asc');
+    if (Array.isArray(f) && f.length) return _fallasResumenDeFilas(f.map(function (x) { return x && x.row_json; }), desde, hasta);
+  } catch (_) {}
   if (!desde && !hasta) {
     const d = await _sbCacheLeer('fallas.resumen');
     if (d && typeof d === 'object') return d;
@@ -15920,7 +16029,14 @@ async function _paintPrendaCell(td) {
     if (_directoOK) {
       try { if (typeof _pedsEditLocalMark === 'function') _pedsEditLocalMark(nro); } catch(_) {}
     } else {
-      await apiSend('pedidos.setColorPrenda', { NroPedido: nro, Prenda: prenda, Color: next, Occ: occ });
+      // 1-oct-2026 · listado 177 ("lo coloreo y a los 3 dias ya no esta"). Este respaldo
+      // escribia la HOJA Pedidos, congelada desde el 19-set: no daba error, el color se
+      // veia en pantalla (copia local) y se perdia al refrescar. Ahora, si la base no lo
+      // guarda, se avisa y se deshace — nunca un color que solo existe en esta pantalla.
+      if (filaId !== undefined && filaId !== null && String(filaId) !== '' && typeof pRaw !== 'undefined' && Array.isArray(pRaw)) {
+        pRaw.forEach(r => { if (r && r._sbId != null && String(r._sbId) === String(filaId)) r['ColorPrenda'] = cur; });
+      }
+      throw new Error('el color NO se guardo en la base' + (window._colorUltimoError ? ' (' + window._colorUltimoError + ')' : '') + '. Vuelve a intentarlo.');
     }
     // FIX color-persist: actualizar también el cache localStorage para que el
     // color sobreviva a "Actualizar" y a recargar la página. Antes solo se
@@ -17080,7 +17196,125 @@ window.diagPedido = async function(nro){
 // recarga completa. Cada ~60s se comparan las 50 filas más nuevas de la BASE (vía
 // lectura directa Supabase) contra lo local y se fusiona lo que falte o haya cambiado.
 let _sbRecoLast = 0, _sbRecoInFlight = false;
+// ═════════════════════════════════════════════════════════════════════
+// 1-oct-2026 · LA PANTALLA PEDIDOS COMPARA FILAS, NO SOLO FECHAS
+// (listado de las chicas 185-188: "no figura la prenda en Pedidos pero en el
+// historial si", "me dice que ya fue registrado pero no aparece").
+//
+// MEDIDO en el Chrome de Pablo: 105 filas de la base que la pantalla no tenia,
+// en 67 pedidos (22199, 22535, 22610, 22633...). La base estaba bien.
+// CAUSA: el radar, el tiempo real y el detector de fantasmas decidian "este
+// pedido cambio" SOLO si la base traia una fecha de modificacion MAS NUEVA. Una
+// fila agregada que queda con la MISMA fecha que sus hermanas (ej. un guardado
+// masivo estampa la misma hora a todas) no la disparaba nunca: la pantalla
+// quedaba sin esa prenda para siempre y la asesora la volvia a cargar (duplicado).
+// ARREGLO: ademas de la fecha se comparan los ids de las filas, y cada 10 min
+// una huella (filas + suma de ids) de los pedidos tocados en 21 dias
+// (rpc pedidos_huella) repara cualquier diferencia, venga de donde venga.
+// ═════════════════════════════════════════════════════════════════════
+function _pedsIdsLocales(rows, enJuego) {
+  const out = {}, sinId = {};
+  (rows || []).forEach(r => {
+    const n = String((r && r['NroPedido']) || '').trim();
+    if (!n || (enJuego && !enJuego[n])) return;
+    if (r._sbId == null || String(r._sbId) === '') { sinId[n] = true; return; }
+    (out[n] = out[n] || new Set()).add(String(r._sbId));
+  });
+  Object.keys(sinId).forEach(n => { out[n] = null; });   // fila del navegador sin guardar: no se decide por ids
+  return out;
+}
+// base COMPLETA del pedido (lectura por numero) vs la pantalla
+function _pedsIdsDistintos(localSet, filasBase) {
+  if (!localSet) return false;
+  const b = new Set();
+  (filasBase || []).forEach(r => { if (r && r._sbId != null && String(r._sbId) !== '') b.add(String(r._sbId)); });
+  if (!b.size) return false;
+  if (b.size !== localSet.size) return true;
+  for (const x of b) if (!localSet.has(x)) return true;
+  return false;
+}
+// base PARCIAL (radar: solo las filas tocadas ultimas): ¿trae alguna que no tengo?
+function _pedsIdsFaltan(localSet, filasBase) {
+  if (!localSet) return false;
+  for (const r of (filasBase || [])) { if (r && r._sbId != null && String(r._sbId) !== '' && !localSet.has(String(r._sbId))) return true; }
+  return false;
+}
+// Huella: { nro: "filas:suma_ids" } de la base vs lo que tiene la pantalla.
+function _pedsHuellaDistintos(rows, huella) {
+  const loc = {}, sinId = {};
+  (rows || []).forEach(r => {
+    const n = String((r && r['NroPedido']) || '').trim();
+    if (!n || !(n in huella)) return;
+    const id = Number(r._sbId);
+    if (r._sbId == null || !isFinite(id)) { sinId[n] = true; return; }
+    const l = loc[n] = loc[n] || { c: 0, s: 0 }; l.c++; l.s += id;
+  });
+  return Object.keys(huella).filter(n => {
+    if (sinId[n]) return false;
+    const p = String(huella[n] || '0:0').split(':'), c = Number(p[0]) || 0, s = Number(p[1]) || 0;
+    const l = loc[n];
+    if (!l) return c > 0;
+    return l.c !== c || l.s !== s;
+  });
+}
+window._pedsHuella = { corridas: 0, distintos: 0, reparados: 0, ultima: 0, detalle: [] };
+let _phEnCurso = false, _phUlt = 0;
+const PEDS_HUELLA_CADA_MS = 10 * 60 * 1000, PEDS_HUELLA_DIAS = 21;
+async function _pedsHuellaReconciliar(forzar) {
+  if (_phEnCurso) return;
+  if (!forzar && Date.now() - _phUlt < PEDS_HUELLA_CADA_MS) return;
+  if (typeof pRaw === 'undefined' || !Array.isArray(pRaw) || !pRaw.length) return;
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return;
+  _phEnCurso = true; _phUlt = Date.now();
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_huella', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_dias: PEDS_HUELLA_DIAS }),
+    });
+    if (!r.ok) return;
+    const h = await r.json();
+    if (!h || typeof h !== 'object' || Array.isArray(h)) return;
+    window._pedsHuella.corridas++; window._pedsHuella.ultima = Date.now();
+    const _tombs = _pedsTombsGet();
+    const lista = _pedsHuellaDistintos(pRaw, h).filter(n => !_tombs[n] && !_pedsEditLocalReciente(n)).slice(0, 300);
+    if (!lista.length) return;
+    window._pedsHuella.distintos += lista.length;
+    window._pedsHuella.detalle = lista.slice(0, 20);
+    const completas = await _sbFilasDePedidos(lista);
+    if (!completas) return;
+    const porNro = {}, borrar = new Set();
+    lista.forEach(n => {
+      const c = completas[n];
+      const cnt = Number(String(h[n] || '0').split(':')[0]) || 0;
+      if (c && c.length) porNro[n] = c; else if (cnt === 0) borrar.add(n);
+    });
+    let rows = pRaw;
+    if (Object.keys(porNro).length) rows = _pedsFusionarPedidos(rows, porNro, { completo: true }).rows;
+    if (borrar.size) rows = rows.filter(x => !borrar.has(String((x && x['NroPedido']) || '').trim()));
+    if (rows === pRaw) return;
+    pRaw = rows;
+    const tocados = Object.keys(porNro).concat([...borrar]);
+    window._pedsHuella.reparados += tocados.length;
+    try { console.warn('[huella] ' + tocados.length + ' pedido(s) no coincidian con la base — reparados:', tocados.slice(0, 30).join(', ')); } catch (_) {}
+    try { _errLog('pedidos.huella.reparo', new Error(tocados.length + ' pedidos: ' + tocados.slice(0, 15).join(','))); } catch (_) {}
+    try { _cliColorRecalcNros(tocados); } catch (_) {}
+    try { pEnrichPagos(pRaw); } catch (_) {}
+    try {
+      const pedView = document.getElementById('pg-pedidos');
+      if (pedView && pedView.classList.contains('on') && !window._pedsCargaEnCurso) {
+        if (Object.keys(pFlt || {}).length && typeof pAply === 'function') pAply();
+        else _pedsRenderSuave();
+      }
+    } catch (_) {}
+    try { lsSetPeds(pRaw.filter(r2 => !r2._extraCamDev && !r2._reciente && !r2._provisional), pLastSyncTs || Date.now()); } catch (_) {}
+  } catch (e) {}
+  finally { _phEnCurso = false; }
+}
+
 async function _sbReconciliarTope(){
+  try { _pedsHuellaReconciliar(); } catch (_) {}   // 1-oct · huella (se frena sola: 1 vez cada 10 min)
   try {
     if (_sbRecoInFlight) return;
     if (Date.now() - _sbRecoLast < 55000) return;
@@ -17100,6 +17334,7 @@ async function _sbReconciliarTope(){
     if (d.total) window._pedTotalReal = d.total;
     const porNro = {};
     d.rows.forEach(r => { const n = String(r['NroPedido']||'').trim(); if (n) (porNro[n] = porNro[n] || []).push(r); });
+    const _idsLoc = _pedsIdsLocales(pRaw, porNro);   // 1-oct · ids de la pantalla por pedido
     const localUM = {};
     pRaw.forEach(r => {
       const n = String(r['NroPedido']||'').trim();
@@ -17112,7 +17347,7 @@ async function _sbReconciliarTope(){
       if (_tombs[n] || _pedsEditLocalReciente(n)) return;
       const umBase = Math.max.apply(null, porNro[n].map(r => Date.parse(r['UltimaModif']||'') || 0));
       const esNuevo = !(n in localUM);
-      if (!esNuevo && !(umBase > (localUM[n]||0))) return;
+      if (!esNuevo && !(umBase > (localUM[n]||0)) && !_pedsIdsFaltan(_idsLoc[n], porNro[n])) return;   // 1-oct: o trae una fila que no tengo
       cambiados.push(n);
       if (esNuevo) nuevos.push(n);
     });
@@ -17472,9 +17707,10 @@ async function _rtAplicar() {
     if (!r.ok) return;
     const arr = await r.json();
     const porNro = {};
-    arr.map(x => { const row = x.row_json || {}; if (x.id != null && row._sbId == null) row._sbId = x.id; return row; })
+    arr.map(x => { const row = _sbSinMarcas(x.row_json || {}); if (x.id != null && row._sbId == null) row._sbId = x.id; return row; })
        .forEach(row => { const n = String(row['NroPedido'] || '').trim(); if (n) (porNro[n] = porNro[n] || []).push(row); });
     // Merge idéntico al radar: solo pisar lo local si la base trae algo MÁS NUEVO
+    const _idsLocRt = _pedsIdsLocales(pRaw, porNro);   // 1-oct · ids de la pantalla por pedido
     const localUM = {};
     pRaw.forEach(r2 => { const n = String(r2['NroPedido'] || '').trim(); if (porNro[n]) { const t = Date.parse(r2['UltimaModif'] || '') || 0; localUM[n] = Math.max(localUM[n] || 0, t); } });
     let cambios = false; const nuevos = [];
@@ -17482,7 +17718,7 @@ async function _rtAplicar() {
     Object.keys(porNro).forEach(n => {
       const umBase = Math.max.apply(null, porNro[n].map(r2 => Date.parse(r2['UltimaModif'] || '') || 0));
       const esNuevo = !(n in localUM);
-      if (!esNuevo && !(umBase > (localUM[n] || 0))) return;
+      if (!esNuevo && !(umBase > (localUM[n] || 0)) && !_pedsIdsDistintos(_idsLocRt[n], porNro[n])) return;   // 1-oct: o las filas no son las mismas
       _aplicar[n] = porNro[n];
       if (esNuevo) nuevos.push(n);
     });
@@ -18449,6 +18685,7 @@ function verPed(p) {
     const prenda = (_prendaTxt && _esMue && !/^MUESTRA\b/i.test(_prendaTxt)) ? ('MUESTRA - ' + _prendaTxt) : _prendaTxt;
     const precio = parseFloat(qId('mpf-precio').value) || 0;
     if (!prenda) { toast('Escribí el nombre de la prenda', 'err'); return; }
+    if (!_prendaEnCatalogo(_prendaTxt.replace(/^MUESTRA\s*-\s*/i, ''))) { toast('"' + _prendaTxt + '" no está en el catálogo: elegila del desplegable (tal cual aparece)', 'err'); return; }   // 1-oct · listado 181
     // Anti doble-agregado: bloquear el botón mientras corre (evita 2 clics = 2 prendas)
     if (this.disabled) return;
     this.disabled = true;
@@ -22760,6 +22997,25 @@ function npConfirm(msg) {
   });
 }
 
+// 1-oct-2026 · listado 176/181 — una prenda escrita a mano que no esta en el catalogo
+// (ej. "PANTALON MIRELLA VERDE OLIVA L" en vez de "PANTALON MIRELLA VERDE L") entra al
+// pedido pero NO descuenta stock. Solo se aceptan nombres de la lista (desplegable).
+// Si el catalogo todavia no cargo (lista vacia) no se bloquea: la base sigue mandando.
+function _prendaListaOficial() {
+  try {
+    const k = Object.keys(MAESTROS || {}).find(k => k.toLowerCase() === 'prenda');
+    if (k && MAESTROS[k] && MAESTROS[k].length) return MAESTROS[k];
+    if (typeof CAT !== 'undefined' && CAT && CAT.colores_por_dis) return Object.keys(CAT.colores_por_dis);
+  } catch (_) {}
+  return [];
+}
+function _prendaEnCatalogo(nombre) {
+  const n = String(nombre || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  if (!n) return true;
+  const L = _prendaListaOficial();
+  if (!L.length) return true;
+  return L.some(p => String(p || '').trim().toUpperCase().replace(/\s+/g, ' ') === n);
+}
 function npValidar() {
   const errs = [];
   if (!(document.getElementById('np-nom').value || '').trim()) errs.push('Nombres y Apellidos es obligatorio');
@@ -22773,6 +23029,10 @@ function npValidar() {
   // Al menos una prenda con nombre
   const prendasValidas = [...document.querySelectorAll('#np-prendas .np-prenda')].filter(i => i.value.trim());
   if (!prendasValidas.length) errs.push('Debes ingresar al menos una Prenda');
+  prendasValidas.forEach(i => {
+    const _pv = i.value.trim().replace(/^MUESTRA\s*-\s*/i, '');
+    if (typeof _prendaEnCatalogo === 'function' && !_prendaEnCatalogo(_pv)) errs.push('La prenda "' + i.value.trim() + '" no está en el catálogo: elegila del desplegable (tal cual aparece). Si es una prenda nueva, primero se crea en Catálogo.');
+  });
   // Precio obligatorio: toda prenda con nombre debe tener precio > 0.
   // 17-set-2026 — EXCEPCION MARKETPLACE (regla de Pablo): SAGA paga a los meses y de
   // varios pedidos juntos; mientras no cobra, el pedido puede entrar con precio 0.
