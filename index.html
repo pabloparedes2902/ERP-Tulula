@@ -9795,9 +9795,18 @@ function _c2ComoFilasHist_(grupos) {
   return out;
 }
 
+// 1-oct · los cambios VIEJOS (v1, historicos: 85, ya no se escriben) se leen directo de la tabla
+// cambios_historico, igual que cambiosListar (Code.js): mismas filas, orden por FechaSolicitud desc.
+async function _cambiosViejosDeLaBase() {
+  const f = await _sbTablaLeer('cambios_historico?select=row_json&order=id.asc');
+  if (!Array.isArray(f) || !f.length) return null;
+  return f.map(function (x) { return x && x.row_json; }).filter(Boolean)
+    .sort(function (a, b) { return new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0); });
+}
 async function _cambiosListarRapido() {
-  const d = await _sbCacheLeer('cambios.listar');
-  const viejo = (Array.isArray(d) && d.length) ? d : await api('cambios.listar', {});
+  let viejo = null;
+  try { viejo = await _cambiosViejosDeLaBase(); } catch (_) { viejo = null; }
+  if (!viejo) { const d = await _sbCacheLeer('cambios.listar'); viejo = (Array.isArray(d) && d.length) ? d : await api('cambios.listar', {}); }
   let nuevo = [];
   try { nuevo = _c2ComoFilasHist_(await _c2ListarRapido()); } catch (e) { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} }
   return (Array.isArray(viejo) ? viejo : []).concat(nuevo);
@@ -36276,6 +36285,7 @@ async function _onGoogleCredential(resp){
     // Con el mismo pase de Google, abrir también la sesión de LECTURA DIRECTA Supabase
     try { _sbAuthConCredencial(resp.credential); } catch(_){}
     SESSION_TOKEN = data.sessionToken; MY_ROLE = data.rol; MY_EMAIL = data.email;
+    try { localStorage.setItem('erp_auth_chk', String(Date.now())); } catch(_c){}   // 1-oct · recien validado: no hace falta ping
     MY_ASESORA = data.asesora || '';
     MY_PERMISOS = data.permisos || null;   // 30-set
     try { localStorage.setItem('erp_permisos', JSON.stringify(MY_PERMISOS)); } catch(_p){}
@@ -36466,10 +36476,24 @@ function _permVerComoAplicar(){
 }
 // Al arrancar, pregunta si Pablo cambio los permisos de esta persona: surte efecto
 // sin tener que cerrar sesion. Si falla la consulta, sigue todo como estaba.
-async function _permRefrescar(){
+// 1-oct · EL ARRANQUE SIN DOS VIAJES. Antes, cada vez que alguien abria el ERP: auth.ping (7,9 s)
+// + auth.permisos (7,2 s) a Apps Script. Ahora UN viaje (el ping trae los permisos) y como mucho
+// 1 vez por hora por equipo. El servidor igual valida la sesion en CADA llamada (_validarSesion).
+// Un cambio de permisos de Pablo llega en <= 1 hora (o al cerrar y abrir sesion).
+var AUTH_CHK_MIN = 60;
+async function _authChequeo(){
+  try { var u = parseInt(localStorage.getItem('erp_auth_chk') || '0', 10) || 0; if (Date.now() - u < AUTH_CHK_MIN * 60000) return null; } catch(_){}
+  try {
+    var r = await apiSend('auth.ping', {});
+    try { localStorage.setItem('erp_auth_chk', String(Date.now())); } catch(_){}
+    if (r && Object.prototype.hasOwnProperty.call(r, 'permisos')) _permRefrescar(r);
+    return r;
+  } catch(e) { return null; }
+}
+async function _permRefrescar(rDado){
   if(window._VER_COMO || (typeof _permEsDueno === 'function' && _permEsDueno(MY_EMAIL))) return;
   try{
-    var r = await api('auth.permisos', {});
+    var r = rDado || await api('auth.permisos', {});
     var nuevo = (r && r.permisos) || null;
     if(JSON.stringify(nuevo) === JSON.stringify(MY_PERMISOS)) return;
     MY_PERMISOS = nuevo;
@@ -36530,7 +36554,7 @@ function bootApp(){
   try{ _npQueueRestore(); }catch(e){} // 13/07: ofrecer reintentar guardados que quedaron pendientes
   if(MY_ROLE === 'Ventas') _initVentasGuard();   // guardián read-only en todos los módulos
   _initVistaGuard();   // 30-set · modulos en "vista": sin botones de escribir
-  _permRefrescar();    // 30-set · trae cambios de permisos sin cerrar sesion
+  // 1-oct · los permisos llegan con el chequeo de sesion (_authChequeo, 1 vez por hora), no en otro viaje
   // Restaurar el ÚLTIMO módulo visitado (persistido en localStorage). Si no hay historial
   // o el módulo está oculto para el rol, el default es Pedidos (decisión Pablo).
   var _lastPg=''; try{ _lastPg=localStorage.getItem('erp_last_pg')||''; }catch(e){}
@@ -36582,7 +36606,7 @@ async function startAuth(){
   _initGoogleButton();
   if(SESSION_TOKEN && MY_ROLE){
     _hideLogin(); bootApp();
-    apiSend('auth.ping', {}).catch(function(_e){ /* inválida→login vía _onSessionExpired; red→ignorar */ });
+    _authChequeo();   // 1-oct · 1 vez por hora (antes en cada arranque). Inválida→login vía _onSessionExpired; red→ignorar
     try { _sbPasePrecalentar(); } catch(_){}   // Etapa 1.5: el pase, antes de que haga falta
     return;
   }
