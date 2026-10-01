@@ -104,7 +104,12 @@ function haceCuanto(ts) {
 // apiSend manda el body como JSON y agrega _reqId (anti-duplicado).
 // El backend lo recibe en comisionesAdmin(body).
 function comApi(op, args) {
-  return apiSend('comisiones.admin', { op: op, args: args || {} });
+  // 1-oct · F3b: comisiones.admin tarda ~64 s (p50) y no sabemos QUE operacion. Se anota cada una
+  // (marca.comisiones <op>) para atacar la que de verdad demora. Solo mide: no cambia nada.
+  var _c = null; try { _c = (typeof _cronAbrir === 'function') ? _cronAbrir('marca.comisiones', String(op || '?')) : null; } catch (_) {}
+  var p = apiSend('comisiones.admin', { op: op, args: args || {} });
+  try { p.then(function () { try { if (_c) _cronCerrar(_c, true); } catch (_) {} }, function () { try { if (_c) _cronCerrar(_c, false); } catch (_) {} }); } catch (_) {}
+  return p;
 }
 
 /* ── Formato ───────────────────────────────────────────────────────── */
