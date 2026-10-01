@@ -4973,9 +4973,30 @@ function _flujoLazy(){
       // Web App deployado, no google.script.run — este ERP corre en GitHub
       // Pages, no dentro de un HtmlService). Requiere el case 'margen.calcular'
       // agregado en el doGet() del backend (ver instrucciones de instalación).
+      // 1-oct · F3b · MARGEN AL INSTANTE: el calculo tarda ~17 s. Si este navegador ya vio ese mismo
+      // periodo, se pinta YA y se recalcula por detras. Un numero de turno evita que una respuesta vieja
+      // pise un periodo que se eligio despues.
+      var _mgK = rango.inicio + '_' + rango.fin, _mgTk = (window._mgTk = (window._mgTk || 0) + 1), _mgPint = false;
+      try {
+        var _mgG = JSON.parse(localStorage.getItem('erp_swr_margen') || '{}') || {};
+        if (_mgG[_mgK] && _mgG[_mgK].d && (Date.now() - _mgG[_mgK].t) < 7 * 86400000) {
+          mgRenderizar(_mgG[_mgK].d, rango); _mgPint = true;
+          try { toast('Margen de las ' + new Date(_mgG[_mgK].t).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' }) + ' · actualizando…', 'info'); } catch (_) {}
+        }
+      } catch (_) {}
       api('margen.calcular', { desde: rango.inicio, hasta: rango.fin })
-        .then(function (data) { mgRenderizar(data, rango); })
-        .catch(mgMostrarError);
+        .then(function (data) {
+          if (_mgTk !== window._mgTk) return;   // ya eligieron otro periodo
+          try {
+            var g = JSON.parse(localStorage.getItem('erp_swr_margen') || '{}') || {};
+            g[_mgK] = { t: Date.now(), d: data };
+            var ks = Object.keys(g).sort(function (a, b) { return g[b].t - g[a].t; });
+            ks.slice(6).forEach(function (k) { delete g[k]; });   // como mucho 6 periodos guardados
+            localStorage.setItem('erp_swr_margen', JSON.stringify(g));
+          } catch (_) {}
+          mgRenderizar(data, rango);
+        })
+        .catch(function (e) { if (_mgTk !== window._mgTk) return; if (_mgPint) { try { toast('No se pudo actualizar el margen (se muestra lo anterior)', 'err'); } catch (_) {} return; } mgMostrarError(e); });
     }
 
     function mgMostrarError(err) {
@@ -6007,25 +6028,43 @@ const COS = { data: [], sin: [], q: '', fest: '', soloSin: false, destino: 'hoja
 
 const _cosS = n => 'S/ ' + (Number(n) || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+// 1-oct · F3b · COSTOS AL INSTANTE. El calculo (costos + ventas por diseño) tarda ~66 s en el servidor y se
+// usa 1 vez al dia: no vale una copia que se rehaga cada hora (gastaria cuota todo el dia). Se muestra AL
+// INSTANTE lo ultimo que vio este navegador, con su hora, y se trae lo nuevo por detras.
+const COS_SWR_KEY = 'erp_swr_costos';
+function _cosAplicar(r) {
+  COS.data = (r && r.rows) || [];
+  COS.sin = (r && r.sinCosto) || [];
+  COS.destino = (r && r.destino) || 'hoja';
+  COS.encendido = !!(r && r.encendido);
+  COS.aviso = (r && r.aviso) || '';
+  COS.tipos = (r && r.tiposPrenda) || [];
+  COS.cats = (r && r.categorias) || [];
+  COS.filasSinCosto = (r && r.filasSinCosto) || 0;
+  COS.filasTotal = (r && r.filasTotal) || 0;
+}
 async function loadCostos() {
   const w = document.getElementById('cos-w');
-  w.innerHTML = spin('Cargando costos...');
+  let pintado = false;
+  try {
+    const g = JSON.parse(localStorage.getItem(COS_SWR_KEY) || 'null');
+    if (g && g.r && (Date.now() - g.t) < 7 * 86400000) {
+      _cosAplicar(g.r); _cosRender(); pintado = true;
+      toast('Costos de las ' + new Date(g.t).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' }) + ' · actualizando…', 'info');
+    }
+  } catch (_) {}
+  if (!pintado) w.innerHTML = spin('Cargando costos...');
   try {
     const r = await apiSend('costos.listar', {});
-    COS.data = (r && r.rows) || [];
-    COS.sin = (r && r.sinCosto) || [];
-    COS.destino = (r && r.destino) || 'hoja';
-    COS.encendido = !!(r && r.encendido);
-    COS.aviso = (r && r.aviso) || '';
-    COS.tipos = (r && r.tiposPrenda) || [];
-    COS.cats = (r && r.categorias) || [];
-    COS.filasSinCosto = (r && r.filasSinCosto) || 0;
-    COS.filasTotal = (r && r.filasTotal) || 0;
+    _cosAplicar(r);
+    try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), r: r })); } catch (_) {}
   } catch (e) {
+    if (pintado) { toast('No se pudo actualizar costos: ' + esc(e.message) + ' (se muestra lo anterior)', 'err'); return; }
     w.innerHTML = '<div style="padding:24px;color:var(--rd)">Error cargando costos: ' + esc(e.message) + '</div>';
     return;
   }
   _cosRender();
+  if (pintado) toast('✓ Costos actualizados', 'ok');
 }
 
 function _cosFilas() {
