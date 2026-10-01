@@ -9167,6 +9167,37 @@ function _stockEscrito(claves, refrescarYa){
 ═══════════════════════════════════════════════════════════════════════════*/
 const SB_ESPEJO_2PASOS = true;
 
+// ══════════════════════════════════════════════════════════════════════════
+// 1-oct-2026 · F1 · ARRANQUE INSTANTANEO (lo que hacen Linear y los ERP top)
+// Lo guardado se muestra YA; lo vencido se rehace por detras. Nunca una pantalla
+// espera a Apps Script por una copia vieja. Reversa: SB_F1_INSTANTANEO = false.
+// ══════════════════════════════════════════════════════════════════════════
+const SB_F1_INSTANTANEO = true;
+const SB_F1_TOPE_MS = 24 * 60 * 60 * 1000;
+const SB_F1_ESPERA_MS = 10 * 60 * 1000;     // a lo sumo 1 pedido de refresco por clave cada 10 min
+const _f1Pedidos = {};
+function _f1PedirRefresco(clave, edad) {
+  try { (window._espejoViejo = window._espejoViejo || {})[clave] = edad; } catch (_) {}
+  const ahora = Date.now();
+  if (_f1Pedidos[clave] && ahora - _f1Pedidos[clave] < SB_F1_ESPERA_MS) return false;
+  _f1Pedidos[clave] = ahora;
+  try { _f1Aviso(edad); } catch (_) {}
+  try { if (typeof apiSend === 'function') apiSend('espejo.refrescar', { claves: [clave], motivo: 'vencida' }).catch(function(){}); } catch (_) {}
+  return true;
+}
+function _f1Aviso(edad) {
+  if (typeof document === 'undefined' || !document.body) return;
+  let el = document.getElementById('f1-aviso');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'f1-aviso';
+    el.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:9998;background:var(--bg3,#222);color:var(--mu,#bbb);border:1px solid var(--bd,#444);border-radius:8px;padding:6px 10px;font-size:12px;pointer-events:none';
+    document.body.appendChild(el);
+  }
+  el.textContent = '↻ Actualizando datos (copia de hace ' + Math.max(1, Math.round(edad / 60000)) + ' min)…';
+  el.style.display = 'block';
+  clearTimeout(el._t); el._t = setTimeout(function () { el.style.display = 'none'; }, 20000);
+}
+
 // Trae de la base el resultado ya calculado de una pantalla.
 // Devuelve null si no se puede o si está vencido → quien llama usa Apps Script.
 async function _sbCacheLeer(clave, venceMs) {
@@ -9213,10 +9244,16 @@ async function _sbCacheLeer(clave, venceMs) {
     const _gen  = new Date(jS[0].generado).getTime();
     const edad  = Date.now() - _gen;
 
-    // Vencida: se corta ACA. Antes se bajaba 1,2 MB para tirarlos.
+    // Vencida: antes se cortaba ACA y la pantalla iba a Apps Script (8-35 s, y un arranque
+    // con varias vencidas llenaba el servidor: 1-oct 00:07 y 05:36).
+    // 1-oct-2026 · F1, COMO LINEAR: se muestra la copia AL INSTANTE, con su hora a la vista,
+    // y se pide por detras que se rehaga (_f1PedirRefresco). Excepciones que siguen yendo al
+    // servidor: si ESTA persona acaba de escribir esa clave (duda, abajo) o si la copia tiene
+    // mas de SB_F1_TOPE_MS (24 h): ahi un dato viejo podria confundir.
     if (!(edad >= 0) || edad > _vence) {
       try { _errLog('sb.cache.vencida', new Error(clave + ' con ' + Math.round(edad / 60000) + ' min')); } catch (_) {}
-      return null;
+      if (!(SB_F1_INSTANTANEO && edad >= 0 && edad < SB_F1_TOPE_MS)) return null;
+      try { _f1PedirRefresco(clave, edad); } catch (_) {}
     }
 
     // 05-ago — LEER LO QUE ACABAS DE ESCRIBIR: si esta clave quedó EN DUDA por
