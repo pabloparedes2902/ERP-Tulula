@@ -11181,8 +11181,15 @@ async function _sbRpcAgregarPrenda(nro, d) {
         p_request_id: String(d.requestId),
       }),
     });
-    if (!r.ok) { try { console.warn('[agregar-prenda] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){} return null; }
+    if (!r.ok) {
+      // 1-oct · el motivo REAL de la base (SIN_PERMISO, PEDIDO_SIN_PRENDAS...) se guarda
+      // para decirselo a la asesora: el respaldo por Apps Script esta cerrado (hoja congelada).
+      try { const _t = await r.text(); const _j = JSON.parse(_t); window._agrUltimoError = String((_j && (_j.message || _j.hint)) || ('HTTP ' + r.status)); } catch(_) { window._agrUltimoError = 'HTTP ' + r.status; }
+      try { console.warn('[agregar-prenda] RPC HTTP ' + r.status + ' → via Apps Script'); } catch(_){}
+      return null;
+    }
     const x = await r.json();
+    if (!(x && x.ok === true)) window._agrUltimoError = String((x && (x.error || x.mensaje)) || 'la base no confirmo');
     return (x && x.ok === true) ? x : null;
   } catch (e) {
     try { console.warn('[agregar-prenda] RPC fallo → via Apps Script'); } catch(_){}
@@ -18349,6 +18356,7 @@ function verPed(p) {
       const _esYay  = !!(qId('mpf-yay-chk') && qId('mpf-yay-chk').checked);
       const _estAdd = qId('medit-Estado').value;
       const _fpAdd  = qId('medit-FechaPedido').value;
+      let _filaOptDom = null;   // 1-oct: la fila del modal, para quitarla si no se guarda
       const _porAppsScriptAdd = () => apiPost('pedidos.agregar', {
         NroPedido: nro, cliente: cli, requestId: _reqAdd,
         prendas: [{prenda, precio, envio: _envio, subtotal: precio + _envio, pago: 0, formaPago: '', comentarios: _coment,
@@ -18356,7 +18364,21 @@ function verPed(p) {
         FechaPedido: _fpAdd, Estado: _estAdd,
       })
         .then(r => _corregirLoteAgregada(nro, prenda, _loteAdiv, r && r.lote))
-        .catch(e => toast('Error al agregar prenda: '+esc(e.message),'err'));
+        .catch(e => {
+          // 1-oct-2026 · 22199 / 22633 / 22610: la prenda NO se guardo, pero seguia
+          // pintada en el modal hasta el siguiente refresco → la asesora registraba el
+          // pago, quedaba saldo a favor y al reintentar se duplicaba. Ahora la fila
+          // optimista se QUITA y el aviso dice que no se guardo y por que.
+          try {
+            const _i = pRaw.indexOf(_filaOpt); if (_i >= 0) pRaw.splice(_i, 1);
+            if (_filaOptDom && _filaOptDom.parentNode) _filaOptDom.parentNode.removeChild(_filaOptDom);
+            lsSetPeds(pRaw, pLastSyncTs || Date.now()); _renderPedsDesde(pRaw, pEst, true);
+          } catch (_) {}
+          const _mot = window._agrUltimoError ? (' (base: ' + window._agrUltimoError + ')') : '';
+          window._agrUltimoError = '';
+          _celdaAviso('NO se agrego "' + prenda + '" al pedido #' + nro + '.' + _mot +
+            '\n\nNo registres el pago de esta prenda todavia. Proba de nuevo; si sigue, avisar a Pablo.\n\nDetalle: ' + (e && e.message ? e.message : ''));
+        });
 
       // 31-ago — VIA RAPIDA. Una YAYITA o un Estado vacio NO pasan por aca:
       // la primera sale del monton de fallas (otra hoja) y el segundo lo tiene
@@ -18378,13 +18400,15 @@ function verPed(p) {
           .catch(() => _porAppsScriptAdd());
       }
       // Actualizar cache local
-      pRaw.push({ NroPedido: nro, Prenda: prenda, Precio: precio, Envio: _envio, Subtotal: precio + _envio, Pago: 0, 'Forma pago': '', 'Fecha Pago': '', Nombres: cli.Nombre, 'Nombres y Apellidos': cli.Nombre, 'CANAL': cli.Canal, 'ORIGEN': cli.Origen, 'Asesora': cli.Asesora, 'Comentarios Envio': _coment, 'Fecha Pedido': qId('medit-FechaPedido').value, 'Lote': _loteAdiv, 'Descuento': 0, 'Estado': qId('medit-Estado').value });
+      const _filaOpt = { NroPedido: nro, Prenda: prenda, Precio: precio, Envio: _envio, Subtotal: precio + _envio, Pago: 0, 'Forma pago': '', 'Fecha Pago': '', Nombres: cli.Nombre, 'Nombres y Apellidos': cli.Nombre, 'CANAL': cli.Canal, 'ORIGEN': cli.Origen, 'Asesora': cli.Asesora, 'Comentarios Envio': _coment, 'Fecha Pedido': qId('medit-FechaPedido').value, 'Lote': _loteAdiv, 'Descuento': 0, 'Estado': qId('medit-Estado').value };
+      pRaw.push(_filaOpt);
       // Insertar nueva fila en la tabla del modal sin cerrarlo
       const tbody = document.querySelector('#modal-ped tbody');
       if (tbody) {
         const newPi = document.querySelectorAll('.medit-prenda-row').length;
         const newRow = document.createElement('tr');
         newRow.className = 'medit-prenda-row';
+        _filaOptDom = newRow;
         newRow.dataset.pi = newPi;
         newRow.dataset.prenda = prenda;
         newRow.dataset.precio = precio;
@@ -18795,6 +18819,14 @@ function verPed(p) {
     // Envío: el campo muestra el TOTAL del pedido (suma por lote). Si no se cambió a propósito,
     // NO reenviarlo (evita escribir ese total en cada fila y multiplicar el envío por lote).
     if (String(body.Envio||'') === String(envioTotalDisp||0)) delete body.Envio;
+    // 1-oct-2026 · ENTREGADO QUE NO SE GUARDABA (21753, 21574, 21532, 21600, 21849,
+    // 21876, 21890). Con el envio VACIO en el modal, body.Envio = '' no es igual a '0',
+    // viajaba, la base lo rechazaba (no es numero) y todo el guardado caia a Apps
+    // Script → HOJA_CONGELADA (43 veces en 36 h). Vacio = no tocar. Y '10.00' = 10.
+    if (body.Envio !== undefined) {
+      const _envTxt = String(body.Envio == null ? '' : body.Envio).trim();
+      if (_envTxt === '' || (!isNaN(parseFloat(_envTxt)) && parseFloat(_envTxt) === (parseFloat(envioTotalDisp) || 0))) delete body.Envio;
+    }
     // 30-ago — CINTURÓN Y TIRANTES. Aunque el campo esté bloqueado arriba, acá se
     // vuelve a impedir: con varios envíos NUNCA se manda el total del pedido.
     if (_variosEnvios && body.Envio !== undefined) {
@@ -27077,6 +27109,40 @@ async function _fallasIngresarRapido(items) {
     return d;
   } catch (e) { _cronCerrar(_c, false); try { console.warn('[falla] RPC fallo → via Apps Script'); } catch(_){} return null; }
 }
+
+// ── 1-oct-2026 · STOCK: LA BARRA HORIZONTAL SIEMPRE A LA VISTA (pedido de Pablo) ──
+// La tabla de Stock (.st-wrap) tenia su barra horizontal al FINAL de la tabla: con
+// el alto fijo `100dvh - 168px` el borde de abajo quedaba bajo el pliegue de la
+// pantalla (filtros y cabecera ocupan mas de 168 px) y para moverse a la derecha
+// habia que bajar hasta el fondo. Ahora el alto se calcula con la posicion REAL de
+// la tabla: el borde de abajo —y con el, la barra horizontal de 18 px, el mismo
+// grosor que la vertical— queda pegado al borde inferior de la ventana.
+function _stAjustarAlto() {
+  try {
+    document.querySelectorAll('#pg-stock .st-wrap, #pg-inventario .st-wrap').forEach(w => {
+      if (!w.offsetParent) return;                         // pestaña oculta
+      const top = w.getBoundingClientRect().top + (window.scrollY || 0);
+      const alto = Math.max(260, Math.floor(window.innerHeight - top - 10));
+      if (w.style.maxHeight !== alto + 'px') { w.style.maxHeight = alto + 'px'; w.style.height = alto + 'px'; }
+    });
+  } catch (_) {}
+}
+(function _stAltoEnganchar() {
+  let _t = null;
+  const pedir = () => { clearTimeout(_t); _t = setTimeout(_stAjustarAlto, 60); };
+  window.addEventListener('resize', pedir);
+  const mirar = () => {
+    ['pg-stock', 'pg-inventario'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el && !el._stAltoObs) {
+        el._stAltoObs = new MutationObserver(pedir);
+        el._stAltoObs.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+      }
+    });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { mirar(); pedir(); });
+  else { mirar(); pedir(); }
+})();
 
 // ── LA VÍA RÁPIDA (30-jul-2026, segunda vuelta) ───────────────────────────
 // La PRIMERA versión traía el mapa de Apps Script. Seguía tardando ~15 s, y el motivo
