@@ -3683,11 +3683,35 @@ try { window.verLentos = verLentos; } catch (_) {}
 
 // Envoltorio del cronómetro. La función de verdad es _fetchJsonCrudo, acá abajo:
 // esto solo mide y deja pasar. Si el cronómetro falla, la llamada igual sale.
+// 1-oct-2026 · TURNOS PARA APPS SCRIPT. El ERP entero corre con UNA cuenta de Google
+// (la de Pablo) y Google atiende como mucho ~30 pedidos a la vez por cuenta. El 1-oct a
+// las 00:07 y a las 05:36 un arranque disparo ~25 pedidos en paralelo (las copias de la
+// base estaban vencidas y cada pantalla fue sola a Apps Script): el servidor se lleno,
+// devolvio una pagina de error y el LOGIN de Dayanne y de Pablo dio "Respuesta no
+// valida del servidor". Ahora cada navegador manda como mucho 4 LECTURAS a la vez y el
+// resto espera su turno. El inicio de sesion (auth.*) y los GUARDADOS (POST) NUNCA hacen fila.
+const _API_MAX_PARALELO = 4;
+let _apiEnVuelo = 0;
+const _apiCola = [];
+function _apiTomarTurno(action, metodo) {
+  if (/^auth\./.test(String(action || ''))) return Promise.resolve(false);
+  if (metodo && String(metodo).toUpperCase() !== 'GET') return Promise.resolve(false);
+  if (_apiEnVuelo < _API_MAX_PARALELO) { _apiEnVuelo++; return Promise.resolve(true); }
+  return new Promise(function (res) { _apiCola.push(function () { _apiEnVuelo++; res(true); }); });
+}
+function _apiSoltarTurno(t) {
+  if (!t) return;
+  _apiEnVuelo = Math.max(0, _apiEnVuelo - 1);
+  const sig = _apiCola.shift(); if (sig) sig();
+}
 async function _fetchJson(buildReq, action) {
+  let _met = 'GET';
+  try { const _q = buildReq(); _met = (_q && _q.opts && _q.opts.method) || 'GET'; } catch (_) {}
+  const _turno = await _apiTomarTurno(action, _met);
   const _c = _cronAbrir('api.' + String(action || '?'));
   let _ok = false;
   try { const r = await _fetchJsonCrudo(buildReq, action); _ok = true; return r; }
-  finally { _cronCerrar(_c, _ok); }
+  finally { _cronCerrar(_c, _ok); _apiSoltarTurno(_turno); }
 }
 
 async function _fetchJsonCrudo(buildReq, action) {
