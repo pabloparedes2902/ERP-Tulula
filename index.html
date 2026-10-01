@@ -9764,7 +9764,29 @@ async function _catalogoPrendasRapido() {
   if (d && (Array.isArray(d) ? d.length : Object.keys(d).length)) return d;
   return api('catalogo.prendas', {});
 }
+// 1-oct · F2 · CATALOGO DE STOCK desde el LIBRO VIVO (el mismo que ya lee Inventario, _sbLibroDirecto):
+// misma cuenta que _catalogoStockDesdeLibro_ (EspejoDatos.gs). Ensayo 1-oct: 1.965 de 1.965 iguales, mismo orden, 0,6 s.
+// Si el libro esta sucio o no contesta (null), sigue por la copia de siempre.
+function _catalogoStockDeLibro(res) {
+  if (!Array.isArray(res) || !res.length) return null;
+  const stock = {}, meta = {};
+  res.forEach(function (d) {
+    (d.tallas || []).forEach(function (t) {
+      const c = d.conf ? d.conf[t] : undefined;
+      if (c === undefined || c === null) return;
+      const key = d.diseno + '|' + d.color + '|' + t;
+      if (stock[key] === undefined) stock[key] = 0;
+      stock[key] += c;
+      if (!meta[key]) meta[key] = { cat: d.cat || '', prenda: d.prenda, dis: d.diseno, col: d.color, tal: t };
+    });
+  });
+  return Object.keys(stock).filter(function (k) { return stock[k] > 0; }).map(function (k) {
+    const m = meta[k];
+    return { cat: m.cat, prenda: m.prenda, dis: m.dis, col: m.col, tal: m.tal, stock: stock[k], label: (m.prenda + ' ' + m.dis + ' ' + m.col + ' ' + m.tal).trim() };
+  }).sort(function (a, b) { return a.label < b.label ? -1 : 1; });
+}
 async function _catalogoStockRapido() {
+  try { const lib = await _sbLibroDirecto(); const c = _catalogoStockDeLibro(lib); if (c && c.length) return c; } catch (_) {}
   const d = await _sbCacheLeer('catalogo.stock');
   if (d && (Array.isArray(d) ? d.length : Object.keys(d).length)) return d;
   return api('catalogo.stock', {});
@@ -9934,11 +9956,12 @@ async function _serieDiariaRapido(mes) {
 // nota. Una tolerancia infinita esconderia esa rotura para siempre.
 const CONF_VENCE_MS = 72 * 60 * 60 * 1000;
 async function _confeccionListarRapido() {
-  // 1-oct · F2: la cuenta la hace la BASE en el momento (confeccion_listar_calc, 0,9 s): ve lo ultimo aun
-  // justo despues de cargar un lote. Ensayo 1-oct: 596 de 596 iguales a la copia. Si la base no contesta, la copia.
-  try { const b = await _listaDeLaBase('confeccion_listar_calc', function (x) { return Array.isArray(x) && x.length > 0; }); if (b) return b; } catch (_) {}
+  // 1-oct · v2: la BASE deja la copia lista cada minuto (pg_cron confeccion-1min) -> se lee en ~0,5 s.
+  // Si ESTA persona acaba de escribir (la copia queda "en duda" y _sbCacheLeer da null), se pide la cuenta
+  // en el momento a la base (confeccion_listar_calc, ~1,9 s). Ensayo 1-oct: 596 de 596 iguales.
   const d = await _sbCacheLeer('confeccion.listar', CONF_VENCE_MS);
   if (Array.isArray(d) && d.length) return d;
+  try { const b = await _listaDeLaBase('confeccion_listar_calc', function (x) { return Array.isArray(x) && x.length > 0; }); if (b) return b; } catch (_) {}
   return api('confeccion.listar', {});
 }
 async function _alertasListarRapido(soloEspejo) {
