@@ -5022,6 +5022,29 @@ function _flujoLazy(){
         .catch(function (e) { if (_mgTk !== window._mgTk) return; if (_mgPint) { try { toast('No se pudo actualizar el margen (se muestra lo anterior)', 'err'); } catch (_) {} return; } mgMostrarError(e); });
     }
 
+    // 1-oct · F3b · MARGEN SIN PRIMERA ESPERA. Medido 18:33: la primera apertura tardo 48 s (no habia nada
+    // guardado); la segunda 0 s de espera. Para el dueño y administradores, 2 min despues de abrir el ERP se
+    // calcula POR DETRAS el periodo que muestra Margen al entrar, si lo guardado tiene mas de 3 h.
+    // Asi la primera apertura del dia tambien pinta al instante. Un solo calculo cada 3 h por equipo.
+    function _mgPrecalentar() {
+      try {
+        if (!(MY_ROLE === 'Administrador' || (typeof _permEsDueno === 'function' && _permEsDueno(MY_EMAIL)))) return;
+        var rango = mgRangoActivo(); if (!rango || !rango.inicio || !rango.fin) return;
+        var k = rango.inicio + '_' + rango.fin, g = {};
+        try { g = JSON.parse(localStorage.getItem('erp_swr_margen') || '{}') || {}; } catch (_) { g = {}; }
+        if (g[k] && (Date.now() - g[k].t) < 3 * 60 * 60 * 1000) return;
+        api('margen.calcular', { desde: rango.inicio, hasta: rango.fin }).then(function (data) {
+          try {
+            var g2 = JSON.parse(localStorage.getItem('erp_swr_margen') || '{}') || {};
+            g2[k] = { t: Date.now(), d: data };
+            Object.keys(g2).sort(function (a, b) { return g2[b].t - g2[a].t; }).slice(6).forEach(function (x) { delete g2[x]; });
+            localStorage.setItem('erp_swr_margen', JSON.stringify(g2));
+          } catch (_) {}
+        }).catch(function () {});
+      } catch (_) {}
+    }
+    setTimeout(_mgPrecalentar, 120000);
+
     function mgMostrarError(err) {
       document.getElementById('mg-loading').style.display = 'none';
       document.getElementById('mg-select-periodo').disabled = false;
@@ -36444,10 +36467,17 @@ function _credEmail(cred) {
 }
 function _ingresoCache(email) {
   try {
-    if (!email || email !== String(localStorage.getItem('erp_email') || '').trim().toLowerCase()) return null;
-    const rol = localStorage.getItem('erp_rol') || ''; if (!rol) return null;
-    let perm = null; try { perm = JSON.parse(localStorage.getItem('erp_permisos') || 'null'); } catch (_) {}
-    return { email: email, rol: rol, asesora: localStorage.getItem('erp_asesora') || '', permisos: perm };
+    if (!email) return null;
+    if (email === String(localStorage.getItem('erp_email') || '').trim().toLowerCase() && localStorage.getItem('erp_rol')) {
+      let perm = null; try { perm = JSON.parse(localStorage.getItem('erp_permisos') || 'null'); } catch (_) {}
+      return { email: email, rol: localStorage.getItem('erp_rol'), asesora: localStorage.getItem('erp_asesora') || '', permisos: perm };
+    }
+    // 1-oct · medido 18:24: tras "Salir" se borran erp_email/erp_rol y el ingreso volvia al camino lento (7-12 s).
+    // Se recuerda aparte QUIEN entro por ultima vez en este equipo (correo, rol, asesora, permisos: sin llaves ni
+    // sesion). Solo sirve si vuelve a entrar ESA MISMA cuenta de Google; el servidor igual valida todo.
+    const u = JSON.parse(localStorage.getItem('erp_ingreso_previo') || 'null');
+    if (u && u.email === email && u.rol) return { email: email, rol: u.rol, asesora: u.asesora || '', permisos: u.permisos || null };
+    return null;
   } catch (_) { return null; }
 }
 function _ingresoComparar(c, data) {
@@ -36484,6 +36514,7 @@ function _ingresoAplicar(data, resp) {
   localStorage.setItem('erp_rol', MY_ROLE);
   localStorage.setItem('erp_email', MY_EMAIL);
   localStorage.setItem('erp_asesora', MY_ASESORA);
+  try { localStorage.setItem('erp_ingreso_previo', JSON.stringify({ email: String(MY_EMAIL || '').toLowerCase(), rol: MY_ROLE, asesora: MY_ASESORA, permisos: MY_PERMISOS })); } catch (_) {}
 }
 async function _ingresoRapido(resp, c, t0) {
   let soltar = null;
