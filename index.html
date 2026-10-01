@@ -8891,6 +8891,11 @@ function _c2HistMapDe(filas) {
     const g = grupos[nc]; if (g.estado === 'CANCELADO') return;
     g.dev.forEach((d, i) => {
       const nv = g.nue[i] ? g.nue[i].prenda : '';
+      // 1-oct-2026 · CAMBIO CON MAS DEVUELTAS QUE NUEVAS (CAM-0219 del 22378: 2 por 1;
+      // 21135; el de 10 por 9). La devuelta que NO tiene nueva quedaba en el pedido con
+      // su nombre de siempre, como si hubiera que enviarla. Ahora se marca SIEMPRE
+      // (aunque el stock ya se haya recibido) para pintarla como DEVUELTA.
+      if (!nv && d.ped) { out.push({ NroCambio: nc, NroPedido: d.ped, PrendaOriginal: d.prenda, PrendaNueva: '', _esV2: true, _devSinNueva: true }); return; }
       if (!g.recibido && d.ped) out.push({ NroCambio: nc, NroPedido: d.ped, PrendaOriginal: d.prenda, PrendaNueva: nv, _esV2: true });
       if (nv && d.ped) out.push({ NroCambio: nc, NroPedido: d.ped, PrendaOriginal: '', PrendaNueva: nv, _esV2: true });
     });
@@ -11177,18 +11182,20 @@ async function _sbRpcAgregarPrenda(nro, d) {
     if (!SB_PILOTO_AGREGAR) return null;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
     if (!d || !String(d.prenda || '').trim()) return null;
-    if (/^YAYITA\s*-/i.test(String(d.prenda || ''))) return null;   // monton de fallas: no
+    // 1-oct-2026 · YAYITAS POR LA BASE: van a pedido_agregar_yayita (revisa el monton,
+    // agrega con la misma receta y le pone "YAYITA - "). Antes: siempre Apps Script → error.
+    const _esYayRpc = !!d.yayita || /^YAYITA\s*-/i.test(String(d.prenda || ''));
     if (!String(d.estado || '').trim()) return null;                 // la hoja decide PREVENTA
     if (!String(d.requestId || '').trim()) return null;              // sin esto podria duplicar
     const _env = parseFloat(d.envio) || 0;
     if (_env < 0 || _env > 99) return null;
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
-    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_agregar_prenda', {
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + (_esYayRpc ? 'pedido_agregar_yayita' : 'pedido_agregar_prenda'), {
       method: 'POST',
       headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        p_nro: String(nro), p_prenda: String(d.prenda).trim(),
+        p_nro: String(nro), p_prenda: String(d.prenda).trim().replace(/^YAYITA\s*[-\u2013\u2014]?\s+/i, ''),
         p_precio: parseFloat(d.precio) || 0, p_envio: _env,
         p_estado: String(d.estado).trim(), p_fecha_pedido: String(d.fechaPedido || ''),
         p_comentarios: String(d.comentarios || ''), p_cliente: d.cliente || {},
@@ -12330,6 +12337,7 @@ function pExpandFlat(grouped) {
     let _camMap = {}; // [FIX-1] mapa normOriginal→PrendaNueva para display directo en tabla Pedidos
     let _camNuevasNorm = new Set(); // prendas NUEVAS de cambios (normalizadas) → para pintar amarillo aunque la fila ya tenga la nueva
      let _c2NroMap = {}; // [v2] normPrenda → NroCambio (para abrir Timeline v2 desde Pedidos)
+    let _camDevSinMap = {}; // 1-oct: normPrenda → NroCambio de una devuelta SIN prenda nueva
     try {
       const _nroPed = String(ped['NroPedido']||'').trim();
       if (_nroPed) {
@@ -12343,6 +12351,7 @@ function pExpandFlat(grouped) {
             // pedido). Esa fila se MUESTRA pero el render la pinta con el texto de la prenda NUEVA
             // (lo que logística debe enviar). Las demás prendas entregadas se ocultan.
             const po = _normP(c['PrendaOriginal']); if (po) { _activas.add(po); const _pnTxt = String(c['PrendaNueva']||'').trim(); if (_pnTxt) _camMap[po] = _pnTxt; }
+            if (c._devSinNueva && po) { _camDevSinMap[po] = c['NroCambio'] || 'CAM'; return; }   // 1-oct
             // También la nueva, por si en algún flujo se agregó como fila propia.
             const pn = String(c['PrendaNueva']||'').split('|').map(s => _normP(s)).filter(Boolean);
             pn.forEach(x => { _activas.add(x); _camNuevasNorm.add(x); });
@@ -12385,6 +12394,7 @@ function pExpandFlat(grouped) {
       const _prendaNuevaDisplay = _camMap[_nrmPr(pr.prenda)] || '';
       const _esPrendaNuevaCambio = _camNuevasNorm.has(_nrmPr(pr.prenda));
       const _c2Nro = _c2NroMap[_nrmPr(pr.prenda)] || '';
+      const _devSinNueva = _camDevSinMap[_nrmPr(pr.prenda)] || '';   // 1-oct
       if (i === 0) {
         flat.push(Object.assign({}, ped, {
           _isContinuacion: false,
@@ -12405,6 +12415,7 @@ function pExpandFlat(grouped) {
           _prendaNuevaDisplay,
           _esPrendaNuevaCambio,
           _c2Nro,
+          _devSinNueva,
           _prendaOcc: (pr && pr._occ) || 0,
           _prendaFilaId: (pr && pr._sbId != null) ? pr._sbId : null,   // FASE 2: id REAL de la fila
         }));
@@ -12424,6 +12435,7 @@ function pExpandFlat(grouped) {
           _prendaNuevaDisplay,
           _esPrendaNuevaCambio,
           _c2Nro,
+          _devSinNueva,
           _prendaOcc: (pr && pr._occ) || 0,
           _prendaFilaId: (pr && pr._sbId != null) ? pr._sbId : null,   // FASE 2: id REAL de la fila
         });
@@ -15525,7 +15537,14 @@ function mkTBody(rows) {
         let _badge   = '';
         let _trazaAttr = '';
         let _displayText = t; // por defecto, la prenda original
-        if (_matchDev) {
+        if (p['_devSinNueva']) {
+          // 1-oct-2026 · devuelta en un cambio que NO tiene prenda nueva para ella:
+          // ya no es una prenda a enviar. Se ve tachada, en rojo, con su cambio.
+          _txtColor = 'color:#f87171;font-weight:700;';
+          _badge = ' <span title="Devuelta en el cambio, sin prenda nueva" style="font-size:10px;color:#f87171;margin-left:4px;font-weight:700">↩ DEVUELTA</span>';
+          _trazaAttr = ' data-traza-tipo="camv2" data-traza-id="'+esc(String(p['_devSinNueva']))+'" data-traza-nro="'+esc(String(p['NroPedido']||''))+'" data-traza-prenda="'+esc(String(v||''))+'"';
+          _displayText = '<span style="text-decoration:line-through">' + t + '</span><br><span style="font-size:10px;font-weight:400;opacity:.8">devuelta en ' + esc(String(p['_devSinNueva'])) + '</span>';
+        } else if (_matchDev) {
           _txtColor = 'color:#f87171;font-weight:700;';
           _badge = ' <span title="Prenda devuelta" style="font-size:10px;color:#f87171;margin-left:4px;font-weight:700">↩ DEV</span>';
           const _m = _camb.match(/DEV[-\s]?(\d+)/);
@@ -18397,11 +18416,11 @@ function verPed(p) {
       // 31-ago — VIA RAPIDA. Una YAYITA o un Estado vacio NO pasan por aca:
       // la primera sale del monton de fallas (otra hoja) y el segundo lo tiene
       // que decidir la hoja mirando el stock. Ver sql/agregar_prenda_DISENO.md
-      if (_esYay || !String(_estAdd || '').trim() || typeof _sbRpcAgregarPrenda !== 'function') {
+      if (!String(_estAdd || '').trim() || typeof _sbRpcAgregarPrenda !== 'function') {   // 1-oct: la Yayita ya NO se salta la base
         _porAppsScriptAdd();
       } else {
         const _t0Add = Date.now();
-        _sbRpcAgregarPrenda(nro, { prenda: prenda, precio: precio, envio: _envio,
+        _sbRpcAgregarPrenda(nro, { prenda: prenda, yayita: _esYay, precio: precio, envio: _envio,
                                    estado: _estAdd, fechaPedido: _fpAdd,
                                    comentarios: _coment, cliente: cli, requestId: _reqAdd })
           .then(r => {
@@ -22216,6 +22235,17 @@ async function _npProcessSaveQueue() {
 async function _npExecuteSave(job) {
   const cliBase = job.cliBase;
   if (job.modo === 'agregar' && job.nroPedBase) {
+    // 1-oct-2026 · "AGREGAR AQUI" (desde el aviso de duplicado) iba SIEMPRE por Apps Script
+    // (pedidos.agregar), que con la hoja congelada desde el 19-set ya no escribe → error.
+    // Ahora: cada prenda por la base (Yayitas incluidas) y cada pago con pago_agregar.
+    const _vb = await _npAgregarPorBase(job);
+    if (_vb) {
+      await _npAplicarSaldosOrigen(job, job.nroPedBase, cliBase.FechaPago);
+      _pendOlvidar();
+      try { stData = null; _stLsDel(); } catch (e) {}
+      try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch (_) {}
+      return job.nroPedBase;
+    }
     await apiPost('pedidos.agregar', {
       NroPedido:   job.nroPedBase,
       FechaPedido: cliBase.FechaPedido,
@@ -22272,7 +22302,9 @@ async function _npExecuteSave(job) {
   if (_hayYayita) {
     const _alcanza = await _yayAlcanzaParaTodas(job.prendasData);
     try { _yayOlvidar(); } catch(e) {}          // se consumió una: el mapa quedó viejo
-    if (!_alcanza) _bodyRapido = null;          // → Apps Script, con su validación
+    // 1-oct-2026 · la hoja esta congelada: Apps Script ya no puede crear el pedido.
+    // Si el monton no alcanza, se dice CLARO en vez de mandar a una puerta cerrada.
+    if (!_alcanza) throw new Error('No hay Yayitas disponibles para todas las prendas marcadas. Revisa Stock › Yayitas o desmarca la casilla. No se guardo nada.');
     else _bodyRapido = Object.assign({}, _bodyCrear, {
       prendas: (job.prendasData || []).map(p => (p && p.esYayita)
         ? Object.assign({}, p, { dis: _yayPrefijar(p.dis) }) : p),
@@ -22339,6 +22371,61 @@ async function _npExecuteSave(job) {
   // ya viaja como línea de pago real del pedido nuevo, evitando doble conteo).
   if (nuevoNro) await _npAplicarSaldosOrigen(job, nuevoNro, cliBase.FechaPago);
   return nuevoNro;
+}
+
+// 1-oct-2026 · Nuevo pedido en modo "agregar a un pedido que ya existe", por la base.
+// Devuelve null SOLO si no se pudo empezar (sin sesion): entonces se intenta el camino
+// de siempre. Si una prenda falla a mitad de camino NO se cae a Apps Script (repetiria
+// las que ya entraron): se avisa clarito cuales quedaron y cuales no.
+async function _npAgregarPorBase(job) {
+  if (typeof _sbRpcAgregarPrenda !== 'function' || typeof _sbRpcPago !== 'function') return null;
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  const tok = await _sbSesionAsegurar();
+  if (!tok) return null;
+  const nro = String(job.nroPedBase), cb = job.cliBase || {};
+  const cli = { Nombre: cb.NombreApellido, DNI: cb.DNI, Celular: cb.Celular, Direccion: cb.Direccion, Distrito: cb.Distrito,
+                Provincia: cb.Provincia, Region: cb.Region, Referencia: cb.Referencia, Canal: cb.Canal, Origen: cb.Origen,
+                Asesora: cb.Asesora, Email: cb.Email };
+  const ok = [], mal = [];
+  const lista = [];
+  (job.prendasData || []).forEach(p => { const n = Math.max(1, parseInt(p.cant, 10) || 1); for (let k = 0; k < n; k++) lista.push(p); });
+  for (let i = 0; i < lista.length; i++) {
+    const p = lista[i];
+    window._agrUltimoError = '';
+    const r = await _sbRpcAgregarPrenda(nro, {
+      prenda: p.dis, yayita: !!p.esYayita, precio: p.prec, envio: i === 0 ? (job.env || 0) : 0,
+      estado: cb.Estado || 'PENDIENTE', fechaPedido: cb.FechaPedido || '', comentarios: cb.ComentariosEnvio || '',
+      cliente: cli, requestId: String(job.requestId || ('np_' + Date.now())) + '_p' + i });
+    if (r) ok.push(p.dis); else mal.push(p.dis + (window._agrUltimoError ? ' (' + window._agrUltimoError + ')' : ''));
+  }
+  if (mal.length && !ok.length) throw new Error('NO se agrego nada al pedido #' + nro + ': ' + mal.join(' · '));
+  // pagos (cada uno con su codigo; si la respuesta se pierde, el reintento no duplica)
+  const pagosMal = [];
+  for (let j = 0; j < (job.pagosData || []).length; j++) {
+    const pg = job.pagosData[j] || {};
+    if (!(parseFloat(pg.monto) > 0)) continue;
+    if (!pg._pagoId) pg._pagoId = _nuevoPagoIdCliente();
+    const rp = await _sbRpcPago('pago_agregar', { p_nro: nro, p_monto: parseFloat(pg.monto), p_forma: String(pg.forma || ''),
+      p_fecha: String(pg.fecha || ''), p_constancia: '', p_asesora: String(pg.asesora || (typeof MY_ASESORA !== 'undefined' ? MY_ASESORA : '') || ''),
+      p_pago_id: pg._pagoId });
+    if (!rp) { pagosMal.push('S/ ' + pg.monto); continue; }
+    const vouchers = pg.vouchers || [];
+    if (vouchers.length) (async () => {
+      try {
+        const _res = await _subirConstanciasJuntas(nro, vouchers.map(_partirDataUrl));
+        const _urls = _res.filter(Boolean);
+        const _key = (parseFloat(pg.monto) || 0) + '|' + String(pg.forma || '').trim() + '|' + String(pg.fecha || '').split('T')[0];
+        if (_urls.length) await _constanciaAsociar(nro, pg._pagoId, _key, _urls.join('\n'));
+      } catch (e) { _errLog('constancia.setPago', e, { toast: 'Constancia subida pero no se pudo asociar al pago del #' + nro }); }
+    })();
+  }
+  try { _sbEspejarYa([nro]); } catch (_) {}
+  if (mal.length || pagosMal.length) {
+    _celdaAviso('Pedido #' + nro + ': se agrego ' + ok.length + ' prenda(s).' +
+      (mal.length ? '\n\nNO se agregaron: ' + mal.join(' · ') : '') +
+      (pagosMal.length ? '\n\nNO se registraron los pagos: ' + pagosMal.join(', ') + '. Registralos desde el pedido.' : ''));
+  }
+  return { ok: true, nro: nro, via: 'base', prendas: ok.length };
 }
 
 // v15 — Aplica el efecto de los saldos en el PEDIDO ORIGEN únicamente:
