@@ -9146,7 +9146,13 @@ const _ESP_CLAVES_STOCK = ['stock.resumen','catalogo.stock','lotes.listar','conf
 // cada escritura costaba ~26 s de servidor y cuota, para una copia que nadie lee. Se dejan de pedir.
 const _ESP_LEE_BASE = { 'productos.listar':1, 'lotes.listar':1, 'fallas.resumen':1, 'cambios.listar':1, 'dashboard.todo':1,
                         'clientes.index':1, 'confeccion.listar':1, 'catalogo.stock':1, 'reposicion.calc':1 };
-function _espRefrescables(arr) { return (arr || []).filter(c => !_ESP_LEE_BASE[c]).slice(0, 3); }
+// 1-oct F4: stock.resumen tambien se lee del LIBRO VIVO (_sbLibroDirecto). Si el libro se leyo limpio en los
+// ultimos 10 min, la copia de Apps Script es solo respaldo: no se pide rehacerla (medido: 6 pedidos de 11-26 s
+// en 1 hora de una sola asesora). Con el libro sucio se sigue pidiendo como siempre.
+function _espRefrescables(arr) {
+  const libroOk = !!(window._libroLimpioTs && (Date.now() - window._libroLimpioTs) < 10 * 60 * 1000);
+  return (arr || []).filter(c => !_ESP_LEE_BASE[c] && !(libroOk && c === 'stock.resumen')).slice(0, 3);
+}
 function _stockMovido(claves, refrescarYa){
   _espejoDudar(claves);
   try {
@@ -9602,6 +9608,7 @@ async function _stockResumenRapido() {
   const lib = await _sbLibroDirecto();
   if (Array.isArray(lib) && lib.length) {
     try { (window._espejoGen = window._espejoGen || {})['stock.resumen'] = Date.now(); } catch (_) {}
+    try { window._libroLimpioTs = Date.now(); } catch (_) {}   // 1-oct F4: ver _espRefrescables
     return lib;
   }
   // 2) La copia periodica de siempre.
@@ -36430,7 +36437,7 @@ function _renovarSesionSilencioso(){
 // se vuelve al login; si su rol/permisos cambiaron, se recarga con lo del servidor (el servidor manda).
 // INTERRUPTOR: 'NO' = como antes · 'ENSAYO' = como antes + anota si lo guardado coincide con el
 // servidor (marca.ingresoEnsayo igual|difiere:<que>) · 'SI' = ingreso rapido. REVERSA: 'NO' y publicar.
-const SB_INGRESO_RAPIDO = 'ENSAYO';
+const SB_INGRESO_RAPIDO = 'SI';   // 1-oct 18:15 · ENSAYO -> SI a pedido de Pablo (1er ensayo 'igual': 11,8 s -> al instante). Reversa: 'NO'
 function _credEmail(cred) {
   try { const p = String(cred || '').split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
         return String((JSON.parse(atob(p)) || {}).email || '').trim().toLowerCase(); } catch (_) { return ''; }
@@ -36492,6 +36499,9 @@ async function _ingresoRapido(resp, c, t0) {
     _ingresoAplicar(data, resp);
     const dif = _ingresoAnotar(c, data, t0);
     _fin();
+    // lo que el arranque salteo por no tener todavia la sesion de Apps Script: se retoma ahora
+    try { if (window._pedsCargaIncompleta && !window._pedsCargaEnCurso) _pedsCargarRestoProgresivo(); } catch (_) {}
+    try { _pollPedsOnce(); } catch (_) {}
     if (dif.length) { try { toast('Tus permisos cambiaron: actualizando…', 'info'); } catch (_) {} setTimeout(function () { location.reload(); }, 800); }
   } catch (e) {
     SESSION_TOKEN = ''; localStorage.removeItem('erp_sess');
