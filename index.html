@@ -9664,6 +9664,82 @@ async function _sbCacheLeer(clave, venceMs) {
   El comparador queda: se puede volver a correr cuando se quiera.
 ═══════════════════════════════════════════════════════════════════════════*/
 const SB_LECTURA_LIBRO = true;           // 31-ago: encendido con 0 diferencias
+/*═══════════════════════════════════════════════════════════════════════════
+  2-oct-2026 · FASE 2 · LA TABLA UNICA DE MOVIMIENTOS (como Odoo/SAP)
+  Inventario y el kardex 🕑 leen el stock SUMANDO MOVIMIENTOS (erp.v_movimientos_stock):
+  produccion, ventas, cambios, devoluciones, fallas, yayitas, bajas. El libro
+  (stock_saldos) queda de respaldo: si la base no contesta, se sigue por el libro.
+  Medido 2-oct: 2.312 de 2.360 tallas iguales al libro (98%); las otras son ventas de
+  lotes aun sin confeccion (Estefany) y diferencias de ±1 donde el Drive le da la razon
+  a los movimientos (19 contra 12).
+  REVERSA INMEDIATA: SB_STOCK_MOVIMIENTOS = false y publicar.
+═══════════════════════════════════════════════════════════════════════════*/
+const SB_STOCK_MOVIMIENTOS = true;
+async function _sbLibroMovimientos() {
+  try {
+    if (!SB_STOCK_MOVIMIENTOS || window._sbSaltarBase) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
+    const a = await r.json();
+    // Solo filas con la forma de la vista; cualquier otra cosa = no confiar (camino de siempre).
+    const forma = x => x && typeof x.prenda === 'string' && typeof x.diseno === 'string' && typeof x.color === 'string'
+                        && typeof x.talla === 'string' && x.conf !== undefined && x.ventas !== undefined;
+    return (Array.isArray(a) && a.length && a.every(forma)) ? a : null;
+  } catch (e) { return null; }
+}
+const _MOV_ETQ = { SALDO_INICIAL:'Saldo inicial', PRODUCCION:'Producción', DIGITAL:'Producción', VENTA:'Venta',
+  VENTA_HISTORICA:'Ventas hasta el corte (Drive)', YAYITA:'Yayita (sale de fallas)', FALLA_MONTON:'Falla al montón',
+  BAJA:'Baja', REINGRESO:'Reingreso', DEVOLUCION_CLIENTE:'Devolución de clienta', DEVOLUCION_CLIENTE_REV:'Devolución anulada',
+  CAMBIO:'Cambio', RECUPERACION:'Recuperación', DEVOLUCION:'Devolución', FALLA:'No disponible (ajuste)', AJUSTE:'Ajuste' };
+async function _sbKardexMovimientos(prenda, dis, col) {
+  try {
+    if (!SB_STOCK_MOVIMIENTOS) return null;
+    const U = x => encodeURIComponent(String(x || '').trim().toUpperCase().replace(/\s+/g, ' '));
+    const f = 'prenda=eq.' + U(prenda) + '&diseno=eq.' + U(dis) + '&color=eq.' + U(col);
+    const [rows, lib] = await Promise.all([
+      _sbTablaLeer('v_movimientos_stock?select=fuente,tipo,fecha,talla_libro,cant,d_conf,d_ventas,d_fallas,ref,desde,hacia&' + f, 'erp'),
+      _sbTablaLeer('stock_saldos?select=talla,stock&' + f).catch(() => null),
+    ]);
+    if (!Array.isArray(rows)) return null;
+    const stockActual = {}, ev = [];
+    rows.forEach(function (m, i) {
+      const t = String(m.talla_libro || '');
+      const ds = (Number(m.d_conf) || 0) - (Number(m.d_ventas) || 0);
+      const df = Number(m.d_fallas) || 0;
+      if (t) stockActual[t] = (stockActual[t] || 0) + ds;
+      if (!ds && !df && m.tipo !== 'SALDO_INICIAL') return;
+      const fm = Date.parse(m.fecha || '') || 0;
+      const ref = String(m.ref || '').trim();
+      let det = String(m.desde || '') + ' → ' + String(m.hacia || '');
+      if (m.fuente === 'pedidos' && ref) det = '#' + ref + ' · ' + det;
+      else if (ref && m.fuente !== 'ventas_archivadas') det += ' · ' + ref;
+      if (!ds && df) det += ' · no cambia el stock (fallas ' + (df > 0 ? '+' : '') + df + ')';
+      const n = ds || df;
+      ev.push({ fechaMs: fm, fecha: _fechaCortaLima(fm), tipo: _MOV_ETQ[m.tipo] || m.tipo, signo: n < 0 ? '−' : '+',
+                talla: t, cantidad: Math.abs(n), detalle: det, _i: i });
+    });
+    ev.sort(function (a, b) { return (b.fechaMs - a.fechaMs) || (a._i - b._i); });
+    const anomalias = [];
+    Object.keys(stockActual).forEach(function (t) {
+      if (stockActual[t] < 0) anomalias.push('Stock NEGATIVO en talla ' + t + ' (' + stockActual[t] + ') — se vendió/bajó más de lo que entró.');
+    });
+    if (Array.isArray(lib)) lib.forEach(function (x) {
+      const t = String(x.talla || ''), sl = Number(x.stock) || 0, sm = stockActual[t] || 0;
+      if (sl !== sm) anomalias.push('Talla ' + t + ': el libro viejo dice ' + sl + ', los movimientos dicen ' + sm + '.');
+    });
+    try { window._kardexFuente = 'movimientos'; } catch (_) {}
+    return { prenda: prenda, dis: dis, col: col, fuente: 'movimientos',
+             eventos: ev.slice(0, 400).map(function (e) { const c = Object.assign({}, e); delete c._i; return c; }),
+             anomalias: anomalias, stockActual: stockActual, total: ev.length };
+  } catch (e) { return null; }
+}
 const LIBRO_TSTD = ['XS','S','M','L','XL','2XL','3XL'];
 const LIBRO_ESTADO_MAX_MIN = 30;         // marca mas vieja que esto = no confiar
 
@@ -9695,13 +9771,18 @@ async function _sbLibroDirecto(forzar) {
     if (!tok) return null;
     const H = { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok };
 
+    // 2-oct Fase 2: los MOVIMIENTOS salen en paralelo (no dependen del libro).
+    const pMov = forzar ? Promise.resolve(null) : _sbLibroMovimientos();
     // 1) ¿Se puede confiar? Esto va PRIMERO y decide todo lo demas.
+    //    Con movimientos el libro solo aporta categoria y fecha: si esta sucio no importa.
     const re = await fetch(SB_URL + '/rest/v1/libro_estado?id=eq.1&select=sucio,ts,motivo', { headers: H });
-    if (!re.ok) { if (re.status === 401 || re.status === 403) _sbVencerTok(); return null; }
-    const est = (await re.json())[0];
-    if (!est || est.sucio !== false) return null;                   // sucio, o sin fila
-    const edadMin = (Date.now() - new Date(est.ts).getTime()) / 60000;
-    if (!(edadMin >= 0) || edadMin > LIBRO_ESTADO_MAX_MIN) return null;  // marca vieja: no confiar
+    if (!re.ok) { if (re.status === 401 || re.status === 403) _sbVencerTok(); if (!(await pMov)) return null; }
+    else {
+      const est = (await re.json())[0];
+      const edadMin = est ? (Date.now() - new Date(est.ts).getTime()) / 60000 : -1;
+      const libroOk = !!est && est.sucio === false && edadMin >= 0 && edadMin <= LIBRO_ESTADO_MAX_MIN;
+      if (!libroOk && !(await pMov)) return null;                   // sucio/viejo y sin movimientos
+    }
 
     // 2) El libro Y el catalogo, EN PARALELO.
     //
@@ -9732,6 +9813,7 @@ async function _sbLibroDirecto(forzar) {
 
     const filas = await pLibro;
     if (!filas || !filas.length) return null;
+    const movs = await pMov;
 
     // 3) La misma forma que devuelve stockResumen(). Si esto se desalinea, la
     //    pantalla pinta cualquier cosa: por eso existe libroDirectoComparar().
@@ -9744,6 +9826,18 @@ async function _sbLibroDirecto(forzar) {
       const fm = Number(x.fecha_ms) || 0;
       if (fm > libro[k].fechaMs) libro[k].fechaMs = fm;
     });
+
+    // 3b) 2-oct Fase 2: si hay MOVIMIENTOS, mandan ellos (conf, ventas y fallas por talla).
+    //     Del libro solo quedan la categoria y la fecha. Sin movimientos = libro de siempre.
+    if (Array.isArray(movs) && movs.length) {
+      Object.keys(libro).forEach(function (k) { libro[k].tallas = {}; });
+      movs.forEach(function (x) {
+        const k = x.prenda + '|' + x.diseno + '|' + x.color;
+        if (!libro[k]) libro[k] = { prenda:x.prenda, dis:x.diseno, col:x.color, cat:'', tallas:{}, fechaMs:0 };
+        libro[k].tallas[x.talla] = { conf:Number(x.conf) || 0, v:Number(x.ventas) || 0, fa:Number(x.fallas) || 0 };
+      });
+      try { window._stockFuente = 'movimientos'; } catch (_) {}
+    } else { try { window._stockFuente = 'libro'; } catch (_) {} }
 
     // 4) Los SKU del catalogo sin movimiento salen en 0 — si no, un producto
     //    recien creado DESAPARECERIA de Inventario. Mismo criterio que el backend.
@@ -11310,6 +11404,9 @@ async function _stockKardexRapido(p) {
   const dis = String(p.dis || '').trim();
   const col = String(p.col || '').trim();
   const porApps = () => api('stock.kardex', { prenda: prenda, dis: dis, col: col });
+  // 2-oct Fase 2: el kardex es la lista de MOVIMIENTOS de la prenda. Si la base no contesta, sigue como antes.
+  const _km = await _sbKardexMovimientos(prenda, dis, col);
+  if (_km) return _km;
   if (!SB_LECTURA_STOCK) return porApps();
   if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
   if (window._sbSaltarEspejo) return porApps();
@@ -26664,7 +26761,7 @@ async function _invKardex(pren, dis, col){
     ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:800;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
     ov.innerHTML='<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:640px;width:100%;padding:18px">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:700;color:var(--ac)">🕑 Kardex — '+esc(pren+' '+dis+' '+col)+'</span><button id="kx-x" class="btn bg bs" style="font-size:12px">✕</button></div>'
-      +'<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Stock actual → '+esc(stkTxt)+'</div>'
+      +'<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Stock actual → '+esc(stkTxt)+((r&&r.fuente==='movimientos')?' <span style="opacity:.7">· suma de movimientos</span>':'')+'</div>'
       +anomHtml
       +'<div style="max-height:60vh;overflow:auto;border:1px solid var(--bd);border-radius:8px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--bg3)"><th style="padding:6px 8px;text-align:left;color:var(--mu)">Fecha</th><th style="padding:6px 8px;text-align:left;color:var(--mu)">Movimiento</th><th style="padding:6px 8px;text-align:center;color:var(--mu)">Talla</th><th style="padding:6px 8px;text-align:center;color:var(--mu)">Cant.</th></tr></thead><tbody>'+rowsHtml+'</tbody></table></div>'
       +'</div>';
