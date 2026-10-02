@@ -8822,6 +8822,28 @@ async function _sbRpcCambioCancelar(nc) {
   }
 }
 
+// 2-oct · #198 · condicion + reingreso de cada prenda devuelta (cambio_devueltas_guardar).
+// Devuelve true si la base confirmo. Sin la funcion en la base (404) devuelve false.
+async function _sbRpcCambioDevueltasGuardar(nc, devs) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return false;
+    const lista = (devs || []).map(function (d) { return { Prenda: String((d && d.Prenda) || ''),
+      CondicionPrenda: String((d && d.CondicionPrenda) || '').trim().toUpperCase(),
+      ReingresaStock: String((d && d.ReingresaStock) || '').trim().toUpperCase() }; });
+    if (!nc || !lista.length) return true;
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return false;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_devueltas_guardar', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_nc: String(nc), p_devs: lista }),
+    });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return !!(d && d.ok === true);
+  } catch (e) { return false; }
+}
+
 async function _sbRpcCambioEditar(body) {
   try {
     if (!SB_ESCRITURA_CAMBIOS) return null;
@@ -9192,7 +9214,8 @@ function _c2Agrupar(filas) {
     const nped = _c2Ped(r.NroPedido);
     if (nped) g.pedidos[nped] = 1;
     if (rol === 'NUEVA') g.nuevas.push({ Prenda: r.Prenda || '', NroPedido: nped, Cant: parseInt(r.Cantidad, 10) || 1, Precio: parseFloat(r.Precio) || 0, ID: r.ID || '' });
-    else g.devueltas.push({ Prenda: r.Prenda || '', NroPedido: nped, Precio: parseFloat(r.Precio) || 0, CondicionPrenda: r.CondicionPrenda || '', ID: r.ID || '' });
+    // 2-oct · #198 · el reingreso ("NORMAL", "OUTLET"...) se perdia al recargar: no se leia de la fila.
+    else g.devueltas.push({ Prenda: r.Prenda || '', NroPedido: nped, Precio: parseFloat(r.Precio) || 0, CondicionPrenda: String(r.CondicionPrenda || '').trim().toUpperCase(), ReingresaStock: String(r.ReingresaStock || '').trim().toUpperCase(), ID: r.ID || '' });
   });
   const out = orden.map(nc => { const g = grupos[nc]; g.pedidos = Object.keys(g.pedidos); return g; });
   out.sort((a, b) => {
@@ -30628,6 +30651,12 @@ async function _c2EditProcesar() {
         }
       }
       if (r) {
+        // 2-oct · #198 · cambio_editar no guarda el reingreso (y en la edicion liviana
+        // tampoco la condicion): se guardan aparte, fila por fila de las devueltas.
+        try {
+          const _okCR = await _sbRpcCambioDevueltasGuardar(job.nc, (job.body && job.body.devueltas) || []);
+          if (!_okCR) toast('⚠ ' + job.nc + ': se guardo el cambio, pero no la condicion/reingreso. Vuelve a guardarlo.', 'err');
+        } catch (_) {}
         // 7-set-2026 — guardar un cambio BORRA y reescribe sus filas en la base,
         // así que la línea de saldo a favor hay que volver a pedirla. Sin destino
         // explícito, la receta respeta el que ya tenía guardado ese cambio.
@@ -30653,6 +30682,9 @@ async function _c2EditProcesar() {
       try { job.alTerminar && job.alTerminar(); } catch (_) {}
     } catch (e) {
       _cronCerrar(cron, false);
+      // 2-oct · #197 · el MOTIVO del rechazo se anota (verLentos / erp_lentos) para poder
+      // diagnosticarlo sin pedirle una captura a nadie.
+      try { const _cm = _cronAbrir('rechazo.cambio.editar', String(job.nc || '') + ' ' + String((e && e.message) || e || '').slice(0, 160)); _cronCerrar(_cm, false); } catch (_) {}
       _c2EditActive = false;
       _c2EditIndicador();
       _c2EditError(job, e);
@@ -30942,7 +30974,12 @@ function editarCambios2(nc){
         ReingresaStock:  sr ? (sr.value||'').trim() : '',
       };
     }).filter(function(d){return d.Prenda;});
-    var nues=[].slice.call(ov.querySelectorAll('.c2e-nue-row')).map(function(r){ return { Prenda:(r.querySelector('.c2e-nue-pr').value||'').trim(), Cant:parseInt(r.querySelector('.c2e-nue-cant').value)||1 }; }).filter(function(n){return n.Prenda;});
+    // 2-oct · #197 · las nuevas iban SIN NroPedido. cambio_editar busca el pedido de cada
+    // nueva "extra" (las que sobran respecto de las devueltas) por ese numero: vacio → no lo
+    // encuentra → "Sync ABORTADO" y no se podia guardar NADA (fechas, condicion) en los
+    // cambios con mas nuevas que devueltas (CAM-0202 2/6, CAM-0210 1/3). Va el del cambio.
+    var _pedC2 = (devs[0] && devs[0].NroPedido) || ((c && c.pedidos && c.pedidos[0]) || '');
+    var nues=[].slice.call(ov.querySelectorAll('.c2e-nue-row')).map(function(r, i){ var _np = (c && c.nuevas && c.nuevas[i] && c.nuevas[i].NroPedido) || _pedC2; return { Prenda:(r.querySelector('.c2e-nue-pr').value||'').trim(), Cant:parseInt(r.querySelector('.c2e-nue-cant').value)||1, NroPedido: String(_np || '').trim() }; }).filter(function(n){return n.Prenda;});
     if(!devs.length){ toast('Agrega al menos una prenda a devolver','err'); return; }
     if(!nues.length){ toast('Agrega al menos una prenda nueva','err'); return; }
     // Si la prenda ya llegó, la condición deja de ser opcional: de ella depende que el
