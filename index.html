@@ -26339,10 +26339,7 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
           _espejoDudar(clavesEsc);
           let emp=null;
           try{
-            emp=await Promise.race([
-              apiSend('stock.colaAplicar',{items:items, request:(res&&res.request)||''}),
-              new Promise(r=>setTimeout(()=>r({_lento:true}),15000))
-            ]);
+            emp=await _stkColaEmpujon({items:items, request:(res&&res.request)||''});
           }catch(e){ emp={_err:(e&&e.message)||String(e)}; }
           const v = emp && emp.veredicto;
           if(v && v.murio){
@@ -27613,10 +27610,7 @@ function _confAbrirIngresarStock(confEl) {
       if (viaBase || viaBaseFal) {
         this.textContent = 'Escribiendo en la hoja...';
         try {
-          empujon = await Promise.race([
-            apiSend('stock.colaAplicar', { items: buenas, request: (res && res.request) || '' }),
-            new Promise(r => setTimeout(() => r({ _lento: true }), 15000))
-          ]);
+          empujon = await _stkColaEmpujon({ items: buenas, request: (res && res.request) || '' });
         } catch (e) { empujon = { _err: e && e.message ? e.message : String(e) }; }
         veredicto = empujon && empujon.veredicto;
       }
@@ -36461,6 +36455,24 @@ let MY_PERMISOS   = (function(){ try{ return JSON.parse(localStorage.getItem('er
 // (srv.auth.login.total). Los ~24 s eran Apps Script despertando. Apenas aparece la pantalla de
 // ingreso se le manda un toque a sys.ping (publico, no lee ni escribe nada), asi Apps Script se
 // despierta MIENTRAS la persona elige su cuenta de Google y el login llega con el servidor listo.
+// 2-oct · F4 · LA COLA DE STOCK YA NO HACE ESPERAR 15 s. Medido 1-oct (erp_lentos): stock.colaAplicar
+// tarda 54 s (p50, 8 veces) -> la pantalla SIEMPRE agotaba los 15 s y terminaba igual en ambar
+// ("se esta escribiendo en la hoja"). Ahora espera 6 s; si la hoja contesta despues y la RECHAZO,
+// se avisa igual con un error claro (no se pierde el aviso). Reversa: _STK_EMPUJON_MS = 15000.
+const _STK_EMPUJON_MS = 6000;
+function _stkColaEmpujon(cuerpo) {
+  const p = apiSend('stock.colaAplicar', cuerpo);
+  let corto = false;
+  p.then(function (emp) {
+    if (!corto) return;
+    const v = emp && emp.veredicto;
+    if (v && v.murio) {
+      try { toast('✗ La hoja RECHAZO el ingreso de stock que se estaba escribiendo: ' + String(v.error || '') + ' — vuelve a registrarlo o avisa a Pablo.', 'err'); } catch (_) {}
+      try { _stDataTs = 0; _refrescarInv(); } catch (_) {}
+    }
+  }).catch(function () {});
+  return Promise.race([p, new Promise(function (r) { setTimeout(function () { corto = true; r({ _lento: true }); }, _STK_EMPUJON_MS); })]);
+}
 let _asDespertadoTs = 0;
 function _asDespertar(){
   try {
