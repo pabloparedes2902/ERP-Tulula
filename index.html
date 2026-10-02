@@ -6070,7 +6070,7 @@ async function _prodEliminar(sku) {
 // ══════════════════════════════════════════════════════════════════════════
 const COS = { data: [], esAdmin: false, sin: null, ign: [], sinMsg: '', q: '', fest: '', cat: '', tipos: [], cats: [], tipoCat: {}, comps: [],
               ver: { comp: true, lista: true, live: true, cyber: true, show: true, colab: true, margen: true },
-              destino: 'hoja', aviso: '', editing: null, _t: null, rev: '' };
+              destino: 'hoja', aviso: '', editing: null, _t: null, rev: '', catSel: [], w: {} };
 // 2-oct · alerta de margen bajo: un canal (lista/live/cyber/showroom) por debajo de este % se marca. Colaborador no cuenta (es un descuento a proposito).
 const COS_MARGEN_MIN = 40;
 const COS_SWR_KEY = 'erp_swr_costos2';
@@ -6165,7 +6165,7 @@ function _cosFilas() {
   return COS.data.filter(r => {
     if (COS.fest === 'ACTIVO' && r.Activo === false) return false;
     if (COS.fest === 'INACTIVO' && r.Activo !== false) return false;
-    if (COS.cat && r.Categoria !== COS.cat) return false;
+    if (COS.catSel.length && COS.catSel.indexOf(r.Categoria) < 0) return false;
     if (COS.rev && COS.esAdmin && _cosRevFlags(r).indexOf(COS.rev) < 0) return false;
     if (q && [r.Categoria, r.TipoPrenda, r.Modelo, r.Notas].join(' ').toLowerCase().indexOf(q) < 0) return false;
     return true;
@@ -6175,9 +6175,10 @@ function _cosFilas() {
 // ── Columnas: Categoría · Tipo · Modelo siempre; el resto según rol y lo que se quiera ver ──
 function _cosCols() {
   const A = COS.esAdmin, c = [];
-  c.push({ t: 'Categoría', f: r => '<span style="color:var(--mu)">' + esc(r.Categoria || '') + '</span>' });
+  if (A) c.push({ t: 'Activo', sw: 1, stick: 1, f: r => '<label class="cos-sw" title="' + (r.Activo === false ? 'Inactivo: tocá para activar' : 'Activo: tocá para desactivar (no se borra nada)') + '"><input type="checkbox" class="cos-act" data-d="' + esc(r.Diseno) + '"' + (r.Activo === false ? '' : ' checked') + '><span></span></label>' });
+  c.push({ t: 'Categoría', cat: 1, f: r => '<span style="color:var(--mu)">' + esc(r.Categoria || '') + '</span>' });
   c.push({ t: 'Tipo de prenda', f: r => esc(r.TipoPrenda || '') });
-  c.push({ t: 'Modelo', stick: 1, f: r => '<b>' + esc(r.Modelo || '') + '</b>' + (A && r.Notas ? ' <span title="' + esc(r.Notas) + '" style="color:var(--mu)">🗒</span>' : '')
+  c.push({ t: 'Modelo', stick: 2, f: r => '<b>' + esc(r.Modelo || '') + '</b>' + (A && r.Notas ? ' <span title="' + esc(r.Notas) + '" style="color:var(--mu)">🗒</span>' : '')
     + (A && _cosRevFlags(r).length ? ' <span title="' + esc(_cosRevFlags(r).map(k => COS_REV_TXT[k][0]).join(' · ')) + '" style="color:var(--rd)">⚠</span>' : '') });
   if (A && COS.ver.comp) {
     (COS.comps || []).forEach(k => c.push({ g: 'Componentes del costo', gbg: 'rgba(59,130,246,.20)', t: k.t, num: 1,
@@ -6206,14 +6207,56 @@ function _cosCols() {
         + '<button class="btn bg bs cos-edit" data-d="' + esc(r.Diseno) + '" style="font-size:11px">✎ Editar</button> '
         + '<button class="btn bg bs cos-dup" data-d="' + esc(r.Diseno) + '" title="Crear un producto nuevo a partir de este" style="font-size:11px">⧉ Duplicar</button> '
         + '<button class="btn bg bs cos-hist" data-d="' + esc(r.Diseno) + '" title="Quién cambió qué y cuándo" style="font-size:11px">🕘 Historial</button> '
-        + '<button class="btn bg bs cos-off" data-d="' + esc(r.Diseno) + '" data-a="' + (off ? '1' : '0') + '" style="font-size:11px;color:' + (off ? 'var(--gn)' : 'var(--rd)') + '">' + (off ? '↑ Reactivar' : '↓ Desactivar') + '</button>'; } });
+        + ''; } });
   }
   return c;
 }
 
+// 2-oct · ANCHO DE COLUMNAS: se arrastra el borde derecho del encabezado (igual que Pedidos/Cambios/Devoluciones); queda guardado en este navegador
+const COS_W_KEY = 'erp_cos_colw';
+function _cosKey(c) { return (c.g ? c.g + '·' : '') + c.t; }
+function _cosAncho(c) {
+  const g = COS.w[_cosKey(c)];
+  if (g > 0) return g;
+  if (c.acc) return 330;
+  if (c.sw) return 64;
+  if (c.t === 'Modelo') return 140;
+  if (c.t === 'Categoría') return 130;
+  if (c.t === 'Tipo de prenda') return 120;
+  if (c.t === 'Modificado') return 150;
+  return c.num ? 74 : 100;
+}
+try { COS.w = JSON.parse(localStorage.getItem(COS_W_KEY) || '{}') || {}; } catch (_) { COS.w = {}; }
+if (!window._cosCrsBound) {
+  window._cosCrsBound = true;
+  document.addEventListener('mousedown', function (e) {
+    const rs = e.target.closest && e.target.closest('.crs[data-ck]');
+    if (!rs) return;
+    const tbl = rs.closest('table'), th = rs.closest('th');
+    if (!tbl || !th) return;
+    e.preventDefault(); e.stopPropagation();
+    const k = rs.dataset.ck, colEl = [...tbl.querySelectorAll('colgroup col')].find(x => x.dataset.ck === k);
+    const w0 = th.getBoundingClientRect().width, t0 = tbl.getBoundingClientRect().width, x0 = e.pageX;
+    document.body.style.cursor = 'col-resize'; rs.classList.add('on');
+    let nw = w0;
+    const mv = e2 => { nw = Math.max(36, Math.round(w0 + (e2.pageX - x0))); if (colEl) colEl.style.width = nw + 'px'; tbl.style.width = (t0 + nw - w0) + 'px'; };
+    const up = () => {
+      document.body.style.cursor = ''; rs.classList.remove('on');
+      document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up);
+      COS.w[k] = nw;
+      try { localStorage.setItem(COS_W_KEY, JSON.stringify(COS.w)); } catch (_) {}
+    };
+    document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+  });
+}
+
 function _cosTablaHtml(rows) {
   const cols = _cosCols();
-  const th = 'padding:7px 9px;font-weight:600;white-space:nowrap;position:sticky;z-index:2;';
+  const anchos = cols.map(_cosAncho);
+  const total = anchos.reduce((a, b) => a + b, 0);
+  const lefts = []; let acc = 0; cols.forEach((c, i) => { lefts.push(acc); acc += anchos[i]; });
+  const th = 'padding:7px 9px;font-weight:600;white-space:nowrap;position:sticky;z-index:2;overflow:hidden;';
+  const stickL = (c, i) => c.stick ? ';left:' + (c.sw ? 0 : (cols[0] && cols[0].sw ? anchos[0] : 0)) + 'px;z-index:3' : '';
   // fila de grupos (colores como la hoja)
   let g1 = '', i = 0;
   while (i < cols.length) {
@@ -6222,12 +6265,21 @@ function _cosTablaHtml(rows) {
     g1 += '<th colspan="' + n + '" style="' + th + 'top:0;background:var(--bg3);text-align:center;font-size:11px;color:var(--tx);box-shadow:inset 0 -3px 0 ' + (g ? bg.replace(/\.\d+\)/, '.9)') : 'transparent') + '">' + esc(g) + '</th>';
     i += n;
   }
-  const g2 = cols.map(c => '<th style="' + th + 'top:27px;background:var(--bg3);color:var(--mu);font-size:12px;text-align:' + (c.num ? 'right' : 'left') + (c.stick ? ';left:0;z-index:3' : '') + '">' + esc(c.t) + '</th>').join('');
+  const festTxt = { '': 'Todos', ACTIVO: 'Activos', INACTIVO: 'Inactivos' };
+  const cab = c => {
+    if (c.sw) return '<button class="btn ' + (COS.fest ? 'bp' : 'bg') + ' bs cos-festbtn" title="Tocá para alternar: todos → solo activos → solo inactivos" style="font-size:10px;padding:2px 5px">' + festTxt[COS.fest || ''] + '</button>';
+    if (c.cat) return '<button class="btn ' + (COS.catSel.length ? 'bp' : 'bg') + ' bs cos-catbtn" title="Filtrar por una o varias categorías" style="font-size:11px;padding:2px 7px">Categoría ▾' + (COS.catSel.length ? ' (' + COS.catSel.length + ')' : '') + '</button>';
+    return esc(c.t);
+  };
+  const g2 = cols.map((c, ix) => '<th style="' + th + 'top:27px;background:var(--bg3);color:var(--mu);font-size:12px;text-align:' + (c.num ? 'right' : 'left') + stickL(c, ix) + '">'
+    + cab(c) + '<span class="crs" data-ck="' + esc(_cosKey(c)) + '"></span></th>').join('');
   const body = rows.length ? rows.map(r => '<tr style="border-top:1px solid var(--bd2)' + (r.Activo === false ? ';opacity:.55' : '') + '">'
-    + cols.map(c => '<td style="padding:6px 9px;white-space:nowrap;font-size:13px;text-align:' + (c.acc ? 'right' : (c.num ? 'right' : 'left'))
-        + (c.stick ? ';position:sticky;left:0;background:var(--bg2);z-index:1' : '') + '">' + c.f(r) + '</td>').join('')
+    + cols.map((c, ix) => '<td style="padding:6px 9px;white-space:nowrap;font-size:13px;overflow:hidden;text-overflow:ellipsis;text-align:' + (c.acc ? 'right' : (c.num ? 'right' : (c.sw ? 'center' : 'left')))
+        + (c.stick ? ';position:sticky;left:' + (c.sw ? 0 : (cols[0] && cols[0].sw ? anchos[0] : 0)) + 'px;background:var(--bg2);z-index:1' : '') + '">' + c.f(r) + '</td>').join('')
     + '</tr>').join('') : '<tr><td colspan="' + cols.length + '" style="padding:20px;text-align:center;color:var(--mu)">Sin resultados</td></tr>';
-  return '<table style="border-collapse:separate;border-spacing:0;min-width:100%"><thead><tr>' + g1 + '</tr><tr>' + g2 + '</tr></thead><tbody>' + body + '</tbody></table>';
+  return '<table style="table-layout:fixed;width:' + total + 'px;border-collapse:separate;border-spacing:0"><colgroup>'
+    + cols.map((c, ix) => '<col data-ck="' + esc(_cosKey(c)) + '" style="width:' + anchos[ix] + 'px">').join('') + '</colgroup>'
+    + '<thead><tr>' + g1 + '</tr><tr>' + g2 + '</tr></thead><tbody>' + body + '</tbody></table>';
 }
 
 function _cosContador(rows) {
@@ -6246,9 +6298,29 @@ function _cosUpdateRows() {
 function _cosBindRowBtns(scope) {
   scope.querySelectorAll('.cos-edit').forEach(b => b.addEventListener('click', () => _cosForm(COS.data.find(x => String(x.Diseno) === b.dataset.d) || null)));
   scope.querySelectorAll('.cos-off').forEach(b => b.addEventListener('click', () => _cosDesactivar(b.dataset.d, b.dataset.a === '1')));
+  scope.querySelectorAll('.cos-act').forEach(b => b.addEventListener('change', async () => { await _cosDesactivar(b.dataset.d, b.checked); _cosRender(); }));
+  scope.querySelectorAll('.cos-festbtn').forEach(b => b.addEventListener('click', () => { COS.fest = COS.fest === '' ? 'ACTIVO' : (COS.fest === 'ACTIVO' ? 'INACTIVO' : ''); _cosUpdateRows(); }));
+  scope.querySelectorAll('.cos-catbtn').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); _cosCatPop(b); }));
   scope.querySelectorAll('.cos-dup').forEach(b => b.addEventListener('click', () => _cosDuplicar(b.dataset.d)));
   scope.querySelectorAll('.cos-hist').forEach(b => b.addEventListener('click', () => _cosHistorial(b.dataset.d)));
   scope.querySelectorAll('.cos-nuevo-de').forEach(b => b.addEventListener('click', () => _cosForm(_cosPrellenar(b.dataset.d))));
+}
+
+// 2-oct · FILTRO DE CATEGORÍAS en el encabezado: se marcan una o varias
+function _cosCatPop(btn) {
+  const old = document.getElementById('cos-catpop'); if (old) { old.remove(); return; }
+  const r = btn.getBoundingClientRect();
+  const d = document.createElement('div');
+  d.id = 'cos-catpop';
+  d.style.cssText = 'position:fixed;z-index:9999;left:' + Math.max(8, Math.min(r.left, window.innerWidth - 230)) + 'px;top:' + (r.bottom + 4) + 'px;min-width:210px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:8px 10px;box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:13px';
+  d.innerHTML = (COS.cats || []).map(c => '<label style="display:flex;gap:7px;align-items:center;padding:3px 0;cursor:pointer"><input type="checkbox" class="cos-catchk" value="' + esc(c) + '"' + (COS.catSel.indexOf(c) >= 0 ? ' checked' : '') + '> ' + esc(c) + '</label>').join('')
+    + '<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--bd2)"><button class="btn bg bs" id="cos-catclr" style="font-size:11px">Mostrar todas</button></div>';
+  document.body.appendChild(d);
+  const aplicar = () => { COS.catSel = [...d.querySelectorAll('.cos-catchk:checked')].map(x => x.value); _cosUpdateRows(); };
+  d.querySelectorAll('.cos-catchk').forEach(x => x.addEventListener('change', aplicar));
+  d.querySelector('#cos-catclr').addEventListener('click', () => { COS.catSel = []; d.remove(); _cosUpdateRows(); });
+  d.addEventListener('click', e => e.stopPropagation());
+  setTimeout(() => document.addEventListener('click', function cerrar() { d.remove(); document.removeEventListener('click', cerrar); }), 0);
 }
 
 // 2-oct · DUPLICAR: abre «Nuevo producto» con categoría, tipo, componentes y precios del original; el modelo queda vacío para escribir el nuevo
@@ -6324,6 +6396,7 @@ function _cosPintarSin() {
 }
 
 function _cosRender() {
+  if (!document.getElementById('cos-sw-css')) { const st = document.createElement('style'); st.id = 'cos-sw-css'; st.textContent = '.cos-sw{position:relative;display:inline-block;width:34px;height:18px;vertical-align:middle}.cos-sw input{opacity:0;width:0;height:0;position:absolute}.cos-sw span{position:absolute;inset:0;background:#6b7280;border-radius:18px;transition:.15s;cursor:pointer}.cos-sw span:before{content:"";position:absolute;height:14px;width:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}.cos-sw input:checked+span{background:var(--gn)}.cos-sw input:checked+span:before{transform:translateX(16px)}'; document.head.appendChild(st); }
   const w = document.getElementById('cos-w');
   const rows = _cosFilas(), A = COS.esAdmin;
   const sel = 'padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px';
@@ -6332,9 +6405,6 @@ function _cosRender() {
   h += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px">'
     + (A ? '<button class="btn bp" id="cos-nuevo">＋ Nuevo producto</button>' : '')
     + '<input id="cos-q" placeholder="Buscar (categoría, tipo, modelo...)" autocomplete="off" value="' + esc(COS.q) + '" style="flex:1;min-width:190px;' + sel + '">'
-    + '<select id="cos-cat" style="' + sel + '"><option value="">Todas las categorías</option>'
-      + (COS.cats || []).map(c => '<option value="' + esc(c) + '"' + (COS.cat === c ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select>'
-    + (A ? '<select id="cos-fest" style="' + sel + '">' + [['', 'Activos e inactivos'], ['ACTIVO', 'Solo activos'], ['INACTIVO', 'Solo inactivos']].map(o => '<option value="' + o[0] + '"' + (COS.fest === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>' : '')
     + '<button class="btn bg" id="cos-recargar">↻ Actualizar</button></div>';
   // qué grupos de columnas se ven (como ocultar columnas en la hoja)
   const chips = [['comp', 'Componentes', A], ['lista', 'Lista', 1], ['live', 'Live', 1], ['cyber', 'Cyber', 1], ['show', 'Showroom', 1], ['colab', 'Colaborador', 1], ['margen', 'Márgenes', A]].filter(x => x[2]);
@@ -6347,8 +6417,6 @@ function _cosRender() {
   h += '<div id="cos-tabla" style="overflow:auto;max-height:68vh;border:1px solid var(--bd2);border-radius:var(--r)">' + _cosTablaHtml(rows) + '</div>';
   w.innerHTML = h;
   document.getElementById('cos-q').addEventListener('input', function () { COS.q = this.value; clearTimeout(COS._t); COS._t = setTimeout(_cosUpdateRows, 150); });
-  document.getElementById('cos-cat').addEventListener('change', function () { COS.cat = this.value; _cosUpdateRows(); });
-  const fe = document.getElementById('cos-fest'); if (fe) fe.addEventListener('change', function () { COS.fest = this.value; _cosUpdateRows(); });
   document.getElementById('cos-recargar').addEventListener('click', () => loadCostos());
   w.querySelectorAll('.cos-ver').forEach(b => b.addEventListener('click', () => { COS.ver[b.dataset.v] = !COS.ver[b.dataset.v]; _cosRender(); }));
   const nb = document.getElementById('cos-nuevo'); if (nb) nb.addEventListener('click', () => _cosForm(null));
