@@ -8,7 +8,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20261003-082246';
+const SW_VERSION = 'tulula-20261003-083630';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 
