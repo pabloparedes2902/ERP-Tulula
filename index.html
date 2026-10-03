@@ -6469,6 +6469,7 @@ function _cosForm(r) {
       + '<div style="flex:3;min-width:240px">' + campo('Descripción', '<textarea id="cf-desc" rows="4" style="' + st + ';resize:vertical">' + esc(v.Descripcion || '') + '</textarea>') + '</div>'
       + '<div style="flex:2;min-width:200px">' + campo('Cuidados', '<textarea id="cf-cui" rows="4" style="' + st + ';resize:vertical">' + esc(v.Cuidados || '') + '</textarea>') + '</div>'
     + '</div>'
+    + (esNuevo ? '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">Guardá el producto primero: después vas a poder subir sus fotos y video acá mismo.</div>' : '<div id="cf-media" style="margin:0 0 14px"></div>')
     + '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn bp" id="cf-save">' + (esNuevo ? '＋ Crear producto' : '💾 Guardar cambios') + '</button>'
     + '<button class="btn bg" id="cf-cancel">Cancelar</button></div></div>';
   try { cont.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
@@ -6479,6 +6480,50 @@ function _cosForm(r) {
   document.getElementById('cf-cancel').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; });
   document.getElementById('cf-save').addEventListener('click', () => _cosGuardar(esNuevo ? '' : v.Diseno, v));
   prev();
+  if (!esNuevo) _cosMediaPintar(v);
+}
+
+// 3-oct · panel «Fotos y video» dentro de la ficha del producto: lo que tiene, lo que falta y subir archivos ahi mismo
+function _cosNormD(x) { return String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim().replace(/\s+/g, ' '); }
+async function _cosMediaPintar(v) {
+  const box = document.getElementById('cf-media');
+  if (!box) return;
+  if (!(MUL.data && MUL.data.length) && !v._mmCargado) {
+    box.innerHTML = '<div style="font-size:12px;color:var(--mu)">Cargando fotos y video…</div>';
+    try { const r = await apiSend('multimedia.listar', {}); MUL.data = (r && r.rows) || []; } catch (e) { box.innerHTML = '<div style="font-size:12px;color:var(--rd)">No pude leer las fotos: ' + esc(e.message) + '</div>'; return; }
+    v._mmCargado = true;
+  }
+  const d = _cosNormD(v.Diseno);
+  const mm = (MUL.data || []).filter(r => r.Activo !== false && _cosNormD(r.Diseno) === d);
+  const tienda = mm.filter(r => r.Canal === 'SHOPIFY' && r.Tipo !== 'VIDEO');
+  const porColor = {}; tienda.forEach(r => { const c = r.Color || '(sin color)'; (porColor[c] = porColor[c] || []).push(r); });
+  const cat = mm.filter(r => r.Canal === 'BOT' && r.Tipo !== 'VIDEO');
+  const vid = mm.filter(r => r.Tipo === 'VIDEO');
+  const th = r => '<a href="' + esc(r.Url) + '" target="_blank" rel="noopener" title="' + esc(r.Tipo) + '" style="position:relative;display:inline-block">'
+    + (r.Tipo === 'VIDEO' ? '<video src="' + esc(r.Url) + '#t=0.5" preload="metadata" muted playsinline style="width:64px;height:88px;object-fit:cover;border-radius:6px;background:#000"></video>'
+                          : '<img loading="lazy" src="' + esc(r.Url) + '" style="width:64px;height:88px;object-fit:cover;border-radius:6px;background:var(--bg3)">')
+    + (r.Tipo === 'PRINCIPAL' ? '<span style="position:absolute;left:3px;top:3px;background:var(--ac);color:#fff;font-size:9px;padding:1px 4px;border-radius:4px">1ª</span>' : '') + '</a>';
+  const fila = (tit, arr) => '<div style="margin:6px 0"><div style="font-size:12px;font-weight:600;margin-bottom:3px">' + tit + '</div><div style="display:flex;flex-wrap:wrap;gap:6px">' + (arr.length ? arr.map(th).join('') : '<span style="font-size:12px;color:var(--rd)">Falta</span>') + '</div></div>';
+  const sem = (ok, t) => '<span style="display:inline-block;margin:0 10px 4px 0;font-size:12px;color:' + (ok ? 'var(--gr,#2a9d4b)' : 'var(--rd)') + '">' + (ok ? '●' : '○') + ' ' + t + '</span>';
+  box.innerHTML = '<div style="font-weight:600;font-size:13px;margin-bottom:6px">Fotos y video <span style="font-weight:400;color:var(--mu)">— lo que ve la tienda y el agente</span></div>'
+    + '<div>' + sem(!!v.Descripcion, 'Descripción') + sem(!!v.Cuidados, 'Cuidados') + sem(Object.keys(porColor).length > 0, 'Fotos tienda (' + Object.keys(porColor).length + ' colores)') + sem(vid.length > 0, 'Video') + sem(cat.length > 0, 'Foto de catálogo (agente)') + '</div>'
+    + (Object.keys(porColor).length ? Object.keys(porColor).sort().map(c => fila('Tienda · ' + esc(c) + ' (' + porColor[c].length + ')', porColor[c])).join('') : fila('Tienda · fotos por color', []))
+    + fila('Foto de catálogo (agente IA)', cat) + fila('Video (tienda y agente)', vid)
+    + '<div style="margin-top:8px;padding:8px 10px;border-radius:var(--r);background:var(--bg3)">'
+      + '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">'
+        + '<div style="flex:1;min-width:140px"><label style="font-size:11px">Color de las fotos de tienda</label><input id="cfm-col" autocomplete="off" placeholder="Ej. CELESTE" style="width:100%;padding:7px 9px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px"></div>'
+        + '<label class="btn bg" style="cursor:pointer;margin:0">📷 Subir fotos de la tienda<input id="cfm-f1" type="file" accept="image/*" multiple style="display:none"></label>'
+        + '<label class="btn bg" style="cursor:pointer;margin:0">🤖 Subir foto de catálogo o video<input id="cfm-f2" type="file" accept="image/*,video/mp4,video/quicktime,video/webm" multiple style="display:none"></label>'
+      + '</div><div id="cfm-st" style="font-size:12px;color:var(--mu);margin-top:6px">Las fotos se reducen solas (máx. 2400 px) antes de subir. Videos hasta 50 MB.</div></div>';
+  const alT = async () => { try { const r = await apiSend('multimedia.listar', {}); MUL.data = (r && r.rows) || []; } catch (e) {} _cosMediaPintar(v); };
+  document.getElementById('cfm-f1').addEventListener('change', function () {
+    const col = String(document.getElementById('cfm-col').value || '').trim();
+    if (!col) { toast('Escribí primero el color de esas fotos', 'err'); this.value = ''; return; }
+    _mulSubirVarios(Array.from(this.files || []), { dis: v.Diseno, col: col, canal: 'SHOPIFY', st: 'cfm-st', alTerminar: alT }); this.value = '';
+  });
+  document.getElementById('cfm-f2').addEventListener('change', function () {
+    _mulSubirVarios(Array.from(this.files || []), { dis: v.Diseno, col: '', canal: 'BOT', st: 'cfm-st', alTerminar: alT }); this.value = '';
+  });
 }
 function _cosPreview(v) {
   const g = id => { const e = document.getElementById(id); return e && String(e.value).trim() !== '' ? parseFloat(e.value) : null; };
@@ -7066,17 +7111,43 @@ function _mulPut(url, file, ct, onProg) {
     x.send(file);
   });
 }
-async function _mulSubirVarios(files) {
+// 3-oct · reduce la foto en el navegador antes de subirla: lado largo max 2400 px, JPEG calidad 85 (las ya livianas no se tocan)
+async function _mulReducir(f) {
+  const out = { blob: f, nombre: f.name, aviso: '' };
+  try {
+    if (!/^image\//.test(f.type || '')) return out;
+    const bmp = await createImageBitmap(f);
+    const w = bmp.width, h = bmp.height, largo = Math.max(w, h);
+    if (Math.min(w, h) < 1100) out.aviso = f.name + ': es chica (' + w + '×' + h + ' px), el zoom se va a ver blando';
+    const liviana = f.type === 'image/jpeg' && largo <= 2400 && f.size <= 1024 * 1024;
+    if (liviana) { if (bmp.close) bmp.close(); return out; }
+    const k = Math.min(1, 2400 / largo);
+    const c = document.createElement('canvas');
+    c.width = Math.round(w * k); c.height = Math.round(h * k);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(bmp, 0, 0, c.width, c.height);
+    if (bmp.close) bmp.close();
+    const b = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+    if (b && b.size > 0 && (b.size < f.size || k < 1 || f.type !== 'image/jpeg')) {
+      out.blob = b; out.nombre = f.name.replace(/\.[^.]+$/, '') + '.jpg'; out.tipo = 'image/jpeg';
+    }
+  } catch (e) {}
+  return out;
+}
+async function _mulSubirVarios(files, opt) {
   if (!files.length) return;
+  opt = opt || {};
   const g = id => String((document.getElementById(id) || {}).value || '').trim();
-  const st = document.getElementById('mf-up-st');
-  const dis = g('mf-dis'), col = g('mf-col');
-  let canal = g('mf-can');
+  const st = document.getElementById(opt.st || 'mf-up-st');
+  const dis = opt.dis != null ? opt.dis : g('mf-dis'), col = opt.col != null ? opt.col : g('mf-col');
+  let canal = opt.canal || g('mf-can');
   if (!dis) { toast('Escribí primero de qué prenda son (campo Prenda o diseño)', 'err'); return; }
   const extTipo = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm' };
   const norm = x => String(x || '').toUpperCase().trim();
   const hayPrincipal = (c, co) => (MUL.data || []).some(r => r.Activo !== false && r.Tipo === 'PRINCIPAL' && norm(r.Diseno) === norm(dis) && r.Canal === c && norm(r.Color) === norm(co));
-  const nuevos = {}; let hechos = 0; const errores = [];
+  const nuevos = {}; let hechos = 0; const errores = [], avisos = [];
   files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   for (let i = 0; i < files.length; i++) {
     const f = files[i], ext = (f.name.split('.').pop() || '').toLowerCase(), ct = f.type || extTipo[ext] || '';
@@ -7084,8 +7155,15 @@ async function _mulSubirVarios(files) {
     const pre = 'Subiendo ' + (i + 1) + ' de ' + files.length + ' · ' + f.name;
     if (st) st.textContent = pre + ' …';
     try {
-      const fir = await apiSend('multimedia.firmar', { Nombre: f.name, Tipo: ct, Bytes: f.size, Diseno: dis });
-      await _mulPut(fir.uploadUrl, f, fir.contentType || ct, p => { if (st) st.textContent = pre + ' · ' + p + '%'; });
+      let sub = f, subNombre = f.name, subCt = ct;
+      if (!esVideo) {
+        if (st) st.textContent = pre + ' · optimizando…';
+        const rd = await _mulReducir(f);
+        sub = rd.blob; subNombre = rd.nombre; if (rd.tipo) subCt = rd.tipo;
+        if (rd.aviso) avisos.push(rd.aviso);
+      }
+      const fir = await apiSend('multimedia.firmar', { Nombre: subNombre, Tipo: subCt, Bytes: sub.size, Diseno: dis });
+      await _mulPut(fir.uploadUrl, sub, fir.contentType || subCt, p => { if (st) st.textContent = pre + ' · ' + p + '%'; });
       const cn = esVideo ? 'BOT' : canal;
       const clave = cn + '|' + norm(col);
       const tipo = esVideo ? 'VIDEO' : ((hayPrincipal(cn, col) || nuevos[clave]) ? 'EXTRA' : 'PRINCIPAL');
@@ -7095,8 +7173,9 @@ async function _mulSubirVarios(files) {
     } catch (e) { errores.push(f.name + ': ' + e.message); }
   }
   if (st) st.textContent = '';
-  MUL.editing = null;
-  toast(hechos + ' de ' + files.length + ' archivos guardados' + (errores.length ? (' · fallaron: ' + errores.join(' | ')) : ''), errores.length ? 'warn' : 'ok');
+  if (!opt.dis) MUL.editing = null;
+  toast(hechos + ' de ' + files.length + ' archivos guardados' + (errores.length ? (' · fallaron: ' + errores.join(' | ')) : '') + (avisos.length ? (' · ojo: ' + avisos.join(' | ')) : ''), (errores.length || avisos.length) ? 'warn' : 'ok');
+  if (opt.alTerminar) { try { await opt.alTerminar(); } catch (e) {} return; }
   try { await loadMultimedia(); } catch (e) {}
 }
 
