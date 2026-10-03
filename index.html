@@ -9006,6 +9006,28 @@ async function _crearRescatarPorRequest(req) {
   return null;
 }
 
+// 2-oct · FRENO de prendas que no existen: rpc prendas_no_reconocidas (Supabase). Devuelve [] si la base no contesta.
+async function _prendasNoReconocidas(textos) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return [];
+    const lista = (textos || []).map(t => String(t || '').trim()).filter(Boolean);
+    if (!lista.length) return [];
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return [];
+    const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const tm = ctl ? setTimeout(() => ctl.abort(), 4000) : null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/prendas_no_reconocidas', {
+      method: 'POST', signal: ctl ? ctl.signal : undefined,
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_textos: lista }),
+    });
+    if (tm) clearTimeout(tm);
+    if (!r.ok) return [];
+    const a = await r.json();
+    return Array.isArray(a) ? a.map(String) : [];
+  } catch (e) { return []; }
+}
+
 async function _crearPedidoRapido(body) {
   // 30-jul — medido: sin cronómetro acá no se podía saber si el pedido se guardó por la
   // base (décimas) o se cayó a Apps Script (3-4 s) sin decir nada. Sale en verLentos()
@@ -22709,6 +22731,11 @@ async function npGuardar() {
       // 30-jul-2026 — la unidad sale del montón de fallas, no del stock vendible.
       esYayita: !!(d.querySelector('.np-yayita') && d.querySelector('.np-yayita').checked),
     })).filter(p => p.dis); // ignorar filas con prenda vacía
+    // 2-oct · FRENO (Pablo): una prenda que no existe en el catálogo no descuenta stock de nadie.
+    // Pasó con 'CHALECO MIRELLA AZUL L 95' (el precio escrito en la prenda). Si la base no contesta, no frena.
+    const _noExisten = await _prendasNoReconocidas(prendasData.map(p => p.dis));
+    if (_noExisten.length) throw new Error('Esta(s) prenda(s) no existen en el catálogo: ' + _noExisten.join(' · ') +
+      '. Elígela de la lista (sin precio ni notas en el nombre). Si es un conjunto, revisa que esté creado en Costos de producto. No se guardó nada.');
     // Cada .pbox de pagos tiene sus propias constancias (np-vcard) — recolectar por pago
     const pagosData = [...document.querySelectorAll('#np-pagos .pbox')].map(d => {
       const vouchers = [...d.querySelectorAll('.np-vcard img')]
