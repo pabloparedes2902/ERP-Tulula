@@ -11722,6 +11722,24 @@ async function _registrarDevolucion(body) {
 ═══════════════════════════════════════════════════════════════════════════*/
 const SB_PILOTO_FALLAREC = true;
 
+// 3-oct · como termino una operacion encolada (rpc cola_estado). null si no se pudo saber.
+async function _colaConfirmar(req, maxMs) {
+  const hasta = Date.now() + (maxMs || 30000);
+  while (Date.now() < hasta) {
+    try {
+      const tok = await _sbSesionAsegurar();
+      if (!tok) return null;
+      const r = await fetch(SB_URL + '/rest/v1/rpc/cola_estado', { method: 'POST',
+        headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_request: req }) });
+      if (!r.ok) return null;
+      const e = await r.json();
+      if (e && (e.abandonado || e.aplicado)) return e;
+    } catch (_) { return null; }
+    await new Promise(res => setTimeout(res, 3000));
+  }
+  return null;
+}
 async function _recuperarFalla(body) {
   const items = (body && body.items) || [];
   if (!items.length) return apiSend('fallas.recuperar', body);
@@ -11733,7 +11751,17 @@ async function _recuperarFalla(body) {
                                   cantidad: parseInt(it.cantidad, 10) || 0,
                                   lote: String(it.lote || '') })),
       p_request: req });
-    if (d) { const inm = await _inmAplicarYa(req); return { ok: true, items: items.length, via: 'base', inmediato: inm }; }
+    if (d) {
+      const inm = await _inmAplicarYa(req);
+      // 3-oct (Pablo): si no se aplico al instante, se ESPERA el resultado real. Antes la pantalla decia
+      // "listo" y el robot podia rechazarla despues ("hay 0 No disp.") sin que nadie se enterara.
+      if (!inm) {
+        const fin = await _colaConfirmar(req, 30000);
+        if (fin && fin.abandonado) { const er = new Error('No se recuperó: ' + (fin.error || 'el sistema la rechazó')); er._negocio = true; throw er; }
+        if (!fin || !fin.aplicado) { try { toast('⏳ Recuperación guardada; se aplica en unos minutos. Si no se puede, te aparecerá en Alertas.', 'warn'); } catch (_) {} }
+      }
+      return { ok: true, items: items.length, via: 'base', inmediato: inm };
+    }
   } catch (e) {
     // Un "no" de la base (no hay tantas fallas disponibles) es una respuesta
     // válida, no una falla de red: se le muestra a la persona en vez de
