@@ -6095,6 +6095,7 @@ function _cosAplicar(r) {
   COS.cats = r.categorias || COS.cats;
   COS.tipoCat = r.tipoCategoria || COS.tipoCat;
   COS.comps = r.componentes || COS.comps;
+  if (r.plantillas) COS.plantillas = r.plantillas;
 }
 
 // Se muestra AL INSTANTE lo último que vio este navegador y se trae lo nuevo por detrás.
@@ -6484,11 +6485,7 @@ function _cosForm(r) {
     + '<div style="display:flex;flex-wrap:wrap;gap:12px;margin:6px 0 14px">'
       + '<div style="flex:3;min-width:220px">' + campo('Nombre exacto en Shopify (solo productos nuevos; vacío = Tipo + Modelo)', '<input id="cf-nshop" autocomplete="off" value="' + esc(v.NombreShopify || '') + '" style="' + st + '">') + '</div>'
     + '</div>'
-    + '<div style="font-weight:600;font-size:13px;margin-bottom:6px">Texto de la tienda <span style="font-weight:400;color:var(--mu)">— va a la Descripción del producto en Shopify. Una línea = un párrafo (descripción) o una viñeta (cuidados).</span></div>'
-    + '<div style="display:flex;flex-wrap:wrap;gap:12px;margin:0 0 14px">'
-      + '<div style="flex:3;min-width:240px">' + campo('Descripción', '<textarea id="cf-desc" rows="4" style="' + st + ';resize:vertical">' + esc(v.Descripcion || '') + '</textarea>') + '</div>'
-      + '<div style="flex:2;min-width:200px">' + campo('Cuidados', '<textarea id="cf-cui" rows="4" style="' + st + ';resize:vertical">' + esc(v.Cuidados || '') + '</textarea>') + '</div>'
-    + '</div>'
+    + _cosFichaHtml(v, st, campo)
     + (esNuevo ? '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">📷 Primero tocá «Crear producto». Después abrís este mismo producto y acá aparecen las fotos por color, la foto de catálogo y el video.</div>' : '<div id="cf-media" style="margin:0 0 14px"></div>')
     + '</div>'
     + '<div class="cf-sec" data-sec="shopify" style="display:none"><div id="cf-shop"></div></div>'
@@ -6503,6 +6500,7 @@ function _cosForm(r) {
   document.getElementById('cf-save').addEventListener('click', () => _cosGuardar(esNuevo ? '' : v.Diseno, v));
   prev();
   document.getElementById('cf-sug-go').addEventListener('click', () => _cosSugerir(v));
+  _cosFichaWire(v);
   const verTab = t => {
     cont.querySelectorAll('.cf-sec').forEach(x => { x.style.display = x.dataset.sec === t ? '' : 'none'; });
     cont.querySelectorAll('.cf-tab').forEach(x => { x.classList.toggle('bp', x.dataset.t === t); x.classList.toggle('bg', x.dataset.t !== t); });
@@ -6512,6 +6510,110 @@ function _cosForm(r) {
   };
   cont.querySelectorAll('.cf-tab').forEach(b => b.addEventListener('click', () => verTab(b.dataset.t)));
   verTab(v._tab || 'datos');
+}
+
+// 3-oct · FICHA ESTRUCTURADA: lo que escribes aqui arma la sección «La prenda» de la tienda (Tela / Entalle / Corte / Detalle + Cuidados) y el subtítulo.
+// Se guarda en la misma columna de siempre (descripcion): primera línea sin etiqueta = descripción corta; luego «Tela: ...», «Entalle: ...», etc.
+const COS_FICHA_CAMPOS = [['tela', 'Tela'], ['entalle', 'Entalle'], ['corte', 'Corte'], ['detalle', 'Detalle'], ['diseno', 'Diseño']];
+const COS_CUIDADOS_DEF = {
+  BLUSA: 'Lavar a mano o a máquina en ciclo delicado con agua fría\nNo usar lejía\nSecar a la sombra\nPlanchar a baja temperatura\nGuardar en percha',
+  TOP: 'Lavar a mano o a máquina en ciclo delicado con agua fría\nNo usar lejía\nSecar a la sombra\nPlanchar a baja temperatura',
+  BLAZER: 'Se recomienda lavado en seco, o a mano con agua fría\nNo retorcer ni usar lejía\nSecar en percha y a la sombra\nPlanchar por el revés a baja temperatura\nGuardar en percha ancha',
+  PANTALON: 'Lavar a máquina en ciclo delicado con agua fría, por el revés\nNo usar lejía\nSecar a la sombra\nPlanchar a baja temperatura\nGuardar colgado o doblado',
+  VESTIDO: 'Lavar a mano o a máquina en ciclo delicado con agua fría\nNo usar lejía\nSecar a la sombra\nPlanchar a baja temperatura\nGuardar en percha',
+  FALDA: 'Lavar a mano o a máquina en ciclo delicado con agua fría\nNo usar lejía\nSecar a la sombra\nPlanchar a baja temperatura',
+  CONJUNTO: 'Lavar cada pieza a mano o en ciclo delicado con agua fría\nNo usar lejía\nSecar a la sombra\nPlanchar a baja temperatura'
+};
+function _cosFichaParseTxt(desc) {
+  const o = { corta: [], otras: [] };
+  COS_FICHA_CAMPOS.forEach(c => { o[c[0]] = ''; });
+  String(desc || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean).forEach(x => {
+    const m = /^([A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ ]{1,27}):\s*(\S.*)$/.exec(x);
+    if (!m) { o.corta.push(x); return; }
+    const k = _cosNormD(m[1]);
+    const campo = k.indexOf('TELA') === 0 ? 'tela' : (k === 'ENTALLE' ? 'entalle' : (k === 'CORTE' ? 'corte' : (k === 'DETALLE' ? 'detalle' : (k === 'DISENO' ? 'diseno' : ''))));
+    if (campo && !o[campo]) o[campo] = m[2].trim(); else o.otras.push(x);
+  });
+  o.corta = o.corta.join(' ');
+  return o;
+}
+function _cosFichaLeerCampos() {
+  const g = id => String((document.getElementById(id) || {}).value || '').trim();
+  return { corta: g('ff-corta'), tela: g('ff-tela'), entalle: g('ff-entalle'), corte: g('ff-corte'), detalle: g('ff-detalle'), diseno: g('ff-diseno'), otras: g('ff-otras') };
+}
+function _cosFichaJuntar() {
+  const f = _cosFichaLeerCampos(), L = [];
+  if (f.corta) L.push(f.corta);
+  COS_FICHA_CAMPOS.forEach(c => { if (f[c[0]]) L.push(c[1] + ': ' + f[c[0]]); });
+  String(f.otras || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean).forEach(x => L.push(x));
+  return L.join('\n');
+}
+function _cosFichaPonerCampos(o, soloVacios) {
+  const put = (id, val) => { const e = document.getElementById(id); if (!e) return; if (soloVacios && String(e.value).trim() !== '') return; e.value = val || ''; };
+  put('ff-corta', o.corta); COS_FICHA_CAMPOS.forEach(c => put('ff-' + c[0], o[c[0]]));
+  put('ff-otras', Array.isArray(o.otras) ? o.otras.join('\n') : (o.otras || ''));
+}
+function _cosFichaTipo() { return _cosNormD((document.getElementById('cf-tipo') || {}).value || ''); }
+function _cosFichaHtml(v, st, campo) {
+  const p = _cosFichaParseTxt(v.Descripcion);
+  const inp = (id, lbl, val, ph) => campo(lbl, '<input id="' + id + '" autocomplete="off" value="' + esc(val || '') + '" placeholder="' + esc(ph || '') + '" style="' + st + '">');
+  return '<div style="font-weight:600;font-size:13px;margin-bottom:6px">Texto de la tienda <span style="font-weight:400;color:var(--mu)">— arma la sección «La prenda» de la página: una frase corta y las filas Tela, Entalle, Corte y Detalle</span></div>'
+    + '<div id="ff-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px;padding:8px 10px;border:1px dashed var(--ac);border-radius:var(--r)">'
+      + '<span style="font-size:12px;font-weight:600">⚡ Para no escribir de cero:</span>'
+      + '<button type="button" class="btn bg bs" id="ff-usar" style="font-size:12px">Usar plantilla de este tipo</button>'
+      + '<button type="button" class="btn bg bs" id="ff-guardar" style="font-size:12px">Guardar este texto como plantilla del tipo</button>'
+      + '<select id="ff-ref" style="' + st + ';width:auto;min-width:200px">' + _cosFichaRefOpts(v) + '</select>'
+      + '<button type="button" class="btn bg bs" id="ff-copiar" style="font-size:12px">Copiar de ese producto</button>'
+      + '<span id="ff-msg" style="font-size:12px;color:var(--mu)"></span></div>'
+    + '<div style="margin-bottom:8px">' + inp('ff-corta', 'Descripción corta (una frase; es el subtítulo de la página)', p.corta, 'Ej. Blusa ejecutiva de cuello camisero y manga larga, de caída elegante.') + '</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;margin-bottom:8px">'
+      + inp('ff-tela', 'Tela y composición', p.tela, 'Ej. Popelina 100% algodón, cómoda y con buen cuerpo.')
+      + inp('ff-entalle', 'Entalle', p.entalle, 'Ej. Corte princesa con pinzas posteriores.')
+      + inp('ff-corte', 'Corte', p.corte, 'Ej. Cuello camisero y manga larga.')
+      + inp('ff-detalle', 'Detalle', p.detalle, 'Ej. Botonadura frontal y pliegue posterior.')
+      + inp('ff-diseno', 'Diseño (opcional)', p.diseno, 'Ej. Versátil, ideal para looks casuales y formales.')
+    + '</div>'
+    + (p.otras.length ? '<div style="margin-bottom:8px">' + campo('Otras filas (Etiqueta: texto)', '<textarea id="ff-otras" rows="2" style="' + st + ';resize:vertical">' + esc(p.otras.join('\n')) + '</textarea>') + '</div>' : '<textarea id="ff-otras" style="display:none"></textarea>')
+    + '<div style="margin-bottom:14px">' + campo('Cuidados (una línea = un cuidado; sale como una fila más de «La prenda»)', '<textarea id="cf-cui" rows="4" style="' + st + ';resize:vertical">' + esc(v.Cuidados || '') + '</textarea>') + '<div id="ff-cuinota" style="font-size:11px;color:var(--mu);margin-top:2px"></div></div>';
+}
+function _cosFichaRefOpts(v) {
+  const c = (COS.data || []).filter(r => r.Diseno !== v.Diseno && r.Descripcion && r.Activo !== false);
+  c.sort((a, b) => (a.TipoPrenda === v.TipoPrenda ? 0 : 1) - (b.TipoPrenda === v.TipoPrenda ? 0 : 1) || String(a.Diseno).localeCompare(String(b.Diseno)));
+  return '<option value="">Copiar de otro producto…</option>' + c.map(r => '<option value="' + esc(r.Diseno) + '">' + esc(r.Diseno) + '</option>').join('');
+}
+function _cosFichaWire(v) {
+  const msg = t => { const e = document.getElementById('ff-msg'); if (e) e.textContent = t; };
+  const hayTexto = () => { const f = _cosFichaLeerCampos(); return !!(f.corta || f.tela || f.entalle || f.corte || f.detalle || f.diseno || String((document.getElementById('cf-cui') || {}).value || '').trim()); };
+  const plantilla = () => { const t = _cosFichaTipo(); const P = (COS.plantillas || {})[t]; return { t, P, def: COS_CUIDADOS_DEF[t] || '' }; };
+  // cuidados: si está vacío y hay plantilla (guardada o sugerida), se precarga para que solo lo revises
+  const cui = document.getElementById('cf-cui');
+  if (cui && !String(cui.value).trim()) {
+    const x = plantilla(), txt = (x.P && x.P.cuidados) || x.def;
+    if (txt) { cui.value = txt; const n = document.getElementById('ff-cuinota'); if (n) n.textContent = (x.P && x.P.cuidados) ? ('Precargado de tu plantilla de ' + x.t + '. Edítalo si este producto es distinto.') : ('Precargado con un texto sugerido para ' + x.t + ': ajústalo a tus telas y guárdalo como plantilla.'); }
+  }
+  document.getElementById('ff-usar').addEventListener('click', async () => {
+    const x = plantilla();
+    if (!x.P && !x.def) { msg('No hay plantilla para «' + (x.t || 'este tipo') + '». Escribe el texto y toca «Guardar este texto como plantilla».'); return; }
+    if (hayTexto() && !(await npConfirm('Esto reemplaza lo que ya escribiste con la plantilla de ' + x.t + '. ¿Seguimos?'))) return;
+    const base = (x.P && x.P.ficha) || {}; _cosFichaPonerCampos({ corta: base.corta || '', tela: base.tela || '', entalle: base.entalle || '', corte: base.corte || '', detalle: base.detalle || '', diseno: base.diseno || '', otras: '' }, false);
+    document.getElementById('cf-cui').value = (x.P && x.P.cuidados) || x.def || '';
+    msg('Plantilla de ' + x.t + ' cargada. Ajusta lo que cambie en este producto.');
+  });
+  document.getElementById('ff-guardar').addEventListener('click', async () => {
+    const t = _cosFichaTipo(); if (!t) { msg('Primero pon el tipo de prenda (pestaña 1).'); return; }
+    if (!hayTexto()) { msg('No hay nada escrito para guardar.'); return; }
+    if (!(await npConfirm('Guardar este texto como plantilla de «' + t + '»?\n\nLos próximos productos de este tipo podrán partir de aquí.'))) return;
+    const f = _cosFichaLeerCampos();
+    try { const r = await apiSend('costos.plantilla', { Tipo: t, Cuidados: String(document.getElementById('cf-cui').value || '').trim(), Ficha: f }); COS.plantillas = (r && r.plantillas) || COS.plantillas; msg('✓ Plantilla de ' + t + ' guardada.'); }
+    catch (e) { msg('No pude guardar: ' + e.message); }
+  });
+  document.getElementById('ff-copiar').addEventListener('click', async () => {
+    const d = document.getElementById('ff-ref').value; const r = (COS.data || []).find(x => x.Diseno === d);
+    if (!r) { msg('Elige primero de qué producto copiar.'); return; }
+    if (hayTexto() && !(await npConfirm('Esto reemplaza lo que ya escribiste con el texto de «' + d + '». ¿Seguimos?'))) return;
+    _cosFichaPonerCampos(_cosFichaParseTxt(r.Descripcion), false); document.getElementById('cf-cui').value = r.Cuidados || '';
+    msg('Copiado de «' + d + '». Cambia solo lo que sea distinto (tela, detalle…).');
+  });
 }
 
 // 3-oct · SUGERIR PRECIOS: copia las proporciones de un producto de referencia (x2, x3, x6, x12, Live, Cyber, Showroom, Colaborador) sobre el precio Lista que escribiste
@@ -6670,7 +6772,7 @@ async function _cosGuardar(original, v) {
   (COS.comps || []).forEach(k => { comp[k.k] = g('cc-' + k.k); if (comp[k.k] !== '') algunComp = true; });
   const precios = {};
   COS_BLOQUES.forEach(b => b.p.forEach(p => { precios[p[0]] = g('cp-' + p[0]); }));
-  const body = { original: original || '', TipoPrenda: tipo, Modelo: mod, Categoria: g('cf-cat'), precios: precios, Notas: g('cf-notas'), NombreShopify: g('cf-nshop'), Descripcion: g('cf-desc'), Cuidados: g('cf-cui') };
+  const body = { original: original || '', TipoPrenda: tipo, Modelo: mod, Categoria: g('cf-cat'), precios: precios, Notas: g('cf-notas'), NombreShopify: g('cf-nshop'), Descripcion: _cosFichaJuntar(), Cuidados: g('cf-cui') };
   // un conjunto sin componentes conserva su costo (suma de piezas): no se mandan componentes vacíos
   if (algunComp || tipo.toUpperCase() !== 'CONJUNTO') body.comp = comp;
   const act = document.getElementById('cf-activo'); if (act) body.Activo = !!act.checked;
@@ -13367,11 +13469,16 @@ function pExpandFlat(grouped) {
         const _devs  = _idxDev.get(_nroPed) || [];
         if (_cambs.length || _devs.length) {
           const _activas = new Set();
+          const _filasCnt = {};   // 3-oct · cuantas filas del pedido hay de cada prenda (para el cambio contado 2 veces)
+          (prendas || []).forEach(x => { const k = _normP(x && x.prenda); if (k) _filasCnt[k] = (_filasCnt[k] || 0) + 1; });
           _cambs.forEach(c => {
             // Item-3: identificar la prenda del cambio por su PrendaOriginal (que SÍ es fila del
             // pedido). Esa fila se MUESTRA pero el render la pinta con el texto de la prenda NUEVA
             // (lo que logística debe enviar). Las demás prendas entregadas se ocultan.
-            const po = _normP(c['PrendaOriginal']); if (po) { _activas.add(po); const _pnTxt = String(c['PrendaNueva']||'').trim(); if (_pnTxt) _camMap[po] = _pnTxt; }
+            // 3-oct-2026 (Pablo, 20695) · CAMBIO CONTADO DOS VECES: si la prenda NUEVA ya es una fila
+            // propia del pedido, la fila de la DEVUELTA no se pinta como la nueva (eso la duplicaba en
+            // pantalla: 7 prendas en vez de 5). Se muestra tachada como "devuelta en CAM-xxxx".
+            const po = _normP(c['PrendaOriginal']); if (po) { _activas.add(po); const _pnTxt = String(c['PrendaNueva']||'').trim(); if (_pnTxt) { const _pnN = _normP(_pnTxt); if (!c._devSinNueva && _pnN !== po && _filasCnt[_pnN] > 0 && _filasCnt[po] > 0) { _filasCnt[_pnN]--; _camDevSinMap[po] = c['NroCambio'] || 'CAM'; } else _camMap[po] = _pnTxt; } }
             if (c._devSinNueva && po) { _camDevSinMap[po] = c['NroCambio'] || 'CAM'; return; }   // 1-oct
             // También la nueva, por si en algún flujo se agregó como fila propia.
             const pn = String(c['PrendaNueva']||'').split('|').map(s => _normP(s)).filter(Boolean);
@@ -19508,6 +19615,15 @@ function verPed(p) {
     const precio = parseFloat(qId('mpf-precio').value) || 0;
     if (!prenda) { toast('Escribí el nombre de la prenda', 'err'); return; }
     if (!_prendaEnCatalogo(_prendaTxt.replace(/^MUESTRA\s*-\s*/i, ''))) { toast('"' + _prendaTxt + '" no está en el catálogo: elegila del desplegable (tal cual aparece)', 'err'); return; }   // 1-oct · listado 181
+    // 3-oct-2026 (Pablo, 20695) · NO DUPLICAR UN CAMBIO: si la prenda ya es la NUEVA de un cambio de
+    // este pedido, el cambio ya la cuenta y agregarla como fila la duplica (prenda y cobro dos veces).
+    try {
+      const _nPr = String(_prendaTxt).trim().toUpperCase().replace(/\s+/g, ' ');
+      const _cms = [].concat(Array.isArray(histCamData) ? histCamData : [], Array.isArray(_c2Hist) ? _c2Hist : [])
+        .filter(c => String(c['NroPedido'] || '').trim() === String(nro || '').trim());
+      const _hit = _cms.find(c => String(c['PrendaNueva'] || '').split('|').map(x => x.trim().toUpperCase().replace(/\s+/g, ' ')).indexOf(_nPr) >= 0);
+      if (_hit && !confirm('"' + _prendaTxt + '" ya es la prenda NUEVA del cambio ' + (_hit['NroCambio'] || '') + ' de este pedido.\n\nEl cambio ya la cuenta: si la agregas aca, queda DUPLICADA (dos prendas y se cobra dos veces).\n\n¿Agregarla igual?')) return;
+    } catch (_) {}
     // Anti doble-agregado: bloquear el botón mientras corre (evita 2 clics = 2 prendas)
     if (this.disabled) return;
     this.disabled = true;
