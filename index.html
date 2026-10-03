@@ -7033,7 +7033,10 @@ function _mulForm(r) {
       + '<div class="fg" style="flex:1;min-width:150px;margin:0"><label>Categoría (opcional)</label><input id="mf-cat" autocomplete="off" value="' + esc(v.Categoria || '') + '" style="' + st + '"></div>'
       + '<div class="fg" style="flex:2;min-width:200px;margin:0"><label>Notas</label><input id="mf-notas" autocomplete="off" value="' + esc(v.Notas || '') + '" style="' + st + '"></div>'
     + '</div>'
-    + '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">La dirección tiene que empezar con http:// o https://. Una prenda puede tener una sola foto PRINCIPAL activa por canal (las demás van como EXTRA).</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px">'
+      + '<label class="btn bp" style="cursor:pointer;margin:0">&#128193; Subir archivos desde mi computadora<input id="mf-files" type="file" multiple accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm" style="display:none"></label>'
+      + '<span id="mf-up-st" style="font-size:12px;color:var(--mu)"></span></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">Podés elegir varias a la vez (llená antes <b>Prenda</b>, <b>Canal</b> y <b>Color</b>): la primera foto de cada color queda PRINCIPAL y las demás EXTRA; un video queda como VIDEO del agente. Máximo 100 MB por archivo. O pegá un enlace arriba. Una prenda puede tener una sola foto PRINCIPAL activa por canal y color.</div>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn bp" id="mf-save">' + (esNueva ? '&#65291; Guardar foto' : '&#128190; Guardar cambios') + '</button>'
     + '<button class="btn bg" id="mf-cancel">Cancelar</button></div>'
     + '</div>';
@@ -7045,8 +7048,56 @@ function _mulForm(r) {
     const u = String(this.value || '').trim();
     p.innerHTML = /^https?:\/\//i.test(u) ? _mulThumb({ Url: u, Tipo: document.getElementById('mf-tipo').value }) : '';
   });
+  document.getElementById('mf-files').addEventListener('change', function () { _mulSubirVarios(Array.from(this.files || [])); this.value = ''; });
   document.getElementById('mf-cancel').addEventListener('click', () => { MUL.editing = null; cont.innerHTML = ''; });
   document.getElementById('mf-save').addEventListener('click', () => _mulGuardar(esNueva ? '' : v.Clave));
+}
+
+// 3-oct · subir fotos/videos directo al almacen del ERP (Supabase Storage) y guardarlos de una vez
+function _mulPut(url, file, ct, onProg) {
+  return new Promise((ok, mal) => {
+    const x = new XMLHttpRequest();
+    x.open('PUT', url);
+    x.setRequestHeader('Content-Type', ct);
+    x.setRequestHeader('x-upsert', 'false');
+    x.upload.onprogress = e => { if (e.lengthComputable && onProg) onProg(Math.round(e.loaded * 100 / e.total)); };
+    x.onload = () => (x.status < 300 ? ok() : mal(new Error('el almacén respondió ' + x.status + ' ' + String(x.responseText || '').slice(0, 120))));
+    x.onerror = () => mal(new Error('se cortó la conexión al subir'));
+    x.send(file);
+  });
+}
+async function _mulSubirVarios(files) {
+  if (!files.length) return;
+  const g = id => String((document.getElementById(id) || {}).value || '').trim();
+  const st = document.getElementById('mf-up-st');
+  const dis = g('mf-dis'), col = g('mf-col');
+  let canal = g('mf-can');
+  if (!dis) { toast('Escribí primero de qué prenda son (campo Prenda o diseño)', 'err'); return; }
+  const extTipo = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm' };
+  const norm = x => String(x || '').toUpperCase().trim();
+  const hayPrincipal = (c, co) => (MUL.data || []).some(r => r.Activo !== false && r.Tipo === 'PRINCIPAL' && norm(r.Diseno) === norm(dis) && r.Canal === c && norm(r.Color) === norm(co));
+  const nuevos = {}; let hechos = 0; const errores = [];
+  files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i], ext = (f.name.split('.').pop() || '').toLowerCase(), ct = f.type || extTipo[ext] || '';
+    const esVideo = /^video\//.test(ct);
+    const pre = 'Subiendo ' + (i + 1) + ' de ' + files.length + ' · ' + f.name;
+    if (st) st.textContent = pre + ' …';
+    try {
+      const fir = await apiSend('multimedia.firmar', { Nombre: f.name, Tipo: ct, Bytes: f.size, Diseno: dis });
+      await _mulPut(fir.uploadUrl, f, fir.contentType || ct, p => { if (st) st.textContent = pre + ' · ' + p + '%'; });
+      const cn = esVideo ? 'BOT' : canal;
+      const clave = cn + '|' + norm(col);
+      const tipo = esVideo ? 'VIDEO' : ((hayPrincipal(cn, col) || nuevos[clave]) ? 'EXTRA' : 'PRINCIPAL');
+      if (tipo === 'PRINCIPAL') nuevos[clave] = true;
+      await apiSend('multimedia.guardar', { Diseno: dis, Canal: cn, Tipo: tipo, Url: fir.publicUrl, Color: esVideo ? '' : col, Origen: 'subido desde el ERP', Rapido: true });
+      hechos++;
+    } catch (e) { errores.push(f.name + ': ' + e.message); }
+  }
+  if (st) st.textContent = '';
+  MUL.editing = null;
+  toast(hechos + ' de ' + files.length + ' archivos guardados' + (errores.length ? (' · fallaron: ' + errores.join(' | ')) : ''), errores.length ? 'warn' : 'ok');
+  try { await loadMultimedia(); } catch (e) {}
 }
 
 async function _mulGuardar(original) {
