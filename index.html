@@ -6070,14 +6070,14 @@ async function _prodEliminar(sku) {
 // ══════════════════════════════════════════════════════════════════════════
 const COS = { data: [], esAdmin: false, sin: null, ign: [], sinMsg: '', q: '', fest: '', cat: '', tipos: [], cats: [], tipoCat: {}, comps: [],
               ver: { comp: true, lista: true, live: true, cyber: true, show: true, colab: true, margen: true, mod: false },
-              destino: 'hoja', aviso: '', editing: null, _t: null, rev: '', fic: '', catSel: [], w: {} };
+              destino: 'hoja', aviso: '', editing: null, _t: null, rev: '', catSel: [], w: {} };
 // 2-oct · alerta de margen bajo: un canal (lista/live/cyber/showroom) por debajo de este % se marca. Colaborador no cuenta (es un descuento a proposito).
 const COS_MARGEN_MIN = 40;
 const COS_SWR_KEY = 'erp_swr_costos2';
 const COS_BLOQUES = [
   { id: 'lista', t: 'Precio lista',  bg: 'rgba(250,204,21,.22)', p: [['lista', 'Lista'], ['lista2', 'x2'], ['lista3', 'x3'], ['lista6', 'x6'], ['lista12', 'x12']] },
   { id: 'live',  t: 'Live',          bg: 'rgba(34,211,238,.20)', p: [['live', 'Live'], ['live2', 'x2'], ['live3', 'x3']] },
-  { id: 'cyber', t: 'Cyber',         bg: 'rgba(217,70,239,.20)', p: [['cyber', 'Cyber'], ['cyber2', 'x2'], ['cyber3', 'x3']] },
+  { id: 'cyber', t: 'Promoción',     bg: 'rgba(217,70,239,.20)', p: [['cyber', 'Promoción'], ['cyber2', 'x2'], ['cyber3', 'x3']] },
   { id: 'show',  t: 'Showroom',      bg: 'rgba(34,197,94,.20)',  p: [['show', 'Showroom'], ['show2', 'x2'], ['show3', 'x3']] },
   { id: 'colab', t: 'Colaborador',   bg: 'rgba(249,115,22,.20)', p: [['colab', 'Colaborador']] }
 ];
@@ -6119,7 +6119,7 @@ async function loadCostos() {
     return;
   }
   _cosRender();
-  if (COS.esAdmin) loadCostosSin();
+  if (COS.esAdmin) { loadCostosSin(); _cosFichaCargar(true); }
 }
 
 // La tabla «vendidas sin costo» lee las ventas (tarda): se pide DESPUÉS de pintar la pantalla.
@@ -6145,8 +6145,7 @@ function _cosFichaCelda(r) {
   const it = _cosFichaItems(r), n = _cosFichaN(r);
   if (n === null) return '<span style="color:var(--mu)" title="Calculando fotos y video…">…</span>';
   const falta = COS_FICHA_ITEMS.filter((_, i) => !it[i]);
-  return '<span style="font-weight:700;color:' + (n === 6 ? 'var(--gn)' : (n >= 4 ? '#d97706' : 'var(--rd)')) + '" title="' + esc(falta.length ? 'Falta: ' + falta.join(', ') : 'Ficha completa') + '">' + n + '/6</span>'
-    + (falta.length ? ' <span style="font-size:10px;color:var(--mu);white-space:normal">' + esc(falta.join(', ')) + '</span>' : '');
+  return '<span style="font-weight:700;color:' + (n === 6 ? 'var(--gn)' : (n >= 4 ? '#d97706' : 'var(--rd)')) + '" title="' + esc(falta.length ? 'Falta: ' + falta.join(', ') : 'Ficha completa') + '">' + n + '/6</span>';
 }
 async function _cosFichaCargar(force) {
   if (!COS.esAdmin || (MCT.cargado && !force) || MCT._cargando) return;
@@ -6157,18 +6156,51 @@ async function _cosFichaCargar(force) {
     MCT.cargado = true;
   } catch (e) { MCT._cargando = false; return; }
   MCT._cargando = false;
-  try { const w = document.getElementById('cos-fic-w'); if (w) w.innerHTML = _cosFicHtml(); if (document.getElementById('cos-tabla')) _cosUpdateRows(); _cosFicBind(); } catch (_) {}
+  try { if (document.getElementById('cos-tabla')) _cosUpdateRows(); } catch (_) {}
 }
-function _cosFicHtml() {
-  if (!COS.esAdmin) return '';
-  if (!MCT.cargado) return '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Calculando la ficha de cada producto (fotos, video, catálogo)…</div>';
-  const act = (COS.data || []).filter(r => r.Activo !== false), ns = act.map(_cosFichaN);
-  const inc = ns.filter(n => n < 6).length, ok = ns.length - inc;
-  const b = (k, t) => '<button class="btn ' + (COS.fic === k ? 'bp' : 'bg') + ' bs cos-fic" data-k="' + k + '" style="font-size:11px">' + t + '</button>';
-  return '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px"><span style="font-size:12px;font-weight:600">Ficha de la tienda:</span>'
-    + b('inc', 'Incompletas: ' + inc) + b('ok', 'Completas (6/6): ' + ok) + (COS.fic ? ' <button class="btn bg bs cos-fic" data-k="" style="font-size:11px">✕ Ver todos</button>' : '') + '</div>';
+// 4-oct · ALERTAS: un solo botón arriba a la derecha; al abrirlo dice cuál es la alerta de cada producto. Dentro de cada producto también aparece su propia alerta.
+function _cosAlertasGrupos() {
+  const g = [];
+  ['sincosto', 'sinprecio', 'costomayor', 'bajo'].forEach(k => {
+    const items = (COS.data || []).filter(r => _cosRevFlags(r).indexOf(k) >= 0);
+    if (items.length) g.push({ k: k, t: COS_REV_TXT[k][0], d: COS_REV_TXT[k][1], items: items.map(r => ({ d: r.Diseno })) });
+  });
+  if (COS.sin && COS.sin.length) g.push({ k: 'ventas', t: 'Vendidas sin costo cargado', d: 'Prendas que se vendieron y no tienen producto con costo: inflan el margen sin que se note.', items: COS.sin.map(x => ({ v: x.diseno, veces: x.veces, venta: x.ventaTotal })) });
+  return g;
 }
-function _cosFicBind() { document.querySelectorAll('.cos-fic').forEach(b => { b.onclick = () => { COS.fic = (COS.fic === b.dataset.k) ? '' : b.dataset.k; const w = document.getElementById('cos-fic-w'); if (w) w.innerHTML = _cosFicHtml(); _cosUpdateRows(); _cosFicBind(); }; }); }
+function _cosAlertasBadge() {
+  const b = document.getElementById('cos-alertas'); if (!b) return;
+  const n = _cosAlertasGrupos().reduce((a, g) => a + g.items.length, 0);
+  b.className = 'btn ' + (n ? 'bp' : 'bg') + ' bs';
+  b.innerHTML = '🔔 Alertas' + (n ? ' <b style="background:#fff;color:var(--rd);border-radius:10px;padding:0 6px;margin-left:4px">' + n + '</b>' : '');
+}
+function _cosPintarSin() { _cosAlertasBadge(); const ov = document.getElementById('cos-alert-ov'); if (ov) _cosAlertasAbrir(); }
+function _cosAlertasAbrir() {
+  const old = document.getElementById('cos-alert-ov'); if (old) old.remove();
+  const gr = _cosAlertasGrupos();
+  const ov = document.createElement('div');
+  ov.id = 'cos-alert-ov';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.6);display:flex;align-items:flex-start;justify-content:center;padding-top:6vh';
+  const lk = 'background:none;border:0;color:var(--tx);cursor:pointer;font:inherit;text-decoration:underline;padding:2px 0;text-align:left';
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2,10px);width:min(640px,94vw);max-height:84vh;overflow:auto;padding:16px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><b>🔔 Alertas</b><button class="btn bg bs" id="cal-x">✕ Cerrar</button></div>'
+    + (COS.sin == null && COS.sinMsg ? '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">' + esc(COS.sinMsg) + '</div>' : '')
+    + (gr.length ? gr.map(g => '<div style="margin-bottom:14px"><div style="font-weight:700;color:var(--rd)">⚠ ' + esc(g.t) + ' (' + g.items.length + ')</div>'
+        + '<div style="font-size:12px;color:var(--mu);margin:2px 0 6px">' + esc(g.d) + '</div>'
+        + g.items.map(x => x.d ? '<div><button class="cal-p" data-d="' + esc(x.d) + '" style="' + lk + '">' + esc(x.d) + '</button></div>'
+            : '<div style="display:flex;gap:8px;align-items:center;font-size:13px"><span style="flex:1">' + esc(x.v) + ' <span style="color:var(--mu)">· ' + (Number(x.veces) || 0) + ' venta(s) · ' + _cosS(x.venta) + '</span></span><button class="btn bp bs cal-nuevo" data-d="' + esc(x.v) + '" style="font-size:11px">＋ Crear producto</button></div>').join('') + '</div>').join('')
+      : '<div style="color:var(--gn);font-size:13px">✓ Sin alertas.</div>')
+    + '</div>';
+  document.body.appendChild(ov);
+  const cerrar = () => { ov.remove(); document.removeEventListener('keydown', esc1); };
+  const esc1 = e => { if (e.key === 'Escape') { e.stopPropagation(); cerrar(); } };
+  document.addEventListener('keydown', esc1, true);
+  ov.addEventListener('click', e => { if (e.target === ov) cerrar(); });
+  ov.querySelector('#cal-x').addEventListener('click', cerrar);
+  ov.querySelectorAll('.cal-p').forEach(b => b.addEventListener('click', () => { const r = COS.data.find(x => String(x.Diseno) === b.dataset.d); cerrar(); if (r) _cosForm(r); }));
+  ov.querySelectorAll('.cal-nuevo').forEach(b => b.addEventListener('click', () => { cerrar(); _cosForm(_cosPrellenar(b.dataset.d)); }));
+}
+
 function _cosRevFlags(r) {
   const f = [];
   if (!COS.esAdmin || r.Activo === false) return f;
@@ -6180,22 +6212,10 @@ function _cosRevFlags(r) {
   if (['lista', 'live', 'cyber', 'show'].some(k => m[k] && m[k].p * 100 < COS_MARGEN_MIN)) f.push('bajo');
   return f;
 }
-const COS_REV_TXT = { bajo: ['Margen bajo (< ' + COS_MARGEN_MIN + '%)', 'Algún canal (lista, live, cyber o showroom) deja menos de ' + COS_MARGEN_MIN + '% de margen'],
+const COS_REV_TXT = { bajo: ['Margen bajo (< ' + COS_MARGEN_MIN + '%)', 'Algún canal (lista, live, promoción o showroom) deja menos de ' + COS_MARGEN_MIN + '% de margen'],
   sincosto: ['Sin costo', 'Producto activo sin costo cargado: su margen no se puede calcular'],
   sinprecio: ['Sin precio lista', 'Producto activo sin precio de lista'],
   costomayor: ['Costo ≥ precio lista', 'El costo es igual o mayor que el precio de lista: se pierde plata en cada venta'] };
-function _cosRevHtml() {
-  if (!COS.esAdmin) return '';
-  const n = { bajo: 0, sincosto: 0, sinprecio: 0, costomayor: 0 };
-  COS.data.forEach(r => _cosRevFlags(r).forEach(k => { n[k]++; }));
-  const tot = Object.keys(n).reduce((a, k) => a + n[k], 0);
-  const chips = Object.keys(n).filter(k => n[k] > 0).map(k => '<button class="btn ' + (COS.rev === k ? 'bp' : 'bg') + ' bs cos-rev" data-k="' + k + '" title="' + esc(COS_REV_TXT[k][1]) + '" style="font-size:11px">⚠ '
-    + esc(COS_REV_TXT[k][0]) + ': ' + n[k] + '</button>').join(' ');
-  if (!tot) return '<div style="font-size:12px;color:var(--gn);margin-bottom:10px">✓ Revisión: ningún producto activo con margen bajo, sin costo ni sin precio.</div>';
-  return '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px;padding:8px 10px;border:1px solid var(--bd2);border-radius:var(--r)">'
-    + '<span style="font-size:12px;font-weight:600">Para revisar:</span>' + chips
-    + (COS.rev ? ' <button class="btn bg bs cos-rev" data-k="" style="font-size:11px">✕ Ver todos</button>' : '') + '</div>';
-}
 
 function _cosFilas() {
   const q = COS.q.toLowerCase();
@@ -6204,7 +6224,6 @@ function _cosFilas() {
     if (COS.fest === 'INACTIVO' && r.Activo !== false) return false;
     if (COS.catSel.length && COS.catSel.indexOf(r.Categoria) < 0) return false;
     if (COS.rev && COS.esAdmin && _cosRevFlags(r).indexOf(COS.rev) < 0) return false;
-    if (COS.fic && COS.esAdmin && MCT.cargado) { if (r.Activo === false) return false; const n = _cosFichaN(r); if (COS.fic === 'inc' ? n === 6 : n !== 6) return false; }
     if (q && [r.Categoria, r.TipoPrenda, r.Modelo, r.Notas].join(' ').toLowerCase().indexOf(q) < 0) return false;
     return true;
   });
@@ -6221,7 +6240,7 @@ function _cosCols() {
     : (r.ShopifyId ? '<span style="color:var(--mu)" title="Enlazado a Shopify">enlazado</span>' : '<span style="color:var(--mu)" title="Todavía no está enlazado a un producto de Shopify">—</span>')) });
   if (A) c.push({ t: 'Ficha', f: r => _cosFichaCelda(r) });
   if (A && COS.ver.comp) {
-    (COS.comps || []).forEach(k => c.push({ g: 'Componentes del costo', gbg: 'rgba(59,130,246,.20)', t: k.t, num: 1,
+    (COS.comps || []).forEach(k => c.push({ g: 'Costo', gbg: 'rgba(249,115,22,.30)', t: k.t, num: 1,
       f: r => { const v = _cosN2(r.comp && r.comp[k.k]); return v == null ? '<span style="color:var(--mu)">·</span>' : v; } }));
   }
   if (A) c.push({ g: 'Costo', gbg: 'rgba(249,115,22,.30)', t: 'Costo unitario', num: 1,
@@ -6231,7 +6250,7 @@ function _cosCols() {
     if (!COS.ver[b.id]) return;
     b.p.forEach(p => c.push({ g: b.t, gbg: b.bg, t: p[1], num: 1,
       f: r => { const v = _cosN2(r.precios && r.precios[p[0]]); return v == null ? '<span style="color:var(--mu)">N/A</span>' : v; } }));
-    if (A && COS.ver.margen) {
+    if (A) {
       c.push({ g: b.t, gbg: b.bg, t: 'Margen S/', num: 1, adm: 1, f: r => { const m = r.margen && r.margen[b.id]; return m ? _cosN2(m.s) : '<span style="color:var(--mu)">—</span>'; } });
       c.push({ g: b.t, gbg: b.bg, t: 'Margen %', num: 1, adm: 1, f: r => {
         const m = r.margen && r.margen[b.id]; if (!m) return '<span style="color:var(--mu)">—</span>';
@@ -6240,15 +6259,8 @@ function _cosCols() {
     }
   });
   if (A) {
-    if (COS.ver.mod) c.push({ t: 'Modificado', f: r => '<span style="font-size:11px;color:var(--mu);white-space:nowrap">' + esc(r.UltimaActualizacion || '—') + (r.Quien ? '<br>' + esc(r.Quien) : '') + '</span>' });
-    c.push({ t: '', acc: 1, f: r => {
-      const off = (r.Activo === false);
-      return (off ? '<span style="font-size:11px;font-weight:700;color:#9ca3af;border:1px solid var(--bd2);padding:2px 7px;border-radius:10px">INACTIVO</span> ' : '')
-        + '<button class="btn bg bs cos-edit" data-d="' + esc(r.Diseno) + '" style="font-size:11px">✎ Editar</button> '
-        + '<button class="btn bg bs cos-ficha" data-d="' + esc(r.Diseno) + '" title="Fotos, video y texto de la tienda" style="font-size:11px">📷 Ficha</button> '
-        + '<button class="btn bg bs cos-dup" data-d="' + esc(r.Diseno) + '" title="Crear un producto nuevo a partir de este" style="font-size:11px">⧉ Duplicar</button> '
-        + '<button class="btn bg bs cos-hist" data-d="' + esc(r.Diseno) + '" title="Quién cambió qué y cuándo" style="font-size:11px">🕘 Historial</button> '
-        + ''; } });
+    c.push({ t: '', acc: 1, f: r => (r.Activo === false ? '<span style="font-size:11px;font-weight:700;color:#9ca3af;border:1px solid var(--bd2);padding:2px 7px;border-radius:10px;margin-right:6px">INACTIVO</span>' : '')
+      + '<button class="btn bg bs cos-ficha" data-d="' + esc(r.Diseno) + '" title="Costos, precios, fotos, video y textos de este producto" style="font-size:11px">Ficha</button>' });
   }
   return c;
 }
@@ -6259,7 +6271,7 @@ function _cosKey(c) { return (c.g ? c.g + '·' : '') + c.t; }
 function _cosAncho(c) {
   const g = COS.w[_cosKey(c)];
   if (g > 0) return g;
-  if (c.acc) return 330;
+  if (c.acc) return 130;
   if (c.sw) return 64;
   if (c.t === 'SKU') return 250;
   if (c.t === 'Modificado') return 150;
@@ -6310,10 +6322,10 @@ function _cosTablaHtml(rows) {
     if (c.cat) return 'SKU <button class="btn ' + (COS.catSel.length ? 'bp' : 'bg') + ' bs cos-catbtn" title="Filtrar por una o varias categorías" style="font-size:11px;padding:2px 7px;margin-left:6px">Categoría ▾' + (COS.catSel.length ? ' (' + COS.catSel.length + ')' : '') + '</button>';
     return esc(c.t);
   };
-  const g2 = cols.map((c, ix) => '<th style="' + th + 'top:27px;background:var(--bg3);color:var(--mu);font-size:12px;text-align:' + (c.num ? 'right' : 'left') + stickL(c, ix) + '">'
+  const g2 = cols.map((c, ix) => '<th style="' + th + 'top:27px;background:var(--bg3);color:var(--mu);font-size:12px;text-align:' + (c.t === 'SKU' ? 'left' : 'center') + stickL(c, ix) + '">'
     + cab(c) + '<span class="crs" data-ck="' + esc(_cosKey(c)) + '"></span></th>').join('');
   const body = rows.length ? rows.map(r => '<tr style="border-top:1px solid var(--bd2)' + (r.Activo === false ? ';opacity:.55' : '') + '">'
-    + cols.map((c, ix) => '<td style="padding:6px 9px;white-space:nowrap;font-size:13px;overflow:hidden;text-overflow:ellipsis;text-align:' + (c.acc ? 'right' : (c.num ? 'right' : (c.sw ? 'center' : 'left')))
+    + cols.map((c, ix) => '<td style="padding:6px 9px;white-space:nowrap;font-size:13px;overflow:hidden;text-overflow:ellipsis;text-align:' + (c.t === 'SKU' ? 'left' : 'center')
         + (c.stick ? ';position:sticky;left:' + lefts[ix] + 'px;background:var(--bg2);z-index:1' + (ix === cols.reduce((m, k, n) => k.stick ? n : m, 0) ? ';box-shadow:2px 0 4px rgba(0,0,0,.35)' : '') : '') + '">' + c.f(r) + '</td>').join('')
     + '</tr>').join('') : '<tr><td colspan="' + cols.length + '" style="padding:20px;text-align:center;color:var(--mu)">Sin resultados</td></tr>';
   return '<table style="table-layout:fixed;width:' + total + 'px;border-collapse:separate;border-spacing:0"><colgroup>'
@@ -6326,7 +6338,7 @@ function _cosAlto() {
   const t = document.getElementById('cos-tabla'); if (!t) return;
   const top = t.getBoundingClientRect().top;
   t.style.maxHeight = Math.max(260, window.innerHeight - top - 14) + 'px';
-  if (!document.getElementById('cos-dw-css')) { const c = document.createElement('style'); c.id = 'cos-dw-css'; c.textContent = '#cos-form:not(:empty){position:fixed;top:0;right:0;bottom:0;width:min(760px,100vw);overflow:auto;z-index:90;background:var(--bg);box-shadow:-8px 0 24px rgba(0,0,0,.5);padding:12px;box-sizing:border-box}#cos-form:not(:empty)>div{margin-bottom:0!important}'; document.head.appendChild(c); }
+  if (!document.getElementById('cos-dw-css')) { const c = document.createElement('style'); c.id = 'cos-dw-css'; c.textContent = '#cos-form:not(:empty){position:fixed;top:3vh;left:50%;transform:translateX(-50%);width:min(1120px,96vw);max-height:94vh;overflow:auto;z-index:90;background:var(--bg);border-radius:10px;box-shadow:0 0 0 100vmax rgba(0,0,0,.62),0 12px 40px rgba(0,0,0,.6);padding:12px;box-sizing:border-box}#cos-form:not(:empty)>div{margin-bottom:0!important}'; document.head.appendChild(c); }
 }
 if (!window._cosAltoBound) { window._cosAltoBound = true; window.addEventListener('resize', () => { try { _cosAlto(); } catch (_) {} }); document.addEventListener('keydown', e => { if (e.key === 'Escape') { const f = document.getElementById('cos-form'); if (f && f.innerHTML && !document.querySelector('.npc-ov,.np-confirm')) { f.innerHTML = ''; COS.editing = null; } } }); }
 
@@ -6345,7 +6357,7 @@ function _cosUpdateRows() {
 
 function _cosBindRowBtns(scope) {
   scope.querySelectorAll('.cos-edit').forEach(b => b.addEventListener('click', () => _cosForm(COS.data.find(x => String(x.Diseno) === b.dataset.d) || null)));
-  scope.querySelectorAll('.cos-ficha').forEach(b => b.addEventListener('click', () => { const r = COS.data.find(x => String(x.Diseno) === b.dataset.d); if (r) _cosForm(Object.assign({}, r, { _tab: 'ficha' })); }));
+  scope.querySelectorAll('.cos-ficha').forEach(b => b.addEventListener('click', () => { const r = COS.data.find(x => String(x.Diseno) === b.dataset.d); if (r) _cosForm(Object.assign({}, r, { _tab: 'datos' })); }));
   scope.querySelectorAll('.cos-off').forEach(b => b.addEventListener('click', () => _cosDesactivar(b.dataset.d, b.dataset.a === '1')));
   scope.querySelectorAll('.cos-act').forEach(b => b.addEventListener('change', async () => { await _cosDesactivar(b.dataset.d, b.checked); _cosRender(); }));
   scope.querySelectorAll('.cos-festbtn').forEach(b => b.addEventListener('click', () => { COS.fest = COS.fest === '' ? 'ACTIVO' : (COS.fest === 'ACTIVO' ? 'INACTIVO' : ''); _cosUpdateRows(); }));
@@ -6381,7 +6393,7 @@ function _cosDuplicar(diseno) {
 
 // 2-oct · HISTORIAL por producto (solo Administrador)
 async function _cosHistorial(diseno) {
-  const cont = document.getElementById('cos-form');
+  const cont = document.getElementById('cf-hist-w') || document.getElementById('cos-form');
   if (!cont) return;
   cont.innerHTML = '<div class="card" style="margin-bottom:16px;font-size:13px;color:var(--mu)">Cargando historial de ' + esc(diseno) + '…</div>';
   try { cont.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
@@ -6416,34 +6428,6 @@ function _cosPrellenar(nombre) {
   return { TipoPrenda: tipo, Modelo: t[n] || '', Categoria: (COS.tipoCat || {})[tipo] || '', _desde: nombre };
 }
 
-function _cosSinHtml() {
-  if (COS.sinMsg) return '<div class="card" style="font-size:13px;color:var(--mu);margin-bottom:14px">' + esc(COS.sinMsg) + '</div>';
-  if (COS.sin == null) return '';
-  let h = '';
-  if (!COS.sin.length) h += '<div style="padding:12px;border:1px solid var(--bd2);border-radius:var(--r);font-size:13px;color:var(--gn);margin-bottom:12px">✓ Todas las prendas vendidas tienen su costo cargado.</div>';
-  else {
-    const rws = COS.sin.map(x => '<tr style="border-top:1px solid var(--bd2)"><td style="padding:7px 10px;font-weight:600">' + esc(x.diseno) + '</td>'
-      + '<td style="padding:7px 10px;text-align:right">' + (Number(x.veces) || 0) + '</td>'
-      + '<td style="padding:7px 10px;text-align:right;white-space:nowrap">' + _cosS(x.ventaTotal) + '</td>'
-      + '<td style="padding:7px 10px;text-align:right"><button class="btn bp bs cos-nuevo-de" data-d="' + esc(x.diseno) + '" style="font-size:11px">＋ Crear producto</button></td></tr>').join('');
-    h += '<div style="border:1px solid var(--rd);border-radius:var(--r);overflow:hidden;margin-bottom:12px">'
-      + '<div style="padding:10px 12px;background:rgba(220,38,38,.10);font-weight:700;font-size:13px;color:var(--rd)">⚠ ' + COS.sin.length + ' prenda(s) vendidas sin costo cargado — inflan el margen en silencio</div>'
-      + '<div style="overflow:auto;max-height:320px"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:480px"><thead><tr style="background:var(--bg3);text-align:left">'
-      + ['Prenda vendida (como figura en el pedido)', 'Veces', 'Vendido S/', ''].map(t => '<th style="padding:7px 10px;font-weight:600;color:var(--mu);white-space:nowrap">' + t + '</th>').join('')
-      + '</tr></thead><tbody>' + rws + '</tbody></table></div></div>';
-  }
-  if ((COS.ign || []).length) {
-    h += '<div style="font-size:12px;color:var(--mu);margin-bottom:12px;border:1px solid var(--bd2);border-radius:var(--r);padding:9px 12px">'
-      + '<b>Aparte, no son prendas (no cuentan como «sin costo»):</b> '
-      + COS.ign.map(x => esc(x.etiqueta) + ' — ' + x.veces + ' línea(s), ' + _cosS(x.venta)).join(' · ') + '</div>';
-  }
-  return h;
-}
-function _cosPintarSin() {
-  const s = document.getElementById('cos-sin-w');
-  if (s) { s.innerHTML = _cosSinHtml(); _cosBindRowBtns(s); }
-}
-
 function _cosRender() {
   if (!document.getElementById('cos-sw-css')) { const st = document.createElement('style'); st.id = 'cos-sw-css'; st.textContent = '.cos-sw{position:relative;display:inline-block;width:34px;height:18px;vertical-align:middle}.cos-sw input{opacity:0;width:0;height:0;position:absolute}.cos-sw span{position:absolute;inset:0;background:#6b7280;border-radius:18px;transition:.15s;cursor:pointer}.cos-sw span:before{content:"";position:absolute;height:14px;width:14px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.15s}.cos-sw input:checked+span{background:var(--gn)}.cos-sw input:checked+span:before{transform:translateX(16px)}'; document.head.appendChild(st); }
   const w = document.getElementById('cos-w');
@@ -6451,29 +6435,22 @@ function _cosRender() {
   const sel = 'padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px';
   let h = '';
   if (A && COS.aviso) h += '<div class="card" style="margin-bottom:12px;font-size:12px;color:var(--rd)">' + esc(COS.aviso) + '</div>';
-  h += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px">'
-    + (A ? '<button class="btn bp" id="cos-nuevo">＋ Nuevo producto</button>' : '')
-    + '<input id="cos-q" placeholder="Buscar (categoría, tipo, modelo...)" autocomplete="off" value="' + esc(COS.q) + '" style="flex:1;min-width:190px;' + sel + '">'
-    + '<button class="btn bg" id="cos-recargar">↻ Actualizar</button></div>';
-  // qué grupos de columnas se ven (como ocultar columnas en la hoja)
-  const chips = [['comp', 'Componentes', A], ['lista', 'Lista', 1], ['live', 'Live', 1], ['cyber', 'Cyber', 1], ['show', 'Showroom', 1], ['colab', 'Colaborador', 1], ['margen', 'Márgenes', A], ['mod', 'Modificado', A]].filter(x => x[2]);
-  h += '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px"><span style="font-size:12px;color:var(--mu)">Columnas:</span>'
-    + chips.map(x => '<button class="btn ' + (COS.ver[x[0]] ? 'bp' : 'bg') + ' bs cos-ver" data-v="' + x[0] + '" style="font-size:11px">' + x[1] + '</button>').join('') + '</div>';
-  h += '<div id="cos-rev-w">' + _cosRevHtml() + '</div>';
-  h += '<div id="cos-fic-w">' + _cosFicHtml() + '</div>';
-  h += '<div id="cos-count" style="font-size:12px;color:var(--mu);margin-bottom:8px">' + _cosContador(rows) + '</div>';
+  const chips = [['comp', 'Costo', A], ['lista', 'Lista', 1], ['live', 'Live', 1], ['cyber', 'Promoción', 1], ['show', 'Showroom', 1], ['colab', 'Colaborador', 1]].filter(x => x[2]);
+  h += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">'
+    + (A ? '<button class="btn bp" id="cos-nuevo" style="white-space:nowrap">＋ Nuevo producto</button>' : '')
+    + '<input id="cos-q" placeholder="Buscar…" autocomplete="off" value="' + esc(COS.q) + '" style="width:150px;' + sel + '">'
+    + chips.map(x => '<button class="btn ' + (COS.ver[x[0]] ? 'bp' : 'bg') + ' bs cos-ver" data-v="' + x[0] + '" style="font-size:12px">' + x[1] + '</button>').join('')
+    + (A ? '<span style="flex:1"></span><button class="btn bg bs" id="cos-alertas" style="font-size:12px;white-space:nowrap">🔔 Alertas</button>' : '') + '</div>';
   h += '<div id="cos-form"></div>';
-  if (A) h += '<div id="cos-sin-w">' + _cosSinHtml() + '</div>';
   h += '<div id="cos-tabla" style="overflow:auto;max-height:68vh;border:1px solid var(--bd2);border-radius:var(--r)">' + _cosTablaHtml(rows) + '</div>';
   w.innerHTML = h;
   _cosAlto();
   document.getElementById('cos-q').addEventListener('input', function () { COS.q = this.value; clearTimeout(COS._t); COS._t = setTimeout(_cosUpdateRows, 150); });
-  document.getElementById('cos-recargar').addEventListener('click', () => loadCostos());
+  const bal = document.getElementById('cos-alertas'); if (bal) { bal.addEventListener('click', _cosAlertasAbrir); _cosAlertasBadge(); }
   w.querySelectorAll('.cos-ver').forEach(b => b.addEventListener('click', () => { COS.ver[b.dataset.v] = !COS.ver[b.dataset.v]; _cosRender(); }));
   const nb = document.getElementById('cos-nuevo'); if (nb) nb.addEventListener('click', () => _cosForm(null));
   _cosBindRowBtns(w);
-  w.querySelectorAll('.cos-rev').forEach(b => b.addEventListener('click', () => { COS.rev = (COS.rev === b.dataset.k) ? '' : b.dataset.k; _cosRender(); }));
-  _cosFicBind(); if (COS.esAdmin && !MCT.cargado) _cosFichaCargar();
+  if (COS.esAdmin && !MCT.cargado) _cosFichaCargar();
   if (COS.editing) _cosForm(COS.editing);
 }
 
@@ -6492,15 +6469,18 @@ function _cosForm(r) {
   const grid = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(105px,1fr));gap:8px';
   const esConj = String(v.TipoPrenda || '').toUpperCase() === 'CONJUNTO';
   const pf = _cosFichaParseTxt(v.Descripcion);
-  const COMUNES = ['CONFECCION', 'TELA 1', 'TRICOTEX', 'ETIQUETA', 'BOTONES', 'PACKAGING'];
-  const principales = (COS.comps || []).filter(k => COMUNES.indexOf(_cosNormD(k.t)) >= 0 || Number(comp[k.k]) > 0);
-  const otros = (COS.comps || []).filter(k => principales.indexOf(k) < 0);
+  const principales = (COS.comps || []).slice();   // 4-oct · son solo 10: se ven todos
+  const otros = [];
   const skuIni = ((v.TipoPrenda || '') + ' ' + (v.Modelo || '')).trim() + (!v.Modelo && v.TipoPrenda ? ' ' : '');
   const pr = id => '<td style="padding:3px 4px"><input id="cp-' + id + '" type="number" step="0.01" min="0" inputmode="decimal" value="' + (pre[id] == null ? '' : pre[id]) + '" style="' + st + ';text-align:right;min-width:70px"></td>';
   const filaPr = (b, etq) => '<tr><td style="padding:3px 4px;font-size:13px;white-space:nowrap">' + etq + '</td>' + [0, 1, 2].map(n => b.p[n] ? pr(b.p[n][0]) : '<td></td>').join('') + '<td style="padding:3px 4px;font-size:11px;color:var(--mu);white-space:nowrap"><span id="cm-' + b.id + '"></span></td></tr>';
   const bl = id => COS_BLOQUES.find(b => b.id === id);
   const mas6 = (bl('lista').p.slice(3)).some(p => pre[p[0]] != null && pre[p[0]] !== '');
   cont.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--ac);border-radius:var(--r);padding:16px;margin-bottom:16px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="font-size:12px;color:var(--mu)">' + (esNuevo ? 'Producto nuevo' : 'Modificado: ' + esc(v.UltimaActualizacion || '—') + (v.Quien ? ' · ' + esc(v.Quien) : '')) + '</div>'
+      + '<div style="display:flex;gap:6px">' + (esNuevo ? '' : '<button type="button" class="btn bg bs" id="cf-dup">⧉ Duplicar</button><button type="button" class="btn bg bs" id="cf-hist">🕘 Historial</button>') + '<button type="button" class="btn bg bs" id="cf-x">✕ Cerrar</button></div></div>'
+    + '<div id="cf-hist-w"></div>'
+    + (!esNuevo && _cosRevFlags(v).length ? '<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--rd);border-radius:var(--r);background:rgba(220,38,38,.10);font-size:12px;color:var(--rd)">⚠ ' + _cosRevFlags(v).map(k => esc(COS_REV_TXT[k][1])).join('<br>⚠ ') + '</div>' : '')
     + (v._dup ? '<div style="font-size:12px;color:var(--rd);margin-bottom:8px">Copia de «' + esc(v._dup) + '» — escribe el modelo nuevo y ajusta los costos y precios que cambien.</div>' : '')
     + (v._desde ? '<div style="font-size:12px;color:var(--rd);margin-bottom:8px">Viene de la prenda vendida «' + esc(v._desde) + '» — revisa que el nombre esté bien escrito.</div>' : '')
     + '<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">'
@@ -6529,7 +6509,7 @@ function _cosForm(r) {
         + '<button type="button" class="btn bg bs" id="cf-sug-go" style="font-size:12px">Sugerir</button><span id="cf-sug-msg" style="font-size:12px;color:var(--mu)"></span></div>'
       + '<div style="font-weight:600;font-size:13px;margin-bottom:4px">Precios <span style="font-weight:400;color:var(--mu)">— vacío = no aplica. El margen se muestra solo.</span></div>'
       + '<div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th><th style="font-size:11px;color:var(--mu);text-align:right;padding:2px 6px">1 unidad</th><th style="font-size:11px;color:var(--mu);text-align:right;padding:2px 6px">Pack 2 (total)</th><th style="font-size:11px;color:var(--mu);text-align:right;padding:2px 6px">Pack 3 (total)</th><th></th></tr>'
-        + filaPr(bl('lista'), 'Lista') + filaPr(bl('live'), 'Live') + filaPr(bl('cyber'), 'Cyber') + filaPr(bl('show'), 'Showroom')
+        + filaPr(bl('lista'), 'Lista') + filaPr(bl('live'), 'Live') + filaPr(bl('cyber'), 'Promoción') + filaPr(bl('show'), 'Showroom')
         + '<tr><td style="padding:3px 4px;font-size:13px">Colaborador</td>' + pr('colab') + '<td colspan="2" style="font-size:11px;color:var(--mu);padding:3px 6px">vacío = 80% del Showroom</td><td style="padding:3px 4px;font-size:11px;color:var(--mu)"><span id="cm-colab"></span></td></tr></table></div>'
       + '<details' + (mas6 ? ' open' : '') + ' style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--ac)">＋ Packs de 6 y 12 (casi no se usan)</summary><div style="display:flex;gap:10px;margin-top:6px">'
         + (bl('lista').p.slice(3)).map(p => '<div style="width:110px">' + campo(esc('Lista ' + p[1]), num('cp-' + p[0], pre[p[0]])) + '</div>').join('') + '</div></details>'
@@ -6558,6 +6538,9 @@ function _cosForm(r) {
   const alSku = () => { if (!catEl.dataset.touched && _cosSkuParse(skuEl.value).tipo !== tipo0) delete catEl.dataset.manual; _cosSkuChips(); };
   skuEl.addEventListener('input', alSku); skuEl.addEventListener('change', alSku);
   document.getElementById('cf-cancel').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; });
+  document.getElementById('cf-x').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; });
+  const bd = document.getElementById('cf-dup'); if (bd) bd.addEventListener('click', () => _cosDuplicar(v.Diseno));
+  const bh = document.getElementById('cf-hist'); if (bh) bh.addEventListener('click', () => _cosHistorial(v.Diseno));
   document.getElementById('cf-save').addEventListener('click', () => _cosGuardar(esNuevo ? '' : v.Diseno, v));
   _cosSkuChips();
   if (v.Categoria) catEl.dataset.manual = '1';
