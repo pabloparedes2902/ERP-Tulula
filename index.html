@@ -6146,11 +6146,17 @@ function _cosFichaItems(r) {
     o ? o.tienda > 0 : null, o ? o.video > 0 : null, o ? o.catalogo > 0 : null];
 }
 function _cosFichaN(r) { const it = _cosFichaItems(r); return it.indexOf(null) >= 0 ? null : it.filter(Boolean).length; }
-// 4-oct · el punto junto al interruptor dice cómo está el producto en la tienda (solo si está enlazado a Shopify)
-function _cosShopPunto(r) {
-  if (!r.ShopifyId) return '';
-  const pub = r.ShopifyEstado === 'active', bor = r.ShopifyEstado === 'draft';
-  return ' <span style="color:' + (pub ? 'var(--gn)' : (bor ? '#d97706' : 'var(--mu)')) + ';font-size:11px;vertical-align:middle" title="' + (pub ? 'En Shopify: publicado' : (bor ? 'En Shopify: borrador (no se ve en la tienda)' : 'Enlazado a Shopify')) + '">●</span>';
+// 4-oct · estado del producto en las DOS plataformas: ERP (fila activa) y Shopify (publicado). Verde = en las dos · amarillo = solo en una · rojo = en ninguna.
+function _cosEstadoColor(r) {
+  const n = (r.Activo === false ? 0 : 1) + (r.ShopifyEstado === 'active' ? 1 : 0);
+  return n === 2 ? 'var(--gn)' : (n === 1 ? '#d97706' : 'var(--rd)');
+}
+function _cosEstadoTxt(r) {
+  return 'ERP: ' + (r.Activo === false ? 'inactivo' : 'activo') + ' · Shopify: ' + (r.ShopifyId ? (r.ShopifyEstado === 'active' ? 'publicado' : 'borrador') : 'no enlazado');
+}
+function _cosVerCelda(r) {
+  const col = _cosEstadoColor(r);
+  return '<button class="btn bg bs cos-ficha" data-d="' + esc(r.Diseno) + '" title="' + esc(_cosEstadoTxt(r) + ' — abrir costos, precios, fotos, video y textos') + '" style="font-size:11px;font-weight:700;padding:3px 12px;background:transparent;border:1.5px solid ' + col + ';color:' + col + '">Ver</button> ' + _cosFichaCelda(r);
 }
 function _cosFichaCelda(r) {
   const it = _cosFichaItems(r), n = _cosFichaN(r);
@@ -6251,8 +6257,7 @@ function _cosFilas() {
 // ── Columnas: Categoría · Tipo · Modelo siempre; el resto según rol y lo que se quiera ver ──
 function _cosCols() {
   const A = COS.esAdmin, c = [];
-  if (A) c.push({ t: 'Activo', sw: 1, stick: 1, f: r => '<label class="cos-sw" title="' + (r.Activo === false ? 'Inactivo: tocá para activar (si está en Shopify, lo vuelve a publicar)' : 'Activo: tocá para desactivar (no se borra nada; si está en Shopify, lo oculta de la tienda)') + '"><input type="checkbox" class="cos-act" data-d="' + esc(r.Diseno) + '"' + (r.Activo === false ? '' : ' checked') + '><span></span></label>' + _cosShopPunto(r) });
-  if (A) c.push({ t: 'Ficha', stick: 1, sortf: 1, f: r => _cosFichaCelda(r) });
+  if (A) c.push({ t: 'Ver', stick: 1, sortf: 1, f: r => _cosVerCelda(r) });
   c.push({ t: 'SKU', cat: 1, stick: 1, f: r => '<span style="color:var(--mu)">' + esc(r.TipoPrenda || '') + '</span> <b>' + esc(r.Modelo || '') + '</b>' + (A && r.Notas ? ' <span title="' + esc(r.Notas) + '" style="color:var(--mu)">🗒</span>' : '')
     + (A && _cosRevFlags(r).length ? ' <span title="' + esc(_cosRevFlags(r).map(k => COS_REV_TXT[k][0]).join(' · ')) + '" style="color:var(--rd)">⚠</span>' : '') });
   if (A && COS.ver.comp) {
@@ -6274,10 +6279,6 @@ function _cosCols() {
         return '<span style="color:' + col + ';font-weight:600" ' + (b.id !== 'colab' && pc < COS_MARGEN_MIN ? 'title="Margen bajo (menos de ' + COS_MARGEN_MIN + '%)"' : '') + '>' + pc.toFixed(0) + '%' + (b.id !== 'colab' && pc < COS_MARGEN_MIN ? ' ⚠' : '') + '</span>'; } });
     }
   });
-  if (A) {
-    c.push({ t: '', acc: 1, f: r => (r.Activo === false ? '<span style="font-size:11px;font-weight:700;color:#9ca3af;border:1px solid var(--bd2);padding:2px 7px;border-radius:10px;margin-right:6px">INACTIVO</span>' : '')
-      + '<button class="btn bg bs cos-ficha" data-d="' + esc(r.Diseno) + '" title="Costos, precios, fotos, video y textos de este producto" style="font-size:11px">Ficha</button>' });
-  }
   return c;
 }
 
@@ -6289,7 +6290,7 @@ function _cosAncho(c) {
   if (g > 0) return g;
   if (c.acc) return 130;
   if (c.sw) return 78;
-  if (c.sortf) return 64;
+  if (c.sortf) return 128;
   if (c.t === 'SKU') return 250;
   if (c.t === 'Modificado') return 150;
   return c.num ? 74 : 100;
@@ -6379,7 +6380,7 @@ function _cosBindRowBtns(scope) {
   scope.querySelectorAll('.cos-off').forEach(b => b.addEventListener('click', () => _cosDesactivar(b.dataset.d, b.dataset.a === '1')));
   scope.querySelectorAll('.cos-act').forEach(b => b.addEventListener('change', async () => { await _cosDesactivar(b.dataset.d, b.checked); _cosRender(); }));
   scope.querySelectorAll('.cos-sortf').forEach(b => b.addEventListener('click', () => { COS.sortF = !COS.sortF ? 'asc' : (COS.sortF === 'asc' ? 'desc' : ''); _cosUpdateRows(); }));
-  scope.querySelectorAll('.cos-festbtn').forEach(b => b.addEventListener('click', () => { COS.fest = COS.fest === '' ? 'ACTIVO' : (COS.fest === 'ACTIVO' ? 'INACTIVO' : ''); _cosUpdateRows(); }));
+  scope.querySelectorAll('.cos-festbtn').forEach(b => b.addEventListener('click', () => { COS.fest = COS.fest === '' ? 'ACTIVO' : (COS.fest === 'ACTIVO' ? 'INACTIVO' : ''); _cosRender(); }));
   scope.querySelectorAll('.cos-catbtn').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); _cosCatPop(b); }));
   scope.querySelectorAll('.cos-dup').forEach(b => b.addEventListener('click', () => _cosDuplicar(b.dataset.d)));
   scope.querySelectorAll('.cos-hist').forEach(b => b.addEventListener('click', () => _cosHistorial(b.dataset.d)));
@@ -6458,6 +6459,7 @@ function _cosRender() {
   h += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">'
     + (A ? '<button class="btn bp" id="cos-nuevo" style="white-space:nowrap">＋ Nuevo producto</button>' : '')
     + '<input id="cos-q" placeholder="Buscar…" autocomplete="off" value="' + esc(COS.q) + '" style="width:150px;' + sel + '">'
+    + (A ? '<button class="btn ' + (COS.fest ? 'bp' : 'bg') + ' bs cos-festbtn" title="Tocá para alternar: todos → solo activos → solo inactivos (del ERP)" style="font-size:12px">' + ({ '': 'Todos', ACTIVO: 'Activos', INACTIVO: 'Inactivos' })[COS.fest || ''] + '</button>' : '')
     + chips.map(x => '<button class="btn ' + (COS.ver[x[0]] ? 'bp' : 'bg') + ' bs cos-ver" data-v="' + x[0] + '" style="font-size:12px">' + x[1] + '</button>').join('')
     + (A ? '<span style="flex:1"></span><button class="btn bg bs" id="cos-alertas" style="font-size:12px;white-space:nowrap">🔔 Alertas</button>' : '') + '</div>';
   h += '<div id="cos-form"></div>';
@@ -6499,6 +6501,7 @@ function _cosForm(r) {
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="font-size:12px;color:var(--mu)">' + (esNuevo ? 'Producto nuevo' : 'Modificado: ' + esc(v.UltimaActualizacion || '—') + (v.Quien ? ' · ' + esc(v.Quien) : '')) + '</div>'
       + '<div style="display:flex;gap:6px">' + (esNuevo ? '' : '<button type="button" class="btn bg bs" id="cf-dup">⧉ Duplicar</button><button type="button" class="btn bg bs" id="cf-hist">🕘 Historial</button>') + '<button type="button" class="btn bg bs" id="cf-x">✕ Cerrar</button></div></div>'
     + '<div id="cf-hist-w"></div>'
+    + (esNuevo ? '' : '<div id="cf-estados" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>')
     + (!esNuevo && _cosRevFlags(v).length ? '<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--rd);border-radius:var(--r);background:rgba(220,38,38,.10);font-size:12px;color:var(--rd)">⚠ ' + _cosRevFlags(v).map(k => esc(COS_REV_TXT[k][1])).join('<br>⚠ ') + '</div>' : '')
     + (v._dup ? '<div style="font-size:12px;color:var(--rd);margin-bottom:8px">Copia de «' + esc(v._dup) + '» — escribe el modelo nuevo y ajusta los costos y precios que cambien.</div>' : '')
     + (v._desde ? '<div style="font-size:12px;color:var(--rd);margin-bottom:8px">Viene de la prenda vendida «' + esc(v._desde) + '» — revisa que el nombre esté bien escrito.</div>' : '')
@@ -6543,7 +6546,7 @@ function _cosForm(r) {
         + campo('Nombre en Shopify (vacío = el SKU con tilde; solo productos nuevos)', '<input id="cf-nshop" autocomplete="off" value="' + esc(v.NombreShopify || '') + '" style="' + st + '">')
         + campo('Notas internas (solo el equipo; no van a Shopify ni al agente)', '<input id="cf-notas" autocomplete="off" value="' + esc(v.Notas || '') + '" style="' + st + '">')
         + campo('Otras filas (Etiqueta: texto, una por línea)', '<textarea id="ff-otras" rows="2" style="' + st + ';resize:vertical">' + esc(pf.otras.join('\n')) + '</textarea>')
-        + (esNuevo ? '' : '<label style="display:flex;gap:6px;align-items:center;font-size:13px" title="Activo = el producto está en uso. El switch de arriba lo publica u oculta en Shopify."><input id="cf-activo" type="checkbox"' + (v.Activo === false ? '' : ' checked') + '> Activo</label>')
+        + (esNuevo ? '' : '<input id="cf-activo" type="checkbox" hidden' + (v.Activo === false ? '' : ' checked') + '>')
       + '</div></details>'
     + '</div>'
     + '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn bp" id="cf-save">' + (esNuevo ? '＋ Crear producto' : '💾 Guardar cambios') + '</button>'
@@ -6559,6 +6562,7 @@ function _cosForm(r) {
   document.getElementById('cf-cancel').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; });
   document.getElementById('cf-x').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; });
   const bd = document.getElementById('cf-dup'); if (bd) bd.addEventListener('click', () => _cosDuplicar(v.Diseno));
+  try { _cosEstadosPintar(v); } catch (_) {}
   const bh = document.getElementById('cf-hist'); if (bh) bh.addEventListener('click', () => _cosHistorial(v.Diseno));
   document.getElementById('cf-save').addEventListener('click', () => _cosGuardar(esNuevo ? '' : v.Diseno, v));
   _cosSkuChips();
@@ -6959,6 +6963,58 @@ async function _cosMediaPintar(v) {
   });
 }
 
+// 4-oct · las DOS cápsulas de la ficha: ERP (activo/inactivo) y Shopify (activo = publicado / inactivo = borrador). Son independientes.
+function _cosEstadosPintar(v) {
+  const box = document.getElementById('cf-estados'); if (!box || !v.Diseno) return;
+  if (!document.getElementById('cos-sw-big-css')) { const c = document.createElement('style'); c.id = 'cos-sw-big-css'; c.textContent = '.cos-sw.big{width:64px;height:32px}.cos-sw.big span{border-radius:32px}.cos-sw.big span:before{height:26px;width:26px;left:3px;top:3px}.cos-sw.big input:checked+span:before{transform:translateX(32px)}'; document.head.appendChild(c); }
+  const erp = v.Activo !== false, enl = !!v.ShopifyId, pub = v.ShopifyEstado === 'active';
+  const fila = (id, nombre, on, txt, col, off) => '<div style="display:flex;align-items:center;gap:10px"><span style="width:62px;font-size:12px;font-weight:700;color:var(--mu)">' + nombre + '</span>'
+    + '<label class="cos-sw" title="' + esc(nombre) + '"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + (off ? ' disabled' : '') + '><span></span></label>'
+    + '<span id="' + id + '-t" style="font-size:13px;font-weight:700;color:' + col + '">' + txt + '</span></div>';
+  box.innerHTML = fila('cf-sw-erp', 'ERP', erp, erp ? 'Activo' : 'Inactivo', erp ? 'var(--gn)' : 'var(--rd)', false)
+    + fila('cf-sw-shop', 'Shopify', pub, !enl ? 'No está en Shopify' : (pub ? 'Activo · publicado en la tienda' : 'Inactivo · borrador (no se ve)'), !enl ? 'var(--mu)' : (pub ? 'var(--gn)' : 'var(--rd)'), !enl)
+    + '<div id="cf-est-msg" style="font-size:12px;color:var(--mu)"></div>';
+  const msg = (t, c) => { const m = document.getElementById('cf-est-msg'); if (m) { m.style.color = c || 'var(--mu)'; m.textContent = t; } };
+  const sincronizar = () => {
+    const f = COS.data.find(x => x.Diseno === v.Diseno);
+    if (f) { v.Activo = f.Activo; v.ShopifyEstado = f.ShopifyEstado; }
+    const a = document.getElementById('cf-activo'); if (a) a.checked = v.Activo !== false;
+    _cosUpdateRows(); _cosEstadosPintar(v); try { _cosShopPintar(v); } catch (_) {}
+  };
+  const e = document.getElementById('cf-sw-erp');
+  if (e) e.addEventListener('change', async () => {
+    const quiere = e.checked; e.disabled = true;
+    if (!quiere && !(await npConfirm('Vas a marcar INACTIVO en el ERP:\n\n' + v.Diseno + '\n\nNo se borra nada, y no cambia lo que está publicado en Shopify (eso se maneja aparte).\n\n¿Seguimos?'))) { e.checked = true; e.disabled = false; return; }
+    try {
+      msg('Guardando…');
+      const r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: quiere, Canal: 'ERP' });
+      _cosAplicar(r); sincronizar(); msg('✓ ERP: ' + (quiere ? 'activo' : 'inactivo'), 'var(--gn)');
+    } catch (er) { e.checked = !quiere; e.disabled = false; msg('Error: ' + er.message, 'var(--rd)'); }
+  });
+  const sh = document.getElementById('cf-sw-shop');
+  if (sh && enl) sh.addEventListener('change', async () => {
+    const quiere = sh.checked; sh.disabled = true;
+    const volver = () => { sh.checked = !quiere; sh.disabled = false; };
+    try {
+      if (quiere) {
+        const it = _cosFichaItems(v), falta = COS_FICHA_ITEMS.filter((_, i) => it[i] === false);
+        if (!(await npConfirm('Esto PUBLICA «' + v.Diseno + '» en tulula.com.pe: lo verán tus clientes.\n\n' + (falta.length ? ('Todavía falta: ' + falta.join(', ') + '.\n\n') : 'La ficha está completa.\n\n') + 'Se envían fotos, video, descripción, cuidados y precios, y luego se publica.\n\n¿Publicar?'))) { volver(); return; }
+        msg('1 de 2 · Enviando la ficha completa a Shopify… (puede tardar un minuto)');
+        const env = await _cosFichaEnviar(v, true);
+        if (!env.ok) { msg('No se publicó: ' + env.texto + ' — revisa y vuelve a intentar.', 'var(--rd)'); volver(); return; }
+        msg('2 de 2 · Publicando…');
+      } else {
+        if (!(await npConfirm('Esto OCULTA «' + v.Diseno + '» de la tienda (pasa a borrador). No cambia el ERP.\n\n¿Seguimos?'))) { volver(); return; }
+        msg('Ocultando…');
+      }
+      const r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: quiere, Canal: 'SHOPIFY' });
+      _cosAplicar(r); sincronizar();
+      const f = COS.data.find(x => x.Diseno === v.Diseno), ok = f && ((f.ShopifyEstado === 'active') === quiere);
+      if (ok) { msg('✓ Confirmado en Shopify: ' + (quiere ? 'PUBLICADO' : 'BORRADOR'), 'var(--gn)'); toast(quiere ? '✓ Publicado en Shopify: ' + esc(v.Diseno) : '✓ Oculto en Shopify: ' + esc(v.Diseno), 'ok'); }
+      else { msg('No pude confirmar el cambio' + (r && r.aviso ? ': ' + r.aviso : '') + '. Revisa en Shopify.', 'var(--rd)'); }
+    } catch (er) { msg('Error: ' + er.message, 'var(--rd)'); volver(); }
+  });
+}
 // 3-oct · pestaña «Shopify» de la ficha: estado, enviar la ficha ahora, publicar u ocultar
 function _cosShopPintar(v) {
   const box = document.getElementById('cf-shop'); if (!box) return;
@@ -6971,7 +7027,7 @@ function _cosShopPintar(v) {
       + '<label class="cos-sw big" title="Izquierda = borrador (no se ve). Derecha = publicado en tulula.com.pe"><input type="checkbox" id="cfs-sw"' + (pub ? ' checked' : '') + '><span></span></label>'
       + '<span id="cfs-l1" style="font-size:14px;font-weight:700;color:' + (pub ? 'var(--gn)' : 'var(--mu)') + '">Publicado en Shopify</span>'
       + '<a href="https://admin.shopify.com/store/tulula-ecom/products/' + esc(v.ShopifyId) + '" target="_blank" rel="noopener" style="font-size:12px">abrir en Shopify ↗</a></div>'
-    + '<div style="font-size:11px;color:var(--mu);margin-bottom:4px">Al publicar se envían fotos (en tu orden), video, textos y precios. Es el mismo switch «Activo» del listado.</div>'
+    + '<div style="font-size:11px;color:var(--mu);margin-bottom:4px">Al publicar se envían fotos (en tu orden), video, textos y precios. Es la cápsula «Shopify» de arriba.</div>'
     + '<div id="cfs-st" style="font-size:13px;margin-top:8px"></div>';
   const sw = document.getElementById('cfs-sw'), st = document.getElementById('cfs-st');
   const pinta = pb => { const a = document.getElementById('cfs-l0'), b = document.getElementById('cfs-l1'); if (a) a.style.color = pb ? 'var(--mu)' : '#d97706'; if (b) b.style.color = pb ? 'var(--gn)' : 'var(--mu)'; };
@@ -6991,21 +7047,21 @@ function _cosShopPintar(v) {
         const env = await _cosFichaEnviar(v, true);
         if (!env.ok) { msg('No se publicó: ' + env.texto + ' — revisa y vuelve a intentar.', 'var(--rd)'); volver(); return; }
         msg('2 de 2 · Publicando…');
-        const r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: true });
+        const r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: true, Canal: 'SHOPIFY' });
         _cosAplicar(r); _cosUpdateRows();
         const fila = COS.data.find(x => x.Diseno === v.Diseno);
         if (fila) { v.ShopifyEstado = fila.ShopifyEstado; v.Activo = fila.Activo; }
-        const a = document.getElementById('cf-activo'); if (a) a.checked = true;
+        try { _cosEstadosPintar(v); } catch (_) {}
         if (fila && fila.ShopifyEstado === 'active') { msg('✓ Confirmado: «' + v.Diseno + '» está PUBLICADO en Shopify.', 'var(--gn)'); sw.disabled = false; pinta(true); toast('✓ Publicado en Shopify: ' + esc(v.Diseno), 'ok'); }
         else { msg('No pude confirmar que quedó publicado' + (r && r.aviso ? ': ' + r.aviso : '') + '. Revisa en Shopify.', 'var(--rd)'); volver(); }
       } else {
-        if (!(await npConfirm('Esto OCULTA «' + v.Diseno + '» de la tienda (pasa a borrador) y lo marca inactivo en el ERP.\n\n¿Seguimos?'))) { volver(); return; }
+        if (!(await npConfirm('Esto OCULTA «' + v.Diseno + '» de la tienda (pasa a borrador) No cambia el ERP.\n\n¿Seguimos?'))) { volver(); return; }
         msg('Ocultando…');
-        const r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: false });
+        const r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: false, Canal: 'SHOPIFY' });
         _cosAplicar(r); _cosUpdateRows();
         const fila = COS.data.find(x => x.Diseno === v.Diseno);
         if (fila) { v.ShopifyEstado = fila.ShopifyEstado; v.Activo = fila.Activo; }
-        const a = document.getElementById('cf-activo'); if (a) a.checked = false;
+        try { _cosEstadosPintar(v); } catch (_) {}
         if (fila && fila.ShopifyEstado !== 'active') { msg('✓ Confirmado: «' + v.Diseno + '» pasó a BORRADOR (ya no se ve en la tienda).', 'var(--gn)'); sw.disabled = false; pinta(false); }
         else { msg('No pude confirmar que se ocultó' + (r && r.aviso ? ': ' + r.aviso : '') + '. Revisa en Shopify.', 'var(--rd)'); volver(); }
       }
