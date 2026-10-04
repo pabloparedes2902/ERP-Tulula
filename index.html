@@ -6070,7 +6070,7 @@ async function _prodEliminar(sku) {
 // ══════════════════════════════════════════════════════════════════════════
 const COS = { data: [], esAdmin: false, sin: null, ign: [], sinMsg: '', q: '', fest: '', cat: '', tipos: [], cats: [], tipoCat: {}, comps: [],
               ver: { comp: true, lista: true, live: true, cyber: true, show: true, colab: true, margen: true, mod: false },
-              destino: 'hoja', aviso: '', editing: null, _t: null, rev: '', catSel: [], w: {} };
+              destino: 'hoja', aviso: '', editing: null, _t: null, rev: '', fic: '', catSel: [], w: {} };
 // 2-oct · alerta de margen bajo: un canal (lista/live/cyber/showroom) por debajo de este % se marca. Colaborador no cuenta (es un descuento a proposito).
 const COS_MARGEN_MIN = 40;
 const COS_SWR_KEY = 'erp_swr_costos2';
@@ -6133,6 +6133,42 @@ async function loadCostosSin() {
 }
 
 // 2-oct · REVISION: qué productos activos tienen algo raro (solo Administrador; Ventas y Logística no reciben costos ni márgenes)
+// 4-oct · FICHA n/6: cuántas de las 6 cosas de la ficha tiene cada producto. Costos, precios y textos salen de la fila; fotos de tienda, video y catálogo del resumen de Multimedia (se pide aparte).
+const COS_FICHA_ITEMS = ['Costos', 'Precios', 'Textos', 'Fotos de tienda', 'Video', 'Foto de catálogo'];
+function _cosFichaItems(r) {
+  const o = MCT.cargado ? (MCT.res[_mctClave(r.Diseno)] || { catalogo: 0, video: 0, tienda: 0 }) : null;
+  return [Number(r.CostoUnitario) > 0, Number(r.precios && r.precios.lista) > 0, !!(r.Descripcion && r.Cuidados),
+    o ? o.tienda > 0 : null, o ? o.video > 0 : null, o ? o.catalogo > 0 : null];
+}
+function _cosFichaN(r) { const it = _cosFichaItems(r); return it.indexOf(null) >= 0 ? null : it.filter(Boolean).length; }
+function _cosFichaCelda(r) {
+  const it = _cosFichaItems(r), n = _cosFichaN(r);
+  if (n === null) return '<span style="color:var(--mu)" title="Calculando fotos y video…">…</span>';
+  const falta = COS_FICHA_ITEMS.filter((_, i) => !it[i]);
+  return '<span style="font-weight:700;color:' + (n === 6 ? 'var(--gn)' : (n >= 4 ? '#d97706' : 'var(--rd)')) + '" title="' + esc(falta.length ? 'Falta: ' + falta.join(', ') : 'Ficha completa') + '">' + n + '/6</span>'
+    + (falta.length ? ' <span style="font-size:10px;color:var(--mu);white-space:normal">' + esc(falta.join(', ')) + '</span>' : '');
+}
+async function _cosFichaCargar(force) {
+  if (!COS.esAdmin || (MCT.cargado && !force) || MCT._cargando) return;
+  MCT._cargando = true;
+  try {
+    const rs = await apiSend('multimedia.resumen', {});
+    MCT.res = {}; ((rs && rs.productos) || []).forEach(o => { MCT.res[_mctClave(o.diseno)] = o; });
+    MCT.cargado = true;
+  } catch (e) { MCT._cargando = false; return; }
+  MCT._cargando = false;
+  try { const w = document.getElementById('cos-fic-w'); if (w) w.innerHTML = _cosFicHtml(); if (document.getElementById('cos-tabla')) _cosUpdateRows(); _cosFicBind(); } catch (_) {}
+}
+function _cosFicHtml() {
+  if (!COS.esAdmin) return '';
+  if (!MCT.cargado) return '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Calculando la ficha de cada producto (fotos, video, catálogo)…</div>';
+  const act = (COS.data || []).filter(r => r.Activo !== false), ns = act.map(_cosFichaN);
+  const inc = ns.filter(n => n < 6).length, ok = ns.length - inc;
+  const b = (k, t) => '<button class="btn ' + (COS.fic === k ? 'bp' : 'bg') + ' bs cos-fic" data-k="' + k + '" style="font-size:11px">' + t + '</button>';
+  return '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px"><span style="font-size:12px;font-weight:600">Ficha de la tienda:</span>'
+    + b('inc', 'Incompletas: ' + inc) + b('ok', 'Completas (6/6): ' + ok) + (COS.fic ? ' <button class="btn bg bs cos-fic" data-k="" style="font-size:11px">✕ Ver todos</button>' : '') + '</div>';
+}
+function _cosFicBind() { document.querySelectorAll('.cos-fic').forEach(b => { b.onclick = () => { COS.fic = (COS.fic === b.dataset.k) ? '' : b.dataset.k; const w = document.getElementById('cos-fic-w'); if (w) w.innerHTML = _cosFicHtml(); _cosUpdateRows(); _cosFicBind(); }; }); }
 function _cosRevFlags(r) {
   const f = [];
   if (!COS.esAdmin || r.Activo === false) return f;
@@ -6168,6 +6204,7 @@ function _cosFilas() {
     if (COS.fest === 'INACTIVO' && r.Activo !== false) return false;
     if (COS.catSel.length && COS.catSel.indexOf(r.Categoria) < 0) return false;
     if (COS.rev && COS.esAdmin && _cosRevFlags(r).indexOf(COS.rev) < 0) return false;
+    if (COS.fic && COS.esAdmin && MCT.cargado) { if (r.Activo === false) return false; const n = _cosFichaN(r); if (COS.fic === 'inc' ? n === 6 : n !== 6) return false; }
     if (q && [r.Categoria, r.TipoPrenda, r.Modelo, r.Notas].join(' ').toLowerCase().indexOf(q) < 0) return false;
     return true;
   });
@@ -6182,6 +6219,7 @@ function _cosCols() {
   if (A) c.push({ t: 'Shopify', f: r => r.ShopifyEstado === 'active' ? '<span style="color:var(--gn);font-weight:600" title="Publicado en Shopify">● Activo</span>'
     : (r.ShopifyEstado === 'draft' ? '<span style="color:#d97706;font-weight:600" title="En Shopify como borrador">● Borrador</span>'
     : (r.ShopifyId ? '<span style="color:var(--mu)" title="Enlazado a Shopify">enlazado</span>' : '<span style="color:var(--mu)" title="Todavía no está enlazado a un producto de Shopify">—</span>')) });
+  if (A) c.push({ t: 'Ficha', f: r => _cosFichaCelda(r) });
   if (A && COS.ver.comp) {
     (COS.comps || []).forEach(k => c.push({ g: 'Componentes del costo', gbg: 'rgba(59,130,246,.20)', t: k.t, num: 1,
       f: r => { const v = _cosN2(r.comp && r.comp[k.k]); return v == null ? '<span style="color:var(--mu)">·</span>' : v; } }));
@@ -6422,6 +6460,7 @@ function _cosRender() {
   h += '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px"><span style="font-size:12px;color:var(--mu)">Columnas:</span>'
     + chips.map(x => '<button class="btn ' + (COS.ver[x[0]] ? 'bp' : 'bg') + ' bs cos-ver" data-v="' + x[0] + '" style="font-size:11px">' + x[1] + '</button>').join('') + '</div>';
   h += '<div id="cos-rev-w">' + _cosRevHtml() + '</div>';
+  h += '<div id="cos-fic-w">' + _cosFicHtml() + '</div>';
   h += '<div id="cos-count" style="font-size:12px;color:var(--mu);margin-bottom:8px">' + _cosContador(rows) + '</div>';
   h += '<div id="cos-form"></div>';
   if (A) h += '<div id="cos-sin-w">' + _cosSinHtml() + '</div>';
@@ -6434,6 +6473,7 @@ function _cosRender() {
   const nb = document.getElementById('cos-nuevo'); if (nb) nb.addEventListener('click', () => _cosForm(null));
   _cosBindRowBtns(w);
   w.querySelectorAll('.cos-rev').forEach(b => b.addEventListener('click', () => { COS.rev = (COS.rev === b.dataset.k) ? '' : b.dataset.k; _cosRender(); }));
+  _cosFicBind(); if (COS.esAdmin && !MCT.cargado) _cosFichaCargar();
   if (COS.editing) _cosForm(COS.editing);
 }
 
@@ -6796,7 +6836,7 @@ function _cosBloquePintar(v) {
     const hay = (c, co) => (v._mm || []).some(r => r.Tipo === 'PRINCIPAL' && r.Canal === c && nd(r.Color) === nd(co));
     b.items.forEach(x => { try { URL.revokeObjectURL(x.url); } catch (_) {} }); v._blq = null;
     for (let i = 0; i < nombres.length; i++) {
-      await _mulSubirVarios(grupos[nombres[i]], { dis: v.Diseno, col: nombres[i], canal: 'SHOPIFY', st: 'cfm-st', hay: hay, alTerminar: i === nombres.length - 1 ? (async () => { v._recargar = true; await _cosMediaPintar(v); _cosFichaEnviar(v, true); }) : (async () => {}) });
+      await _mulSubirVarios(grupos[nombres[i]], { dis: v.Diseno, col: nombres[i], canal: 'SHOPIFY', st: 'cfm-st', hay: hay, alTerminar: i === nombres.length - 1 ? (async () => { v._recargar = true; await _cosMediaPintar(v); _cosFichaEnviar(v, true); _cosFichaCargar(true); }) : (async () => {}) });
     }
   });
 }
@@ -6855,7 +6895,7 @@ async function _cosMediaPintar(v) {
     + '<div id="cfm-st" style="font-size:12px;color:var(--mu);margin-top:4px">Las fotos se reducen solas (máx. 2400 px) antes de subir.</div>';
   try { _cosMeter(v); } catch (_) {}
   const r2 = document.getElementById('cfm-reint2'); if (r2) r2.addEventListener('click', ev => { ev.preventDefault(); v._recargar = true; _cosMediaPintar(v); });
-  const tras = async () => { v._recargar = true; await _cosMediaPintar(v); _cosFichaEnviar(v, true); };
+  const tras = async () => { v._recargar = true; await _cosMediaPintar(v); _cosFichaEnviar(v, true); _cosFichaCargar(true); };
   const hay = (c, co) => (v._mm || []).some(r => r.Tipo === 'PRINCIPAL' && r.Canal === c && nd(r.Color) === nd(co));
   box.querySelectorAll('.cfm-file').forEach(inp => inp.addEventListener('change', function () {
     const files = Array.from(this.files || []), modo = this.dataset.modo; let col = this.dataset.color || '';
@@ -6883,6 +6923,7 @@ async function _cosMediaPintar(v) {
       await apiSend('multimedia.desactivar', { Clave: b.dataset.k, Activar: false, Rapido: true });
       v._mm = (v._mm || []).filter(r => r.Clave !== b.dataset.k); _cosMediaPintar(v);
       if (deTienda) _cosFichaEnviar(v, true);
+      _cosFichaCargar(true);
     } catch (e) { toast('Error: ' + esc(e.message), 'err'); }
   }));
   // ── orden: arrastrar y soltar (o ‹ ›). Se guarda solo y se manda a Shopify unos segundos después del último cambio.
@@ -7303,7 +7344,7 @@ function _homAplicar(r) {
 // media queries.
 // ══════════════════════════════════════════════════════════════════════════
 // ── 4-oct · PANTALLA DE CONTROL: una fila por producto de Costos, qué le falta de foto/video ──
-const MCT = { res: {}, q: '', f: '', _t: null };
+const MCT = { res: {}, q: '', f: '', _t: null, cargado: false, _cargando: false };
 function _mctClave(x) { return _cosNormD(x).replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim(); }
 /** Estado de multimedia de un producto. res = resumen de multimediaResumen indexado por clave. */
 function _mctEstado(r, res) {
@@ -7382,6 +7423,7 @@ async function loadMultimedia() {
     if (rc) _cosAplicar(rc);
     MCT.res = {};
     ((rs && rs.productos) || []).forEach(o => { MCT.res[_mctClave(o.diseno)] = o; });
+    MCT.cargado = true;
   } catch (e) {
     w.innerHTML = '<div style="padding:24px;color:var(--rd)">Error cargando el control de multimedia: ' + esc(e.message) + '</div>';
     return;
