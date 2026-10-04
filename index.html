@@ -6535,6 +6535,7 @@ function _cosForm(r) {
         + '<tr><td style="padding:3px 4px;font-size:13px">Colaborador</td>' + pr('colab') + '<td colspan="4" style="font-size:11px;color:var(--mu);padding:3px 6px">vacío = 80% del Showroom</td><td style="padding:3px 4px;font-size:11px;color:var(--mu)"><span id="cm-colab"></span></td></tr></table></div>'
     + '</div>'
     + '<div class="cf-sec" data-sec="ficha" style="display:none">'
+      + (esNuevo ? _cosSkusBloque(st) : '')
       + (esNuevo ? '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">📷 Primero toca «Crear producto». Después abres este mismo producto y aquí aparecen las fotos por color, la foto de catálogo y el video.</div>' : '<div id="cf-media" style="margin:0 0 14px"></div>')
     + '</div>'
     + '<div class="cf-sec" data-sec="textos" style="display:none">'
@@ -7064,6 +7065,27 @@ function _cosPreview(v) {
   });
 }
 
+
+// 4-oct · UN SOLO FLUJO: al crear el producto también se eligen colores y tallas y se crean los SKU (los mismos de «Crear SKU» en Stock, cantidad 0)
+function _cosSkusBloque(st) {
+  const u = a => [...new Set((a || []).filter(Boolean).map(x => String(x).trim().toUpperCase()))].sort();
+  const chk = (cl, arr) => arr.map(x => '<label style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:1px solid var(--bd);border-radius:12px;font-size:12px;cursor:pointer;background:var(--bg3)"><input type="checkbox" class="' + cl + '" value="' + esc(x) + '">' + esc(x) + '</label>').join('');
+  return '<div id="cf-skus" style="margin:0 0 14px;padding:10px;border:1px solid var(--bd);border-radius:var(--r)">'
+    + '<div style="font-size:12px;font-weight:600;margin-bottom:6px">Colores y tallas <span style="font-weight:400;color:var(--mu)">· se crean los SKU al guardar (stock 0)</span></div>'
+    + '<div style="font-size:11px;color:var(--mu);margin-bottom:4px">Colores</div><div id="cf-skus-col" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">' + chk('cf-sk-col', u(mOpts('Color'))) + '</div>'
+    + '<input id="cf-sk-newcol" placeholder="Otro color nuevo (varios separados por coma)" style="' + st + ';margin-bottom:8px">'
+    + '<div style="font-size:11px;color:var(--mu);margin-bottom:4px">Tallas</div><div id="cf-skus-tal" style="display:flex;flex-wrap:wrap;gap:6px">' + chk('cf-sk-tal', u(mOpts('Talla'))) + '</div>'
+    + '<div style="font-size:11px;color:var(--mu);margin-top:6px">Un conjunto no lleva SKU propio: su stock sale de sus piezas. Deja vacío si aún no sabes los colores.</div></div>';
+}
+function _cosSkusItems(tipo, mod, cat) {
+  if (String(tipo).toUpperCase() === 'CONJUNTO') return [];
+  const cols = [...document.querySelectorAll('.cf-sk-col:checked')].map(x => x.value);
+  String((document.getElementById('cf-sk-newcol') || {}).value || '').split(',').forEach(x => { x = x.trim().toUpperCase(); if (x && cols.indexOf(x) < 0) cols.push(x); });
+  const tals = [...document.querySelectorAll('.cf-sk-tal:checked')].map(x => x.value);
+  const out = [];
+  cols.forEach(c => tals.forEach(t => out.push({ categoria: String(cat || '').toUpperCase(), producto: String(tipo).toUpperCase(), diseno: String(mod).toUpperCase(), color: c, talla: t, cantidad: 0, _full: [tipo, mod, c, t].join(' ').toUpperCase() })));
+  return out;
+}
 async function _cosGuardar(original, v) {
   const g = id => String((document.getElementById(id) || {}).value || '').trim();
   const sk = _cosSkuParse(g('cf-sku')), tipo = sk.tipo, mod = sk.modelo;
@@ -7077,6 +7099,7 @@ async function _cosGuardar(original, v) {
   // un conjunto sin componentes conserva su costo (suma de piezas): no se mandan componentes vacíos
   if (algunComp || tipo.toUpperCase() !== 'CONJUNTO') body.comp = comp;
   const act = document.getElementById('cf-activo'); if (act) body.Activo = !!act.checked;
+  const skuItems = original ? [] : _cosSkusItems(tipo, mod, body.Categoria);
   const btn = document.getElementById('cf-save');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
   try {
@@ -7085,6 +7108,10 @@ async function _cosGuardar(original, v) {
     _cosAplicar(r); _cosRender();
     try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: true, r: r })); } catch (_) {}
     toast('✓ Guardado: ' + esc(r.guardado || (tipo + ' ' + mod).trim()), 'ok');
+    if (skuItems.length) {   // colores × tallas elegidos: se crean los SKU por la misma puerta que «Crear SKU»
+      try { await _skuCrearRapido(skuItems); toast('✓ ' + skuItems.length + ' SKU creados (stock 0)', 'ok'); try { confData = null; if (typeof refrescarMaestros === 'function') refrescarMaestros(); } catch (_) {} }
+      catch (e2) { toast('El producto se guardó, pero los SKU fallaron: ' + esc(e2.message) + '. Créalos desde Stock → Crear SKU.', 'warn'); }
+    }
     if (r && r.aviso) toast(r.aviso, 'warn');
     clearTimeout(window._cosSinT); window._cosSinT = setTimeout(() => { if (document.getElementById('cos-tabla')) loadCostosSin(); }, 20000);   // 4-oct · la revisión de ventas es lenta: no se pide en cada guardado
     if (original && r && r.guardado && r.guardado !== original) _cosFichaCargar(true);   // renombrado: las fotos/video cuelgan del nombre nuevo
