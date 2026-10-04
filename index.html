@@ -7241,11 +7241,98 @@ function _homAplicar(r) {
 // (flex-wrap) y las tablas scrollean solas (overflow:auto) — el ERP no usa
 // media queries.
 // ══════════════════════════════════════════════════════════════════════════
+// ── 4-oct · PANTALLA DE CONTROL: una fila por producto de Costos, qué le falta de foto/video ──
+const MCT = { res: {}, q: '', f: '', _t: null };
+function _mctClave(x) { return _cosNormD(x).replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim(); }
+/** Estado de multimedia de un producto. res = resumen de multimediaResumen indexado por clave. */
+function _mctEstado(r, res) {
+  const o = (res || {})[_mctClave(r.Diseno)] || { catalogo: 0, video: 0, tienda: 0, colores: [] };
+  return { cat: o.catalogo > 0, vid: o.video > 0, tie: o.tienda > 0, nTie: o.tienda, nCol: (o.colores || []).length };
+}
+function _mctFilas() {
+  const q = MCT.q.toLowerCase();
+  const filas = (COS.data || []).filter(r => r.Activo !== false).map(r => ({ r: r, e: _mctEstado(r, MCT.res) })).filter(x => {
+    if (MCT.f === 'cat' && x.e.cat) return false;
+    if (MCT.f === 'vid' && x.e.vid) return false;
+    if (MCT.f === 'tie' && x.e.tie) return false;
+    if (MCT.f === 'falta' && x.e.cat && x.e.vid && x.e.tie) return false;
+    if (MCT.f === 'ok' && !(x.e.cat && x.e.vid && x.e.tie)) return false;
+    return !q || String(x.r.Diseno || '').toLowerCase().indexOf(q) >= 0;
+  });
+  const falta = x => (x.e.cat ? 0 : 1) + (x.e.vid ? 0 : 1) + (x.e.tie ? 0 : 1);
+  filas.sort((a, b) => falta(b) - falta(a) || String(a.r.Diseno).localeCompare(String(b.r.Diseno)));
+  return filas;
+}
+function _mctCelda(ok, txt) {
+  return '<td style="padding:7px 10px;text-align:center;white-space:nowrap;color:' + (ok ? 'var(--gn)' : 'var(--rd)') + ';font-weight:600">' + (ok ? '✓' : '○') + (txt ? ' <span style="font-weight:400;color:var(--mu);font-size:11px">' + esc(txt) + '</span>' : '') + '</td>';
+}
+function _mctFilasHtml() {
+  const f = _mctFilas();
+  if (!f.length) return '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--mu)">Nada con ese filtro.</td></tr>';
+  return f.map(x => '<tr class="mct-fila" style="border-top:1px solid var(--bd2)"><td style="padding:7px 10px;font-weight:600">' + esc(x.r.Diseno) + '</td>'
+    + _mctCelda(x.e.cat) + _mctCelda(x.e.vid) + _mctCelda(x.e.tie, x.e.tie ? (x.e.nTie + ' fotos · ' + x.e.nCol + ' colores') : '')
+    + '<td style="padding:7px 10px;font-size:12px;color:var(--mu)">' + (x.e.cat && x.e.vid && x.e.tie ? 'Completo' : 'Falta: ' + [x.e.cat ? '' : 'catálogo', x.e.vid ? '' : 'video', x.e.tie ? '' : 'fotos de tienda'].filter(Boolean).join(', ')) + '</td>'
+    + '<td style="padding:7px 10px"><button class="btn bg bs mct-abrir" data-d="' + esc(x.r.Diseno) + '">Abrir ficha</button></td></tr>').join('');
+}
+function _mctContador() {
+  const todos = (COS.data || []).filter(r => r.Activo !== false), est = todos.map(r => _mctEstado(r, MCT.res));
+  const n = f => est.filter(f).length;
+  return todos.length + ' productos activos · con foto de catálogo ' + n(e => e.cat) + ' · con video ' + n(e => e.vid) + ' · con fotos de tienda ' + n(e => e.tie) + ' · completos ' + n(e => e.cat && e.vid && e.tie);
+}
+function _mctRender() {
+  const w = document.getElementById('mul-w');
+  const sel = 'padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px';
+  w.innerHTML = '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px">'
+    + '<input id="mct-q" placeholder="Buscar producto" autocomplete="off" value="' + esc(MCT.q) + '" style="flex:1;min-width:190px;' + sel + '">'
+    + '<select id="mct-f" style="' + sel + '">' + [['', 'Todos'], ['falta', 'Les falta algo'], ['cat', 'Sin foto de catálogo'], ['vid', 'Sin video'], ['tie', 'Sin fotos de tienda'], ['ok', 'Completos']].map(o => '<option value="' + o[0] + '"' + (MCT.f === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
+    + '<button class="btn bg" id="mct-rec">↻ Actualizar</button>'
+    + '<button class="btn bg" id="mct-adv" title="Lista completa de archivos, con canales y direcciones">Vista avanzada</button></div>'
+    + '<div id="mct-cnt" style="font-size:12px;color:var(--mu);margin-bottom:8px">' + esc(_mctContador()) + '</div>'
+    + '<div style="overflow:auto;border:1px solid var(--bd2);border-radius:var(--r)"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:720px"><thead><tr style="background:var(--bg3);text-align:left">'
+    + ['Producto', 'Foto de catálogo', 'Video', 'Fotos de tienda', 'Estado', ''].map((t, i) => '<th style="padding:8px 10px;font-weight:600;color:var(--mu);white-space:nowrap;text-align:' + (i > 0 && i < 4 ? 'center' : 'left') + '">' + t + '</th>').join('')
+    + '</tr></thead><tbody id="mct-tb">' + _mctFilasHtml() + '</tbody></table></div>';
+  document.getElementById('mct-q').addEventListener('input', function () { MCT.q = this.value; clearTimeout(MCT._t); MCT._t = setTimeout(() => { document.getElementById('mct-tb').innerHTML = _mctFilasHtml(); }, 150); });
+  document.getElementById('mct-f').addEventListener('change', function () { MCT.f = this.value; document.getElementById('mct-tb').innerHTML = _mctFilasHtml(); });
+  document.getElementById('mct-rec').addEventListener('click', () => loadMultimedia());
+  document.getElementById('mct-adv').addEventListener('click', () => loadMultimediaAvanzado());
+  document.getElementById('mct-tb').addEventListener('click', e => { const b = e.target.closest('.mct-abrir'); if (b) _mctAbrir(b.dataset.d); });
+}
+/** Lleva a Costos de producto y abre la ficha (pestaña Fotos y video) del producto. */
+function _mctAbrir(diseno) {
+  const row = (COS.data || []).find(r => r.Diseno === diseno);
+  if (!row) { toast('No encontré ese producto en Costos.', 'warn'); return; }
+  row._tab = 'ficha';
+  navegarA('costos');
+  let n = 0;
+  const t = setInterval(() => {
+    n++;
+    const ok = document.getElementById('cos-form') && (COS.data || []).length;
+    if (ok || n > 60) { clearInterval(t); if (ok) { const r2 = COS.data.find(r => r.Diseno === diseno) || row; r2._tab = 'ficha'; _cosForm(r2); } }
+  }, 250);
+}
+async function loadMultimedia() {
+  const w = document.getElementById('mul-w');
+  w.innerHTML = spin('Cargando el control de multimedia...');
+  try {
+    const [rs, rc] = await Promise.all([
+      apiSend('multimedia.resumen', {}),
+      (COS.data && COS.data.length) ? Promise.resolve(null) : apiSend('costos.listar', {})
+    ]);
+    if (rc) _cosAplicar(rc);
+    MCT.res = {};
+    ((rs && rs.productos) || []).forEach(o => { MCT.res[_mctClave(o.diseno)] = o; });
+  } catch (e) {
+    w.innerHTML = '<div style="padding:24px;color:var(--rd)">Error cargando el control de multimedia: ' + esc(e.message) + '</div>';
+    return;
+  }
+  _mctRender();
+}
+
 const MUL = { data: [], sinfoto: [], falta: [], q: '', fcan: '', fest: '', ftipo: '', soloSin: false,
               encendido: false, aviso: '', nota: '', plata: 0, editing: null,
               canales: [], tipos: [], _t: null };
 
-async function loadMultimedia() {
+async function loadMultimediaAvanzado() {
   const w = document.getElementById('mul-w');
   w.innerHTML = spin('Cargando multimedia...');
   try {
@@ -7401,6 +7488,7 @@ function _mulRender() {
   let h = '';
   h += '<div class="card" style="margin-bottom:12px;font-size:12px">' + donde
      + (MUL.aviso ? ('<div style="margin-top:6px;color:var(--rd)">' + esc(MUL.aviso) + '</div>') : '') + '</div>';
+  h += '<div style="margin-bottom:10px"><button class="btn bg" id="mul-volver">&larr; Volver al control por producto</button></div>';
   h += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px">'
     + '<button class="btn bp" id="mul-nuevo">&#65291; Cargar foto o video</button>'
     + '<input id="mul-q" placeholder="Buscar (prenda, dirección...)" autocomplete="off" value="' + esc(MUL.q) + '" style="flex:1;min-width:190px;padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">'
@@ -7431,7 +7519,8 @@ function _mulRender() {
   document.getElementById('mul-ftipo').addEventListener('change', function () { MUL.ftipo = this.value; _mulRender(); });
   document.getElementById('mul-fest').addEventListener('change', function () { MUL.fest = this.value; _mulRender(); });
   document.getElementById('mul-fsin').addEventListener('click', () => { MUL.soloSin = !MUL.soloSin; _mulRender(); });
-  document.getElementById('mul-recargar').addEventListener('click', () => loadMultimedia());
+  document.getElementById('mul-recargar').addEventListener('click', () => loadMultimediaAvanzado());
+  document.getElementById('mul-volver').addEventListener('click', () => loadMultimedia());
   document.getElementById('mul-nuevo').addEventListener('click', () => _mulForm(null));
   _mulBindRowBtns(w);
   if (MUL.editing) _mulForm(MUL.editing);
@@ -7564,7 +7653,7 @@ async function _mulSubirVarios(files, opt) {
   if (!opt.dis) MUL.editing = null;
   toast(hechos + ' de ' + files.length + ' archivos guardados' + (errores.length ? (' · fallaron: ' + errores.join(' | ')) : '') + (avisos.length ? (' · ojo: ' + avisos.join(' | ')) : ''), (errores.length || avisos.length) ? 'warn' : 'ok');
   if (opt.alTerminar) { try { await opt.alTerminar(); } catch (e) {} return; }
-  try { await loadMultimedia(); } catch (e) {}
+  try { await loadMultimediaAvanzado(); } catch (e) {}
 }
 
 async function _mulGuardar(original) {
@@ -7602,7 +7691,7 @@ async function _mulDesactivar(clave, activar) {
 }
 
 function _mulAplicar(r) {
-  if (!r) { loadMultimedia(); return; }
+  if (!r) { loadMultimediaAvanzado(); return; }
   MUL.data = r.rows || [];
   MUL.sinfoto = r.sinFoto || [];
   MUL.falta = r.faltanImportar || [];
