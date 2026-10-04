@@ -6106,7 +6106,11 @@ async function loadCostos() {
   try { localStorage.removeItem('erp_swr_costos'); } catch (_) {}
   try {
     const g = JSON.parse(localStorage.getItem(COS_SWR_KEY) || 'null');
-    if (g && g.r && g.admin === _cosYoAdmin() && (Date.now() - g.t) < 7 * 86400000) { _cosAplicar(g.r); _cosRender(); pintado = true; }
+    if (g && g.r && g.admin === _cosYoAdmin() && (Date.now() - g.t) < 7 * 86400000) {
+      // 4-oct · la columna Ficha también aparece al instante con lo último que se vio (se corrige apenas llega lo nuevo)
+      if (g.admin && !MCT.res) { try { const m = JSON.parse(localStorage.getItem('erp_swr_mct1') || 'null'); if (m && m.res && (Date.now() - m.t) < 7 * 86400000) MCT.res = m.res; } catch (_) {} }
+      _cosAplicar(g.r); _cosRender(); pintado = true;
+    }
   } catch (_) {}
   if (!pintado) w.innerHTML = spin('Cargando costos de producto...');
   try {
@@ -6119,7 +6123,8 @@ async function loadCostos() {
     return;
   }
   _cosRender();
-  if (COS.esAdmin) { loadCostosSin(); _cosFichaCargar(true); }
+  // 4-oct · lo pesado va después y de a una: primero la ficha (≈6 s); la revisión de ventas (≈17 s, la más lenta) 20 s más tarde para no frenar la pantalla
+  if (COS.esAdmin) { _cosFichaCargar(true); clearTimeout(window._cosSinT); window._cosSinT = setTimeout(() => { if (document.getElementById('cos-tabla')) loadCostosSin(); }, 20000); }
 }
 
 // La tabla «vendidas sin costo» lee las ventas (tarda): se pide DESPUÉS de pintar la pantalla.
@@ -6141,6 +6146,12 @@ function _cosFichaItems(r) {
     o ? o.tienda > 0 : null, o ? o.video > 0 : null, o ? o.catalogo > 0 : null];
 }
 function _cosFichaN(r) { const it = _cosFichaItems(r); return it.indexOf(null) >= 0 ? null : it.filter(Boolean).length; }
+// 4-oct · el punto junto al interruptor dice cómo está el producto en la tienda (solo si está enlazado a Shopify)
+function _cosShopPunto(r) {
+  if (!r.ShopifyId) return '';
+  const pub = r.ShopifyEstado === 'active', bor = r.ShopifyEstado === 'draft';
+  return ' <span style="color:' + (pub ? 'var(--gn)' : (bor ? '#d97706' : 'var(--mu)')) + ';font-size:11px;vertical-align:middle" title="' + (pub ? 'En Shopify: publicado' : (bor ? 'En Shopify: borrador (no se ve en la tienda)' : 'Enlazado a Shopify')) + '">●</span>';
+}
 function _cosFichaCelda(r) {
   const it = _cosFichaItems(r), n = _cosFichaN(r);
   if (n === null) return '<span style="color:var(--mu)" title="Calculando fotos y video…">…</span>';
@@ -6154,6 +6165,7 @@ async function _cosFichaCargar(force) {
     const rs = await apiSend('multimedia.resumen', {});
     MCT.res = {}; ((rs && rs.productos) || []).forEach(o => { MCT.res[_mctClave(o.diseno)] = o; });
     MCT.cargado = true;
+    try { localStorage.setItem('erp_swr_mct1', JSON.stringify({ t: Date.now(), res: MCT.res })); } catch (_) {}
   } catch (e) { MCT._cargando = false; return; }
   MCT._cargando = false;
   try { if (document.getElementById('cos-tabla')) _cosUpdateRows(); } catch (_) {}
@@ -6219,7 +6231,7 @@ const COS_REV_TXT = { bajo: ['Margen bajo (< ' + COS_MARGEN_MIN + '%)', 'Algún 
 
 function _cosFilas() {
   const q = COS.q.toLowerCase();
-  return COS.data.filter(r => {
+  const out = COS.data.filter(r => {
     if (COS.fest === 'ACTIVO' && r.Activo === false) return false;
     if (COS.fest === 'INACTIVO' && r.Activo !== false) return false;
     if (COS.catSel.length && COS.catSel.indexOf(r.Categoria) < 0) return false;
@@ -6227,18 +6239,22 @@ function _cosFilas() {
     if (q && [r.Categoria, r.TipoPrenda, r.Modelo, r.Notas].join(' ').toLowerCase().indexOf(q) < 0) return false;
     return true;
   });
+  // 4-oct · ordenar por la columna Ficha (clic en el encabezado: menos completas arriba → más completas arriba → orden normal). Las que aún calculan (…) van al final.
+  if (COS.esAdmin && (COS.sortF === 'asc' || COS.sortF === 'desc')) {
+    const k = r => { const n = _cosFichaN(r); return n === null ? 99 : n; };
+    const d = COS.sortF === 'asc' ? 1 : -1;
+    return out.map((r, i) => [r, i]).sort((a, b) => { const x = k(a[0]), y = k(b[0]); return x === y ? a[1] - b[1] : (x === 99 ? 1 : (y === 99 ? -1 : (x - y) * d)); }).map(a => a[0]);
+  }
+  return out;
 }
 
 // ── Columnas: Categoría · Tipo · Modelo siempre; el resto según rol y lo que se quiera ver ──
 function _cosCols() {
   const A = COS.esAdmin, c = [];
-  if (A) c.push({ t: 'Activo', sw: 1, stick: 1, f: r => '<label class="cos-sw" title="' + (r.Activo === false ? 'Inactivo: tocá para activar' : 'Activo: tocá para desactivar (no se borra nada)') + '"><input type="checkbox" class="cos-act" data-d="' + esc(r.Diseno) + '"' + (r.Activo === false ? '' : ' checked') + '><span></span></label>' });
+  if (A) c.push({ t: 'Activo', sw: 1, stick: 1, f: r => '<label class="cos-sw" title="' + (r.Activo === false ? 'Inactivo: tocá para activar (si está en Shopify, lo vuelve a publicar)' : 'Activo: tocá para desactivar (no se borra nada; si está en Shopify, lo oculta de la tienda)') + '"><input type="checkbox" class="cos-act" data-d="' + esc(r.Diseno) + '"' + (r.Activo === false ? '' : ' checked') + '><span></span></label>' + _cosShopPunto(r) });
+  if (A) c.push({ t: 'Ficha', stick: 1, sortf: 1, f: r => _cosFichaCelda(r) });
   c.push({ t: 'SKU', cat: 1, stick: 1, f: r => '<span style="color:var(--mu)">' + esc(r.TipoPrenda || '') + '</span> <b>' + esc(r.Modelo || '') + '</b>' + (A && r.Notas ? ' <span title="' + esc(r.Notas) + '" style="color:var(--mu)">🗒</span>' : '')
     + (A && _cosRevFlags(r).length ? ' <span title="' + esc(_cosRevFlags(r).map(k => COS_REV_TXT[k][0]).join(' · ')) + '" style="color:var(--rd)">⚠</span>' : '') });
-  if (A) c.push({ t: 'Shopify', f: r => r.ShopifyEstado === 'active' ? '<span style="color:var(--gn);font-weight:600" title="Publicado en Shopify">● Activo</span>'
-    : (r.ShopifyEstado === 'draft' ? '<span style="color:#d97706;font-weight:600" title="En Shopify como borrador">● Borrador</span>'
-    : (r.ShopifyId ? '<span style="color:var(--mu)" title="Enlazado a Shopify">enlazado</span>' : '<span style="color:var(--mu)" title="Todavía no está enlazado a un producto de Shopify">—</span>')) });
-  if (A) c.push({ t: 'Ficha', f: r => _cosFichaCelda(r) });
   if (A && COS.ver.comp) {
     (COS.comps || []).forEach(k => c.push({ g: 'Costo', gbg: 'rgba(249,115,22,.30)', t: k.t, num: 1,
       f: r => { const v = _cosN2(r.comp && r.comp[k.k]); return v == null ? '<span style="color:var(--mu)">·</span>' : v; } }));
@@ -6272,7 +6288,8 @@ function _cosAncho(c) {
   const g = COS.w[_cosKey(c)];
   if (g > 0) return g;
   if (c.acc) return 130;
-  if (c.sw) return 64;
+  if (c.sw) return 78;
+  if (c.sortf) return 64;
   if (c.t === 'SKU') return 250;
   if (c.t === 'Modificado') return 150;
   return c.num ? 74 : 100;
@@ -6319,6 +6336,7 @@ function _cosTablaHtml(rows) {
   const festTxt = { '': 'Todos', ACTIVO: 'Activos', INACTIVO: 'Inactivos' };
   const cab = c => {
     if (c.sw) return '<button class="btn ' + (COS.fest ? 'bp' : 'bg') + ' bs cos-festbtn" title="Tocá para alternar: todos → solo activos → solo inactivos" style="font-size:10px;padding:2px 5px">' + festTxt[COS.fest || ''] + '</button>';
+    if (c.sortf) return '<button class="btn ' + (COS.sortF ? 'bp' : 'bg') + ' bs cos-sortf" title="Ordenar por ficha: menos completas primero → más completas primero → orden normal" style="font-size:11px;padding:2px 6px">Ficha ' + (COS.sortF === 'asc' ? '▲' : (COS.sortF === 'desc' ? '▼' : '↕')) + '</button>';
     if (c.cat) return 'SKU <button class="btn ' + (COS.catSel.length ? 'bp' : 'bg') + ' bs cos-catbtn" title="Filtrar por una o varias categorías" style="font-size:11px;padding:2px 7px;margin-left:6px">Categoría ▾' + (COS.catSel.length ? ' (' + COS.catSel.length + ')' : '') + '</button>';
     return esc(c.t);
   };
@@ -6360,6 +6378,7 @@ function _cosBindRowBtns(scope) {
   scope.querySelectorAll('.cos-ficha').forEach(b => b.addEventListener('click', () => { const r = COS.data.find(x => String(x.Diseno) === b.dataset.d); if (r) _cosForm(Object.assign({}, r, { _tab: 'datos' })); }));
   scope.querySelectorAll('.cos-off').forEach(b => b.addEventListener('click', () => _cosDesactivar(b.dataset.d, b.dataset.a === '1')));
   scope.querySelectorAll('.cos-act').forEach(b => b.addEventListener('change', async () => { await _cosDesactivar(b.dataset.d, b.checked); _cosRender(); }));
+  scope.querySelectorAll('.cos-sortf').forEach(b => b.addEventListener('click', () => { COS.sortF = !COS.sortF ? 'asc' : (COS.sortF === 'asc' ? 'desc' : ''); _cosUpdateRows(); }));
   scope.querySelectorAll('.cos-festbtn').forEach(b => b.addEventListener('click', () => { COS.fest = COS.fest === '' ? 'ACTIVO' : (COS.fest === 'ACTIVO' ? 'INACTIVO' : ''); _cosUpdateRows(); }));
   scope.querySelectorAll('.cos-catbtn').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); _cosCatPop(b); }));
   scope.querySelectorAll('.cos-dup').forEach(b => b.addEventListener('click', () => _cosDuplicar(b.dataset.d)));
@@ -7031,7 +7050,8 @@ async function _cosGuardar(original, v) {
     try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: true, r: r })); } catch (_) {}
     toast('✓ Guardado: ' + esc(r.guardado || (tipo + ' ' + mod).trim()), 'ok');
     if (r && r.aviso) toast(r.aviso, 'warn');
-    loadCostosSin();
+    clearTimeout(window._cosSinT); window._cosSinT = setTimeout(() => { if (document.getElementById('cos-tabla')) loadCostosSin(); }, 20000);   // 4-oct · la revisión de ventas es lenta: no se pide en cada guardado
+    if (original && r && r.guardado && r.guardado !== original) _cosFichaCargar(true);   // renombrado: las fotos/video cuelgan del nombre nuevo
     try {   // si cambió la descripción o los cuidados de un producto ya enlazado, se manda a Shopify sin que tengas que pedirlo
       if (original && v && v.ShopifyId && (body.Descripcion !== String(v.Descripcion || '') || body.Cuidados !== String(v.Cuidados || ''))) _cosFichaEnviar(v, true);
     } catch (_) {}
@@ -20875,8 +20895,18 @@ async function _guardarPedidoModal(nro, body) {
     }
     // Fix raíz (2-ago): si nadie eligió en el selector, el pago queda a nombre
     // de la asesora logueada — nunca más pagos huérfanos por vacío.
-    const asesoraPago = (qId('pago-f-asesora') ? qId('pago-f-asesora').value.trim() : '') ||
+    let asesoraPago = (qId('pago-f-asesora') ? qId('pago-f-asesora').value.trim() : '') ||
       (typeof MY_ASESORA !== 'undefined' ? MY_ASESORA : '');
+    // 4-oct-2026 (Pablo) · NUNCA UN CORREO COMO ASESORA. Si quien registra no es asesora
+    // (Pablo, admin, logistica), el servidor estampaba su correo (_asesoraPagoStamp_):
+    // 99 pagos asi. Ahora el pago queda a nombre de la asesora del PEDIDO (si no es OTROS).
+    if (!asesoraPago) {
+      try {
+        const _rA = (pRaw || []).find(r => String(r['NroPedido'] || '').trim() === String(nro || '').trim() && String(r['Asesora'] || '').trim());
+        const _aA = _rA ? String(_rA['Asesora']).trim().toUpperCase() : '';
+        if (_aA && _aA !== 'OTROS' && _aA.indexOf('@') < 0) asesoraPago = _aA;
+      } catch (_) {}
+    }
     if (!monto || monto <= 0) { toast('Ingresa un monto válido', 'err'); return; }
     // 16-set-2026 — la forma de pago tambien se valida. Sacarla del desplegable no
     // alcanza: el valor puede llegar de la hoja Maestros, de un pedido viejo que se
