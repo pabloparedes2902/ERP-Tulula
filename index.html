@@ -6722,7 +6722,12 @@ async function _cosFichaEnviar(v, auto) {
   const out = document.getElementById('cfm-st') || document.getElementById('cfs-st');
   if (out) out.textContent = 'Enviando a Shopify…';
   try {
-    const r = await apiSend('costos.shopify', { fichaProducto: v.Diseno });
+    let r = await apiSend('costos.shopify', { fichaProducto: v.Diseno });
+    // 4-oct · con subida en bloque quedan fotos por mandar (tope de 12 por vuelta): se repite sola hasta terminar (máx. 6 vueltas)
+    for (let k = 2; k <= 6 && /faltan \d+ fotos/.test(String((r && r.texto) || '')); k++) {
+      if (out) out.textContent = 'Enviando a Shopify… (vuelta ' + k + ')';
+      r = await apiSend('costos.shopify', { fichaProducto: v.Diseno });
+    }
     const t = String((r && r.texto) || '');
     const mal = /FALLARON|FALLO|no pude/i.test(t);
     if (out) out.textContent = t;
@@ -6754,6 +6759,46 @@ function _cosOrdenTienda(v) {
   const pos = r => { const i = ord.indexOf(r.Url); return i < 0 ? 9999 : i; };
   return t.map((r, i) => ({ r, i })).sort((a, b) => (pos(a.r) - pos(b.r)) || (nd(a.r.Color) < nd(b.r.Color) ? -1 : nd(a.r.Color) > nd(b.r.Color) ? 1 : 0)
     || ((a.r.Tipo === 'PRINCIPAL' ? 0 : 1) - (b.r.Tipo === 'PRINCIPAL' ? 0 : 1)) || (a.i - b.i)).map(x => x.r);
+}
+// 4-oct · SUBIDA EN BLOQUE: el color sale del nombre del archivo ("rojo-1.jpg", "Camel 2.png", "VERDE OLIVA_3.webp"), sin importar tildes, mayúsculas, guiones ni números.
+// Si el nombre no dice ningún color (o dice dos distintos) devuelve '' y la pantalla te deja elegirlo de la lista. Gana el color más largo ("verde oliva" antes que "verde").
+function _cosColorDeArchivo(nombre, colores) {
+  const nd = _cosNormD;
+  const limpio = ' ' + nd(String(nombre || '').replace(/\.[A-Za-z0-9]{2,5}$/, '')).replace(/[_\-.()\d]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+  const hall = (colores || []).filter(c => { const k = nd(c).replace(/[_\-.]+/g, ' ').trim(); return k && limpio.indexOf(' ' + k + ' ') >= 0; });
+  if (!hall.length) return '';
+  const mayor = hall.reduce((m, c) => Math.max(m, nd(c).length), 0);
+  const top = hall.filter(c => nd(c).length === mayor);
+  const distintos = top.filter((c, i) => top.findIndex(d => nd(d) === nd(c)) === i);
+  // un color contenido en otro más largo ya hallado ("verde" dentro de "verde oliva") no cuenta como segundo color
+  const otros = hall.filter(c => nd(c).length < mayor && !top.some(t => (' ' + nd(t) + ' ').indexOf(' ' + nd(c) + ' ') >= 0));
+  return (distintos.length === 1 && !otros.length) ? distintos[0] : '';
+}
+function _cosBloquePintar(v) {
+  const box = document.getElementById('cfm-blq'); if (!box) return;
+  const b = v._blq;
+  if (!b) { box.innerHTML = ''; return; }
+  const cols = b.cols, sin = b.items.filter(x => !x.col).length;
+  const sel = 'padding:4px 6px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:12px';
+  box.innerHTML = '<div style="margin:8px 0;padding:10px;border:1px solid var(--ac);border-radius:var(--r)">'
+    + '<div style="font-weight:600;font-size:13px">📦 ' + b.items.length + ' fotos listas · ' + (b.items.length - sin) + ' con color reconocido' + (sin ? ' · <span style="color:var(--rd)">' + sin + ' por elegir</span>' : ' · <span style="color:var(--gn)">todas con color</span>') + '</div>'
+    + '<div style="font-size:11px;color:var(--mu);margin:2px 0 8px">Revisa el color de cada una (puedes cambiarlo) y sube todas de una vez.</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:8px">' + b.items.map((x, i) => '<div style="width:112px;font-size:11px"><img src="' + esc(x.url) + '" style="width:112px;height:120px;object-fit:cover;border-radius:6px;display:block;background:var(--bg3)">'
+      + '<div title="' + esc(x.f.name) + '" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mu);margin:2px 0">' + esc(x.f.name) + '</div>'
+      + '<select class="cfb-sel" data-i="' + i + '" style="' + sel + ';width:112px;' + (x.col ? '' : 'border-color:var(--rd)') + '"><option value="">— elegir color —</option>' + cols.map(c => '<option value="' + esc(c) + '"' + (x.col === c ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select></div>').join('') + '</div>'
+    + '<div style="margin-top:10px;display:flex;gap:8px;align-items:center"><button type="button" class="btn bp" id="cfb-go"' + (sin ? ' disabled' : '') + '>Subir las ' + b.items.length + ' fotos</button><button type="button" class="btn bg" id="cfb-no">Cancelar</button></div></div>';
+  box.querySelectorAll('.cfb-sel').forEach(el => el.addEventListener('change', () => { b.items[+el.dataset.i].col = el.value; _cosBloquePintar(v); }));
+  document.getElementById('cfb-no').addEventListener('click', () => { b.items.forEach(x => { try { URL.revokeObjectURL(x.url); } catch (_) {} }); v._blq = null; _cosBloquePintar(v); });
+  document.getElementById('cfb-go').addEventListener('click', async () => {
+    const go = document.getElementById('cfb-go'); go.disabled = true;
+    const grupos = {}; b.items.forEach(x => { (grupos[x.col] = grupos[x.col] || []).push(x.f); });
+    const nombres = Object.keys(grupos), nd = _cosNormD;
+    const hay = (c, co) => (v._mm || []).some(r => r.Tipo === 'PRINCIPAL' && r.Canal === c && nd(r.Color) === nd(co));
+    b.items.forEach(x => { try { URL.revokeObjectURL(x.url); } catch (_) {} }); v._blq = null;
+    for (let i = 0; i < nombres.length; i++) {
+      await _mulSubirVarios(grupos[nombres[i]], { dis: v.Diseno, col: nombres[i], canal: 'SHOPIFY', st: 'cfm-st', hay: hay, alTerminar: i === nombres.length - 1 ? (async () => { v._recargar = true; await _cosMediaPintar(v); _cosFichaEnviar(v, true); }) : (async () => {}) });
+    }
+  });
 }
 async function _cosMediaPintar(v) {
   const box = document.getElementById('cf-media');
@@ -6802,6 +6847,7 @@ async function _cosMediaPintar(v) {
     + (colores.length ? colores.map(c => '<div style="margin-top:6px"><b style="font-size:12px">' + esc(c) + '</b> <span style="font-size:11px;color:var(--mu)">' + delDe(c).length + ' fotos</span> ' + btn('＋ Agregar fotos de ' + esc(c), 'color', 'image/*', c) + fila(delDe(c))).join('')
         : '<div style="font-size:12px;color:var(--mu);margin:4px 0">Este producto aún no tiene colores en el catálogo: escribe el color y sube las fotos.</div>')
     + (sinColor.length ? '<div style="margin-top:6px"><b style="font-size:12px">Sin color</b>' + fila(sinColor) + '</div>' : '')
+    + '<div style="margin:6px 0"><label class="btn bp bs" style="cursor:pointer;margin:0;font-size:12px">📦 Subir fotos en bloque<input type="file" id="cfm-blq-in" accept="image/*" multiple style="display:none"></label> <span style="font-size:11px;color:var(--mu)">elige todas juntas: el color se detecta por el nombre del archivo (ej. «rojo-1.jpg»)</span></div><div id="cfm-blq"></div>'
     + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 10px"><input id="cfm-otro" autocomplete="off" placeholder="Otro color (ej. CELESTE)" style="padding:6px 8px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:12px;width:170px">' + btn('＋ Subir fotos de ese color', 'otro', 'image/*', '') + '</div>'
     + ordHtml
     + '<div style="font-size:12px;font-weight:600">🤖 Foto de catálogo <span style="font-weight:400;color:var(--mu)">(para el agente IA; la primera es la principal)</span> ' + btn('＋ Subir foto de catálogo', 'catalogo', 'image/*', '') + '</div>' + fila(cat)
@@ -6819,10 +6865,25 @@ async function _cosMediaPintar(v) {
     const bot = modo === 'catalogo' || modo === 'video';
     _mulSubirVarios(files, { dis: bot ? (v._nbot || v.Diseno) : v.Diseno, col: bot ? '' : col, canal: bot ? 'BOT' : 'SHOPIFY', st: 'cfm-st', hay: hay, alTerminar: tras });
   }));
+  const blqIn = document.getElementById('cfm-blq-in');
+  if (blqIn) blqIn.addEventListener('change', function () {
+    const fs = Array.from(this.files || []).filter(f => /^image\//.test(f.type) || /\.(jpe?g|png|webp)$/i.test(f.name)); this.value = '';
+    if (!fs.length) return;
+    fs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    (v._blq || {}).items && v._blq.items.forEach(x => { try { URL.revokeObjectURL(x.url); } catch (_) {} });
+    v._blq = { cols: colores.slice(), items: fs.map(f => ({ f, url: URL.createObjectURL(f), col: _cosColorDeArchivo(f.name, colores) })) };
+    _cosBloquePintar(v);
+  });
+  if (v._blq) _cosBloquePintar(v);
   box.querySelectorAll('.cfm-x').forEach(b => b.addEventListener('click', async ev => {
     ev.preventDefault();
-    if (!(await npConfirm('¿Quitar este archivo del ERP?\n\nNo se borra del almacén (queda inactivo). Si ya se envió a Shopify, ahí hay que quitarlo a mano en Medios.'))) return;
-    try { await apiSend('multimedia.desactivar', { Clave: b.dataset.k, Activar: false, Rapido: true }); v._mm = (v._mm || []).filter(r => r.Clave !== b.dataset.k); _cosMediaPintar(v); } catch (e) { toast('Error: ' + esc(e.message), 'err'); }
+    const quitada = (v._mm || []).find(r => r.Clave === b.dataset.k), deTienda = !!(quitada && quitada.Canal === 'SHOPIFY' && quitada.Tipo !== 'VIDEO' && v.ShopifyId);
+    if (!(await npConfirm(deTienda ? '¿Quitar esta foto?\n\nSe quita del ERP y también de la tienda Shopify (se borra de la página del producto). El archivo queda guardado en el almacén por si la necesitas.' : '¿Quitar este archivo del ERP?\n\nNo se borra del almacén (queda inactivo).'))) return;
+    try {
+      await apiSend('multimedia.desactivar', { Clave: b.dataset.k, Activar: false, Rapido: true });
+      v._mm = (v._mm || []).filter(r => r.Clave !== b.dataset.k); _cosMediaPintar(v);
+      if (deTienda) _cosFichaEnviar(v, true);
+    } catch (e) { toast('Error: ' + esc(e.message), 'err'); }
   }));
   // ── orden: arrastrar y soltar (o ‹ ›). Se guarda solo y se manda a Shopify unos segundos después del último cambio.
   const mover = (urls, de, haciaIdx) => { const a = urls.slice(), [x] = a.splice(a.indexOf(de), 1); a.splice(Math.max(0, Math.min(a.length, haciaIdx)), 0, x); return a; };
