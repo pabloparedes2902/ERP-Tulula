@@ -6171,6 +6171,7 @@ async function _cosFichaCargar(force) {
     const rs = await apiSend('multimedia.resumen', {});
     MCT.res = {}; ((rs && rs.productos) || []).forEach(o => { MCT.res[_mctClave(o.diseno)] = o; });
     MCT.cargado = true;
+    apiSend('multimedia.todos', {}).then(rt => { MCT.todos = (rt && rt.por) || {}; }).catch(() => {});   // 4-oct · en segundo plano, para que abrir fotos y video sea instantáneo
     try { localStorage.setItem('erp_swr_mct1', JSON.stringify({ t: Date.now(), res: MCT.res })); } catch (_) {}
   } catch (e) { MCT._cargando = false; return; }
   MCT._cargando = false;
@@ -6803,6 +6804,8 @@ async function _cosFichaEnviar(v, auto) {
 // 3-oct · lee fotos/video del producto con reintentos (el servidor a veces tarda o responde mal una vez)
 async function _cosMmLeer(v) {
   if (v._pL) return v._pL;
+  const pre = MCT.todos && MCT.todos[v.Diseno];   // 4-oct · ya lo trajo el viaje en segundo plano: abre al instante (se usa una sola vez; después se pide fresco)
+  if (pre && !v._mm) { delete MCT.todos[v.Diseno]; v._mm = pre.rows || []; v._cols = pre.colores || []; v._ord = pre.orden || []; v._nbot = pre.nombreBot || v.Diseno; return true; }
   v._pL = (async () => {
     let ult = null;
     for (let i = 0; i < 3; i++) {
@@ -6910,10 +6913,9 @@ async function _cosMediaPintar(v) {
       + sem(colores.length ? conFoto === colores.length : tienda.length > 0, 'Fotos de tienda' + (colores.length ? ' (' + conFoto + ' de ' + colores.length + ' colores)' : '')) + sem(vid.length > 0, 'Video') + sem(cat.length > 0, 'Foto de catálogo (agente IA)') + '</div>'
     + '<div style="font-size:12px;font-weight:600;margin-top:6px">📷 Fotos de la tienda, por color <span style="font-weight:400;color:var(--mu)">(sube todas; luego las ordenas abajo)</span></div>'
     + (colores.length ? colores.map(c => '<div style="margin-top:6px"><b style="font-size:12px">' + esc(c) + '</b> <span style="font-size:11px;color:var(--mu)">' + delDe(c).length + ' fotos</span> ' + btn('＋ Agregar fotos de ' + esc(c), 'color', 'image/*', c) + fila(delDe(c))).join('')
-        : '<div style="font-size:12px;color:var(--mu);margin:4px 0">Este producto aún no tiene colores en el catálogo: escribe el color y sube las fotos.</div>')
+        : '<div style="font-size:12px;color:var(--mu);margin:4px 0">Este producto aún no tiene colores en el catálogo. Los colores se crean en Stock → Crear SKU; apenas existan aparecen aquí.</div>')
     + (sinColor.length ? '<div style="margin-top:6px"><b style="font-size:12px">Sin color</b>' + fila(sinColor) + '</div>' : '')
     + '<div style="margin:6px 0"><label class="btn bp bs" style="cursor:pointer;margin:0;font-size:12px">📦 Subir fotos en bloque<input type="file" id="cfm-blq-in" accept="image/*" multiple style="display:none"></label> <span style="font-size:11px;color:var(--mu)">elige todas juntas: el color se detecta por el nombre del archivo (ej. «rojo-1.jpg»)</span></div><div id="cfm-blq"></div>'
-    + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 10px"><input id="cfm-otro" autocomplete="off" placeholder="Otro color (ej. CELESTE)" style="padding:6px 8px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:12px;width:170px">' + btn('＋ Subir fotos de ese color', 'otro', 'image/*', '') + '</div>'
     + ordHtml
     + '<div style="font-size:12px;font-weight:600">🤖 Foto de catálogo <span style="font-weight:400;color:var(--mu)">(para el agente IA; la primera es la principal)</span> ' + btn('＋ Subir foto de catálogo', 'catalogo', 'image/*', '') + '</div>' + fila(cat)
     + '<div style="font-size:12px;font-weight:600">🎬 Video <span style="font-weight:400;color:var(--mu)">(va a la tienda y al agente IA; MP4 o MOV, hasta 50 MB)</span> ' + btn('＋ Subir video', 'video', 'video/mp4,video/quicktime,video/webm', '') + '</div>' + fila(vid)
@@ -6926,7 +6928,6 @@ async function _cosMediaPintar(v) {
     const files = Array.from(this.files || []), modo = this.dataset.modo; let col = this.dataset.color || '';
     this.value = '';
     if (!files.length) return;
-    if (modo === 'otro') { col = String((document.getElementById('cfm-otro') || {}).value || '').trim(); if (!col) { toast('Escribe primero el color de esas fotos', 'err'); return; } }
     const bot = modo === 'catalogo' || modo === 'video';
     _mulSubirVarios(files, { dis: bot ? (v._nbot || v.Diseno) : v.Diseno, col: bot ? '' : col, canal: bot ? 'BOT' : 'SHOPIFY', st: 'cfm-st', hay: hay, alTerminar: tras });
   }));
@@ -7077,6 +7078,15 @@ function _cosSkusBloque(st) {
     + '<div style="font-size:11px;color:var(--mu);margin-bottom:4px">Tallas</div><div id="cf-skus-tal" style="display:flex;flex-wrap:wrap;gap:6px">' + chk('cf-sk-tal', u(mOpts('Talla'))) + '</div>'
     + '<div style="font-size:11px;color:var(--mu);margin-top:6px">Un conjunto no lleva SKU propio: su stock sale de sus piezas. Deja vacío si aún no sabes los colores.</div></div>';
 }
+// avisa si falta una de las dos listas: con colores y sin tallas (o al revés) no se puede crear ningún SKU
+function _cosSkusFalta(tipo) {
+  if (String(tipo).toUpperCase() === 'CONJUNTO') return '';
+  const nc = document.querySelectorAll('.cf-sk-col:checked').length + String((document.getElementById('cf-sk-newcol') || {}).value || '').split(',').filter(x => x.trim()).length;
+  const nt = document.querySelectorAll('.cf-sk-tal:checked').length;
+  if (nc && !nt) return 'Elegiste colores pero ninguna talla: marca las tallas (o quita los colores) para crear los SKU.';
+  if (nt && !nc) return 'Elegiste tallas pero ningún color: marca o escribe los colores (o quita las tallas) para crear los SKU.';
+  return '';
+}
 function _cosSkusItems(tipo, mod, cat) {
   if (String(tipo).toUpperCase() === 'CONJUNTO') return [];
   const cols = [...document.querySelectorAll('.cf-sk-col:checked')].map(x => x.value);
@@ -7099,6 +7109,8 @@ async function _cosGuardar(original, v) {
   // un conjunto sin componentes conserva su costo (suma de piezas): no se mandan componentes vacíos
   if (algunComp || tipo.toUpperCase() !== 'CONJUNTO') body.comp = comp;
   const act = document.getElementById('cf-activo'); if (act) body.Activo = !!act.checked;
+  const faltaSku = original ? '' : _cosSkusFalta(tipo);
+  if (faltaSku) { toast(faltaSku, 'err'); return; }
   const skuItems = original ? [] : _cosSkusItems(tipo, mod, body.Categoria);
   const btn = document.getElementById('cf-save');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
@@ -7128,13 +7140,18 @@ async function _cosGuardar(original, v) {
 async function _cosEliminar(diseno) {
   if (!(await npConfirm('Vas a ELIMINAR PARA SIEMPRE:\n\n' + diseno + '\n\nSe borra del ERP con sus costos, precios y textos. Esto no se puede deshacer desde la pantalla.\n\n¿Seguro?'))) return;
   if (!(await npConfirm('Última confirmación: ¿eliminar «' + diseno + '» definitivamente?'))) return;
+  // 4-oct · se quita de la lista AL INSTANTE y el servidor confirma por detrás (si falla, vuelve a aparecer)
+  const copia = COS.data.slice(), posAntes = COS.data.findIndex(x => x.Diseno === diseno);
+  COS.data = COS.data.filter(x => x.Diseno !== diseno); COS.editing = null; { const f0 = document.getElementById('cos-form'); if (f0) f0.innerHTML = ''; }
+  try { _cosRender(); } catch (_) {}
+  toast('Eliminando «' + esc(diseno) + '»…', 'info');
   try {
     const r = await apiSend('costos.eliminar', { Diseno: diseno });
     COS.editing = null; const f = document.getElementById('cos-form'); if (f) f.innerHTML = '';
     _cosAplicar(r); try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: true, r: r })); } catch (_) {}
     _cosRender(); toast('✓ Eliminado: ' + esc(diseno), 'ok');
     if (r && r.aviso) toast(r.aviso, 'warn');
-  } catch (e) { toast('No se pudo eliminar: ' + esc(e.message), 'err'); }
+  } catch (e) { COS.data = copia; try { _cosRender(); } catch (_) {} toast('No se pudo eliminar (vuelve a la lista): ' + esc(e.message), 'err'); }
 }
 async function _cosDesactivar(diseno, activar) {
   if (!activar) {
