@@ -1343,7 +1343,7 @@ const MK_COLS = {
   ticket:{t:'Ticket',w:96,f:v=>mkSol(v),h:'<b>Ticket promedio</b> = ingreso ÷ ventas de este anuncio.'},
   cac:{t:'CAC',w:96,f:v=>mkSol(v),h:'<b>CAC</b> = gasto ÷ ventas.<br>Cuánto cuesta conseguir una clienta con este anuncio. Para no perder plata tiene que quedar por debajo de <i>ticket × margen</i> (con el margen que pusiste en la barra de arriba).'},
   /* 7-sep-2026 — no es una metrica: es la historia del anuncio dibujada. */
-  spark:{t:'30 días',w:120,f:v=>v,h:'<b>Últimos 30 días.</b> Una barra por día: el alto es el gasto de ese día, <b style="color:#43c98a">verde</b> si ese día hubo venta, gris si gastó sin vender y una rayita si no corrió.<br>Sirve para reconocer la forma de un anuncio de un vistazo: si rindió al principio y se apagó solo, si es un ganador vivo, o si nunca lo dejaste correr.'},
+  spark:{t:'30 días',w:120,f:v=>v,h:'<b>Últimos 30 días.</b> Una barra por día.<br><b>Alto</b> = cuánto <b>gastó</b> ese día, comparado con el día que más gastó ESE anuncio (no dice nada de cuántas ventas hubo).<br><b>Color</b> = si ese día hubo venta: <b style="color:#43c98a">verde</b> = 1 o más ventas · <b>gris</b> = gastó y no vendió · <b>rayita</b> = no corrió.<br>Barra alta y verde = gastó mucho y vendió (1 o 10, el color no distingue). Pasa el mouse por una barra para ver su día, gasto y número de ventas; clic para la gráfica completa.'},
   roas:{t:'ROAS',w:88,f:v=>v===null?'—':Number(v).toFixed(2)+'x',h:'<b>ROAS</b> = ingreso ÷ gasto.<br>El punto de equilibrio es 1 ÷ margen: con 60% de margen necesitás 1.67x solo para no perder. Debajo de eso, cada sol invertido devuelve menos de lo que cuesta.<br><b>Ojo:</b> con una o dos ventas por anuncio el ROAS salta muchísimo; para decidir, mirá primero el costo por conversación y la tasa de cierre.'}
 };
 
@@ -1980,7 +1980,6 @@ function _mkSparkDatos(r){
    (a) el nombre dice "Estático"/"Imagen"/"Carrusel" (posición formato), o
    (b) tuvo impresiones pero 0 reproducciones de 3 s y 0 ThruPlays.
    Una imagen no tiene hook ni hold: se muestra NA, nunca 0%. */
-function _mkNorm(x){ return String(x || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
 function mkEsEstatico(r){
   if (!r) return false;
   if (!r._grupo && /estatic|imagen|carrusel|carousel/.test(_mkNorm(r.anuncio))) return true;
@@ -2018,14 +2017,30 @@ function mkPopSparkCerrar(){ const m = document.getElementById('mkPopSpark'); if
    "Frecuencia" existe en el codigo pero bot.gasto_anuncios todavia no trae
    el dato de alcance de Meta (siempre llega en 0) — por eso puede salir en
    blanco hasta que se arregle esa sincronizacion aparte. */
+/* 5-oct-2026 — pedido de Pablo: 10 indicadores en este orden, Ventas prendido
+   por defecto. Profit por día = ingreso − costo de prendas − gasto. El detalle
+   diario NO trae el costo de prendas, así que se usa el MISMO margen que la
+   tabla (mkMargenDe: el real del anuncio o el "Margen supuesto" de la barra).
+   Hook y Hold = NA si es imagen. */
+let mkPopCostoPct = null;   /* costo de prendas ÷ ingreso, del anuncio abierto */
+let mkPopEstatico = false;
 const MK_METRICAS = [
-  { key:'hook',       label:'Hook',       color:'#22c55e', calc:d => { const im=+d.impresiones||0, v3=+d.v3s||0; return im ? v3/im*100 : null; }, fmt:v => v.toFixed(1)+'%' },
+  { key:'ventas',     label:'Ventas',     color:'#22c55e', calc:d => +d.ventas || 0, fmt:v => v + (v === 1 ? ' venta' : ' ventas') },
+  { key:'gasto',      label:'Gasto',      color:'#94a3b8', calc:d => +d.gasto || 0, fmt:v => mkSol(v) },
+  { key:'profit',     label:'Profit',     color:'#14b8a6', calc:d => { const ing=+d.ingreso||0, g=+d.gasto||0; if (mkPopCostoPct === null) return null; return ing - ing*mkPopCostoPct - g; }, fmt:v => mkSol(v) },
+  { key:'hook',       label:'Hook',       color:'#f97316', video:true, calc:d => { const im=+d.impresiones||0, v3=+d.v3s||0; return im ? v3/im*100 : null; }, fmt:v => v.toFixed(1)+'%' },
+  { key:'hold',       label:'Hold',       color:'#facc15', video:true, calc:d => { const im=+d.impresiones||0, tp=+d.thruplays||0; return im ? tp/im*100 : null; }, fmt:v => v.toFixed(1)+'%' },
+  { key:'ctr',        label:'CTR',        color:'#ec4899', calc:d => { const im=+d.impresiones||0, lc=+d.link_clicks||0; return im ? lc/im*100 : null; }, fmt:v => v.toFixed(2)+'%' },
   { key:'cpm',        label:'CPM',        color:'#3b82f6', calc:d => { const im=+d.impresiones||0, g=+d.gasto||0; return im ? g/im*1000 : null; }, fmt:v => mkSol(v) },
-  { key:'cpc',        label:'CPC',        color:'#f59e0b', calc:d => { const lc=+d.link_clicks||0, g=+d.gasto||0; return lc ? g/lc : null; }, fmt:v => mkSol(v) },
-  { key:'roas',       label:'ROAS',       color:'#a855f7', calc:d => { const g=+d.gasto||0, ing=+d.ingreso||0; return g ? ing/g : null; }, fmt:v => v.toFixed(2)+'x' },
+  { key:'cpc',        label:'CPC',        color:'#06b6d4', calc:d => { const lc=+d.link_clicks||0, g=+d.gasto||0; return lc ? g/lc : null; }, fmt:v => mkSol(v) },
   { key:'frecuencia', label:'Frecuencia', color:'#ef4444', calc:d => { const im=+d.impresiones||0, al=+d.alcance||0; return al ? im/al : null; }, fmt:v => v.toFixed(2)+'x' },
+  { key:'roas',       label:'ROAS',       color:'#a855f7', calc:d => { const g=+d.gasto||0, ing=+d.ingreso||0; return g ? ing/g : null; }, fmt:v => v.toFixed(2)+'x' },
 ];
-let mkPopSel = new Set(['hook','roas']);
+let mkPopSel = new Set(['ventas']);
+function _mkPopCostoPct(r){
+  /* mismo margen que usa la tabla: el real del anuncio, o el "Margen supuesto" de la barra */
+  try { return r ? 1 - mkMargenDe(r) : null; } catch (e) { return null; }
+}
 let mkPopDias = null;
 let mkPopChart = null;
 
@@ -2055,6 +2070,8 @@ function _mkCargarChartJs(cb){
 }
 
 function mkPopSparkToggle(key){
+  const _m = MK_METRICAS.filter(x => x.key === key)[0];
+  if (_m && _m.video && mkPopEstatico) return;   /* imagen: hook/hold = NA */
   if (mkPopSel.has(key)) mkPopSel.delete(key); else mkPopSel.add(key);
   if (mkPopSel.size === 0) mkPopSel.add(key); /* siempre al menos uno prendido */
   mkPopSparkPintarBotones();
@@ -2064,8 +2081,9 @@ function mkPopSparkToggle(key){
 function mkPopSparkPintarBotones(){
   const cont = document.getElementById('mkPopSparkBtns');
   if (!cont) return;
-  cont.innerHTML = MK_METRICAS.map(m =>
-    '<button class="accn' + (mkPopSel.has(m.key) ? ' on' : '') + '" style="border-color:' + m.color
+  cont.innerHTML = MK_METRICAS.map(m => (m.video && mkPopEstatico)
+    ? '<button class="accn" disabled title="No aplica: es una imagen (estático)" style="opacity:.45;cursor:not-allowed;border-color:' + m.color + '">' + m.label + ' NA</button>'
+    : '<button class="accn' + (mkPopSel.has(m.key) ? ' on' : '') + '" style="border-color:' + m.color
     + (mkPopSel.has(m.key) ? ';background:' + m.color : '') + '" onclick="mkPopSparkToggle(\'' + m.key + '\')">' + m.label + '</button>'
   ).join('');
 }
@@ -2083,12 +2101,13 @@ function mkPopSparkDibujar(){
     }
     const dias = mkPopDias;
     const labels = dias.map(d => d.fecha.slice(5));
-    const activas = MK_METRICAS.filter(m => mkPopSel.has(m.key));
+    const activas = MK_METRICAS.filter(m => mkPopSel.has(m.key) && !(m.video && mkPopEstatico));
     const normalizar = activas.length > 1;
     const datasets = activas.map(m => {
       const raw = dias.map(d => m.calc(d));
       const nums = raw.filter(v => v != null && isFinite(v));
-      const max = nums.length ? Math.max(...nums, 0.0001) : 1;
+      /* 5-oct: escala por el valor ABSOLUTO más grande (Profit puede ser negativo) */
+      const max = nums.length ? Math.max(...nums.map(Math.abs), 0.0001) : 1;
       return {
         label: m.label,
         data: raw.map(v => v == null ? null : (normalizar ? v / max * 100 : v)),
@@ -2113,7 +2132,8 @@ function mkPopSparkDibujar(){
         },
         scales: {
           x: { ticks: { color: '#9db0cc' }, grid: { color: 'rgba(157,176,204,.12)' } },
-          y: { ticks: { color: '#9db0cc', callback: v => normalizar ? v + '%' : v }, grid: { color: 'rgba(157,176,204,.12)' } }
+          /* 5-oct: Ventas sola = conteo entero desde 0 (sin 0,2 ventas ni negativos) */
+          y: { min: (!normalizar && activas[0] && activas[0].key === 'ventas') ? 0 : undefined, ticks: { color: '#9db0cc', precision: (!normalizar && activas[0] && activas[0].key === 'ventas') ? 0 : undefined, callback: v => normalizar ? v + '%' : v }, grid: { color: 'rgba(157,176,204,.12)' } }
         }
       }
     });
@@ -2133,6 +2153,10 @@ function mkPopSparkAbrir(adId){
       + 'Todavía no tengo el detalle día por día de este anuncio. Intenta recargar el módulo en unos segundos.</div>';
   } else {
     mkPopDias = dd.dias.slice().sort((a, b) => a.fecha < b.fecha ? -1 : 1);
+    mkPopEstatico = mkEsEstatico(r);
+    mkPopCostoPct = _mkPopCostoPct(r);
+    mkPopSel.forEach(k => { const m = MK_METRICAS.filter(x => x.key === k)[0]; if (!m || (m.video && mkPopEstatico)) mkPopSel.delete(k); });
+    if (!mkPopSel.size) mkPopSel.add('ventas');
     cuerpo.innerHTML = '<div id="mkPopSparkBtns" style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px"></div>'
       + '<div style="position:relative;height:320px"><canvas id="mkPopChart"></canvas></div>'
       + '<div style="font-size:10px;color:var(--txt2);margin-top:8px">Con más de un indicador seleccionado, cada línea se muestra en escala relativa (0-100%) de su propio máximo para poder compararlas — el valor real siempre sale al pasar el mouse.</div>';
