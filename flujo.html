@@ -784,7 +784,7 @@ async function embPisarCanonico(d, desde, hasta, vivo){
         d.asesoras.forEach(x => { const v = VA.porAses[nomAsesora(x.asesora)] || 0; x.compras = v; x.acumulado.compras = v; });
         const fechas = _listaDias(dF, hF), hist = [];
         fechas.forEach(f => ASESORAS_VENTAS.forEach(n => hist.push({ fecha: f, vendedora: n, ventas: VA.porDia[n + '|' + f] || 0 })));
-        d.__ventasDia = { historia: hist, fechas: fechas };
+        d.__ventasDia = { historia: hist, fechas: fechas, sinAtrib: VA.sinAtrib || 0 };
         d.__ventasAsesoraDe = 'base';
       } else {
         d.__ventasAviso = 'Abre Ventas desde el ERP (con tu sesi\u00f3n) para ver las ventas por d\u00eda.';
@@ -3025,7 +3025,7 @@ function pintarSerie(idx){
     if (!val[k]) val[k] = ((TURNO_ASESORA[v]||[]).indexOf(dow) > -1) ? 0 : null;
   }));
   let maxV = 0; Object.keys(val).forEach(k => { if ((val[k]||0) > maxV) maxV = val[k]; });
-  const techo = Math.max(4, Math.ceil(maxV));
+  const techo = Math.max(META_VENTAS_DIA + 1, Math.ceil(maxV));
   const pasoY = techo <= 6 ? 1 : (techo <= 12 ? 2 : Math.ceil(techo / 6));
   const tope = Math.ceil(techo / pasoY) * pasoY;
 
@@ -3034,6 +3034,7 @@ function pintarSerie(idx){
   z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:14px;padding:12px 14px;background:var(--card)">'
     + '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
     +   '<b style="font-size:13.5px">Ventas por asesora por d\u00eda</b>'
+    +   ((idx && idx.sinAtrib) ? '<span style="font-size:11px;color:var(--txt2)">'+idx.sinAtrib+' venta'+(idx.sinAtrib===1?'':'s')+' a\u00fan sin atribuir</span>' : '')
     +   '<span style="flex:1"></span>' + leyenda
     + '</div><div id="embSerieSvg"></div></div>';
 
@@ -3054,6 +3055,10 @@ function pintarSerie(idx){
       grid += '<line x1="'+mL+'" y1="'+y.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+y.toFixed(1)+'" stroke="var(--bd)" stroke-width="1" opacity="'+(v===0?'.85':'.32')+'"/>'
             + '<text x="'+(mL-8)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="11" fill="var(--txt2)">'+v+'</text>';
     }
+    /* linea de META (4 ventas/dia por asesora) */
+    const yM = py(META_VENTAS_DIA);
+    grid += '<line x1="'+mL+'" y1="'+yM.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+yM.toFixed(1)+'" stroke="#ef4444" stroke-width="1.6" stroke-dasharray="6 5"/>'
+          + '<text x="'+(W-mR-4)+'" y="'+(yM-6).toFixed(1)+'" text-anchor="end" font-size="11" font-weight="800" fill="#ef4444">meta '+META_VENTAS_DIA+'/d\u00eda</text>';
     const paso = Math.max(1, Math.ceil(fechas.length / Math.max(2, Math.floor((W-mL-mR)/42))));
     let ejeX='';
     fechas.forEach((f,i)=>{
@@ -3122,6 +3127,7 @@ try{ if (parent !== window) parent.postMessage({tipo:'erp-tema-pedir'}, '*'); }c
    Dias de turno: Angie L-V, Dayann V-M (vie, sab, dom, lun, mar), Lucia S-D,
    Tula todos los dias. 0 = domingo ... 6 = sabado. */
 const ASESORAS_VENTAS = ['Angie', 'Dayann', 'Lucia', 'Tula'];
+const META_VENTAS_DIA = 4;   /* 5-oct-2026 (Pablo): 4 ventas diarias por asesora */
 const TURNO_ASESORA = { Angie: [1,2,3,4,5], Dayann: [5,6,0,1,2], Lucia: [6,0], Tula: [0,1,2,3,4,5,6] };
 function nomAsesora(x){
   const u = String(x || '').trim().toUpperCase();
@@ -3151,32 +3157,38 @@ function esquinaVentasDia(a, d){
   const r = d.__rango || (typeof rango === 'function' ? rango() : null);
   const dias = r ? diasTurno(nombre, r.desde, r.hasta) : 0;
   const pd = dias ? (v / dias) : 0;
-  return '<span title="'+v+' ventas en '+dias+' d\u00edas de turno" style="text-align:right;line-height:1.05">'
-    + '<b style="font-size:17px;font-weight:900">'+pd.toFixed(1)+'</b>'
+  /* verde si llega a la meta, rojo si no. Tula (el bot) no tiene meta: va en blanco. */
+  const col = nombre === 'Tula' ? 'var(--txt)' : (pd >= META_VENTAS_DIA ? 'var(--ok)' : 'var(--bad)');
+  return '<span title="'+v+' ventas en '+dias+' d\u00edas de turno'+(nombre==='Tula'?'':' \u00b7 meta '+META_VENTAS_DIA+'/d\u00eda')+'" style="text-align:right;line-height:1.05">'
+    + '<b style="font-size:17px;font-weight:900;color:'+col+'">'+pd.toFixed(1)+'</b>'
     + '<span style="display:block;font-size:9.5px;font-weight:800;color:var(--txt2);letter-spacing:.03em">VENTAS/D\u00cdA</span></span>';
 }
 /* Ventas del rango por asesora y por dia, de erp.v_venta_ads (copia que se
-   refresca cada 5 min). Cuenta a quien CERRO la venta (asesora_vendio): si Tula
-   la cerro sola, es de Tula aunque el pedido lo haya registrado una asesora.
-   Si no hay dato de quien cerro, cuenta quien la atendio. */
+   refresca al instante, ver PEGAR_EN_SUPABASE_ventas_al_instante_5oct.sql). Cuenta a
+   quien CERRO la venta por ESFUERZO de venta (asesora_vendio, regla de atribucion
+   fijada por Pablo): si Tula la cerro sola, es de Tula aunque el pedido lo haya
+   registrado una asesora. 5-oct T3: sin atribuir NO se le da a quien la registro
+   (eso es administrativo): se cuenta aparte como "sin atribuir". */
 async function _ventasAsesoraRango(desdeF, hastaF){
   const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
   const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
   if (!tok) return null;
-  const r = await fetch(FL_SB_URL + '/rest/v1/v_venta_ads?select=dia_pago,asesora_vendio,asesora_atendio&dia_pago=gte.' + desdeF + '&dia_pago=lte.' + hastaF,
+  const r = await fetch(FL_SB_URL + '/rest/v1/v_venta_ads?select=dia_pago,asesora_vendio&dia_pago=gte.' + desdeF + '&dia_pago=lte.' + hastaF,
     { headers: { apikey: FL_SB_ANON, Authorization: 'Bearer ' + tok, 'Accept-Profile': 'erp' } });
   if (!r.ok) return null;
   const filas = await r.json();
   if (!Array.isArray(filas)) return null;
   const porAses = {}, porDia = {};
+  let sinAtrib = 0;
   filas.forEach(f => {
-    const n = nomAsesora(f.asesora_vendio || f.asesora_atendio);
+    if (!String(f.asesora_vendio || '').trim()){ sinAtrib++; return; }
+    const n = nomAsesora(f.asesora_vendio);
     if (!n) return;
     const dia = String(f.dia_pago || '').slice(0, 10);
     porAses[n] = (porAses[n] || 0) + 1;
     porDia[n + '|' + dia] = (porDia[n + '|' + dia] || 0) + 1;
   });
-  return { porAses, porDia, n: filas.length };
+  return { porAses, porDia, n: filas.length, sinAtrib };
 }
 function _listaDias(desdeF, hastaF){
   const out = []; const d = new Date(desdeF + 'T12:00:00'), h = new Date(hastaF + 'T12:00:00');
