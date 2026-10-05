@@ -785,6 +785,13 @@ async function embPisarCanonico(d, desde, hasta, vivo){
         const fechas = _listaDias(dF, hF), hist = [];
         fechas.forEach(f => ASESORAS_VENTAS.forEach(n => hist.push({ fecha: f, vendedora: n, ventas: VA.porDia[n + '|' + f] || 0 })));
         d.__ventasDia = { historia: hist, fechas: fechas, sinAtrib: VA.sinAtrib || 0 };
+        /* 5-oct T5 · "Hoy: X de 4" en cada tarjeta: si el filtro no incluye hoy, se pide aparte */
+        const hoyF = _fHoy();
+        if (dF <= hoyF && hF >= hoyF){
+          d.__hoyVentas = {}; ASESORAS_VENTAS.forEach(n => { d.__hoyVentas[n] = VA.porDia[n + '|' + hoyF] || 0; });
+        } else {
+          try { const VH = await _ventasAsesoraRango(hoyF, hoyF); if (VH) d.__hoyVentas = VH.porAses; } catch (e) {}
+        }
         d.__ventasAsesoraDe = 'base';
       } else {
         d.__ventasAviso = 'Abre Ventas desde el ERP (con tu sesi\u00f3n) para ver las ventas por d\u00eda.';
@@ -2768,7 +2775,7 @@ function cargarEmbudo(){
       d.acumulado = Object.assign(d.acumulado || {}, _canon.acumulado || {});
       if (_canon.asesoras) d.asesoras = _canon.asesoras;
       /* 5-oct-2026 — las ventas por dia y el rango viajan con lo canonico */
-      ['__ventasDia', '__ventasAviso', '__rango'].forEach(k => { if (_canon[k] !== undefined) d[k] = _canon[k]; });
+      ['__ventasDia', '__ventasAviso', '__rango', '__hoyVentas'].forEach(k => { if (_canon[k] !== undefined) d[k] = _canon[k]; });
       d.__canon = true;
     }
     embData = { d: d, dPrev: (embData && embData.dPrev) || null, lbl: r.lbl };
@@ -3011,7 +3018,9 @@ function pintarSerie(idx){
   const z = document.getElementById('embSerie'); if(!z) return;
   const hist = (idx && idx.historia) || [];
   const fechas = (idx && idx.fechas) || [...new Set(hist.map(x=>x.fecha))].sort();
-  const quienes = ASESORAS_VENTAS.slice();
+  window.__ultSerie = idx;
+  const solo = window.__serieSolo && ASESORAS_VENTAS.indexOf(window.__serieSolo) > -1 ? window.__serieSolo : null;
+  const quienes = solo ? [solo] : ASESORAS_VENTAS.slice();
   if(!fechas.length){
     z.innerHTML = idx && idx.aviso ? '<div style="color:var(--txt2);font-size:11.5px;padding:6px 2px">'+idx.aviso+'</div>' : '';
     return;
@@ -3029,11 +3038,19 @@ function pintarSerie(idx){
   const pasoY = techo <= 6 ? 1 : (techo <= 12 ? 2 : Math.ceil(techo / 6));
   const tope = Math.ceil(techo / pasoY) * pasoY;
 
-  const leyenda = quienes.map(v => capsulaAsesora(v)).join('<span style="width:6px;display:inline-block"></span>');
+  const leyenda = ASESORAS_VENTAS.map(v => '<span style="cursor:pointer;opacity:' + (solo && solo !== v ? '.35' : '1') + '" title="Ver solo a ' + v + '" onclick="serieSolo(\'' + v + '\')">' + capsulaAsesora(v) + '</span>').join('<span style="width:6px;display:inline-block"></span>');
+  /* en modo "una sola": cuantos dias de turno llego a la meta */
+  let resumenSolo = '';
+  if (solo){
+    let enTurno = 0, enMeta = 0;
+    fechas.forEach(f => { const y = val[solo + '|' + f]; if (y != null){ enTurno++; if (y >= META_VENTAS_DIA) enMeta++; } });
+    resumenSolo = '<span style="font-size:11.5px;color:var(--txt2)">' + capsulaAsesora(solo) + ' lleg\u00f3 a la meta <b style="color:var(--txt)">' + enMeta + ' de ' + enTurno + '</b> d\u00edas de turno'
+      + ' \u00b7 <a href="javascript:void(0)" onclick="serieSolo(\'' + solo + '\')" style="color:var(--txt2)">ver todas</a></span>';
+  }
 
   z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:14px;padding:12px 14px;background:var(--card)">'
     + '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
-    +   '<b style="font-size:13.5px">Ventas por asesora por d\u00eda</b>'
+    +   '<b style="font-size:13.5px">Ventas por asesora por d\u00eda</b>' + resumenSolo
     +   ((idx && idx.sinAtrib) ? '<span style="font-size:11px;color:var(--txt2)">'+idx.sinAtrib+' venta'+(idx.sinAtrib===1?'':'s')+' a\u00fan sin atribuir</span>' : '')
     +   '<span style="flex:1"></span>' + leyenda
     + '</div><div id="embSerieSvg"></div></div>';
@@ -3076,7 +3093,9 @@ function pintarSerie(idx){
         if(y==null || isNaN(y)){ abierto=false; return; }
         d += (abierto?' L ':' M ') + px(i).toFixed(1) + ' ' + py(y).toFixed(1);
         abierto = true;
-        puntos += '<circle cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="3.2" fill="'+col+'" stroke="var(--card)" stroke-width="1.5"/>'
+        /* una sola asesora: cada dia verde si llego a la meta, rojo si no */
+        const colP = (solo && v !== 'Tula') ? (y >= META_VENTAS_DIA ? '#22c55e' : '#ef4444') : col;
+        puntos += '<circle cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="'+(solo?'5':'3.2')+'" fill="'+colP+'" stroke="var(--card)" stroke-width="1.5"/>'
                 + '<circle class="ptHit" cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="11" fill="transparent" style="cursor:pointer"'
                 + ' data-a="'+v+'" data-f="'+f+'" data-v="'+(+y)+(+y===1?' venta':' ventas')+'" data-c="'+col+'"/>';
       });
@@ -3150,6 +3169,66 @@ function diasTurno(nombre, desdeSeg, hastaSeg){
   let n = 0, guard = 0;
   while (d <= fin && guard++ < 400){ if (t.indexOf(d.getDay()) > -1) n++; d.setDate(d.getDate() + 1); }
   return n;
+}
+function _fHoy(){ const d = new Date(), p = x => String(x).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
+/* dias de turno entre dos fechas (Date), SIN tope de hoy: sirve para el mes completo */
+function diasTurnoEntre(nombre, d1, d2){
+  const t = TURNO_ASESORA[nombre]; if (!t) return 0;
+  const d = new Date(d1); d.setHours(12, 0, 0, 0); const f = new Date(d2); f.setHours(12, 0, 0, 0);
+  let n = 0, g = 0;
+  while (d <= f && g++ < 400){ if (t.indexOf(d.getDay()) > -1) n++; d.setDate(d.getDate() + 1); }
+  return n;
+}
+const MESES_ES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+/* 5-oct-2026 (pedido de Pablo) — debajo de cada tarjeta: que tan lejos esta de la meta.
+   1) barra del periodo: ventas vs 4 x dias de turno · 2) hoy: X de 4 · 3) solo con
+   "Mes hasta hoy": cuanto necesita por dia en los dias de turno que le quedan. Tula no. */
+function pieMeta(a, d){
+  const nombre = nomAsesora(a.asesora);
+  if (!nombre || nombre === 'Tula') return '';
+  const v = +((a.acumulado || {}).compras || a.compras || 0);
+  const r = d.__rango || (typeof rango === 'function' ? rango() : null);
+  const dias = r ? diasTurno(nombre, r.desde, r.hasta) : 0;
+  const meta = META_VENTAS_DIA * dias;
+  const pct = meta ? Math.round(v / meta * 100) : 0;
+  const colPct = pct >= 100 ? 'var(--ok)' : (pct >= 75 ? '#f59e0b' : 'var(--bad)');
+  const fil = (txt) => '<div style="font-size:11.5px;color:var(--txt2);margin-top:6px;line-height:1.35">' + txt + '</div>';
+  let h = '<div style="border-top:1px dashed var(--bd);margin-top:10px;padding-top:10px">';
+  h += '<div style="display:flex;justify-content:space-between;align-items:baseline;font-size:11.5px">'
+     + '<span style="font-weight:800;color:var(--txt2);letter-spacing:.03em">META DEL PER\u00cdODO</span>'
+     + '<span><b style="color:' + colPct + '">' + v + ' de ' + meta + ' = ' + pct + '%</b>'
+     + (meta > v ? ' <span style="color:var(--txt2)">\u00b7 faltan ' + (meta - v) + '</span>' : '') + '</span></div>'
+     + '<div style="background:' + _op('#9aa3b2', .18) + ';border-radius:6px;height:10px;overflow:hidden;margin-top:5px">'
+     + '<div style="width:' + Math.min(100, pct) + '%;height:100%;background:' + colPct + ';border-radius:6px"></div></div>';
+  /* hoy */
+  const hoyDow = new Date().getDay();
+  if ((TURNO_ASESORA[nombre] || []).indexOf(hoyDow) > -1){
+    const vh = d.__hoyVentas ? (+d.__hoyVentas[nombre] || 0) : null;
+    if (vh != null) h += fil('Hoy: <b style="color:' + (vh >= META_VENTAS_DIA ? 'var(--ok)' : 'var(--txt)') + '">' + vh + ' de ' + META_VENTAS_DIA + '</b>'
+                          + (vh < META_VENTAS_DIA ? ' \u00b7 le faltan ' + (META_VENTAS_DIA - vh) : ' \u2714 meta del d\u00eda'));
+  } else {
+    h += fil('Hoy no le toca turno');
+  }
+  /* ritmo para cerrar el mes (solo "Mes hasta hoy") */
+  if (typeof periodo !== 'undefined' && periodo === 'mtd'){
+    const hoy = new Date(), ini = new Date(hoy.getFullYear(), hoy.getMonth(), 1), fin = new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0);
+    const metaMes = META_VENTAS_DIA * diasTurnoEntre(nombre, ini, fin);
+    const quedan = diasTurnoEntre(nombre, hoy, fin);   /* hoy incluido: el dia aun no termina */
+    const falta = Math.max(0, metaMes - v);
+    const nec = quedan ? falta / quedan : 0;
+    h += fil(falta === 0 ? '<b style="color:var(--ok)">Ya lleg\u00f3 a la meta de ' + MESES_ES[hoy.getMonth()] + ' (' + metaMes + ')</b>'
+      : (quedan ? 'Para llegar a <b>' + metaMes + '</b> en ' + MESES_ES[hoy.getMonth()] + ' necesita <b style="color:' + (nec > META_VENTAS_DIA ? 'var(--bad)' : 'var(--txt)') + '">'
+                  + nec.toFixed(1) + '/d\u00eda</b> en sus ' + quedan + ' d\u00edas de turno que quedan'
+                : 'Mes cerrado: le faltaron ' + falta + ' para la meta de ' + metaMes));
+  }
+  return h + '</div>';
+}
+/* 5-oct-2026 — tocar la capsula de una asesora (tarjeta o leyenda) deja el grafico
+   solo con ella, con cada dia en verde (llego a 4) o rojo (no llego). Tocar de nuevo = todas. */
+function serieSolo(n){
+  window.__serieSolo = (window.__serieSolo === n) ? null : n;
+  try { pintarSerie(window.__ultSerie); } catch (e) {}
+  const z = document.getElementById('embSerie'); if (z && window.__serieSolo && z.scrollIntoView) z.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 function esquinaVentasDia(a, d){
   const nombre = nomAsesora(a.asesora);
@@ -3274,6 +3353,7 @@ function cajasGrupo(d, dp, cfg){
          el % principal ya dice todo y el globito al costado confundia. */
     });
     if (cfg.mostrarMejora) h += bloqueMejora(a, d);
+    if (cfg.pie) h += cfg.pie(a);
     h += `</div>`;
   }
   return h + '</div>';
@@ -3296,7 +3376,8 @@ function cajasAsesoras(d, dp){
   const dConDatos = Object.assign({}, d, {asesoras:conDatos});
   return cajasGrupo(dConDatos, dp, {campo:'asesoras', claveK:'asesora', filas:FIL5,
     nombreFn:x => x==='Tula' ? '\ud83e\udd16 Tula' : nomCorto(x),
-    nombreHtml:x => capsulaAsesora(nomAsesora(x), true),
+    nombreHtml:x => '<span style="cursor:pointer" title="Ver solo a ' + nomAsesora(x) + ' en el gr\u00e1fico" onclick="serieSolo(\'' + nomAsesora(x) + '\')">' + capsulaAsesora(nomAsesora(x), true) + '</span>',
+    pie:a => pieMeta(a, d),
     esquina:a => esquinaVentasDia(a, d),
     /* 5-oct-2026 (pedido de Pablo) — sin el bloque "Principal mejora" */
     denomK:'conversaciones', metaConv:8, mostrarMejora:false});
