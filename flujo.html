@@ -675,13 +675,14 @@ const BASE_N8N = 'https://n8n-production-4e716.up.railway.app/webhook';
    no hay pase, se pide a n8n como siempre. */
 const FL_SB_URL  = 'https://vlilvrxfppppzwyaeviu.supabase.co';
 const FL_SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsaWx2cnhmcHBwcHp3eWFldml1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2NDIwMTMsImV4cCI6MjEwMDIxODAxM30.Bmo4CNDDbSF7Vp9JpDm7ceKUlsKKdufKcKFDIGHS4Hs';
-async function _flGetJSON(url){
-  const porDias = (window.MKDIAS && typeof periodo !== 'undefined' && periodo === 'custom') ? window.MKDIAS.leer(url).catch(() => null) : null;   /* 30-set T19 · fechas personalizadas: en paralelo */
+/* 5-oct-2026 · vivo = true: 2do pase al abrir Ventas, directo a n8n sin copia (ni espejo_cache ni dias) */
+async function _flGetJSON(url, vivo){
+  const porDias = (!vivo && window.MKDIAS && typeof periodo !== 'undefined' && periodo === 'custom') ? window.MKDIAS.leer(url).catch(() => null) : null;   /* 30-set T19 · fechas personalizadas: en paralelo */
   try {
     const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
     const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
     const k = url.indexOf('/webhook/') > -1 ? 'mk:' + url.split('/webhook/')[1] : null;
-    if (tok && k){
+    if (tok && k && !vivo){
       const r = await fetch(FL_SB_URL + '/rest/v1/espejo_cache?select=datos,generado&clave=eq.' + encodeURIComponent(k),
                             { headers: { apikey: FL_SB_ANON, Authorization: 'Bearer ' + tok } });
       if (r.ok){
@@ -691,7 +692,7 @@ async function _flGetJSON(url){
     }
   } catch (e) { /* sin copia: vamos a n8n */ }
   /* 30-set T18 · rango personalizado: se arma sumando los DIAS precalculados (publico/mk_dias.js) */
-  try { const d = porDias ? await porDias : (window.MKDIAS ? await window.MKDIAS.leer(url) : null); if (d) return d; } catch (e) {}
+  try { const d = vivo ? null : porDias ? await porDias : (window.MKDIAS ? await window.MKDIAS.leer(url) : null); if (d) return d; } catch (e) {}
   return fetch(url).then(x => x.json());
 }
 const URL_EMBUDO = BASE_N8N + '/embudo-rango-v2';
@@ -736,7 +737,7 @@ function _embFecha(v){
 
 /* Pisa el acumulado con el dato canonico. Si algun endpoint no responde,
    deja lo que ya venia: la pantalla nunca se queda en blanco. */
-async function embPisarCanonico(d, desde, hasta){
+async function embPisarCanonico(d, desde, hasta, vivo){
   if (!d) return d;
   const ac = d.acumulado || (d.acumulado = {});
   try {
@@ -744,8 +745,8 @@ async function embPisarCanonico(d, desde, hasta){
       /* 5-oct-2026 · tambien en FECHA: n8n (/embudo-periodo) solo entiende 'AAAA-MM-DD';
          con segundos ignoraba el rango y devolvia el MES EN CURSO (ultimos 30 dias,
          mes pasado, etc. mostraban las conversaciones de este mes). */
-      _flGetJSON(URL_EMBUDO_P + '?desde=' + _embFecha(desde) + '&hasta=' + _embFecha(hasta)).catch(() => null),
-      _flGetJSON(URL_VENTAS_P + '?desde=' + _embFecha(desde) + '&hasta=' + _embFecha(hasta)).catch(() => null)
+      _flGetJSON(URL_EMBUDO_P + '?desde=' + _embFecha(desde) + '&hasta=' + _embFecha(hasta), vivo).catch(() => null),
+      _flGetJSON(URL_VENTAS_P + '?desde=' + _embFecha(desde) + '&hasta=' + _embFecha(hasta), vivo).catch(() => null)
     ]);
     const TODO = Array.isArray(emb) ? emb : [];
     const E = TODO.filter(x => (x.tipo || 'ad') === 'ad');
@@ -775,7 +776,20 @@ async function embPisarCanonico(d, desde, hasta){
          conversaciones ('Angie'): no coinciden y todas salian 0. Mientras el nodo
          de n8n no tenga el arreglo, se completan con el Marcador (mismo rango),
          que si cuenta quien cerro cada venta. Si n8n ya trae ventas, manda n8n. */
-      if (!d.asesoras.some(x => x.compras > 0)){
+      /* 5-oct-2026 — 1ro: ventas por asesora desde la base (al dia, ~5 min) */
+      const dF = _embFecha(desde), hF = _embFecha(hasta);
+      d.__rango = { desde: Number(desde) || Math.floor(new Date(dF + 'T00:00:00') / 1000), hasta: Number(hasta) || Math.floor(new Date(hF + 'T23:59:59') / 1000) };
+      let VA = null; try { VA = await _ventasAsesoraRango(dF, hF); } catch (e) { VA = null; }
+      if (VA){
+        d.asesoras.forEach(x => { const v = VA.porAses[nomAsesora(x.asesora)] || 0; x.compras = v; x.acumulado.compras = v; });
+        const fechas = _listaDias(dF, hF), hist = [];
+        fechas.forEach(f => ASESORAS_VENTAS.forEach(n => hist.push({ fecha: f, vendedora: n, ventas: VA.porDia[n + '|' + f] || 0 })));
+        d.__ventasDia = { historia: hist, fechas: fechas };
+        d.__ventasAsesoraDe = 'base';
+      } else {
+        d.__ventasAviso = 'Abre Ventas desde el ERP (con tu sesi\u00f3n) para ver las ventas por d\u00eda.';
+      }
+      if (!VA && !d.asesoras.some(x => x.compras > 0)){
         const mc = await _flGetJSON(BASE_N8N + '/marcador?desde=' + _embFecha(desde) + '&hasta=' + _embFecha(hasta)).catch(() => null);
         const MA = (mc && Array.isArray(mc.asesoras)) ? mc.asesoras : [];
         const llave = (t) => { const u = String(t || '').trim().toUpperCase();
@@ -2604,11 +2618,10 @@ function pintarEmbudo(ac, nota, acPrev, etapasDef, paletaDef){
   if (ac.compras_con_clic !== undefined)
     /* 21-set - el pie dice QUE se esta contando: ventas cobradas y, si hay, las que
        solo pagaron un adelanto y por eso no cuentan. */
-    o+='<text x="'+cx+'" y="466" text-anchor="middle" class="epie"><tspan class="epieb">'+(ac.compras||0)+
-       '</tspan> cobradas'+(ac.compras_adelanto ? ' · <tspan class="epieb">'+ac.compras_adelanto+'</tspan> con adelanto' : '')+
-       ' · <tspan class="epieb">'+ac.compras_con_clic+
-       '</tspan> con anuncio identificado · <tspan class="epieb">'+ac.compras_sin_clic+
-       '</tspan> sin anuncio identificado (cuentan en el total)</text>';
+    /* 5-oct-2026 (pedido de Pablo) — el pie dice solo esto: con ad_id / sin ad_id */
+    o+='<text x="'+cx+'" y="466" text-anchor="middle" class="epie"><tspan class="epieb">'+ac.compras_con_clic+
+       '</tspan> con ad_id · <tspan class="epieb">'+ac.compras_sin_clic+
+       '</tspan> sin ad_id</text>';
   document.getElementById('embZona').innerHTML =
     '<div id="embCard"><svg id="embSvg" viewBox="0 0 '+W+' '+H+'">'+o+'</svg></div>';
   /* centrado exacto: horizontal medido en vivo; vertical con el desfase
@@ -2649,9 +2662,10 @@ function capsulaDelta(v, prev, base, prevBase){
 }
 /* 25-ago-2026 — la serie ya no sale del scorecard sino del embudo diario. */
 function cargarSerieEmbudo(){
-  _flGetJSON(BASE_N8N+'/serie-embudo')
-    .then(d=>{ const arr=Array.isArray(d)?d:(d?[d]:[]); try{ pintarSerie({historia:arr}); }catch(e){} })
-    .catch(()=>{ const z=document.getElementById('embSerie'); if(z) z.innerHTML=''; });
+  /* 5-oct-2026 — antes pedia /serie-embudo (tabla nocturna bot.embudo_diario_a):
+     no seguia el filtro de fechas, traia los nombres crudos ("Agente IA Tulula",
+     "Pablo Paredes", "Otros") y sus ventas quedaron en 0 desde septiembre.
+     Ahora el grafico se pinta desde pintarTodo() con las ventas del rango. */
 }
 function cargarEmbudo(){
   if (EMB_FUENTE === 'web'){ cargarEmbudoWeb(); return; }
@@ -2753,6 +2767,8 @@ function cargarEmbudo(){
     if (_canon) {
       d.acumulado = Object.assign(d.acumulado || {}, _canon.acumulado || {});
       if (_canon.asesoras) d.asesoras = _canon.asesoras;
+      /* 5-oct-2026 — las ventas por dia y el rango viajan con lo canonico */
+      ['__ventasDia', '__ventasAviso', '__rango'].forEach(k => { if (_canon[k] !== undefined) d[k] = _canon[k]; });
       d.__canon = true;
     }
     embData = { d: d, dPrev: (embData && embData.dPrev) || null, lbl: r.lbl };
@@ -2763,7 +2779,14 @@ function cargarEmbudo(){
 
   /* lo rapido: ~1 s, y trae TODO lo que decide los numeros del embudo */
   embPisarCanonico({ acumulado: {}, serie: [] }, r.desde, r.hasta)
-    .then(d => { _canon = d; _fundir(); })
+    .then(d => {
+      _canon = d; _fundir();
+      /* 5-oct-2026 (pedido de Pablo: "al abrir, totalmente actualizado") — la copia
+         pinta al instante y enseguida se recalcula EN VIVO contra n8n (~1 s);
+         si cambio algo, se repinta solo. */
+      return embPisarCanonico({ acumulado: {}, serie: [] }, r.desde, r.hasta, true)
+        .then(dv => { if (dv && dv.__canon && rango().desde === r.desde && rango().hasta === r.hasta){ _canon = dv; _fundir(); } });
+    })
     .catch(()=>{});
 
   /* lo lento: 8 s, y solo aporta dio_talla. Ya no bloquea a nadie. */
@@ -2971,36 +2994,46 @@ function pintarPrompt(av, idx, idx7){
    parece un derrumbe. Sigue el filtro de fechas de la cabecera.
    ══════════════════════════════════════════════════════════════════════════ */
 const COLOR_ASESORA = {
-  'Tula':   '#7aa2ff',
-  'Angie':  '#3ecf8e',
-  'Lucia':  '#f5a524',
-  'Dayann': '#e879c7',
+  /* 5-oct-2026 (pedido de Pablo): Angie verde, Lucia amarillo, Dayann morado, Tula plomo */
+  'Tula':   '#9aa3b2',
+  'Angie':  '#22c55e',
+  'Lucia':  '#facc15',
+  'Dayann': '#a855f7',
   'Mixta':  '#8b93a7'
 };
 const PALETA_EXTRA = ['#4aa8d8','#ff8f6b','#b18cff','#59d0c4','#d4c05a'];
 
+/* 5-oct-2026 (pedido de Pablo) — "Avance del embudo por dia" pasa a ser
+   VENTAS POR ASESORA POR DIA: eje vertical = numero de ventas (1, 2, 3...),
+   solo Angie, Dayann, Lucia y Tula, con su color. Sigue el filtro de fechas.
+   Fuente: erp.v_venta_ads (la misma de las tarjetas, ver _ventasAsesoraRango). */
 function pintarSerie(idx){
-  /* 25-ago-2026 — vuelve la evolucion, pero midiendo AVANCE DEL EMBUDO (% de
-     conversaciones que pasaron de fria a la siguiente etapa), no el score: el
-     score estaba anticorrelacionado con vender (r=-0.942). Eje 0-100. */
   const z = document.getElementById('embSerie'); if(!z) return;
   const hist = (idx && idx.historia) || [];
-  if(!hist.length){ z.innerHTML=''; return; }
-  const fechas = [...new Set(hist.map(x=>x.fecha))].sort();
-  const quienes = [...new Set(hist.map(x=>x.vendedora))].filter(v=>v && v!=='Mixta');
-  if(fechas.length<2 || !quienes.length){
-    z.innerHTML='<div style="color:var(--txt2);font-size:11.5px;padding:6px 2px">Aun no hay dias suficientes para dibujar la evolucion.</div>';
+  const fechas = (idx && idx.fechas) || [...new Set(hist.map(x=>x.fecha))].sort();
+  const quienes = ASESORAS_VENTAS.slice();
+  if(!fechas.length){
+    z.innerHTML = idx && idx.aviso ? '<div style="color:var(--txt2);font-size:11.5px;padding:6px 2px">'+idx.aviso+'</div>' : '';
     return;
   }
   const color = (v,i) => COLOR_ASESORA[v] || PALETA_EXTRA[i % PALETA_EXTRA.length];
   const val = {};
-  hist.forEach(x=>{ val[x.vendedora+'|'+x.fecha] = (x.pct_avance!=null ? +x.pct_avance : null); });
+  hist.forEach(x=>{ val[x.vendedora+'|'+x.fecha] = (+x.ventas || 0); });
+  /* dia sin turno y sin ventas = sin punto (asi Lucia no dibuja ceros de lunes a viernes) */
+  fechas.forEach(f => quienes.forEach(v => {
+    const k = v+'|'+f, dow = new Date(f+'T12:00:00').getDay();
+    if (!val[k]) val[k] = ((TURNO_ASESORA[v]||[]).indexOf(dow) > -1) ? 0 : null;
+  }));
+  let maxV = 0; Object.keys(val).forEach(k => { if ((val[k]||0) > maxV) maxV = val[k]; });
+  const techo = Math.max(4, Math.ceil(maxV));
+  const pasoY = techo <= 6 ? 1 : (techo <= 12 ? 2 : Math.ceil(techo / 6));
+  const tope = Math.ceil(techo / pasoY) * pasoY;
 
-  const leyenda = quienes.map((v,qi)=>'<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--txt2)"><i style="width:14px;height:3px;border-radius:2px;background:'+color(v,qi)+';display:inline-block"></i>'+v+(v==='Tula'?' \u{1F916}':'')+'</span>').join('<span style="width:14px;display:inline-block"></span>');
+  const leyenda = quienes.map(v => capsulaAsesora(v)).join('<span style="width:6px;display:inline-block"></span>');
 
   z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:14px;padding:12px 14px;background:var(--card)">'
     + '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
-    +   '<b style="font-size:13.5px">Avance del embudo por d\u00eda</b><span style="font-size:11px;color:var(--txt2)">% de conversaciones que pasaron de fr\u00eda</span>'
+    +   '<b style="font-size:13.5px">Ventas por asesora por d\u00eda</b>'
     +   '<span style="flex:1"></span>' + leyenda
     + '</div><div id="embSerieSvg"></div></div>';
 
@@ -3014,24 +3047,24 @@ function pintarSerie(idx){
     const W = Math.max(320, Math.round(host.clientWidth || 900));
     const H = 260, mL = 40, mR = 16, mT = 16, mB = 28;
     const px = i => mL + (fechas.length===1 ? (W-mL-mR)/2 : i*(W-mL-mR)/(fechas.length-1));
-    const py = v => mT + (100-v)*(H-mT-mB)/100;
+    const py = v => mT + (tope-v)*(H-mT-mB)/tope;
     let grid='';
-    for(let v=0; v<=100; v+=20){
+    for(let v=0; v<=tope; v+=pasoY){
       const y = py(v);
       grid += '<line x1="'+mL+'" y1="'+y.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+y.toFixed(1)+'" stroke="var(--bd)" stroke-width="1" opacity="'+(v===0?'.85':'.32')+'"/>'
-            + '<text x="'+(mL-8)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="11" fill="var(--txt2)">'+v+'%</text>';
+            + '<text x="'+(mL-8)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="11" fill="var(--txt2)">'+v+'</text>';
     }
     const paso = Math.max(1, Math.ceil(fechas.length / Math.max(2, Math.floor((W-mL-mR)/42))));
     let ejeX='';
     fechas.forEach((f,i)=>{
-      if(i % paso && i !== fechas.length-1) return;
+      if((i % paso && i !== fechas.length-1) || (i !== fechas.length-1 && fechas.length-1-i < paso)) return;
       const pr = f.split('-');
       const anc = i===0 ? 'start' : (i===fechas.length-1 ? 'end' : 'middle');
       ejeX += '<text x="'+px(i).toFixed(1)+'" y="'+(H-9)+'" text-anchor="'+anc+'" font-size="11" fill="var(--txt2)">'+pr[2]+'/'+pr[1]+'</text>';
     });
     let lineas='', puntos='';
     quienes.forEach((v,qi)=>{
-      const col = color(v,qi);
+      const col = COLOR_ASESORA[v] || color(v,qi);
       let d='', abierto=false;
       fechas.forEach((f,i)=>{
         const y = val[v+'|'+f];
@@ -3040,7 +3073,7 @@ function pintarSerie(idx){
         abierto = true;
         puntos += '<circle cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="3.2" fill="'+col+'" stroke="var(--card)" stroke-width="1.5"/>'
                 + '<circle class="ptHit" cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="11" fill="transparent" style="cursor:pointer"'
-                + ' data-a="'+v+'" data-f="'+f+'" data-v="'+(+y).toFixed(2)+'" data-c="'+col+'"/>';
+                + ' data-a="'+v+'" data-f="'+f+'" data-v="'+(+y)+(+y===1?' venta':' ventas')+'" data-c="'+col+'"/>';
       });
       if(d) lineas += '<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>';
     });
@@ -3082,6 +3115,79 @@ window.addEventListener('message', function(ev){
   document.body.classList.toggle('light', !!m.light);
 });
 try{ if (parent !== window) parent.postMessage({tipo:'erp-tema-pedir'}, '*'); }catch(e){}
+/* ══ 5-oct-2026 · VENTAS POR ASESORA (pedido de Pablo) ═══════════════════════
+   Solo cuatro: Angie, Dayann, Lucia y Tula. "Agente IA Tulula", "Agente", "Otros",
+   "TULA" y vacio son TULA (el mismo bot con distintos nombres segun el sistema que
+   lo escribio). "Pablo Paredes" no es una vendedora: no se muestra.
+   Dias de turno: Angie L-V, Dayann V-M (vie, sab, dom, lun, mar), Lucia S-D,
+   Tula todos los dias. 0 = domingo ... 6 = sabado. */
+const ASESORAS_VENTAS = ['Angie', 'Dayann', 'Lucia', 'Tula'];
+const TURNO_ASESORA = { Angie: [1,2,3,4,5], Dayann: [5,6,0,1,2], Lucia: [6,0], Tula: [0,1,2,3,4,5,6] };
+function nomAsesora(x){
+  const u = String(x || '').trim().toUpperCase();
+  if (['', 'TULA', 'AGENTE', 'AGENTE IA TULULA', 'OTROS', 'N/A', '(SIN DATO)'].indexOf(u) > -1) return 'Tula';
+  if (u === 'ANGIE') return 'Angie';
+  if (u === 'DAYANN' || u === 'DAYAN') return 'Dayann';
+  if (u === 'LUCIA' || u === 'LUCÍA') return 'Lucia';
+  return '';   /* Pablo Paredes y cualquier otro: fuera */
+}
+function capsulaAsesora(n, grande){
+  const col = COLOR_ASESORA[n] || '#8b93a7';
+  return '<span style="display:inline-block;background:'+col+';color:#111;border-radius:999px;padding:'+(grande?'3px 12px':'2px 10px')+
+    ';font-size:'+(grande?'14px':'11px')+';font-weight:900;line-height:1.35;white-space:nowrap">'+(n==='Tula'?'\ud83e\udd16 ':'')+n+'</span>';
+}
+/* dias de turno de una asesora dentro del rango, sin contar dias futuros */
+function diasTurno(nombre, desdeSeg, hastaSeg){
+  const t = TURNO_ASESORA[nombre]; if (!t) return 0;
+  const d = new Date(desdeSeg * 1000); d.setHours(12, 0, 0, 0);
+  const fin = new Date(Math.min(hastaSeg * 1000, Date.now())); fin.setHours(12, 0, 0, 0);
+  let n = 0, guard = 0;
+  while (d <= fin && guard++ < 400){ if (t.indexOf(d.getDay()) > -1) n++; d.setDate(d.getDate() + 1); }
+  return n;
+}
+function esquinaVentasDia(a, d){
+  const nombre = nomAsesora(a.asesora);
+  const v = +((a.acumulado || {}).compras || a.compras || 0);
+  const r = d.__rango || (typeof rango === 'function' ? rango() : null);
+  const dias = r ? diasTurno(nombre, r.desde, r.hasta) : 0;
+  const pd = dias ? (v / dias) : 0;
+  return '<span title="'+v+' ventas en '+dias+' d\u00edas de turno" style="text-align:right;line-height:1.05">'
+    + '<b style="font-size:17px;font-weight:900">'+pd.toFixed(1)+'</b>'
+    + '<span style="display:block;font-size:9.5px;font-weight:800;color:var(--txt2);letter-spacing:.03em">VENTAS/D\u00cdA</span></span>';
+}
+/* Ventas del rango por asesora y por dia, de erp.v_venta_ads (copia que se
+   refresca cada 5 min). Cuenta a quien CERRO la venta (asesora_vendio): si Tula
+   la cerro sola, es de Tula aunque el pedido lo haya registrado una asesora.
+   Si no hay dato de quien cerro, cuenta quien la atendio. */
+async function _ventasAsesoraRango(desdeF, hastaF){
+  const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
+  const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
+  if (!tok) return null;
+  const r = await fetch(FL_SB_URL + '/rest/v1/v_venta_ads?select=dia_pago,asesora_vendio,asesora_atendio&dia_pago=gte.' + desdeF + '&dia_pago=lte.' + hastaF,
+    { headers: { apikey: FL_SB_ANON, Authorization: 'Bearer ' + tok, 'Accept-Profile': 'erp' } });
+  if (!r.ok) return null;
+  const filas = await r.json();
+  if (!Array.isArray(filas)) return null;
+  const porAses = {}, porDia = {};
+  filas.forEach(f => {
+    const n = nomAsesora(f.asesora_vendio || f.asesora_atendio);
+    if (!n) return;
+    const dia = String(f.dia_pago || '').slice(0, 10);
+    porAses[n] = (porAses[n] || 0) + 1;
+    porDia[n + '|' + dia] = (porDia[n + '|' + dia] || 0) + 1;
+  });
+  return { porAses, porDia, n: filas.length };
+}
+function _listaDias(desdeF, hastaF){
+  const out = []; const d = new Date(desdeF + 'T12:00:00'), h = new Date(hastaF + 'T12:00:00');
+  const hoy = new Date(); hoy.setHours(23, 59, 59);
+  while (d <= h && d <= hoy && out.length < 400){
+    const p = x => String(x).padStart(2, '0');
+    out.push(d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()));
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
 function pintarTodo(){
   if (EMB_FUENTE === 'web'){ pintarTodoWeb(); return; }
   const d = embData.d, dp = embData.dPrev;
@@ -3089,6 +3195,7 @@ function pintarTodo(){
   z.style.width = '100%';
   pintarEmbudo(d.acumulado, '', dp && dp.acumulado);
   z.innerHTML = `<div style="max-width:896px;margin:0 auto">${z.innerHTML}</div>` + cajasAsesoras(d, dp);
+  try { pintarSerie(d.__ventasDia || { historia: [], fechas: [], aviso: d.__ventasAviso || '' }); } catch(e){}
 }
 function pintarTodoWeb(){
   const z = document.getElementById('embZona');
@@ -3125,10 +3232,13 @@ function cajasGrupo(d, dp, cfg){
        cero y parece que no hubiera datos. */
     const denom = ac[denomK] || a[denomK] || ac[FIL[0][0]] || a[FIL[0][0]] || 0;
     const conv = denom ? Math.round((ac[FIL[FIL.length-1][0]]||0)/denom*1000)/10 : 0;
+    /* 5-oct-2026 — cfg.nombreHtml (capsula de color) y cfg.esquina (ventas por dia
+       de turno) son opcionales: las tarjetas de dispositivo siguen como estaban. */
+    const esq = cfg.esquina ? cfg.esquina(a) : `<span style="font-weight:900;font-size:15.5px;color:${conv>=cfg.metaConv?'var(--ok)':'var(--bad)'}">${conv}%</span>`;
     h += `<div style="border:1.5px solid var(--bd);border-radius:14px;padding:14px 14px;background:var(--card);min-width:0">` +
-      `<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px">` +
-        `<span style="font-weight:900;font-size:15.5px">${cfg.nombreFn(clave)}</span>` +
-        `<span style="font-weight:900;font-size:15.5px;color:${conv>=cfg.metaConv?'var(--ok)':'var(--bad)'}">${conv}%</span></div>`;
+      `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">` +
+        `<span style="font-weight:900;font-size:15.5px">${cfg.nombreHtml ? cfg.nombreHtml(clave) : cfg.nombreFn(clave)}</span>` +
+        esq + `</div>`;
     FIL.forEach(([k,nom,col], idx)=>{
       const v = (ac[k]!=null ? ac[k] : (a[k]!=null ? a[k] : 0)) || 0;
       const base = denom;
@@ -3168,12 +3278,16 @@ function cajasAsesoras(d, dp){
      cajasDispositivos, para no tocar cajasGrupo. */
   const conDatos = (d.asesoras||[]).filter(a=>{
     const ac = a.acumulado||{};
-    return FIL5.some(([k])=> ((ac[k]||0) + (a[k]||0)) > 0);
+    /* 5-oct-2026 (pedido de Pablo) — solo Angie, Dayann, Lucia y Tula */
+    return ASESORAS_VENTAS.indexOf(nomAsesora(a.asesora)) > -1 && FIL5.some(([k])=> ((ac[k]||0) + (a[k]||0)) > 0);
   });
   const dConDatos = Object.assign({}, d, {asesoras:conDatos});
   return cajasGrupo(dConDatos, dp, {campo:'asesoras', claveK:'asesora', filas:FIL5,
     nombreFn:x => x==='Tula' ? '\ud83e\udd16 Tula' : nomCorto(x),
-    denomK:'conversaciones', metaConv:8, mostrarMejora:true});
+    nombreHtml:x => capsulaAsesora(nomAsesora(x), true),
+    esquina:a => esquinaVentasDia(a, d),
+    /* 5-oct-2026 (pedido de Pablo) — sin el bloque "Principal mejora" */
+    denomK:'conversaciones', metaConv:8, mostrarMejora:false});
 }
 function nomDispositivo(x){
   const m = {celular:'\ud83d\udcf1 Celular', movil:'\ud83d\udcf1 Celular', mobile:'\ud83d\udcf1 Celular',
