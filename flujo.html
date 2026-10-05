@@ -664,6 +664,11 @@
     <span id="boxCustom" style="display:none;gap:6px;align-items:center">
       <input type="date" id="pDesde" onchange="onPeriodo()"><input type="date" id="pHasta" onchange="onPeriodo()" style="margin-left:6px">
     </span>
+    <span id="embOrigenBox" style="display:inline-flex;gap:4px;margin-left:4px">
+      <button type="button" class="btn" id="btnOrigen_ads" onclick="embSetOrigen('ads')">Anuncios</button>
+      <button type="button" class="btn" id="btnOrigen_org" onclick="embSetOrigen('org')">Orgánico</button>
+      <button type="button" class="btn" id="btnOrigen_todos" onclick="embSetOrigen('todos')">Todos</button>
+    </span>
     <span style="display:inline-flex;gap:4px;margin-left:4px">
       <button type="button" class="btn on" id="btnFuenteWA" onclick="embSetFuente('wa')">WhatsApp</button>
       <button type="button" class="btn" id="btnFuenteWeb" onclick="embSetFuente('web')">Web</button>
@@ -791,12 +796,15 @@ async function embPisarCanonico(d, desde, hasta, vivo){
       /* 5-oct-2026 — 1ro: ventas por asesora desde la base (al dia, ~5 min) */
       const dF = _embFecha(desde), hF = _embFecha(hasta);
       d.__rango = { desde: Number(desde) || Math.floor(new Date(dF + 'T00:00:00') / 1000), hasta: Number(hasta) || Math.floor(new Date(hF + 'T23:59:59') / 1000) };
-      let VA = null; try { VA = await _ventasAsesoraRango(dF, hF); } catch (e) { VA = null; }
+      let VA = null, VO = null;
+      try { [VA, VO] = await Promise.all([_ventasAsesoraRango(dF, hF).catch(() => null), _ventasOrganicasRango(dF, hF).catch(() => null)]); } catch (e) { VA = null; }
+      d.__org = VO || null;                         /* 5-oct T8 · vista Organico / Todos */
+      if (VA) d.__adsIngreso = VA.ingreso;          /* ingreso de anuncios SOLO prendas */
       if (VA){
         d.asesoras.forEach(x => { const v = VA.porAses[nomAsesora(x.asesora)] || 0; x.compras = v; x.acumulado.compras = v; });
         const fechas = _listaDias(dF, hF), hist = [];
         fechas.forEach(f => ASESORAS_VENTAS.forEach(n => hist.push({ fecha: f, vendedora: n, ventas: VA.porDia[n + '|' + f] || 0 })));
-        d.__ventasDia = { historia: hist, fechas: fechas, sinAtrib: VA.sinAtrib || 0 };
+        d.__ventasDia = { historia: hist, fechas: fechas, sinAtrib: VA.sinAtrib || 0, __porDia: VA.porDia };
         /* 5-oct T6: ya no se pide "hoy" aparte (Pablo saco la linea "Hoy X de 4") */
         d.__ventasAsesoraDe = 'base';
       } else {
@@ -2537,6 +2545,20 @@ const EMB_ETAPAS_WEB = [
    pintarEmbudo solo recorre las etapas listadas aca. */
 const EMB_NEON_WEB = ['#2e8fff','#c239ff','#ffd23f','#ff9f45','#ff5d5d','#34ffb0']; /* 3-sep-2026 (v2): frio->caliente, compra siempre verde */
 let EMB_FUENTE = 'wa'; /* 'wa' | 'web' */
+/* 5-oct-2026 (Pablo) — WhatsApp en tres vistas: 'ads' (anuncios, con embudo),
+   'org' (organico directo + indirecto, sin embudo) y 'todos' (anuncios + organico). */
+let EMB_ORIGEN = 'todos';
+try { const _o = localStorage.getItem('erp_emb_origen'); if (['ads','org','todos'].indexOf(_o) > -1) EMB_ORIGEN = _o; } catch (e) {}
+function embSetOrigen(o){
+  if (['ads','org','todos'].indexOf(o) < 0) return;
+  EMB_ORIGEN = o;
+  try { localStorage.setItem('erp_emb_origen', o); } catch (e) {}
+  ['ads','org','todos'].forEach(k => { const b = document.getElementById('btnOrigen_' + k); if (b) b.classList.toggle('on', k === o); });
+  const tx = document.getElementById('embTituloTxt');
+  if (tx && EMB_FUENTE === 'wa') tx.textContent = 'Ventas por WhatsApp \u00b7 ' + ({ ads: 'Anuncios', org: 'Org\u00e1nico', todos: 'Todos' })[o];
+  if (embData) pintarTodo();
+}
+setTimeout(function(){ try { embSetOrigen(EMB_ORIGEN); } catch (e) {} }, 0);   /* botones y titulo al abrir */
 let embDataWeb = null;
 function embSetFuente(f){
   if (f !== 'wa' && f !== 'web') return;
@@ -2546,6 +2568,8 @@ function embSetFuente(f){
   const bw = document.getElementById('btnFuenteWA'), bWeb = document.getElementById('btnFuenteWeb');
   if (bw) bw.classList.toggle('on', f==='wa');
   if (bWeb) bWeb.classList.toggle('on', f==='web');
+  const ob = document.getElementById('embOrigenBox'); if (ob) ob.style.display = (f === 'wa') ? 'inline-flex' : 'none';   /* web: por ahora solo anuncios */
+  if (f === 'wa') embSetOrigen(EMB_ORIGEN);
   if ((f==='wa' && embData) || (f==='web' && embDataWeb)) pintarTodo();
   else { const z=document.getElementById('embZona'); if(z){ _embRescatarFiltros(); z.innerHTML=''; } }
   cargarEmbudo();
@@ -2784,7 +2808,7 @@ function cargarEmbudo(){
       d.acumulado = Object.assign(d.acumulado || {}, _canon.acumulado || {});
       if (_canon.asesoras) d.asesoras = _canon.asesoras;
       /* 5-oct-2026 — las ventas por dia y el rango viajan con lo canonico */
-      ['__ventasDia', '__ventasAviso', '__rango', '__hoyVentas'].forEach(k => { if (_canon[k] !== undefined) d[k] = _canon[k]; });
+      ['__ventasDia', '__ventasAviso', '__rango', '__hoyVentas', '__org', '__adsIngreso'].forEach(k => { if (_canon[k] !== undefined) d[k] = _canon[k]; });
       d.__canon = true;
     }
     embData = { d: d, dPrev: (embData && embData.dPrev) || null, lbl: r.lbl };
@@ -3192,6 +3216,32 @@ const MESES_ES = ['enero','febrero','marzo','abril','mayo','junio','julio','agos
 /* 5-oct-2026 (pedido de Pablo) — debajo de cada tarjeta: que tan lejos esta de la meta.
    1) barra del periodo: ventas vs 4 x dias de turno · 2) hoy: X de 4 · 3) solo con
    "Mes hasta hoy": cuanto necesita por dia en los dias de turno que le quedan. Tula no. */
+/* Todos: la tarjeta suma anuncios + organico para la meta y la esquina */
+function _conTotal(a, org){
+  const n = nomAsesora(a.asesora), o = (org && org.porAses && org.porAses[n]) || 0;
+  const v = +((a.acumulado || {}).compras || a.compras || 0) + o;
+  return Object.assign({}, a, { compras: v, acumulado: Object.assign({}, a.acumulado, { compras: v }) });
+}
+function _filasOrgTotal(a, org){
+  const n = nomAsesora(a.asesora), o = (org && org.porAses && org.porAses[n]) || 0;
+  const ads = +((a.acumulado || {}).compras || a.compras || 0);
+  const fila = (et, v, col) => '<div style="display:flex;align-items:center;gap:10px;margin:7px 0"><span style="width:96px;font-size:9.5px;font-weight:800;letter-spacing:.04em;color:var(--txt2)">' + et + '</span>'
+    + '<span style="flex:1"></span><b style="font-size:13.5px;color:' + col + '">' + v + '</b></div>';
+  return '<div style="border-top:1px dashed var(--bd);margin-top:8px;padding-top:2px">' + fila('ORG\u00c1NICO', o, '#facc15') + fila('TOTAL', ads + o, 'var(--txt)') + '</div>';
+}
+/* Vista Organico: tarjeta simple por asesora (ventas, ingreso, ticket + meta) */
+function cajasOrganico(d, org){
+  const tarj = ASESORAS_VENTAS.map(n => {
+    const v = (org.porAses && org.porAses[n]) || 0, ing = (org.ingAses && org.ingAses[n]) || 0;
+    const a = { asesora: n, compras: v, acumulado: { compras: v } };
+    const fila = (et, val) => '<div style="display:flex;justify-content:space-between;margin:8px 0;font-size:12.5px"><span style="font-size:9.5px;font-weight:800;letter-spacing:.04em;color:var(--txt2)">' + et + '</span><b>' + val + '</b></div>';
+    return '<div style="border:1.5px solid var(--bd);border-radius:14px;padding:14px;background:var(--card);min-width:0">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px"><span style="cursor:pointer" onclick="serieSolo(\'' + n + '\')">' + capsulaAsesora(n, true) + '</span>' + esquinaVentasDia(a, d) + '</div>'
+      + fila('VENTAS ORG\u00c1NICAS', v) + fila('INGRESO (PRENDAS)', 'S/ ' + Math.round(ing).toLocaleString('es-PE')) + fila('TICKET PROMEDIO', v ? 'S/ ' + Math.round(ing / v) : '\u2014')
+      + pieMeta(a, d) + '</div>';
+  });
+  return '<div style="width:100%;margin:26px auto 0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">' + tarj.join('') + '</div>';
+}
 function pieMeta(a, d){
   const nombre = nomAsesora(a.asesora);
   if (!nombre || nombre === 'Tula') return '';
@@ -3256,13 +3306,15 @@ async function _ventasAsesoraRango(desdeF, hastaF){
   const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
   const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
   if (!tok) return null;
-  const r = await fetch(FL_SB_URL + '/rest/v1/v_venta_ads?select=dia_pago,asesora_vendio&dia_pago=gte.' + desdeF + '&dia_pago=lte.' + hastaF,
+  const r = await fetch(FL_SB_URL + '/rest/v1/v_venta_ads?select=dia_pago,asesora_vendio,venta_sin_envio&dia_pago=gte.' + desdeF + '&dia_pago=lte.' + hastaF,
     { headers: { apikey: FL_SB_ANON, Authorization: 'Bearer ' + tok, 'Accept-Profile': 'erp' } });
   if (!r.ok) return null;
   const filas = await r.json();
   if (!Array.isArray(filas)) return null;
   const porAses = {}, porDia = {};
   let sinAtrib = 0;
+  /* 5-oct T8 (Pablo): el ingreso cuenta SOLO prendas, nunca el envio */
+  const ingreso = filas.reduce((a, f) => a + (Number(f.venta_sin_envio) || 0), 0);
   filas.forEach(f => {
     /* 5-oct T6 (Pablo): lo que no tiene a quien lo cerro va a "Tula y otros", asi las
        4 tarjetas suman el total del embudo. */
@@ -3274,7 +3326,31 @@ async function _ventasAsesoraRango(desdeF, hastaF){
     porAses[n] = (porAses[n] || 0) + 1;
     porDia[n + '|' + dia] = (porDia[n + '|' + dia] || 0) + 1;
   });
-  return { porAses, porDia, n: filas.length, sinAtrib };
+  return { porAses, porDia, n: filas.length, sinAtrib, ingreso };
+}
+/* 5-oct-2026 · ventas ORGANICAS de WhatsApp (directo + indirecto), de erp.v_venta_organica
+   (PEGAR_EN_SUPABASE_ventas_organicas_5oct.sql). Quien cerro = la asesora que registro la
+   mayor parte del pago; si no hay, la que registro el pedido; el bot -> "Tula y otros". */
+async function _ventasOrganicasRango(desdeF, hastaF){
+  const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
+  const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
+  if (!tok) return null;
+  const r = await fetch(FL_SB_URL + '/rest/v1/v_venta_organica?select=dia_pago,asesora_cierre,venta_sin_envio&dia_pago=gte.' + desdeF + '&dia_pago=lte.' + hastaF,
+    { headers: { apikey: FL_SB_ANON, Authorization: 'Bearer ' + tok, 'Accept-Profile': 'erp' } });
+  if (!r.ok) return null;
+  const filas = await r.json();
+  if (!Array.isArray(filas)) return null;
+  const porAses = {}, porDia = {}, ingAses = {};
+  let ingreso = 0;
+  filas.forEach(f => {
+    const n = nomAsesora(f.asesora_cierre) || 'Tula';
+    const dia = String(f.dia_pago || '').slice(0, 10), m = Number(f.venta_sin_envio) || 0;
+    porAses[n] = (porAses[n] || 0) + 1;
+    ingAses[n] = (ingAses[n] || 0) + m;
+    porDia[n + '|' + dia] = (porDia[n + '|' + dia] || 0) + 1;
+    ingreso += m;
+  });
+  return { porAses, porDia, ingAses, n: filas.length, ingreso };
 }
 function _listaDias(desdeF, hastaF){
   const out = []; const d = new Date(desdeF + 'T12:00:00'), h = new Date(hastaF + 'T12:00:00');
@@ -3295,13 +3371,15 @@ function _embResumen(ac, acp, web){
     return '<span style="font-size:11px;font-weight:800;color:' + (p > 0 ? 'var(--ok)' : 'var(--bad)') + '">' + (p > 0 ? '\u25b2 ' : '\u25bc ') + Math.abs(p) + '%</span>'; };
   const soles = (x) => 'S/ ' + Math.round(n(x)).toLocaleString('es-PE');
   const den = web ? n(ac.visitas) : n(ac.conversaciones), denP = acp ? (web ? n(acp.visitas) : n(acp.conversaciones)) : 0;
-  const cv = den ? n(ac.compras) * 100 / den : 0, cvP = denP ? n(acp.compras) * 100 / denP : 0;
+  const vC = (o) => n(o.__soloAnunciosConv ? o.__ventasAds : o.compras);
+  const cv = den ? vC(ac) * 100 / den : 0, cvP = denP ? vC(acp) * 100 / denP : 0;
   const fila = (et, vl, d) => '<div class="fila"><span class="et">' + et + '</span><span><span class="vl">' + vl + '</span> ' + (d || '') + '</span></div>';
   let h = '<div class="embRes"><div style="font-size:11px;font-weight:800;color:var(--txt2);margin-bottom:2px">RESUMEN \u00b7 vs per\u00edodo anterior</div>';
   h += fila('VENTAS', n(ac.compras), acp ? dif(ac.compras, acp.compras) : '');
   if (ac.ingreso != null) h += fila('INGRESO', soles(ac.ingreso), acp ? dif(ac.ingreso, acp.ingreso) : '');
   if (ac.ingreso != null && n(ac.compras)) h += fila('TICKET PROMEDIO', soles(n(ac.ingreso) / n(ac.compras)), (acp && n(acp.compras) && acp.ingreso != null) ? dif(n(ac.ingreso) / n(ac.compras), n(acp.ingreso) / n(acp.compras)) : '');
-  h += fila('CONVERSI\u00d3N', cv.toFixed(1) + '%', (acp && cvP) ? dif(cv, cvP) : '');
+  /* Todos: la conversion es SOLO de anuncios (las organicas no tienen conversaciones) */
+  if (web !== 'org') h += fila(ac.__soloAnunciosConv ? 'CONVERSI\u00d3N ANUNCIOS' : 'CONVERSI\u00d3N', cv.toFixed(1) + '%', (acp && cvP) ? dif(cv, cvP) : '');
   return h + '</div>';
 }
 /* si algo va a reescribir embZona, los filtros vuelven a su lugar de origen (arriba) */
@@ -3318,13 +3396,76 @@ function _embArmarArriba(z, ac, acp, web){
   pan.insertAdjacentHTML('beforeend', _embResumen(ac || {}, acp, web));
   if (est && est.textContent && est.textContent !== '\u2014') { /* "Leyendo..." queda arriba, chico */ }
 }
+/* ══ 5-oct-2026 · TRES VISTAS DE WHATSAPP ══════════════════════════════════
+   ads   = como estaba (embudo de anuncios, tarjetas, grafico).
+   org   = sin embudo: resumen organico, tarjetas por asesora (ventas, ingreso, ticket,
+           meta 4/dia) y grafico de ventas organicas por dia.
+   todos = embudo de anuncios + franja "Anuncios N · Organico N · Total N"; tarjetas con
+           filas ORGANICO y TOTAL; la meta y el grafico usan el TOTAL. */
+function _acTodos(ac, org, adsIng){
+  const n = (x) => +x || 0;
+  return Object.assign({}, ac, { compras: n(ac && ac.compras) + n(org && org.n),
+    ingreso: (adsIng != null ? n(adsIng) : n(ac && ac.ingreso)) + n(org && org.ingreso),
+    __soloAnunciosConv: true, __ventasAds: n(ac && ac.compras) });
+}
+function _franjaOrigen(ads, org){
+  const tot = ads + org, pc = (x) => tot ? Math.round(x * 100 / tot) : 0;
+  const caja = (et, v, col, sub) => '<div style="flex:1;text-align:center;padding:10px 6px;border-radius:12px;background:' + _op(col, .14) + ';border:1px solid ' + _op(col, .45) + '">'
+    + '<div style="font-size:10.5px;font-weight:800;letter-spacing:.05em;color:var(--txt2)">' + et + '</div>'
+    + '<div style="font-size:22px;font-weight:900;color:' + col + '">' + v + '</div>'
+    + '<div style="font-size:10.5px;color:var(--txt2)">' + sub + '</div></div>';
+  return '<div style="display:flex;gap:10px;margin-top:10px">'
+    + caja('ANUNCIOS', ads, '#34ffb0', pc(ads) + '% del total')
+    + caja('ORG\u00c1NICO', org, '#facc15', pc(org) + '% del total')
+    + caja('TOTAL', tot, '#e5e7eb', 'ventas de WhatsApp') + '</div>';
+}
+function _histSuma(fechas, partes){
+  const h = [];
+  fechas.forEach(f => ASESORAS_VENTAS.forEach(n => {
+    let v = 0; partes.forEach(p => { if (p) v += (p[n + '|' + f] || 0); });
+    h.push({ fecha: f, vendedora: n, ventas: v });
+  }));
+  return h;
+}
 function pintarTodo(){
   if (EMB_FUENTE === 'web'){ pintarTodoWeb(); return; }
   const d = embData.d, dp = embData.dPrev;
   const z = document.getElementById('embZona');
   z.style.width = '100%';
+  const org = d.__org, orgP = dp && dp.__org;
+  const sinOrg = !org && EMB_ORIGEN !== 'ads';
+  const origen = sinOrg ? 'ads' : EMB_ORIGEN;
+  const acAds = Object.assign({}, d.acumulado, d.__adsIngreso != null ? { ingreso: d.__adsIngreso } : {});
+  const acAdsP = dp && dp.acumulado ? Object.assign({}, dp.acumulado, dp.__adsIngreso != null ? { ingreso: dp.__adsIngreso } : {}) : null;
+  const vd = d.__ventasDia;
+  if (origen === 'org'){
+    _embRescatarFiltros();
+    const n = (x) => +x || 0;
+    const totWA = n(d.acumulado.compras) + n(org.n);
+    z.innerHTML = '<div class="embCard" style="padding:18px 20px;border:1px solid var(--bd);border-radius:14px;background:var(--card)">'
+      + '<div style="font-size:12px;font-weight:800;color:var(--txt2);letter-spacing:.04em">VENTAS ORG\u00c1NICAS DE WHATSAPP <span style="font-weight:600">(directo + indirecto \u00b7 sin embudo)</span></div>'
+      + '<div style="display:flex;gap:28px;flex-wrap:wrap;margin-top:12px;align-items:baseline">'
+      +   '<div><div style="font-size:44px;font-weight:900;color:#facc15;line-height:1">' + n(org.n) + '</div><div style="font-size:11px;color:var(--txt2)">ventas</div></div>'
+      +   '<div><div style="font-size:26px;font-weight:900">S/ ' + Math.round(n(org.ingreso)).toLocaleString('es-PE') + '</div><div style="font-size:11px;color:var(--txt2)">ingreso (solo prendas)</div></div>'
+      +   '<div><div style="font-size:26px;font-weight:900">' + (totWA ? Math.round(n(org.n) * 100 / totWA) : 0) + '%</div><div style="font-size:11px;color:var(--txt2)">del total de WhatsApp (' + n(org.n) + ' de ' + totWA + ')</div></div>'
+      + '</div></div>';
+    _embArmarArriba(z, { compras: org.n, ingreso: org.ingreso }, orgP ? { compras: orgP.n, ingreso: orgP.ingreso } : null, 'org');
+    z.insertAdjacentHTML('beforeend', cajasOrganico(d, org));
+    const fechas = (vd && vd.fechas) || [];
+    try { pintarSerie(fechas.length ? { historia: _histSuma(fechas, [org.porDia]), fechas: fechas } : { historia: [], fechas: [], aviso: d.__ventasAviso || '' }); } catch(e){}
+    return;
+  }
   pintarEmbudo(d.acumulado, '', dp && dp.acumulado);
-  _embArmarArriba(z, d.acumulado, dp && dp.acumulado, false);
+  if (origen === 'todos'){
+    _embArmarArriba(z, _acTodos(acAds, org, d.__adsIngreso), acAdsP ? _acTodos(acAdsP, orgP, dp.__adsIngreso) : null, false);
+    const izq = z.querySelector('.embIzq'); if (izq) izq.insertAdjacentHTML('beforeend', _franjaOrigen(+d.acumulado.compras || 0, +org.n || 0));
+    z.insertAdjacentHTML('beforeend', cajasAsesoras(d, dp, org));
+    const fechas = (vd && vd.fechas) || [];
+    try { pintarSerie(fechas.length ? { historia: _histSuma(fechas, [vd.__porDia, org.porDia]), fechas: fechas } : { historia: [], fechas: [], aviso: d.__ventasAviso || '' }); } catch(e){}
+    return;
+  }
+  _embArmarArriba(z, acAds, acAdsP, false);
+  if (sinOrg && EMB_ORIGEN !== 'ads'){ const izq = z.querySelector('.embIzq'); if (izq) izq.insertAdjacentHTML('beforeend', '<div style="font-size:11.5px;color:var(--txt2);margin-top:8px">Las ventas org\u00e1nicas se ven al abrir Ventas desde el ERP (con tu sesi\u00f3n). Mostrando solo anuncios.</div>'); }
   z.insertAdjacentHTML('beforeend', cajasAsesoras(d, dp));
   try { pintarSerie(d.__ventasDia || { historia: [], fechas: [], aviso: d.__ventasAviso || '' }); } catch(e){}
 }
@@ -3394,16 +3535,17 @@ function cajasGrupo(d, dp, cfg){
          el % principal ya dice todo y el globito al costado confundia. */
     });
     if (cfg.mostrarMejora) h += bloqueMejora(a, d);
+    if (cfg.extra) h += cfg.extra(a);
     if (cfg.pie) h += cfg.pie(a);
     h += `</div>`;
   }
   return h + '</div>';
 }
-function cajasAsesoras(d, dp){
+function cajasAsesoras(d, dp, org){
   /* 19-ago-2026 — las cajas por asesora usan los MISMOS tonos neon del embudo,
      para que una etapa se reconozca por su color en las dos vistas. */
   /* 7-sep-2026 — mismo corrimiento que el embudo, mismo arreglo. */
-  const FIL5 = [['conversaciones','CONVERSACIONES','#38e0ff'],['frias','FR\u00cdAS','#ffd23f'],['tibias','TIBIAS','#ff9f45'],['calientes','CALIENTES','#ff5d8f'],['compras','VENTAS','#34ffb0']];
+  const FIL5 = [['conversaciones','CONVERSACIONES','#38e0ff'],['frias','FR\u00cdAS','#ffd23f'],['tibias','TIBIAS','#ff9f45'],['calientes','CALIENTES','#ff5d8f'],['compras',(org?'VENTAS ANUNCIOS':'VENTAS'),'#34ffb0']];
   /* 7-sep-2026 (pedido de Pablo) - fuera las cartillas vacias. Si una asesora
      no tuvo NADA en el rango (ni conversaciones, ni etapas, ni ventas) no
      aporta y ensucia: la fila "Otros" que arma el ERP cuando una venta no
@@ -3418,8 +3560,9 @@ function cajasAsesoras(d, dp){
   return cajasGrupo(dConDatos, dp, {campo:'asesoras', claveK:'asesora', filas:FIL5,
     nombreFn:x => x==='Tula' ? '\ud83e\udd16 Tula' : nomCorto(x),
     nombreHtml:x => '<span style="cursor:pointer" title="Ver solo a ' + nomAsesora(x) + ' en el gr\u00e1fico" onclick="serieSolo(\'' + nomAsesora(x) + '\')">' + capsulaAsesora(nomAsesora(x), true) + '</span>',
-    pie:a => pieMeta(a, d),
-    esquina:a => esquinaVentasDia(a, d),
+    pie:a => pieMeta(org ? _conTotal(a, org) : a, d),
+    esquina:a => esquinaVentasDia(org ? _conTotal(a, org) : a, d),
+    extra: org ? (a => _filasOrgTotal(a, org)) : null,
     /* 5-oct-2026 (pedido de Pablo) — sin el bloque "Principal mejora" */
     denomK:'conversaciones', metaConv:8, mostrarMejora:false});
 }
