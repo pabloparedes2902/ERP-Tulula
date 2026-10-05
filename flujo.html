@@ -2555,8 +2555,8 @@ function embSetOrigen(o){
   try { localStorage.setItem('erp_emb_origen', o); } catch (e) {}
   ['ads','org','todos'].forEach(k => { const b = document.getElementById('btnOrigen_' + k); if (b) b.classList.toggle('on', k === o); });
   const tx = document.getElementById('embTituloTxt');
-  if (tx && EMB_FUENTE === 'wa') tx.textContent = 'Ventas por WhatsApp \u00b7 ' + ({ ads: 'Anuncios', org: 'Org\u00e1nico', todos: 'Todos' })[o];
-  if (embData) pintarTodo();
+  if (tx) tx.textContent = 'Ventas por ' + (EMB_FUENTE === 'web' ? 'Web' : 'WhatsApp') + ' \u00b7 ' + ({ ads: 'Anuncios', org: 'Org\u00e1nico', todos: 'Todos' })[o];
+  if ((EMB_FUENTE === 'wa' && embData) || (EMB_FUENTE === 'web' && embDataWeb)) pintarTodo();
 }
 setTimeout(function(){ try { embSetOrigen(EMB_ORIGEN); } catch (e) {} }, 0);   /* botones y titulo al abrir */
 let embDataWeb = null;
@@ -2568,8 +2568,7 @@ function embSetFuente(f){
   const bw = document.getElementById('btnFuenteWA'), bWeb = document.getElementById('btnFuenteWeb');
   if (bw) bw.classList.toggle('on', f==='wa');
   if (bWeb) bWeb.classList.toggle('on', f==='web');
-  const ob = document.getElementById('embOrigenBox'); if (ob) ob.style.display = (f === 'wa') ? 'inline-flex' : 'none';   /* web: por ahora solo anuncios */
-  if (f === 'wa') embSetOrigen(EMB_ORIGEN);
+  embSetOrigen(EMB_ORIGEN);   /* 5-oct: Web tambien tiene Anuncios / Organico / Todos */
   if ((f==='wa' && embData) || (f==='web' && embDataWeb)) pintarTodo();
   else { const z=document.getElementById('embZona'); if(z){ _embRescatarFiltros(); z.innerHTML=''; } }
   cargarEmbudo();
@@ -2902,7 +2901,11 @@ function cargarEmbudoWeb(){
   } catch(e){} };
   const inf = document.getElementById('embInfo');
   if (inf) inf.textContent = r.lbl;
-  _flGetJSON(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(r.desde))}&hasta=${encodeURIComponent(_fISO(r.hasta))}`).then(d=>{
+  /* 5-oct-2026 · ventas web del ERP (anuncios/organico) para las tres vistas */
+  const _vw = _ventasWebRango(_embFecha(r.desde), _embFecha(r.hasta)).catch(() => null);
+  const _vwP = _ventasWebRango(_embFecha(pDesde), _embFecha(pHasta)).catch(() => null);
+  _flGetJSON(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(r.desde))}&hasta=${encodeURIComponent(_fISO(r.hasta))}`).then(async d=>{
+    try { d.__web = await _vw; } catch (e) {}
     embDataWeb = { d: d, dPrev: (embDataWeb && embDataWeb.dPrev) || null, lbl: r.lbl };
     pintarTodo(); _pintado = true; _guardar();
     document.getElementById('embEstado').textContent = '';
@@ -2912,7 +2915,8 @@ function cargarEmbudoWeb(){
       '⚠️ Falta crear el endpoint web en n8n — sin conexión con el servicio.', null,
       EMB_ETAPAS_WEB, EMB_NEON_WEB);
   });
-  _flGetJSON(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(pDesde))}&hasta=${encodeURIComponent(_fISO(pHasta))}`).then(dp=>{
+  _flGetJSON(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(pDesde))}&hasta=${encodeURIComponent(_fISO(pHasta))}`).then(async dp=>{
+    try { dp.__web = await _vwP; } catch (e) {}
     if (!embDataWeb || !embDataWeb.d) return;
     embDataWeb.dPrev = dp; pintarTodo(); _guardar();
   }).catch(()=>{});
@@ -3052,8 +3056,12 @@ function pintarSerie(idx){
   const hist = (idx && idx.historia) || [];
   const fechas = (idx && idx.fechas) || [...new Set(hist.map(x=>x.fecha))].sort();
   window.__ultSerie = idx;
-  const solo = window.__serieSolo && ASESORAS_VENTAS.indexOf(window.__serieSolo) > -1 ? window.__serieSolo : null;
-  const quienes = solo ? [solo] : ASESORAS_VENTAS.slice();
+  /* 5-oct-2026 · idx.series = [{k, label, col}] -> grafico por serie (Web: Anuncios/Organico),
+     sin turnos de asesora ni linea de meta */
+  const SER = (idx && idx.series) || null;
+  const solo = !SER && window.__serieSolo && ASESORAS_VENTAS.indexOf(window.__serieSolo) > -1 ? window.__serieSolo : null;
+  const quienes = SER ? SER.map(x => x.k) : (solo ? [solo] : ASESORAS_VENTAS.slice());
+  const colSer = {}; if (SER) SER.forEach(x => { colSer[x.k] = x.col; });
   if(!fechas.length){
     z.innerHTML = idx && idx.aviso ? '<div style="color:var(--txt2);font-size:11.5px;padding:6px 2px">'+idx.aviso+'</div>' : '';
     return;
@@ -3064,14 +3072,15 @@ function pintarSerie(idx){
   /* dia sin turno y sin ventas = sin punto (asi Lucia no dibuja ceros de lunes a viernes) */
   fechas.forEach(f => quienes.forEach(v => {
     const k = v+'|'+f, dow = new Date(f+'T12:00:00').getDay();
-    if (!val[k]) val[k] = ((TURNO_ASESORA[v]||[]).indexOf(dow) > -1) ? 0 : null;
+    if (!val[k]) val[k] = (SER || (TURNO_ASESORA[v]||[]).indexOf(dow) > -1) ? 0 : null;
   }));
   let maxV = 0; Object.keys(val).forEach(k => { if ((val[k]||0) > maxV) maxV = val[k]; });
-  const techo = Math.max(META_VENTAS_DIA + 1, Math.ceil(maxV));
+  const techo = Math.max(SER ? 3 : META_VENTAS_DIA + 1, Math.ceil(maxV));
   const pasoY = techo <= 6 ? 1 : (techo <= 12 ? 2 : Math.ceil(techo / 6));
   const tope = Math.ceil(techo / pasoY) * pasoY;
 
-  const leyenda = ASESORAS_VENTAS.map(v => '<span style="cursor:pointer;opacity:' + (solo && solo !== v ? '.35' : '1') + '" title="Ver solo a ' + v + '" onclick="serieSolo(\'' + v + '\')">' + capsulaAsesora(v) + '</span>').join('<span style="width:6px;display:inline-block"></span>');
+  const leyenda = SER ? SER.map(x => '<span style="display:inline-block;background:' + x.col + ';color:#111;border-radius:999px;padding:2px 10px;font-size:11px;font-weight:900">' + x.label + '</span>').join('<span style="width:6px;display:inline-block"></span>')
+    : ASESORAS_VENTAS.map(v => '<span style="cursor:pointer;opacity:' + (solo && solo !== v ? '.35' : '1') + '" title="Ver solo a ' + v + '" onclick="serieSolo(\'' + v + '\')">' + capsulaAsesora(v) + '</span>').join('<span style="width:6px;display:inline-block"></span>');
   /* en modo "una sola": cuantos dias de turno llego a la meta */
   let resumenSolo = '';
   if (solo){
@@ -3083,7 +3092,7 @@ function pintarSerie(idx){
 
   z.innerHTML = '<div style="border:1px solid var(--bd);border-radius:14px;padding:12px 14px;background:var(--card)">'
     + '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px">'
-    +   '<b style="font-size:13.5px">Ventas por asesora por d\u00eda</b>' + resumenSolo
+    +   '<b style="font-size:13.5px">' + ((idx && idx.titulo) || 'Ventas por asesora por d\u00eda') + '</b>' + resumenSolo
 
     +   '<span style="flex:1"></span>' + leyenda
     + '</div><div id="embSerieSvg"></div></div>';
@@ -3105,9 +3114,9 @@ function pintarSerie(idx){
       grid += '<line x1="'+mL+'" y1="'+y.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+y.toFixed(1)+'" stroke="var(--bd)" stroke-width="1" opacity="'+(v===0?'.85':'.32')+'"/>'
             + '<text x="'+(mL-8)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="11" fill="var(--txt2)">'+v+'</text>';
     }
-    /* linea de META (4 ventas/dia por asesora) */
+    /* linea de META (4 ventas/dia por asesora) — no aplica a Web */
     const yM = py(META_VENTAS_DIA);
-    grid += '<line x1="'+mL+'" y1="'+yM.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+yM.toFixed(1)+'" stroke="#ef4444" stroke-width="1.6" stroke-dasharray="6 5"/>'
+    if (!SER) grid += '<line x1="'+mL+'" y1="'+yM.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+yM.toFixed(1)+'" stroke="#ef4444" stroke-width="1.6" stroke-dasharray="6 5"/>'
           + '<text x="'+(W-mR-4)+'" y="'+(yM-6).toFixed(1)+'" text-anchor="end" font-size="11" font-weight="800" fill="#ef4444">meta '+META_VENTAS_DIA+'/d\u00eda</text>';
     const paso = Math.max(1, Math.ceil(fechas.length / Math.max(2, Math.floor((W-mL-mR)/56))));
     let ejeX='';
@@ -3119,7 +3128,7 @@ function pintarSerie(idx){
     });
     let lineas='', puntos='';
     quienes.forEach((v,qi)=>{
-      const col = COLOR_ASESORA[v] || color(v,qi);
+      const col = colSer[v] || COLOR_ASESORA[v] || color(v,qi);
       let d='', abierto=false;
       fechas.forEach((f,i)=>{
         const y = val[v+'|'+f];
@@ -3130,7 +3139,7 @@ function pintarSerie(idx){
         const colP = (solo && v !== 'Tula') ? (y >= META_VENTAS_DIA ? '#22c55e' : '#ef4444') : col;
         puntos += '<circle cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="'+(solo?'5':'3.2')+'" fill="'+colP+'" stroke="var(--card)" stroke-width="1.5"/>'
                 + '<circle class="ptHit" cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="11" fill="transparent" style="cursor:pointer"'
-                + ' data-a="'+v+'" data-f="'+f+'" data-v="'+(+y)+(+y===1?' venta':' ventas')+'" data-c="'+col+'"/>';
+                + ' data-a="'+(SER ? (SER.find(x => x.k === v) || {}).label : v)+'" data-f="'+f+'" data-v="'+(+y)+(+y===1?' venta':' ventas')+'" data-c="'+col+'"/>';
       });
       if(d) lineas += '<path d="'+d+'" fill="none" stroke="'+col+'" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>';
     });
@@ -3331,6 +3340,24 @@ async function _ventasAsesoraRango(desdeF, hastaF){
 /* 5-oct-2026 · ventas ORGANICAS de WhatsApp (directo + indirecto), de erp.v_venta_organica
    (PEGAR_EN_SUPABASE_ventas_organicas_5oct.sql). Quien cerro = la asesora que registro la
    mayor parte del pago; si no hay, la que registro el pedido; el bot -> "Tula y otros". */
+/* 5-oct-2026 · ventas de la PAGINA WEB (anuncios + organico) desde erp.v_venta_web
+   (PEGAR_EN_SUPABASE_ventas_web_5oct.sql): del ERP, al dia; ingreso solo prendas. */
+async function _ventasWebRango(desdeF, hastaF){
+  const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
+  const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
+  if (!tok) return null;
+  const r = await fetch(FL_SB_URL + '/rest/v1/v_venta_web?select=dia_pago,grupo,venta_sin_envio&dia_pago=gte.' + desdeF + '&dia_pago=lte.' + hastaF,
+    { headers: { apikey: FL_SB_ANON, Authorization: 'Bearer ' + tok, 'Accept-Profile': 'erp' } });
+  if (!r.ok) return null;
+  const filas = await r.json();
+  if (!Array.isArray(filas)) return null;
+  const g = { ADS: { n: 0, ingreso: 0, porDia: {} }, ORG: { n: 0, ingreso: 0, porDia: {} } };
+  filas.forEach(f => {
+    const x = g[f.grupo === 'ADS' ? 'ADS' : 'ORG'], dia = String(f.dia_pago || '').slice(0, 10);
+    x.n++; x.ingreso += Number(f.venta_sin_envio) || 0; x.porDia[dia] = (x.porDia[dia] || 0) + 1;
+  });
+  return { ads: g.ADS, org: g.ORG, fechas: _listaDias(desdeF, hastaF) };
+}
 async function _ventasOrganicasRango(desdeF, hastaF){
   const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
   const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
@@ -3474,9 +3501,44 @@ function pintarTodoWeb(){
   if (!embDataWeb || !embDataWeb.d){ _embRescatarFiltros(); z.innerHTML = ''; return; }
   const d = embDataWeb.d, dp = embDataWeb.dPrev;
   z.style.width = '100%';
+  /* 5-oct-2026 · Web en tres vistas, igual que WhatsApp (sin asesoras ni meta) */
+  const W = d.__web, WP = dp && dp.__web;
+  const origen = W ? EMB_ORIGEN : 'ads';
+  const n = (x) => +x || 0;
+  const serieW = (claves) => {
+    if (!W || !W.fechas || !W.fechas.length) return { historia: [], fechas: [] };
+    const SER = [{ k: 'ADS', label: 'Anuncios', col: '#34ffb0' }, { k: 'ORG', label: 'Org\u00e1nico', col: '#facc15' }].filter(x => claves.indexOf(x.k) > -1);
+    const h = []; W.fechas.forEach(f => SER.forEach(x => h.push({ fecha: f, vendedora: x.k, ventas: (x.k === 'ADS' ? W.ads : W.org).porDia[f] || 0 })));
+    return { historia: h, fechas: W.fechas, series: SER, titulo: 'Ventas web por d\u00eda' };
+  };
+  if (origen === 'org'){
+    _embRescatarFiltros();
+    const tot = n(W.ads.n) + n(W.org.n);
+    z.innerHTML = '<div class="embCard" style="padding:18px 20px;border:1px solid var(--bd);border-radius:14px;background:var(--card)">'
+      + '<div style="font-size:12px;font-weight:800;color:var(--txt2);letter-spacing:.04em">VENTAS ORG\u00c1NICAS DE LA WEB <span style="font-weight:600">(sin anuncio \u00b7 sin embudo)</span></div>'
+      + '<div style="display:flex;gap:28px;flex-wrap:wrap;margin-top:12px;align-items:baseline">'
+      +   '<div><div style="font-size:44px;font-weight:900;color:#facc15;line-height:1">' + n(W.org.n) + '</div><div style="font-size:11px;color:var(--txt2)">ventas</div></div>'
+      +   '<div><div style="font-size:26px;font-weight:900">S/ ' + Math.round(n(W.org.ingreso)).toLocaleString('es-PE') + '</div><div style="font-size:11px;color:var(--txt2)">ingreso (solo prendas)</div></div>'
+      +   '<div><div style="font-size:26px;font-weight:900">' + (tot ? Math.round(n(W.org.n) * 100 / tot) : 0) + '%</div><div style="font-size:11px;color:var(--txt2)">del total de la web (' + n(W.org.n) + ' de ' + tot + ')</div></div>'
+      + '</div></div>';
+    _embArmarArriba(z, { compras: W.org.n, ingreso: W.org.ingreso }, WP ? { compras: WP.org.n, ingreso: WP.org.ingreso } : null, 'org');
+    try { pintarSerie(serieW(['ORG'])); } catch (e) {}
+    return;
+  }
   pintarEmbudo(d.acumulado, '', dp && dp.acumulado, EMB_ETAPAS_WEB, EMB_NEON_WEB);
-  _embArmarArriba(z, d.acumulado, dp && dp.acumulado, true);
+  const acA = Object.assign({}, d.acumulado, W ? { compras: W.ads.n, ingreso: W.ads.ingreso } : {});
+  const acAP = dp && dp.acumulado ? Object.assign({}, dp.acumulado, WP ? { compras: WP.ads.n, ingreso: WP.ads.ingreso } : {}) : null;
+  if (origen === 'todos'){
+    const t = (a, w) => Object.assign({}, a, { compras: n(w.ads.n) + n(w.org.n), ingreso: n(w.ads.ingreso) + n(w.org.ingreso), __soloAnunciosConv: true, __ventasAds: n(w.ads.n) });
+    _embArmarArriba(z, t(acA, W), (acAP && WP) ? t(acAP, WP) : null, true);
+    const izq = z.querySelector('.embIzq'); if (izq) izq.insertAdjacentHTML('beforeend', _franjaOrigen(n(W.ads.n), n(W.org.n)).replace('ventas de WhatsApp', 'ventas de la web'));
+    z.insertAdjacentHTML('beforeend', cajasDispositivos(d, dp));
+    try { pintarSerie(serieW(['ADS', 'ORG'])); } catch (e) {}
+    return;
+  }
+  _embArmarArriba(z, acA, acAP, true);
   z.insertAdjacentHTML('beforeend', cajasDispositivos(d, dp));
+  try { pintarSerie(W ? serieW(['ADS']) : { historia: [], fechas: [] }); } catch (e) {}
 }
 /* un color hex con opacidad, sin depender de color-mix */
 function _op(hex, a){
