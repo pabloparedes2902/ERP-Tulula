@@ -804,10 +804,51 @@ async function mkCargarVentas(desde, hasta){
      lento. Promise.all vuelve, y es seguro: leer() NUNCA lanza — devuelve null
      cuando falla — asi que una caida ya no se lleva puesta a la otra, que era
      el bicho que dejaba Marketing en cero. */
+  /* 5-oct: el costo del ERP sale a la vez (nunca lanza: devuelve null si falla) */
+  const _costoProm = Promise.all([ _mkCostoPeriodo(desde, hasta), _mkCostoPeriodo(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
   [MKV, MKVP] = await Promise.all([
     leer(desde, hasta),
     leer(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1))
   ]);
+  [MKC, MKCP] = await _costoProm;
+}
+
+/* 5-oct-2026 · COSTO DE PRENDAS DESDE EL ERP (pedido de Pablo).
+   /marketing2 (n8n) calculaba el costo con bot.costo_producto: tabla vieja del bot
+   (ultima actualizacion 8-ago) que busca por MODELO y no por prenda. Medido en oct:
+   pantalon Mirella a 59,35 cuando el ERP dice 38,36 (+20,99 por pedido) y 4 de 8
+   anuncios con costo 0 aunque el ERP tenia S/ 177,87. Ahora el costo sale de
+   public.mk_costo_periodo (erp.v_linea_margen, PEGAR_EN_SUPABASE_costo_marketing_erp_5oct.sql):
+   costo real de cada prenda + lo cobrado por prendas SIN costo cargado x (1 - margen supuesto).
+   Si la funcion no responde, queda el costo de /marketing2 como antes. */
+let MKC = null, MKCP = null;   /* { ad_id: {all:{costo,sin}, wa:{...}, web:{...}} } */
+async function _mkCostoPeriodo(desde, hasta){
+  try {
+    const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+    if (!tok) return null;
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_costo_periodo', { method: 'POST',
+      headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_desde: desde, p_hasta: hasta }) });
+    if (!r.ok) return null;
+    const a = await r.json();
+    if (!Array.isArray(a)) return null;
+    const o = {};
+    a.forEach(x => {
+      const id = String(x.ad_id), c = +x.costo || 0, sc = +x.cobrado_sin_costo || 0;
+      const e = o[id] || (o[id] = { all:{costo:0, sin:0}, wa:{costo:0, sin:0}, web:{costo:0, sin:0} });
+      e.all.costo += c; e.all.sin += sc;
+      if (e[x.canal]){ e[x.canal].costo += c; e[x.canal].sin += sc; }
+    });
+    return o;
+  } catch (e) { return null; }
+}
+function _mkCostoERP(mapa, id){
+  if (!mapa) return null;                      /* sin la funcion: no se toca */
+  const e = mapa[id];
+  if (!e) return 0;                            /* sin ventas en el ERP: costo 0 */
+  const k = (MKCANAL === 'wa' || MKCANAL === 'web') ? MKCANAL : 'all';
+  const sup = 1 - Math.max(1, Math.min(95, Number((document.getElementById('mkMargen') || {}).value) || 60)) / 100;
+  return Math.round((e[k].costo + e[k].sin * sup) * 100) / 100;
 }
 
 /* Pisa ventas e ingreso de cada anuncio con el dato del ERP.
@@ -828,6 +869,10 @@ function mkAplicarVentas(){
     const a = _mkVentaCanal(MKV.porAd[id]), p = _mkVentaCanal(MKVP && MKVP.porAd[id]);
     if (r.act){  r.act.pedidos  = a.pedidos; r.act.pagados  = a.pagados; r.act.ingreso  = a.ingreso; }
     if (r.prev){ r.prev.pedidos = p.pedidos; r.prev.pagados = p.pagados; r.prev.ingreso = p.ingreso; }
+    /* 5-oct-2026 · costo de prendas del ERP (ver _mkCostoPeriodo) */
+    const ca = _mkCostoERP(MKC, id), cp = _mkCostoERP(MKCP, id);
+    if (r.act  && ca !== null) r.act.costo  = ca;
+    if (r.prev && cp !== null) r.prev.costo = cp;
   });
 }
 
@@ -1718,14 +1763,14 @@ function _mkSnapClave(){ return 'mkSnap:' + (mkPers ? ('p' + (document.getElemen
 function _mkSnapGuardar(k){
   try {
     localStorage.setItem(k, JSON.stringify({ v: MK_SNAP_V, ts: Date.now(),
-      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD }));
+      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP }));
   } catch (e) { /* sin espacio o sin permiso: no pasa nada */ }
 }
 function _mkSnapUsar(k){
   try {
     const o = JSON.parse(localStorage.getItem(k) || 'null');
     if (!o || o.v !== MK_SNAP_V || !o.MK || !Array.isArray(o.MK.filas)) return 0;
-    MK = o.MK; MKV = o.MKV; MKVP = o.MKVP; MKE = o.MKE; MKEP = o.MKEP; MKTXT = o.MKTXT || {};
+    MK = o.MK; MKV = o.MKV; MKVP = o.MKVP; MKC = o.MKC || null; MKCP = o.MKCP || null; MKE = o.MKE; MKEP = o.MKEP; MKTXT = o.MKTXT || {};
     MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD;
     mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
     mkPintarCols(); mkPintar();
