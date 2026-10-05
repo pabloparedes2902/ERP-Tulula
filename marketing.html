@@ -2027,7 +2027,7 @@ let mkPopEstatico = false;
 const MK_METRICAS = [
   { key:'ventas',     label:'Ventas',     color:'#22c55e', calc:d => +d.ventas || 0, fmt:v => v + (v === 1 ? ' venta' : ' ventas') },
   { key:'gasto',      label:'Gasto',      color:'#94a3b8', calc:d => +d.gasto || 0, fmt:v => mkSol(v) },
-  { key:'profit',     label:'Profit',     color:'#14b8a6', calc:d => { const ing=+d.ingreso||0, g=+d.gasto||0; if (mkPopCostoPct === null) return null; return ing - ing*mkPopCostoPct - g; }, fmt:v => mkSol(v) },
+  { key:'profit',     label:'Profit',     color:'#14b8a6', calc:d => _mkPopProfitDia(d), fmt:v => mkSol(v) },
   { key:'hook',       label:'Hook',       color:'#f97316', video:true, calc:d => { const im=+d.impresiones||0, v3=+d.v3s||0; return im ? v3/im*100 : null; }, fmt:v => v.toFixed(1)+'%' },
   { key:'hold',       label:'Hold',       color:'#facc15', video:true, calc:d => { const im=+d.impresiones||0, tp=+d.thruplays||0; return im ? tp/im*100 : null; }, fmt:v => v.toFixed(1)+'%' },
   { key:'ctr',        label:'CTR',        color:'#ec4899', calc:d => { const im=+d.impresiones||0, lc=+d.link_clicks||0; return im ? lc/im*100 : null; }, fmt:v => v.toFixed(2)+'%' },
@@ -2037,6 +2037,32 @@ const MK_METRICAS = [
   { key:'roas',       label:'ROAS',       color:'#a855f7', calc:d => { const g=+d.gasto||0, ing=+d.ingreso||0; return g ? ing/g : null; }, fmt:v => v.toFixed(2)+'x' },
 ];
 let mkPopSel = new Set(['ventas']);
+/* 5-oct-2026 · Propuesta 2 — costo REAL de prendas por día (rpc public.mk_costo_dia,
+   PEGAR_EN_SUPABASE_profit_por_dia_5oct.sql). Prendas sin costo cargado: se les
+   aplica el "Margen supuesto" de la barra. Si la función no está o falla, el
+   Profit sigue estimado con el margen del anuncio (como antes). */
+let mkPopCostoDia = null;   /* { 'YYYY-MM-DD': {costo, cobrado_sin_costo} } del anuncio abierto */
+function _mkSupuestoCosto(){ return 1 - Math.max(1, Math.min(95, Number((document.getElementById('mkMargen')||{}).value) || 60)) / 100; }
+function _mkPopProfitDia(d){
+  const ing = +d.ingreso || 0, g = +d.gasto || 0;
+  const c = mkPopCostoDia && mkPopCostoDia[d.fecha];
+  if (c) return ing - ((+c.costo || 0) + (+c.cobrado_sin_costo || 0) * _mkSupuestoCosto()) - g;
+  if (mkPopCostoDia && ing === 0) return -g;          /* día sin ventas: profit = -gasto, exacto */
+  if (mkPopCostoPct === null) return null;
+  return ing - ing * mkPopCostoPct - g;               /* respaldo: estimado */
+}
+async function _mkCostoDiaCargar(adId){
+  const tok = _mkSbTok();
+  if (!tok) return null;
+  const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_costo_dia', { method: 'POST',
+    headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_ad: String(adId) }) });
+  if (!r.ok) return null;
+  const a = await r.json();
+  if (!Array.isArray(a)) return null;
+  const m = {}; a.forEach(x => { m[x.fecha] = x; });
+  return m;
+}
 function _mkPopCostoPct(r){
   /* mismo margen que usa la tabla: el real del anuncio, o el "Margen supuesto" de la barra */
   try { return r ? 1 - mkMargenDe(r) : null; } catch (e) { return null; }
@@ -2155,11 +2181,22 @@ function mkPopSparkAbrir(adId){
     mkPopDias = dd.dias.slice().sort((a, b) => a.fecha < b.fecha ? -1 : 1);
     mkPopEstatico = mkEsEstatico(r);
     mkPopCostoPct = _mkPopCostoPct(r);
+    mkPopCostoDia = null;
+    const _adAbierto = String(adId);
+    _mkCostoDiaCargar(adId).then(m => {
+      if (!m || !mkPopDias || window._mkPopAd !== _adAbierto) return;
+      mkPopCostoDia = m;
+      const nota = document.getElementById('mkPopProfitNota');
+      if (nota) nota.textContent = 'Profit = venta − costo REAL de prendas de ese día − gasto (prendas sin costo cargado: con el margen supuesto de la barra).';
+      if (mkPopSel.has('profit')) mkPopSparkDibujar();
+    }).catch(() => {});
+    window._mkPopAd = _adAbierto;
     mkPopSel.forEach(k => { const m = MK_METRICAS.filter(x => x.key === k)[0]; if (!m || (m.video && mkPopEstatico)) mkPopSel.delete(k); });
     if (!mkPopSel.size) mkPopSel.add('ventas');
     cuerpo.innerHTML = '<div id="mkPopSparkBtns" style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px"></div>'
       + '<div style="position:relative;height:320px"><canvas id="mkPopChart"></canvas></div>'
-      + '<div style="font-size:10px;color:var(--txt2);margin-top:8px">Con más de un indicador seleccionado, cada línea se muestra en escala relativa (0-100%) de su propio máximo para poder compararlas — el valor real siempre sale al pasar el mouse.</div>';
+      + '<div id="mkPopProfitNota" style="font-size:10px;color:var(--txt2);margin-top:8px">Profit estimado con el margen del anuncio (cargando el costo real por día…).</div>'
+      + '<div style="font-size:10px;color:var(--txt2);margin-top:4px">Con más de un indicador seleccionado, cada línea se muestra en escala relativa (0-100%) de su propio máximo para poder compararlas — el valor real siempre sale al pasar el mouse.</div>';
     mkPopSparkPintarBotones();
     mkPopSparkDibujar();
   }
@@ -2362,9 +2399,12 @@ function mkAggFilas(filas, campo){
   const t = {}; K.forEach(k => t[k] = 0);
   let hayEtapas = false;
   filas.forEach(r => { const o = r[campo] || {}; K.forEach(k => { if (o[k] != null) { t[k] += Number(o[k]) || 0; if (k==='frias'||k==='tibias'||k==='calientes') hayEtapas = true; } }); });
+  /* 5-oct-2026 · Hook y Hold solo sobre impresiones de VIDEOS: las imagenes no
+     se reproducen y bajaban el % del grupo aunque los videos rindieran bien. */
+  t.impr_vid = filas.reduce((n, r) => n + (mkEsEstatico(r) ? 0 : (Number((r[campo] || {}).impresiones) || 0)), 0);
   const d = (a, b) => (b ? a / b : null);
-  t.hook_rate   = d(t.v3s, t.impresiones) === null ? null : d(t.v3s, t.impresiones) * 100;
-  t.hold_rate   = d(t.thruplays, t.impresiones) === null ? null : d(t.thruplays, t.impresiones) * 100;
+  t.hook_rate   = d(t.v3s, t.impr_vid) === null ? null : d(t.v3s, t.impr_vid) * 100;
+  t.hold_rate   = d(t.thruplays, t.impr_vid) === null ? null : d(t.thruplays, t.impr_vid) * 100;
   t.retencion   = d(t.p100, t.v3s) === null ? null : d(t.p100, t.v3s) * 100;
   t.ctr         = d(t.link_clicks, t.impresiones) === null ? null : d(t.link_clicks, t.impresiones) * 100;
   t.ctr_todos   = d(t.clics, t.impresiones) === null ? null : d(t.clics, t.impresiones) * 100;
@@ -2497,9 +2537,11 @@ function mkPintar(){
     const t = {}; K.forEach(k => t[k] = 0);
     let hayEtapas = false;
     base.forEach(r => { const o = r[lado] || {}; K.forEach(k => { if (o[k] != null) { t[k] += Number(o[k]) || 0; if (k==='frias'||k==='tibias'||k==='calientes') hayEtapas = true; } }); });
+    /* 5-oct-2026 · Hook y Hold del TOTAL y de los cuadros: solo impresiones de videos */
+    t.impr_vid = base.reduce((n, r) => n + (mkEsEstatico(r) ? 0 : (Number((r[lado] || {}).impresiones) || 0)), 0);
     const d = (a, b) => (b ? a / b : null);
-    t.hook_rate   = d(t.v3s, t.impresiones) === null ? null : d(t.v3s, t.impresiones) * 100;
-    t.hold_rate   = d(t.thruplays, t.impresiones) === null ? null : d(t.thruplays, t.impresiones) * 100;
+    t.hook_rate   = d(t.v3s, t.impr_vid) === null ? null : d(t.v3s, t.impr_vid) * 100;
+    t.hold_rate   = d(t.thruplays, t.impr_vid) === null ? null : d(t.thruplays, t.impr_vid) * 100;
     t.retencion   = d(t.p100, t.v3s) === null ? null : d(t.p100, t.v3s) * 100;
     t.ctr         = d(t.link_clicks, t.impresiones) === null ? null : d(t.link_clicks, t.impresiones) * 100;
     t.ctr_todos   = d(t.clics, t.impresiones) === null ? null : d(t.clics, t.impresiones) * 100;
