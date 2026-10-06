@@ -3855,6 +3855,8 @@ async function apiSend(action, body) {
 // POST con Content-Type text/plain → no dispara preflight CORS en Apps Script.
 // Usar para payloads grandes (ej. imágenes base64) o cuando GET falla por límite de URL.
 async function apiPost(action, body) {
+  // 6-oct · la subida de respaldo (Apps Script) también frena la misma constancia
+  if (action === 'voucher.subir' && body && body.imageBase64) await _constanciaUnicaOFrenar(body.NroPedido, body.imageBase64);
   const _reqId = 'rq_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10); // 13/07 anti-duplicado (mismo id en todos los reintentos)
   // FIX 24-jul (cruces de instrucciones): apiPost NO marcaba el pedido como "editado
   // localmente" (solo apiSend lo hacía) → durante la ventana de anotación en segundo
@@ -6569,7 +6571,11 @@ function _cosForm(r) {
     cont.querySelectorAll('.cf-sec').forEach(x => { x.style.display = x.dataset.sec === t ? '' : 'none'; });
     cont.querySelectorAll('.cf-tab').forEach(x => { x.classList.toggle('bp', x.dataset.t === t); x.classList.toggle('bg', x.dataset.t !== t); });
     COS.tab = t;
-    if (t === 'ficha' && !esNuevo && !v._panelOk) { v._panelOk = true; _cosMediaPintar(v); }
+    /* 6-oct-2026 (Pablo: CONJUNTO PATRICK, «Fotos y video» en blanco) · la marca de "ya pintado" iba en el
+       producto (v._panelOk) y el formulario se vuelve a armar (refresco de Costos): el panel NUEVO quedaba vacío
+       para siempre. Ahora la marca va en el propio panel: cada panel nuevo se pinta. */
+    const _cfm = document.getElementById('cf-media');
+    if (t === 'ficha' && !esNuevo && _cfm && !_cfm.dataset.pintado) { _cfm.dataset.pintado = '1'; _cosMediaPintar(v); }
   };
   cont.querySelectorAll('.cf-tab').forEach(b => b.addEventListener('click', () => verTab(b.dataset.t)));
   verTab(v._tab === 'shopify' ? 'datos' : (v._tab || 'datos'));
@@ -9299,7 +9305,8 @@ async function _subirConstanciasJuntas(nro, imagenes) {
     // 25-set · PRIMERO DIRECTO A SUPABASE STORAGE (<1 s), como ya hace el modal
     // del pago. Medido (vr_2_LENTAS_TOP): api.voucher.subir 177 veces en 7 dias,
     // 13 s de promedio con la asesora esperando. Apps Script queda de respaldo.
-    try { const _u = await _subirConstanciaRapida(nro, img); if (_u) return _u; } catch (_) {}
+    try { const _u = await _subirConstanciaRapida(nro, img); if (_u) return _u; }
+    catch (_e0) { if (_e0 && _e0.dupConst) { try { toast(esc(_e0.message), 'err'); } catch (_) {} return null; } }   // 6-oct: constancia repetida → se frena y se avisa
     try {
       const r = await apiPost('voucher.subir', {
         NroPedido: String(nro || '0'),
@@ -11390,13 +11397,27 @@ async function _sbBuzonAlertas() {
   } catch (_) { return null; }
 }
 async function _sbEsperaStock() { return null; }
+// 6-oct-2026 · BUZÓN ÚNICO: además de los escalados del bot, el módulo Alertas lee
+// erp.alertas (guardián de Supabase cada 10 min + vigilantes de n8n). Antes esa tabla
+// juntaba avisos que nadie veía. Si la base no contesta, se sigue sin ellos.
+async function _sbAlertasErp() {
+  try {
+    const a = await _sbTablaLeer('v_alertas_abiertas?select=id,creada_at,origen,nivel,titulo,detalle,repeticiones&order=creada_at.desc', 'erp');
+    return Array.isArray(a) ? a.map(x => Object.assign({}, x, { _erp: true })) : [];
+  } catch (_) { return []; }
+}
+async function _sbBuzonTodo() {
+  const [e, a] = await Promise.all([_sbBuzonAlertas(), _sbAlertasErp()]);
+  return (Array.isArray(e) ? e : []).concat(a || []);
+}
 
 async function _sbAlertaAtender(id) {
   const tok = await _sbSesionAsegurar();
   if (!tok) throw new Error('sin sesion');
   const r = await fetch(SB_URL + '/rest/v1/rpc/alerta_atender', {
     method: 'POST',
-    headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    // 6-oct: la función vive en el esquema erp (sin este perfil daba 404)
+    headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', 'Content-Profile': 'erp' },
     body: JSON.stringify({ p_id: id, p_por: (typeof USUARIO !== 'undefined' && USUARIO) ? String(USUARIO) : 'ERP' })
   });
   if (!r.ok) throw new Error('no se pudo marcar (' + r.status + ')');
@@ -13412,7 +13433,49 @@ async function _voucherSubirRapido(nro, cmp, pagoId, pagoKey, urlsPrevias) {
   return { ok: true, url: url, urls: urls, via: 'storage' };
 }
 
+// ── CONSTANCIA ÚNICA (6-oct-2026, pedido de Pablo) ───────────────────────────
+// Mismo monto NO es pago repetido; la MISMA constancia sí. Cada archivo deja una
+// huella (SHA-256 del contenido) en erp.constancia_huella. Si se intenta subir el
+// mismo archivo otra vez, se frena y se dice en qué pedido ya está.
+// Si la base no contesta, NO se frena (nunca trabar una venta por el vigilante).
+const _constHuellaMemo = {};
+async function _constHuella(b64) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(String(b64 || '')));
+  return Array.from(new Uint8Array(d)).map(x => x.toString(16).padStart(2, '0')).join('');
+}
+async function _constRpc(fn, body) {
+  const tok = await _sbSesionAsegurar();
+  if (!tok) return undefined;
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST',
+    headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', 'Content-Profile': 'erp' },
+    body: JSON.stringify(body) });
+  if (!r.ok) return undefined;
+  return r.json();
+}
+async function _constanciaUnicaOFrenar(nro, b64) {
+  if (!b64 || typeof crypto === 'undefined' || !crypto.subtle || typeof SB_URL === 'undefined') return null;
+  let h;
+  try { h = await _constHuella(b64); } catch (_) { return null; }
+  if (_constHuellaMemo[h] && _constHuellaMemo[h] !== String(nro || '')) {
+    const e = new Error('Esta constancia ya está registrada en el pedido #' + _constHuellaMemo[h] + '. No se puede usar la misma constancia dos veces.');
+    e.dupConst = true; throw e;
+  }
+  let previo = null;
+  try { previo = await _constRpc('constancia_huella_buscar', { p_huella: h, p_nro: String(nro || '') }); } catch (_) { previo = null; }
+  if (previo) {
+    const e = new Error('Esta constancia ya está registrada en el pedido #' + previo + '. No se puede usar la misma constancia dos veces.');
+    e.dupConst = true; throw e;
+  }
+  return h;
+}
+function _constanciaHuellaGuardar(h, nro, url) {
+  if (!h) return;
+  _constHuellaMemo[h] = String(nro || '');
+  try { _constRpc('constancia_huella_guardar', { p_huella: h, p_nro: String(nro || ''), p_url: url || '', p_por: (typeof USUARIO !== 'undefined' && USUARIO) ? String(USUARIO) : '' }).catch(() => {}); } catch (_) {}
+}
+
 async function _subirConstanciaRapida(nro, cmp) {
+  const _huella = await _constanciaUnicaOFrenar(nro, cmp && cmp.base64);   // 6-oct: frena la misma constancia (lanza error)
   try {
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
     const tok = await _sbSesionAsegurar();
@@ -13429,6 +13492,7 @@ async function _subirConstanciaRapida(nro, cmp) {
       body: bytes,
     });
     if (!r.ok) return null;   // bucket no existe / sin permiso → respaldo Apps Script
+    _constanciaHuellaGuardar(_huella, nro, SB_URL + '/storage/v1/object/public/constancias/' + nombre);   // 6-oct
     return SB_URL + '/storage/v1/object/public/constancias/' + nombre;
   } catch (e) { return null; }
 }
@@ -37450,7 +37514,7 @@ async function loadAlertas() {
     // null sin romper nada: la pantalla se arma con lo que haya llegado.
     const [r, buzon, espera] = await Promise.all([
       _alertasListarRapido(),
-      _sbBuzonAlertas(),
+      _sbBuzonTodo(),
       _sbEsperaStock()
     ]);
     _ALERT_BUZON  = Array.isArray(buzon)  ? buzon  : [];
@@ -37547,7 +37611,19 @@ const AL_REGLAS = [
   {re:/se edit[oó] a mano/i, nivel:'historial', t:'Ediciones a mano en la hoja de Google', s:'Registro de quién tocó qué. No requiere acción.', q:'—'},
   {re:/auditor nocturno repar/i, nivel:'historial', t:'El sistema se reparó solo de noche', s:'Ya está resuelto. Solo queda el registro.', q:'—'}
 ];
-const AL_RE_MKT = /marketing|anuncio|\bads\b|fatiga|carrusel|swipe|campa[ñn]a/i;
+const AL_RE_MKT = /marketing|anuncio|\bads\b|fatiga|carrusel|swipe|campa[ñn]a|embudo/i;
+// Avisos de erp.alertas por su origen (6-oct). Lo que no esté acá conserva su nivel.
+const AL_ORIGEN = {
+  'guardian':              { q: 'Sistemas' },
+  'salud':                 { nivel: 'amarillo', t: a => 'El bot Tula tiene ' + ((String(a.titulo).match(/\d+/) || ['varios'])[0]) + ' indicadores de calidad en rojo', s: 'No frena la venta. Lo revisa sistemas.', q: 'Sistemas' },
+  'posible-venta-perdida': { nivel: 'rojo', t: () => 'Posible pago que nadie registró', s: 'Una clienta mandó una imagen después de recibir los datos de pago y no hay pedido. Revisar la conversación.', q: 'Ventas' },
+  'espera-stock':          { mkt: true, t: () => 'Llegó stock que clientas estaban esperando', s: 'Avisarles para cerrar la venta.', q: 'Ventas' },
+  'Chequeo semanal':       { mkt: true, q: 'Marketing' },
+  'adjuntos':              { nivel: 'amarillo', t: () => 'Fotos o archivos de clientas que no se pueden abrir', s: 'Lo revisa sistemas.', q: 'Sistemas' },
+  'procesos-nocturnos':    { nivel: 'amarillo', t: () => 'Un proceso nocturno está atrasado', s: 'Lo revisa sistemas.', q: 'Sistemas' },
+  'vigía de la tienda':    { nivel: 'amarillo', t: () => 'Revisión automática de la tienda web', s: 'Lo revisa sistemas.', q: 'Sistemas' },
+  'reconciliador-pagos':   { nivel: 'amarillo', q: 'Operación' }
+};
 const AL_MESES = ['ene','feb','mar','abr','may','jun','jul','ago','set','oct','nov','dic'];
 
 function _alN8nTitulo(a) {
@@ -37585,7 +37661,22 @@ function _alClasificarTodo(r, buzon) {
     if (AL_RE_MKT.test(tit)) g.mkt.push(x);
     else (x.nivel === 'rojo' ? g.rojo : x.nivel === 'amarillo' ? g.amarillo : g.hist).push(x);
   }));
+  const _vistoOrigen = {};
   (Array.isArray(buzon) ? buzon : []).forEach(a => {
+    if (a._erp) {   // erp.alertas: una sola línea por origen (la más nueva) y reglas por origen
+      const o = String(a.origen || '');
+      if (_vistoOrigen[o]) return;
+      _vistoOrigen[o] = 1;
+      const rg = AL_ORIGEN[o] || {};
+      const nv = rg.nivel || (a.nivel === 'critica' ? 'rojo' : a.nivel === 'aviso' ? 'amarillo' : 'historial');
+      const rp = Number(a.repeticiones || 1);
+      const y = { nivel: nv, t: rg.t ? rg.t(a) : String(a.titulo || ''), s: rg.s || '', q: rg.q || 'Sistemas',
+        cant: 0, det: a.detalle ? [String(a.detalle).slice(0, 700)] : [], id: a.id, idAt: a.id,
+        cuando: _alertaCuando(a.creada_at) + (rp > 1 ? ' · se repitió ' + rp + ' veces' : '') };
+      if (rg.mkt || AL_RE_MKT.test(o + ' ' + y.t)) { y.mkt = true; g.mkt.push(y); }
+      else (nv === 'rojo' ? g.rojo : nv === 'amarillo' ? g.amarillo : g.hist).push(y);
+      return;
+    }
     const niv = a.nivel === 'critica' ? 'rojo' : a.nivel === 'aviso' ? 'amarillo' : 'historial';
     const rep = Number(a.repeticiones || 1);
     const x = { nivel: niv, t: String(a.titulo || ''), s: '', q: a.origen ? String(a.origen) : '',
@@ -37611,6 +37702,7 @@ function _alCard(x) {
     + '</div><div style="display:flex;gap:6px">'
     + (x.modulo ? '<button class="btn bg bs" onclick="navegarA(\'' + esc(x.modulo) + '\')">Ir a resolverlo →</button>' : '')
     + (x.idEsc != null ? '<button class="btn bg bs alerta-atender-escalado" data-id="' + esc(String(x.idEsc)) + '">✓ Atendida</button>' : '')
+    + (x.idAt != null ? '<button class="btn bg bs alerta-atender" data-id="' + esc(String(x.idAt)) + '">✓ Atendida</button>' : '')
     + '</div></div>';
   if (x.det && x.det.length) {
     const total = x.cant > x.det.length ? x.cant : 0;
@@ -37720,7 +37812,7 @@ function _updateAlertBadge(n) {
 async function _pollAlertBadge() {
   try {
     const [r, buzon, espera] = await Promise.all([
-      _alertasListarRapido(!!document.hidden), _sbBuzonAlertas(), _sbEsperaStock()
+      _alertasListarRapido(!!document.hidden), _sbBuzonTodo(), _sbEsperaStock()
     ]);
     _updateAlertBadge(_alRojosN(r, buzon));   // 6-oct: solo urgentes
   } catch(e) {}
