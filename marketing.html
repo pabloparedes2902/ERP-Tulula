@@ -483,7 +483,16 @@
   .mkmodal-in .res{font-size:11.5px;font-weight:800;margin-top:11px;text-align:right;min-height:16px}
   .mkmodal-in .res .bien{color:var(--ok)} .mkmodal-in .res .mal{color:var(--bad)}
   .mkmodal-in .res .esp{color:var(--txt2);font-weight:600}
-  .mkmodal-in .dato .mal{color:var(--bad)} .mkmodal-in .dato .esp{color:var(--txt2);font-weight:600}   /* 5-oct · Escalar */
+  .mkmodal-in .dato .mal{color:var(--bad)}
+  /* 6-oct · ➕ Nuevo anuncio */
+  #mkNuevoBox .mkmodal-in{max-width:760px;width:96vw;max-height:92vh;overflow:auto}
+  .mkn-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+  .mkn-grid label,.mkn-f label{display:block;font-size:10.5px;font-weight:800;color:var(--txt2);margin-bottom:3px}
+  .mkn-grid input,.mkn-grid select,.mkn-f input,.mkn-f select,.mkn-f textarea{width:100%;box-sizing:border-box;background:var(--card);border:1.5px solid var(--bd);
+    color:var(--txt);border-radius:8px;padding:6px 8px;font-size:12px;font-family:inherit}
+  .mkn-f{margin-bottom:10px} .mkn-f textarea{min-height:92px;resize:vertical}
+  .mkn-nom{font-size:12px;font-weight:800;background:var(--bg);border:1.5px dashed var(--bd);border-radius:8px;padding:7px 9px;margin-bottom:10px;word-break:break-word}
+  @media (max-width:640px){ .mkn-grid{grid-template-columns:repeat(2,minmax(0,1fr))} } .mkmodal-in .dato .esp{color:var(--txt2);font-weight:600}   /* 5-oct · Escalar */
   /* Fase 2 — selector de alcance y presupuesto dentro del modal */
   .mkmodal-in .niv{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 10px;font-size:11px;color:var(--txt2)}
   .mkmodal-in .niv span{margin-right:2px;font-weight:700}
@@ -635,6 +644,7 @@
       <span title="Solo se usa cuando el anuncio todavía no tiene costo real de sus prendas.">Margen supuesto</span>
       <input id="mkMargen" type="number" min="1" max="95" value="60" style="width:58px" onchange="mkPintar()">%
     </span>
+    <button class="btn" onclick="mkNuevoAbrir()" title="Subir un anuncio nuevo a un conjunto que ya existe (nace apagado)">➕ Nuevo anuncio</button>
     <button class="btn" onclick="mkToggleCols(event)">⚙ Columnas</button>
     <button class="btn" onclick="mkTogglePar(event)">🎯 Parámetros</button>
   </div>
@@ -3435,6 +3445,147 @@ async function mkAccConsultarPresupuesto(nivelPedido){
 }
 function mkAccCerrar(){ document.getElementById('mkAccBox').style.display = 'none'; MKACC = null; }
 
+/* ═══ 6-oct-2026 · ➕ NUEVO ANUNCIO (F1 + F2) ════════════════════════════════
+   El video se sube al almacen del ERP (bucket producto-media, misma subida firmada que las fichas:
+   multimedia.firmar en MultimediaBase.gs, via el ERP padre). n8n "API - Crear anuncio en Meta desde
+   el ERP" lo sube a Meta, copia la receta del anuncio plantilla (pagina, Instagram, boton de WhatsApp,
+   mensaje de bienvenida) y crea el anuncio APAGADO en el conjunto elegido. La pantalla consulta el
+   estado cada 5 s (anuncio-estado) hasta LISTO / ERROR / RECHAZADO.                                  */
+const URL_ANUNCIO_CREAR  = 'https://n8n-production-4e716.up.railway.app/webhook/anuncio-crear';
+const URL_ANUNCIO_ESTADO = 'https://n8n-production-4e716.up.railway.app/webhook/anuncio-estado';
+const MKN_MAX = 50 * 1024 * 1024;
+const MKN_MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+let MKN = { video: null, subiendo: false, conj: {} };
+function _mknHoyLima(){ const d = new Date(Date.now() - 5 * 3600 * 1000); return { m: d.getUTCMonth(), d: d.getUTCDate() }; }
+function _mknPartes(nombre){
+  const s = String(nombre || ''); const i = s.indexOf('|'); if (i < 0) return null;
+  const p = s.slice(i + 1).split('/').map(x => x.trim());
+  return p.length >= 8 ? p : null;
+}
+function mkNuevoOpciones(){
+  const filas = (MK && MK.filas) || [];
+  const listas = [new Map(), new Map(), new Map(), new Map(), new Map(), new Map(), new Map(), new Map()];
+  let maxCod = 0;
+  filas.forEach(r => {
+    const p = _mknPartes(r.anuncio); if (!p) return;
+    p.forEach((v, k) => { if (v && k < 8) listas[k].set(v, (listas[k].get(v) || 0) + 1); });
+    const n = parseInt(String(p[0]).split('-')[0], 10); if (n > maxCod && n < 1000) maxCod = n;
+  });
+  const llenar = (id, k) => { const el = document.getElementById(id); if (!el) return;
+    el.innerHTML = [...listas[k].entries()].sort((a, b) => b[1] - a[1]).map(x => '<option value="' + esc(x[0]).replace(/"/g, '') + '">').join(''); };
+  llenar('mknL1', 1); llenar('mknL2', 2); llenar('mknL3', 3); llenar('mknL4', 4); llenar('mknL6', 6); llenar('mknL7', 7);
+  const h = _mknHoyLima();
+  return String(maxCod + 1).padStart(2, '0') + '-' + String(h.m + 1).padStart(2, '0') + String(h.d).padStart(2, '0');
+}
+function mkNuevoAbrir(){
+  if (!MK || !MK.filas){ alert('Espera a que cargue Marketing.'); return; }
+  const sel = document.getElementById('mknConj');
+  MKN.conj = {};
+  MK.filas.filter(r => r._on && r.ad_id && r.conjunto).forEach(r => { if (!MKN.conj[r.conjunto]) MKN.conj[r.conjunto] = { ad: String(r.ad_id), camp: r.campana || '' }; });
+  const nombres = Object.keys(MKN.conj).sort();
+  sel.innerHTML = '<option value="">— elige el conjunto —</option>' + nombres.map(n => '<option value="' + esc(n).replace(/"/g, '&quot;') + '">' + esc(n) + ' · ' + esc(MKN.conj[n].camp) + '</option>').join('');
+  document.getElementById('mknCod').value = mkNuevoOpciones();
+  ['mknProd','mknHook','mknAng','mknFor','mknCta','mknTal','mknTexto','mknD1','mknD2','mknMsg','mknLink'].forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('mknTit').value = 'Escríbenos';
+  document.getElementById('mknVideo').value = '';
+  document.getElementById('mknVideoEst').innerHTML = '';
+  document.getElementById('mknRes').innerHTML = '';
+  document.getElementById('mknOk').disabled = false;
+  MKN.video = null; MKN.subiendo = false;
+  mkNuevoNombre();
+  document.getElementById('mkNuevoBox').style.display = 'flex';
+}
+function mkNuevoCerrar(){ if (MKN.subiendo && !confirm('Se está subiendo el video. ¿Cerrar igual?')) return; document.getElementById('mkNuevoBox').style.display = 'none'; }
+function mkNuevoArmarNombre(f){
+  const h = f.hoy || _mknHoyLima();
+  const fecha = MKN_MESES[h.m] + ' ' + String(h.d).padStart(2, '0');
+  return fecha + ' | ' + [f.cod, f.prod, f.hook, f.ang, f.form, f.tc, f.cta, f.tal].map(x => String(x || '').trim().replace(/\//g, '-')).join(' / ');
+}
+function _mknCampos(){
+  const g = id => (document.getElementById(id) || {}).value || '';
+  return { cod: g('mknCod'), prod: g('mknProd'), hook: g('mknHook'), ang: g('mknAng'), form: g('mknFor'), tc: g('mknTC'), cta: g('mknCta'), tal: g('mknTal') };
+}
+function mkNuevoNombre(){ const el = document.getElementById('mknNombre'); if (el) el.textContent = mkNuevoArmarNombre(_mknCampos()); }
+function _mknPut(url, file, ct, onProg){
+  return new Promise((ok, mal) => {
+    const x = new XMLHttpRequest();
+    x.open('PUT', url); x.setRequestHeader('Content-Type', ct); x.setRequestHeader('x-upsert', 'false');
+    x.upload.onprogress = e => { if (e.lengthComputable && onProg) onProg(Math.round(e.loaded * 100 / e.total)); };
+    x.onload = () => (x.status < 300 ? ok() : mal(new Error('el almacén respondió ' + x.status)));
+    x.onerror = () => mal(new Error('se cortó la conexión al subir'));
+    x.send(file);
+  });
+}
+async function mkNuevoVideo(f){
+  const st = document.getElementById('mknVideoEst');
+  MKN.video = null;
+  if (!f) return;
+  if (!/^video\/(mp4|quicktime)$/.test(f.type)){ st.innerHTML = '<span class="mal">Tiene que ser MP4 o MOV.</span>'; return; }
+  if (f.size > MKN_MAX){ st.innerHTML = '<span class="mal">Pesa ' + Math.round(f.size / 1048576) + ' MB y el máximo es 50 MB. Comprímelo (por ejemplo con HandBrake, preset "Fast 1080p30") y vuelve a elegirlo.</span>'; return; }
+  const api = (window.parent && window.parent !== window && window.parent.apiSend) ? window.parent.apiSend : null;
+  if (!api){ st.innerHTML = '<span class="mal">Abre Marketing desde el ERP para poder subir videos.</span>'; return; }
+  MKN.subiendo = true;
+  try {
+    st.innerHTML = '<span class="esp">Preparando la subida…</span>';
+    const fir = await api('multimedia.firmar', { Nombre: f.name, Tipo: f.type, Bytes: f.size, Diseno: 'anuncios-meta' });
+    await _mknPut(fir.uploadUrl, f, fir.contentType || f.type, p => { st.innerHTML = '<span class="esp">Subiendo video… ' + p + '%</span>'; });
+    MKN.video = fir.publicUrl;
+    st.innerHTML = '<span class="bien" style="color:var(--ok)">✓ Video subido (' + Math.round(f.size / 1048576) + ' MB)</span>';
+  } catch (e) {
+    st.innerHTML = '<span class="mal">No se pudo subir: ' + esc(e.message || e) + '</span>';
+  }
+  MKN.subiendo = false;
+}
+function mkNuevoValidar(v){
+  const faltan = [];
+  if (!v.conjunto) faltan.push('el conjunto');
+  if (!v.video_url) faltan.push('el video (subido)');
+  const c = v.campos;
+  ['cod','prod','hook','ang','form','tc','cta','tal'].forEach(k => { if (!String(c[k] || '').trim()) faltan.push({cod:'código',prod:'producto',hook:'hook',ang:'ángulo',form:'formato',tc:'T/C',cta:'CTA',tal:'talento'}[k]); });
+  if (String(v.texto || '').trim().length < 10) faltan.push('el texto principal');
+  if (!String(v.producto_msg || '').trim()) faltan.push('el producto del mensaje de WhatsApp');
+  if (v.link && !/^https:\/\/(www\.)?tulula\.com\.pe\//i.test(v.link)) faltan.push('un enlace de tulula.com.pe');
+  return faltan;
+}
+async function mkNuevoCrear(){
+  const res = document.getElementById('mknRes'), ok = document.getElementById('mknOk');
+  if (MKN.subiendo){ res.innerHTML = '<span class="mal">Espera a que termine de subir el video.</span>'; return; }
+  const g = id => String((document.getElementById(id) || {}).value || '').trim();
+  const conjunto = g('mknConj');
+  const v = { conjunto: conjunto, ad_ref: conjunto && MKN.conj[conjunto] ? MKN.conj[conjunto].ad : '', video_url: MKN.video,
+              campos: _mknCampos(), texto: g('mknTexto'), titulo: g('mknTit'), desc1: g('mknD1'), desc2: g('mknD2'),
+              producto_msg: g('mknMsg'), link: g('mknLink') };
+  const faltan = mkNuevoValidar(v);
+  if (faltan.length){ res.innerHTML = '<span class="mal">Falta: ' + esc(faltan.join(', ')) + '.</span>'; return; }
+  const nombre = mkNuevoArmarNombre(v.campos);
+  ok.disabled = true;
+  res.innerHTML = '<span class="esp">Enviando a Meta…</span>';
+  let d;
+  try {
+    const r = await fetch(URL_ANUNCIO_CREAR, { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ ad_ref: v.ad_ref, conjunto: v.conjunto, nombre: nombre, video_url: v.video_url, texto: v.texto,
+                             titulo: v.titulo, desc1: v.desc1, desc2: v.desc2, producto_msg: v.producto_msg, link: v.link, quien: 'Pablo' }) });
+    d = await r.json(); if (Array.isArray(d)) d = d[0] || {};
+  } catch (e) { d = { ok: false, motivo: 'No hubo respuesta del servidor. No se creó nada.' }; }
+  if (!(d.ok === true || d.ok === 'true')){ res.innerHTML = '<span class="mal">✕ ' + esc(d.motivo || 'No se pudo.') + '</span>'; ok.disabled = false; return; }
+  const id = d.id, t0 = Date.now();
+  const tick = async () => {
+    let e = {};
+    try { e = await fetch(URL_ANUNCIO_ESTADO + '?id=' + encodeURIComponent(id)).then(x => x.json()); if (Array.isArray(e)) e = e[0] || {}; } catch (x) {}
+    const seg = Math.round((Date.now() - t0) / 1000);
+    if (e.estado === 'LISTO'){
+      res.innerHTML = '<span class="bien">✓ Anuncio creado APAGADO en Meta: <b>' + esc(e.nombre || nombre) + '</b>' + (e.error ? '<br><span class="esp">' + esc(e.error) + '</span>' : '')
+        + '<br>Aparece en la tabla en el próximo refresco; revísalo y préndelo con ⏻.</span>';
+      return;
+    }
+    if (e.estado === 'ERROR' || e.estado === 'RECHAZADO'){ res.innerHTML = '<span class="mal">✕ ' + esc(e.error || 'Falló.') + '</span>'; ok.disabled = false; return; }
+    if (seg > 360){ res.innerHTML = '<span class="mal">Lleva más de 6 minutos. Revisa el Administrador de anuncios antes de reintentar.</span>'; return; }
+    res.innerHTML = '<span class="esp">Meta está procesando el video y armando el anuncio… ' + seg + ' s (suele tardar 1-3 min)</span>';
+    setTimeout(tick, 5000);
+  };
+  setTimeout(tick, 4000);
+}
+
 /* ═══ 5-oct-2026 · 📈 ESCALAR ══════════════════════════════════════════════
    1. Pregunta a Meta (meta-presupuesto, solo lectura) donde vive el presupuesto y cuanto es.
    2. Si se abrio desde Conjuntos/Campañas y Meta dice que vive en el OTRO nivel: no deja
@@ -3659,6 +3810,43 @@ window.addEventListener('message', function(e){
       </span>
     </div>
     <div class="res" id="mkAccRes"></div>
+  </div>
+</div>
+<!-- 6-oct-2026 · ➕ NUEVO ANUNCIO (F1): sube el video al ERP y n8n lo crea en Meta APAGADO (ver mkNuevoCrear). -->
+<div id="mkNuevoBox" class="mkmodal" style="display:none">
+  <div class="mkmodal-in">
+    <h3>&#10133; Nuevo anuncio <span style="font-size:11px;font-weight:600;color:var(--txt2)">· nace apagado: lo prendes con ⏻ cuando lo revises</span></h3>
+    <div class="mkn-f"><label>1 · Conjunto donde va (solo conjuntos con anuncios activos)</label><select id="mknConj" onchange="mkNuevoNombre()"></select></div>
+    <div class="mkn-f"><label>2 · Video (MP4 o MOV, máximo 50 MB)</label><input id="mknVideo" type="file" accept="video/mp4,video/quicktime" onchange="mkNuevoVideo(this.files[0])">
+      <div class="dato" id="mknVideoEst" style="margin:4px 0 0;font-size:11px"></div></div>
+    <label style="display:block;font-size:10.5px;font-weight:800;color:var(--txt2);margin-bottom:4px">3 · Nombre (se arma solo con tu nomenclatura)</label>
+    <div class="mkn-grid">
+      <div><label>Código</label><input id="mknCod" oninput="mkNuevoNombre()"></div>
+      <div><label>Producto</label><input id="mknProd" list="mknL1" placeholder="Bla Alma" oninput="mkNuevoNombre()"></div>
+      <div><label>Hook</label><input id="mknHook" list="mknL2" oninput="mkNuevoNombre()"></div>
+      <div><label>Ángulo</label><input id="mknAng" list="mknL3" oninput="mkNuevoNombre()"></div>
+      <div><label>Formato</label><input id="mknFor" list="mknL4" oninput="mkNuevoNombre()"></div>
+      <div><label>T / C</label><select id="mknTC" onchange="mkNuevoNombre()"><option>T</option><option>C</option></select></div>
+      <div><label>CTA</label><input id="mknCta" list="mknL6" oninput="mkNuevoNombre()"></div>
+      <div><label>Talento</label><input id="mknTal" list="mknL7" oninput="mkNuevoNombre()"></div>
+    </div>
+    <datalist id="mknL1"></datalist><datalist id="mknL2"></datalist><datalist id="mknL3"></datalist><datalist id="mknL4"></datalist><datalist id="mknL6"></datalist><datalist id="mknL7"></datalist>
+    <div class="mkn-nom" id="mknNombre"></div>
+    <div class="mkn-f"><label>4 · Texto principal</label><textarea id="mknTexto" placeholder="El blazer que proyecta autoridad desde que te lo pones…"></textarea></div>
+    <div class="mkn-grid" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+      <div><label>Título</label><input id="mknTit" value="Escríbenos"></div>
+      <div><label>Descripción 1</label><input id="mknD1" placeholder="Envío GRATIS 🔥"></div>
+      <div><label>Descripción 2</label><input id="mknD2" placeholder="Tallas S al 2XL 📏"></div>
+    </div>
+    <div class="mkn-grid" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+      <div><label>Producto en el mensaje de WhatsApp</label><input id="mknMsg" placeholder="el Blazer Alma"></div>
+      <div><label>Enlace del producto (solo conjuntos de la web)</label><input id="mknLink" placeholder="https://tulula.com.pe/products/..."></div>
+    </div>
+    <div class="btns">
+      <button class="no" onclick="mkNuevoCerrar()">Cancelar</button>
+      <button class="si azul" id="mknOk" onclick="mkNuevoCrear()">Crear anuncio (apagado)</button>
+    </div>
+    <div class="res" id="mknRes"></div>
   </div>
 </div>
 <!-- 5-oct-2026 · 📈 ESCALAR (pedido de Pablo): % sobre el presupuesto diario, 20% por defecto,
