@@ -462,6 +462,8 @@
   .mkejec:hover{border-color:#6d8dff;color:#fff;background:#6d8dff}
   /* resaltado solo cuando el ERP ademas lo recomienda */
   .mkejec.pide{border-color:#6d8dff;color:#9fb4ff}
+  .mkejec.mkesc{padding:1px 4px}
+  .mkejec.mkesc:hover{border-color:var(--cel);background:rgba(56,224,255,.18)}
   .mkmodal{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:9999;display:flex;
            align-items:center;justify-content:center;padding:20px}
   .mkmodal-in{background:var(--card);border:1.5px solid var(--bd);border-radius:16px;padding:20px 22px;
@@ -481,6 +483,7 @@
   .mkmodal-in .res{font-size:11.5px;font-weight:800;margin-top:11px;text-align:right;min-height:16px}
   .mkmodal-in .res .bien{color:var(--ok)} .mkmodal-in .res .mal{color:var(--bad)}
   .mkmodal-in .res .esp{color:var(--txt2);font-weight:600}
+  .mkmodal-in .dato .mal{color:var(--bad)} .mkmodal-in .dato .esp{color:var(--txt2);font-weight:600}   /* 5-oct · Escalar */
   /* Fase 2 — selector de alcance y presupuesto dentro del modal */
   .mkmodal-in .niv{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 10px;font-size:11px;color:var(--txt2)}
   .mkmodal-in .niv span{margin-right:2px;font-weight:700}
@@ -2495,6 +2498,7 @@ function mkAgruparNivel(filas, nivel){
       prev: mkAggFilas(hijos, 'prev'),
       _grupo: true,
       _nivelGrupo: nivel,
+      _adRef: String(((hijos.filter(h => h._on)[0]) || hijos[0]).ad_id || ''),   /* 5-oct: para Escalar */
       _activos: activos,
       _inactivos: hijos.length - activos,
       _accCount: accCount,
@@ -2785,11 +2789,19 @@ function mkPintar(){
        no una reja. Lo que ofrece el boton es lo CONTRARIO al estado actual. */
     const _puedeEjec = !!r.ad_id;
     const _sugiere = r._on ? 'APAGAR' : 'ENCENDER';
-    const btnEjec = _puedeEjec
+    /* 5-oct-2026 · 📈 Escalar: en Conjuntos/Campañas escala ese nivel; en Anuncios, su conjunto
+       (o su campaña si Meta dice que el presupuesto vive ahi). Solo si esta activo. */
+    const _escNivel = r._grupo ? (r._nivelGrupo === 'campana' ? 'campaign' : 'adset') : 'adset';
+    const _escAd = r._grupo ? (r._adRef || '') : String(r.ad_id || '');
+    const btnEsc = (_escAd && r._on)
+      ? '<button class="mkejec mkesc" title="Escalar el presupuesto en Meta"'
+        + ' onclick="mkEscAbrir(\'' + _escAd + '\', \'' + _escNivel + '\', ' + (r._grupo ? 'true' : 'false') + ')">&#128200;</button>'
+      : '';
+    const btnEjec = (_puedeEjec
       ? '<button class="mkejec' + (r._pide ? ' pide' : '') + '"'
         + ' title="' + (r._on ? 'Apagar' : 'Encender') + ' este anuncio en Meta"'
         + ' onclick="mkEjecPreg(\'' + String(r.ad_id) + '\', \'' + _sugiere + '\')">&#9211;</button>'
-      : '';
+      : '') + btnEsc;
     const chipAcc = r._grupo
       ? (['ESCALAR','ENCENDER','ESPERAR','APAGAR'].filter(a => r._accCount[a])
           .map(a => '<span class="mkchip acc-' + a.toLowerCase() + '" style="margin:0 2px">' + r._accCount[a] + ' ' + a + '</span>').join('')
@@ -3423,6 +3435,118 @@ async function mkAccConsultarPresupuesto(nivelPedido){
 }
 function mkAccCerrar(){ document.getElementById('mkAccBox').style.display = 'none'; MKACC = null; }
 
+/* ═══ 5-oct-2026 · 📈 ESCALAR ══════════════════════════════════════════════
+   1. Pregunta a Meta (meta-presupuesto, solo lectura) donde vive el presupuesto y cuanto es.
+   2. Si se abrio desde Conjuntos/Campañas y Meta dice que vive en el OTRO nivel: no deja
+      escalar aca (regla de Pablo: conjunto solo por conjunto, campaña solo por campaña).
+   3. % por defecto 20, tope 30. Manda el monto nuevo a meta-accion (PRESUPUESTO, tipo ESCALAR):
+      el servidor vuelve a frenar (lista blanca, tope S/ por dia, 72 h entre escaladas, +30% max).
+   4. Despues vuelve a leer Meta y solo dice "listo" si el presupuesto nuevo coincide.
+   5. Deja "Volver a S/ X" por 72 h (en este navegador).                        */
+const MK_ESC_PCT = 20, MK_ESC_TOPE = 30;
+let MKESC = null;
+function _mkEscLeerDeshacer(){ try { return JSON.parse(localStorage.getItem('mkEscDeshacer') || '{}'); } catch (e) { return {}; } }
+function _mkEscGuardarDeshacer(o){ try { localStorage.setItem('mkEscDeshacer', JSON.stringify(o)); } catch (e) {} }
+async function _mkEscLeerMeta(adId, nivel){
+  const r = await fetch(URL_META_PRESUPUESTO, { method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ nivel: nivel, id: String(adId), accion: 'PRESUPUESTO', presupuesto: 1, nombre: '', quien: 'Pablo' }) }).then(x => x.json());
+  return Array.isArray(r) ? (r[0] || {}) : (r || {});
+}
+async function mkEscAbrir(adId, nivel, desdeGrupo){
+  const fila = (MK.filas || []).filter(x => String(x.ad_id) === String(adId))[0] || {};
+  MKESC = { adId: String(adId), nivelPedido: nivel, desdeGrupo: !!desdeGrupo, nivel: null, actual: null, nombre: '' };
+  document.getElementById('mkEscNom').textContent = (nivel === 'campaign' ? (fila.campana || '') : (fila.conjunto || '')) || fila.anuncio || adId;
+  document.getElementById('mkEscDato').innerHTML = desdeGrupo ? '' : 'Desde el anuncio: ' + esc(fila.anuncio || '');
+  document.getElementById('mkEscInfo').innerHTML = '<span class="esp">Consultando el presupuesto en Meta…</span>';
+  document.getElementById('mkEscPres').style.display = 'none';
+  document.getElementById('mkEscRes').innerHTML = '';
+  document.getElementById('mkEscDeshacer').innerHTML = '';
+  document.getElementById('mkEscPct').value = MK_ESC_PCT;
+  const ok = document.getElementById('mkEscOk'); ok.disabled = true; ok.textContent = 'Escalar';
+  document.getElementById('mkEscBox').style.display = 'flex';
+  let d;
+  try { d = await _mkEscLeerMeta(adId, nivel); } catch (e) { d = { ok: false, motivo: 'sin respuesta' }; }
+  if (!MKESC || MKESC.adId !== String(adId)) return;
+  const info = document.getElementById('mkEscInfo');
+  if (!(d.ok === true || d.ok === 'true')){
+    info.innerHTML = '<span class="mal">No pude leer el presupuesto en Meta' + (d.motivo ? ' (' + esc(d.motivo) + ')' : '') + '. No se cambia nada.</span>';
+    return;
+  }
+  const QUE = { adset: 'conjunto', campaign: 'campaña' };
+  const donde = d.nivel || nivel;
+  if (d.tipo === 'lifetime'){
+    info.innerHTML = '<span class="mal">Este ' + QUE[donde] + ' tiene presupuesto TOTAL (de por vida), no diario. Se escala desde el Administrador de anuncios.</span>';
+    return;
+  }
+  if (desdeGrupo && donde !== nivel){
+    info.innerHTML = '<span class="mal">⚠️ En Meta el presupuesto de esto vive en la <b>' + QUE[donde] + '</b>, no en el ' + QUE[nivel]
+      + '. Para escalarlo, cambia arriba a la vista <b>' + (donde === 'campaign' ? 'Campañas' : 'Conjuntos') + '</b>.</span>';
+    return;
+  }
+  MKESC.nivel = donde; MKESC.actual = Number(d.presupuesto_actual) || 0; MKESC.nombre = d.objeto_nombre || '';
+  if (!(MKESC.actual > 0)){ info.innerHTML = '<span class="mal">Meta no devolvió un presupuesto diario. No se cambia nada.</span>'; return; }
+  info.innerHTML = 'Presupuesto diario hoy: <b>' + mkSol(MKESC.actual) + '</b> · ' + QUE[donde] + ' <b>' + esc(MKESC.nombre) + '</b>'
+    + (donde !== nivel ? ' <span class="esp">(Meta lo tiene a nivel ' + QUE[donde] + ')</span>' : '');
+  document.getElementById('mkEscPres').style.display = 'flex';
+  const dh = _mkEscLeerDeshacer()[MKESC.nombre + '|' + donde];
+  if (dh && (Date.now() - dh.ts) < 72 * 3600 * 1000 && Math.abs(dh.nuevo - MKESC.actual) < 0.6){
+    document.getElementById('mkEscDeshacer').innerHTML = 'Lo escalaste hace ' + Math.max(1, Math.round((Date.now() - dh.ts) / 3600000)) + ' h desde '
+      + mkSol(dh.previo) + '. <button class="accn" onclick="mkEscHacer(' + dh.previo + ')">Volver a ' + mkSol(dh.previo) + '</button>';
+  }
+  mkEscCalcular();
+}
+function mkEscNuevoMonto(actual, pct){ return Math.round(actual * (1 + pct / 100) * 100) / 100; }
+function mkEscCalcular(){
+  if (!MKESC || !MKESC.actual) return;
+  let pct = Number(document.getElementById('mkEscPct').value);
+  const ok = document.getElementById('mkEscOk');
+  if (!(pct >= 1 && pct <= MK_ESC_TOPE)){
+    document.getElementById('mkEscNuevo').innerHTML = '<span class="mal">entre 1% y ' + MK_ESC_TOPE + '%</span>';
+    ok.disabled = true; return;
+  }
+  const nuevo = mkEscNuevoMonto(MKESC.actual, pct);
+  document.getElementById('mkEscNuevo').innerHTML = mkSol(MKESC.actual) + ' → ' + mkSol(nuevo) + ' diarios';
+  ok.disabled = false; ok.textContent = 'Escalar a ' + mkSol(nuevo);
+}
+function mkEscCerrar(){ document.getElementById('mkEscBox').style.display = 'none'; MKESC = null; }
+async function mkEscHacer(montoDeshacer){
+  if (!MKESC || !MKESC.nivel || !MKESC.actual) return;
+  const deshacer = (typeof montoDeshacer === 'number');
+  const pct = Number(document.getElementById('mkEscPct').value);
+  const monto = deshacer ? montoDeshacer : mkEscNuevoMonto(MKESC.actual, pct);
+  const res = document.getElementById('mkEscRes'), ok = document.getElementById('mkEscOk');
+  ok.disabled = true;
+  res.innerHTML = '<span class="esp">Hablando con Meta…</span>';
+  let d;
+  try {
+    const r = await fetch(URL_META_ACCION, { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ nivel: MKESC.nivel, id: MKESC.adId, accion: 'PRESUPUESTO', presupuesto: monto,
+                             tipo: deshacer ? 'DESHACER' : 'ESCALAR', pct: deshacer ? 0 : pct,
+                             nombre: MKESC.nombre, quien: 'Pablo' }) }).then(x => x.json());
+    d = Array.isArray(r) ? (r[0] || {}) : (r || {});
+  } catch (e) { d = { ok: false, mensaje: 'No hubo respuesta del servidor. No se cambió nada en Meta.' }; }
+  if (!(d.ok === true || d.ok === 'true')){
+    res.innerHTML = '<span class="mal">✕ ' + esc(d.mensaje || d.motivo || 'No se pudo.') + '</span>';
+    ok.disabled = false; return;
+  }
+  /* verificacion: se vuelve a leer Meta y recien ahi se dice "listo" */
+  res.innerHTML = '<span class="esp">Meta aceptó. Verificando el monto nuevo…</span>';
+  let v = null;
+  try { v = await _mkEscLeerMeta(MKESC.adId, MKESC.nivel); } catch (e) {}
+  const real = v && Number(v.presupuesto_actual);
+  if (real && Math.abs(real - monto) < 0.6){
+    res.innerHTML = '<span class="bien">✓ Confirmado en Meta: ' + mkSol(MKESC.actual) + ' → ' + mkSol(real) + ' diarios.</span>';
+    const k = MKESC.nombre + '|' + MKESC.nivel, o = _mkEscLeerDeshacer();
+    if (deshacer) delete o[k]; else o[k] = { previo: MKESC.actual, nuevo: real, ts: Date.now() };
+    _mkEscGuardarDeshacer(o);
+    document.getElementById('mkEscDeshacer').innerHTML = '';
+    document.getElementById('mkEscPres').style.display = 'none';
+  } else {
+    res.innerHTML = '<span class="mal">⚠️ Meta respondió OK pero al volver a leer dice ' + (real ? mkSol(real) : 'nada')
+      + '. Revisa en el Administrador de anuncios antes de volver a intentar.</span>';
+  }
+}
+
 /* accion: 'PAUSED' | 'ACTIVE' | 'PRESUPUESTO' */
 async function mkAccHacer(accion){
   if (!MKACC) return;
@@ -3535,6 +3659,27 @@ window.addEventListener('message', function(e){
       </span>
     </div>
     <div class="res" id="mkAccRes"></div>
+  </div>
+</div>
+<!-- 5-oct-2026 · 📈 ESCALAR (pedido de Pablo): % sobre el presupuesto diario, 20% por defecto,
+     solo en el nivel donde Meta tiene el presupuesto. Ver mkEscAbrir. -->
+<div id="mkEscBox" class="mkmodal" style="display:none" onclick="if(event.target.id==='mkEscBox')mkEscCerrar()">
+  <div class="mkmodal-in">
+    <h3>&#128200; Escalar presupuesto</h3>
+    <div class="nom" id="mkEscNom"></div>
+    <div class="dato" id="mkEscDato"></div>
+    <div class="dato" id="mkEscInfo"><span class="esp">Consultando el presupuesto en Meta…</span></div>
+    <div class="pres" id="mkEscPres" style="display:none">
+      <label>Subir</label>
+      <input id="mkEscPct" type="number" min="1" max="30" step="1" value="20" style="width:64px" oninput="mkEscCalcular()"><span>%</span>
+      <span id="mkEscNuevo" style="font-weight:800"></span>
+    </div>
+    <div class="dato" id="mkEscDeshacer" style="font-size:11px"></div>
+    <div class="btns">
+      <button class="no" onclick="mkEscCerrar()">Cancelar</button>
+      <button class="si azul" id="mkEscOk" disabled onclick="mkEscHacer()">Escalar</button>
+    </div>
+    <div class="res" id="mkEscRes"></div>
   </div>
 </div>
 </body>
