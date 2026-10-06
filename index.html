@@ -6125,7 +6125,7 @@ async function loadCostos() {
   }
   _cosRender();
   // 4-oct · lo pesado va después y de a una: primero la ficha (≈6 s); la revisión de ventas (≈17 s, la más lenta) 20 s más tarde para no frenar la pantalla
-  if (COS.esAdmin) { _cosFichaCargar(true); clearTimeout(window._cosSinT); window._cosSinT = setTimeout(() => { if (document.getElementById('cos-tabla')) loadCostosSin(); }, 20000); }
+  if (COS.esAdmin) { _cosFichaCargar(true); _cftCargar(); clearTimeout(window._cosSinT); window._cosSinT = setTimeout(() => { if (document.getElementById('cos-tabla')) loadCostosSin(); }, 20000); }
 }
 
 // La tabla «vendidas sin costo» lee las ventas (tarda): se pide DESPUÉS de pintar la pantalla.
@@ -6143,8 +6143,12 @@ async function loadCostosSin() {
 const COS_FICHA_ITEMS = ['Costos', 'Precios', 'Textos', 'Fotos de tienda', 'Video', 'Foto de catálogo'];
 function _cosFichaItems(r) {
   const o = MCT.cargado ? (MCT.res[_mctClave(r.Diseno)] || { catalogo: 0, video: 0, tienda: 0 }) : null;
-  return [Number(r.CostoUnitario) > 0, Number(r.precios && r.precios.lista) > 0, !!(r.Descripcion && r.Cuidados),
+  const it = [Number(r.CostoUnitario) > 0, Number(r.precios && r.precios.lista) > 0, !!(r.Descripcion && r.Cuidados),
     o ? o.tienda > 0 : null, o ? o.video > 0 : null, o ? o.catalogo > 0 : null];
+  // 6-oct · lo cargado directo en Shopify también cuenta (mismo criterio que los semáforos de la ficha)
+  const sh = (typeof _cosShopDe === 'function') ? _cosShopDe(r) : null;
+  if (sh) { if (sh.desc > 0) it[2] = true; if (it[3] !== null && sh.fotos.length) it[3] = true; if (it[4] !== null && sh.videos > 0) it[4] = true; }
+  return it;
 }
 function _cosFichaN(r) { const it = _cosFichaItems(r); return it.indexOf(null) >= 0 ? null : it.filter(Boolean).length; }
 // 4-oct · estado del producto en las DOS plataformas: ERP (fila activa) y Shopify (publicado). Verde = en las dos · amarillo = solo en una · rojo = en ninguna.
@@ -6169,10 +6173,10 @@ async function _cosFichaCargar(force) {
   if (!COS.esAdmin || (MCT.cargado && !force) || MCT._cargando) return;
   MCT._cargando = true;
   try {
+    _mctTodosCargar();   // 6-oct · en paralelo (antes esperaba al resumen: +9 s)
     const rs = await apiSend('multimedia.resumen', {});
     MCT.res = {}; ((rs && rs.productos) || []).forEach(o => { MCT.res[_mctClave(o.diseno)] = o; });
     MCT.cargado = true;
-    apiSend('multimedia.todos', {}).then(rt => { MCT.todos = (rt && rt.por) || {}; }).catch(() => {});   // 4-oct · en segundo plano, para que abrir fotos y video sea instantáneo
     try { localStorage.setItem('erp_swr_mct1', JSON.stringify({ t: Date.now(), res: MCT.res })); } catch (_) {}
   } catch (e) { MCT._cargando = false; return; }
   MCT._cargando = false;
@@ -6503,18 +6507,19 @@ function _cosForm(r) {
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="font-size:12px;color:var(--mu)">' + (esNuevo ? 'Producto nuevo' : 'Modificado: ' + esc(v.UltimaActualizacion || '—') + (v.Quien ? ' · ' + esc(v.Quien) : '')) + '</div>'
       + '<div style="display:flex;gap:6px">' + (esNuevo ? '' : '<button type="button" class="btn bg bs" id="cf-hist">🕘 Historial</button><button type="button" class="btn bs" id="cf-del" style="background:transparent;border:1px solid var(--rd);color:var(--rd)">🗑 Eliminar</button>') + '<button type="button" class="btn bg bs" id="cf-x">✕ Cerrar</button></div></div>'
     + '<div id="cf-hist-w"></div>'
-    + (esNuevo ? '' : '<div id="cf-estados" style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px"></div>')
+    + '<div style="display:flex;gap:10px 22px;align-items:center;flex-wrap:wrap;margin-bottom:12px">'   // 6-oct (Pablo) · los semáforos van a la derecha de las cápsulas ERP / Shopify
+      + (esNuevo ? '' : '<div id="cf-estados" style="display:flex;flex-direction:column;gap:6px"></div>')
+      + '<div id="cf-meter" style="flex:1;min-width:240px"></div></div>'
     + (v._dup ? '<div style="font-size:12px;color:var(--rd);margin-bottom:8px">Copia de «' + esc(v._dup) + '» — escribe el modelo nuevo y ajusta los costos y precios que cambien.</div>' : '')
     + (v._desde ? '<div style="font-size:12px;color:var(--rd);margin-bottom:8px">Viene de la prenda vendida «' + esc(v._desde) + '» — revisa que el nombre esté bien escrito.</div>' : '')
     + '<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">'
-      + '<div style="flex:1;min-width:240px"><label style="font-size:11px;color:var(--mu);text-transform:uppercase">SKU (tipo + modelo)</label>'
-        + '<input id="cf-sku" list="cf-sku-l" autocomplete="off" placeholder="Ej. Pantalón Mirella" value="' + esc(skuIni) + '" style="' + st + ';font-size:17px;font-weight:700">'
+      + '<div style="flex:1;min-width:240px"><div style="display:flex;align-items:center;gap:10px"><label for="cf-sku" style="font-size:11px;color:var(--mu);text-transform:uppercase;white-space:nowrap">SKU (tipo + modelo)</label>'   // 6-oct · el título al costado, no encima
+        + '<input id="cf-sku" list="cf-sku-l" autocomplete="off" placeholder="Ej. Pantalón Mirella" value="' + esc(skuIni) + '" style="' + st + ';font-size:17px;font-weight:700;flex:1;min-width:0"></div>'
         + '<datalist id="cf-sku-l">' + (COS.tipos || []).map(t => '<option value="' + esc(t) + ' "></option>').join('') + '</datalist>'
         + '<div id="cf-skuchips"></div>'
         + '<div id="cf-catw" style="margin-top:4px;font-size:11px;color:var(--mu);display:none">Tipo nuevo: elige su categoría <select id="cf-cat" style="' + st + ';width:auto;font-size:12px;padding:3px 6px"><option value=""></option>' + (COS.cats || []).map(c => '<option value="' + esc(c) + '"' + (String(v.Categoria || '') === c ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select></div></div>'
       + '<div id="cf-shop" style="min-width:260px"></div>'
     + '</div>'
-    + '<div id="cf-meter" style="margin-top:8px"></div>'
     + '<div id="cf-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px;border-bottom:1px solid var(--bd);padding-bottom:8px">'
       + [['datos', '1 · Costos y precios'], ['ficha', '2 · Fotos y video'], ['textos', '3 · Textos de la tienda']].map(t => '<button type="button" class="btn bg bs cf-tab" data-t="' + t[0] + '" style="font-size:12px">' + t[1] + '</button>').join('')
     + '</div>'
@@ -6531,7 +6536,7 @@ function _cosForm(r) {
     + '</div>'
     + '<div class="cf-sec" data-sec="ficha" style="display:none">'
       + (esNuevo ? _cosPendInfo(v) : '')
-      + (esNuevo ? '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">📷 Primero toca «Guardar costos». Después abres este mismo producto y aquí aparecen las fotos por color, la foto de catálogo y el video.</div>' : '<div id="cf-media" style="margin:0 0 14px"></div>')
+      + (esNuevo ? '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">📷 Primero toca «Guardar costos». Después abres este mismo producto y aquí aparecen las fotos por color, la foto de catálogo y el video.</div>' : '<div id="cf-media" style="margin:0 0 6px"></div><div id="cf-histw" style="margin:0 0 14px"></div>')
     + '</div>'
     + '<div class="cf-sec" data-sec="textos" style="display:none">'
       + _cosFichaHtml(v, st, campo)
@@ -6566,7 +6571,8 @@ function _cosForm(r) {
   document.getElementById('cf-sug-go').addEventListener('click', () => _cosSugerir(v));
   _cosFichaWire(v);
   _cosShopPintar(v);
-  if (!esNuevo && !v._mm) _cosMmLeer(v).then(() => { _cosMeter(v); }).catch(() => {});
+  if (!esNuevo) _cftCargar();   // 6-oct · lo que ya está en Shopify (usa la copia si es de hace menos de 10 min)
+  if (!esNuevo && !v._mm) _cosMmLeer(v).then(() => { _cosMeter(v); if (v._deCopia) _cosMmRefrescar(v); }).catch(() => {});
   const verTab = t => {
     cont.querySelectorAll('.cf-sec').forEach(x => { x.style.display = x.dataset.sec === t ? '' : 'none'; });
     cont.querySelectorAll('.cf-tab').forEach(x => { x.classList.toggle('bp', x.dataset.t === t); x.classList.toggle('bg', x.dataset.t !== t); });
@@ -6575,7 +6581,7 @@ function _cosForm(r) {
        producto (v._panelOk) y el formulario se vuelve a armar (refresco de Costos): el panel NUEVO quedaba vacío
        para siempre. Ahora la marca va en el propio panel: cada panel nuevo se pinta. */
     const _cfm = document.getElementById('cf-media');
-    if (t === 'ficha' && !esNuevo && _cfm && !_cfm.dataset.pintado) { _cfm.dataset.pintado = '1'; _cosMediaPintar(v); }
+    if (t === 'ficha' && !esNuevo && _cfm && !_cfm.dataset.pintado) { _cfm.dataset.pintado = '1'; _cosMediaPintar(v); _cosHistCabecera(v); }
   };
   cont.querySelectorAll('.cf-tab').forEach(b => b.addEventListener('click', () => verTab(b.dataset.t)));
   verTab(v._tab === 'shopify' ? 'datos' : (v._tab || 'datos'));
@@ -6644,7 +6650,7 @@ function _cosSkuChips() {
   if (cs && x.cat && !cs.dataset.manual) cs.value = x.cat;
   const cw = document.getElementById('cf-catw'); if (cw) cw.style.display = (x.nuevo && !x.cat && x.tipo) ? '' : 'none';
   const chip = t => '<span style="display:inline-block;font-size:11px;background:var(--bg3);border:1px solid var(--bd);border-radius:10px;padding:2px 8px;color:var(--mu);margin:2px 4px 0 0">' + t + '</span>';
-  box.innerHTML = x.tipo ? (chip('Tipo: <b>' + esc(x.tipo) + '</b>' + (x.nuevo ? ' (tipo nuevo)' : '')) + chip('Modelo: <b>' + esc(x.modelo || '—') + '</b>')) : '<span style="font-size:11px;color:var(--mu)">Escribe el tipo y el modelo, por ejemplo «Pantalón Mirella».</span>';
+  box.innerHTML = (x.tipo && x.nuevo) ? chip('Tipo nuevo: <b>' + esc(x.tipo) + '</b>') : '';   // 6-oct (Pablo) · fuera las cápsulas «Tipo / Modelo»: solo se avisa si el tipo es nuevo
 }
 // 4-oct · medidor de ficha (arriba de la ficha): lo que ya está listo y lo que falta
 function _cosMeter(v) {
@@ -6656,9 +6662,15 @@ function _cosMeter(v) {
   const conFoto = tienda ? colores.filter(c => tienda.some(r => _cosNormD(r.Color) === _cosNormD(c))).length : 0;
   const it = (ok, t) => '<b style="display:inline-block;margin:0 6px 4px 0;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:' + (ok === null ? 'var(--bg3)' : (ok ? 'rgba(34,197,94,.18)' : 'rgba(239,68,68,.15)')) + ';color:' + (ok === null ? 'var(--mu)' : (ok ? 'var(--gn)' : 'var(--rd)')) + '">' + (ok === null ? '… ' : (ok ? '● ' : '○ ')) + t + '</b>';
   const nuevo = !v.Diseno;
-  box.innerHTML = it(hayComp, 'Costos') + it(gi('cp-lista') !== '', 'Precios') + it(!!(gi('ff-corta') || gi('ff-tela')) && !!gi('cf-cui'), 'Textos')
-    + (nuevo ? '' : (it(mm ? (colores.length ? conFoto === colores.length : tienda.length > 0) : null, 'Fotos de tienda' + (mm && colores.length ? ' (' + conFoto + '/' + colores.length + ')' : ''))
-       + it(mm ? mm.some(r => r.Tipo === 'VIDEO') : null, 'Video') + it(mm ? mm.some(r => r.Canal === 'BOT' && r.Tipo !== 'VIDEO') : null, 'Foto de catálogo')));
+  // 6-oct (Pablo) · semáforos sincronizados con la tienda: lo cargado directo en Shopify cuenta como hecho (y lo dice)
+  const sh = _cosShopDe(v), shF = sh ? sh.fotos.length : 0, shV = sh ? (sh.videos || 0) : 0, shD = !!(sh && sh.desc > 0);
+  const txtErp = !!(gi('ff-corta') || gi('ff-tela')) && !!gi('cf-cui');
+  const fotErp = mm ? (colores.length ? conFoto === colores.length : tienda.length > 0) : null;
+  const vidErp = mm ? mm.some(r => r.Tipo === 'VIDEO') : null;
+  const fotOk = fotErp || shF > 0 ? true : fotErp, vidOk = vidErp || shV > 0 ? true : vidErp;
+  box.innerHTML = it(hayComp, 'Costos') + it(gi('cp-lista') !== '', 'Precios') + it(txtErp || shD, 'Textos' + (!txtErp && shD ? ' (en Shopify)' : ''))
+    + (nuevo ? '' : (it(fotOk, 'Fotos de tienda' + (fotErp ? (colores.length ? ' (' + conFoto + '/' + colores.length + ')' : '') : (shF ? ' (en Shopify)' : (mm && colores.length ? ' (' + conFoto + '/' + colores.length + ')' : ''))))
+       + it(vidOk, 'Video' + (!vidErp && shV ? ' (en Shopify)' : '')) + it(mm ? mm.some(r => r.Canal === 'BOT' && r.Tipo !== 'VIDEO') : null, 'Foto de catálogo')));
 }
 function _cosFichaTipo() { return _cosNormD(_cosSkuParse((document.getElementById('cf-sku') || {}).value || '').tipo); }
 function _cosFichaHtml(v, st, campo) {
@@ -6800,16 +6812,18 @@ async function _cosFichaEnviar(v, auto) {
   } catch (e) { if (out) out.textContent = ''; toast('Shopify: ' + esc(e.message), 'err'); return { ok: false, texto: String(e.message || e) }; }
 }
 // 3-oct · lee fotos/video del producto con reintentos (el servidor a veces tarda o responde mal una vez)
-async function _cosMmLeer(v) {
+async function _cosMmLeer(v, fresco) {
   if (v._pL) return v._pL;
-  const pre = MCT.todos && MCT.todos[v.Diseno];   // 4-oct · ya lo trajo el viaje en segundo plano: abre al instante (se usa una sola vez; después se pide fresco)
-  if (pre && !v._mm) { delete MCT.todos[v.Diseno]; v._mm = pre.rows || []; v._cols = pre.colores || []; v._ord = pre.orden || []; v._nbot = pre.nombreBot || v.Diseno; return true; }
+  // 6-oct · la copia de TODOS los productos queda guardada (antes se usaba una vez y se borraba): abre al instante y _cosMmRefrescar trae lo fresco por detrás
+  const pre = !fresco && MCT.todos && MCT.todos[v.Diseno];
+  if (pre && !v._mm) { v._mm = (pre.rows || []).slice(); v._cols = pre.colores || []; v._ord = pre.orden || []; v._nbot = pre.nombreBot || v.Diseno; v._deCopia = true; return true; }
   v._pL = (async () => {
     let ult = null;
     for (let i = 0; i < 3; i++) {
       try {
         const r = await apiSend('multimedia.deProducto', { Diseno: v.Diseno });
         v._mm = (r && r.rows) || []; v._cols = (r && r.colores) || []; v._ord = (r && r.orden) || []; v._nbot = (r && r.nombreBot) || v.Diseno;
+        v._deCopia = false; _cosMmCopiar(v);
         return true;
       } catch (e) { ult = e; await new Promise(res => setTimeout(res, 1500 * (i + 1))); }
     }
@@ -6817,6 +6831,22 @@ async function _cosMmLeer(v) {
     return false;
   })().finally(() => { v._pL = null; });
   return v._pL;
+}
+// 6-oct · lo último leído de un producto pasa a la copia guardada (así la próxima vez abre igual de rápido y al día)
+function _cosMmCopiar(v) {
+  if (!v || !v.Diseno || !v._mm) return;
+  MCT.todos = MCT.todos || {};
+  MCT.todos[v.Diseno] = { rows: v._mm.slice(), colores: v._cols || [], orden: v._ord || [], nombreBot: v._nbot || v.Diseno };
+  _mctTodosGuardar();
+}
+// 6-oct · abrió con la copia: se pide lo fresco por detrás y, solo si cambió algo, se repinta
+async function _cosMmRefrescar(v) {
+  const antes = JSON.stringify([v._mm, v._cols, v._ord]);
+  const ok = await _cosMmLeer(v, true);
+  if (!ok || antes === JSON.stringify([v._mm, v._cols, v._ord])) return;
+  try { _cosMeter(v); } catch (_) {}
+  const m = document.getElementById('cf-media');
+  if (m && m.dataset.pintado && COS.editing === v && !v._blq) _cosMediaPintar(v);
 }
 // orden de las fotos de la tienda: primero lo que Pablo ordenó; lo nuevo al final (agrupado por color; la principal de cada color primero)
 function _cosOrdenTienda(v) {
@@ -6889,6 +6919,15 @@ const CFW_ESC = [['elasticidad', 'Elasticidad', ['Rígida', 'Cede un poco', 'El�
 function _cfwMini(archivo) { const x = (CFW.fotos || []).find(p => p.archivo === archivo); return x ? x.mini : ''; }
 async function _cosFichaWebAbrir(v, shopifyId) {
   const box = document.getElementById('cfw-box'); if (!box) return;
+  // 6-oct (Pablo: «al dar Editar demora mucho») · con la copia de la tienda (ya traída en segundo plano) abre al instante, sin ir al servidor
+  const sh = !shopifyId && _cosShopDe(v);
+  if (sh) {
+    CFW.v = v; CFW.fotos = (sh.fotos || []).map(u => ({ archivo: _cftArchivo(u), mini: _cftMini(u) })); CFW.gid = sh.id || ''; CFW.handle = sh.handle || ''; CFW.titulo = sh.titulo || '';
+    CFW.abierto = ''; CFW.nueva = !sh.ficha; CFW.vistasOp = (CFT.vistas && CFT.vistas.length) ? CFT.vistas : CFW_VISTAS;
+    CFW.f = _cfwArmar(sh.ficha);
+    _cosFichaWebPintar();
+    return;
+  }
   box.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:8px 0">Leyendo la tienda…</div>';
   try {
     const r = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: shopifyId || '' });
@@ -6958,6 +6997,7 @@ async function _cosFichaWebGuardar() {
     const r = await apiSend('costos.fichaWeb', { accion: 'guardar', Diseno: CFW.v.Diseno, ShopifyId: CFW.gid, ficha: CFW.f });
     if (!r || !r.ok) throw new Error((r && r.texto) || 'La tienda no respondió.');
     CFW.f = _cfwArmar(r.ficha); CFW.nueva = false;
+    try { const k = _cftGid(CFW.gid); if (CFT.por && CFT.por[k]) { CFT.por[k].ficha = r.ficha || null; localStorage.setItem(CFT_KEY, JSON.stringify({ t: CFT.t, por: CFT.por })); } } catch (_) {}   // 6-oct · la copia queda al día
     _cosFichaWebPintar('✓ ' + esc(r.texto || 'Guardado en la tienda.') + (r.handle ? ' <a href="https://tulula.com.pe/products/' + esc(r.handle) + '" target="_blank" rel="noopener" style="color:var(--ac)">Ver el producto →</a>' : ''));
     const o2 = document.getElementById('cfw-st'); if (o2) o2.style.color = 'var(--gn)';
     toast('Historia guardada en la tienda', 'ok');
@@ -6977,7 +7017,7 @@ async function _cosMediaPintar(v) {
     if (!tenia) box.innerHTML = '<div style="font-size:12px;color:var(--mu)">Cargando fotos y video…</div>';
     else { const st0 = document.getElementById('cfm-st'); if (st0) st0.textContent = 'Actualizando…'; }
     v._recargar = false;
-    const ok = await _cosMmLeer(v);
+    const ok = await _cosMmLeer(v, tenia);   // 6-oct · si ya tenía algo y se pide refrescar (tras subir), va al servidor, no a la copia
     if (!ok) {
       if (!tenia) { box.innerHTML = '<div style="font-size:12px;color:var(--rd)">No pude leer las fotos: ' + esc(v._errLeer) + ' <a href="#" id="cfm-reint">Reintentar</a></div>'; const a = document.getElementById('cfm-reint'); if (a) a.addEventListener('click', ev => { ev.preventDefault(); _cosMediaPintar(v); }); return; }
       aviso = '<div style="font-size:12px;color:var(--rd);margin:4px 0">El servidor no respondió al refrescar: te muestro lo último que tenía. <a href="#" id="cfm-reint2">Refrescar de nuevo</a></div>';
@@ -6996,11 +7036,12 @@ async function _cosMediaPintar(v) {
   const img = (r, w, h) => r.Tipo === 'VIDEO' ? '<video src="' + esc(r.Url) + '#t=0.5" preload="metadata" muted playsinline style="width:' + w + 'px;height:' + h + 'px;object-fit:cover;border-radius:6px;background:#000"></video>'
     : '<img loading="lazy" draggable="false" src="' + esc(r.Url) + '" style="width:' + w + 'px;height:' + h + 'px;object-fit:cover;border-radius:6px;background:var(--bg3);display:block">';
   const th = r => '<span style="position:relative;display:inline-block"><a href="' + esc(r.Url) + '" target="_blank" rel="noopener" title="' + esc(r.Tipo) + '">' + img(r, 84, 112) + '</a>' + X(r) + '</span>';
-  const fila = arr => '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 10px">' + (arr.length ? arr.map(th).join('') : '<span style="font-size:12px;color:var(--rd)">Falta</span>') + '</div>';
+  const sh = _cosShopDe(v);   // 6-oct · lo cargado directo en Shopify: si ya está allá, el vacío del ERP no es «Falta» en rojo
+  const fila = (arr, vacio) => '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 10px">' + (arr.length ? arr.map(th).join('') : (vacio || '<span style="font-size:12px;color:var(--rd)">Falta</span>')) + '</div>';
+  const enShop = t => '<span style="font-size:12px;color:var(--mu)">— ' + t + ' (ya está en Shopify)</span>';
   const btn = (txt, modo, accept, color) => '<label class="btn bg bs" style="cursor:pointer;margin:0;font-size:12px">' + txt + '<input type="file" class="cfm-file" data-modo="' + modo + '" data-color="' + esc(color || '') + '" accept="' + accept + '" multiple style="display:none"></label>';
-  const sem = (ok, t) => '<span style="display:inline-block;margin:0 12px 4px 0;font-size:12px;color:' + (ok ? 'var(--gn)' : 'var(--rd)') + '">' + (ok ? '●' : '○') + ' ' + t + '</span>';
   const conFoto = colores.filter(c => delDe(c).length).length;
-  const ordHtml = orden.length > 1 ? ('<div style="font-size:12px;font-weight:600;margin-top:8px">🔀 Orden en la tienda <span style="font-weight:400;color:var(--mu)">— arrastra las fotos para ordenarlas (o usa ‹ ›). La nº 1 es la principal de la tienda. Se guarda solo.</span></div>'
+  const ordHtml = orden.length > 1 ? ('<div style="font-size:12px;font-weight:600;margin-top:8px">🔀 Orden en la tienda <span style="font-weight:400;color:var(--mu)">— arrastra; la nº 1 es la principal</span></div>'
     + '<div id="cfm-ord" style="display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 10px;padding:8px;border:1px dashed var(--bd2);border-radius:var(--r)">'
     + orden.map((r, i) => '<div class="cfm-it" draggable="true" data-u="' + esc(r.Url) + '" style="position:relative;cursor:grab;width:84px">'
         + img(r, 84, 112)
@@ -7008,21 +7049,21 @@ async function _cosMediaPintar(v) {
         + '<span style="position:absolute;left:3px;bottom:22px;background:rgba(0,0,0,.7);color:#fff;font-size:9px;padding:1px 4px;border-radius:4px;max-width:78px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(r.Color || 'sin color') + '</span>'
         + '<div style="display:flex;justify-content:space-between;margin-top:2px"><button type="button" class="btn bg bs cfm-mv" data-d="-1" data-u="' + esc(r.Url) + '" style="padding:0 8px;font-size:12px"' + (i === 0 ? ' disabled' : '') + '>‹</button><button type="button" class="btn bg bs cfm-mv" data-d="1" data-u="' + esc(r.Url) + '" style="padding:0 8px;font-size:12px"' + (i === orden.length - 1 ? ' disabled' : '') + '>›</button></div></div>').join('')
     + '</div>') : '';
-  box.innerHTML = '<div style="font-weight:600;font-size:13px;margin:6px 0">Fotos y video <span style="font-weight:400;color:var(--mu)">— se suben aquí y se mandan solas a Shopify</span></div>' + aviso
-    + '<div>' + sem(!!v.Descripcion, 'Descripción') + sem(!!v.Cuidados, 'Cuidados')
-      + sem(colores.length ? conFoto === colores.length : tienda.length > 0, 'Fotos de tienda' + (colores.length ? ' (' + conFoto + ' de ' + colores.length + ' colores)' : '')) + sem(vid.length > 0, 'Video') + sem(cat.length > 0, 'Foto de catálogo (agente IA)') + '</div>'
-    + '<div style="font-size:12px;font-weight:600;margin-top:6px">📷 Fotos de la tienda, por color <span style="font-weight:400;color:var(--mu)">(sube todas; luego las ordenas abajo)</span></div>'
-    + (colores.length ? colores.map(c => '<div style="margin-top:6px"><b style="font-size:12px">' + esc(c) + '</b> <span style="font-size:11px;color:var(--mu)">' + delDe(c).length + ' fotos</span> ' + btn('＋ Agregar fotos de ' + esc(c), 'color', 'image/*', c) + fila(delDe(c))).join('')
+  // 6-oct (Pablo: «demasiados campos que marean») · fuera la fila de semáforos repetida (quedan arriba, junto a las cápsulas) y los textos de ayuda largos
+  const shF = sh ? sh.fotos.length : 0, shV = sh ? sh.videos : 0;
+  box.innerHTML = '<div style="font-weight:600;font-size:13px;margin:6px 0">Fotos y video</div>' + aviso
+    + '<div id="cfm-shop"></div>'
+    + '<div style="font-size:12px;font-weight:600;margin-top:6px">📷 Fotos de la tienda, por color</div>'
+    + (colores.length ? colores.map(c => '<div style="margin-top:6px"><b style="font-size:12px">' + esc(c) + '</b> <span style="font-size:11px;color:var(--mu)">' + delDe(c).length + ' fotos</span> ' + btn('＋ Agregar fotos de ' + esc(c), 'color', 'image/*', c) + fila(delDe(c), shF ? enShop('sin fotos desde el ERP') : '')).join('')
         : '<div style="font-size:12px;color:var(--mu);margin:4px 0">Este producto aún no tiene colores en el catálogo. Los colores se crean en Stock → Crear SKU; apenas existan aparecen aquí.</div>')
     + (sinColor.length ? '<div style="margin-top:6px"><b style="font-size:12px">Sin color</b>' + fila(sinColor) + '</div>' : '')
-    + '<div style="margin:6px 0"><label class="btn bp bs" style="cursor:pointer;margin:0;font-size:12px">📦 Subir fotos en bloque<input type="file" id="cfm-blq-in" accept="image/*" multiple style="display:none"></label> <span style="font-size:11px;color:var(--mu)">elige todas juntas: el color se detecta por el nombre del archivo (ej. «rojo-1.jpg»)</span></div><div id="cfm-blq"></div>'
+    + '<div style="margin:6px 0"><label class="btn bp bs" style="cursor:pointer;margin:0;font-size:12px">📦 Subir fotos en bloque<input type="file" id="cfm-blq-in" accept="image/*" multiple style="display:none"></label> <span style="font-size:11px;color:var(--mu)">todas juntas, de todos los colores; el color que no se reconozca lo eliges antes de subir</span></div><div id="cfm-blq"></div>'
     + ordHtml
-    + '<div style="font-size:12px;font-weight:600">🤖 Foto de catálogo <span style="font-weight:400;color:var(--mu)">(para el agente IA; la primera es la principal)</span> ' + btn('＋ Subir foto de catálogo', 'catalogo', 'image/*', '') + '</div>' + fila(cat)
-    + '<div style="font-size:12px;font-weight:600">🎬 Video <span style="font-weight:400;color:var(--mu)">(va a la tienda y al agente IA; MP4 o MOV, hasta 50 MB)</span> ' + btn('＋ Subir video', 'video', 'video/mp4,video/quicktime,video/webm', '') + '</div>' + fila(vid)
-    + '<div id="cfm-st" style="font-size:12px;color:var(--mu);margin-top:4px">Las fotos se reducen solas (máx. 2400 px) antes de subir.</div>'
-    + '<div style="font-size:12px;font-weight:600;margin-top:12px">🌐 Historia en la tienda <span style="font-weight:400;color:var(--mu)">(beneficios con su foto, ocasiones y comparación de la ficha nueva)</span> <button type="button" class="btn bg bs" id="cfw-abrir" style="font-size:12px">Editar</button></div><div id="cfw-box"></div>';
+    + '<div style="font-size:12px;font-weight:600">🤖 Foto de catálogo <span style="font-weight:400;color:var(--mu)">(agente IA)</span> ' + btn('＋ Subir foto de catálogo', 'catalogo', 'image/*', '') + '</div>' + fila(cat)
+    + '<div style="font-size:12px;font-weight:600">🎬 Video <span style="font-weight:400;color:var(--mu)">(MP4 o MOV, hasta 50 MB)</span> ' + btn('＋ Subir video', 'video', 'video/mp4,video/quicktime,video/webm', '') + '</div>' + fila(vid, shV ? enShop(shV + ' video' + (shV === 1 ? '' : 's')) : '')
+    + '<div id="cfm-st" style="font-size:12px;color:var(--mu);margin-top:4px"></div>';
   try { _cosMeter(v); } catch (_) {}
-  const cfwB = document.getElementById('cfw-abrir'); if (cfwB) cfwB.addEventListener('click', ev => { ev.preventDefault(); _cosFichaWebAbrir(v); });   // 5-oct · historia de la tienda (FichaWeb.gs)
+  _cosMediaShopPintar(v);
   const r2 = document.getElementById('cfm-reint2'); if (r2) r2.addEventListener('click', ev => { ev.preventDefault(); v._recargar = true; _cosMediaPintar(v); });
   const tras = async () => { v._recargar = true; await _cosMediaPintar(v); _cosFichaEnviar(v, true); _cosFichaCargar(true); };
   const hay = (c, co) => (v._mm || []).some(r => r.Tipo === 'PRINCIPAL' && r.Canal === c && nd(r.Color) === nd(co));
@@ -7049,7 +7090,7 @@ async function _cosMediaPintar(v) {
     if (!(await npConfirm(deTienda ? '¿Quitar esta foto?\n\nSe quita del ERP y también de la tienda Shopify (se borra de la página del producto). El archivo queda guardado en el almacén por si la necesitas.' : '¿Quitar este archivo del ERP?\n\nNo se borra del almacén (queda inactivo).'))) return;
     try {
       await apiSend('multimedia.desactivar', { Clave: b.dataset.k, Activar: false, Rapido: true });
-      v._mm = (v._mm || []).filter(r => r.Clave !== b.dataset.k); _cosMediaPintar(v);
+      v._mm = (v._mm || []).filter(r => r.Clave !== b.dataset.k); _cosMmCopiar(v); _cosMediaPintar(v);
       if (deTienda) _cosFichaEnviar(v, true);
       _cosFichaCargar(true);
     } catch (e) { toast('Error: ' + esc(e.message), 'err'); }
@@ -7057,7 +7098,7 @@ async function _cosMediaPintar(v) {
   // ── orden: arrastrar y soltar (o ‹ ›). Se guarda solo y se manda a Shopify unos segundos después del último cambio.
   const mover = (urls, de, haciaIdx) => { const a = urls.slice(), [x] = a.splice(a.indexOf(de), 1); a.splice(Math.max(0, Math.min(a.length, haciaIdx)), 0, x); return a; };
   const guardarOrden = urls => {
-    v._ord = urls; _cosMediaPintar(v);
+    v._ord = urls; _cosMmCopiar(v); _cosMediaPintar(v);
     const st = document.getElementById('cfm-st'); if (st) st.textContent = 'Guardando el orden…';
     clearTimeout(v._tOrd);
     v._tOrd = setTimeout(async () => {
@@ -7083,6 +7124,30 @@ async function _cosMediaPintar(v) {
       const u = urlsAct(); guardarOrden(mover(u, de, u.indexOf(it.dataset.u)));
     });
   });
+}
+
+// 6-oct-2026 · «🛍 Ya en Shopify»: lo que la tienda ya tiene de este producto (fotos y videos), aunque no haya pasado por el ERP
+function _cosMediaShopPintar(v) {
+  const box = document.getElementById('cfm-shop'); if (!box) return;
+  if (!v || !v.ShopifyId) { box.innerHTML = ''; return; }
+  const sh = _cosShopDe(v);
+  if (!sh) { box.innerHTML = CFT._p ? '<div style="font-size:12px;color:var(--mu);margin:2px 0 8px">Revisando lo que ya está en Shopify…</div>' : ''; return; }
+  const n = sh.fotos.length, nv = sh.videos || 0;
+  const deErp = (v._mm || []).filter(r => r.Canal === 'SHOPIFY' && r.Tipo !== 'VIDEO').length;
+  if (!n && !nv) { box.innerHTML = '<div style="font-size:12px;color:var(--mu);margin:2px 0 8px">🛍 En Shopify todavía no hay fotos ni video de este producto.</div>'; return; }
+  const origen = deErp ? (deErp + ' foto' + (deErp === 1 ? '' : 's') + ' subida' + (deErp === 1 ? '' : 's') + ' desde el ERP') : 'ya cargado directamente en Shopify (no pasó por el ERP)';
+  box.innerHTML = '<div style="margin:2px 0 10px;padding:8px 10px;border:1px solid var(--bd);border-radius:var(--r)">'
+    + '<div style="font-size:12px"><b>🛍 Ya en Shopify:</b> ' + n + ' foto' + (n === 1 ? '' : 's') + ' · ' + nv + ' video' + (nv === 1 ? '' : 's') + ' <span style="color:var(--mu)">— ' + origen + '</span>'
+    + ' <a href="https://admin.shopify.com/store/tulula-ecom/products/' + esc(_cftGid(v.ShopifyId)) + '" target="_blank" rel="noopener" style="color:var(--ac)">ver ↗</a></div>'
+    + (n ? '<div style="display:flex;gap:6px;overflow-x:auto;margin-top:6px">' + sh.fotos.slice(0, 14).map(u => '<img loading="lazy" alt="" src="' + esc(_cftMini(u)) + '" style="width:54px;height:68px;object-fit:cover;border-radius:5px;flex:0 0 auto;background:var(--bg3)">').join('')
+      + (n > 14 ? '<span style="align-self:center;font-size:11px;color:var(--mu)">+' + (n - 14) + '</span>' : '') + '</div>' : '')
+    + '</div>';
+}
+// 6-oct · «Historia en la tienda» en su propio lugar (antes vivía dentro del panel de fotos y se borraba cada vez que este se refrescaba)
+function _cosHistCabecera(v) {
+  const w = document.getElementById('cf-histw'); if (!w) return;
+  w.innerHTML = '<div style="font-size:12px;font-weight:600;margin-top:6px">🌐 Historia en la tienda <span style="font-weight:400;color:var(--mu)">(beneficios, ocasiones y comparación)</span> <button type="button" class="btn bg bs" id="cfw-abrir" style="font-size:12px">Editar</button></div><div id="cfw-box"></div>';
+  document.getElementById('cfw-abrir').addEventListener('click', ev => { ev.preventDefault(); _cosFichaWebAbrir(v); });   // 5-oct · historia de la tienda (FichaWeb.gs)
 }
 
 // 4-oct · las DOS cápsulas de la ficha: ERP (activo/inactivo) y Shopify (activo = publicado / inactivo = borrador). Son independientes.
@@ -7550,6 +7615,42 @@ function _homAplicar(r) {
 // ══════════════════════════════════════════════════════════════════════════
 // ── 4-oct · PANTALLA DE CONTROL: una fila por producto de Costos, qué le falta de foto/video ──
 const MCT = { res: {}, q: '', f: '', _t: null, cargado: false, _cargando: false };
+// 6-oct-2026 (Pablo: «Fotos y video tarda 10-15 s») · el material de TODOS los productos queda guardado en este navegador: la ficha abre al instante
+// con esa copia y por detrás se pide lo fresco (si cambió, se repinta). Antes la copia se usaba una sola vez y se borraba.
+try { const _mt = JSON.parse(localStorage.getItem('erp_swr_mmtodos1') || 'null'); if (_mt && _mt.por && (Date.now() - _mt.t) < 7 * 86400000) { MCT.todos = _mt.por; MCT.todosT = _mt.t; } } catch (_) {}
+function _mctTodosGuardar() { try { localStorage.setItem('erp_swr_mmtodos1', JSON.stringify({ t: MCT.todosT || Date.now(), por: MCT.todos || {} })); } catch (_) {} }
+function _mctTodosCargar() {
+  if (MCT._pT) return MCT._pT;
+  MCT._pT = apiSend('multimedia.todos', {}).then(rt => { if (rt && rt.por) { MCT.todos = rt.por; MCT.todosT = Date.now(); _mctTodosGuardar(); } }).catch(() => {}).finally(() => { MCT._pT = null; });
+  return MCT._pT;
+}
+// >>> 6-oct-2026 · LO QUE YA ESTÁ EN SHOPIFY (pedido de Pablo: muchos productos se cargaron directo en la tienda y la ficha decía «falta»)
+// Una sola lectura de TODA la tienda (costos.fichaWeb accion «todos», FichaWeb.gs), en segundo plano y guardada en el navegador.
+// Sirve para: semáforos (cuentan lo que ya está en Shopify), «Fotos y video» (muestra lo cargado directo) e «Historia en la tienda» (abre al instante).
+const CFT = { por: null, t: 0, _p: null };
+const CFT_KEY = 'erp_swr_shopficha1';
+try { const _ct = JSON.parse(localStorage.getItem(CFT_KEY) || 'null'); if (_ct && _ct.por) { CFT.por = _ct.por; CFT.t = _ct.t || 0; } } catch (_) {}
+function _cftGid(id) { return String(id == null ? '' : id).replace(/\D/g, ''); }
+function _cosShopDe(r) { return (CFT.por && r && r.ShopifyId) ? (CFT.por[_cftGid(r.ShopifyId)] || null) : null; }
+function _cftArchivo(u) { const x = String(u || '').split('?')[0].split('#')[0]; const n = x.substring(x.lastIndexOf('/') + 1); return n ? '/' + n : ''; }
+function _cftMini(u) { return String(u) + (String(u).indexOf('?') >= 0 ? '&' : '?') + 'width=240'; }
+function _cftCargar(force) {
+  if (!COS.esAdmin) return Promise.resolve(false);
+  if (CFT._p) return CFT._p;
+  if (!force && CFT.por && (Date.now() - CFT.t) < 10 * 60 * 1000) return Promise.resolve(true);
+  CFT._p = apiSend('costos.fichaWeb', { accion: 'todos' }).then(r => {
+    if (!r || !r.por) return false;
+    CFT.por = r.por; CFT.t = r.t || Date.now();
+    if (r.comun && r.comun.length) CFW.comun = r.comun;
+    if (r.vistas && r.vistas.length) CFT.vistas = r.vistas;
+    try { localStorage.setItem(CFT_KEY, JSON.stringify({ t: CFT.t, por: CFT.por })); } catch (_) {}
+    try { if (document.getElementById('cos-tabla')) _cosUpdateRows(); } catch (_) {}
+    try { const v = COS.editing; if (v && v.Diseno) { _cosMeter(v); _cosMediaShopPintar(v); } } catch (_) {}
+    return true;
+  }).catch(() => false).finally(() => { CFT._p = null; });
+  return CFT._p;
+}
+// <<< LO QUE YA ESTÁ EN SHOPIFY
 function _mctClave(x) { return _cosNormD(x).replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim(); }
 /** Estado de multimedia de un producto. res = resumen de multimediaResumen indexado por clave. */
 function _mctEstado(r, res) {
