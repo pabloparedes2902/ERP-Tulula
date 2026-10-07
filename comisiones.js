@@ -103,7 +103,73 @@ function haceCuanto(ts) {
 /* ── Puente con el backend ─────────────────────────────────────────── */
 // apiSend manda el body como JSON y agrega _reqId (anti-duplicado).
 // El backend lo recibe en comisionesAdmin(body).
+/* 7-oct · PASO 2: lo que se lee y se guarda en Cierre / Configuracion / Asesoras
+   va al calculo oficial de la base. Lo demas sigue por Apps Script como siempre. */
 function comApi(op, args) {
+  args = args || {};
+  if (window.COM_OFICIAL_OFF) return comApiApps(op, args);
+  if (op === 'cierresTrim') {
+    return _comOfRpc('comisiones_cierres_listar', { p_limite: args.limite || 8 }).then(function (r) {
+      return Array.isArray(r) ? r : comApiApps(op, args);
+    });
+  }
+  if (op === 'previewTrim') {
+    return _comOfRpc('comisiones_trimestre', { p_year: Number(args.year), p_q: Number(args.q) }).then(function (t) {
+      if (!t || !t.asesoras) return comApiApps(op, args);
+      return _comOfPreviewDe(t);
+    });
+  }
+  if (op === 'cerrarTrim') {
+    var aj = {};
+    var bono = (args.overrides && args.overrides.bono) || {};
+    Object.keys(bono).forEach(function (n) { aj[String(n).toUpperCase()] = bono[n]; });
+    return _comOfRpc('comisiones_cerrar_trimestre', { p_year: Number(args.year), p_q: Number(args.q), p_ajustes: aj,
+                                                      p_nota: 'Cerrado desde la pestaña Cierre' }, true)
+      .then(function (r) {
+        COMOF.cache = {}; COMOF.pedido = {};
+        try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('com_of_') === 0) localStorage.removeItem(k); }); } catch (e) {}
+        return r;
+      });
+  }
+  if (op === 'saveCfg') {
+    return comApiApps(op, args).then(function (r) {
+      return _comOfRpc('comisiones_config_guardar', { p: args.patch || {} }, true).then(function () {
+        COMOF.cache = {}; COMOF.pedido = {};
+        return r;
+      });
+    });
+  }
+  if (op === 'saveAsesoraFull') {
+    return comApiApps(op, args).then(function (r) {
+      var m = args.master || {};
+      return _comOfRpc('comisiones_asesora_guardar', { p_email: args.email, p_sueldo: Number(m.base) || null,
+                       p_desde: m.desde || null, p_activa: m.estado ? m.estado === 'activa' : null }, true)
+        .then(function () { COMOF.cache = {}; COMOF.pedido = {}; return r; });
+    });
+  }
+  return comApiApps(op, args);
+}
+
+/** Vista previa del cierre con la forma que ya dibuja la pestaña Cierre. */
+function _comOfPreviewDe(t) {
+  var tiers = ((t.reglas && t.reglas.tramos) || []).map(function (x) { return { from: Number(x.desde), rate: Number(x.tasa) }; });
+  var rows = (t.asesoras || []).map(function (a) {
+    var nombre = String(a.nombre || a.asesora || '');
+    return { nombre: nombre.charAt(0) + nombre.slice(1).toLowerCase(),
+             cumpl: Math.round((Number(a.cumplimiento) || 0) * 100) / 100,
+             margen: Math.round(Number(a.margen) || 0), meta: Math.round(Number(a.meta) || 0),
+             rate: Number(a.tasa) || 0,
+             bonoCalc: Number(t.cerrado ? a.bono_calculado : a.bono) || 0,
+             bonoOverride: t.cerrado && a.bono_ajuste != null ? Number(a.bono_ajuste) : null };
+  });
+  var eq = t.equipo || {}, a0 = (t.asesoras || [])[0] || {};
+  return { rows: rows, tiers: tiers.length ? tiers : TIERS_FALLBACK, cerrado: !!t.cerrado,
+           teamCumpl: Math.round(Number(t.cerrado ? a0.equipo_cumplimiento : eq.cumplimiento) * 100 || 0) / 100,
+           teamGate: t.cerrado ? !!a0.equipo_pasa : !!eq.pasa,
+           total: Math.round(Number(t.total_bonos) * 100 || 0) / 100 };
+}
+
+function comApiApps(op, args) {
   // 1-oct · F3b: comisiones.admin tarda ~64 s (p50) y no sabemos QUE operacion. Se anota cada una
   // (marca.comisiones <op>) para atacar la que de verdad demora. Solo mide: no cambia nada.
   var _c = null; try { _c = (typeof _cronAbrir === 'function') ? _cronAbrir('marca.comisiones', String(op || '?')) : null; } catch (_) {}
@@ -427,6 +493,21 @@ function cargar(forzar) {
   if (COM.cargando) return;
   COM.cargando = true;
   pintarCargando();
+
+  // 7-oct · paso 2: con el calculo oficial se abre en ~1 s, sin esperar a Apps Script
+  // (que antes tardaba hasta 40 s la primera vez). Apps Script completa por detras.
+  if (!window.COM_OFICIAL_OFF) {
+    var yO = COM.year, qO = COM.q;
+    _comOfRpc('comisiones_trimestre', { p_year: yO, p_q: qO }).then(function (t) {
+      if (!t || !t.asesoras || COM.data || COM.year !== yO || COM.q !== qO) return;
+      var dS = _comOfDataSintetica(yO, qO, t);
+      if (!dS) return;
+      COMOF.cache[_comOfClave(yO, qO)] = t; COMOF.activo = true;
+      COM.data = dS; COM.traidoEn = Date.now(); COM.cargando = false;
+      pintarHome();
+      refrescarDetras();
+    });
+  }
 
   // 26-set · B · 2.5) La foto guardada en la base (ComisionesFoto.gs): 0,2 s
   // en vez de 7-60 s. Si es de hace mas de 15 min se refresca por detras.
@@ -1017,6 +1098,13 @@ function comVerTrimImpl() {
 
 function renderPreviewTrim(d, year, q) {
   var tiers = d.tiers || TIERS_FALLBACK;
+  if (d.cerrado) {
+    return '<div style="margin-top:18px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r2);padding:16px">' +
+      '<b>🔒 ' + esc(etiquetaTrim(q, year)) + ' ya está cerrado.</b>' +
+      '<div class="ml" style="margin-top:6px">Total pagado: <b style="color:var(--gn)">' + f2(d.total) + '</b>. ' +
+      'Un trimestre cerrado no se puede volver a cerrar ni cambiar; lo que llegue tarde entra como ajuste del trimestre abierto. ' +
+      'El detalle está abajo, en Trimestres cerrados.</div></div>';
+  }
 
   var filas = (d.rows || []).map(function (r) {
     var lv = nivelDe(r.cumpl, tiers);
@@ -1064,7 +1152,7 @@ function bloqueConfirmacion(year, q) {
   return '<div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--bd)">' +
     '<div style="font-size:13px;margin-bottom:10px;line-height:1.6">' +
       'Para confirmar, escribí <b style="color:var(--ac)">' + codigo + '</b> abajo. ' +
-      'Esto guarda el pago del trimestre; si lo volvés a cerrar, se sobrescribe.' +
+      'Esto guarda el pago del trimestre y le pone candado: después no se puede volver a cerrar ni cambiar.' +
     '</div>' +
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
       '<input id="ct-confirm" placeholder="' + codigo + '" oninput="comChequearConfirm()" ' +
@@ -3261,6 +3349,7 @@ window.comCambiarPeriodo = function () {
   COM.year = Number(p[0]);
   COM.q    = Number(p[1]);
   PER.meses = null;    // el resumen vuelve al trimestre completo
+  PER.perf = null; PER.perfPrev = null; PER.hist = null;   // 7-oct: si no, quedaba el resumen del trimestre anterior
   COM.data = null;
   COM.traidoEn = null;
   // Asesoras depende del año: si cambió, hay que releerla
@@ -4212,6 +4301,20 @@ function _comOfMapear(d, t) {
   d.sinCosto = { items: [], covPct: 100, sinCostoIngreso: 0 };
 }
 
+function _comOfDataSintetica(y, q, t) {
+  var m0 = (q - 1) * 3 + 1, meses = [m0, m0 + 1, m0 + 2];
+  var lista = (t.asesoras || []).map(function (a) { return { a: a, det: a.detalle || a }; })
+                .filter(function (x) { return x.det && x.det.meses && x.det.meses.length; });
+  if (!lista.length) return null;
+  var d = { year: y, q: q, meses: meses, cfgFull: {}, results: lista.map(function (x) {
+    var n = String(x.a.nombre || x.a.asesora || '');
+    return { nombre: n.charAt(0) + n.slice(1).toLowerCase(), base_m: Number((x.det.meses[0] || {}).sueldo) || 0,
+             marginM: [0, 0, 0], ventas: [0, 0, 0], factorM: [1, 1, 1] };
+  }), __sintetica: true };
+  _comOfMapear(d, t);
+  return d;
+}
+
 function _comOfAviso(d) {
   if (!d || d.__oficial !== _comOfClave(d.year, d.q)) return '';
   if (d.__oficialNo) return '<div class="ml" style="margin:-4px 0 12px">Trimestre cerrado con el sistema anterior: se muestra tal como se pagó.</div>';
@@ -4332,17 +4435,27 @@ function _comOfCaja() {
   return c;
 }
 
-function _comOfRpc(fn, args) {
-  try { if (!sbDisponible()) return Promise.resolve(null); } catch (e) { return Promise.resolve(null); }
-  return _sbSesionAsegurar().then(function (tok) {
-    if (!tok) return null;
+function _comOfRpc(fn, args, estricto) {
+  // estricto = escritura: si la base no la guarda, se avisa (nunca se da por guardado)
+  var falla = function (m) { if (estricto) throw new Error(m); return null; };
+  try { if (!sbDisponible()) return Promise.resolve().then(function () { return falla('Sin conexión con la base: no se guardó en el cálculo oficial.'); }); }
+  catch (e) { return Promise.resolve().then(function () { return falla('Sin conexión con la base.'); }); }
+  var pr = _sbSesionAsegurar().then(function (tok) {
+    if (!tok) return falla('Sin sesión con la base: no se guardó en el cálculo oficial.');
     return fetch(SB_URL + '/rest/v1/rpc/' + fn, {
       method: 'POST',
       headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json',
                  'Content-Profile': 'erp', 'Accept-Profile': 'erp' },
       body: JSON.stringify(args)
-    }).then(function (r) { return r.ok ? r.json() : null; });
-  }).catch(function () { return null; });
+    }).then(function (r) {
+      if (r.ok) return r.json();
+      return r.text().then(function (tx) {
+        var m = tx; try { m = JSON.parse(tx).message || tx; } catch (e) {}
+        return falla('La base no lo aceptó: ' + m);
+      });
+    });
+  }, function () { return falla('Sin sesión con la base.'); });
+  return estricto ? pr : pr.catch(function () { return null; });
 }
 
 function _comOfSoles(n) {
