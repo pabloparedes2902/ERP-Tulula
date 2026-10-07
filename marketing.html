@@ -2529,8 +2529,39 @@ function mkAgruparNivel(filas, nivel){
   });
 }
 
+/* ═══ 7-oct-2026 · F5 «ANUNCIO VISIBLE AL INSTANTE» (pedido de Pablo) ═══════════════════════════════
+   Un anuncio recién creado con ➕ Nuevo anuncio aparece EN LA TABLA apenas Meta lo confirma (antes: al próximo
+   refresco, hasta 10 min). Va en su conjunto y campaña (los del anuncio de referencia), marcado 🆕 y APAGADO,
+   con sus números en cero, y se puede prender ahí mismo con ⏻ (su ad_id es el real de Meta).
+   Cuando el refresco ya lo trae de Meta, la fila provisional se va sola (se compara por ad_id). Tope: 48 h. */
+const MK_NUEVOS_KEY = 'mkNuevosAds';
+function _mkNuevosLeer(){ try { const a = JSON.parse(localStorage.getItem(MK_NUEVOS_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+function _mkNuevosGuardar(a){ try { localStorage.setItem(MK_NUEVOS_KEY, JSON.stringify(a)); } catch (e) {} }
+function mkNuevoRegistrar(adId, nombre, adRef, conjunto){
+  if (!adId) return;
+  const ref = (MK && MK.filas || []).filter(x => String(x.ad_id) === String(adRef))[0] || {};
+  const a = _mkNuevosLeer().filter(x => String(x.ad_id) !== String(adId));
+  a.push({ ad_id: String(adId), nombre: nombre || '', conjunto: ref.conjunto || conjunto || '', campana: ref.campana || '', t: Date.now() });
+  _mkNuevosGuardar(a);
+  mkPintar();
+}
+function _mkCeros(o){ const z = {}; Object.keys(o || {}).forEach(k => { z[k] = (typeof o[k] === 'number') ? 0 : null; }); return z; }
+function _mkInyectarNuevos(){
+  if (!MK || !MK.filas) return;
+  MK.filas = MK.filas.filter(r => !r._nuevo);                       /* idempotente: se rearma cada vez */
+  const reales = new Set(MK.filas.map(r => String(r.ad_id)));
+  const vivos = _mkNuevosLeer().filter(x => !reales.has(String(x.ad_id)) && (Date.now() - (x.t || 0)) < 48 * 3600000);
+  _mkNuevosGuardar(vivos);                                            /* los que Meta ya trae (o vencidos) salen de la lista */
+  const molde = MK.filas[0] || {};
+  vivos.forEach(x => {
+    MK.filas.push({ ad_id: x.ad_id, anuncio: '🆕 ' + x.nombre, campana: x.campana, conjunto: x.conjunto, estado_anuncio: 'PAUSED',
+      thumbnail_url: null, act: _mkCeros(molde.act), prev: _mkCeros(molde.prev), _nuevo: true });
+  });
+}
+
 function mkPintar(){
   if (!MK) return;
+  _mkInyectarNuevos();   /* 7-oct · F5 */
   mkFiltroCerrar();
   /* 8-sep-2026 — ventas y embudo se re-aplican en cada pintado porque dependen
      del canal elegido, que cambia sin volver a pedir datos al servidor. */
@@ -2544,6 +2575,7 @@ function mkPintar(){
     r._on  = (r.estado_anuncio === 'ACTIVE');
     r._acc = mkAccion(r);          /* recomendacion cruda del periodo (referencia) */
     r._au  = mkAccionFinal(r);     /* la accion real: historia + estado */
+    if (r._nuevo) r._au = { a: 'NUEVO', pide: false, por: 'Recién creado desde el ERP (apagado). Revísalo y préndelo con ⏻.' };   /* 7-oct · F5 */
     r._pide = r._au.pide;
     return r;
   }).filter(r => {
@@ -3635,8 +3667,9 @@ async function mkNuevoCrear(){
     try { e = await fetch(URL_ANUNCIO_ESTADO + '?id=' + encodeURIComponent(id)).then(x => x.json()); if (Array.isArray(e)) e = e[0] || {}; } catch (x) {}
     const seg = Math.round((Date.now() - t0) / 1000);
     if (e.estado === 'LISTO'){
+      mkNuevoRegistrar(e.ad_id, e.nombre || nombre, v.ad_ref, v.conjunto);   /* 7-oct · F5: a la tabla al instante */
       res.innerHTML = '<span class="bien">✓ Anuncio creado APAGADO en Meta: <b>' + esc(e.nombre || nombre) + '</b>' + (e.error ? '<br><span class="esp">' + esc(e.error) + '</span>' : '')
-        + '<br>Aparece en la tabla en el próximo refresco; revísalo y préndelo con ⏻.</span>';
+        + '<br>Ya está en la tabla (🆕, apagado) dentro de su conjunto: revísalo y préndelo con ⏻.</span>';
       return;
     }
     if (e.estado === 'ERROR' || e.estado === 'RECHAZADO'){ res.innerHTML = '<span class="mal">✕ ' + esc(e.error || 'Falló.') + '</span>'; ok.disabled = false; return; }
