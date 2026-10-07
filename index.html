@@ -38124,7 +38124,7 @@ const AL_REGLAS = [
   {re:/hoja Usuarios cambi/i, nivel:'rojo', t:'Cambiaron los accesos al ERP', s:'Confirma que el cambio de permisos lo hicieron tú o Ana.', q:'Dirección'},
   {re:/hoja y la base dicen cosas distintas/i, nivel:'amarillo', t:'Diferencias entre la hoja y la base de datos', s:'Cuadre técnico. No frena la venta de hoy. Lo corrige sistemas.', q:'Sistemas'},
   {re:/flujo de n8n/i, nivel:'amarillo', t:null, s:'Una automatización no respondió. Lo revisa sistemas.', q:'Sistemas', n8n:true},
-  {re:/libro de stock no cuadra/i, nivel:'amarillo', t:'El stock rápido está en pausa', s:'El ERP muestra el stock por el camino normal (algo más lento). Nadie ve datos malos.', q:'Sistemas'},
+  {re:/libro de stock no cuadra/i, nivel:'historial', t:'Stock rápido en pausa (1 prenda; se cierra con el proyecto de cuadre de stock)', s:'El ERP muestra el stock por el camino normal. Nadie ve datos malos.', q:'Sistemas'},   // 7-oct: de fondo
   {re:/^Stock agotado/i, nivel:'amarillo', t:'Prendas agotadas', s:'Decidir si se reponen o se pausa su publicidad.', q:'Operación'},
   // 6-oct 20:30 (Pablo: "mándalos al historial"): avisos viejos que no son del día.
   {re:/^Revision del espejo|vigilante del espejo no corre/i, nivel:'historial', t:'Vigilante viejo de la copia a la hoja (lo reemplazó el Guardián)', s:'Ya no se usa: el Guardián revisa la copia a la hoja cada 10 minutos.', q:'—'},
@@ -38144,7 +38144,9 @@ const AL_ORIGEN = {
   'procesos-nocturnos':    { nivel: 'amarillo', t: () => 'Un proceso nocturno está atrasado', s: 'Lo revisa sistemas.', q: 'Sistemas' },
   'vigía de la tienda':    { nivel: 'amarillo', t: () => 'Revisión automática de la tienda web', s: 'Lo revisa sistemas.', q: 'Sistemas' },
   'reconciliador-pagos':   { nivel: 'amarillo', q: 'Operación' },
-  'recordatorio':          { nivel: 'amarillo', q: 'Dirección' }   // 6-oct: copia y archivado mensual (antes, tareas programadas)
+  'recordatorio':          { nivel: 'amarillo', q: 'Dirección' },
+  // 7-oct: el «estado de hoy» y las pruebas son informes, no pendientes
+  'correo':                { nivel: a => /estado de hoy|prueba del correo|todo ok/i.test(String(a.titulo || '')) ? 'historial' : (a.nivel === 'critica' ? 'rojo' : 'amarillo'), q: 'Sistemas' }   // 6-oct: copia y archivado mensual (antes, tareas programadas)
 };
 const AL_MESES = ['ene','feb','mar','abr','may','jun','jul','ago','set','oct','nov','dic'];
 
@@ -38166,6 +38168,14 @@ function _alN8nTitulo(a) {
   return t;
 }
 
+function _alN8nHorasDesdeUltima(a) {
+  let ult = 0;
+  (a.detalle || []).forEach(d => {
+    const m = String(d).match(/\((\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})\)\s*$/);
+    if (m) { const t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime(); if (t > ult) ult = t; }
+  });
+  return ult ? (Date.now() - ult) / 3600000 : 0;
+}
 function _alClasificarTodo(r, buzon) {
   const g = { rojo: [], amarillo: [], mkt: [], hist: [] };
   const base = { criticas: 'rojo', advertencias: 'amarillo', info: 'historial' };
@@ -38176,10 +38186,13 @@ function _alClasificarTodo(r, buzon) {
     const x = {
       nivel: regla ? regla.nivel : base[k],
       t: regla ? (regla.n8n ? _alN8nTitulo(a) : regla.t) : tit,
+      // 7-oct: una automatización que falló hace horas y siguió funcionando no es pendiente
+      _n8nViejo: !!(regla && regla.n8n && _alN8nHorasDesdeUltima(a) > 3),
       s: regla ? regla.s : '', q: regla ? regla.q : '',
       cant: regla && regla.n8n ? 0 : (a.count || 0),
       det: Array.isArray(a.detalle) ? a.detalle : [], modulo: a.modulo || ''
     };
+    if (x._n8nViejo) x.nivel = 'historial';
     if (AL_RE_MKT.test(tit)) g.mkt.push(x);
     else (x.nivel === 'rojo' ? g.rojo : x.nivel === 'amarillo' ? g.amarillo : g.hist).push(x);
   }));
@@ -38187,10 +38200,12 @@ function _alClasificarTodo(r, buzon) {
   (Array.isArray(buzon) ? buzon : []).forEach(a => {
     if (a._erp) {   // erp.alertas: una sola línea por origen (la más nueva) y reglas por origen
       const o = String(a.origen || '');
-      if (_vistoOrigen[o]) return;
-      _vistoOrigen[o] = 1;
+      // 7-oct: los avisos que antes eran correo traen asuntos distintos: uno por asunto
+      const kv = o === 'correo' ? o + ':' + String(a.titulo || '').toLowerCase().replace(/[0-9]+/g, '#') : o;
+      if (_vistoOrigen[kv]) return;
+      _vistoOrigen[kv] = 1;
       const rg = AL_ORIGEN[o] || {};
-      const nv = rg.nivel || (a.nivel === 'critica' ? 'rojo' : a.nivel === 'aviso' ? 'amarillo' : 'historial');
+      const nv = (typeof rg.nivel === 'function' ? rg.nivel(a) : rg.nivel) || (a.nivel === 'critica' ? 'rojo' : a.nivel === 'aviso' ? 'amarillo' : 'historial');
       const rp = Number(a.repeticiones || 1);
       const y = { nivel: nv, t: rg.t ? rg.t(a) : String(a.titulo || ''), s: rg.s || '', q: rg.q || 'Sistemas',
         cant: 0, det: a.detalle ? [String(a.detalle).slice(0, 700)] : [], id: a.id, idAt: a.id,
@@ -38250,57 +38265,46 @@ const AL_AREAS = [
   { k: 'pedidos', n: 'Pedidos', i: '🧾' }, { k: 'pagos', n: 'Pagos', i: '💰' }, { k: 'stock', n: 'Stock', i: '📦' },
   { k: 'tula', n: 'Tula (bot)', i: '🤖' }, { k: 'erp', n: 'ERP', i: '🖥️' }, { k: 'costos', n: 'Costos', i: '🧮' }
 ];
-// Qué hacer con cada aviso. `claude`: cómo lo resolvería Claude (null = no aplica).
-// `yo`: pasos para hacerlo uno mismo. `necesito`: lo que Claude necesitaría de ti.
+// Qué hacer con cada aviso (7-oct, 2ª versión — pedido de Pablo):
+//   `claude`: SOLO si Claude lo deja resuelto de forma definitiva (un arreglo de sistema,
+//             no una decisión de negocio). Si no, no hay botón de Claude.
+//   `yo`:     pasos para hacerlo uno mismo. `necesito`: lo que Claude necesitaría de ti.
+//   `abrir`:  'chatwoot' → botón para abrir la conversación de la clienta.
 const AL_ACCION = [
-  { re: /pago que nadie registr|venta-perdida/i, a: 'pagos', hacer: 'Abrir la conversación y ver si la imagen es un pago.',
-    yo: ['Abre el Chatwoot de la clienta que figura en el detalle.', 'Si es un pago: regístralo en ERP → Pedidos.', 'Si no lo es (pregunta con foto): marca el aviso como atendido.'],
-    claude: 'Busco a la clienta en todos los canales (WhatsApp, TikTok Live, web). Si ya tiene pedido, cierro el aviso; si no, te digo qué pedido falta registrar.' },
-  { re: /pago registrado y ninguna prenda/i, a: 'pagos', hacer: 'Hay pagos cargados a pedidos que no tienen prenda: o falta la prenda o el pago va en otro pedido.',
-    yo: ['Abre ERP → Pedidos y busca los números del detalle.', 'Agrega la prenda que corresponde, o mueve el pago al pedido correcto.'],
-    claude: 'Reviso cada pedido (montos chicos como S/10 suelen ser envío o adelanto), encuentro a qué pedido pertenece cada pago y te dejo la corrección lista para que solo apruebes.' },
-  { re: /pago (duplicado|que podr)|contados dos veces/i, a: 'pagos', hacer: 'Confirmar en el banco que el pago entró una sola vez antes de darlo por cobrado.',
-    yo: ['Abre el banco y busca la operación del detalle.', 'Si entró una sola vez, elimina el pago repetido en ERP → Pedidos.'],
-    claude: 'Comparo las dos constancias y te digo cuál sobra.' },
+  { re: /pago que nadie registr|venta-perdida/i, a: 'pagos', hacer: 'Una clienta mandó una imagen después de recibir los datos de pago y no tiene pedido en ningún canal. Que la asesora mire si es un pago.',
+    abrir: 'chatwoot', yo: ['Abre la conversación (botón 💬).', 'Si es un pago: regístralo en Pedidos. Si no: ✓ Atendida.'], claude: null },
+  { re: /pago registrado y ninguna prenda/i, a: 'pagos', hacer: 'Pagos cargados a pedidos sin prenda: o falta la prenda o el pago va en otro pedido.',
+    yo: ['Abre los pedidos de «Ver casos».', 'Agrega la prenda o mueve el pago al pedido correcto.'], claude: null },
+  { re: /pago (duplicado|que podr)|contados dos veces/i, a: 'pagos', hacer: 'Dos pagos con la misma constancia. Confirmar en el banco antes de dar por cobrado.',
+    yo: ['Abre el banco y busca la operación.', 'Si entró una sola vez, elimina el pago repetido en Pedidos.'], claude: null },
   { re: /posible duplicado|pedido web podr|repetido/i, a: 'pedidos', hacer: 'Antes de despachar, confirmar que no sea el mismo pedido cargado dos veces.',
-    yo: ['Abre los dos pedidos del detalle.', 'Si son el mismo: elimina uno. Si son distintos: marca atendida.'],
-    claude: 'Comparo prendas, montos y conversación de los dos pedidos y te digo si es el mismo.' },
-  { re: /sin movimiento/i, a: 'pedidos', hacer: 'Pedidos quietos hace más de una semana: cerrar los entregados y cancelar los que ya no van.',
-    yo: ['Abre ERP → Pedidos y filtra por estado SEPARAR / PENDIENTE.', 'Con Ana: los entregados → ENTREGADO; los abandonados → cancelar.'],
-    claude: 'Te armo la lista separada en 3 grupos: ya entregados (se cierran solos con tu OK), separados viejos (mensaje para la clienta) y sin pago (se cancelan).' },
-  { re: /sin homologar/i, a: 'pedidos', hacer: 'Un pedido web trae una prenda que el ERP no reconoce: hay que decirle a qué producto corresponde.',
-    yo: ['Abre ERP → Homologaciones.', 'Asigna la prenda del pedido del detalle al producto correcto.'],
-    claude: 'Busco el producto que corresponde y te dejo la homologación lista para aprobar.' },
-  { re: /stock r[aá]pido|libro de stock/i, a: 'stock', hacer: 'Nada urgente: el ERP muestra el stock por el camino normal (un poco más lento).',
-    yo: null, claude: 'Recalculo el stock de las prendas que no cuadran y vuelvo a encender el stock rápido.' },
-  { re: /agotad/i, a: 'stock', hacer: 'Decidir si se reponen o se pausa su publicidad.',
-    yo: ['Revisa la lista de agotadas.', 'Pide reposición o pausa sus anuncios.'], claude: null },
-  { re: /automatizaci|flujo de n8n/i, a: 'tula', hacer: 'Una automatización no respondió. No frena la venta.',
-    yo: null, claude: 'Reviso el flujo en n8n, le activo reintento automático y confirmo que vuelve a responder.' },
-  { re: /bot tula|indicadores de calidad/i, a: 'tula', hacer: 'Métricas internas del bot fuera de rango. No frena la venta.',
-    yo: null, claude: 'Mido el prompt del bot, ordeno las reglas sugeridas pendientes y ubico la venta de anuncios que quedó sin anuncio.' },
+    yo: ['Abre los dos pedidos.', 'Si son el mismo: elimina uno. Si no: ✓ Atendida.'], claude: null },
+  { re: /sin movimiento/i, a: 'pedidos', hacer: 'Pedidos que no cambian de estado hace más de 7 días (la mayoría «ENVIAR»). Logística tiene que actualizarlos o despacharlos.',
+    yo: ['Abre Pedidos y filtra por estado ENVIAR / SEPARAR.', 'Con logística: lo despachado → EN CAMINO o ENTREGADO; lo abandonado → cancelar.'], claude: null },
+  { re: /sin homologar/i, a: 'pedidos', hacer: 'Un pedido web trae una prenda que el ERP no reconoce.',
+    yo: ['Abre Homologaciones.', 'Asigna la prenda al producto correcto.'],
+    claude: 'Ubico el producto que corresponde, dejo la homologación hecha y la prenda vuelve a sumar en stock y ventas.' },
+  { re: /agotad/i, a: 'stock', hacer: 'Decidir si se reponen o se pausa su publicidad.', yo: ['Revisa la lista.', 'Pide reposición o pausa sus anuncios.'], claude: null },
+  { re: /automatizaci|flujo de n8n/i, a: 'tula', hacer: 'Una automatización está fallando ahora mismo.',
+    yo: null, claude: 'Reviso el flujo en n8n, corrijo la causa y le pongo reintento automático para que no vuelva a avisar por una falla suelta.' },
+  { re: /bot tula|indicadores de calidad/i, a: 'tula', hacer: 'El bot tiene indicadores internos fuera de rango. No frena la venta.',
+    yo: null, claude: 'Registro la medición del prompt, archivo las reglas sugeridas viejas sin decisión y ubico la venta de anuncios sin anuncio. Los 3 indicadores vuelven a verde.' },
   { re: /fotos o archivos/i, a: 'tula', hacer: 'Algún archivo que mandó una clienta no abre.',
-    yo: null, claude: 'Reviso el archivo que no abre y, si es del almacenamiento, lo arreglo.' },
-  { re: /hoja y la base/i, a: 'erp', hacer: 'La hoja de Google y la base no dicen lo mismo en algunos pedidos. No frena la venta.',
-    yo: null, claude: 'Comparo los pedidos uno por uno y, cuando la hoja tiene razón, copio la hoja a la base. Te aviso cuáles toqué.' },
-  { re: /chequeo semanal del sistema/i, a: 'erp', hacer: 'Se apagaron relojes automáticos del ERP o hay un respaldo viejo.',
-    yo: null, claude: 'Vuelvo a encender los relojes automáticos caídos y reviso el respaldo. Si hace falta correr una función, te la paso lista para un clic.',
-    necesito: 'Quizá un clic en Apps Script (te digo cuál, en qué archivo).' },
+    yo: null, claude: 'Reviso por qué no abre y lo corrijo en el almacenamiento.' },
+  { re: /hoja y la base/i, a: 'erp', hacer: 'La hoja y la base no dicen lo mismo en algunos pedidos.',
+    yo: null, claude: 'Comparo pedido por pedido y dejo la base correcta.' },
+  { re: /chequeo semanal del sistema/i, a: 'erp', hacer: 'El chequeo del lunes encontró algo.',
+    yo: null, claude: 'Corrijo lo que encontró el chequeo (es un arreglo de sistema).' },
   { re: /fallaron o tardaron/i, a: 'erp', hacer: 'Partes del ERP fallaron varias veces en las últimas 2 horas.',
-    yo: null, claude: 'Reviso qué parte falla (por ejemplo el pase de entrada a la base) y lo arreglo.' },
-  { re: /proceso nocturno/i, a: 'erp', hacer: 'Un proceso de la noche no corre hace más de un día.',
-    yo: null, claude: 'Veo por qué se detuvo y lo vuelvo a encender.' },
-  { re: /estado de hoy/i, a: 'erp', hacer: 'Informe diario del ERP: si sale 🟡 es que no llegó a alguna meta (velocidad o cuota).',
-    yo: null, claude: 'Acelero las pantallas más lentas del informe.' },
-  { re: /tienda web|vig[ií]a/i, a: 'erp', hacer: 'Revisión automática de la tienda. Si el detalle dice "ninguna falló", ya está bien: márcala atendida.',
-    yo: ['Lee el detalle.', 'Si dice "ninguna falló": ✓ Atendida.'], claude: null },
+    yo: null, claude: 'Busco la causa de las fallas y la corrijo para que no se repita.' },
+  { re: /proceso nocturno/i, a: 'erp', hacer: 'Un proceso de la noche no corrió.',
+    yo: null, claude: 'Veo por qué no corrió y lo corrijo.' },
+  { re: /tienda web|vig[ií]a/i, a: 'erp', hacer: 'Revisión automática de la tienda web.', yo: ['Si dice «ninguna falló»: ✓ Atendida.'], claude: null },
   { re: /accesos|usuarios cambi/i, a: 'erp', hacer: 'Cambiaron los permisos del ERP: confirma que fuiste tú o Ana.',
     yo: ['Si fueron ustedes: ✓ Atendida.', 'Si no: avísale a Claude ya.'], claude: null },
-  { re: /recordatorio|copia mensual|archivar/i, a: 'erp', hacer: 'Recordatorio del mes: los pasos están en el detalle.', yo: null, claude: null },
-  { re: /correo|prueba/i, a: 'erp', hacer: 'Aviso que antes llegaba por correo.', yo: null, claude: null },
+  { re: /recordatorio|copia mensual|archivar/i, a: 'erp', hacer: 'Recordatorio del mes: los pasos están en «Ver casos».', yo: null, claude: null },
   { re: /costo|margen/i, a: 'costos', hacer: 'Prendas sin costo cargado: su margen sale inflado.',
-    yo: ['Abre ERP → Costos de producto.', 'Completa el costo de las prendas sin costo.'],
-    claude: 'Te armo la lista de prendas sin costo ordenada por lo que más se vende, para cargar primero las que más pesan.' }
+    yo: ['Abre Costos de producto.', 'Completa el costo de las prendas sin costo.'], claude: null }
 ];
 const AL_AREA_DEF = [
   [/pedido|despach|homolog/i, 'pedidos'], [/pago|constancia|cobr|caja/i, 'pagos'], [/stock|prenda|libro/i, 'stock'],
@@ -38331,18 +38335,41 @@ function _alItemHtml(x, area) {
     + (x.cant > 1 ? ' <span style="color:var(--mu);font-weight:400;font-size:11.5px">· ' + x.cant + ' casos</span>' : '') + '</div>'
     + '<div style="font-size:12px;margin-top:3px"><b>Qué hacer:</b> ' + esc(ac.hacer || x.s || 'Revisar el detalle.') + '</div>'
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">';
-  if (ac.claude) h += '<button class="btn bs" style="background:#7c3aed;color:#fff" onclick="_alClaudeVer(' + n + ',this)">🤖 Que Claude lo resuelva</button>';
+  if (ac.abrir === 'chatwoot') {
+    const cv = (x.det || []).join(' ').match(/conversaci[oó]n (\d+)/i);
+    if (cv) h += '<a class="btn bs" style="background:#16a34a;color:#fff;text-decoration:none" target="_blank" rel="noopener" href="' + AL_CHATWOOT + cv[1] + '">💬 Abrir conversación</a>';
+  }
+  if (ac.claude) h += '<button class="btn bs" style="background:#7c3aed;color:#fff" onclick="_alClaudeVer(' + n + ',this)">🤖 Claude lo resuelve</button>';
   if (ac.yo && ac.yo.length) h += '<button class="btn bg bs" onclick="_alYoVer(' + n + ')">✋ Lo hago yo</button>';
   if (x.modulo) h += '<button class="btn bg bs" onclick="navegarA(\'' + esc(x.modulo) + '\')">Ir →</button>';
   if (x.idEsc != null) h += '<button class="btn bg bs alerta-atender-escalado" data-id="' + esc(String(x.idEsc)) + '">✓ Atendida</button>';
   if (x.idAt != null) h += '<button class="btn bg bs alerta-atender" data-id="' + esc(String(x.idAt)) + '">✓ Atendida</button>';
   h += '</div><div id="al-pan-' + n + '"></div>';
-  if (x.det && x.det.length) {
-    h += '<details style="margin-top:5px"><summary style="cursor:pointer;font-size:10.5px;color:var(--mu)">Ver detalle</summary>'
-      + '<div style="font-size:10.5px;color:var(--mu);margin-top:4px;line-height:1.5;word-break:break-word">'
-      + x.det.slice(0, 12).map(d => '• ' + esc(d)).join('<br>') + '</div></details>';
+  const casos = _alCasosSimples(x);
+  if (casos.length) {
+    h += '<details style="margin-top:5px"><summary style="cursor:pointer;font-size:11px;color:var(--mu)">Ver casos (' + (x.cant > casos.length ? x.cant : casos.length) + ')</summary>'
+      + '<div style="font-size:12px;margin-top:4px;line-height:1.6;word-break:break-word">'
+      + casos.map(d => '• ' + esc(d)).join('<br>') + (x.cant > casos.length ? '<br><span style="color:var(--mu)">… y ' + (x.cant - casos.length) + ' más</span>' : '') + '</div></details>';
   }
   return h + '</div>';
+}
+const AL_CHATWOOT = 'https://chatwoot-production-5c5c.up.railway.app/app/accounts/1/conversations/';
+// «Ver casos» en simple: una línea por caso, sin códigos internos.
+function _alCasosSimples(x) {
+  const out = [];
+  (x.det || []).forEach(d => {
+    String(d).split(/\n+/).forEach(l => {
+      l = l.trim();
+      if (!l || /^(A estas clientas|Puede ser una pregunta|Revisado sobre|Si el porcentaje)/i.test(l)) return;
+      l = l.replace(/^[·•\-]\s*/, '')
+           .replace(/\s*—\s*conversaci[oó]n \d+,?/i, ' —')
+           .replace(/calculo\{.*$/i, '')
+           .replace(/\s{2,}/g, ' ');
+      if (l.length > 160) l = l.slice(0, 157) + '…';
+      out.push(l);
+    });
+  });
+  return out.slice(0, 10);
 }
 function _alClaudeVer(n, btn) {
   const it = _AL_ITEMS[n]; if (!it) return;
@@ -38350,9 +38377,10 @@ function _alClaudeVer(n, btn) {
   if (p.dataset.v === 'c') { p.innerHTML = ''; p.dataset.v = ''; return; }
   p.dataset.v = 'c';
   p.innerHTML = '<div style="margin-top:8px;padding:9px;border:1px dashed #7c3aed;border-radius:8px;font-size:12px">'
-    + '<div><b>Así lo resolvería Claude:</b> ' + esc(it.ac.claude) + '</div>'
-    + '<div style="margin-top:4px"><b>Qué necesito de ti:</b> ' + esc(it.ac.necesito || 'Nada: solo confirmar.') + '</div>'
-    + '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn bs" style="background:#7c3aed;color:#fff" onclick="_alEncargar(' + n + ',this)">Sí, encárgaselo a Claude</button>'
+    + '<div><b>Qué voy a hacer:</b> ' + esc(it.ac.claude) + '</div>'
+    + '<div style="margin-top:4px"><b>Cuándo:</b> en tu próxima conversación conmigo (dime «atiende los encargos del ERP») o, si no, en el Parte de la mañana. Al terminar, este aviso desaparece.</div>'
+    + '<div style="margin-top:4px"><b>Qué necesito de ti:</b> ' + esc(it.ac.necesito || 'Nada.') + '</div>'
+    + '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn bs" style="background:#7c3aed;color:#fff" onclick="_alEncargar(' + n + ',this)">Sí, que lo resuelva</button>'
     + '<button class="btn bg bs" onclick="_alClaudeVer(' + n + ')">Cancelar</button></div></div>';
 }
 function _alYoVer(n) {
