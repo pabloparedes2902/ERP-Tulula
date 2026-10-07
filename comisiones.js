@@ -4074,4 +4074,194 @@ try {
   }
 } catch (e) {}
 
+
+/* ══════════════════════════════════════════════════════════════════════
+   7-oct · CÁLCULO OFICIAL (motor único en la base, aprobado por Pablo)
+   Lee erp.comisiones_trimestre (admin: todo) o erp.comisiones_mio (asesora:
+   lo suyo + ranking sin plata). Es lo que se paga. La vista anterior queda
+   plegada debajo para el admin y oculta para la asesora.
+   ══════════════════════════════════════════════════════════════════════ */
+var COMOF = { year: null, q: null, data: null, verAnterior: false };
+
+function _comOfCaja() {
+  var w = document.getElementById('com-w');
+  if (!w || !w.parentNode) return null;
+  var c = document.getElementById('com-oficial');
+  if (!c) { c = document.createElement('div'); c.id = 'com-oficial'; w.parentNode.insertBefore(c, w); }
+  return c;
+}
+
+function _comOfRpc(fn, args) {
+  try { if (!sbDisponible()) return Promise.resolve(null); } catch (e) { return Promise.resolve(null); }
+  return _sbSesionAsegurar().then(function (tok) {
+    if (!tok) return null;
+    return fetch(SB_URL + '/rest/v1/rpc/' + fn, {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json',
+                 'Content-Profile': 'erp', 'Accept-Profile': 'erp' },
+      body: JSON.stringify(args)
+    }).then(function (r) { return r.ok ? r.json() : null; });
+  }).catch(function () { return null; });
+}
+
+function _comOfSoles(n) {
+  var v = Math.round(Number(n) || 0);
+  return 'S/ ' + v.toLocaleString('es-PE');
+}
+function _comOfPct(n) { return (Math.round((Number(n) || 0) * 10) / 10).toLocaleString('es-PE') + '%'; }
+
+function _comOfBarra(pct, puerta) {
+  var p = Math.max(0, Math.min(150, Number(pct) || 0));
+  var ancho = Math.round(p / 150 * 100);
+  var marca = Math.round((Number(puerta) || 75) / 150 * 100);
+  var color = p >= (puerta || 75) ? 'var(--gn, #16a34a)' : 'var(--rd, #dc2626)';
+  return '<div style="position:relative;height:8px;background:rgba(127,127,127,.18);border-radius:4px;min-width:90px">' +
+           '<div style="width:' + ancho + '%;height:8px;background:' + color + ';border-radius:4px"></div>' +
+           '<div title="puerta ' + (puerta || 75) + '%" style="position:absolute;left:' + marca + '%;top:-3px;width:2px;height:14px;background:var(--mu,#888)"></div>' +
+         '</div>';
+}
+
+function _comOfTrimestres() {
+  var hoy = new Date(), y = hoy.getFullYear(), q = Math.ceil((hoy.getMonth() + 1) / 3);
+  var pq = q - 1, py = y; if (pq < 1) { pq = 4; py = y - 1; }
+  return [{ y: y, q: q }, { y: py, q: pq }];
+}
+
+function _comOfSelector() {
+  var ops = _comOfTrimestres().map(function (t) {
+    var sel = (t.y === COMOF.year && t.q === COMOF.q) ? ' selected' : '';
+    return '<option value="' + t.y + '-' + t.q + '"' + sel + '>Q' + t.q + ' ' + t.y + '</option>';
+  }).join('');
+  return '<select onchange="comOfCambiar(this.value)" style="padding:4px 8px;border-radius:8px;font-weight:600">' + ops + '</select>';
+}
+
+window.comOfCambiar = function (v) {
+  var p = String(v).split('-'); COMOF.year = Number(p[0]); COMOF.q = Number(p[1]); COMOF.data = null;
+  comOficialPintar();
+};
+window.comOfVerAnterior = function () {
+  COMOF.verAnterior = !COMOF.verAnterior;
+  var w = document.getElementById('com-w');
+  if (w) w.style.display = COMOF.verAnterior ? '' : 'none';
+  var b = document.getElementById('com-of-ant');
+  if (b) b.textContent = COMOF.verAnterior ? 'Ocultar vista anterior' : 'Ver vista anterior (no usar para pagar)';
+};
+
+function _comOfAdminHtml(d) {
+  var cerrado = !!d.cerrado;
+  var filas = (d.asesoras || []).map(function (a) {
+    var nombre = a.nombre || a.asesora;
+    var cumpl = Number(a.cumplimiento) || 0;
+    var bono = cerrado ? a.bono_pagar : a.bono;
+    var cobra = cerrado ? Number(a.bono_pagar) > 0 : !!a.cobra;
+    var estado = cobra ? '<b style="color:var(--gr,#16a34a)">Cobra</b>'
+               : (cerrado ? 'No cobra' : 'Le faltan ' + _comOfSoles(a.le_falta_para_cobrar) + ' para cobrar');
+    return '<tr>' +
+      '<td style="padding:6px 8px;font-weight:600">' + esc(nombre) + '</td>' +
+      '<td style="padding:6px 8px;text-align:right">' + _comOfSoles(a.margen) + '</td>' +
+      '<td style="padding:6px 8px;text-align:right">' + _comOfSoles(a.meta) + '</td>' +
+      '<td style="padding:6px 8px;min-width:140px">' + _comOfBarra(cumpl, 75) + '<div style="font-size:11px;color:var(--mu)">' + _comOfPct(cumpl) + ' de su meta</div></td>' +
+      '<td style="padding:6px 8px;text-align:right">' + _comOfPct(a.tasa) + '</td>' +
+      '<td style="padding:6px 8px;text-align:right;font-weight:700">' + _comOfSoles(bono) + '</td>' +
+      '<td style="padding:6px 8px;font-size:12px">' + estado + '</td>' +
+    '</tr>';
+  }).join('');
+  var eq = d.equipo || {}, eqCumpl = cerrado ? ((d.asesoras || [])[0] || {}).equipo_cumplimiento : eq.cumplimiento;
+  var eqTxt = 'Equipo: <b>' + _comOfPct(eqCumpl) + '</b> de la meta';
+  if (!cerrado) {
+    eqTxt += eq.pasa ? ' · pasa la puerta del ' + (eq.puerta || 75) + '% · tramo <b>' + _comOfPct(eq.tasa) + '</b> para todas'
+                     : ' · <b style="color:var(--rd)">no pasa la puerta del ' + (eq.puerta || 75) + '%</b>';
+    if (eq.siguiente_tramo) eqTxt += ' · al equipo le faltan <b>' + _comOfSoles(eq.siguiente_tramo.le_falta_margen) +
+                                      '</b> de margen para subir al tramo de ' + _comOfPct(eq.siguiente_tramo.tasa);
+  }
+  var fuera = '';
+  if (d.fuera) fuera = '<div style="font-size:12px;color:var(--mu);margin-top:8px">No comisionan: ' +
+      _comOfSoles(d.fuera.canal_no_comisiona_ventas) + ' de canales sin comisión (web, contacto, marketplace) · ' +
+      _comOfSoles(d.fuera.pago_de_otros_ventas) + ' cobrados por otras personas.</div>';
+  var cuando = d.calculado_at ? ' · actualizado ' + new Date(d.calculado_at).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' }) : '';
+  return '<div class="card" style="margin-bottom:14px">' +
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">' +
+      '<div class="ct" style="margin:0">Comisiones · cálculo oficial</div>' + _comOfSelector() +
+      '<span style="font-size:12px;padding:2px 8px;border-radius:10px;background:' + (cerrado ? 'rgba(127,127,127,.2)' : 'rgba(22,163,74,.15)') + '">' +
+        (cerrado ? '🔒 Cerrado' : 'En curso · al instante') + '</span>' +
+      '<span style="font-size:12px;color:var(--mu)">' + cuando + '</span>' +
+    '</div>' +
+    '<div style="font-size:13px;margin-bottom:10px">' + eqTxt + '</div>' +
+    '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">' +
+      '<thead><tr style="text-align:left;color:var(--mu);font-size:11px">' +
+        '<th style="padding:4px 8px">Asesora</th><th style="padding:4px 8px;text-align:right">Margen</th>' +
+        '<th style="padding:4px 8px;text-align:right">Meta</th><th style="padding:4px 8px">Avance</th>' +
+        '<th style="padding:4px 8px;text-align:right">Tramo</th><th style="padding:4px 8px;text-align:right">Bono</th>' +
+        '<th style="padding:4px 8px">Estado</th></tr></thead>' +
+      '<tbody>' + filas + '</tbody>' +
+      '<tfoot><tr><td colspan="5" style="padding:6px 8px;text-align:right;color:var(--mu)">Total a pagar</td>' +
+        '<td style="padding:6px 8px;text-align:right;font-weight:700">' + _comOfSoles(d.total_bonos) + '</td><td></td></tr></tfoot>' +
+    '</table></div>' + fuera +
+    '<div style="margin-top:10px"><button class="btn" id="com-of-ant" onclick="comOfVerAnterior()" style="font-size:12px">' +
+      (COMOF.verAnterior ? 'Ocultar vista anterior' : 'Ver vista anterior (no usar para pagar)') + '</button></div>' +
+  '</div>';
+}
+
+function _comOfAsesoraHtml(d) {
+  var m = d.mio || {};
+  var cumpl = Number(m.cumplimiento) || 0;
+  var cerrado = !!d.cerrado;
+  var linea;
+  if (cerrado) linea = Number(m.bono_pagar) > 0 ? 'Trimestre cerrado. Tu comisión: <b>' + _comOfSoles(m.bono_pagar) + '</b>' : 'Trimestre cerrado.';
+  else if (m.cobra) linea = '¡Ya estás cobrando! Con el tramo del equipo (' + _comOfPct(m.tasa) + ') vas ganando <b>' + _comOfSoles(m.bono) + '</b>. Cada venta suma.';
+  else if (Number(m.le_falta_para_cobrar) > 0) linea = 'Te faltan <b>' + _comOfSoles(m.le_falta_para_cobrar) + '</b> de margen para llegar al 75% de tu meta y cobrar comisión.';
+  else linea = 'Llegaste al 75% de tu meta: cobras cuando el equipo también llegue al 75%.';
+  var eqTxt = 'El equipo va en <b>' + _comOfPct(d.equipo_cumplimiento) + '</b> ' +
+              (d.equipo_pasa ? '(pasa la puerta del 75%)' : '(todavía no llega al 75%: entre todas lo empujan)');
+  var rk = (d.ranking || []).map(function (r) {
+    var yo = String(r.nombre || '').toUpperCase() === String(d.yo || '').toUpperCase();
+    return '<tr' + (yo ? ' style="font-weight:700"' : '') + '><td style="padding:4px 8px">' + r.puesto + '°</td>' +
+      '<td style="padding:4px 8px">' + esc(r.nombre) + (yo ? ' (tú)' : '') + '</td>' +
+      '<td style="padding:4px 8px;text-align:right">' + (r.pedidos || 0) + ' pedidos</td>' +
+      '<td style="padding:4px 8px;min-width:120px">' + _comOfBarra(r.cumplimiento, 75) + '</td>' +
+      '<td style="padding:4px 8px;text-align:right">' + _comOfPct(r.cumplimiento) + '</td></tr>';
+  }).join('');
+  return '<div class="card" style="margin-bottom:14px">' +
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">' +
+      '<div class="ct" style="margin:0">Mi comisión</div>' + _comOfSelector() + '</div>' +
+    '<div style="font-size:28px;font-weight:800">' + _comOfPct(cumpl) + '<span style="font-size:13px;font-weight:500;color:var(--mu)"> de tu meta del trimestre</span></div>' +
+    '<div style="margin:8px 0">' + _comOfBarra(cumpl, 75) + '</div>' +
+    '<div style="font-size:14px;margin-bottom:6px">' + linea + '</div>' +
+    '<div style="font-size:13px;color:var(--mu);margin-bottom:12px">' + eqTxt + '</div>' +
+    '<div class="ct" style="font-size:13px">Ranking del trimestre</div>' +
+    '<table style="width:100%;border-collapse:collapse;font-size:13px">' + rk + '</table>' +
+  '</div>';
+}
+
+function comOficialPintar() {
+  var caja = _comOfCaja();
+  if (!caja) return;
+  if (!COMOF.year) { var t = _comOfTrimestres()[0]; COMOF.year = t.y; COMOF.q = t.q; }
+  var esAsesora = (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA);
+  var fn = esAsesora ? 'comisiones_mio' : 'comisiones_trimestre';
+  var y = COMOF.year, q = COMOF.q;
+  if (!caja.innerHTML) caja.innerHTML = '<div class="ld"><div class="sp"></div>Cargando cálculo oficial...</div>';
+  _comOfRpc(fn, { p_year: y, p_q: q }).then(function (d) {
+    if (y !== COMOF.year || q !== COMOF.q) return;
+    var w = document.getElementById('com-w');
+    if (!d) { caja.innerHTML = ''; if (w) w.style.display = ''; return; }   // sin la base: queda la vista de siempre
+    COMOF.data = d;
+    caja.innerHTML = esAsesora ? _comOfAsesoraHtml(d) : _comOfAdminHtml(d);
+    if (w) w.style.display = (esAsesora || !COMOF.verAnterior) ? 'none' : '';
+  });
+}
+window.comOficialPintar = comOficialPintar;
+
+(function () {
+  var orig = window.loadComisiones;
+  if (typeof orig !== 'function' || orig.__conOficial) return;
+  var envuelta = function () {
+    var r = orig.apply(this, arguments);
+    try { comOficialPintar(); } catch (e) {}
+    return r;
+  };
+  envuelta.__conOficial = true;
+  window.loadComisiones = envuelta;
+})();
+
 })();
