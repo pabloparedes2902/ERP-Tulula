@@ -6113,6 +6113,103 @@ function _cosAplicar(r) {
   if (r.plantillas) COS.plantillas = r.plantillas;
 }
 
+// >>> 7-oct-2026 · PASO 3 DE LA VÍA RÁPIDA: la lista de Costos se lee DIRECTO de la base (rpc costos_admin, solo Admin) ≈0,4 s en vez de 7 s.
+// Es el MISMO armado que costosListar (CostosBase.gs): _cosDeBase_ + _cosCompletar_ + _cosMargenes_, copiado tal cual
+// (la prueba regresion_costos_directo_7oct.js corre los dos con los mismos datos y exige el mismo resultado).
+// Si la base no responde, se sigue por Apps Script como siempre.
+const CF_COMP = [['confeccion', 'c_confeccion', 'Confección'], ['tela1', 'c_tela1', 'Tela'], ['entretela', 'c_tricotex', 'Entretela'],
+  ['forro', 'c_forro', 'Forro'], ['elastico', 'c_elastico', 'Elástico'], ['etiqueta', 'c_etiqueta', 'Etiqueta'], ['botones', 'c_botones', 'Botones'],
+  ['cierre', 'c_cierre', 'Cierre/broches'], ['packaging', 'c_packaging', 'Packaging'], ['otros', 'c_otros', 'Otros']];   // = COS_COMP
+const CF_PRE = [['lista', 'precio_lista'], ['lista2', 'p_lista_x2'], ['lista3', 'p_lista_x3'], ['lista6', 'p_lista_x6'], ['lista12', 'p_lista_x12'],
+  ['live', 'p_live'], ['live2', 'p_live_x2'], ['live3', 'p_live_x3'], ['cyber', 'p_cyber'], ['cyber2', 'p_cyber_x2'], ['cyber3', 'p_cyber_x3'],
+  ['show', 'p_show'], ['show2', 'p_show_x2'], ['show3', 'p_show_x3'], ['colab', 'p_colab']];   // = COS_PRE
+const CF_CANALES = ['lista', 'live', 'cyber', 'show', 'colab'];
+function _cfNum(v) { var n = parseFloat(v); return isNaN(n) ? 0 : Math.round(n * 100) / 100; }
+function _cfNumN(v) { if (v === null || v === undefined || v === '') return null; var n = parseFloat(v); return isNaN(n) ? null : Math.round(n * 1000) / 1000; }
+function _cfTxt(v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim(); }
+function _cfClave(v) { return _cfTxt(v).toUpperCase(); }
+function _cfFecha(v) { if (!v) return ''; try { var t = new Date(v).getTime(); return isNaN(t) ? _cfTxt(v) : _fmtLima(t, 'yyyy-MM-dd HH:mm'); } catch (e) { return _cfTxt(v); } }
+function _cfDeBase(x) {   // = _cosDeBase_
+  var comp = {}, pre = {};
+  CF_COMP.forEach(function (c) { comp[c[0]] = _cfNumN(x[c[1]]); });
+  CF_PRE.forEach(function (p) { pre[p[0]] = _cfNumN(x[p[1]]); });
+  if (!(pre.lista > 0)) pre.lista = null;
+  return { fila: 0, Diseno: _cfTxt(x.diseno), Categoria: _cfTxt(x.categoria), TipoPrenda: _cfTxt(x.tipo_prenda), Modelo: _cfTxt(x.modelo),
+    CostoUnitario: _cfNum(x.costo_unitario), CostoPaqueteria: _cfNum(x.costo_paqueteria), PrecioLista: _cfNum(x.precio_lista), Notas: _cfTxt(x.notas),
+    Activo: x.activo !== false, UltimaActualizacion: _cfFecha(x.actualizado), Quien: _cfTxt(x.actualizado_por), comp: comp, precios: pre, pctAs: _cfNumN(x.pct_as),
+    ShopifyId: _cfTxt(x.shopify_id), NombreShopify: _cfTxt(x.nombre_shopify), ShopifyEstado: _cfTxt(x.shopify_estado), Descripcion: _cfTxt(x.descripcion),
+    Cuidados: _cfTxt(x.cuidados), Orden: (x.orden === null || x.orden === undefined) ? null : Number(x.orden) };
+}
+function _cfConjCortoParse(d) { var m = /^CONJUNTO\s+(.+?)\s*\(\s*([^()+\s]+)\s*\)\s*$/.exec(String(d || '').trim().toUpperCase()); return m ? [m[1].trim(), m[2]] : null; }
+function _cfConjPiezasDe(nombre, pieza) { nombre = String(nombre || '').toUpperCase(); return [String(pieza || '').toUpperCase() + ' ' + nombre, 'PANTALON ' + (nombre === 'MADONNA' ? 'ATENAS' : nombre)]; }
+function _cfPiezas(modelo) {   // = _cosPiezas_
+  var m = String(modelo || '').match(/\(([^)]*)\)/);
+  if (!m) return [];
+  if (m[1].indexOf('+') < 0) { var corto = _cfConjCortoParse('CONJUNTO ' + String(modelo)); return corto ? _cfConjPiezasDe(corto[0], corto[1]).map(_cfClave) : []; }
+  return m[1].split('+').map(_cfClave).filter(function (x) { return !!x; });
+}
+function _cfCompletar(filas) {   // = _cosCompletar_
+  var porClave = {};
+  (filas || []).forEach(function (r) { porClave[_cfClave(r.Diseno)] = r; });
+  var suma = function (r) { var s = 0, hay = false, c = r.comp || {}; CF_COMP.forEach(function (k) { var v = c[k[0]]; if (v != null) { s += v; if (v > 0) hay = true; } }); return hay ? Math.round(s * 100) / 100 : null; };
+  (filas || []).forEach(function (r) { var s = suma(r); if (s != null) { r.CostoUnitario = s; r.calculado = 'componentes'; } });
+  (filas || []).forEach(function (r) {
+    if (r.calculado) return;
+    if (_cfClave(r.TipoPrenda) !== 'CONJUNTO') return;
+    var piezas = _cfPiezas(r.Modelo);
+    if (piezas.length < 2) return;
+    var tot = 0, ok = true;
+    piezas.forEach(function (p) { var f = porClave[p]; if (!f || !(f.CostoUnitario > 0)) ok = false; else tot += f.CostoUnitario; });
+    if (ok) { r.CostoUnitario = Math.round(tot * 100) / 100; r.calculado = 'piezas'; r.piezas = piezas; }
+  });
+  (filas || []).forEach(function (r) { var pr = r.precios; if (pr && !(pr.colab > 0) && pr.show > 0) { pr.colab = Math.round(pr.show * 0.8 * 100) / 100; r.colabCalculado = true; } });
+  return filas;
+}
+function _cfMargenes(r) {   // = _cosMargenes_
+  var m = {}, cu = Number(r.CostoUnitario) || 0;
+  CF_CANALES.forEach(function (k) { var p = r.precios && r.precios[k]; if (p > 0 && cu > 0) { var s = Math.round((p - cu) * 100) / 100; m[k] = { s: s, p: Math.round(s / p * 10000) / 10000 }; } else m[k] = null; });
+  return m;
+}
+function _cfArmar(rawRows, admin) {   // = lo que arma costosListar (para Admin: todas las filas con costos y márgenes)
+  var filas = rawRows.map(_cfDeBase);
+  _cfCompletar(filas);
+  var tipos = {}, cats = {}, tipoCat = {};
+  filas.forEach(function (r) {
+    if (r.TipoPrenda) tipos[r.TipoPrenda] = 1;
+    if (r.Categoria) cats[r.Categoria] = 1;
+    if (r.TipoPrenda && r.Categoria && r.TipoPrenda !== 'CONJUNTO') tipoCat[r.TipoPrenda] = r.Categoria;
+    if (admin) r.margen = _cfMargenes(r);
+  });
+  return { filas: filas, tiposPrenda: Object.keys(tipos).sort(), categorias: Object.keys(cats).sort(), tipoCategoria: tipoCat };
+}
+async function _cfRpc(fn) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON || (typeof SB_APAGADO !== 'undefined' && SB_APAGADO)) return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) { if (r.status === 401) _sbVencerTok(); return null; }
+    const j = await r.json();
+    return (j && Array.isArray(j.rows) && j.rows.length) ? j : null;
+  } catch (_) { return null; }
+}
+function _cfPlantillas(v) { try { return v ? (JSON.parse(v) || {}) : {}; } catch (_) { return {}; } }
+async function _cosDirecto() {
+  if (!_cosYoAdmin()) return null;
+  const j = await _cfRpc('costos_admin'); if (!j) return null;
+  const a = _cfArmar(j.rows, true);
+  return { ok: true, esAdmin: true, destino: 'base', encendido: true, aviso: '', rows: a.filas, tiposPrenda: a.tiposPrenda, categorias: a.categorias,
+    tipoCategoria: a.tipoCategoria, componentes: CF_COMP.map(function (c) { return { k: c[0], t: c[2] }; }), plantillas: _cfPlantillas(j.plantillas), _directo: true };
+}
+async function _conDirecto() {   // Contenido de producto: la base ya filtra (sin costos, solo activos); aquí se arma igual que contenidoListar
+  const j = await _cfRpc('contenido_productos'); if (!j) return null;
+  const a = _cfArmar(j.rows, false);
+  return { ok: true, rows: a.filas.filter(function (r) { return r.Activo !== false; }).map(function (r) {
+    return { Diseno: r.Diseno, Categoria: r.Categoria, TipoPrenda: r.TipoPrenda, Modelo: r.Modelo, Activo: true, ShopifyId: r.ShopifyId || '', ShopifyEstado: r.ShopifyEstado || '',
+      Descripcion: r.Descripcion || '', Cuidados: r.Cuidados || '', precios: r.precios || {}, UltimaActualizacion: r.UltimaActualizacion || '', Quien: r.Quien || '' }; }),
+    plantillas: _cfPlantillas(j.plantillas), tiposPrenda: a.tiposPrenda, _directo: true };
+}
+// <<< PASO 3
+
 // Se muestra AL INSTANTE lo último que vio este navegador y se trae lo nuevo por detrás.
 // La copia guardada lleva la marca de si era de un administrador: nunca se reusa con otro rol.
 async function loadCostos() {
@@ -6129,7 +6226,7 @@ async function loadCostos() {
   } catch (_) {}
   if (!pintado) w.innerHTML = spin('Cargando costos de producto...');
   try {
-    const r = await apiSend('costos.listar', {});
+    const r = (await _cosDirecto()) || await apiSend('costos.listar', {});   // 7-oct · paso 3: primero la base directo (≈0,4 s)
     _cosAplicar(r);
     try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: !!r.esAdmin, r: r })); } catch (_) {}
   } catch (e) {
@@ -7693,7 +7790,7 @@ async function loadContenido() {
   try { const g = JSON.parse(localStorage.getItem(CON_KEY) || 'null'); if (g && g.r && (Date.now() - g.t) < 7 * 86400000) { _conAplicar(g.r); _conRender(); pintado = true; } } catch (_) {}
   if (!pintado) w.innerHTML = spin('Cargando productos...');
   try {
-    const r = await apiSend('contenido.listar', {});
+    const r = (await _conDirecto()) || await apiSend('contenido.listar', {});   // 7-oct · paso 3: primero la base directo
     _conAplicar(r);
     try { localStorage.setItem(CON_KEY, JSON.stringify({ t: Date.now(), r: r })); } catch (_) {}
     if (!CTN.editing) _conRender(); else _conTabla();
