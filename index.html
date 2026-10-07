@@ -38237,6 +38237,208 @@ function _alCard(x) {
   return h + '</div>';
 }
 
+// ══ PANEL POR ÁREA (7-oct-2026, pedido de Pablo) ═══════════════════════════
+// Seis tarjetas: Pedidos · Pagos · Stock · Tula · ERP · Costos. Cada aviso dice en
+// simple qué pasa y qué hacer, y trae dos botones:
+//   🤖 «Que Claude lo resuelva» → muestra CÓMO lo resolvería y, al confirmar, deja
+//      el encargo en erp.claude_encargos (Claude lo toma en la próxima conversación
+//      o en el Parte de la mañana). Si la base no responde, copia el encargo.
+//   ✋ «Lo hago yo» → los pasos, numerados.
+// REVERSA: AL_PANEL_ON = false y publicar (vuelve la lista por urgencia sola).
+const AL_PANEL_ON = true;
+const AL_AREAS = [
+  { k: 'pedidos', n: 'Pedidos', i: '🧾' }, { k: 'pagos', n: 'Pagos', i: '💰' }, { k: 'stock', n: 'Stock', i: '📦' },
+  { k: 'tula', n: 'Tula (bot)', i: '🤖' }, { k: 'erp', n: 'ERP', i: '🖥️' }, { k: 'costos', n: 'Costos', i: '🧮' }
+];
+// Qué hacer con cada aviso. `claude`: cómo lo resolvería Claude (null = no aplica).
+// `yo`: pasos para hacerlo uno mismo. `necesito`: lo que Claude necesitaría de ti.
+const AL_ACCION = [
+  { re: /pago que nadie registr|venta-perdida/i, a: 'pagos', hacer: 'Abrir la conversación y ver si la imagen es un pago.',
+    yo: ['Abre el Chatwoot de la clienta que figura en el detalle.', 'Si es un pago: regístralo en ERP → Pedidos.', 'Si no lo es (pregunta con foto): marca el aviso como atendido.'],
+    claude: 'Busco a la clienta en todos los canales (WhatsApp, TikTok Live, web). Si ya tiene pedido, cierro el aviso; si no, te digo qué pedido falta registrar.' },
+  { re: /pago registrado y ninguna prenda/i, a: 'pagos', hacer: 'Hay pagos cargados a pedidos que no tienen prenda: o falta la prenda o el pago va en otro pedido.',
+    yo: ['Abre ERP → Pedidos y busca los números del detalle.', 'Agrega la prenda que corresponde, o mueve el pago al pedido correcto.'],
+    claude: 'Reviso cada pedido (montos chicos como S/10 suelen ser envío o adelanto), encuentro a qué pedido pertenece cada pago y te dejo la corrección lista para que solo apruebes.' },
+  { re: /pago (duplicado|que podr)|contados dos veces/i, a: 'pagos', hacer: 'Confirmar en el banco que el pago entró una sola vez antes de darlo por cobrado.',
+    yo: ['Abre el banco y busca la operación del detalle.', 'Si entró una sola vez, elimina el pago repetido en ERP → Pedidos.'],
+    claude: 'Comparo las dos constancias y te digo cuál sobra.' },
+  { re: /posible duplicado|pedido web podr|repetido/i, a: 'pedidos', hacer: 'Antes de despachar, confirmar que no sea el mismo pedido cargado dos veces.',
+    yo: ['Abre los dos pedidos del detalle.', 'Si son el mismo: elimina uno. Si son distintos: marca atendida.'],
+    claude: 'Comparo prendas, montos y conversación de los dos pedidos y te digo si es el mismo.' },
+  { re: /sin movimiento/i, a: 'pedidos', hacer: 'Pedidos quietos hace más de una semana: cerrar los entregados y cancelar los que ya no van.',
+    yo: ['Abre ERP → Pedidos y filtra por estado SEPARAR / PENDIENTE.', 'Con Ana: los entregados → ENTREGADO; los abandonados → cancelar.'],
+    claude: 'Te armo la lista separada en 3 grupos: ya entregados (se cierran solos con tu OK), separados viejos (mensaje para la clienta) y sin pago (se cancelan).' },
+  { re: /sin homologar/i, a: 'pedidos', hacer: 'Un pedido web trae una prenda que el ERP no reconoce: hay que decirle a qué producto corresponde.',
+    yo: ['Abre ERP → Homologaciones.', 'Asigna la prenda del pedido del detalle al producto correcto.'],
+    claude: 'Busco el producto que corresponde y te dejo la homologación lista para aprobar.' },
+  { re: /stock r[aá]pido|libro de stock/i, a: 'stock', hacer: 'Nada urgente: el ERP muestra el stock por el camino normal (un poco más lento).',
+    yo: null, claude: 'Recalculo el stock de las prendas que no cuadran y vuelvo a encender el stock rápido.' },
+  { re: /agotad/i, a: 'stock', hacer: 'Decidir si se reponen o se pausa su publicidad.',
+    yo: ['Revisa la lista de agotadas.', 'Pide reposición o pausa sus anuncios.'], claude: null },
+  { re: /automatizaci|flujo de n8n/i, a: 'tula', hacer: 'Una automatización no respondió. No frena la venta.',
+    yo: null, claude: 'Reviso el flujo en n8n, le activo reintento automático y confirmo que vuelve a responder.' },
+  { re: /bot tula|indicadores de calidad/i, a: 'tula', hacer: 'Métricas internas del bot fuera de rango. No frena la venta.',
+    yo: null, claude: 'Mido el prompt del bot, ordeno las reglas sugeridas pendientes y ubico la venta de anuncios que quedó sin anuncio.' },
+  { re: /fotos o archivos/i, a: 'tula', hacer: 'Algún archivo que mandó una clienta no abre.',
+    yo: null, claude: 'Reviso el archivo que no abre y, si es del almacenamiento, lo arreglo.' },
+  { re: /hoja y la base/i, a: 'erp', hacer: 'La hoja de Google y la base no dicen lo mismo en algunos pedidos. No frena la venta.',
+    yo: null, claude: 'Comparo los pedidos uno por uno y, cuando la hoja tiene razón, copio la hoja a la base. Te aviso cuáles toqué.' },
+  { re: /chequeo semanal del sistema/i, a: 'erp', hacer: 'Se apagaron relojes automáticos del ERP o hay un respaldo viejo.',
+    yo: null, claude: 'Vuelvo a encender los relojes automáticos caídos y reviso el respaldo. Si hace falta correr una función, te la paso lista para un clic.',
+    necesito: 'Quizá un clic en Apps Script (te digo cuál, en qué archivo).' },
+  { re: /fallaron o tardaron/i, a: 'erp', hacer: 'Partes del ERP fallaron varias veces en las últimas 2 horas.',
+    yo: null, claude: 'Reviso qué parte falla (por ejemplo el pase de entrada a la base) y lo arreglo.' },
+  { re: /proceso nocturno/i, a: 'erp', hacer: 'Un proceso de la noche no corre hace más de un día.',
+    yo: null, claude: 'Veo por qué se detuvo y lo vuelvo a encender.' },
+  { re: /estado de hoy/i, a: 'erp', hacer: 'Informe diario del ERP: si sale 🟡 es que no llegó a alguna meta (velocidad o cuota).',
+    yo: null, claude: 'Acelero las pantallas más lentas del informe.' },
+  { re: /tienda web|vig[ií]a/i, a: 'erp', hacer: 'Revisión automática de la tienda. Si el detalle dice "ninguna falló", ya está bien: márcala atendida.',
+    yo: ['Lee el detalle.', 'Si dice "ninguna falló": ✓ Atendida.'], claude: null },
+  { re: /accesos|usuarios cambi/i, a: 'erp', hacer: 'Cambiaron los permisos del ERP: confirma que fuiste tú o Ana.',
+    yo: ['Si fueron ustedes: ✓ Atendida.', 'Si no: avísale a Claude ya.'], claude: null },
+  { re: /recordatorio|copia mensual|archivar/i, a: 'erp', hacer: 'Recordatorio del mes: los pasos están en el detalle.', yo: null, claude: null },
+  { re: /correo|prueba/i, a: 'erp', hacer: 'Aviso que antes llegaba por correo.', yo: null, claude: null },
+  { re: /costo|margen/i, a: 'costos', hacer: 'Prendas sin costo cargado: su margen sale inflado.',
+    yo: ['Abre ERP → Costos de producto.', 'Completa el costo de las prendas sin costo.'],
+    claude: 'Te armo la lista de prendas sin costo ordenada por lo que más se vende, para cargar primero las que más pesan.' }
+];
+const AL_AREA_DEF = [
+  [/pedido|despach|homolog/i, 'pedidos'], [/pago|constancia|cobr|caja/i, 'pagos'], [/stock|prenda|libro/i, 'stock'],
+  [/bot|tula|n8n|chatwoot|automatiz|adjunto/i, 'tula'], [/costo|margen/i, 'costos']
+];
+function _alAccion(x) {
+  const txt = String(x.t || '') + ' ' + String(x.q || '');
+  return AL_ACCION.find(a => a.re.test(txt)) || null;
+}
+function _alArea(x) {
+  const ac = _alAccion(x);
+  if (ac) return ac.a;
+  const txt = String(x.t || '');
+  const d = AL_AREA_DEF.find(p => p[0].test(txt));
+  return d ? d[1] : 'erp';
+}
+function _alClave(area, x) { return area + ':' + String(x.t || '').toLowerCase().replace(/[0-9]+/g, '#').replace(/\s+/g, ' ').slice(0, 80); }
+
+let _AL_ITEMS = [];
+function _alItemHtml(x, area) {
+  const ac = _alAccion(x) || {};
+  const n = _AL_ITEMS.push({ x: x, area: area, ac: ac, clave: _alClave(area, x) }) - 1;
+  const col = x.nivel === 'rojo' ? 'var(--rd)' : '#d97706';
+  let h = '<div class="al-item" data-al-i="' + n + '"' + (x.id != null ? ' data-alerta="' + esc(String(x.id)) + '"' : '')
+    + (x.nivel === 'rojo' ? ' data-rojo="1"' : '')
+    + ' style="border-left:3px solid ' + col + ';padding:8px 10px;margin-top:8px;background:var(--bg2,rgba(0,0,0,.08));border-radius:8px">'
+    + '<div style="font-weight:600;font-size:13px">' + (x.nivel === 'rojo' ? '🔴 ' : '') + esc(x.t)
+    + (x.cant > 1 ? ' <span style="color:var(--mu);font-weight:400;font-size:11.5px">· ' + x.cant + ' casos</span>' : '') + '</div>'
+    + '<div style="font-size:12px;margin-top:3px"><b>Qué hacer:</b> ' + esc(ac.hacer || x.s || 'Revisar el detalle.') + '</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">';
+  if (ac.claude) h += '<button class="btn bs" style="background:#7c3aed;color:#fff" onclick="_alClaudeVer(' + n + ',this)">🤖 Que Claude lo resuelva</button>';
+  if (ac.yo && ac.yo.length) h += '<button class="btn bg bs" onclick="_alYoVer(' + n + ')">✋ Lo hago yo</button>';
+  if (x.modulo) h += '<button class="btn bg bs" onclick="navegarA(\'' + esc(x.modulo) + '\')">Ir →</button>';
+  if (x.idEsc != null) h += '<button class="btn bg bs alerta-atender-escalado" data-id="' + esc(String(x.idEsc)) + '">✓ Atendida</button>';
+  if (x.idAt != null) h += '<button class="btn bg bs alerta-atender" data-id="' + esc(String(x.idAt)) + '">✓ Atendida</button>';
+  h += '</div><div id="al-pan-' + n + '"></div>';
+  if (x.det && x.det.length) {
+    h += '<details style="margin-top:5px"><summary style="cursor:pointer;font-size:10.5px;color:var(--mu)">Ver detalle</summary>'
+      + '<div style="font-size:10.5px;color:var(--mu);margin-top:4px;line-height:1.5;word-break:break-word">'
+      + x.det.slice(0, 12).map(d => '• ' + esc(d)).join('<br>') + '</div></details>';
+  }
+  return h + '</div>';
+}
+function _alClaudeVer(n, btn) {
+  const it = _AL_ITEMS[n]; if (!it) return;
+  const p = document.getElementById('al-pan-' + n); if (!p) return;
+  if (p.dataset.v === 'c') { p.innerHTML = ''; p.dataset.v = ''; return; }
+  p.dataset.v = 'c';
+  p.innerHTML = '<div style="margin-top:8px;padding:9px;border:1px dashed #7c3aed;border-radius:8px;font-size:12px">'
+    + '<div><b>Así lo resolvería Claude:</b> ' + esc(it.ac.claude) + '</div>'
+    + '<div style="margin-top:4px"><b>Qué necesito de ti:</b> ' + esc(it.ac.necesito || 'Nada: solo confirmar.') + '</div>'
+    + '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn bs" style="background:#7c3aed;color:#fff" onclick="_alEncargar(' + n + ',this)">Sí, encárgaselo a Claude</button>'
+    + '<button class="btn bg bs" onclick="_alClaudeVer(' + n + ')">Cancelar</button></div></div>';
+}
+function _alYoVer(n) {
+  const it = _AL_ITEMS[n]; if (!it) return;
+  const p = document.getElementById('al-pan-' + n); if (!p) return;
+  if (p.dataset.v === 'y') { p.innerHTML = ''; p.dataset.v = ''; return; }
+  p.dataset.v = 'y';
+  p.innerHTML = '<ol style="margin:8px 0 0 18px;padding:0;font-size:12px;line-height:1.6">'
+    + (it.ac.yo || []).map(s => '<li>' + esc(s) + '</li>').join('') + '</ol>';
+}
+function _alEncargoTexto(it) {
+  return 'Encargo desde ERP › Alertas (' + it.area + '): ' + it.x.t + (it.x.cant > 1 ? ' · ' + it.x.cant + ' casos' : '')
+    + '\nCómo resolverlo: ' + it.ac.claude
+    + (it.x.det && it.x.det.length ? '\nDetalle: ' + it.x.det.slice(0, 12).join(' | ').slice(0, 2500) : '');
+}
+async function _alEncargar(n, btn) {
+  const it = _AL_ITEMS[n]; if (!it) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Encargando…'; }
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) throw new Error('sin sesión');
+    const r = await fetch(SB_URL + '/rest/v1/rpc/encargo_claude', { method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', 'Content-Profile': 'erp' },
+      body: JSON.stringify({ p_clave: it.clave, p_area: it.area, p_titulo: String(it.x.t || '').slice(0, 200),
+        p_sugerencia: it.ac.claude, p_detalle: _alEncargoTexto(it) }) });
+    if (!r.ok) throw new Error('encargo ' + r.status);
+    _alEncMarcar([it.clave]);
+    toast('📨 Encargado a Claude. Lo toma en la próxima conversación o en el Parte de la mañana.', 'ok');
+  } catch (e) {
+    try { await navigator.clipboard.writeText(_alEncargoTexto(it)); toast('No pude guardarlo en la base: copié el encargo. Pégaselo a Claude en el chat.', 'err'); }
+    catch (_) { toast('No pude guardar el encargo: ' + esc(e.message), 'err'); }
+    if (btn) { btn.disabled = false; btn.textContent = 'Sí, encárgaselo a Claude'; }
+  }
+}
+// Marca «📨 Encargado» en los avisos que ya tienen encargo pendiente.
+function _alEncMarcar(claves) {
+  const set = new Set(claves || []);
+  document.querySelectorAll('.al-item').forEach(el => {
+    const it = _AL_ITEMS[Number(el.dataset.alI)];
+    if (!it || !set.has(it.clave)) return;
+    const p = document.getElementById('al-pan-' + el.dataset.alI);
+    if (p) { p.dataset.v = 'e'; p.innerHTML = '<div style="margin-top:6px;font-size:11.5px;color:#7c3aed">📨 Encargado a Claude — pendiente de resolver.</div>'; }
+    el.querySelectorAll('button').forEach(b => { if (/Claude/.test(b.textContent)) b.style.display = 'none'; });
+  });
+}
+// Claude cierra un encargo al terminar, desde la pestaña del ERP:
+//   await erpEncargoCerrar(12, 'hecho', 'Qué hice, en simple')
+async function erpEncargoCerrar(id, estado, resultado) {
+  const tok = await _sbSesionAsegurar();
+  if (!tok) throw new Error('sin sesión del ERP');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/encargo_cerrar', { method: 'POST',
+    headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', 'Content-Profile': 'erp' },
+    body: JSON.stringify({ p_id: Number(id), p_estado: estado || 'hecho', p_resultado: resultado || '' }) });
+  if (!r.ok) throw new Error('encargo_cerrar ' + r.status);
+  return r.json();
+}
+if (typeof window !== 'undefined') window.erpEncargoCerrar = erpEncargoCerrar;
+async function _alEncCargar() {
+  try {
+    const a = await _sbTablaLeer('claude_encargos?select=clave&estado=eq.pendiente', 'erp');
+    if (Array.isArray(a)) _alEncMarcar(a.map(x => x.clave));
+  } catch (_) {}
+}
+function _alPanelHtml(g) {
+  _AL_ITEMS = [];
+  const por = {}; AL_AREAS.forEach(a => { por[a.k] = { act: [], fondo: [] }; });
+  g.rojo.concat(g.amarillo).forEach(x => por[_alArea(x)].act.push(x));
+  g.hist.forEach(x => { const ar = _alArea(x); if (ar === 'costos' || x.cant > 0) por[ar].fondo.push(x); });
+  let h = '<div id="al-panel" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:12px;margin-bottom:14px">';
+  AL_AREAS.forEach(a => {
+    const L = por[a.k].act, nR = L.filter(x => x.nivel === 'rojo').length;
+    const col = nR ? 'var(--rd)' : L.length ? '#d97706' : 'var(--gn)';
+    const chip = nR ? '🔴 ' + nR + ' urgente' + (nR > 1 ? 's' : '') : L.length ? '🟡 ' + L.length + ' para revisar' : '🟢 Todo en orden';
+    L.sort((p, q) => (p.nivel === 'rojo' ? 0 : 1) - (q.nivel === 'rojo' ? 0 : 1));
+    h += '<div class="card al-area" data-area="' + a.k + '" style="padding:12px;border-top:4px solid ' + col + '">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+      + '<div style="font-weight:700;font-size:15px">' + a.i + ' ' + a.n + '</div>'
+      + '<div style="font-size:12px;font-weight:600;color:' + col + '">' + chip + '</div></div>'
+      + (L.length ? L.map(x => _alItemHtml(x, a.k)).join('') : '<div style="font-size:12px;color:var(--mu);margin-top:6px">Nada que hacer aquí.</div>')
+      + (por[a.k].fondo.length ? '<div style="font-size:11px;color:var(--mu);margin-top:8px">De fondo (sin apuro): '
+        + por[a.k].fondo.map(x => esc(x.t) + (x.cant > 1 ? ' · ' + x.cant : '')).join(' · ') + '</div>' : '')
+      + '</div>';
+  });
+  return h + '</div>';
+}
+
 function _alertasHtmlSimple(r) {
   const g = _alClasificarTodo(r, _ALERT_BUZON);
   const nR = g.rojo.length;
@@ -38245,6 +38447,7 @@ function _alertasHtmlSimple(r) {
     + (nR ? '🔴 ' + nR + ' cosa' + (nR !== 1 ? 's' : '') + ' urgente' + (nR !== 1 ? 's' : '') + ' por atender' : '🟢 Nada urgente') + '</div>'
     + '<div style="color:var(--mu);font-size:12.5px">' + g.amarillo.length + ' para revisar hoy · ' + g.mkt.length + ' de marketing · ' + g.hist.length + ' en historial</div>'
     + '<span style="flex:1"></span><button class="btn bg bs" onclick="loadAlertas()">↻ Refrescar</button></div>';
+  if (AL_PANEL_ON) h += _alPanelHtml(g) + '<details id="alertas-lista"><summary style="cursor:pointer;font-size:12.5px;color:var(--mu);margin-bottom:10px">Ver la lista completa por urgencia (incluye 📣 Marketing e historial)</summary>';
   const bloque = (id, titulo, sub, color, arr, vacio) =>
     '<div id="' + id + '" class="card" style="padding:14px;margin-bottom:12px;border-left:4px solid ' + color + '">'
     + '<h3 style="margin:0 0 2px 0;font-size:14px;color:' + color + '">' + titulo + ' (' + arr.length + ')</h3>'
@@ -38257,6 +38460,7 @@ function _alertasHtmlSimple(r) {
     + ' <span style="font-weight:400;color:var(--mu);font-size:11.5px">— solo registro, no requiere acción</span></summary><div style="margin-top:10px">'
     + (g.hist.length ? g.hist.map(_alCard).join('') : '<div style="font-size:12.5px;color:var(--mu)">Vacío.</div>') + '</div></details>';
   if (_ALERT_ESPERA && _ALERT_ESPERA.length) h += _secEspera();
+  if (AL_PANEL_ON) h += '</details>';
   return h;
 }
 
@@ -38280,22 +38484,22 @@ function _alIrARojas() {
   navegarA('alertas');
   let k = 0;
   const t = setInterval(() => {
-    const e = document.getElementById('alertas-rojas');
+    const e = document.querySelector('#al-panel [data-rojo]') || document.getElementById('alertas-rojas');
     if (e || ++k > 60) { clearInterval(t); if (e) e.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   }, 250);
 }
-function _alRojosEnPantalla() { return document.querySelectorAll('#alertas-w [data-rojo="1"]:not([data-hecho])').length; }
+function _alRojosEnPantalla() { return document.querySelectorAll((AL_PANEL_ON ? '#al-panel' : '#alertas-w') + ' [data-rojo="1"]:not([data-hecho])').length; }
 
 function _renderAlertas(w, r) {
   w.innerHTML = _alertasHtmlSimple(r);   // 6-oct: alertas simples (ver arriba)
+  if (AL_PANEL_ON) _alEncCargar();   // 7-oct: marca los avisos ya encargados a Claude
 
   w.querySelectorAll('.alerta-atender').forEach(b => b.addEventListener('click', async function() {
     const id = this.dataset.id;
     this.disabled = true; this.textContent = 'Marcando…';
     try {
       await _sbAlertaAtender(Number(id));
-      const fila = w.querySelector('[data-alerta="'+id+'"]');
-      if (fila) { fila.style.opacity = '.35'; fila.dataset.hecho = '1'; }
+      w.querySelectorAll('[data-alerta="'+id+'"]').forEach(fila => { fila.style.opacity = '.35'; fila.dataset.hecho = '1'; });
       this.textContent = '✓ Lista';
       _ALERT_BUZON = _ALERT_BUZON.filter(a => String(a.id) !== String(id));
       _updateAlertBadge(_alRojosEnPantalla());
@@ -38310,8 +38514,7 @@ function _renderAlertas(w, r) {
     this.disabled = true; this.textContent = 'Marcando…';
     try {
       await _sbAlertaSemaforoAtender(id);
-      const fila = w.querySelector('[data-alerta="'+id+'"]');
-      if (fila) { fila.style.opacity = '.35'; fila.dataset.hecho = '1'; }
+      w.querySelectorAll('[data-alerta="'+id+'"]').forEach(fila => { fila.style.opacity = '.35'; fila.dataset.hecho = '1'; });
       this.textContent = '✓ Lista';
       _ALERT_BUZON = _ALERT_BUZON.filter(a => String(a.id) !== String(id));
       _updateAlertBadge(_alRojosEnPantalla());
