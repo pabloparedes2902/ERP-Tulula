@@ -3742,7 +3742,7 @@ async function _fetchJsonCrudo(buildReq, action) {
       const _tokUsado = SESSION_TOKEN;   // FIX QA: recordar con qué token salió ESTA llamada
       // 1-oct · el INGRESO espera hasta 50 s por intento: medido 17:05, el servidor resolvio el login en 0,5 s
       // pero Apps Script tardo 11,3 s en despertar; con 20 s un arranque en frio se cortaba y mostraba error.
-      const _tmoMs = (_apiEnModoLento() || action === 'auth.login') ? _API_TIMEOUT_LENTO_MS : _API_TIMEOUT_MS;
+      const _tmoMs = (_apiEnModoLento() || action === 'auth.login' || action === 'costos.fichaWeb' || action === 'multimedia.todos') ? _API_TIMEOUT_LENTO_MS : _API_TIMEOUT_MS;   // 6-oct · la tienda entera (≈20 s con la pantalla cargando) se cortaba a los 20 s
       const r = await Promise.race([
         fetch(url, opts),
         new Promise((_, rej) => setTimeout(() => rej(new Error('TIMEOUT_API')), _tmoMs)),
@@ -6172,6 +6172,18 @@ function _cosFichaCelda(r) {
 async function _cosFichaCargar(force) {
   if (!COS.esAdmin || (MCT.cargado && !force) || MCT._cargando) return;
   MCT._cargando = true;
+  // 6-oct · VÍA RÁPIDA: resumen y material de todos los productos en UN viaje directo a la base (≈0,4 s)
+  const dir = await _mmDirecto();
+  if (dir) {
+    MCT.res = _mmResumen(dir.rows); MCT.cargado = true;
+    const por = {}; (COS.data || []).forEach(r => { por[r.Diseno] = _mmDeProducto(dir, r.Diseno); });
+    MCT.todos = por; MCT.todosT = Date.now(); _mctTodosGuardar();
+    try { localStorage.setItem('erp_swr_mct1', JSON.stringify({ t: Date.now(), res: MCT.res })); } catch (_) {}
+    MCT._cargando = false;
+    try { if (document.getElementById('cos-tabla')) _cosUpdateRows(); } catch (_) {}
+    if (!MCT._colT || (Date.now() - MCT._colT) > 6 * 3600000) { MCT._colT = Date.now(); _mctTodosCargar(); }   // colores del catálogo: por detrás, cada 6 h
+    return;
+  }
   try {
     _mctTodosCargar();   // 6-oct · en paralelo (antes esperaba al resumen: +9 s)
     const rs = await apiSend('multimedia.resumen', {});
@@ -6816,8 +6828,19 @@ async function _cosMmLeer(v, fresco) {
   if (v._pL) return v._pL;
   // 6-oct · la copia de TODOS los productos queda guardada (antes se usaba una vez y se borraba): abre al instante y _cosMmRefrescar trae lo fresco por detrás
   const pre = !fresco && MCT.todos && MCT.todos[v.Diseno];
-  if (pre && !v._mm) { v._mm = (pre.rows || []).slice(); v._cols = pre.colores || []; v._ord = pre.orden || []; v._nbot = pre.nombreBot || v.Diseno; v._deCopia = true; return true; }
+  if (pre && !v._mm && pre._colOk !== false) { v._mm = (pre.rows || []).slice();   // sin colores todavía (navegador nuevo) no se usa: se pide completo
+    v._cols = pre.colores || []; v._ord = pre.orden || []; v._nbot = pre.nombreBot || v.Diseno; v._deCopia = true; return true; }
   v._pL = (async () => {
+    // 6-oct · VÍA RÁPIDA: la base directo (≈0,4 s). Si el producto no tiene colores en la copia, se sigue por Apps Script (que los trae).
+    const dir = await _mmDirecto();
+    if (dir) {
+      const e = _mmDeProducto(dir, v.Diseno);
+      if (e._colOk || (v._cols && v._cols.length)) {
+        v._mm = e.rows; v._cols = e._colOk ? e.colores : v._cols; v._ord = e.orden; v._nbot = e.nombreBot;
+        v._deCopia = false; _cosMmCopiar(v);
+        return true;
+      }
+    }
     let ult = null;
     for (let i = 0; i < 3; i++) {
       try {
@@ -7139,7 +7162,7 @@ function _cosMediaShopPintar(v) {
   box.innerHTML = '<div style="margin:2px 0 10px;padding:8px 10px;border:1px solid var(--bd);border-radius:var(--r)">'
     + '<div style="font-size:12px"><b>🛍 Ya en Shopify:</b> ' + n + ' foto' + (n === 1 ? '' : 's') + ' · ' + nv + ' video' + (nv === 1 ? '' : 's') + ' <span style="color:var(--mu)">— ' + origen + '</span>'
     + ' <a href="https://admin.shopify.com/store/tulula-ecom/products/' + esc(_cftGid(v.ShopifyId)) + '" target="_blank" rel="noopener" style="color:var(--ac)">ver ↗</a></div>'
-    + (n ? '<div style="display:flex;gap:6px;overflow-x:auto;margin-top:6px">' + sh.fotos.slice(0, 14).map(u => '<img loading="lazy" alt="" src="' + esc(_cftMini(u)) + '" style="width:54px;height:68px;object-fit:cover;border-radius:5px;flex:0 0 auto;background:var(--bg3)">').join('')
+    + (n ? '<div style="display:flex;gap:6px;overflow-x:auto;margin-top:6px">' + sh.fotos.slice(0, 14).map(u => '<img alt="" src="' + esc(_cftMini(u)) + '" style="width:54px;height:68px;object-fit:cover;border-radius:5px;flex:0 0 auto;background:var(--bg3)">').join('')
       + (n > 14 ? '<span style="align-self:center;font-size:11px;color:var(--mu)">+' + (n - 14) + '</span>' : '') + '</div>' : '')
     + '</div>';
 }
@@ -7624,6 +7647,54 @@ function _mctTodosCargar() {
   MCT._pT = apiSend('multimedia.todos', {}).then(rt => { if (rt && rt.por) { MCT.todos = rt.por; MCT.todosT = Date.now(); _mctTodosGuardar(); } }).catch(() => {}).finally(() => { MCT._pT = null; });
   return MCT._pT;
 }
+// >>> 6-oct-2026 · VÍA RÁPIDA DE FOTOS Y VIDEO: la base directo (rpc ficha_media_admin, solo Admin) ≈0,4 s en vez de Apps Script (6-11 s).
+// Mismo armado que multimediaResumen / multimediaTodos (MultimediaBase.gs). Si la base no responde, se sigue por Apps Script como antes.
+// Los colores de cada producto salen del catálogo de SKUs (cambian solo al crear SKU): se toman de la última copia y Apps Script los renueva por detrás.
+const MM_ALIAS = { 'BLUSA TOSCANA A RAYAS': 'BLUSA TOSCANA - RAYAS', 'CONJUNTO ANTONIA': 'CONJUNTO ANTONIA (BLAZER)', 'CONJUNTO GRECIA': 'CONJUNTO GRECIA (BLAZER)',
+  'CONJUNTO MIRELLA(BLAZER+PANTALON)': 'CONJUNTO MIRELLA (BLAZER)', 'CONJUNTO MIRELLA(CHALECO+PANTALON)': 'CONJUNTO MIRELLA (CHALECO)', 'CONJUNTO PATRICK': 'CONJUNTO PATRICK (BLAZER)' };   // = MUL_ALIAS
+const MM_CANALES = ['CATALOGO', 'BOT', 'SHOPIFY', 'ADS'], MM_TIPOS = ['PRINCIPAL', 'EXTRA', 'VIDEO'];
+function _mmTxt(x) { return String(x == null ? '' : x).replace(/\s+/g, ' ').trim(); }
+async function _mmDirecto() {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON || (typeof SB_APAGADO !== 'undefined' && SB_APAGADO)) return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/ficha_media_admin', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) { if (r.status === 401) _sbVencerTok(); return null; }
+    const j = await r.json();
+    if (!j || !Array.isArray(j.rows)) return null;
+    const rows = j.rows.map(x => ({ Clave: _mmTxt(x.clave), Diseno: _mmTxt(x.diseno), Color: _mctClave(x.color || ''),
+      Canal: MM_CANALES.indexOf(_mmTxt(x.canal).toUpperCase()) >= 0 ? _mmTxt(x.canal).toUpperCase() : 'CATALOGO',
+      Tipo: MM_TIPOS.indexOf(_mmTxt(x.tipo).toUpperCase()) >= 0 ? _mmTxt(x.tipo).toUpperCase() : 'EXTRA',
+      Url: _mmTxt(x.url), Categoria: _mmTxt(x.categoria), Notas: _mmTxt(x.notas), Origen: _mmTxt(x.origen), Activo: x.activo !== false, Quien: _mmTxt(x.actualizado_por) }));
+    const orden = {};
+    Object.keys(j.orden || {}).forEach(k => { try { const l = JSON.parse(j.orden[k] || '[]'); if (Array.isArray(l)) orden[k] = l.map(String); } catch (_) {} });
+    return { rows, orden };
+  } catch (_) { return null; }
+}
+function _mmNombresDe(d) {   // = _mulNombresDe_: su nombre + los que usa el bot
+  const k = _mctClave(d), out = [{ clave: k, texto: _mmTxt(d) }];
+  Object.keys(MM_ALIAS).forEach(a => { if (_mctClave(MM_ALIAS[a]) === k) out.push({ clave: _mctClave(a), texto: a }); });
+  return out;
+}
+function _mmDeProducto(dir, d) {
+  const nom = _mmNombresDe(d), claves = nom.map(x => x.clave), prev = (MCT.todos || {})[d];
+  return { colores: (prev && prev.colores) || [], orden: dir.orden['ORDEN_FOTOS|' + _mmTxt(d).toUpperCase()] || [], nombreBot: nom.length > 1 ? nom[1].texto : _mmTxt(d),
+    rows: dir.rows.filter(r => r.Activo !== false && claves.indexOf(_mctClave(r.Diseno)) >= 0), _colOk: !!prev };
+}
+function _mmResumen(rows) {   // = multimediaResumen
+  const inv = {}; Object.keys(MM_ALIAS).forEach(a => { inv[_mctClave(a)] = MM_ALIAS[a]; });
+  const out = {};
+  rows.forEach(r => {
+    if (r.Activo === false) return;
+    const nombre = inv[_mctClave(r.Diseno)] || r.Diseno, k = _mctClave(nombre); if (!k) return;
+    const o = out[k] = out[k] || { diseno: nombre, catalogo: 0, video: 0, tienda: 0, colores: [] };
+    if (r.Tipo === 'VIDEO') { o.video++; return; }
+    if (r.Canal === 'BOT') o.catalogo++;
+    if (r.Canal === 'SHOPIFY') { o.tienda++; if (r.Color && o.colores.indexOf(r.Color) < 0) o.colores.push(r.Color); }
+  });
+  return out;
+}
+// <<< VÍA RÁPIDA DE FOTOS Y VIDEO
 // >>> 6-oct-2026 · LO QUE YA ESTÁ EN SHOPIFY (pedido de Pablo: muchos productos se cargaron directo en la tienda y la ficha decía «falta»)
 // Una sola lectura de TODA la tienda (costos.fichaWeb accion «todos», FichaWeb.gs), en segundo plano y guardada en el navegador.
 // Sirve para: semáforos (cuentan lo que ya está en Shopify), «Fotos y video» (muestra lo cargado directo) e «Historia en la tienda» (abre al instante).
@@ -7645,9 +7716,12 @@ function _cftCargar(force) {
     if (r.vistas && r.vistas.length) CFT.vistas = r.vistas;
     try { localStorage.setItem(CFT_KEY, JSON.stringify({ t: CFT.t, por: CFT.por })); } catch (_) {}
     try { if (document.getElementById('cos-tabla')) _cosUpdateRows(); } catch (_) {}
-    try { const v = COS.editing; if (v && v.Diseno) { _cosMeter(v); _cosMediaShopPintar(v); } } catch (_) {}
+    try { const v = COS.editing; if (v && v.Diseno) { _cosMeter(v); const m = document.getElementById('cf-media'); if (m && m.dataset.pintado && v._mm && !v._blq) _cosMediaPintar(v); else _cosMediaShopPintar(v); } } catch (_) {}   // 6-oct · repinta también las filas por color («ya está en Shopify» en vez de «Falta»)
     return true;
-  }).catch(() => false).finally(() => { CFT._p = null; });
+  }).catch(() => {
+    if (!CFT._reint) { CFT._reint = 1; setTimeout(() => { CFT._reint = 0; _cftCargar(true); }, 45000); }   // 6-oct · un reintento si Apps Script estaba ocupado
+    return false;
+  }).finally(() => { CFT._p = null; });
   return CFT._p;
 }
 // <<< LO QUE YA ESTÁ EN SHOPIFY
