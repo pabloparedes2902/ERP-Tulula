@@ -2853,7 +2853,9 @@ function mkPintar(){
       ? '<button class="mkejec' + (r._pide ? ' pide' : '') + '"'
         + ' title="' + (r._on ? 'Apagar' : 'Encender') + ' este anuncio en Meta"'
         + ' onclick="mkEjecPreg(\'' + String(r.ad_id) + '\', \'' + _sugiere + '\')">&#9211;</button>'
-      : '') + btnEsc;
+      : '') + btnEsc
+      + ((!r._grupo && r.ad_id && !r._nuevo) ? '<button class="mkejec" title="Duplicar este anuncio (mismo video y textos) en el conjunto que elijas. Nace apagado."'
+        + ' onclick="mkDupAbrir(\'' + String(r.ad_id) + '\')">&#10697;</button>' : '');   /* 7-oct · F4 */
     const chipAcc = r._grupo
       ? (['ESCALAR','ENCENDER','ESPERAR','APAGAR'].filter(a => r._accCount[a])
           .map(a => '<span class="mkchip acc-' + a.toLowerCase() + '" style="margin:0 2px">' + r._accCount[a] + ' ' + a + '</span>').join('')
@@ -3680,6 +3682,57 @@ async function mkNuevoCrear(){
   setTimeout(tick, 4000);
 }
 
+/* ═══ 7-oct-2026 · F4 «DUPLICAR GANADOR» (pedido de Pablo) ══════════════════════════════════════════
+   Copia el MISMO creativo (video, textos, botón) de un anuncio en el conjunto que se elija (o en el mismo).
+   Usa el mismo flujo de n8n que ➕ Nuevo anuncio (anuncio-crear, modo «duplicar»): lista blanca, tope de 10 por hora,
+   compara el conjunto contra Meta, y no deja mezclar WhatsApp con web. Nace APAGADO y aparece al instante (F5). */
+let MKD_DUP = { origen: null, conj: {} };
+function mkDupAbrir(adId){
+  if (!MK || !MK.filas) return;
+  const o = MK.filas.filter(x => String(x.ad_id) === String(adId))[0]; if (!o) return;
+  MKD_DUP = { origen: o, conj: {} };
+  MK.filas.filter(r => r._on && r.ad_id && r.conjunto && !r._nuevo).forEach(r => { if (!MKD_DUP.conj[r.conjunto]) MKD_DUP.conj[r.conjunto] = { ad: String(r.ad_id), camp: r.campana || '' }; });
+  if (o.conjunto && !MKD_DUP.conj[o.conjunto]) MKD_DUP.conj[o.conjunto] = { ad: String(o.ad_id), camp: o.campana || '' };
+  const sel = document.getElementById('mkdConj'), canalO = mkCanalDe(o);
+  const nombres = Object.keys(MKD_DUP.conj).filter(n => mkCanalDe({ campana: MKD_DUP.conj[n].camp, conjunto: n, anuncio: '' }) === canalO || n === o.conjunto).sort();
+  sel.innerHTML = nombres.map(n => '<option value="' + esc(n).replace(/"/g, '&quot;') + '"' + (n === o.conjunto ? ' selected' : '') + '>' + esc(n) + ' · ' + esc(MKD_DUP.conj[n].camp) + '</option>').join('');
+  document.getElementById('mkdOrigen').innerHTML = 'Anuncio: <b>' + esc(o.anuncio) + '</b><br>Conjunto actual: ' + esc(o.conjunto || '—');
+  document.getElementById('mkdNombre').value = String(o.anuncio || '').replace(/^🆕 /, '') + ' · copia';
+  document.getElementById('mkdRes').innerHTML = '';
+  document.getElementById('mkdOk').disabled = false;
+  document.getElementById('mkDupBox').style.display = 'flex';
+}
+async function mkDupCrear(){
+  const o = MKD_DUP.origen, res = document.getElementById('mkdRes'), ok = document.getElementById('mkdOk');
+  const conjunto = document.getElementById('mkdConj').value, nombre = document.getElementById('mkdNombre').value.trim();
+  const c = MKD_DUP.conj[conjunto];
+  if (!o || !c){ res.innerHTML = '<span class="mal">Elige el conjunto.</span>'; return; }
+  if (nombre.length < 10){ res.innerHTML = '<span class="mal">Escribe el nombre del anuncio nuevo.</span>'; return; }
+  ok.disabled = true; res.innerHTML = '<span class="esp">Enviando a Meta…</span>';
+  let d;
+  try {
+    const r = await fetch(URL_ANUNCIO_CREAR, { method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ modo: 'duplicar', ad_origen: String(o.ad_id), ad_ref: c.ad, conjunto: conjunto, nombre: nombre, quien: 'Pablo' }) });
+    d = await r.json(); if (Array.isArray(d)) d = d[0] || {};
+  } catch (e) { d = { ok: false, motivo: 'No hubo respuesta del servidor. No se creó nada.' }; }
+  if (!(d.ok === true || d.ok === 'true')){ res.innerHTML = '<span class="mal">✕ ' + esc(d.motivo || 'No se pudo.') + '</span>'; ok.disabled = false; return; }
+  const id = d.id, t0 = Date.now();
+  const tick = async () => {
+    let e = {};
+    try { e = await fetch(URL_ANUNCIO_ESTADO + '?id=' + encodeURIComponent(id)).then(x => x.json()); if (Array.isArray(e)) e = e[0] || {}; } catch (x) {}
+    if (e.estado === 'LISTO'){
+      mkNuevoRegistrar(e.ad_id, e.nombre || nombre, c.ad, conjunto);
+      res.innerHTML = '<span class="bien">✓ Duplicado APAGADO en Meta: <b>' + esc(e.nombre || nombre) + '</b><br>Ya está en la tabla (🆕): préndelo con ⏻ cuando quieras.</span>';
+      return;
+    }
+    if (e.estado === 'ERROR' || e.estado === 'RECHAZADO'){ res.innerHTML = '<span class="mal">✕ ' + esc(e.error || 'Falló.') + '</span>'; ok.disabled = false; return; }
+    if (Date.now() - t0 > 120000){ res.innerHTML = '<span class="mal">Meta no respondió en 2 minutos. Revisa el Administrador de anuncios antes de reintentar.</span>'; return; }
+    res.innerHTML = '<span class="esp">Creando… ' + Math.round((Date.now() - t0) / 1000) + ' s</span>';
+    setTimeout(tick, 3000);
+  };
+  setTimeout(tick, 2500);
+}
+
 /* ═══ 5-oct-2026 · 📈 ESCALAR ══════════════════════════════════════════════
    1. Pregunta a Meta (meta-presupuesto, solo lectura) donde vive el presupuesto y cuanto es.
    2. Si se abrio desde Conjuntos/Campañas y Meta dice que vive en el OTRO nivel: no deja
@@ -3917,6 +3970,16 @@ window.addEventListener('message', function(e){
   </div>
 </div>
 <!-- 6-oct-2026 · ➕ NUEVO ANUNCIO (F1): sube el video al ERP y n8n lo crea en Meta APAGADO (ver mkNuevoCrear). -->
+<div id="mkDupBox" class="mkmodal" style="display:none">
+  <div class="mkmodal-in" style="max-width:560px;width:96vw">
+    <h3>&#10697; Duplicar anuncio <span style="font-size:11px;font-weight:600;color:var(--txt2)">· mismo video y textos · nace apagado</span></h3>
+    <div class="dato" id="mkdOrigen" style="margin:0 0 10px;font-size:12px"></div>
+    <div class="mkn-f"><label>1 · Conjunto donde va (puede ser el mismo)</label><select id="mkdConj"></select></div>
+    <div class="mkn-f"><label>2 · Nombre del anuncio nuevo</label><input id="mkdNombre" style="width:100%"></div>
+    <div class="btns"><button class="no" onclick="document.getElementById('mkDupBox').style.display='none'">Cerrar</button><button class="si azul" id="mkdOk" onclick="mkDupCrear()">Duplicar (apagado)</button></div>
+    <div class="res" id="mkdRes"></div>
+  </div>
+</div>
 <div id="mkNuevoBox" class="mkmodal" style="display:none">
   <div class="mkmodal-in">
     <h3>&#10133; Nuevo anuncio <span style="font-size:11px;font-weight:600;color:var(--txt2)">· nace apagado: lo prendes con ⏻ cuando lo revises</span></h3>
