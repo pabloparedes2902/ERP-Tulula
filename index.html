@@ -10132,6 +10132,14 @@ const SB_FALLA_CREAR = true;
 // ══════════════════════════════════════════════════════════════════════════
 const SB_ESCRITURA_CAMBIOS = true;   // ← reversa: poner en false y publicar
 
+// 7-oct-2026 · Fase 3 (A2/A9): si la base NO responde (500/red/401), ya NO se cae a Apps Script:
+// eso escribia la hoja Cambios2 CONGELADA (invisible para la base) y el cambio "existia" solo
+// en la hoja. Ahora se corta con este error y la cola lo muestra (Reintentar). Solo con
+// SB_ESCRITURA_CAMBIOS=false (reversa explicita) se vuelve al camino de Apps Script.
+function _camBaseNoRespondio(que) {
+  return new Error('La base no respondió al ' + (que || 'guardar el cambio') + '. Revisa tu conexión y vuelve a intentar (no se guardó nada).');
+}
+
 // Anular un cambio: misma regla que guardar. Si la base no contesta con un ok
 // explícito, se anula por Apps Script. Anular deshace stock y dinero, así que
 // esto NO puede quedar a medias — por eso la receta lo hace en una transacción.
@@ -10205,13 +10213,23 @@ async function _sbRpcCambioCancelar(nc) {
       body: JSON.stringify({ p_nro: String(nc || '') }),
     });
     if (!r.ok) {
-      try { console.warn('[cambio] RPC cambio_cancelar HTTP ' + r.status + ' → vía Apps Script'); } catch (_) {}
+      // 7-oct-2026 · Fase 3: un 4xx (salvo 401/403) es la base diciendo QUE NO (sus candados:
+      // "ya enviado", "ya cancelado"...). Se muestra el motivo tal cual y NO se reintenta.
+      let __msg = '';
+      try { const __e = await r.json(); __msg = String((__e && (__e.message || __e.error || __e.hint)) || ''); } catch (_) {}
+      if (r.status >= 400 && r.status < 500 && r.status !== 401 && r.status !== 403) {
+        try { console.warn('[cambio] cambio_cancelar RECHAZADO por la base: ' + __msg); } catch (_) {}
+        { const __er = new Error(__msg || ('La base rechazo la anulacion (HTTP ' + r.status + ')')); __er.__rechazoBase = true; throw __er; }
+      }
+      try { console.warn('[cambio] RPC cambio_cancelar HTTP ' + r.status + ' → no respondio'); } catch (_) {}
       return null;
     }
     const d = await r.json();
+    if (d && d.ok === false) { const __er2 = new Error(String(d.error || d.message || d.msg || 'La base rechazo la anulacion')); __er2.__rechazoBase = true; throw __er2; }
     return (d && d.ok === true) ? d : null;
   } catch (e) {
-    try { console.warn('[cambio] RPC cambio_cancelar falló → vía Apps Script'); } catch (_) {}
+    if (e && e.__rechazoBase) throw e;   // 7-oct Fase 3: el rechazo se muestra
+    try { console.warn('[cambio] RPC cambio_cancelar falló → no respondio'); } catch (_) {}
     return null;
   }
 }
@@ -31666,6 +31684,7 @@ async function _camProcessSaveQueue() {
       // Primero la base; si no contesta con un ok explícito, la vía de siempre.
       var _r2 = await _sbRpcCambioRegistrar(job.payload);
       if (_r2) { await _camSaldoFavorTras(_r2, job); try { _sbEspejarYa(_r2.NroCambio); } catch(_){} }
+      else if (SB_ESCRITURA_CAMBIOS) { throw _camBaseNoRespondio('guardar el cambio'); }   // 7-oct Fase 3: sin respaldo por la hoja congelada
       else {
         _r2 = await apiSend('cambios2.registrarYSync', job.payload);
         // A14 · 14-set-2026 — ANTES ESTA RESPUESTA SE LEIA A MEDIAS.
@@ -32309,6 +32328,8 @@ async function _c2EditProcesar() {
         // la hoja ahora y no en el próximo minuto. La nota de la cola está
         // guardada bajo el NroCambio, no bajo el número de pedido.
         try { _sbEspejarYa(job.nc); } catch (_) {}
+      } else if (SB_ESCRITURA_CAMBIOS) {
+        throw _camBaseNoRespondio('guardar el cambio');   // 7-oct Fase 3: sin respaldo por la hoja congelada
       } else {
         r = await apiSend('cambios2.editarPrendas', job.body);
       }
@@ -32673,6 +32694,7 @@ function editarCambios2(nc){
       // Primero la base; si no contesta con un ok explícito, la vía de siempre.
       const _sb = await _sbRpcCambioCancelar(nc);
       if (_sb) { try { _sbEspejarYa(nc); } catch(_){} }
+      else if (SB_ESCRITURA_CAMBIOS) { throw _camBaseNoRespondio('anular el cambio'); }   // 7-oct Fase 3: sin respaldo por la hoja congelada
       else { await api('cambios2.cancelar',{nc:nc}); }
       // 29-ago · ETAPA 1 — anular devuelve el stock a como estaba.
       try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
@@ -33799,7 +33821,17 @@ function _hcBulkUpdate(el, rows) {
 }
 
 async function _hcBulkEditar(el, rows) {
-  const ids = [...document.querySelectorAll('#hc-tbody .hc-chk:checked')].map(c => c.value);
+  let ids = [...document.querySelectorAll('#hc-tbody .hc-chk:checked')].map(c => c.value);
+  // 7-oct-2026 · S4 (Fase 3): las filas v2 llevan IDs sinteticos (CAM-0123-1) que
+  // cambios.actualizarMasivo busca en la hoja Cambios VIEJA → "Cambio no encontrado"
+  // tras pintar el verde. Se excluyen antes de abrir el modal; se editan uno por uno.
+  {
+    const _fuente = Array.isArray(histCamData) ? histCamData : (Array.isArray(rows) ? rows : []);
+    const _v2 = new Set(_fuente.filter(r => r && r._esV2).map(r => String(r.ID)));
+    const _esV2Id = id => _v2.has(String(id)) || /^CAM-\d+-\d+$/i.test(String(id));
+    const _fuera = ids.filter(_esV2Id);
+    if (_fuera.length) { toast(_fuera.length + ' cambio(s) v2 no se editan en masa: ábrelos uno por uno', 'err'); ids = ids.filter(id => !_esV2Id(id)); }
+  }
   if (!ids.length) return;
 
   // Construir mini-modal para elegir campo y valor
