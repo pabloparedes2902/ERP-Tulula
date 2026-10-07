@@ -7480,7 +7480,19 @@ async function _cosEliminar(diseno) {
     _cosAplicar(r); try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: true, r: r })); } catch (_) {}
     _cosRender(); toast('✓ Eliminado: ' + esc(diseno), 'ok');
     if (r && r.aviso) toast(r.aviso, 'warn');
-  } catch (e) { COS.data = copia; try { _cosRender(); } catch (_) {} toast('No se pudo eliminar (vuelve a la lista): ' + esc(e.message), 'err'); }
+  } catch (e) {
+    COS.data = copia; try { _cosRender(); } catch (_) {}
+    // 7-oct (Pablo: «las elimino y vuelven a aparecer») · el motivo antes salía en un aviso de 3 segundos y no se veía.
+    // Ahora se dice claro POR QUÉ no se eliminó y, si es por stock, se ofrece marcarlo INACTIVO (que es lo que corresponde).
+    const msg = String(e.message || e);
+    if (/unidades en el stock/.test(msg)) {
+      if (await npConfirm('No se eliminó «' + diseno + '»:\n\n' + msg + '\n\nUn producto con stock no se borra (se perdería el rastro de esas unidades).\n\n¿Lo marco INACTIVO ahora?')) _cosDesactivar(diseno, false);
+    } else if (/PUBLICADO en Shopify/.test(msg)) {
+      await npConfirm('No se eliminó «' + diseno + '»:\n\n' + msg + '\n\nPrimero ocúltalo en la tienda (cápsula Shopify de la ficha) y vuelve a eliminar.');
+    } else {
+      await npConfirm('No se eliminó «' + diseno + '»:\n\n' + msg);
+    }
+  }
 }
 async function _cosDesactivar(diseno, activar) {
   if (!activar) {
@@ -10155,12 +10167,27 @@ async function _sbRpcCambioRegistrar(payload) {
       body: JSON.stringify({ p_body: payload }),
     });
     if (!r.ok) {
+      // 7-oct-2026 · A2 (auditoria cambios) — ANTES ACA SE DEVOLVIA `null` PARA TODO.
+      // Un 4xx es la base diciendo QUE NO ("cambio sobre cambio", "pedido no
+      // encontrado", "cambio en curso"). Caer a Apps Script ante un rechazo hacia
+      // que el cambio naciera en la HOJA CONGELADA (invisible para la base) o que
+      // la asesora viera un error generico en vez del motivo real. Igual que
+      // _sbRpcCambioEditar: el rechazo se muestra tal cual y NO se reintenta por
+      // el otro camino. 401/403 (pase vencido) si siguen siendo "no se pudo".
+      let __msg = '';
+      try { const __e = await r.json(); __msg = String((__e && (__e.message || __e.error || __e.hint)) || ''); } catch (_) {}
+      if (r.status >= 400 && r.status < 500 && r.status !== 401 && r.status !== 403) {
+        try { console.warn('[cambio] cambio_registrar RECHAZADO por la base: ' + __msg); } catch (_) {}
+        { const __er = new Error(__msg || ('La base rechazo el cambio (HTTP ' + r.status + ')')); __er.__rechazoBase = true; throw __er; }
+      }
       try { console.warn('[cambio] RPC cambio_registrar HTTP ' + r.status + ' → vía Apps Script'); } catch (_) {}
       return null;
     }
     const d = await r.json();
+    if (d && d.ok === false) { const __er2 = new Error(String(d.error || d.message || d.msg || 'La base rechazo el cambio')); __er2.__rechazoBase = true; throw __er2; }
     return (d && d.ok === true) ? d : null;
   } catch (e) {
+    if (e && e.__rechazoBase) throw e;   // 7-oct A2: el rechazo de la base se muestra, no cae a Apps Script
     try { console.warn('[cambio] RPC cambio_registrar falló → vía Apps Script'); } catch (_) {}
     return null;
   }
