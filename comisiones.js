@@ -2925,15 +2925,14 @@ function pintarVerComo(d, real) {
     var gmF = (Number(d.gmPct) || Number(cfg.gm_pct) || 62) / 100;
     if (yo.cumpl < R.gate) {
       falta = 'Te faltan <b>' + fmt((yo.leFalta || 0) / gmF) + '</b> de ventas aproximadas para llegar al ' +
-              R.gate + '% de tu meta y cobrar comisión.';
+              R.gate + '% de tu meta del trimestre y cobrar comisión.';
     } else if (!R.teamGate) {
       falta = '¡Ya pasaste el ' + R.gate + '% de tu meta! Cobras en cuanto el equipo también llegue al ' + R.gate + '%.';
     } else {
       falta = '¡Ya estás cobrando! El equipo está en el ' + _comNivelTxt(R.level) + '. Cada venta suma a tu comisión.';
     }
     var sigEq = R.tiers.find(function (t) { return t.from > R.teamCumpl; });
-    if (sigEq) falta += '<div class="com-mut" style="margin-top:6px">El equipo va en ' + p2(R.teamCumpl) +
-                        ': cuando llegue al ' + sigEq.from + '% sube al ' + (R.tiers.indexOf(sigEq) + 1) + '° Nivel.</div>';
+    // 8-oct 10:23 (Pablo): sin la linea 'el equipo va en X%: cuando llegue...'
   }
 
   // Modo REAL (asesora logueada): sin pestañas de admin ni botón de vista
@@ -2992,7 +2991,7 @@ function pintarVerComo(d, real) {
                 ? (R.teamGate
                     ? 'El equipo va en ' + p2(R.teamCumpl) + ' de su meta (' + _comNivelTxt(R.level) +
                       '). Cobran todas las que llegan al ' + R.gate + '% de su meta.'
-                    : 'La comisión se activa cuando el equipo llegue al ' + R.gate + '% de su meta. Van ' + p2(R.teamCumpl) + '.')
+                    : '')   // 8-oct 10:23 (Pablo): sin 'la comision se activa cuando el equipo llegue...'
             : R.teamGate
                 ? 'El equipo llegó al nivel 1° en promedio. Tu comisión está activa.'
                 : 'La comisión se activa cuando el equipo llegue al menos al 1° nivel en promedio (' +
@@ -3003,7 +3002,7 @@ function pintarVerComo(d, real) {
   c.innerHTML = cabecera +
     '<div style="max-width:620px;margin:0 auto">' +
       (real && !cerrado ? (d.__of ? _comOfCelebrar(d, R, yo) : bannerCelebracion(d, lvActual)) : '') +
-      (real ? tarjetaMetaDia(d) : '') +
+      (real ? (d.__of ? _comOfMetaDia(d) : tarjetaMetaDia(d)) : '') +
       tarjetaPrincipal +
 
       (cerrado ? '' : '<div class="card"><div class="ct">Tu margen mes a mes</div>' + filasMes + '</div>') +
@@ -4814,6 +4813,95 @@ function _comOfCelebrar(d, R, yo) {
   }).join('');
   VENDOF.fiesta[k] = html;
   return html;
+}
+
+/* ── 8-oct 10:23 (Pablo) · TU META DE HOY con sus DIAS DE TURNO ──
+   · Meta del dia = lo que le falta para el 100% de su meta del MES (en margen, desde
+     ayer) ÷ los dias de turno que le quedan (hoy incluido), pasado a VENTAS con su
+     % de margen. Se fija al empezar el dia: no baja mientras vende.
+   · Sin pedidos (se podia leer "3 pedidos = ya cobro"). El dia que no le toca: no aparece.
+   · Celebra: 🎯 meta de hoy cumplida · 🔥 racha de dias de turno seguidos cumpliendo
+     (los dias que no atiende no cortan la racha) · 🏆 100% de la meta del mes. */
+var COM_TURNOS = { ANGIE: [1, 2, 3, 4, 5], DAYANN: [4, 5, 6, 0, 1], LUCIA: [6, 0] };   // 0 = domingo
+
+function _comTrabaja(nombre, f) {
+  var t = COM_TURNOS[String(nombre || '').trim().toUpperCase()];
+  return !t || t.indexOf(f.getDay()) >= 0;
+}
+function _comFTxt(f) { return f.getFullYear() + '-' + String(f.getMonth() + 1).padStart(2, '0') + '-' + String(f.getDate()).padStart(2, '0'); }
+
+function _comOfMetaDiaCalc(d, hoy) {
+  var of = d.__of; if (!of || of.cerrado) return null;
+  hoy = hoy ? new Date(hoy) : new Date(); hoy.setHours(0, 0, 0, 0);
+  var nombre = d.nombre, mo = of.mio || {};
+  var det = (mo.detalle && mo.detalle.meses) ? mo.detalle.meses : (mo.meses || []);
+  var metaMes = {}; det.forEach(function (x) { if (x.activa) metaMes[Number(x.mes)] = Number(x.meta) || 0; });
+  var porDia = {};
+  (of.dias || []).forEach(function (x) {
+    var f = String(x.fecha || '').slice(0, 10), o = porDia[f] || (porDia[f] = { m: 0, v: 0 });
+    o.m += Number(x.margen) || 0; o.v += Number(x.ventas) || 0;
+  });
+  var gm = (Number(d.gmPct) || 62) / 100;
+  var evalDia = function (f) {
+    var y = f.getFullYear(), m = f.getMonth() + 1, meta = metaMes[m];
+    if (!meta) return null;
+    var pre = y + '-' + String(m).padStart(2, '0'), ft = _comFTxt(f), antes = 0;
+    Object.keys(porDia).forEach(function (k) { if (k.slice(0, 7) === pre && k < ft) antes += porDia[k].m; });
+    var fin = new Date(y, m, 0), quedan = 0;
+    for (var c = new Date(f); c <= fin; c.setDate(c.getDate() + 1)) if (_comTrabaja(nombre, c)) quedan++;
+    var falta = Math.max(0, meta - antes), objM = quedan ? falta / quedan : 0, h = porDia[ft] || { m: 0, v: 0 };
+    return { metaMes: meta, antes: antes, falta: falta, quedan: quedan, objM: objM, objV: gm > 0 ? objM / gm : 0,
+             hechoM: h.m, hechoV: h.v, ok: falta <= 0 || (objM > 0 && h.m >= objM) };
+  };
+  if (!_comTrabaja(nombre, hoy)) return { turno: false };
+  var e = evalDia(hoy); if (!e) return null;
+  var ini = new Date(d.year, (d.q - 1) * 3, 1), racha = 0, c2 = new Date(hoy);
+  for (var i = 0; i < 100; i++) {
+    c2.setDate(c2.getDate() - 1);
+    if (c2 < ini) break;
+    if (!_comTrabaja(nombre, c2)) continue;
+    var ed = evalDia(c2);
+    if (!ed || !ed.ok) break;
+    racha++;
+  }
+  e.racha = racha + (e.ok ? 1 : 0);
+  e.mesCompleto = e.antes + e.hechoM >= e.metaMes;
+  e.turno = true;
+  return e;
+}
+
+function _comOfMetaDia(d) {
+  if (!vendEsActual()) return '';
+  var e = _comOfMetaDiaCalc(d);
+  if (!e || !e.turno) return '';   // hoy no le toca: no aparece
+  var chip = '';
+  if (e.racha >= 2) {
+    chip = '<span style="font-size:13px;font-weight:700;color:var(--am)">🔥 ' + e.racha + ' días seguidos' +
+           (e.racha >= 5 ? ' · ¡On fire!' : e.racha >= 3 ? ' · ¡En racha!' : '') + '</span>';
+  }
+  var cuerpo;
+  if (e.mesCompleto) {
+    cuerpo = '<div style="font-size:15px;color:var(--gn);font-weight:700">🏆 ¡Cumpliste el 100% de tu meta del mes!</div>' +
+             '<div class="ml" style="margin-top:4px">Todo lo que vendas ahora suma a tu comisión del trimestre.</div>';
+  } else {
+    var pct = e.objV > 0 ? Math.max(0, Math.min(100, e.hechoV / e.objV * 100)) : 0;
+    cuerpo =
+      (e.ok ? '<div style="font-size:15px;color:var(--gn);font-weight:700;margin-bottom:8px">🎯 ¡Meta de hoy cumplida!</div>' : '') +
+      '<div class="com-row" style="border:none;padding-bottom:0">' +
+        '<span class="com-mut">Vendido hoy (pago completo)</span>' +
+        '<span style="font-weight:600">' + fmt(e.hechoV) + ' <span class="com-mut" style="font-weight:400">de ' + fmt(e.objV) + '</span></span>' +
+      '</div>' +
+      '<div style="height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;margin-top:6px">' +
+        '<div style="width:' + pct.toFixed(0) + '%;height:100%;border-radius:4px;background:' + (e.ok ? 'var(--gn)' : 'var(--ac)') + '"></div></div>' +
+      '<div class="ml" style="margin-top:10px">Es lo que necesitas vender hoy para llegar al 100% de tu meta del mes. ' +
+        'Se calcula con tus días de turno: te quedan ' + e.quedan + ' este mes, contando hoy.</div>';
+  }
+  return '<div class="card"' + (e.ok || e.mesCompleto ? ' style="border-color:var(--gn)"' : '') + '>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<div class="ct" style="margin:0">Tu meta de hoy</div>' + chip +
+    '</div>' +
+    '<div style="margin-top:10px">' + cuerpo + '</div>' +
+  '</div>';
 }
 
 var COM_ASESORA_DESDE = { y: 2026, q: 3 };   // 8-oct (Pablo): las asesoras ven desde el 1 de julio de 2026
