@@ -16636,7 +16636,7 @@ function renderPT(el, rows, total, hayMas) {
   // Opciones por campo
   const BULK_CAMPOS = {
     Estado:      { tipo:'select', opts: () => mOpts('Estado') },
-    EstadoPago:  { tipo:'select', opts: () => ['COMPLETO','INCOMPLETO','PENDIENTE','AUTO'] },
+    EstadoPago:  { tipo:'select', opts: () => ((typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador') ? ['COMPLETO'] : []).concat(['INCOMPLETO','PENDIENTE','AUTO']) },   // 8-oct: COMPLETO en lote solo Administrador
     Canal:       { tipo:'select', opts: () => mOpts('Canal') },
     Origen:      { tipo:'select', opts: () => mOpts('Origen'  /* FIX ago-2026: unificada con la lista de Nuevo pedido. Antes acá se ofrecían 'ADS' y 'ORGANICO' a secas y ensuciaban los informes por origen. */) },
     Courier:     { tipo:'select', opts: () => mOpts('Courier') },
@@ -20501,8 +20501,13 @@ function verPed(p) {
   // Solo se preselecciona si el ajuste sigue vigente (no entró un pago después).
   const _epMan = _epManVigente(p);
   const _epSelSt = 'width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
+  // 8-oct-2026 (pedido de Pablo): «COMPLETO» a mano SIN ningún pago registrado (con su constancia)
+  // solo lo puede poner un Administrador. Antes cualquiera podía y quedaban pedidos cobrados sin pago (R-13).
+  const _epSinPago = !(Number(totalPagado) > 0.009);
+  const _epAdmin = (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador');
   const _epManOpts = ['','COMPLETO','INCOMPLETO','PENDIENTE'].map(function(o){
-    return '<option value="'+o+'"'+(o===_epMan?' selected':'')+'>'+(o===''?'Automático (por saldo)':o)+'</option>';
+    const bloq = (o === 'COMPLETO' && _epSinPago && !_epAdmin && _epMan !== 'COMPLETO');
+    return '<option value="'+o+'"'+(o===_epMan?' selected':'')+(bloq?' disabled':'')+'>'+(o===''?'Automático (por saldo)':o)+(bloq?' — registra primero el pago con su constancia':'')+'</option>';
   }).join('');
   h += '<div class="fr"><div class="fg"><label>Estado pago</label>'
     +'<div style="display:flex;align-items:center;gap:10px;padding:6px 0;flex-wrap:wrap">'
@@ -38400,7 +38405,7 @@ function _alItemHtml(x, area) {
   if (casos.length) {
     h += '<details style="margin-top:5px"><summary style="cursor:pointer;font-size:11px;color:var(--mu)">Ver casos (' + (x.cant > casos.length ? x.cant : casos.length) + ')</summary>'
       + '<div style="font-size:12px;margin-top:4px;line-height:1.6;word-break:break-word">'
-      + casos.map(d => '• ' + esc(d)).join('<br>') + (x.cant > casos.length ? '<br><span style="color:var(--mu)">… y ' + (x.cant - casos.length) + ' más</span>' : '') + '</div></details>';
+      + casos.map(d => '• ' + _alLinkPedidos(esc(d))).join('<br>') + (x.cant > casos.length ? '<br><span style="color:var(--mu)">… y ' + (x.cant - casos.length) + ' más</span>' : '') + '</div></details>';
   }
   return h + '</div>';
 }
@@ -38432,7 +38437,7 @@ const AL_CHATWOOT = 'https://chatwoot-production-5c5c.up.railway.app/app/account
 function _alCasosSimples(x) {
   const out = [];
   (x.det || []).forEach(d => {
-    String(d).split(/\n+/).forEach(l => {
+    String(d).split(/\n+| · (?=#|R-\d)/).forEach(l => {   // 8-oct: una línea por pedido
       l = l.trim();
       if (!l || /^(A estas clientas|Puede ser una pregunta|Revisado sobre|Si el porcentaje)/i.test(l)) return;
       l = l.replace(/^[·•\-]\s*/, '')
@@ -38443,7 +38448,16 @@ function _alCasosSimples(x) {
       out.push(l);
     });
   });
-  return out.slice(0, 10);
+  return out.slice(0, 150);   // 8-oct (Pablo): todos los casos, no unos ejemplos
+}
+// 8-oct · cada número de pedido en un aviso es un enlace que abre ese pedido
+function _alLinkPedidos(htmlEsc) {
+  return String(htmlEsc).replace(/(^|[^\w&])(#?)(\d{4,6}|R-\d{1,4})\b/g, (m, pre, h, nro) =>
+    (h || /^R-/.test(nro)) ? pre + '<a href="#" style="color:var(--ac);font-weight:600" onclick="event.preventDefault();_alAbrirPedido(\'' + nro + '\')">#' + nro.replace(/^#/, '') + ' ↗</a>' : m);
+}
+function _alAbrirPedido(nro) {
+  if (typeof window !== 'undefined' && typeof window._globalSearchClose !== 'function') window._globalSearchClose = () => {};
+  try { _abrirPedidoDesdeBusqueda(nro); } catch (e) { try { toast('No se pudo abrir el pedido ' + nro, 'err'); } catch (_) {} }
 }
 function _alClaudeVer(n, btn) {
   const it = _AL_ITEMS[n]; if (!it) return;
