@@ -113,7 +113,11 @@ function _comAsesoraNombre() {
 }
 function _comEsAsesora() {
   var rol = (typeof MY_ROLE !== 'undefined' && MY_ROLE) || (typeof window !== 'undefined' && window.MY_ROLE) || '';
-  return !!_comAsesoraNombre() && !/admin/i.test(String(rol));
+  if (/admin/i.test(String(rol))) return false;
+  if (_comAsesoraNombre()) return true;
+  // 8-oct: una persona sin rol admin con permiso de VISTA en Comisiones ve SU vista
+  var perm = (typeof MY_PERMISOS !== 'undefined' && MY_PERMISOS) || (typeof window !== 'undefined' && window.MY_PERMISOS) || null;
+  return !!(perm && Number(perm.comisiones) === 1);
 }
 
 function comApi(op, args) {
@@ -2368,6 +2372,14 @@ function vendCargar(forzar) {
   VEND.year = VEND.year || hoy.getFullYear();
   VEND.q    = VEND.q    || Math.ceil((hoy.getMonth() + 1) / 3);
 
+  // 8-oct · CALCULO OFICIAL: todo sale de la base (su trimestre, su historial y
+  // sus dias). El camino viejo (Apps Script / vista vieja) queda solo de respaldo.
+  if (!window.COM_OFICIAL_OFF && !VENDOF.viejo) {
+    VEND.cargando = false;
+    pintarVerComo(null, true);
+    return;
+  }
+
   // ── VÍA RÁPIDA (solo vista previa del admin): el cambio de trimestre se
   //    arma desde los datos ya traídos de la base espejo, sin ir al servidor.
   var pv0 = VEND.preview;
@@ -2440,10 +2452,10 @@ function vendSelector() {
       });
     });
   }
-  // El esquema arrancó en 2026-Q2: nada anterior a eso (pedido Pablo 3-ago)
+  // 8-oct (pedido Pablo): las asesoras ven desde el 1 de julio de 2026 (Q3). Antes: desde 2026-Q2.
   Object.keys(ops).forEach(function (o) {
     var p0 = o.split('-');
-    if (parseInt(p0[0], 10) < 2026 || (parseInt(p0[0], 10) === 2026 && parseInt(p0[1], 10) < 2)) delete ops[o];
+    if (parseInt(p0[0], 10) * 4 + parseInt(p0[1], 10) < COM_ASESORA_DESDE.y * 4 + COM_ASESORA_DESDE.q) delete ops[o];
   });
   var sel = VEND.year + '-' + VEND.q;
   var estilo = 'background:var(--bg2);border:1px solid var(--bd);color:var(--tx);' +
@@ -2641,18 +2653,19 @@ function pintarVerComo(d, real) {
   var nomV = (d && d.nombre) || (VEND.preview && VEND.preview.nombre) || _comAsesoraNombre();
   VENDOF.ult = { d: d, real: real, y: yV, q: qV };
   var ofV = _comOfVendOf(yV, qV, nomV);
+  if (!ofV && !d && ofV !== 'esperar') {   // la base no respondio: camino de siempre
+    if (VEND.preview && COM.comoEmail) { comVerComoApps(VEND.preview.email); return; }
+    if (!VEND.preview && !VENDOF.viejo) { VENDOF.viejo = true; vendCargar(true); return; }
+  }
   if (ofV === 'esperar' || (!ofV && !d)) {
     c.innerHTML = (real ? '' : pestañas('home')) +
       '<div class="ld"><div class="sp"></div>Cargando ' + (VEND.preview ? 'su vista' : 'tus comisiones') + '...</div>';
     return;
   }
   if (ofV) d = _comOfVendD(d, ofV, yV, qV, nomV);
-  if (d.__of && VEND.hist && VEND.hist.series) {   // "Tu camino" con los meses oficiales
-    var sH = VEND.hist.series[yV] = VEND.hist.series[yV] || {};
-    var mo0 = d.__of.mio || {}, det0 = (mo0.detalle && mo0.detalle.meses) ? mo0.detalle.meses : (mo0.meses || []);
-    det0.forEach(function (x) {
-      if (x.activa) sH[Number(x.mes)] = Object.assign({}, sH[Number(x.mes)] || {}, { margen: Math.round(Number(x.margen) || 0) });
-    });
+  if (d.__of) {   // 8-oct: "Tu camino", tus cierres y "Tu meta de hoy" tambien del calculo oficial
+    VEND.hist = _comOfHistVend(nomV);
+    VEND.dia = _comOfDiaVend(d.__of);
   }
 
   var cfg = d.cfg || {};
@@ -4003,6 +4016,7 @@ function vcPrecache() {
   // Vía rápida: UNA llamada a la base espejo precarga las vistas de TODAS
   // las asesoras (~2 s). El desfile de llamadas a Apps Script queda solo
   // como respaldo si la base no está disponible.
+  if (!window.COM_OFICIAL_OFF) return;   // 8-oct: "Ver como" ya sale del calculo oficial (sin precarga vieja)
   if (sbDisponible()) { sbVistaFull(); return; }
   if (vcPrecargando) return;
   var vend = COM.data &&
@@ -4032,6 +4046,23 @@ window.comVerComo = function (email) {
     VEND.year = null; VEND.q = null;
     cargar();
     return;
+  }
+
+  // 8-oct · CALCULO OFICIAL: la vista de la asesora sale de la base al instante
+  if (!window.COM_OFICIAL_OFF) {
+    var cfgO = (COM.data && COM.data.cfgFull) || EXTRA.cfgFull || {};
+    var nomO = (cfgO.vendedoras && cfgO.vendedoras[email]) ? String(cfgO.vendedoras[email].nombre || '') : '';
+    if (!nomO && ASE.data) {
+      var eO = (ASE.data.asesoras || []).find(function (a) { return a.email === email; });
+      if (eO) nomO = String(eO.nombre || '');
+    }
+    if (nomO) {
+      VEND.preview = { email: email, nombre: _comOfCap(nomO) };
+      VEND.year = COM.year; VEND.q = COM.q;
+      VEND.data = null; VEND.hist = null; VEND.dia = null;
+      pintarVerComo(null, true);
+      return;
+    }
   }
 
   // ── VÍA RÁPIDA: montar desde la base espejo, sin tocar Apps Script ──
@@ -4577,6 +4608,49 @@ function _comOfPeriodo(r, year, q, seq) {
    trimestre completo que ya tiene. Si la base no responde: la vista de siempre. */
 var VENDOF = { mio: {}, pedido: {}, ult: null, cierres: null, cierresPedido: false };
 
+var COM_ASESORA_DESDE = { y: 2026, q: 3 };   // 8-oct (Pablo): las asesoras ven desde el 1 de julio de 2026
+function _comOfDesdeOk(yq) {
+  var m = String(yq || '').match(/^(\d{4})-Q(\d)$/);
+  return !m || Number(m[1]) * 4 + Number(m[2]) >= COM_ASESORA_DESDE.y * 4 + COM_ASESORA_DESDE.q;
+}
+
+/** "Tu camino": sus meses desde 2026-Q3, del calculo oficial. */
+function _comOfHistVend(nombre) {
+  var hoy = new Date(), yA = hoy.getFullYear(), qA = Math.ceil((hoy.getMonth() + 1) / 3);
+  var series = {}, y = COM_ASESORA_DESDE.y, q = COM_ASESORA_DESDE.q;
+  while (y * 4 + q <= yA * 4 + qA) {
+    var k = _comOfClave(y, q), m = null;
+    if (VEND.preview) {
+      if (!COMOF.cache[k]) { var dk = _comOfLeerDisco(k); if (dk) COMOF.cache[k] = dk; }
+      if (COMOF.cache[k]) m = _comOfMioDe(COMOF.cache[k], nombre); else _comOfTraerVend(k, 'trim');
+    } else {
+      if (VENDOF.mio[k] === undefined) _comOfTraerVend(k, 'mio'); else m = VENDOF.mio[k];
+    }
+    if (m && m.mio) {
+      var det = (m.mio.detalle && m.mio.detalle.meses) ? m.mio.detalle.meses : (m.mio.meses || []);
+      det.forEach(function (x) {
+        if (!x.activa) return;
+        (series[y] = series[y] || {})[Number(x.mes)] = { margen: Math.round(Number(x.margen) || 0), ventas: Math.round(Number(x.ventas) || 0) };
+      });
+    }
+    q++; if (q > 4) { q = 1; y++; }
+  }
+  return { series: series, cierres: [] };
+}
+
+/** "Tu meta de hoy": lo que cobro y los pedidos de cada dia del mes en curso. */
+function _comOfDiaVend(of) {
+  var hoy = new Date(), pad = function (n) { return String(n).padStart(2, '0'); };
+  var ym = hoy.getFullYear() + '-' + pad(hoy.getMonth() + 1), dias = {};
+  (of && of.dias || []).forEach(function (x) {
+    var f = String(x.fecha || '').slice(0, 10);
+    if (f.slice(0, 7) !== ym) return;
+    var dd = Number(f.slice(8, 10)), o = dias[dd] || (dias[dd] = { cobrado: 0, pedidos: 0 });
+    o.cobrado += Math.round(Number(x.ventas) || 0); o.pedidos += Number(x.pedidos) || 0;
+  });
+  return { dias: dias };
+}
+
 function _comOfCap(s) { s = String(s || '').trim(); return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase(); }
 function _comOfSum(a) { return (a || []).reduce(function (s2, n) { return s2 + (Number(n) || 0); }, 0); }
 
@@ -4596,7 +4670,8 @@ function _comOfMioDe(t, nombre) {
   return { year: t.year, q: t.q, yo: N, cerrado: cer, reglas: t.reglas || a0.reglas || null,
            equipo_pasa: cer ? a0.equipo_pasa : eq.pasa,
            equipo_cumplimiento: cer ? a0.equipo_cumplimiento : eq.cumplimiento,
-           equipo_tasa: cer ? a0.tasa : eq.tasa, mio: a, ranking: rk };
+           equipo_tasa: cer ? a0.tasa : eq.tasa, mio: a, ranking: rk,
+           dias: (t.dias || []).filter(function (x) { return String(x.asesora || '').trim().toUpperCase() === N; }) };
 }
 
 /** Calculo oficial de quien se esta mirando: objeto, null (vista de siempre) o 'esperar'. */
@@ -4645,7 +4720,7 @@ function _comOfTraerVend(k, tipo) {
       }
       if (!cambio) return;
       var u = VENDOF.ult;
-      if (!u || _comOfClave(u.y, u.q) !== k) return;
+      if (!u) return;
       var sigueAhi = VEND.preview ? (COM.comoEmail && COM.vista === 'home')
                                   : _comEsAsesora();
       if (sigueAhi) pintarVerComo(u.d, u.real);
@@ -4676,6 +4751,7 @@ function _comOfVendD(d0, of, y, q, nombre) {
   var out = Object.assign({}, d0 || {}, {
     year: y, q: q, meses: meses, nombre: nom, cfg: cfg, gmPct: gm, marginM: marginM,
     metaM: iHoy >= 0 ? num(meses[iHoy], 'meta') : (d0 && d0.metaM),
+    ticketOwn: (Number(det.pedidos) || Number(m.pedidos)) > 0 ? Math.round(sv / (Number(det.pedidos) || Number(m.pedidos))) : (d0 && d0.ticketOwn),
     teamRows: [{ nombre: nom, base_m: sueldoM.filter(Boolean)[0] || 0, gmPct: gm,
                  marginM: marginM, ventasM: ventasM, factorM: factorM, sueldoM: sueldoM }],
     __of: of, __ofMeses: (det.meses || []).filter(function (x) { return x.activa; }).map(function (x) { return Number(x.mes); }) });
@@ -4688,7 +4764,7 @@ function _comOfCierresVend() {
   if (VEND.preview) {   // "Ver como": del cierre oficial que ya tiene el admin
     if (!COMOF.cierres || !COMOF.cierres.length) return null;
     var N = String(VEND.preview.nombre || '').trim().toUpperCase();
-    return COMOF.cierres.map(function (c) {
+    return COMOF.cierres.filter(function (c) { return _comOfDesdeOk(c.yq); }).map(function (c) {
       var f = (c.filas || []).filter(function (x) { return String(x.asesora || '').trim().toUpperCase() === N; })[0];
       return f ? { yq: c.yq, cumpl: Number(f.cumpl) || 0, equipo: c.teamGate === 'SI',
                    bono: Number(f.bonoPagar) || 0, meses: null } : null;
@@ -4697,7 +4773,7 @@ function _comOfCierresVend() {
   if (VENDOF.cierres || VENDOF.cierresPedido) return VENDOF.cierres;
   VENDOF.cierresPedido = true;
   var hoy = new Date(), yA = hoy.getFullYear(), qA = Math.ceil((hoy.getMonth() + 1) / 3);
-  var lista = [], y = 2026, q = 2;                        // el esquema arranco en 2026-Q2
+  var lista = [], y = COM_ASESORA_DESDE.y, q = COM_ASESORA_DESDE.q;   // 8-oct: desde 2026-Q3
   while (y * 4 + q < yA * 4 + qA) { lista.push([y, q]); q++; if (q > 4) { q = 1; y++; } }
   Promise.all(lista.map(function (p) { return _comOfRpc('comisiones_mio', { p_year: p[0], p_q: p[1] }); }))
     .then(function (rs) {
