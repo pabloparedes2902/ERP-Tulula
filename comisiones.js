@@ -1803,11 +1803,11 @@ function tarjetaAsesoraAdmin(a, d, x, idx) {
     '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;' +
          'margin:16px 0;padding-bottom:16px;border-bottom:1px solid var(--bd)">' +
       '<span class="com-mut" style="font-size:12px">Fecha de ingreso</span>' +
-      '<input type="date" id="as-desde-' + a.email + '" value="' + (a.desde || '') + '" style="' + estilo + '">' +
+      '<input type="date" id="as-desde-' + K + '" value="' + (a.desde || '') + '" style="' + estilo + '">' +
       '<span class="com-mut" style="font-size:12px">Sueldo base</span>' +
-      '<input type="number" id="as-base-' + a.email + '" value="' + a.base + '" style="' + estilo + ';width:100px">' +
+      '<input type="number" id="as-base-' + K + '" value="' + a.base + '" style="' + estilo + ';width:100px">' +
       '<span class="com-mut" style="font-size:12px">Estado</span>' +
-      '<button type="button" id="as-est-' + a.email + '" data-on="' + (activa ? 1 : 0) + '" ' +
+      '<button type="button" id="as-est-' + K + '" data-on="' + (activa ? 1 : 0) + '" ' +
               'onclick="comAseEstado(' + idx + ')" ' +
               'style="cursor:pointer;border-radius:99px;padding:6px 16px;font-size:12px;font-weight:600;' +
               'font-family:inherit;color:#fff;border:1px solid ' + (activa ? 'var(--gn)' : 'var(--rd)') + ';' +
@@ -1869,9 +1869,9 @@ function tarjetaAsesoraAdmin(a, d, x, idx) {
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:16px;' +
          'padding-top:16px;border-top:1px solid var(--bd)">' +
       '<button class="btn bp" onclick="comAseGuardar(' + idx + ')">Guardar cambios</button>' +
-      '<button class="btn bg" id="as-reset-' + a.email + '" ' +
+      '<button class="btn bg" id="as-reset-' + K + '" ' +
               'onclick="comAseReset(' + idx + ')">Restablecer el año</button>' +
-      '<span id="as-msg-' + a.email + '" style="font-size:13px"></span>' +
+      '<span id="as-msg-' + K + '" style="font-size:13px"></span>' +
     '</div>';
 
   return '<div class="card">' + resumen + general +
