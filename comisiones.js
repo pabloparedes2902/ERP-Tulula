@@ -3006,9 +3006,9 @@ function pintarVerComo(d, real) {
       tarjetaPrincipal +
 
       (cerrado ? '' : '<div class="card"><div class="ct">Tu margen mes a mes</div>' + filasMes + '</div>') +
-      (real && !cerrado ? tarjetaCamino() : '') +
+      // 8-oct 12:11 (Pablo): sin "Tu camino" ni "Tus cierres anteriores" 
       '<div class="card"><div class="ct">Ranking del trimestre</div>' + rank + '</div>' +
-      (cerrado ? '' : (real ? tarjetaCierresVend() : cierresDeAsesora(d.nombre))) +
+
       (cerrado ? '' : tarjetaReglas(cfg, R, 'Leyenda')) +
     '</div>';
 }
@@ -4812,6 +4812,7 @@ function _comOfCelebrar(d, R, yo) {
     '</div>';
   }).join('');
   VENDOF.fiesta[k] = html;
+  if (avisos.length) setTimeout(function () { _comFiesta('confeti', avisos[0][0], avisos[0][1]); }, 400);   // 8-oct 12:11
   return html;
 }
 
@@ -4865,6 +4866,8 @@ function _comOfMetaDiaCalc(d, hoy) {
     racha++;
   }
   e.racha = racha + (e.ok ? 1 : 0);
+  var tt = COM_TURNOS[String(nombre || '').trim().toUpperCase()];
+  e.diasSemana = tt ? tt.length : 7;
   e.mesCompleto = e.antes + e.hechoM >= e.metaMes;
   e.turno = true;
   return e;
@@ -4874,11 +4877,14 @@ function _comOfMetaDia(d) {
   if (!vendEsActual()) return '';
   var e = _comOfMetaDiaCalc(d);
   if (!e || !e.turno) return '';   // hoy no le toca: no aparece
-  var chip = '';
-  if (e.racha >= 2) {
-    chip = '<span style="font-size:13px;font-weight:700;color:var(--am)">🔥 ' + e.racha + ' días seguidos' +
-           (e.racha >= 5 ? ' · ¡On fire!' : e.racha >= 3 ? ' · ¡En racha!' : '') + '</span>';
+  // 8-oct 12:11 (Pablo): sin rachas cortas. Cuenta la SEMANA: todos sus dias de turno de
+  // una semana cumplidos (Angie 5, Dayann 5, Lucia 2). Hoy cuenta solo si ya cumplio.
+  var porSemana = e.diasSemana || 7, semanas = Math.floor((e.racha || 0) / porSemana), chip = '';
+  if (semanas >= 1) {
+    chip = '<span style="font-size:13px;font-weight:700;color:var(--am)">🔥 ¡Semana completa!' +
+           (semanas >= 2 ? ' ×' + semanas : '') + '</span>';
   }
+  _comOfFiestaHoy(d, e, porSemana);
   var cuerpo;
   if (e.mesCompleto) {
     cuerpo = '<div style="font-size:15px;color:var(--gn);font-weight:700">🏆 ¡Cumpliste el 100% de tu meta del mes!</div>' +
@@ -4893,8 +4899,7 @@ function _comOfMetaDia(d) {
       '</div>' +
       '<div style="height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;margin-top:6px">' +
         '<div style="width:' + pct.toFixed(0) + '%;height:100%;border-radius:4px;background:' + (e.ok ? 'var(--gn)' : 'var(--ac)') + '"></div></div>' +
-      '<div class="ml" style="margin-top:10px">Es lo que necesitas vender hoy para llegar al 100% de tu meta del mes. ' +
-        'Se calcula con tus días de turno: te quedan ' + e.quedan + ' este mes, contando hoy.</div>';
+      '';
   }
   return '<div class="card"' + (e.ok || e.mesCompleto ? ' style="border-color:var(--gn)"' : '') + '>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
@@ -4902,6 +4907,61 @@ function _comOfMetaDia(d) {
     '</div>' +
     '<div style="margin-top:10px">' + cuerpo + '</div>' +
   '</div>';
+}
+
+/* ── 8-oct 12:11 (Pablo) · CELEBRACION ANIMADA ──
+   🎯 meta del dia y 🏆 100% del mes / nivel del equipo / 75% → lluvia de "pica pica";
+   🔥 semana completa → fueguitos que suben. Dura ~3 s, no tapa los botones. */
+function _comOfFiestaHoy(d, e, porSemana) {
+  if (VEND.preview) return;
+  var hoyT = _comFTxt(new Date()), n = String(d.nombre || '').toUpperCase(), cola = [];
+  if (e.mesCompleto) cola.push(['mes', '🏆', '¡100% de tu meta del mes!']);
+  else if (e.ok && e.racha > 0 && e.racha % porSemana === 0) cola.push(['semana', '🔥', '¡Semana completa!']);
+  else if (e.ok) cola.push(['dia', '🎯', '¡Meta de hoy cumplida!']);
+  cola.forEach(function (x) {
+    var k = 'com_anim_' + n + '_' + hoyT + '_' + x[0];
+    try { if (localStorage.getItem(k)) return; localStorage.setItem(k, '1'); } catch (er) { return; }
+    setTimeout(function () { _comFiesta(x[0] === 'semana' ? 'fuego' : 'confeti', x[1], x[2]); }, 400);
+  });
+}
+
+function _comFiesta(tipo, emoji, texto) {
+  try {
+    if (typeof document === 'undefined' || !document.body || !document.createElement('canvas').getContext) return;
+    var cv = document.createElement('canvas'), W = window.innerWidth, H = window.innerHeight;
+    cv.width = W; cv.height = H;
+    cv.style.cssText = 'position:fixed;inset:0;z-index:99998;pointer-events:none';
+    document.body.appendChild(cv);
+    var msg = document.createElement('div');
+    msg.style.cssText = 'position:fixed;left:50%;top:38%;transform:translate(-50%,-50%) scale(.6);z-index:99999;pointer-events:none;' +
+      'background:var(--bg2,#1d1d24);color:var(--tx,#fff);border:2px solid var(--gn,#22c55e);border-radius:18px;padding:18px 26px;' +
+      'text-align:center;font-weight:800;font-size:20px;box-shadow:0 12px 40px rgba(0,0,0,.35);opacity:0;transition:all .35s cubic-bezier(.2,1.4,.4,1)';
+    msg.innerHTML = '<div style="font-size:46px;line-height:1.1">' + emoji + '</div>' + esc(texto);
+    document.body.appendChild(msg);
+    requestAnimationFrame(function () { msg.style.opacity = '1'; msg.style.transform = 'translate(-50%,-50%) scale(1)'; });
+    var ctx = cv.getContext('2d'), P = [], colores = ['#f43f5e', '#f59e0b', '#22c55e', '#38bdf8', '#a855f7', '#facc15'];
+    var fuego = tipo === 'fuego';
+    for (var i = 0; i < (fuego ? 46 : 160); i++) {
+      P.push(fuego
+        ? { x: Math.random() * W, y: H + Math.random() * 120, vx: (Math.random() - .5) * 1.2, vy: -(3 + Math.random() * 4.5), s: 18 + Math.random() * 22, r: 0, vr: 0 }
+        : { x: W / 2 + (Math.random() - .5) * 80, y: H * .42, vx: (Math.random() - .5) * 16, vy: -(6 + Math.random() * 11),
+            s: 6 + Math.random() * 7, r: Math.random() * 6, vr: (Math.random() - .5) * .4, c: colores[i % colores.length] });
+    }
+    var t0 = Date.now();
+    (function cuadro() {
+      var t = Date.now() - t0;
+      ctx.clearRect(0, 0, W, H);
+      P.forEach(function (p) {
+        p.x += p.vx; p.y += p.vy; p.r += p.vr;
+        if (fuego) { p.vy *= .995; ctx.globalAlpha = Math.max(0, Math.min(1, p.y / H + .2)); ctx.font = p.s + 'px serif'; ctx.fillText('🔥', p.x, p.y); }
+        else { p.vy += .32; p.vx *= .99; ctx.globalAlpha = Math.max(0, 1 - t / 3200);
+               ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r); ctx.fillStyle = p.c; ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); ctx.restore(); }
+      });
+      ctx.globalAlpha = 1;
+      if (t < 3200) requestAnimationFrame(cuadro);
+      else { cv.remove(); msg.style.opacity = '0'; setTimeout(function () { msg.remove(); }, 400); }
+    })();
+  } catch (er) {}
 }
 
 var COM_ASESORA_DESDE = { y: 2026, q: 3 };   // 8-oct (Pablo): las asesoras ven desde el 1 de julio de 2026
