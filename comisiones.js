@@ -105,6 +105,17 @@ function haceCuanto(ts) {
 // El backend lo recibe en comisionesAdmin(body).
 /* 7-oct · PASO 2: lo que se lee y se guarda en Cierre / Configuracion / Asesoras
    va al calculo oficial de la base. Lo demas sigue por Apps Script como siempre. */
+/* 7-oct · MY_ASESORA se declara con "let" en el ERP: no vive en window. Antes se
+   leia window.MY_ASESORA y nunca reconocia a una asesora. Un admin nunca cuenta como asesora. */
+function _comAsesoraNombre() {
+  var a = (typeof MY_ASESORA !== 'undefined' && MY_ASESORA) || (typeof window !== 'undefined' && window.MY_ASESORA) || '';
+  return String(a || '');
+}
+function _comEsAsesora() {
+  var rol = (typeof MY_ROLE !== 'undefined' && MY_ROLE) || (typeof window !== 'undefined' && window.MY_ROLE) || '';
+  return !!_comAsesoraNombre() && !/admin/i.test(String(rol));
+}
+
 function comApi(op, args) {
   args = args || {};
   if (window.COM_OFICIAL_OFF) return comApiApps(op, args);
@@ -145,6 +156,23 @@ function comApi(op, args) {
       return _comOfRpc('comisiones_asesora_guardar', { p_email: args.email, p_sueldo: Number(m.base) || null,
                        p_desde: m.desde || null, p_activa: m.estado ? m.estado === 'activa' : null }, true)
         .then(function () { COMOF.cache = {}; COMOF.pedido = {}; return r; });
+    });
+  }
+  if (op === 'previewMes') {
+    var yM = Number(args.year), mM = Number(args.mes), qM = Math.ceil(mM / 3), kM = _comOfClave(yM, qM);
+    return (COMOF.cache[kM] ? Promise.resolve(COMOF.cache[kM]) : _comOfRpc('comisiones_trimestre', { p_year: yM, p_q: qM }))
+      .then(function (t) {
+        if (t && t.asesoras && !COMOF.cache[kM]) COMOF.cache[kM] = t;
+        var dm = t && t.asesoras ? _comOfMesDe(t, mM, args.reglas) : null;
+        return dm || comApiApps(op, args);
+      });
+  }
+  if (op === 'reglasLog') {
+    return Promise.all([_comOfRpc('comisiones_bitacora_reglas', { p_limite: args.limite || 10 }),
+                        comApiApps(op, args).catch(function () { return []; })]).then(function (r) {
+      if (Array.isArray(r[0])) COMOF.logOf = r[0];
+      return (Array.isArray(r[0]) ? r[0].map(function (l) { return Object.assign({ __of: true }, l); }) : [])
+        .concat(Array.isArray(r[1]) ? r[1] : []);
     });
   }
   return comApiApps(op, args);
@@ -465,7 +493,7 @@ function cargar(forzar) {
 
   // FASE 1 asesoras (2-ago): si quien entra es una asesora (el login del ERP
   // la reconoció y guardó su nombre en MY_ASESORA), ve SU vista, no la admin.
-  if (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA) {
+  if (_comEsAsesora()) {
     return vendCargar(forzar);
   }
 
@@ -554,6 +582,7 @@ function aplicarBoot(b, year, q, t, desdeFoto) {
       CIERRE.log          = b.reglasLog   || [];
       CIERRE.cargado = true;
     }
+    _comOfCierresAlDia();   // 7-oct · paso 3: manda la lista oficial (incluye el Q3 cerrado)
     // 2-ago: guardar esquema y cierres en el disco del admin para que la
     // vista abra completa al instante incluso tras reiniciar el navegador.
     try {
@@ -1006,6 +1035,7 @@ var CIERRE = {
 
 function pintarCierre() {
   COM.vista = 'cierre';
+  if (CIERRE.cargado) _comOfCierresAlDia();
   var c = cont();
   if (!c) return;
 
@@ -1228,7 +1258,7 @@ function bloqueMensual() {
       '<div style="font-size:13px;margin-bottom:16px;line-height:1.6">' +
         'El cierre mensual es informativo: sirve para dejar registro del avance. ' +
         'El pago real sale del <b>cierre trimestral</b>. ' +
-        'Podés probar otros parámetros antes de cerrar; por defecto usa los vigentes.' +
+        'Podés probar otros parámetros; por defecto usa los vigentes.' +
       '</div>' +
       '<div class="com-toolbar">' +
         '<span class="com-mut" style="font-size:12px">Mes</span>' +
@@ -1298,8 +1328,11 @@ function renderPreviewMes(d, ym) {
     '</div>' + filas +
     '<div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bd);' +
          'display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
-      '<button class="btn bp bs" onclick="comCerrarMes()">Guardar cierre de ' + esc(ym) + '</button>' +
-      '<span id="cm-msg" style="font-size:13px"></span>' +
+      (d.__oficial
+        ? '<span class="ml">Informativo · cálculo oficial (tramo del equipo; cobra quien llega al ' + ((tiers[0] || {}).from || 75) +
+          '% de su meta). No se guarda: lo que se paga sale del cierre trimestral.</span>'
+        : '<button class="btn bp bs" onclick="comCerrarMes()">Guardar cierre de ' + esc(ym) + '</button>' +
+          '<span id="cm-msg" style="font-size:13px"></span>') +
     '</div>' +
   '</div>';
 }
@@ -2345,6 +2378,7 @@ function vendCargar(forzar) {
   if (c && (!VEND.data || forzar)) {
     c.innerHTML = '<div class="ld"><div class="sp"></div>Cargando tus comisiones...</div>';
   }
+  if (!VEND.preview && !VEND.data) pintarVerComo(null, true);   // 7-oct · paso 3: lo oficial primero
 
   // En modo vista previa (admin), las ops llevan a quién mirar.
   // VELOCIDAD (2-ago): las 3 cosas (trimestre + historial + día) vienen en UN
@@ -2577,12 +2611,13 @@ function mesesDeCierre(c) {
 
 function tarjetaCierresVend() {
   var h = VEND.hist;
-  var filas = ((h && h.cierres) || []).map(function (c) {
+  var ofC = _comOfCierresVend();   // 7-oct · paso 3: sus cierres oficiales
+  var filas = (ofC || (h && h.cierres) || []).map(function (c) {
     var mesesTxt = mesesDeCierre(c);
     return '<div style="padding:4px 0">' +
       '<div class="com-row" style="font-size:13px">' +
         '<span>' + esc(c.yq) + ' <span class="com-mut">(' + c.cumpl + '%' +
-          (c.equipo ? '' : ' · equipo no llegó') + ')</span></span>' +
+          (c.equipo ? (ofC && !(c.bono > 0) ? ' · no llegó al 75%' : '') : ' · equipo no llegó') + ')</span></span>' +
         '<span style="color:var(--gn);font-weight:600">' + f2(c.bono) + '</span>' +
       '</div>' +
       (mesesTxt ? '<div class="com-mut" style="font-size:12px;margin-top:1px">' + esc(mesesTxt) + '</div>' : '') +
@@ -2595,6 +2630,18 @@ function tarjetaCierresVend() {
 function pintarVerComo(d, real) {
   var c = cont();
   if (!c) return;
+
+  // 7-oct · paso 3: numeros oficiales de la base (solo lo suyo + el ranking)
+  var yV = (d && d.year) || VEND.year, qV = (d && d.q) || VEND.q;
+  var nomV = (d && d.nombre) || (VEND.preview && VEND.preview.nombre) || _comAsesoraNombre();
+  VENDOF.ult = { d: d, real: real, y: yV, q: qV };
+  var ofV = _comOfVendOf(yV, qV, nomV);
+  if (ofV === 'esperar' || (!ofV && !d)) {
+    c.innerHTML = (real ? '' : pestañas('home')) +
+      '<div class="ld"><div class="sp"></div>Cargando ' + (VEND.preview ? 'su vista' : 'tus comisiones') + '...</div>';
+    return;
+  }
+  if (ofV) d = _comOfVendD(d, ofV, yV, qV, nomV);
 
   var cfg = d.cfg || {};
   var meses = d.meses || [];
@@ -2618,6 +2665,29 @@ function pintarVerComo(d, real) {
   var yoP  = P.rows.find(function (x) { return x.nombre === d.nombre; }) || { bono: 0, cumpl: 0 };
   if (!yo) { c.innerHTML = pestañas('home') + '<div class="card"><div class="ml">Sin datos para esta asesora.</div></div>'; return; }
 
+  // 7-oct · REGLA DE PABLO (calculo oficial): el TRAMO lo pone el equipo y cobra
+  // quien llega al 75% de SU meta. Sus numeros vienen tal cual de la base.
+  if (d.__of) {
+    var OF = d.__of, mo = OF.mio || {}, cerrOF = !!OF.cerrado;
+    var factorP = yo.sumMar > 0 ? yoP.sumMar / yo.sumMar : 1;      // ritmo de hoy para proyectar
+    var ajOF = cerrOF ? 0 : (Number(mo.ajuste_tardios) || 0) + (Number(mo.ajuste_devoluciones) || 0);
+    var pMar = (Number(yoP.sumMar) || 0) + ajOF, pMeta = Number(yoP.sumMeta) || Number(mo.meta) || 0;
+    R.teamCumpl = Number(OF.equipo_cumplimiento) || 0;
+    R.teamGate = !!OF.equipo_pasa;
+    R.teamRate = Number(OF.equipo_tasa) || 0;
+    R.level = nivelDe(R.teamCumpl, R.tiers);
+    Object.assign(yo, { sumMar: Number(mo.margen) || 0, sumMeta: Number(mo.meta) || 0,
+      cumpl: Number(mo.cumplimiento) || 0, rate: R.teamRate,
+      cobra: cerrOF ? Number(mo.bono_pagar) > 0 : !!mo.cobra,
+      bono: Number(cerrOF ? mo.bono_pagar : mo.bono) || 0,
+      leFalta: Number(mo.le_falta_para_cobrar) || 0, ajuste: ajOF });
+    var pTeam = R.teamCumpl * factorP, pRate = 0;
+    R.tiers.forEach(function (t) { if (pTeam >= t.from) pRate = t.rate; });
+    var pCumpl = pMeta > 0 ? pMar / pMeta * 100 : 0;
+    yoP = { cumpl: pCumpl, teamCumpl: pTeam, rate: pRate,
+            bono: (pTeam >= R.gate && pCumpl >= R.gate) ? pRate / 100 * pMar : 0 };
+  }
+
   var col = NIVEL_COLOR[nivelDe(yo.cumpl, R.tiers)];
 
   // Detalle por mes — solo los meses en que estuvo activa
@@ -2630,6 +2700,10 @@ function pintarVerComo(d, real) {
              '<span>' + fmt(yo.marM[j]) + ' · <b style="color:' + NIVEL_COLOR[lv] + '">' + p2(cumplMes) + '</b></span>' +
            '</div>';
   }).join('');
+  if (d.__of && yo.ajuste) {
+    filasMes += '<div class="com-row" style="font-size:13px"><span>Cobros tardíos del trimestre anterior</span>' +
+                '<span>' + fmt(yo.ajuste) + '</span></div>';
+  }
 
   // Ranking — nombre y porcentaje, sin montos
   // ── TRIMESTRE CERRADO (2-ago, pedido Pablo): si este trimestre ya se
@@ -2648,14 +2722,35 @@ function pintarVerComo(d, real) {
     }
   } catch (e) {}
   var cerrado = !!yoCierre;
+  if (d.__of) {   // 7-oct · paso 3: el cierre oficial de la base
+    cerrado = !!d.__of.cerrado;
+    yoCierre = cerrado ? { cumpl: Number(d.__of.mio.cumplimiento) || 0, bonoPagar: Number(d.__of.mio.bono_pagar) || 0 } : null;
+    cierreOf = cerrado ? { teamGate: d.__of.equipo_pasa ? 'SI' : 'NO', filas: [] } : null;
+  }
   var mesesCerradoTxt = '';
   if (cerrado && VEND.hist && VEND.hist.cierres) {
     var ciH = VEND.hist.cierres.find(function (cx) { return cx.yq === yqKey; });
     if (ciH) mesesCerradoTxt = mesesDeCierre(ciH);
   }
+  if (d.__of && cerrado && d.__ofMeses && d.__ofMeses.length) {
+    mesesCerradoTxt = mesesDeCierre({ yq: yqKey, meses: d.__ofMeses }) || mesesCerradoTxt;
+  }
 
   var rank;
-  if (cerrado) {
+  if (d.__of && (d.__of.ranking || []).length) {
+    rank = d.__of.ranking.map(function (r0, i) {
+      var yoM = String(r0.nombre || '').trim().toUpperCase() === String(d.nombre || '').trim().toUpperCase();
+      var cu = Number(r0.cumplimiento) || 0;
+      return '<div class="com-row">' +
+               '<div style="display:flex;align-items:center;gap:10px">' +
+                 medalla((Number(r0.puesto) || (i + 1)) - 1) +
+                 '<span style="font-weight:' + (yoM ? '700' : '400') + ';' + (yoM ? 'color:var(--ac)' : '') + '">' +
+                   esc(_comOfCap(r0.nombre)) + (yoM ? ' (tú)' : '') + '</span>' +
+               '</div>' +
+               (cerrado ? '' : '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(cu, R.tiers)] + '">' + p2(cu) + '</span>') +
+             '</div>';
+    }).join('');
+  } else if (cerrado) {
     rank = (cierreOf.filas || [])
       .filter(function (f0) { return (Number(f0.meta) || 0) > 0; })   // solo quienes participaron
       .slice().sort(function (a, b) { return (b.cumpl || 0) - (a.cumpl || 0); })
@@ -2698,6 +2793,21 @@ function pintarVerComo(d, real) {
     var faltaVentas = pctMargen > 0 ? faltaMargen / pctMargen : faltaMargen;
     falta = 'Te faltan <b>' + fmt(faltaVentas) + '</b> de ventas aproximadas para subir al ' +
             (R.tiers.indexOf(sig) + 1) + '° nivel (' + sig.rate + '%).';
+  }
+  if (d.__of && !cerrado) {   // 7-oct · textos con la regla oficial
+    var gmF = (Number(d.gmPct) || Number(cfg.gm_pct) || 62) / 100;
+    if (yo.cumpl < R.gate) {
+      falta = 'Te faltan <b>' + fmt((yo.leFalta || 0) / gmF) + '</b> de ventas aproximadas para llegar al ' +
+              R.gate + '% de tu meta y cobrar comisión.';
+    } else if (!R.teamGate) {
+      falta = '¡Ya pasaste el ' + R.gate + '% de tu meta! Cobras en cuanto el equipo también llegue al ' + R.gate + '%.';
+    } else {
+      falta = '¡Ya estás cobrando! Con el tramo del equipo (' + R.teamRate + '%), cada ' + fmt(1000) +
+              ' de margen te suma ' + f2(R.teamRate * 10) + '.';
+    }
+    var sigEq = R.tiers.find(function (t) { return t.from > R.teamCumpl; });
+    if (sigEq) falta += '<div class="com-mut" style="margin-top:6px">El equipo va en ' + p2(R.teamCumpl) +
+                        ': cuando llegue al ' + sigEq.from + '% el tramo sube a ' + sigEq.rate + '% para todas.</div>';
   }
 
   // Modo REAL (asesora logueada): sin pestañas de admin ni botón de vista
@@ -2748,9 +2858,16 @@ function pintarVerComo(d, real) {
              ((cerrado ? cierreOf.teamGate === 'SI' : R.teamGate) ? 'var(--gn)' : 'var(--rd)') + '">' +
           (cerrado
             ? (cierreOf.teamGate === 'SI'
-                ? 'El equipo llegó al nivel 1° en promedio. Comisión pagada.'
+                ? (d.__of && !(bonoVer > 0)
+                    ? 'El equipo llegó al ' + R.gate + '%, pero no llegaste al ' + R.gate + '% de tu meta este trimestre.'
+                    : 'El equipo llegó al nivel 1° en promedio. Comisión pagada.')
                 : 'El equipo no llegó al mínimo en este trimestre.')
-            : (R.teamGate
+            : (d.__of
+                ? (R.teamGate
+                    ? 'El equipo va en ' + p2(R.teamCumpl) + ' de su meta: tramo de ' + R.teamRate +
+                      '% para todas las que llegan al ' + R.gate + '% de su meta.'
+                    : 'La comisión se activa cuando el equipo llegue al ' + R.gate + '% de su meta. Van ' + p2(R.teamCumpl) + '.')
+            : R.teamGate
                 ? 'El equipo llegó al nivel 1° en promedio. Tu comisión está activa.'
                 : 'La comisión se activa cuando el equipo llegue al menos al 1° nivel en promedio (' +
                   R.gate + '%). Van ' + p2(R.teamCumpl) + '.')) +
@@ -3855,7 +3972,7 @@ function vcArgs(email) {
 }
 
 function vcPrecache() {
-  if (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA) return;
+  if (_comEsAsesora()) return;
   // Vía rápida: UNA llamada a la base espejo precarga las vistas de TODAS
   // las asesoras (~2 s). El desfile de llamadas a Apps Script queda solo
   // como respaldo si la base no está disponible.
@@ -4183,7 +4300,7 @@ window.comCfgReset = function () {
 // base espejo (caché precalculada: ~200-400 ms). Así "Ver como" abre al
 // instante aunque el usuario haga clic apenas entra al módulo.
 try {
-  if (!(typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA)) {
+  if (!_comEsAsesora()) {
     extrasRestaurar(new Date().getFullYear());
     try {
       var _snap = JSON.parse(localStorage.getItem('com_sb_full') || 'null');
@@ -4427,6 +4544,206 @@ function _comOfPeriodo(r, year, q, seq) {
 }
 
 
+/* ── 7-oct · PASO 3: la VISTA DE LA ASESORA y el "VER COMO" de siempre, con el
+   calculo oficial. La asesora recibe de la base SOLO lo suyo + el ranking (sin
+   plata ajena: erp.comisiones_mio). El admin, en "Ver como", lo saca del
+   trimestre completo que ya tiene. Si la base no responde: la vista de siempre. */
+var VENDOF = { mio: {}, pedido: {}, ult: null, cierres: null, cierresPedido: false };
+
+function _comOfCap(s) { s = String(s || '').trim(); return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase(); }
+function _comOfSum(a) { return (a || []).reduce(function (s2, n) { return s2 + (Number(n) || 0); }, 0); }
+
+/** Lo de UNA asesora, sacado del trimestre completo (solo el "Ver como" del admin). */
+function _comOfMioDe(t, nombre) {
+  var N = String(nombre || '').trim().toUpperCase();
+  var as = (t && t.asesoras) || [];
+  var nomDe = function (x) { return String(x.nombre || x.asesora || '').trim().toUpperCase(); };
+  var a = as.filter(function (x) { return nomDe(x) === N; })[0];
+  if (!a) return null;
+  var a0 = as[0] || {}, eq = t.equipo || {}, cer = !!t.cerrado;
+  var rk = as.map(function (x) {
+    var ped = x.pedidos != null ? x.pedidos : (x.detalle || {}).pedidos;
+    return { nombre: x.nombre || x.asesora, pedidos: Number(ped) || 0, cumplimiento: Number(x.cumplimiento) || 0 };
+  }).sort(function (p1, p2) { return p2.cumplimiento - p1.cumplimiento; });
+  rk.forEach(function (r, i) { r.puesto = (i > 0 && rk[i - 1].cumplimiento === r.cumplimiento) ? rk[i - 1].puesto : i + 1; });
+  return { year: t.year, q: t.q, yo: N, cerrado: cer, reglas: t.reglas || a0.reglas || null,
+           equipo_pasa: cer ? a0.equipo_pasa : eq.pasa,
+           equipo_cumplimiento: cer ? a0.equipo_cumplimiento : eq.cumplimiento,
+           equipo_tasa: cer ? a0.tasa : eq.tasa, mio: a, ranking: rk };
+}
+
+/** Calculo oficial de quien se esta mirando: objeto, null (vista de siempre) o 'esperar'. */
+function _comOfVendOf(y, q, nombre) {
+  if (window.COM_OFICIAL_OFF || !y || !q) return null;
+  var k = _comOfClave(y, q);
+  if (VEND.preview) {
+    if (!COMOF.cache[k]) { var disco = _comOfLeerDisco(k); if (disco) COMOF.cache[k] = disco; }
+    var t = COMOF.cache[k];
+    _comOfTraerVend(k, 'trim');
+    if (t) return _comOfMioDe(t, nombre);
+    return COMOF.fallo[k] ? null : 'esperar';
+  }
+  if (VENDOF.mio[k] === undefined) {
+    try {
+      var g = JSON.parse(localStorage.getItem('com_mio_' + k) || 'null');
+      if (g && g.d && Date.now() - g.t < 7 * 24 * 3600 * 1000) VENDOF.mio[k] = g.d;
+    } catch (e) {}
+  }
+  _comOfTraerVend(k, 'mio');
+  var m = VENDOF.mio[k];
+  if (m === undefined) return 'esperar';
+  return (m && m.mio) ? m : null;
+}
+
+function _comOfTraerVend(k, tipo) {
+  var kk = tipo + '|' + k;
+  if (VENDOF.pedido[kk] && Date.now() - VENDOF.pedido[kk] < 20000) return;
+  VENDOF.pedido[kk] = Date.now();
+  var p = k.split('-');
+  _comOfRpc(tipo === 'trim' ? 'comisiones_trimestre' : 'comisiones_mio', { p_year: Number(p[0]), p_q: Number(p[1]) })
+    .then(function (r) {
+      var cambio = false;
+      if (tipo === 'trim') {
+        if (r && r.asesoras) {
+          cambio = JSON.stringify(COMOF.cache[k] || null) !== JSON.stringify(r);
+          COMOF.cache[k] = r; delete COMOF.fallo[k];
+          try { localStorage.setItem('com_of_' + k, JSON.stringify({ t: Date.now(), d: r })); } catch (e) {}
+        } else if (!COMOF.cache[k]) { COMOF.fallo[k] = true; cambio = true; }
+      } else {
+        if (r && r.mio !== undefined) {
+          cambio = VENDOF.mio[k] === undefined || JSON.stringify(VENDOF.mio[k]) !== JSON.stringify(r);
+          VENDOF.mio[k] = r;
+          try { localStorage.setItem('com_mio_' + k, JSON.stringify({ t: Date.now(), d: r })); } catch (e) {}
+        } else if (VENDOF.mio[k] === undefined) { VENDOF.mio[k] = null; cambio = true; }
+      }
+      if (!cambio) return;
+      var u = VENDOF.ult;
+      if (!u || _comOfClave(u.y, u.q) !== k) return;
+      var sigueAhi = VEND.preview ? (COM.comoEmail && COM.vista === 'home')
+                                  : _comEsAsesora();
+      if (sigueAhi) pintarVerComo(u.d, u.real);
+    });
+}
+
+/** Arma la respuesta que ya dibuja pintarVerComo, con SOLO los numeros oficiales de ella. */
+function _comOfVendD(d0, of, y, q, nombre) {
+  var m = of.mio || {};
+  var det = (m.detalle && m.detalle.meses) ? m.detalle : m;
+  var m0 = (q - 1) * 3 + 1, meses = [m0, m0 + 1, m0 + 2], pm = {};
+  (det.meses || []).forEach(function (x) { pm[Number(x.mes)] = x; });
+  var reg = of.reglas || {}, cfg0 = (d0 && d0.cfg) || (COM.data && COM.data.cfgFull) || {};
+  var tiers = (reg.tramos || []).map(function (x) { return { from: Number(x.desde), rate: Number(x.tasa) }; });
+  var cfg = Object.assign({}, cfg0, {
+    xMeta: Number(reg.x_meta) || cfg0.xMeta,
+    tiers: tiers.length ? tiers : (cfg0.tiers || TIERS_FALLBACK),
+    gm_pct: reg.pct_respaldo != null ? Number(reg.pct_respaldo) * 100 : cfg0.gm_pct });
+  var num = function (mm, campo) { return pm[mm] ? Number(pm[mm][campo]) || 0 : 0; };
+  var marginM = meses.map(function (mm) { return Math.round(num(mm, 'margen')); });
+  var ventasM = meses.map(function (mm) { return Math.round(num(mm, 'ventas')); });
+  var sueldoM = meses.map(function (mm) { return num(mm, 'sueldo'); });
+  var factorM = meses.map(function (mm) { return pm[mm] && pm[mm].activa ? 1 : 0; });
+  var sv = _comOfSum(ventasM), sm = _comOfSum(marginM);
+  var gm = sv > 0 ? Math.round(sm / sv * 1000) / 10 : (Number(cfg.gm_pct) || 62);
+  var nom = (d0 && d0.nombre) || _comOfCap(nombre || of.yo);
+  var iHoy = (y === new Date().getFullYear()) ? meses.indexOf(new Date().getMonth() + 1) : -1;
+  var out = Object.assign({}, d0 || {}, {
+    year: y, q: q, meses: meses, nombre: nom, cfg: cfg, gmPct: gm, marginM: marginM,
+    metaM: iHoy >= 0 ? num(meses[iHoy], 'meta') : (d0 && d0.metaM),
+    teamRows: [{ nombre: nom, base_m: sueldoM.filter(Boolean)[0] || 0, gmPct: gm,
+                 marginM: marginM, ventasM: ventasM, factorM: factorM, sueldoM: sueldoM }],
+    __of: of, __ofMeses: (det.meses || []).filter(function (x) { return x.activa; }).map(function (x) { return Number(x.mes); }) });
+  return out;
+}
+
+/** Cierres anteriores de la asesora, desde la base (solo los suyos). */
+function _comOfCierresVend() {
+  if (window.COM_OFICIAL_OFF || VEND.preview) return null;
+  if (VENDOF.cierres || VENDOF.cierresPedido) return VENDOF.cierres;
+  VENDOF.cierresPedido = true;
+  var hoy = new Date(), yA = hoy.getFullYear(), qA = Math.ceil((hoy.getMonth() + 1) / 3);
+  var lista = [], y = 2026, q = 2;                        // el esquema arranco en 2026-Q2
+  while (y * 4 + q < yA * 4 + qA) { lista.push([y, q]); q++; if (q > 4) { q = 1; y++; } }
+  Promise.all(lista.map(function (p) { return _comOfRpc('comisiones_mio', { p_year: p[0], p_q: p[1] }); }))
+    .then(function (rs) {
+      var out = [], alguno = false;
+      rs.forEach(function (r, i) {
+        if (r) alguno = true;
+        if (!r || !r.cerrado || !r.mio) return;
+        var mm = r.mio, det = (mm.detalle && mm.detalle.meses) ? mm.detalle.meses : null;
+        out.push({ yq: lista[i][0] + '-Q' + lista[i][1],
+                   cumpl: Math.round((Number(mm.cumplimiento) || 0) * 100) / 100,
+                   equipo: !!r.equipo_pasa, bono: Number(mm.bono_pagar) || 0,
+                   meses: det ? det.filter(function (x) { return x.activa; }).map(function (x) { return Number(x.mes); }) : null });
+      });
+      if (!alguno) return;                                // sin la base: queda el historial de siempre
+      VENDOF.cierres = out.reverse();
+      var u = VENDOF.ult;
+      if (u && !VEND.preview && _comEsAsesora()) pintarVerComo(u.d, u.real);
+    });
+  return null;
+}
+
+/* ── Cierre: lista de trimestres cerrados y bitacora de reglas, desde la base ── */
+function _comOfCierresAplicar() {
+  if (window.COM_OFICIAL_OFF) return;
+  if (!COMOF.cierres) {
+    try { var g = JSON.parse(localStorage.getItem('com_of_cierres') || 'null'); if (g && g.c) { COMOF.cierres = g.c; COMOF.logOf = g.l || null; } } catch (e) {}
+  }
+  if (COMOF.cierres && COMOF.cierres.length) CIERRE.cerradosTrim = COMOF.cierres;
+  if (COMOF.logOf) {
+    var viejo = (CIERRE.log || []).filter(function (l) { return !l.__of; });
+    CIERRE.log = COMOF.logOf.map(function (l) { return Object.assign({ __of: true }, l); }).concat(viejo);
+  }
+}
+
+function _comOfCierresAlDia() {
+  if (window.COM_OFICIAL_OFF || _comEsAsesora()) return;
+  _comOfCierresAplicar();
+  if (COMOF.cierresPedido && Date.now() - COMOF.cierresPedido < 20000) return;
+  COMOF.cierresPedido = Date.now();
+  Promise.all([_comOfRpc('comisiones_cierres_listar', { p_limite: 8 }),
+               _comOfRpc('comisiones_bitacora_reglas', { p_limite: 10 })]).then(function (r) {
+    var antes = JSON.stringify([COMOF.cierres || null, COMOF.logOf || null]);
+    if (Array.isArray(r[0]) && r[0].length) COMOF.cierres = r[0];
+    if (Array.isArray(r[1])) COMOF.logOf = r[1];
+    if (antes === JSON.stringify([COMOF.cierres || null, COMOF.logOf || null])) return;
+    try { localStorage.setItem('com_of_cierres', JSON.stringify({ c: COMOF.cierres, l: COMOF.logOf })); } catch (e) {}
+    _comOfCierresAplicar();
+    if (COM.vista === 'cierre' && !COM.comoEmail) pintarCierre();
+    else if (VEND.preview && COM.comoEmail && VENDOF.ult) pintarVerComo(VENDOF.ult.d, VENDOF.ult.real);
+  });
+}
+
+/* ── Cierre › Mensual (informativo) desde el calculo oficial ── */
+function _comOfMesDe(t, mes, reglas) {
+  reglas = reglas || {};
+  var tiers = (reglas.tiers && reglas.tiers.length) ? reglas.tiers
+            : ((t.reglas && t.reglas.tramos) || []).map(function (x) { return { from: Number(x.desde), rate: Number(x.tasa) }; });
+  if (!tiers.length) tiers = TIERS_FALLBACK;
+  var x = Number(reglas.xMeta) || Number((t.reglas || {}).x_meta) || 15;
+  var gate = Number(tiers[0].from) || 75, rows = [], sM = 0, sT = 0;
+  (t.asesoras || []).forEach(function (a) {
+    var det = (a.detalle && a.detalle.meses) ? a.detalle : a;
+    var m = (det.meses || []).filter(function (z) { return Number(z.mes) === mes; })[0];
+    if (!m || !m.activa) return;
+    var sueldo = Number(m.sueldo) || 0, meta = x * sueldo, mg = Number(m.margen) || 0;
+    rows.push({ nombre: _comOfCap(a.nombre || a.asesora), base: sueldo, margen: mg, meta: meta,
+                att: meta > 0 ? Math.round(mg / meta * 10000) / 100 : 0 });
+    sM += mg; sT += meta;
+  });
+  if (!rows.length) return null;
+  var teamAtt = sT > 0 ? Math.round(sM / sT * 10000) / 100 : 0, rate = 0;
+  tiers.forEach(function (tt) { if (teamAtt >= Number(tt.from)) rate = Number(tt.rate); });
+  var pasa = teamAtt >= gate, total = 0;
+  rows.forEach(function (r) {
+    r.com = (pasa && r.att >= gate) ? Math.round(rate / 100 * r.margen * 100) / 100 : 0;
+    total += r.com;
+  });
+  rows.sort(function (a, b) { return b.margen - a.margen; });
+  return { rows: rows, tiers: tiers, teamAtt: teamAtt, teamGate: pasa, teamRate: rate,
+           total: Math.round(total * 100) / 100, __oficial: true };
+}
+
 function _comOfCaja() {
   var w = document.getElementById('com-w');
   if (!w || !w.parentNode) return null;
@@ -4588,7 +4905,7 @@ function _comOfAsesoraHtml(d) {
 }
 
 function comOficialPintar() {
-  var esAse0 = (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA);
+  var esAse0 = false;   // 7-oct · paso 3: tambien la asesora ve su pantalla de siempre (con lo oficial)
   if (!esAse0) {
     var viejo = document.getElementById('com-oficial');
     if (viejo && viejo.parentNode && viejo.parentNode.removeChild) viejo.parentNode.removeChild(viejo);
@@ -4598,7 +4915,7 @@ function comOficialPintar() {
   var caja = _comOfCaja();
   if (!caja) return;
   if (!COMOF.year) { var t = _comOfTrimestres()[0]; COMOF.year = t.y; COMOF.q = t.q; }
-  var esAsesora = (typeof window.MY_ASESORA !== 'undefined' && window.MY_ASESORA);
+  var esAsesora = _comEsAsesora();
   // 7-oct · paso 1: el admin ve la vista de siempre con los numeros oficiales (pintarHome)
   var fn = 'comisiones_mio';
   var y = COMOF.year, q = COMOF.q;
