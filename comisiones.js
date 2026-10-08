@@ -2673,6 +2673,21 @@ function pintarVerComo(d, real) {
     return Object.assign({}, r, { marginM: proyectarMargen(r.marginM, meses, d.year) });
   }), cfg);
 
+  // 8-oct · la asesora ya no recibe las filas de sus compañeras: el % del equipo
+  // viene calculado del servidor (teamCumplPct). Solo se usa si la base no responde.
+  if (!d.__of && d.teamCumplPct != null && rows.length === 1) {
+    [R, P].forEach(function (X) {
+      X.teamCumpl = Number(d.teamCumplPct) || 0;
+      X.teamGate = X.teamCumpl >= X.gate;
+      X.teamRate = 0;
+      X.tiers.forEach(function (t) { if (X.teamCumpl >= t.from) X.teamRate = t.rate; });
+      X.level = nivelDe(X.teamCumpl, X.tiers);
+      X.rows.forEach(function (r) {
+        r.rate = X.teamRate; r.cobra = X.teamGate && r.cumpl >= X.gate;
+        r.bono = r.cobra ? X.teamRate / 100 * r.sumMar : 0;
+      });
+    });
+  }
   var yo   = R.rows.find(function (x) { return x.nombre === d.nombre; }) || R.rows[0];
   var yoP  = P.rows.find(function (x) { return x.nombre === d.nombre; }) || { bono: 0, cumpl: 0 };
   if (!yo) { c.innerHTML = pestañas('home') + '<div class="card"><div class="ml">Sin datos para esta asesora.</div></div>'; return; }
@@ -4669,7 +4684,16 @@ function _comOfVendD(d0, of, y, q, nombre) {
 
 /** Cierres anteriores de la asesora, desde la base (solo los suyos). */
 function _comOfCierresVend() {
-  if (window.COM_OFICIAL_OFF || VEND.preview) return null;
+  if (window.COM_OFICIAL_OFF) return null;
+  if (VEND.preview) {   // "Ver como": del cierre oficial que ya tiene el admin
+    if (!COMOF.cierres || !COMOF.cierres.length) return null;
+    var N = String(VEND.preview.nombre || '').trim().toUpperCase();
+    return COMOF.cierres.map(function (c) {
+      var f = (c.filas || []).filter(function (x) { return String(x.asesora || '').trim().toUpperCase() === N; })[0];
+      return f ? { yq: c.yq, cumpl: Number(f.cumpl) || 0, equipo: c.teamGate === 'SI',
+                   bono: Number(f.bonoPagar) || 0, meses: null } : null;
+    }).filter(Boolean);
+  }
   if (VENDOF.cierres || VENDOF.cierresPedido) return VENDOF.cierres;
   VENDOF.cierresPedido = true;
   var hoy = new Date(), yA = hoy.getFullYear(), qA = Math.ceil((hoy.getMonth() + 1) / 3);

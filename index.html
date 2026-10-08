@@ -11892,7 +11892,9 @@ async function _sbEsperaStock() { return null; }
 // juntaba avisos que nadie veía. Si la base no contesta, se sigue sin ellos.
 async function _sbAlertasErp() {
   try {
-    const a = await _sbTablaLeer('v_alertas_abiertas?select=id,creada_at,origen,nivel,titulo,detalle,repeticiones&order=creada_at.desc', 'erp');
+    let a = null;
+    try { a = await _sbTablaLeer('v_alertas_abiertas?select=id,creada_at,nacida_at,origen,nivel,titulo,detalle,repeticiones&order=creada_at.desc', 'erp'); } catch (_) { a = null; }
+    if (!Array.isArray(a)) a = await _sbTablaLeer('v_alertas_abiertas?select=id,creada_at,origen,nivel,titulo,detalle,repeticiones&order=creada_at.desc', 'erp');   // 8-oct: antes del SQL nuevo
     return Array.isArray(a) ? a.map(x => Object.assign({}, x, { _erp: true })) : [];
   } catch (_) { return []; }
 }
@@ -38118,8 +38120,8 @@ function _alertaCuando(iso) {
 // espejo rápido o de Apps Script. Lo que no reconoce conserva su nivel
 // (una crítica nueva desconocida sigue en rojo: nunca se esconde).
 const AL_REGLAS = [
-  {re:/posible duplicado \(revisar antes de despachar\)/i, nivel:'rojo', t:'Un pedido web podría estar repetido', s:'Antes de despachar, confirma que no sea el mismo pedido cargado dos veces.', q:'Operación'},
-  {re:/posible pago duplicado/i, nivel:'rojo', t:'Pagos que podrían estar contados dos veces', s:'Antes de dar el pedido por cobrado, confirma en el banco que el pago entró una sola vez.', q:'Operación'},
+  {re:/posible duplicado \(revisar antes de despachar\)/i, nivel:'rojo', escala24:true, t:'Un pedido podría estar repetido', s:'Antes de despachar, confirma que no sea el mismo pedido cargado dos veces.', q:'Operación'},
+  {re:/posible pago duplicado/i, nivel:'rojo', escala24:true, t:'Pagos que podrían estar contados dos veces', s:'Antes de dar el pedido por cobrado, confirma en el banco que el pago entró una sola vez.', q:'Operación'},
   {re:/desaparecidos sin rastro/i, nivel:'rojo', t:'Pedidos o prendas que desaparecieron sin registro', s:'Algo se borró sin dejar rastro. Hay que ver qué se perdió.', q:'Sistemas'},
   {re:/hoja Usuarios cambi/i, nivel:'rojo', t:'Cambiaron los accesos al ERP', s:'Confirma que el cambio de permisos lo hicieron tú o Ana.', q:'Dirección'},
   {re:/hoja y la base dicen cosas distintas/i, nivel:'amarillo', t:'Diferencias entre la hoja y la base de datos', s:'Cuadre técnico. No frena la venta de hoy. Lo corrige sistemas.', q:'Sistemas'},
@@ -38137,12 +38139,14 @@ const AL_RE_MKT = /marketing|anuncio|\bads\b|fatiga|carrusel|swipe|campa[ñn]a|e
 const AL_ORIGEN = {
   'guardian':              { q: 'Sistemas' },
   'salud':                 { nivel: 'amarillo', t: a => 'El bot Tula tiene ' + ((String(a.titulo).match(/\d+/) || ['varios'])[0]) + ' indicadores de calidad en rojo', s: 'No frena la venta. Lo revisa sistemas.', q: 'Sistemas' },
-  'posible-venta-perdida': { nivel: 'rojo', t: () => 'Posible pago que nadie registró', s: 'Una clienta mandó una imagen después de recibir los datos de pago y no hay pedido. Revisar la conversación.', q: 'Ventas' },
+  // 8-oct (pedido de Pablo): los avisos de plata nacen 🟡 y recién al día sin resolverse pasan a 🔴
+  'posible-venta-perdida': { nivel: a => _alEscala24(a), t: () => 'Posible pago que nadie registró', s: 'Una clienta mandó una imagen después de recibir los datos de pago y no hay pedido. Revisar la conversación.', q: 'Ventas' },
   'espera-stock':          { mkt: true, t: () => 'Llegó stock que clientas estaban esperando', s: 'Avisarles para cerrar la venta.', q: 'Ventas' },
   'Chequeo semanal':       { mkt: true, q: 'Marketing' },
   'adjuntos':              { nivel: 'amarillo', t: () => 'Fotos o archivos de clientas que no se pueden abrir', s: 'Lo revisa sistemas.', q: 'Sistemas' },
   'procesos-nocturnos':    { nivel: 'amarillo', t: () => 'Un proceso nocturno está atrasado', s: 'Lo revisa sistemas.', q: 'Sistemas' },
-  'vigía de la tienda':    { nivel: 'amarillo', t: () => 'Revisión automática de la tienda web', s: 'Lo revisa sistemas.', q: 'Sistemas' },
+  'comisiones':            { nivel: a => _alEscala24(a), q: 'Operación' },
+  'vigía de la tienda':    { nivel: a => (a.nivel === 'info' ? 'historial' : 'amarillo'), t: () => 'Revisión automática de la tienda web', s: 'Lo revisa sistemas.', q: 'Sistemas' },
   'reconciliador-pagos':   { nivel: 'amarillo', q: 'Operación' },
   'recordatorio':          { nivel: 'amarillo', q: 'Dirección' },
   // 7-oct: el «estado de hoy» y las pruebas son informes, no pendientes
@@ -38184,6 +38188,14 @@ function _alN8nSoloPanel(a) {
   const d = (a.detalle || []).map(String);
   return d.length > 0 && d.every(x => /\(panel\)|en vivo/i.test(x));
 }
+// 8-oct · edad de un aviso de la base: desde que NACIÓ (nacida_at), no desde la última repetición
+function _alEdadErpH(a) {
+  const t = new Date(a.nacida_at || a.creada_at || Date.now()).getTime();
+  return isNaN(t) ? 0 : Math.max(0, (Date.now() - t) / 3600000);
+}
+function _alEscala24(a) { return _alEdadErpH(a) >= 24 ? 'rojo' : 'amarillo'; }
+function _alHorasTxt(h) { return h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h < 48 ? Math.round(h) + ' h' : Math.round(h / 24) + ' días'; }
+const _AL_REVISADOS = {};
 function _alClasificarTodo(r, buzon) {
   const g = { rojo: [], amarillo: [], mkt: [], hist: [] };
   const base = { criticas: 'rojo', advertencias: 'amarillo', info: 'historial' };
@@ -38196,11 +38208,19 @@ function _alClasificarTodo(r, buzon) {
       t: regla ? (regla.n8n ? _alN8nTitulo(a) : regla.t) : tit,
       // 7-oct: una automatización que falló hace horas y siguió funcionando no es pendiente
       _n8nViejo: !!(regla && regla.n8n && (_alN8nHorasDesdeUltima(a) > 3 || _alN8nSoloPanel(a))),
+      edadH: Number(a.edadH) || 0, revTipo: a.revTipo || '', revItems: Array.isArray(a.revItems) ? a.revItems : [],
       s: regla ? regla.s : '', q: regla ? regla.q : '',
       cant: regla && regla.n8n ? 0 : (a.count || 0),
       det: Array.isArray(a.detalle) ? a.detalle : [], modulo: a.modulo || ''
     };
     if (x._n8nViejo) x.nivel = 'historial';
+    if (regla && regla.escala24) x.nivel = x.edadH >= 24 ? 'rojo' : 'amarillo';   // 8-oct: 🟡 al nacer, 🔴 al día
+    if (x.edadH) x.cuando = 'abierto hace ' + _alHorasTxt(x.edadH) + (regla && regla.escala24 && x.edadH < 24 ? ' · pasa a 🔴 en ' + _alHorasTxt(24 - x.edadH) : '');
+    if (x.revTipo && x.revItems.length) {   // lo marcado «Revisado» en esta sesión no se muestra mientras el servidor se pone al día
+      const vistos = _AL_REVISADOS[x.revTipo] || {};
+      x.revItems = x.revItems.filter(i => !vistos[i]);
+      if (!x.revItems.length) return;
+    }
     if (AL_RE_MKT.test(tit)) g.mkt.push(x);
     else (x.nivel === 'rojo' ? g.rojo : x.nivel === 'amarillo' ? g.amarillo : g.hist).push(x);
   }));
@@ -38217,7 +38237,9 @@ function _alClasificarTodo(r, buzon) {
       const rp = Number(a.repeticiones || 1);
       const y = { nivel: nv, t: rg.t ? rg.t(a) : String(a.titulo || ''), s: rg.s || '', q: rg.q || 'Sistemas',
         cant: 0, det: a.detalle ? [String(a.detalle).slice(0, 700)] : [], id: a.id, idAt: a.id,
-        cuando: _alertaCuando(a.creada_at) + (rp > 1 ? ' · se repitió ' + rp + ' veces' : '') };
+        cuando: (typeof rg.nivel === 'function' && /_alEscala24/.test(String(rg.nivel)))
+          ? 'abierto hace ' + _alHorasTxt(_alEdadErpH(a)) + (_alEdadErpH(a) < 24 ? ' · pasa a 🔴 en ' + _alHorasTxt(24 - _alEdadErpH(a)) : '')
+          : _alertaCuando(a.creada_at) + (rp > 1 ? ' · se repitió ' + rp + ' veces' : '') };
       if (rg.mkt || AL_RE_MKT.test(o + ' ' + y.t)) { y.mkt = true; g.mkt.push(y); }
       else (nv === 'rojo' ? g.rojo : nv === 'amarillo' ? g.amarillo : g.hist).push(y);
       return;
@@ -38283,6 +38305,8 @@ const AL_ACCION = [
     abrir: 'chatwoot', yo: ['Abre la conversación (botón 💬).', 'Si es un pago: regístralo en Pedidos. Si no: ✓ Atendida.'], claude: null },
   { re: /pago registrado y ninguna prenda/i, a: 'pagos', hacer: 'Pagos cargados a pedidos sin prenda: o falta la prenda o el pago va en otro pedido.',
     yo: ['Abre los pedidos de «Ver casos».', 'Agrega la prenda o mueve el pago al pedido correcto.'], claude: null },
+  { re: /comisiones|completo a mano/i, a: 'pagos', hacer: 'Un pedido quedó marcado COMPLETO a mano sin ningún pago registrado: no se sabe en qué mes cuenta para comisiones.',
+    yo: ['Abre el pedido de «Ver casos».', 'Registra el pago que falta, o quita el COMPLETO manual.'], claude: null },
   { re: /pago (duplicado|que podr)|contados dos veces/i, a: 'pagos', hacer: 'Dos pagos con la misma constancia. Confirmar en el banco antes de dar por cobrado.',
     yo: ['Abre el banco y busca la operación.', 'Si entró una sola vez, elimina el pago repetido en Pedidos.'], claude: null },
   { re: /posible duplicado|pedido web podr|repetido/i, a: 'pedidos', hacer: 'Antes de despachar, confirmar que no sea el mismo pedido cargado dos veces.',
@@ -38352,7 +38376,8 @@ function _alItemHtml(x, area) {
   if (x.modulo) h += '<button class="btn bg bs" onclick="navegarA(\'' + esc(x.modulo) + '\')">Ir →</button>';
   if (x.idEsc != null) h += '<button class="btn bg bs alerta-atender-escalado" data-id="' + esc(String(x.idEsc)) + '">✓ Atendida</button>';
   if (x.idAt != null) h += '<button class="btn bg bs alerta-atender" data-id="' + esc(String(x.idAt)) + '">✓ Atendida</button>';
-  h += '</div><div id="al-pan-' + n + '"></div>';
+  if (x.revTipo && x.revItems && x.revItems.length) h += '<button class="btn bg bs" onclick="_alRevisar(' + n + ',this)">✓ Revisado</button>';
+  h += '</div>' + (x.cuando ? '<div style="font-size:10.5px;color:var(--mu);margin-top:4px">' + esc(x.cuando) + '</div>' : '') + '<div id="al-pan-' + n + '"></div>';
   const casos = _alCasosSimples(x);
   if (casos.length) {
     h += '<details style="margin-top:5px"><summary style="cursor:pointer;font-size:11px;color:var(--mu)">Ver casos (' + (x.cant > casos.length ? x.cant : casos.length) + ')</summary>'
@@ -38360,6 +38385,29 @@ function _alItemHtml(x, area) {
       + casos.map(d => '• ' + esc(d)).join('<br>') + (x.cant > casos.length ? '<br><span style="color:var(--mu)">… y ' + (x.cant - casos.length) + ' más</span>' : '') + '</div></details>';
   }
   return h + '</div>';
+}
+ // 8-oct · «✓ Revisado» para avisos del servidor (duplicados): queda guardado y no vuelve a salir.
+async function _alRevisar(n, btn) {
+  const it = _AL_ITEMS[n]; if (!it || !it.x.revTipo) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) throw new Error('sin sesión');
+    const r = await fetch(SB_URL + '/rest/v1/rpc/alerta_revisar', { method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', 'Content-Profile': 'erp' },
+      body: JSON.stringify({ p_tipo: it.x.revTipo, p_items: it.x.revItems }) });
+    if (!r.ok) throw new Error('revisar ' + r.status);
+    const m = _AL_REVISADOS[it.x.revTipo] = _AL_REVISADOS[it.x.revTipo] || {};
+    it.x.revItems.forEach(i => { m[i] = 1; });
+    const el = document.querySelector('.al-item[data-al-i="' + n + '"]');
+    if (el) { el.style.opacity = '.35'; el.dataset.hecho = '1'; }
+    if (btn) btn.textContent = '✓ Listo';
+    try { _updateAlertBadge(_alRojosEnPantalla()); } catch (_) {}
+    toast('✓ Marcado como revisado. No vuelve a salir.', 'ok');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Revisado'; }
+    toast('No pude guardarlo: ' + esc(e.message), 'err');
+  }
 }
 const AL_CHATWOOT = 'https://chatwoot-production-5c5c.up.railway.app/app/accounts/1/conversations/';
 // «Ver casos» en simple: una línea por caso, sin códigos internos.
