@@ -154,8 +154,30 @@ function comApi(op, args) {
       });
     });
   }
-  if (op === 'saveAsesoraFull') {
-    return comApiApps(op, args).then(function (r) {
+  // 8-oct (OK de Pablo): la pestaña Asesoras lee y guarda DIRECTO en la base (sin Apps Script ni hoja)
+  if (op === 'asesoraMes') {
+    return _comOfRpc('comisiones_asesoras_leer', { p_year: Number(args.year) }).then(function (r) {
+      return (r && r.asesoras) ? r : comApiApps(op, args);
+    });
+  }
+  if (op === 'saveAsesoraFull' || op === 'delAsesoraAnio') {
+    var esGuardar = op === 'saveAsesoraFull';
+    var pr = esGuardar
+      ? _comOfRpc('comisiones_asesora_guardar_full', { p_email: args.email, p_year: Number(args.year),
+                  p_master: args.master || null, p_meses: args.meses || [] }, true)
+      : _comOfRpc('comisiones_asesora_borrar_anio', { p_email: args.email, p_year: Number(args.year) }, true);
+    return pr.then(function (r) {
+      _comOfDespuesDeGuardar();
+      if (esGuardar && args.master) _comOfSincronizarMaestro(args.email, args.master);
+      return r;
+    }, function (e) {
+      // si la base todavia no tiene la funcion nueva: el camino de antes
+      if (/Could not find the function|PGRST202/i.test(String(e && e.message))) return _comApiAsesoraVieja(op, args);
+      throw e;
+    });
+  }
+  if (op === '__asesoraVieja__') {
+    return comApiApps('saveAsesoraFull', args).then(function (r) {
       var m = args.master || {};
       return _comOfRpc('comisiones_asesora_guardar', { p_email: args.email, p_sueldo: Number(m.base) || null,
                        p_desde: m.desde || null, p_activa: m.estado ? m.estado === 'activa' : null }, true)
@@ -180,6 +202,30 @@ function comApi(op, args) {
     });
   }
   return comApiApps(op, args);
+}
+
+function _comApiAsesoraVieja(op, args) {
+  if (op === 'delAsesoraAnio') return comApiApps(op, args);
+  return comApi('__asesoraVieja__', args);
+}
+
+/** Despues de guardar: el calculo oficial se recalcula solo (≤15 s); se vacia lo guardado en la pantalla. */
+function _comOfDespuesDeGuardar() {
+  COMOF.cache = {}; COMOF.pedido = {};
+  try { Object.keys(localStorage).forEach(function (k) { if (k.indexOf('com_of_') === 0) localStorage.removeItem(k); }); } catch (e) {}
+}
+
+/** Sueldo base / ingreso / estado tambien en la config de Apps Script (solo esos datos, sin tocar la hoja). */
+function _comOfSincronizarMaestro(email, m) {
+  var cfg = (COM.data && COM.data.cfgFull && COM.data.cfgFull.vendedoras) ? COM.data.cfgFull : EXTRA.cfgFull;
+  if (!cfg || !cfg.vendedoras || !cfg.vendedoras[email]) return;
+  var vend = JSON.parse(JSON.stringify(cfg.vendedoras)), v = vend[email];
+  if (m.base != null) v.b = Number(m.base) || 0;
+  if (m.desde != null) v.desde = String(m.desde);
+  if (m.estado != null) v.estado = String(m.estado).toLowerCase() === 'inactiva' ? 'inactiva' : 'activa';
+  if (COM.data && COM.data.cfgFull) COM.data.cfgFull.vendedoras = vend;
+  if (EXTRA.cfgFull) EXTRA.cfgFull.vendedoras = vend;
+  comApiApps('saveCfg', { patch: { vendedoras: vend } }).catch(function () {});
 }
 
 /** Vista previa del cierre con la forma que ya dibuja la pestaña Cierre. */
@@ -2942,7 +2988,7 @@ function pintarVerComo(d, real) {
 
   c.innerHTML = cabecera +
     '<div style="max-width:620px;margin:0 auto">' +
-      (real && !cerrado ? bannerCelebracion(d, lvActual) : '') +
+      (real && !cerrado ? (d.__of ? _comOfCelebrar(d, R, yo) : bannerCelebracion(d, lvActual)) : '') +
       (real ? tarjetaMetaDia(d) : '') +
       tarjetaPrincipal +
 
@@ -4720,6 +4766,40 @@ function _comOfHistoricoAdmin() {
     q++; if (q > 4) { q = 1; y++; }
   }
   return out;
+}
+
+/* ── 8-oct (OK de Pablo) · CELEBRACION en la pantalla de la asesora ──
+   1) cuando pasa el 75% de SU meta (empieza a cobrar), 2) cuando el EQUIPO sube
+   de tramo. Se compara con lo que vio la ultima vez (en su navegador); la
+   primera vez solo se guarda. El aviso queda visible mientras no recargue. */
+function _comOfCelebrar(d, R, yo) {
+  if (VEND.preview || !d.__of || d.__of.cerrado) return '';
+  var k = 'com_fiesta_' + String(d.nombre || '').toUpperCase() + '_' + d.year + '-' + d.q;
+  VENDOF.fiesta = VENDOF.fiesta || {};
+  if (VENDOF.fiesta[k] != null) return VENDOF.fiesta[k];
+  var prev = null;
+  try { prev = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) {}
+  var gate = Number(R.gate) || 75, ahora = { pasa: (Number(yo.cumpl) || 0) >= gate, tasa: Number(R.teamRate) || 0 };
+  try { localStorage.setItem(k, JSON.stringify(ahora)); } catch (e) {}
+  var avisos = [];
+  if (prev && ahora.tasa > (Number(prev.tasa) || 0)) {
+    avisos.push(['🚀', '¡El equipo subió al tramo de ' + ahora.tasa + '%!',
+      ahora.pasa ? 'Tu comisión ahora es el ' + ahora.tasa + '% de todo tu margen del trimestre.'
+                 : 'Llega al ' + gate + '% de tu meta y cobras con este tramo.']);
+  }
+  if (prev && ahora.pasa && !prev.pasa) {
+    avisos.push(['🎉', '¡Pasaste el ' + gate + '% de tu meta!',
+      R.teamGate ? 'Ya estás cobrando comisión. Cada venta suma.' : 'Cobras en cuanto el equipo también llegue al ' + gate + '%.']);
+  }
+  var html = avisos.map(function (a) {
+    return '<div class="card" style="border-color:var(--gn);text-align:center">' +
+      '<div style="font-size:22px">' + a[0] + '</div>' +
+      '<div style="font-weight:700;color:var(--gn)">' + esc(a[1]) + '</div>' +
+      '<div class="ml">' + esc(a[2]) + '</div>' +
+    '</div>';
+  }).join('');
+  VENDOF.fiesta[k] = html;
+  return html;
 }
 
 var COM_ASESORA_DESDE = { y: 2026, q: 3 };   // 8-oct (Pablo): las asesoras ven desde el 1 de julio de 2026
