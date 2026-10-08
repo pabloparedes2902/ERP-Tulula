@@ -270,6 +270,19 @@ var COM_CELESTE = '#38bdf8';   // 3er nivel: celeste, se distingue mejor del mor
 var NIVEL_COLOR  = ['var(--rd)', 'var(--am)', 'var(--gn)', COM_CELESTE];
 var NIVEL_NOMBRE = ['No llega al mínimo', 'Llega al mínimo', 'Nivel intermedio', 'Nivel alto'];
 
+/** 8-oct · "Nivel 0°", "1° Nivel", ... (como la leyenda) */
+function _comNivelTxt(lv) { lv = Number(lv) || 0; return lv > 0 ? lv + '° Nivel' : 'Nivel 0°'; }
+
+/** 8-oct (Pablo) · fila de cierre del ranking: el promedio del equipo y el nivel al que llego. */
+function _comFilaPromedio(cumpl, tiers) {
+  var lv = nivelDe(Number(cumpl) || 0, tiers);
+  return '<div class="com-row" style="border-top:2px solid var(--bd);margin-top:4px;padding-top:10px">' +
+           '<span style="font-weight:700">Promedio equipo</span>' +
+           '<span style="font-weight:700;color:' + NIVEL_COLOR[lv] + '">' + p2(Number(cumpl) || 0) +
+             ' · ' + _comNivelTxt(lv) + '</span>' +
+         '</div>';
+}
+
 /** Medalla de oro, plata o bronce. Del 4° en adelante, solo el número. */
 function medalla(i) {
   var M = [
@@ -957,6 +970,7 @@ function tarjetaRanking(R, qTxt) {
            '</div>';
   }).join('');
 
+  if (COM.data && COM.data.__oficialCerrado) filas += _comFilaPromedio(R.teamCumpl, R.tiers);   // 8-oct
   return '<div class="card">' +
     '<div class="ct">Ranking · ' + esc(qTxt) + '</div>' + filas +
   '</div>';
@@ -1059,8 +1073,7 @@ function tarjetaCobertura(d) {
 }
 
 function tarjetaReglas(cfg, R, titulo) {
-  // 8-oct (OK de Pablo): texto con la regla oficial del calculo en la base.
-  // Los numeros salen de las reglas vigentes (meta y tramos), asi no queda desactualizado.
+  // 8-oct 10:01 (Pablo): SOLO la meta, los niveles (sin ningun % del margen) y la activacion.
   var punto = function (color, txt) {
     return '<span style="display:inline-flex;align-items:center;gap:6px">' +
              '<span style="width:9px;height:9px;border-radius:50%;background:' + color + ';' +
@@ -1068,22 +1081,19 @@ function tarjetaReglas(cfg, R, titulo) {
            '</span>';
   };
   var tiers = (R && R.tiers && R.tiers.length) ? R.tiers : ((cfg && cfg.tiers && cfg.tiers.length) ? cfg.tiers : TIERS_FALLBACK);
-  var t0 = tiers[0] || { from: 75, rate: 1.5 }, t1 = tiers[1] || { from: 100, rate: 3 }, t2 = tiers[2] || { from: 125, rate: 4.5 };
+  var t0 = tiers[0] || { from: 75 }, t1 = tiers[1] || { from: 100 }, t2 = tiers[2] || { from: 125 };
 
   return '<div class="card">' +
     '<div class="ct">' + esc(titulo || 'Reglas vigentes') + '</div>' +
     '<div style="font-size:13px;line-height:2.1">' +
       'Meta = Ventas (pedidos con pago completo) x Margen bruto x Factor nivel x 3 (meses)<br>' +
-      '<b>Niveles de comisión</b> (los pone el equipo, el mismo tramo para todas):<br>' +
-      punto('var(--rd)',  'Nivel 0° = Menos de ' + t0.from + '% → sin comisión') + '<br>' +
-      punto('var(--am)',  '1° Nivel = ' + t0.from + '% - ' + t1.from + '% → ' + t0.rate + '% del margen') + '<br>' +
-      punto('var(--gn)',  '2° Nivel = ' + t1.from + '% - ' + t2.from + '% → ' + t1.rate + '% del margen') + '<br>' +
-      punto(COM_CELESTE,  '3° Nivel = Más de ' + t2.from + '% → ' + t2.rate + '% del margen') + '<br>' +
+      '<b>Niveles de comisión:</b><br>' +
+      punto('var(--rd)',  'Nivel 0° = Menos de ' + t0.from + '%') + '<br>' +
+      punto('var(--am)',  '1° Nivel = ' + t0.from + '% - ' + t1.from + '%') + '<br>' +
+      punto('var(--gn)',  '2° Nivel = ' + t1.from + '% - ' + t2.from + '%') + '<br>' +
+      punto(COM_CELESTE,  '3° Nivel = Más de ' + t2.from + '%') + '<br>' +
       '<b>Activación:</b> La comisión se activa siempre y cuando el equipo ' +
-      'llegue al menos al 1° nivel en promedio.<br>' +
-      '<b>Quién cobra:</b> cada asesora que llega al menos al ' + t0.from + '% de <b>su</b> meta cobra el tramo del ' +
-      '<b>equipo</b> sobre todo su margen del trimestre.<br>' +
-      '<b>Qué cuenta:</b> ventas por WhatsApp, TikTok y Showroom. Cada pago suma a la asesora cuyo nombre está en ese pago.' +
+      'llegue al menos al 1° nivel en promedio.' +
     '</div>' +
   '</div>';
 }
@@ -2896,6 +2906,11 @@ function pintarVerComo(d, real) {
       }).join('');
   }
 
+  if (cerrado) {   // 8-oct (Pablo): con el trimestre cerrado, el promedio del equipo y su nivel
+    var eqC = d.__of ? R.teamCumpl : Number(cierreOf && cierreOf.teamCumpl);
+    if (eqC || eqC === 0) rank += _comFilaPromedio(eqC, R.tiers);
+  }
+
   // Cuánto le falta, expresado en VENTAS aproximadas (margen ÷ % de margen real)
   var sig = R.tiers.find(function (t) { return t.from > yo.cumpl; });
   var falta = 'Estás en el nivel máximo.';
@@ -2914,12 +2929,11 @@ function pintarVerComo(d, real) {
     } else if (!R.teamGate) {
       falta = '¡Ya pasaste el ' + R.gate + '% de tu meta! Cobras en cuanto el equipo también llegue al ' + R.gate + '%.';
     } else {
-      falta = '¡Ya estás cobrando! Con el tramo del equipo (' + R.teamRate + '%), cada ' + fmt(1000) +
-              ' de margen te suma ' + f2(R.teamRate * 10) + '.';
+      falta = '¡Ya estás cobrando! El equipo está en el ' + _comNivelTxt(R.level) + '. Cada venta suma a tu comisión.';
     }
     var sigEq = R.tiers.find(function (t) { return t.from > R.teamCumpl; });
     if (sigEq) falta += '<div class="com-mut" style="margin-top:6px">El equipo va en ' + p2(R.teamCumpl) +
-                        ': cuando llegue al ' + sigEq.from + '% el tramo sube a ' + sigEq.rate + '% para todas.</div>';
+                        ': cuando llegue al ' + sigEq.from + '% sube al ' + (R.tiers.indexOf(sigEq) + 1) + '° Nivel.</div>';
   }
 
   // Modo REAL (asesora logueada): sin pestañas de admin ni botón de vista
@@ -2976,8 +2990,8 @@ function pintarVerComo(d, real) {
                 : 'El equipo no llegó al mínimo en este trimestre.')
             : (d.__of
                 ? (R.teamGate
-                    ? 'El equipo va en ' + p2(R.teamCumpl) + ' de su meta: tramo de ' + R.teamRate +
-                      '% para todas las que llegan al ' + R.gate + '% de su meta.'
+                    ? 'El equipo va en ' + p2(R.teamCumpl) + ' de su meta (' + _comNivelTxt(R.level) +
+                      '). Cobran todas las que llegan al ' + R.gate + '% de su meta.'
                     : 'La comisión se activa cuando el equipo llegue al ' + R.gate + '% de su meta. Van ' + p2(R.teamCumpl) + '.')
             : R.teamGate
                 ? 'El equipo llegó al nivel 1° en promedio. Tu comisión está activa.'
@@ -4783,9 +4797,9 @@ function _comOfCelebrar(d, R, yo) {
   try { localStorage.setItem(k, JSON.stringify(ahora)); } catch (e) {}
   var avisos = [];
   if (prev && ahora.tasa > (Number(prev.tasa) || 0)) {
-    avisos.push(['🚀', '¡El equipo subió al tramo de ' + ahora.tasa + '%!',
-      ahora.pasa ? 'Tu comisión ahora es el ' + ahora.tasa + '% de todo tu margen del trimestre.'
-                 : 'Llega al ' + gate + '% de tu meta y cobras con este tramo.']);
+    avisos.push(['🚀', '¡El equipo subió al ' + _comNivelTxt(R.level) + '!',
+      ahora.pasa ? 'Tu comisión sube junto con el equipo.'
+                 : 'Llega al ' + gate + '% de tu meta y cobras con este nivel.']);
   }
   if (prev && ahora.pasa && !prev.pasa) {
     avisos.push(['🎉', '¡Pasaste el ' + gate + '% de tu meta!',

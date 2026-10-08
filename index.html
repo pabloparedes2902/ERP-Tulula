@@ -38120,10 +38120,11 @@ function _alertaCuando(iso) {
 // espejo rápido o de Apps Script. Lo que no reconoce conserva su nivel
 // (una crítica nueva desconocida sigue en rojo: nunca se esconde).
 const AL_REGLAS = [
-  {re:/posible duplicado \(revisar antes de despachar\)/i, nivel:'rojo', escala24:true, t:'Un pedido podría estar repetido', s:'Antes de despachar, confirma que no sea el mismo pedido cargado dos veces.', q:'Operación'},
-  {re:/posible pago duplicado/i, nivel:'rojo', escala24:true, t:'Pagos que podrían estar contados dos veces', s:'Antes de dar el pedido por cobrado, confirma en el banco que el pago entró una sola vez.', q:'Operación'},
-  {re:/desaparecidos sin rastro/i, nivel:'rojo', t:'Pedidos o prendas que desaparecieron sin registro', s:'Algo se borró sin dejar rastro. Hay que ver qué se perdió.', q:'Sistemas'},
-  {re:/hoja Usuarios cambi/i, nivel:'rojo', t:'Cambiaron los accesos al ERP', s:'Confirma que el cambio de permisos lo hicieron tú o Ana.', q:'Dirección'},
+  {re:/posible duplicado \(revisar antes de despachar\)/i, nivel:'naranja', escala24:true, t:'Un pedido podría estar repetido', s:'Antes de despachar, confirma que no sea el mismo pedido cargado dos veces.', q:'Operación'},
+  {re:/posible pago duplicado/i, nivel:'naranja', escala24:true, t:'Pagos que podrían estar contados dos veces', s:'Antes de dar el pedido por cobrado, confirma en el banco que el pago entró una sola vez.', q:'Operación'},
+  {re:/desaparecidos sin rastro/i, nivel:'naranja', t:'Pedidos o prendas que desaparecieron sin registro', s:'Algo se borró sin dejar rastro. Hay que ver qué se perdió.', q:'Sistemas'},
+  {re:/hoja Usuarios cambi/i, nivel:'amarillo', t:'Cambiaron los accesos al ERP y no fue un administrador', s:'Si fuiste tú editando la hoja a mano, márcala atendida. Si no, avisa: puede ser alguien de fuera.', q:'Dirección'},   // 8-oct: si fue Pablo o Ana desde el panel, va al historial (Code.js)
+  {re:/^Accesos actualizados por/i, nivel:'historial', t:'Cambio de accesos hecho por un administrador', s:'En orden. Solo queda el registro.', q:'—'},
   {re:/hoja y la base dicen cosas distintas/i, nivel:'amarillo', t:'Diferencias entre la hoja y la base de datos', s:'Cuadre técnico. No frena la venta de hoy. Lo corrige sistemas.', q:'Sistemas'},
   {re:/flujo de n8n/i, nivel:'amarillo', t:null, s:'Una automatización no respondió. Lo revisa sistemas.', q:'Sistemas', n8n:true},
   {re:/libro de stock no cuadra/i, nivel:'historial', t:'Stock rápido en pausa (1 prenda; se cierra con el proyecto de cuadre de stock)', s:'El ERP muestra el stock por el camino normal. Nadie ve datos malos.', q:'Sistemas'},   // 7-oct: de fondo
@@ -38134,11 +38135,26 @@ const AL_REGLAS = [
   {re:/se edit[oó] a mano/i, nivel:'historial', t:'Ediciones a mano en la hoja de Google', s:'Registro de quién tocó qué. No requiere acción.', q:'—'},
   {re:/auditor nocturno repar/i, nivel:'historial', t:'El sistema se reparó solo de noche', s:'Ya está resuelto. Solo queda el registro.', q:'—'}
 ];
+// 8-oct-2026 · CUATRO NIVELES (pedido de Pablo):
+//   🔴 rojo     = el ERP (o Tula) está parado o no se puede usar.
+//   🟠 naranja  = no lo para, pero genera errores o conflictos (pago sin registrar,
+//                 pedido repetido, prendas que se perdieron). Los de plata nacen 🟡 y pasan a 🟠 al día.
+//   🟡 amarillo = calidad o pendientes de fondo (indicadores de Tula, costos sin cargar).
+//   🟢 verde    = todo en orden.
+// Una «crítica» solo queda 🔴 si dice que algo está caído / no responde; si no, baja a 🟠.
+const AL_RE_PARADO = /no responde|no (est[aá] )?respondiendo|ca[ií]d[oa]s?\b|no se puede (entrar|usar|ingresar)|no carga|sin conexi[oó]n|fuera de servicio|base (de datos )?ca[ií]da|erp parado|bot apagado/i;
+function _alNivel4(nv, texto) { return nv === 'rojo' && !AL_RE_PARADO.test(String(texto || '')) ? 'naranja' : nv; }
+function _alMeter(g, x, texto) {
+  x.nivel = _alNivel4(x.nivel, texto);
+  (x.nivel === 'rojo' ? g.rojo : x.nivel === 'naranja' ? g.naranja : x.nivel === 'amarillo' ? g.amarillo : g.hist).push(x);
+}
+const AL_COL = { rojo: 'var(--rd)', naranja: '#ea580c', amarillo: '#d97706' };
+const AL_EMO = { rojo: '🔴 ', naranja: '🟠 ', amarillo: '' };
 const AL_RE_MKT = /marketing|anuncio|\bads\b|fatiga|carrusel|swipe|campa[ñn]a|embudo/i;
 // Avisos de erp.alertas por su origen (6-oct). Lo que no esté acá conserva su nivel.
 const AL_ORIGEN = {
   'guardian':              { q: 'Sistemas' },
-  'salud':                 { nivel: 'amarillo', t: a => 'El bot Tula tiene ' + ((String(a.titulo).match(/\d+/) || ['varios'])[0]) + ' indicadores de calidad en rojo', s: 'No frena la venta. Lo revisa sistemas.', q: 'Sistemas' },
+  'salud':                 { nivel: a => (AL_RE_PARADO.test(String(a.titulo || '') + ' ' + String(a.detalle || '')) ? 'rojo' : 'amarillo'), t: a => 'El bot Tula tiene ' + ((String(a.titulo).match(/\d+/) || ['varios'])[0]) + ' indicadores de calidad en rojo', s: 'No frena la venta. Lo revisa sistemas.', q: 'Sistemas' },
   // 8-oct (pedido de Pablo): los avisos de plata nacen 🟡 y recién al día sin resolverse pasan a 🔴
   'posible-venta-perdida': { nivel: a => _alEscala24(a), t: () => 'Posible pago que nadie registró', s: 'Una clienta mandó una imagen después de recibir los datos de pago y no hay pedido. Revisar la conversación.', q: 'Ventas' },
   'espera-stock':          { mkt: true, t: () => 'Llegó stock que clientas estaban esperando', s: 'Avisarles para cerrar la venta.', q: 'Ventas' },
@@ -38193,11 +38209,11 @@ function _alEdadErpH(a) {
   const t = new Date(a.nacida_at || a.creada_at || Date.now()).getTime();
   return isNaN(t) ? 0 : Math.max(0, (Date.now() - t) / 3600000);
 }
-function _alEscala24(a) { return _alEdadErpH(a) >= 24 ? 'rojo' : 'amarillo'; }
+function _alEscala24(a) { return _alEdadErpH(a) >= 24 ? 'naranja' : 'amarillo'; }   // 8-oct: al día pasa a 🟠 (no para el ERP)
 function _alHorasTxt(h) { return h < 1 ? Math.max(1, Math.round(h * 60)) + ' min' : h < 48 ? Math.round(h) + ' h' : Math.round(h / 24) + ' días'; }
 const _AL_REVISADOS = {};
 function _alClasificarTodo(r, buzon) {
-  const g = { rojo: [], amarillo: [], mkt: [], hist: [] };
+  const g = { rojo: [], naranja: [], amarillo: [], mkt: [], hist: [] };
   const base = { criticas: 'rojo', advertencias: 'amarillo', info: 'historial' };
   r = r || {};
   Object.keys(base).forEach(k => (Array.isArray(r[k]) ? r[k] : []).forEach(a => {
@@ -38214,15 +38230,15 @@ function _alClasificarTodo(r, buzon) {
       det: Array.isArray(a.detalle) ? a.detalle : [], modulo: a.modulo || ''
     };
     if (x._n8nViejo) x.nivel = 'historial';
-    if (regla && regla.escala24) x.nivel = x.edadH >= 24 ? 'rojo' : 'amarillo';   // 8-oct: 🟡 al nacer, 🔴 al día
-    if (x.edadH) x.cuando = 'abierto hace ' + _alHorasTxt(x.edadH) + (regla && regla.escala24 && x.edadH < 24 ? ' · pasa a 🔴 en ' + _alHorasTxt(24 - x.edadH) : '');
+    if (regla && regla.escala24) x.nivel = x.edadH >= 24 ? 'naranja' : 'amarillo';   // 8-oct: 🟡 al nacer, 🟠 al día
+    if (x.edadH) x.cuando = 'abierto hace ' + _alHorasTxt(x.edadH) + (regla && regla.escala24 && x.edadH < 24 ? ' · pasa a 🟠 en ' + _alHorasTxt(24 - x.edadH) : '');
     if (x.revTipo && x.revItems.length) {   // lo marcado «Revisado» en esta sesión no se muestra mientras el servidor se pone al día
       const vistos = _AL_REVISADOS[x.revTipo] || {};
       x.revItems = x.revItems.filter(i => !vistos[i]);
       if (!x.revItems.length) return;
     }
     if (AL_RE_MKT.test(tit)) g.mkt.push(x);
-    else (x.nivel === 'rojo' ? g.rojo : x.nivel === 'amarillo' ? g.amarillo : g.hist).push(x);
+    else _alMeter(g, x, tit + ' ' + (x.t || ''));
   }));
   const _vistoOrigen = {};
   (Array.isArray(buzon) ? buzon : []).forEach(a => {
@@ -38238,10 +38254,10 @@ function _alClasificarTodo(r, buzon) {
       const y = { nivel: nv, t: rg.t ? rg.t(a) : String(a.titulo || ''), s: rg.s || '', q: rg.q || 'Sistemas',
         cant: 0, det: a.detalle ? [String(a.detalle).slice(0, 700)] : [], id: a.id, idAt: a.id,
         cuando: (typeof rg.nivel === 'function' && /_alEscala24/.test(String(rg.nivel)))
-          ? 'abierto hace ' + _alHorasTxt(_alEdadErpH(a)) + (_alEdadErpH(a) < 24 ? ' · pasa a 🔴 en ' + _alHorasTxt(24 - _alEdadErpH(a)) : '')
+          ? 'abierto hace ' + _alHorasTxt(_alEdadErpH(a)) + (_alEdadErpH(a) < 24 ? ' · pasa a 🟠 en ' + _alHorasTxt(24 - _alEdadErpH(a)) : '')
           : _alertaCuando(a.creada_at) + (rp > 1 ? ' · se repitió ' + rp + ' veces' : '') };
       if (rg.mkt || AL_RE_MKT.test(o + ' ' + y.t)) { y.mkt = true; g.mkt.push(y); }
-      else (nv === 'rojo' ? g.rojo : nv === 'amarillo' ? g.amarillo : g.hist).push(y);
+      else _alMeter(g, y, String(a.titulo || '') + ' ' + y.t);
       return;
     }
     const niv = a.nivel === 'critica' ? 'rojo' : a.nivel === 'aviso' ? 'amarillo' : 'historial';
@@ -38250,17 +38266,19 @@ function _alClasificarTodo(r, buzon) {
       cant: rep > 1 ? rep : 0, det: a.detalle ? [String(a.detalle).slice(0, 700)] : [],
       id: a.id, idEsc: a.id, cuando: _alertaCuando(a.creada_at) };
     if (AL_RE_MKT.test(String(a.origen || '') + ' ' + x.t)) { x.mkt = true; g.mkt.push(x); }
-    else (niv === 'rojo' ? g.rojo : niv === 'amarillo' ? g.amarillo : g.hist).push(x);
+    else _alMeter(g, x, x.t);
   });
   return g;
 }
-function _alRojosN(r, buzon) { return _alClasificarTodo(r, buzon).rojo.length; }
+// 8-oct: el número del menú cuenta 🔴 + 🟠 (lo que pide acción); la barra de arriba es roja solo si hay 🔴
+let _AL_HAY_ROJO = false;
+function _alRojosN(r, buzon) { const g = _alClasificarTodo(r, buzon); _AL_HAY_ROJO = g.rojo.length > 0; return g.rojo.length + g.naranja.length; }
 
 function _alCard(x) {
-  const col = x.nivel === 'rojo' ? 'var(--rd)' : x.nivel === 'amarillo' ? '#d97706' : 'var(--mu)';
+  const col = AL_COL[x.nivel] || 'var(--mu)';
   let h = '<div style="background:var(--bg3);border-radius:var(--r);padding:12px;margin-bottom:8px;border-left:3px solid ' + col + '"'
     + (x.id != null ? ' data-alerta="' + esc(String(x.id)) + '"' : '')
-    + (x.nivel === 'rojo' && !x.mkt ? ' data-rojo="1"' : '') + '>'
+    + ((x.nivel === 'rojo' || x.nivel === 'naranja') && !x.mkt ? ' data-rojo="1"' : '') + '>'
     + '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap">'
     + '<div style="flex:1;min-width:220px"><div style="font-weight:600;font-size:14px">' + esc(x.t)
     + (x.cant > 1 ? ' <span style="color:var(--mu);font-weight:400;font-size:12px">· ' + x.cant + ' casos</span>' : '') + '</div>'
@@ -38274,7 +38292,7 @@ function _alCard(x) {
   if (x.det && x.det.length) {
     const total = x.cant > x.det.length ? x.cant : 0;
     const lista = x.det.map(d => '• ' + esc(d)).join('<br>') + (total ? '<br>… y ' + (total - x.det.length) + ' más' : '');
-    h += x.nivel === 'rojo'
+    h += (x.nivel === 'rojo' || x.nivel === 'naranja')
       ? '<div style="font-size:11.5px;color:var(--mu);margin-top:8px;line-height:1.6">' + lista + '</div>'
       : '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11px;color:var(--mu)">Ver detalle técnico</summary>'
         + '<div style="font-size:11px;color:var(--mu);margin-top:6px;line-height:1.6;word-break:break-word">' + lista + '</div></details>';
@@ -38359,11 +38377,11 @@ let _AL_ITEMS = [];
 function _alItemHtml(x, area) {
   const ac = _alAccion(x) || {};
   const n = _AL_ITEMS.push({ x: x, area: area, ac: ac, clave: _alClave(area, x) }) - 1;
-  const col = x.nivel === 'rojo' ? 'var(--rd)' : '#d97706';
+  const col = AL_COL[x.nivel] || '#d97706';
   let h = '<div class="al-item" data-al-i="' + n + '"' + (x.id != null ? ' data-alerta="' + esc(String(x.id)) + '"' : '')
-    + (x.nivel === 'rojo' ? ' data-rojo="1"' : '')
+    + ((x.nivel === 'rojo' || x.nivel === 'naranja') ? ' data-rojo="1"' : '')
     + ' style="border-left:3px solid ' + col + ';padding:8px 10px;margin-top:8px;background:var(--bg2,rgba(0,0,0,.08));border-radius:8px">'
-    + '<div style="font-weight:600;font-size:13px">' + (x.nivel === 'rojo' ? '🔴 ' : '') + esc(x.t)
+    + '<div style="font-weight:600;font-size:13px">' + (AL_EMO[x.nivel] || '') + esc(x.t)
     + (x.cant > 1 ? ' <span style="color:var(--mu);font-weight:400;font-size:11.5px">· ' + x.cant + ' casos</span>' : '') + '</div>'
     + '<div style="font-size:12px;margin-top:3px"><b>Qué hacer:</b> ' + esc(ac.hacer || x.s || 'Revisar el detalle.') + '</div>'
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">';
@@ -38503,14 +38521,15 @@ async function _alEncCargar() {
 function _alPanelHtml(g) {
   _AL_ITEMS = [];
   const por = {}; AL_AREAS.forEach(a => { por[a.k] = { act: [], fondo: [] }; });
-  g.rojo.concat(g.amarillo).forEach(x => por[_alArea(x)].act.push(x));
+  g.rojo.concat(g.naranja || [], g.amarillo).forEach(x => por[_alArea(x)].act.push(x));
   g.hist.forEach(x => { const ar = _alArea(x); if (ar === 'costos' || x.cant > 0) por[ar].fondo.push(x); });
   let h = '<div id="al-panel" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:12px;margin-bottom:14px">';
   AL_AREAS.forEach(a => {
-    const L = por[a.k].act, nR = L.filter(x => x.nivel === 'rojo').length;
-    const col = nR ? 'var(--rd)' : L.length ? '#d97706' : 'var(--gn)';
-    const chip = nR ? '🔴 ' + nR + ' urgente' + (nR > 1 ? 's' : '') : L.length ? '🟡 ' + L.length + ' para revisar' : '🟢 Todo en orden';
-    L.sort((p, q) => (p.nivel === 'rojo' ? 0 : 1) - (q.nivel === 'rojo' ? 0 : 1));
+    const L = por[a.k].act, nR = L.filter(x => x.nivel === 'rojo').length, nN = L.filter(x => x.nivel === 'naranja').length;
+    const col = nR ? 'var(--rd)' : nN ? AL_COL.naranja : L.length ? '#d97706' : 'var(--gn)';
+    const chip = nR ? '🔴 ' + nR + ' parado' + (nR > 1 ? 's' : '') : nN ? '🟠 ' + nN + ' con errores' : L.length ? '🟡 ' + L.length + ' para revisar' : '🟢 Todo en orden';
+    const ord = { rojo: 0, naranja: 1, amarillo: 2 };
+    L.sort((p, q) => (ord[p.nivel] ?? 3) - (ord[q.nivel] ?? 3));
     h += '<div class="card al-area" data-area="' + a.k + '" style="padding:12px;border-top:4px solid ' + col + '">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
       + '<div style="font-weight:700;font-size:15px">' + a.i + ' ' + a.n + '</div>'
@@ -38525,11 +38544,13 @@ function _alPanelHtml(g) {
 
 function _alertasHtmlSimple(r) {
   const g = _alClasificarTodo(r, _ALERT_BUZON);
-  const nR = g.rojo.length;
+  const nR = g.rojo.length, nN = (g.naranja || []).length;
   let h = '<div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">'
-    + '<div style="font-size:16px;font-weight:700;color:' + (nR ? 'var(--rd)' : 'var(--gn)') + '">'
-    + (nR ? '🔴 ' + nR + ' cosa' + (nR !== 1 ? 's' : '') + ' urgente' + (nR !== 1 ? 's' : '') + ' por atender' : '🟢 Nada urgente') + '</div>'
-    + '<div style="color:var(--mu);font-size:12.5px">' + g.amarillo.length + ' para revisar hoy · ' + g.mkt.length + ' de marketing · ' + g.hist.length + ' en historial</div>'
+    + '<div style="font-size:16px;font-weight:700;color:' + (nR ? 'var(--rd)' : nN ? AL_COL.naranja : g.amarillo.length ? '#d97706' : 'var(--gn)') + '">'
+    + (nR ? '🔴 ' + nR + ' cosa' + (nR !== 1 ? 's' : '') + ' parando el ERP'
+      : nN ? '🟠 ' + nN + ' con errores por corregir'
+      : g.amarillo.length ? '🟡 Sin errores · ' + g.amarillo.length + ' de calidad por revisar' : '🟢 Todo en orden') + '</div>'
+    + '<div style="color:var(--mu);font-size:12.5px">' + (nR ? nN + ' con errores · ' : '') + g.amarillo.length + ' para revisar · ' + g.mkt.length + ' de marketing · ' + g.hist.length + ' en historial</div>'
     + '<span style="flex:1"></span><button class="btn bg bs" onclick="loadAlertas()">↻ Refrescar</button></div>';
   if (AL_PANEL_ON) h += _alPanelHtml(g) + '<details id="alertas-lista"><summary style="cursor:pointer;font-size:12.5px;color:var(--mu);margin-bottom:10px">Ver la lista completa por urgencia (incluye 📣 Marketing e historial)</summary>';
   const bloque = (id, titulo, sub, color, arr, vacio) =>
@@ -38537,8 +38558,9 @@ function _alertasHtmlSimple(r) {
     + '<h3 style="margin:0 0 2px 0;font-size:14px;color:' + color + '">' + titulo + ' (' + arr.length + ')</h3>'
     + '<div style="font-size:11.5px;color:var(--mu);margin-bottom:10px">' + sub + '</div>'
     + (arr.length ? arr.map(_alCard).join('') : '<div style="font-size:12.5px;color:var(--mu)">' + vacio + '</div>') + '</div>';
-  h += bloque('alertas-rojas', '🔴 Urgente', 'Cuesta plata o puede mandar producto mal. Atender hoy, antes de despachar o cobrar.', 'var(--rd)', g.rojo, 'Nada urgente. 👌');
-  h += bloque('alertas-amarillas', '🟡 Revisar hoy', 'No frena la venta. La mayoría la resuelve sistemas.', '#d97706', g.amarillo, 'Nada pendiente.');
+  h += bloque('alertas-rojas', '🔴 ERP parado', 'El ERP o Tula no se pueden usar. Atender ya.', 'var(--rd)', g.rojo, 'Nada parado. 👌');
+  h += bloque('alertas-naranjas', '🟠 Errores o conflictos', 'No para el ERP, pero hay un dato mal (pago, pedido, prenda). Corregir hoy.', AL_COL.naranja, g.naranja || [], 'Sin errores.');
+  h += bloque('alertas-amarillas', '🟡 Calidad y pendientes', 'No frena la venta. La mayoría la resuelve sistemas.', '#d97706', g.amarillo, 'Nada pendiente.');
   h += bloque('alertas-marketing', '📣 Marketing', 'Avisos de anuncios y contenido. No son fallas: son oportunidades.', '#8b5cf6', g.mkt, 'Sin avisos de marketing por ahora.');
   h += '<details id="alertas-historial" class="card" style="padding:14px;margin-bottom:12px"><summary style="cursor:pointer;font-weight:600;font-size:14px">🗂 Historial (' + g.hist.length + ')'
     + ' <span style="font-weight:400;color:var(--mu);font-size:11.5px">— solo registro, no requiere acción</span></summary><div style="margin-top:10px">'
@@ -38561,7 +38583,8 @@ function _alBanner(n) {
     b.addEventListener('click', _alIrARojas);
     document.body.appendChild(b);
   }
-  b.textContent = '🔴 Hay ' + n + ' cosa' + (n !== 1 ? 's' : '') + ' urgente' + (n !== 1 ? 's' : '') + ' por atender · Ver ›';
+  b.style.background = _AL_HAY_ROJO ? 'var(--rd)' : AL_COL.naranja;
+  b.textContent = (_AL_HAY_ROJO ? '🔴 El ERP tiene algo parado' : '🟠 Hay ' + n + ' error' + (n !== 1 ? 'es' : '') + ' por corregir') + ' · Ver ›';
   b.style.display = '';
 }
 function _alIrARojas() {
