@@ -994,26 +994,31 @@ function tarjetaCobertura(d) {
 }
 
 function tarjetaReglas(cfg, R, titulo) {
-  // 3-ago (pedido Pablo): texto FIJO e INAMOVIBLE, igual en todas las vistas.
-  // No se deriva de la config ni se toca sin pedido explícito de Pablo.
+  // 8-oct (OK de Pablo): texto con la regla oficial del calculo en la base.
+  // Los numeros salen de las reglas vigentes (meta y tramos), asi no queda desactualizado.
   var punto = function (color, txt) {
     return '<span style="display:inline-flex;align-items:center;gap:6px">' +
              '<span style="width:9px;height:9px;border-radius:50%;background:' + color + ';' +
                    'flex-shrink:0"></span>' + txt +
            '</span>';
   };
+  var tiers = (R && R.tiers && R.tiers.length) ? R.tiers : ((cfg && cfg.tiers && cfg.tiers.length) ? cfg.tiers : TIERS_FALLBACK);
+  var t0 = tiers[0] || { from: 75, rate: 1.5 }, t1 = tiers[1] || { from: 100, rate: 3 }, t2 = tiers[2] || { from: 125, rate: 4.5 };
 
   return '<div class="card">' +
     '<div class="ct">' + esc(titulo || 'Reglas vigentes') + '</div>' +
     '<div style="font-size:13px;line-height:2.1">' +
       'Meta = Ventas (pedidos con pago completo) x Margen bruto x Factor nivel x 3 (meses)<br>' +
-      '<b>Niveles de comisión:</b><br>' +
-      punto('var(--rd)',  'Nivel 0° = Menos de 75%') + '<br>' +
-      punto('var(--am)',  '1° Nivel = 75% - 100%') + '<br>' +
-      punto('var(--gn)',  '2° Nivel = 100% - 125%') + '<br>' +
-      punto(COM_CELESTE,  '3° Nivel = Más de 125%') + '<br>' +
+      '<b>Niveles de comisión</b> (los pone el equipo, el mismo tramo para todas):<br>' +
+      punto('var(--rd)',  'Nivel 0° = Menos de ' + t0.from + '% → sin comisión') + '<br>' +
+      punto('var(--am)',  '1° Nivel = ' + t0.from + '% - ' + t1.from + '% → ' + t0.rate + '% del margen') + '<br>' +
+      punto('var(--gn)',  '2° Nivel = ' + t1.from + '% - ' + t2.from + '% → ' + t1.rate + '% del margen') + '<br>' +
+      punto(COM_CELESTE,  '3° Nivel = Más de ' + t2.from + '% → ' + t2.rate + '% del margen') + '<br>' +
       '<b>Activación:</b> La comisión se activa siempre y cuando el equipo ' +
-      'llegue al menos al 1° nivel en promedio.' +
+      'llegue al menos al 1° nivel en promedio.<br>' +
+      '<b>Quién cobra:</b> cada asesora que llega al menos al ' + t0.from + '% de <b>su</b> meta cobra el tramo del ' +
+      '<b>equipo</b> sobre todo su margen del trimestre.<br>' +
+      '<b>Qué cuenta:</b> ventas por WhatsApp, TikTok y Showroom. Cada pago suma a la asesora cuyo nombre está en ese pago.' +
     '</div>' +
   '</div>';
 }
@@ -2642,6 +2647,13 @@ function pintarVerComo(d, real) {
     return;
   }
   if (ofV) d = _comOfVendD(d, ofV, yV, qV, nomV);
+  if (d.__of && VEND.hist && VEND.hist.series) {   // "Tu camino" con los meses oficiales
+    var sH = VEND.hist.series[yV] = VEND.hist.series[yV] || {};
+    var mo0 = d.__of.mio || {}, det0 = (mo0.detalle && mo0.detalle.meses) ? mo0.detalle.meses : (mo0.meses || []);
+    det0.forEach(function (x) {
+      if (x.activa) sH[Number(x.mes)] = Object.assign({}, sH[Number(x.mes)] || {}, { margen: Math.round(Number(x.margen) || 0) });
+    });
+  }
 
   var cfg = d.cfg || {};
   var meses = d.meses || [];
@@ -2904,7 +2916,7 @@ function cierresDeAsesora(nombre) {
     return '<div class="com-row" style="font-size:13px">' +
              '<span>' + esc(c.yq) +
                ' <span class="com-mut">(' + f.cumpl + '%' +
-                 (c.teamGate === 'SI' ? '' : ' · equipo no llegó') + ')</span>' + ajustado + '</span>' +
+                 (c.teamGate === 'SI' ? (!(Number(f.bonoPagar) > 0) ? ' · no llegó al 75%' : '') : ' · equipo no llegó') + ')</span>' + ajustado + '</span>' +
              '<span style="color:var(--gn);font-weight:600">' + f2(f.bonoPagar) + '</span>' +
            '</div>';
   }).join('');
