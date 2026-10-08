@@ -528,18 +528,27 @@ function cargar(forzar) {
 
   // 7-oct · paso 2: con el calculo oficial se abre en ~1 s, sin esperar a Apps Script
   // (que antes tardaba hasta 40 s la primera vez). Apps Script completa por detras.
+  // 8-oct (OK de Pablo): el calculo viejo (Apps Script) ya no corre. Solo si la base no responde.
   if (!window.COM_OFICIAL_OFF) {
     var yO = COM.year, qO = COM.q;
+    extrasRestaurar(yO);
     _comOfRpc('comisiones_trimestre', { p_year: yO, p_q: qO }).then(function (t) {
-      if (!t || !t.asesoras || COM.data || COM.year !== yO || COM.q !== qO) return;
-      var dS = _comOfDataSintetica(yO, qO, t);
-      if (!dS) return;
+      if (COM.data || COM.year !== yO || COM.q !== qO) return;
+      var dS = (t && t.asesoras) ? _comOfDataSintetica(yO, qO, t) : null;
+      if (!dS) { _comCargarViejo(); return; }
       COMOF.cache[_comOfClave(yO, qO)] = t; COMOF.activo = true;
+      try { localStorage.setItem('com_of_' + _comOfClave(yO, qO), JSON.stringify({ t: Date.now(), d: t })); } catch (e) {}
       COM.data = dS; COM.traidoEn = Date.now(); COM.cargando = false;
       pintarHome();
-      refrescarDetras();
+      _comOfExtras();
     });
+    return;
   }
+  _comCargarViejo();
+}
+
+/** El camino de antes (Apps Script). Solo de respaldo si la base no responde. */
+function _comCargarViejo() {
 
   // 26-set · B · 2.5) La foto guardada en la base (ComisionesFoto.gs): 0,2 s
   // en vez de 7-60 s. Si es de hace mas de 15 min se refresca por detras.
@@ -615,6 +624,12 @@ function aplicarBoot(b, year, q, t, desdeFoto) {
  * El usuario ya está viendo algo; esto solo lo actualiza cuando llega.
  */
 function refrescarDetras() {
+  // 8-oct: con el calculo oficial no se recalcula nada viejo: se refresca lo oficial
+  if (_comOfVivo()) {
+    _comOfTraer(_comOfClave(COM.year, COM.q), false);
+    _comOfExtras();
+    return;
+  }
   if (COM.refrescando) return;
   COM.refrescando = true;
   marcarRefrescando(true);
@@ -1048,6 +1063,15 @@ function pintarCierre() {
   var c = cont();
   if (!c) return;
 
+  if (!CIERRE.cargado && _comOfVivo()) {   // 8-oct: sin esperar a Apps Script
+    CIERRE.cargado = true;
+    _comOfCierresAplicar();
+    _comOfCierresAlDia();
+    comApi('cierres', { limite: 12 }).then(function (r) {
+      CIERRE.cerradosMes = r || [];
+      if (COM.vista === 'cierre' && !COM.comoEmail) pintarCierre();
+    }).catch(function () {});
+  }
   if (!CIERRE.cargado) {
     c.innerHTML = pestañas('cierre') + '<div class="ld"><div class="sp"></div>Cargando cierres...</div>';
     Promise.all([
@@ -2787,7 +2811,7 @@ function pintarVerComo(d, real) {
                  '<span style="font-weight:' + (yoM ? '700' : '400') + ';' + (yoM ? 'color:var(--ac)' : '') + '">' +
                    esc(_comOfCap(r0.nombre)) + (yoM ? ' (tú)' : '') + '</span>' +
                '</div>' +
-               (cerrado ? '' : '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(cu, R.tiers)] + '">' + p2(cu) + '</span>') +
+               '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(cu, R.tiers)] + '">' + p2(cu) + '</span>' +   // 8-oct: tambien en el cerrado
              '</div>';
     }).join('');
   } else if (cerrado) {
@@ -2804,6 +2828,8 @@ function pintarVerComo(d, real) {
                          (yoMismo0 ? 'color:var(--ac)' : '') + '">' +
                      esc(f0.asesora) + (yoMismo0 ? ' (tú)' : '') + '</span>' +
                  '</div>' +
+                 '<span style="font-weight:600;color:' + NIVEL_COLOR[nivelDe(Number(f0.cumpl) || 0, R.tiers)] + '">' +   // 8-oct
+                   p2(Number(f0.cumpl) || 0) + '</span>' +
                '</div>';
       }).join('');
   } else {
@@ -3205,6 +3231,12 @@ function pintarConfig() {
     return;
   }
 
+  if (_comOfVivo() && !(COM.data.cfgFull && COM.data.cfgFull.admin)) {
+    // 8-oct: los admins y correos viven en la config de Apps Script: se espera esa (liviana)
+    c.innerHTML = pestañas('config') + '<div class="ld"><div class="sp"></div>Cargando configuración...</div>';
+    _comOfCfg(true).then(function () { if (COM.vista === 'config') pintarConfig(); });
+    return;
+  }
   var cfg = COM.data.cfgFull || {};
   var estilo = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);' +
                'padding:7px 10px;border-radius:var(--r);font-size:13px;font-family:inherit';
@@ -3356,6 +3388,7 @@ window.comIr = function (vista) {
 function precargarPestanas() {
   if (precargarPestanas._hecho) return;
   precargarPestanas._hecho = true;
+  if (_comOfVivo()) { _comOfExtras(); return; }   // 8-oct
 
   // El histórico alimenta la alerta de desviaciones. Recorre todo el año,
   // así que va aparte y sin bloquear: cuando llega, se repinta.
@@ -4450,7 +4483,7 @@ function _comOfMapear(d, t) {
   d.__oficialNo = false;
   var reg = t.reglas || (lista[0] && lista[0].a && lista[0].a.reglas) || null;
   if (reg && reg.tramos) {
-    d.cfgFull = Object.assign({}, d.cfgFull || {}, {
+    d.cfgFull = Object.assign({}, EXTRA.cfgFull || {}, d.cfgFull || {}, {
       xMeta: Number(reg.x_meta),
       tiers: reg.tramos.map(function (x) { return { from: Number(x.desde), rate: Number(x.tasa) }; }),
       gm_pct: reg.pct_respaldo != null ? Number(reg.pct_respaldo) * 100 : (d.cfgFull || {}).gm_pct,
@@ -4462,7 +4495,7 @@ function _comOfMapear(d, t) {
     var x = conMeses.filter(function (z) { return z.nombre === nom; })[0];
     var porMes = {};
     if (x) x.det.meses.forEach(function (m) { porMes[Number(m.mes)] = m; });
-    r.marginM = meses.map(function (m) { return porMes[m] ? Math.round(Number(porMes[m].margen) || 0) : 0; });
+    r.marginM = meses.map(function (m) { return porMes[m] ? Math.round((Number(porMes[m].margen) || 0) * 100) / 100 : 0; });
     r.ventas  = meses.map(function (m) { return porMes[m] ? Math.round(Number(porMes[m].ventas) || 0) : 0; });
     if (x) {
       r.sueldoM = meses.map(function (m) { return porMes[m] ? Number(porMes[m].sueldo) || 0 : 0; });
@@ -4607,6 +4640,87 @@ function _comOfPeriodo(r, year, q, seq) {
    plata ajena: erp.comisiones_mio). El admin, en "Ver como", lo saca del
    trimestre completo que ya tiene. Si la base no responde: la vista de siempre. */
 var VENDOF = { mio: {}, pedido: {}, ult: null, cierres: null, cierresPedido: false };
+
+/* ── 8-oct (OK de Pablo): lo que antes traia el "bootstrap" viejo, sin recalcular nada viejo ── */
+/** ¿Manda el calculo oficial? (si la base no respondio para este trimestre, el camino de antes) */
+function _comOfVivo() {
+  if (window.COM_OFICIAL_OFF) return false;
+  return !COMOF.fallo[_comOfClave(COM.year || new Date().getFullYear(), COM.q || Math.ceil((new Date().getMonth() + 1) / 3))];
+}
+
+function _comOfCfg(forzar) {
+  if (COMOF.cfgProm && !forzar) return COMOF.cfgProm;
+  COMOF.cfgProm = comApi('cfg', {}).then(function (cfg) {
+    if (!cfg || !cfg.vendedoras) return null;
+    var of0 = (COM.data && COM.data.cfgFull) || {};
+    var unido = Object.assign({}, cfg);
+    if (of0.tiers) { unido.xMeta = of0.xMeta; unido.tiers = of0.tiers; if (of0.gm_pct != null) unido.gm_pct = of0.gm_pct; }
+    EXTRA.cfgFull = unido;
+    if (COM.data) COM.data.cfgFull = Object.assign({}, COM.data.cfgFull || {}, unido);
+    try {
+      var y0 = COM.year || new Date().getFullYear(), k0 = 'com_extra_' + y0;
+      var g0 = JSON.parse(localStorage.getItem(k0) || '{}') || {};
+      g0.t = Date.now(); g0.cfgFull = unido;
+      localStorage.setItem(k0, JSON.stringify(g0));
+    } catch (e) {}
+    return unido;
+  }).catch(function () { COMOF.cfgProm = null; return null; });
+  return COMOF.cfgProm;
+}
+
+function _comOfExtras() {
+  if (window.COM_OFICIAL_OFF || _comEsAsesora()) return;
+  if (COMOF.extrasT && Date.now() - COMOF.extrasT < 60000) return;
+  COMOF.extrasT = Date.now();
+  var teniaSel = !!(COM.data && COM.data.cfgFull && COM.data.cfgFull.vendedoras);
+  _comOfCfg(true).then(function (u) {
+    if (u && !teniaSel && COM.vista === 'home' && !COM.comoEmail) pintarHome();
+  });
+  if (!ASE.data) {
+    var yA = COM.year || new Date().getFullYear();
+    comApi('asesoraMes', { year: yA }).then(function (d) { if (!ASE.data) { ASE.data = d; ASE.year = yA; } }).catch(function () {});
+  }
+  COM.historico = _comOfHistoricoAdmin();
+  COM.historicoError = null;
+  _comOfCierresAlDia();
+}
+
+/** Alerta de desviaciones: margen por mes de cada asesora, del calculo oficial (desde julio 2026). */
+function _comOfHistoricoAdmin() {
+  var hoy = new Date(), yA = hoy.getFullYear(), qA = Math.ceil((hoy.getMonth() + 1) / 3);
+  var out = { year: yA, porAsesora: {}, oficial: true }, y = COM_ASESORA_DESDE.y, q = COM_ASESORA_DESDE.q;
+  COMOF.hpend = COMOF.hpend || {};
+  while (y * 4 + q <= yA * 4 + qA) {
+    var k = _comOfClave(y, q);
+    if (!COMOF.cache[k]) { var dk = _comOfLeerDisco(k); if (dk) COMOF.cache[k] = dk; }
+    var t = COMOF.cache[k];
+    if (!t && !COMOF.hpend[k]) {
+      COMOF.hpend[k] = true;
+      (function (k2, y2, q2) {
+        _comOfRpc('comisiones_trimestre', { p_year: y2, p_q: q2 }).then(function (r) {
+          if (!r || !r.asesoras) return;
+          COMOF.cache[k2] = r;
+          try { localStorage.setItem('com_of_' + k2, JSON.stringify({ t: Date.now(), d: r })); } catch (e) {}
+          COM.historico = _comOfHistoricoAdmin();
+          if (COM.vista === 'home' && !COM.comoEmail) pintarHome();
+        });
+      })(k, y, q);
+    }
+    if (t && y === yA) {
+      (t.asesoras || []).forEach(function (a) {
+        var det = (a.detalle && a.detalle.meses) ? a.detalle.meses : (a.meses || []);
+        var n = String(a.nombre || a.asesora || '').trim().toUpperCase();
+        det.forEach(function (x) {
+          if (!x.activa) return;
+          (out.porAsesora[n] = out.porAsesora[n] || {})[Number(x.mes)] =
+            { margen: Math.round(Number(x.margen) || 0), ventas: Math.round(Number(x.ventas) || 0) };
+        });
+      });
+    }
+    q++; if (q > 4) { q = 1; y++; }
+  }
+  return out;
+}
 
 var COM_ASESORA_DESDE = { y: 2026, q: 3 };   // 8-oct (Pablo): las asesoras ven desde el 1 de julio de 2026
 function _comOfDesdeOk(yq) {
