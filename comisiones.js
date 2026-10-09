@@ -4874,7 +4874,9 @@ function _comOfGrafDatos(d, ym, hoy) {
   for (var j = 1; j <= fin; j++) {
     var fd = new Date(y, m - 1, j), ft = _comFTxt(fd), v = porDia[ft] || 0, tr = _comTrabaja(nombre, fd), fut = fd > hoy;
     if (!fut) { total += v; if (tr) { conTurno++; if (metaDia > 0 && v >= metaDia) cumple++; } }
-    dias.push({ dia: j, fecha: ft, v: v, turno: tr, futuro: fut, ok: tr && metaDia > 0 && v >= metaDia });
+    var pctD = (tr && metaDia > 0) ? v / metaDia * 100 : null;
+    var niv = pctD == null ? null : (pctD >= 125 ? 3 : pctD >= 100 ? 2 : pctD >= 75 ? 1 : 0);   // 9-oct: colores de los niveles
+    dias.push({ dia: j, fecha: ft, v: v, turno: tr, futuro: fut, ok: tr && metaDia > 0 && v >= metaDia, nivel: niv, pct: pctD });
   }
   return { ym: ym, y: y, m: m, metaDia: metaDia, metaMes: metaM, dias: dias, total: total, cumple: cumple, conTurno: conTurno };
 }
@@ -4884,14 +4886,14 @@ function _comOfGrafMeses(d, hoy) {
   var out = [], ymHoy = hoy.getFullYear() + '-' + String(hoy.getMonth() + 1).padStart(2, '0');
   for (var k = 0; k < 3; k++) {
     var mm = (d.q - 1) * 3 + 1 + k, ym = d.year + '-' + String(mm).padStart(2, '0');
-    if (ym >= COM_GRAF_DESDE && ym <= ymHoy) out.push(ym);
+    if (ym >= COM_GRAF_DESDE) out.push(ym);   // 9-oct: se puede ver el mes siguiente del trimestre (vacio)
   }
   return out;
 }
 
 function _comOfGrafSvg(g) {
   var W = 620, H = 210, L = 44, R = 8, T = 14, B = 26, n = g.dias.length, paso = (W - L - R) / n;
-  var maxV = Math.max(g.metaDia * 1.25, 1); g.dias.forEach(function (x) { if (x.v > maxV) maxV = x.v; });
+  var maxV = Math.max(g.metaDia * 1.4, 1); g.dias.forEach(function (x) { if (x.v > maxV) maxV = x.v; });
   maxV = Math.ceil(maxV / 500) * 500 || 500;
   var yy = function (v) { return T + (H - T - B) * (1 - v / maxV); };
   var NM = ['', 'ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'set', 'oct', 'nov', 'dic'];
@@ -4905,17 +4907,19 @@ function _comOfGrafSvg(g) {
     var x0 = L + i * paso, bw = Math.max(2, paso * 0.66), bx = x0 + (paso - bw) / 2;
     if (!x.turno) h += '<rect x="' + x0 + '" y="' + T + '" width="' + paso + '" height="' + (H - T - B) + '" fill="var(--bd2)" opacity="0.25"/>';
     if (x.v > 0) {
-      var col = x.ok ? 'var(--gn)' : (x.turno ? '#a855f7' : 'var(--mu)');
+      var col = (x.nivel == null) ? 'var(--mu)' : NIVEL_COLOR[x.nivel];
       h += '<rect x="' + bx + '" y="' + yy(x.v) + '" width="' + bw + '" height="' + Math.max(1, yy(0) - yy(x.v)) + '" rx="2" fill="' + col + '">' +
-           '<title>' + x.dia + ' ' + NM[g.m] + ': ' + fmt(x.v) + (x.turno ? (x.ok ? ' · llegó a la meta' : '') : ' · día libre') + '</title></rect>';
+           '<title>' + x.dia + ' ' + NM[g.m] + ': ' + fmt(x.v) + (x.pct != null ? ' · ' + Math.round(x.pct) + '% de la meta del día' : ' · día libre') + '</title></rect>';
     }
     if (x.dia === 1 || (x.dia % 5 === 0 && n - x.dia >= 2) || x.dia === n)
       h += '<text x="' + (x0 + paso / 2) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="var(--mu)">' + x.dia + '</text>';
   });
-  if (g.metaDia > 0) {
-    var my = yy(g.metaDia);
-    h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + my + '" y2="' + my + '" stroke="var(--rd)" stroke-width="1.5" stroke-dasharray="5 4"/>' +
-         '<text x="' + (W - R) + '" y="' + (my - 4) + '" text-anchor="end" font-size="10" fill="var(--rd)">Meta ' + fmt(g.metaDia) + '</text>';
+  if (g.metaDia > 0) {   // 9-oct (Pablo): tres lineas, 75% · meta (100%) · 125%, con el color de cada nivel
+    [[0.75, NIVEL_COLOR[1], '75%'], [1, NIVEL_COLOR[2], 'Meta'], [1.25, NIVEL_COLOR[3], '125%']].forEach(function (ln) {
+      var my = yy(g.metaDia * ln[0]);
+      h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + my + '" y2="' + my + '" stroke="' + ln[1] + '" stroke-width="' + (ln[0] === 1 ? 1.6 : 1.1) + '" stroke-dasharray="5 4"/>' +
+           '<text x="' + (W - R) + '" y="' + (my - 3) + '" text-anchor="end" font-size="10" fill="' + ln[1] + '">' + ln[2] + ' ' + fmt(g.metaDia * ln[0]) + '</text>';
+    });
   }
   return h + '</svg>';
 }
@@ -4923,42 +4927,50 @@ function _comOfGrafSvg(g) {
 function _comOfGrafCuerpo(d, ym) {
   var g = _comOfGrafDatos(d, ym); if (!g) return '';
   var NM = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Setiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  var chip = function (col, txt) {
+    return '<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap"><span style="width:10px;height:10px;border-radius:2px;background:' + col + ';display:inline-block"></span>' + txt + '</span>';
+  };
   return _comOfGrafSvg(g) +
-    '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px;margin-top:8px">' +
-      '<span>' + esc(NM[g.m]) + ': vendiste <b>' + fmt(g.total) + '</b></span>' +
-      (g.metaDia > 0 ? '<span>Llegaste a la meta <b>' + g.cumple + ' de ' + g.conTurno + '</b> días de turno</span>' : '<span class="ml">Sin meta cargada para este mes</span>') +
-    '</div>' +
-    '<div class="ml" style="margin-top:4px;font-size:11px">Barra verde = llegaste a la meta del día · fondo gris = día libre</div>';
+    '<div style="font-size:12px;margin-top:8px">' + esc(NM[g.m]) + ': vendiste <b>' + fmt(g.total) + '</b>' +
+      (g.metaDia > 0 ? '' : ' · <span class="ml">sin meta cargada para este mes</span>') + '</div>' +
+    '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;margin-top:6px;color:var(--mu)">' +
+      chip(NIVEL_COLOR[0], 'Menos de 75%') + chip(NIVEL_COLOR[1], '75% o más') + chip(NIVEL_COLOR[2], '100% (meta) o más') +
+      chip(NIVEL_COLOR[3], '125% o más') + chip('var(--mu)', 'Día libre') +
+    '</div>';
 }
 
 function _comOfGrafDiasHtml(d) {
   if (!d || !d.__of || d.__of.cerrado) return '';
   var meses = _comOfGrafMeses(d); if (!meses.length) return '';
   var clave = String(d.nombre || '').toUpperCase() + '|' + d.year + '-' + d.q;
-  var sel = COMGRAF.mes[clave]; if (meses.indexOf(sel) < 0) sel = meses[meses.length - 1];
+  var hoyD = new Date(), ymHoy = hoyD.getFullYear() + '-' + String(hoyD.getMonth() + 1).padStart(2, '0');
+  var sel = COMGRAF.mes[clave];
+  if (meses.indexOf(sel) < 0) sel = meses.indexOf(ymHoy) >= 0 ? ymHoy : (meses.filter(function (m) { return m <= ymHoy; }).pop() || meses[0]);
   COMGRAF.mes[clave] = sel; COMGRAF.d = d;
-  var NM = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Set', 'Oct', 'Nov', 'Dic'];
-  var tabs = meses.length > 1 ? '<div style="display:flex;gap:6px">' + meses.map(function (ym) {
-    return '<button class="btn ' + (ym === sel ? 'bp' : 'bg') + ' bs" onclick="comGrafMes(\'' + ym + '\')">' + NM[Number(ym.slice(5, 7))] + '</button>';
-  }).join('') + '</div>' : '';
   return '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">' +
-         '<div class="ct" style="margin:0">Tus ventas por día</div>' + tabs + '</div>' +
+         '<div class="ct" style="margin:0">Tus ventas por día</div>' +
+         '<div id="com-graf-nav" style="display:flex;gap:6px;align-items:center">' + _comOfGrafNav(meses, sel) + '</div></div>' +
          '<div id="com-graf-dias">' + _comOfGrafCuerpo(d, sel) + '</div></div>';
+}
+
+/** ◀ mes anterior · Mes · mes siguiente ▶ (solo dentro del trimestre) */
+function _comOfGrafNav(meses, sel) {
+  var NM = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Setiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  var i = meses.indexOf(sel), ant = i > 0 ? meses[i - 1] : null, sig = i < meses.length - 1 ? meses[i + 1] : null;
+  var bt = function (ym, txt) {
+    return ym ? '<button class="btn bg bs" onclick="comGrafMes(\'' + ym + '\')">' + txt + '</button>'
+              : '<button class="btn bg bs" disabled style="opacity:.35;cursor:default">' + txt + '</button>';
+  };
+  return bt(ant, '◀') + '<span style="font-size:13px;font-weight:600;min-width:86px;text-align:center">' + NM[Number(sel.slice(5, 7))] + '</span>' + bt(sig, '▶');
 }
 
 window.comGrafMes = function (ym) {
   var d = COMGRAF.d; if (!d) return;
+  var meses = _comOfGrafMeses(d); if (meses.indexOf(ym) < 0) return;
   COMGRAF.mes[String(d.nombre || '').toUpperCase() + '|' + d.year + '-' + d.q] = ym;
-  var caja = document.getElementById('com-graf-dias');
-  if (caja) {
-    caja.innerHTML = _comOfGrafCuerpo(d, ym);
-    var bt = caja.parentNode ? caja.parentNode.querySelectorAll('button') : [];
-    var NM = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Set', 'Oct', 'Nov', 'Dic'];
-    Array.prototype.forEach.call(bt, function (b) {
-      var es = b.textContent === NM[Number(ym.slice(5, 7))];
-      b.className = 'btn ' + (es ? 'bp' : 'bg') + ' bs';
-    });
-  }
+  var caja = document.getElementById('com-graf-dias'), nav = document.getElementById('com-graf-nav');
+  if (caja) caja.innerHTML = _comOfGrafCuerpo(d, ym);
+  if (nav) nav.innerHTML = _comOfGrafNav(meses, ym);
 };
 
 function _comTrabaja(nombre, f) {
