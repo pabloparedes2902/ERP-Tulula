@@ -553,6 +553,7 @@ function pintarError(e) {
  */
 function cargar(forzar) {
   inyectarEstilos();
+  try { _comTurnosTraer(forzar); } catch (e) {}   // 9-oct: dias de trabajo desde la base
 
   // FASE 1 asesoras (2-ago): si quien entra es una asesora (el login del ERP
   // la reconoció y guardó su nombre en MY_ASESORA), ve SU vista, no la admin.
@@ -1743,6 +1744,72 @@ var ASE = {
 var MESES_LARGO = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
                    'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
+/* ── 9-oct (Pablo) · DIAS DE TRABAJO de cada asesora (Comisiones > Asesoras, solo admin) ──
+   Un clic en el dia lo prende o lo apaga y se guarda al instante en la base.
+   "Cambio de una fecha": un dia puntual en que trabaja o descansa distinto a lo de siempre. */
+var COM_LETRAS_DIA = [[1, 'L'], [2, 'M'], [3, 'X'], [4, 'J'], [5, 'V'], [6, 'S'], [0, 'D']];
+function _comTurnosCardHtml() {
+  var nombres = Object.keys(COM_TURNOS).sort();
+  var hoy = _comFTxt(new Date());
+  var filas = nombres.map(function (n) {
+    var dias = COM_TURNOS[n] || [];
+    return '<div style="display:flex;align-items:center;gap:10px;margin:8px 0">' +
+      '<span style="width:80px;font-weight:600">' + esc(n.charAt(0) + n.slice(1).toLowerCase()) + '</span>' +
+      COM_LETRAS_DIA.map(function (p) {
+        var on = dias.indexOf(p[0]) >= 0;
+        return '<button class="btn ' + (on ? 'bp' : 'bg') + ' bs" style="width:34px;padding:6px 0" title="' + (on ? 'Trabaja' : 'Descansa') + '" ' +
+               'onclick="comTurnoDia(\'' + n + '\',' + p[0] + ')">' + p[1] + '</button>';
+      }).join('') + '</div>';
+  }).join('');
+  var cambios = Object.keys(COM_TURNO_CAMBIOS).map(function (k) { var a = k.split('|'); return { n: a[0], f: a[1], t: COM_TURNO_CAMBIOS[k] }; })
+    .filter(function (c) { return c.f >= _comFTxt(new Date(Date.now() - 31 * 864e5)); })
+    .sort(function (a, b) { return a.f < b.f ? -1 : 1; });
+  var est = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);padding:6px 8px;border-radius:var(--r);font-size:13px;font-family:inherit';
+  return '<div class="ct" style="margin:0 0 4px">Días de trabajo</div>' +
+    '<div class="ml" style="margin-bottom:6px">Los días marcados son los que trabaja cada asesora. Con esto se arma su meta del día y su gráfico.</div>' +
+    filas +
+    '<div style="margin-top:14px;font-weight:600;font-size:13px">Cambio de una fecha</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">' +
+      '<select id="com-tc-n" style="' + est + '">' + nombres.map(function (n) { return '<option value="' + n + '">' + esc(n.charAt(0) + n.slice(1).toLowerCase()) + '</option>'; }).join('') + '</select>' +
+      '<input id="com-tc-f" type="date" value="' + hoy + '" style="' + est + '">' +
+      '<select id="com-tc-t" style="' + est + '"><option value="0">Descansa</option><option value="1">Trabaja</option></select>' +
+      '<button class="btn bp bs" onclick="comTurnoCambio()">Agregar</button>' +
+    '</div>' +
+    (cambios.length ? '<div style="margin-top:10px;font-size:13px">' + cambios.map(function (c) {
+      return '<div style="display:flex;gap:10px;align-items:center;margin:4px 0">' +
+        '<span>' + esc(c.f.split('-').reverse().join('/')) + '</span><b>' + esc(c.n.charAt(0) + c.n.slice(1).toLowerCase()) + '</b>' +
+        '<span style="color:' + (c.t ? 'var(--gn)' : 'var(--mu)') + '">' + (c.t ? 'trabaja' : 'descansa') + '</span>' +
+        '<button class="btn bg bs" onclick="comTurnoQuitar(\'' + c.n + '\',\'' + c.f + '\')">Quitar</button></div>';
+    }).join('') + '</div>' : '<div class="ml" style="margin-top:8px">Sin cambios de fecha.</div>');
+}
+function _comTurnosRepintar(msg, ok) {
+  var c = document.getElementById('com-turnos-card');
+  if (c) c.innerHTML = _comTurnosCardHtml();
+  try { if (typeof toast === 'function' && msg) toast(msg, ok ? 'ok' : 'err'); } catch (e) {}
+}
+window.comTurnoDia = function (nombre, dow) {
+  var dias = (COM_TURNOS[nombre] || []).slice(), i = dias.indexOf(dow);
+  if (i >= 0) dias.splice(i, 1); else dias.push(dow);
+  var antes = (COM_TURNOS[nombre] || []).slice();
+  COM_TURNOS[nombre] = dias; _comTurnosRepintar();
+  _comOfRpc('turnos_guardar_dias', { p_nombre: nombre, p_dias: dias }, true)
+    .then(function (tt) { _comTurnosAplicar(tt); _comTurnosRepintar('✓ Días de trabajo guardados', true); })
+    .catch(function (e) { COM_TURNOS[nombre] = antes; _comTurnosRepintar('No se guardó: ' + (e && e.message || e), false); });
+};
+window.comTurnoCambio = function () {
+  var n = (document.getElementById('com-tc-n') || {}).value, f = (document.getElementById('com-tc-f') || {}).value,
+      t = (document.getElementById('com-tc-t') || {}).value === '1';
+  if (!n || !f) return;
+  _comOfRpc('turnos_cambio', { p_nombre: n, p_fecha: f, p_trabaja: t }, true)
+    .then(function (tt) { _comTurnosAplicar(tt); _comTurnosRepintar('✓ Cambio guardado', true); })
+    .catch(function (e) { _comTurnosRepintar('No se guardó: ' + (e && e.message || e), false); });
+};
+window.comTurnoQuitar = function (n, f) {
+  _comOfRpc('turnos_cambio', { p_nombre: n, p_fecha: f, p_trabaja: null }, true)
+    .then(function (tt) { _comTurnosAplicar(tt); _comTurnosRepintar('✓ Cambio quitado', true); })
+    .catch(function (e) { _comTurnosRepintar('No se guardó: ' + (e && e.message || e), false); });
+};
+
 function pintarAsesoras() {
   COM.vista = 'asesoras';
   var c = cont();
@@ -1770,6 +1837,7 @@ function pintarAsesoras() {
   }).join('');
 
   c.innerHTML = pestañas('asesoras') +
+    '<div class="card" id="com-turnos-card">' + _comTurnosCardHtml() + '</div>' +
     '<div class="card">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">' +
         '<div class="ct" style="margin:0">Asesoras · mes a mes</div>' +
@@ -4863,7 +4931,7 @@ function _comOfGrafDatos(d, ym, hoy) {
   var y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7)), nombre = d.nombre;
   var mo = of.mio || {}, det = (mo.detalle && mo.detalle.meses) ? mo.detalle.meses : (mo.meses || []);
   var metaM = 0; det.forEach(function (x) { if (x.activa && Number(x.mes) === m) metaM = Number(x.meta) || 0; });
-  var gm = (Number(d.gmPct) || 62) / 100;
+  var gm = _comGmEquipo(d) / 100;   // 9-oct (Pablo): margen del EQUIPO -> misma meta para todas
   var fin = new Date(y, m, 0).getDate(), turnos = 0, porDia = {};
   for (var i = 1; i <= fin; i++) if (_comTrabaja(nombre, new Date(y, m - 1, i))) turnos++;
   (of.dias || []).forEach(function (x) {
@@ -4879,7 +4947,13 @@ function _comOfGrafDatos(d, ym, hoy) {
     var niv = pctD == null ? null : (pctD >= 125 ? 3 : pctD >= 100 ? 2 : pctD >= 75 ? 1 : 0);   // 9-oct: colores de los niveles
     dias.push({ dia: j, fecha: ft, v: v, turno: tr, futuro: fut, ok: tr && metaDia > 0 && v >= metaDia, nivel: niv, pct: pctD });
   }
-  return { ym: ym, y: y, m: m, metaDia: metaDia, metaMes: metaM, dias: dias, total: total, cumple: cumple, conTurno: conTurno };
+  // 9-oct (Pablo): promedio = TODO lo vendido en el mes (incluye lo que cerro en dias libres)
+  // ÷ dias de trabajo que ya pasaron (hoy cuenta solo si ya vendio algo)
+  var hoyTxt = _comFTxt(hoy), diasTrab = 0;
+  dias.forEach(function (x) { if (x.turno && !x.futuro && !(x.fecha === hoyTxt && !(x.v > 0))) diasTrab++; });
+  var promedio = diasTrab > 0 ? total / diasTrab : 0;
+  return { ym: ym, y: y, m: m, metaDia: metaDia, metaMes: metaM, dias: dias, total: total, cumple: cumple, conTurno: conTurno,
+           diasTrab: diasTrab, promedio: promedio };
 }
 
 function _comOfGrafMeses(d, hoy) {
@@ -4930,6 +5004,11 @@ function _comOfGrafSvg(g) {
            '<text x="' + (W - R) + '" y="' + (my - 4) + '" text-anchor="end" font-size="11" fill="' + ln[1] + '">' + ln[2] + ' ' + fmt(g.metaDia * ln[0]) + '</text>';
     });
   }
+  if (g.promedio > 0) {   // 9-oct: linea de su promedio por dia de trabajo
+    var py2 = yy(g.promedio);
+    h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + py2 + '" y2="' + py2 + '" stroke="var(--tx, currentColor)" stroke-width="1.2" stroke-dasharray="2 3" opacity="0.8"/>' +
+         '<text x="' + (L + 6) + '" y="' + (py2 - 4) + '" font-size="11" fill="var(--tx, currentColor)" opacity="0.9">Tu promedio ' + fmt(g.promedio) + '</text>';
+  }
   return h + '</svg>';
 }
 
@@ -4940,11 +5019,14 @@ function _comOfGrafCuerpo(d, ym) {
     return '<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap"><span style="width:10px;height:10px;border-radius:2px;background:' + col + ';display:inline-block"></span>' + txt + '</span>';
   };
   return _comOfGrafSvg(g) +
-    '<div style="font-size:12px;margin-top:8px">' + esc(NM[g.m]) + ': vendiste <b>' + fmt(g.total) + '</b>' +
-      (g.metaDia > 0 ? '' : ' · <span class="ml">sin meta cargada para este mes</span>') + '</div>' +
+    '<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin-top:8px">' +
+      '<span>' + esc(NM[g.m]) + ': vendiste <b>' + fmt(g.total) + '</b></span>' +
+      (g.diasTrab > 0 ? '<span>Tu promedio por día de trabajo: <b>' + fmt(g.promedio) + '</b> <span class="ml">(' + g.diasTrab + ' día' + (g.diasTrab === 1 ? '' : 's') + ' de trabajo)</span></span>' : '') +
+      (g.metaDia > 0 ? '' : '<span class="ml">sin meta cargada para este mes</span>') + '</div>' +
     '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;margin-top:6px;color:var(--mu)">' +
       chip(NIVEL_COLOR[0], 'Menos de 75%') + chip(NIVEL_COLOR[1], '75% o más') + chip(NIVEL_COLOR[2], '100% (meta) o más') +
       chip(NIVEL_COLOR[3], '125% o más') + chip('var(--mu)', 'Día de descanso (columna gris)') +
+      '<span style="white-space:nowrap">┈ Tu promedio</span>' +
     '</div>';
 }
 
@@ -4982,9 +5064,52 @@ window.comGrafMes = function (ym) {
   if (nav) nav.innerHTML = _comOfGrafNav(meses, ym);
 };
 
+// 9-oct (Pablo) · los dias de trabajo se cambian desde Comisiones > Asesoras (tabla erp.asesoras_turnos)
+// y hay cambios de una fecha puntual (erp.asesoras_turno_cambios). COM_TURNOS queda como respaldo.
+var COM_TURNO_CAMBIOS = {};
+var COMTUR = { t: 0, prom: null };
+function _comTurnosAplicar(tt) {
+  if (!tt || !tt.dias) return false;
+  Object.keys(tt.dias).forEach(function (k) {
+    var v = tt.dias[k]; if (Array.isArray(v)) COM_TURNOS[String(k).toUpperCase()] = v.map(Number);
+  });
+  COM_TURNO_CAMBIOS = {};
+  (tt.cambios || []).forEach(function (c) {
+    COM_TURNO_CAMBIOS[String(c.nombre || '').toUpperCase() + '|' + String(c.fecha || '').slice(0, 10)] = !!c.trabaja;
+  });
+  COMTUR.ultimo = tt;
+  try { localStorage.setItem('com_turnos', JSON.stringify(tt)); } catch (e) {}
+  return true;
+}
+(function () { try { var g = JSON.parse(localStorage.getItem('com_turnos') || 'null'); if (g) _comTurnosAplicar(g); } catch (e) {} })();
+function _comTurnosTraer(forzar) {
+  if (!forzar && COMTUR.prom && Date.now() - COMTUR.t < 300000) return COMTUR.prom;
+  COMTUR.t = Date.now();
+  COMTUR.prom = _comOfRpc('turnos_leer', {}).then(function (tt) {
+    if (_comTurnosAplicar(tt)) {
+      try { if (COMGRAF.d && document.getElementById('com-graf-dias')) window.comGrafMes(COMGRAF.mes[String(COMGRAF.d.nombre || '').toUpperCase() + '|' + COMGRAF.d.year + '-' + COMGRAF.d.q]); } catch (e) {}
+    }
+    return tt;
+  }).catch(function () { return null; });
+  return COMTUR.prom;
+}
 function _comTrabaja(nombre, f) {
-  var t = COM_TURNOS[String(nombre || '').trim().toUpperCase()];
+  var N = String(nombre || '').trim().toUpperCase();
+  var k = N + '|' + _comFTxt(f);
+  if (Object.prototype.hasOwnProperty.call(COM_TURNO_CAMBIOS, k)) return COM_TURNO_CAMBIOS[k];
+  var t = COM_TURNOS[N];
   return !t || t.indexOf(f.getDay()) >= 0;
+}
+/** 9-oct (Pablo) · margen % del EQUIPO (todas con los mismos dias = misma meta del dia en soles) */
+function _comGmEquipo(d) {
+  var of = d && d.__of;
+  if (of && Number(of.equipo_gm) > 0) return Number(of.equipo_gm);
+  try {
+    var t = COMOF.cache[_comOfClave(d.year, d.q)], v = 0, m = 0;
+    (t && t.asesoras || []).forEach(function (a) { v += Number(a.ventas) || 0; m += Number(a.margen) || 0; });
+    if (v > 0) return Math.round(m / v * 1000) / 10;
+  } catch (e) {}
+  return Number(d && d.gmPct) || 62;
 }
 function _comFTxt(f) { return f.getFullYear() + '-' + String(f.getMonth() + 1).padStart(2, '0') + '-' + String(f.getDate()).padStart(2, '0'); }
 
@@ -4999,7 +5124,7 @@ function _comOfMetaDiaCalc(d, hoy) {
     var f = String(x.fecha || '').slice(0, 10), o = porDia[f] || (porDia[f] = { m: 0, v: 0 });
     o.m += Number(x.margen) || 0; o.v += Number(x.ventas) || 0;
   });
-  var gm = (Number(d.gmPct) || 62) / 100;
+  var gm = _comGmEquipo(d) / 100;   // 9-oct (Pablo): margen del EQUIPO -> misma meta para todas
   var evalDia = function (f) {
     var y = f.getFullYear(), m = f.getMonth() + 1, meta = metaMes[m];
     if (!meta) return null;
