@@ -4931,7 +4931,7 @@ function _comOfGrafDatos(d, ym, hoy) {
   var y = Number(ym.slice(0, 4)), m = Number(ym.slice(5, 7)), nombre = d.nombre;
   var mo = of.mio || {}, det = (mo.detalle && mo.detalle.meses) ? mo.detalle.meses : (mo.meses || []);
   var metaM = 0; det.forEach(function (x) { if (x.activa && Number(x.mes) === m) metaM = Number(x.meta) || 0; });
-  var gm = _comGmEquipo(d) / 100;   // 9-oct (Pablo): margen del EQUIPO -> misma meta para todas
+  var gm = (typeof _comGmEquipo === 'function' ? _comGmEquipo(d) : (Number(d.gmPct) || 62)) / 100;   // 9-oct (Pablo): margen del EQUIPO -> misma meta para todas
   var fin = new Date(y, m, 0).getDate(), turnos = 0, porDia = {};
   for (var i = 1; i <= fin; i++) if (_comTrabaja(nombre, new Date(y, m - 1, i))) turnos++;
   (of.dias || []).forEach(function (x) {
@@ -5096,7 +5096,8 @@ function _comTurnosTraer(forzar) {
 function _comTrabaja(nombre, f) {
   var N = String(nombre || '').trim().toUpperCase();
   var k = N + '|' + _comFTxt(f);
-  if (Object.prototype.hasOwnProperty.call(COM_TURNO_CAMBIOS, k)) return COM_TURNO_CAMBIOS[k];
+  var cam = (typeof COM_TURNO_CAMBIOS !== 'undefined') ? COM_TURNO_CAMBIOS : {};
+  if (Object.prototype.hasOwnProperty.call(cam, k)) return cam[k];
   var t = COM_TURNOS[N];
   return !t || t.indexOf(f.getDay()) >= 0;
 }
@@ -5124,7 +5125,7 @@ function _comOfMetaDiaCalc(d, hoy) {
     var f = String(x.fecha || '').slice(0, 10), o = porDia[f] || (porDia[f] = { m: 0, v: 0 });
     o.m += Number(x.margen) || 0; o.v += Number(x.ventas) || 0;
   });
-  var gm = _comGmEquipo(d) / 100;   // 9-oct (Pablo): margen del EQUIPO -> misma meta para todas
+  var gm = (typeof _comGmEquipo === 'function' ? _comGmEquipo(d) : (Number(d.gmPct) || 62)) / 100;   // 9-oct (Pablo): margen del EQUIPO -> misma meta para todas
   var evalDia = function (f) {
     var y = f.getFullYear(), m = f.getMonth() + 1, meta = metaMes[m];
     if (!meta) return null;
