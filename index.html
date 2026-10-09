@@ -20549,7 +20549,7 @@ function verPed(p) {
     +'</div>'
     +'<div class="fr">'
     +'<div class="fg"><label>Origen *</label><select id="mpf-origen" style="'+inpStP+'">'+_optSel(ORIGENES, p['ORIGEN'])+'</select></div>'
-    +'<div class="fg"><label>Asesora</label><select id="mpf-asesora" style="'+inpStP+'">'+_optSel(ASESORAS, p['Asesora'])+'</select></div>'
+    +'<div class="fg"><label>Asesora</label><select id="mpf-asesora" style="'+inpStP+'">'+_optSel(ASESORAS, (_miAsesoraERP() && _esNombreAsesora(_miAsesoraERP())) ? _miAsesoraERP() : p['Asesora'])+'</select></div>'
     +'</div>'
     +'<div class="fr">'
     +'<div class="fg"><label>Envío (S/) — este lote</label><input id="mpf-envio" type="number" min="0" step="1" placeholder="0 si es el mismo despacho" value="" style="'+inpStP+'"></div>'
@@ -20904,6 +20904,7 @@ function verPed(p) {
     } catch (_) {}
     // Anti doble-agregado: bloquear el botón mientras corre (evita 2 clics = 2 prendas)
     if (this.disabled) return;
+    if (!(await _confirmarOtraAsesora(qId('mpf-asesora') ? qId('mpf-asesora').value : '', 'una prenda', 'mpf-asesora'))) return;
     this.disabled = true;
     // Verificar stock antes de guardar — igual que en Nuevo Pedido
     if (!_esMue) await npMostrarStock(prenda, qId('mpf-prenda'), qId('mpf-stock-el'));   // una Muestra no pide stock
@@ -21603,6 +21604,11 @@ async function _guardarPedidoModal(nro, body) {
     const _paSel = qId('pago-f-asesora');
     if (_paSel) _paSel.value = (state && state.asesora) ||
       (state && state.esNuevo && typeof MY_ASESORA !== 'undefined' ? MY_ASESORA : '') || '';
+    // 9-oct (Pablo) · CANDADO: en un pago ya registrado, la asesora solo la cambia un admin.
+    if (_paSel) {
+      _paSel.disabled = !!(state && !state.esNuevo && !_soyAdminERP());
+      _paSel.title = _paSel.disabled ? 'Solo un administrador puede cambiar la asesora de un pago ya registrado' : '';
+    }
     _resetConstanciaField();
     const delBtn = qId('pago-f-delete');
     if (delBtn) delBtn.style.display = state.esNuevo ? 'none' : '';
@@ -21628,8 +21634,8 @@ async function _guardarPedidoModal(nro, body) {
       const pg = pagos[i]; if (!pg) return;
       // Filas _PAGO_ se identifican por PagoId (o _pagoKey como respaldo)
       const state = (pg._prenda && !_esPago(pg._prenda))
-        ? {esNuevo: false, prenda: pg._prenda, pagoId: pg._id||''}
-        : {esNuevo: false, pagoKey: pg._key, pagoId: pg._id||''};
+        ? {esNuevo: false, prenda: pg._prenda, pagoId: pg._id||'', asesora: pg.asesora||''}
+        : {esNuevo: false, pagoKey: pg._key, pagoId: pg._id||'', asesora: pg.asesora||''};
       abrirFormPago('Editar pago #'+(i+1), pg.monto, pg.forma, pg.fecha, state);
     });
   });
@@ -21719,6 +21725,11 @@ async function _guardarPedidoModal(nro, body) {
   // Eliminar pago — #8 Optimistic UI: aplicar local AL INSTANTE, backend en background con rollback en fallo
   qId('pago-f-delete').addEventListener('click', function() {
     if (!pagoEditState || pagoEditState.esNuevo) return;
+    // 9-oct (Pablo) · una asesora no puede borrar el pago de OTRA asesora (borrar y volver a
+    // registrarlo a su nombre seria lo mismo que reasignarselo). La base tambien lo bloquea.
+    { const _yo = _miAsesoraERP(), _de = String(pagoEditState.asesora || '').trim().toUpperCase();
+      if (!_soyAdminERP() && _yo && _esNombreAsesora(_de) && _de !== _yo) {
+        toast('Este pago es de ' + _de + ': solo un administrador puede eliminarlo.', 'err'); return; } }
     // FIX jul-2026 (QA): confirmación INLINE de 2 clics. El confirm() nativo del
     // navegador está prohibido en este ERP (regla de Pablo) y además congela la
     // página entera mientras está abierto (reproducido en vivo el 21/07).
@@ -21844,6 +21855,7 @@ async function _guardarPedidoModal(nro, body) {
       toast('Adjunta la foto de la constancia: es obligatoria para guardar el pago (salvo EFECTIVO).', 'err');
       return;
     }
+    if (pagoEditState.esNuevo && !(await _confirmarOtraAsesora(qId('pago-f-asesora') ? qId('pago-f-asesora').value : '', 'un pago', 'pago-f-asesora'))) return;
     this.disabled = true; this.textContent = 'Guardando...';
 
     // K-16 (reforma jul-2026): Voucher upload EN PARALELO al guardado de pago (no bloquea).
@@ -21952,7 +21964,11 @@ async function _guardarPedidoModal(nro, body) {
           if (_pidEd) {
             const _b = await _sbRpcPago('pago_editar', {
               p_nro: String(nro), p_pago_id: String(_pidEd),
-              p_monto: monto, p_forma: String(forma||''), p_fecha: String(fecha||''), p_asesora: '' });
+              p_monto: monto, p_forma: String(forma||''), p_fecha: String(fecha||''),
+              // 9-oct · solo un admin cambia la asesora de un pago ya registrado ('' = no tocar)
+              p_asesora: (_soyAdminERP() && qId('pago-f-asesora') && qId('pago-f-asesora').value
+                          && qId('pago-f-asesora').value.trim().toUpperCase() !== String(pagoEditState.asesora || '').trim().toUpperCase())
+                         ? qId('pago-f-asesora').value.trim() : '' });
             if (_b) return _b;
           }
           return apiSend('pedidos.actualizar', {NroPedido:nro, _pagoId:_pidEd, _pagoKey:pagoEditState.pagoKey, Pago:monto, FormaPago:forma, FechaPago:fecha});
@@ -24194,6 +24210,7 @@ async function npGuardar() {
   }
 
   const errs = npValidar();
+  if (!errs.length && !(await _confirmarOtraAsesora((document.getElementById('np-asesora') || {}).value, 'un pedido', 'np-asesora'))) return;
   const vbox = document.getElementById('np-vbox');
   if (errs.length) {
     vbox.innerHTML = '<div class="vbox"><p>Corrige los siguientes campos:</p><ul>' + errs.map(e => '<li>' + esc(e) + '</li>').join('') + '</ul></div>';
@@ -25226,6 +25243,30 @@ function npConfirm(msg) {
     o.querySelector('#cn-no').addEventListener('click', () => { o.remove(); resolve(false); });
     o.querySelector('#cn-si').addEventListener('click', () => { o.remove(); resolve(true); });
   });
+}
+
+// 9-oct-2026 (Pablo) · VENTAS DE OTRA ASESORA.
+// Cada asesora registra lo suyo. Si elige a OTRA asesora (pedido, prenda o pago) se le
+// pregunta: Si = sigue; No = no se guarda nada y el selector vuelve a su nombre.
+// Admin / logistica (sin asesora propia) no reciben la pregunta.
+function _soyAdminERP() {
+  try { return MY_ROLE === 'Administrador' || MY_ROLE === 'Admin'; } catch (_) { return false; }
+}
+function _miAsesoraERP() {
+  try { return String((typeof MY_ASESORA !== 'undefined' && MY_ASESORA) || '').trim().toUpperCase(); } catch (_) { return ''; }
+}
+function _esNombreAsesora(n) {
+  const x = String(n || '').trim().toUpperCase();
+  if (!x || x === 'OTROS' || /^N\/?A$/.test(x)) return false;
+  try { return (ASESORAS || []).some(a => String(a || '').trim().toUpperCase() === x); } catch (_) { return false; }
+}
+async function _confirmarOtraAsesora(elegida, que, selId) {
+  const yo = _miAsesoraERP();
+  const el = String(elegida || '').trim().toUpperCase();
+  if (!yo || !el || el === yo || !_esNombreAsesora(el)) return true;
+  const ok = await npConfirm('¿Confirmas que estás registrando ' + que + ' de la asesora ' + el + '?\n\nNormalmente cada asesora registra solo lo suyo. Si eliges «No», no se guarda nada.');
+  if (!ok && selId) { try { const e = document.getElementById(selId); if (e) e.value = yo; } catch (_) {} }
+  return ok;
 }
 
 // 1-oct-2026 · listado 176/181 — una prenda escrita a mano que no esta en el catalogo
