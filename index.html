@@ -7484,9 +7484,10 @@ function _cosEstadosPintar(v) {
         if (!v._mm) { try { await _cosMmLeer(v); } catch (_) {} }
         const falta = [];
         if (!(Number(v.precios && v.precios.lista) > 0)) falta.push('el precio de lista');
-        if (!String(v.Descripcion || '').trim()) falta.push('la descripción');
-        if (!String(v.Cuidados || '').trim()) falta.push('los cuidados');
-        if (!v._mm) falta.push('(no pude revisar las fotos: reintenta)'); else if (!v._mm.some(r => r.Canal === 'SHOPIFY' && r.Tipo !== 'VIDEO')) falta.push('las fotos de la tienda');
+        const shY = _cosShopDe(v);   // 9-oct · lo que ya está cargado directo en Shopify también cuenta (el servidor lo vuelve a revisar)
+        if (!String(v.Descripcion || '').trim() && !(shY && shY.desc > 0)) falta.push('la descripción');
+        if (!String(v.Cuidados || '').trim() && !(shY && shY.desc > 0)) falta.push('los cuidados');
+        if (!v._mm && !(shY && shY.fotos && shY.fotos.length)) falta.push('(no pude revisar las fotos: reintenta)'); else if (!(shY && shY.fotos && shY.fotos.length) && !v._mm.some(r => r.Canal === 'SHOPIFY' && r.Tipo !== 'VIDEO')) falta.push('las fotos de la tienda');
         // 8-oct (Pablo) · la ficha nueva tiene que salir completa: La prenda y los beneficios con su foto · 9-oct: las ocasiones ya no se exigen (sección apagada en la tienda)
         try { const fw = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: v.ShopifyId || '' }), fi = (fw && fw.ficha) || {};
           if (!fi.prenda || fi.prenda.borrador) falta.push('«La prenda» (pestaña Tienda)');
@@ -21871,6 +21872,17 @@ async function _guardarPedidoModal(nro, body) {
       return;
     }
     if (pagoEditState.esNuevo && !(await _confirmarOtraAsesora(qId('pago-f-asesora') ? qId('pago-f-asesora').value : '', 'un pago', 'pago-f-asesora'))) return;
+    // 9-oct (Pablo) · pago a SU nombre en un pedido cuyas prendas son todas de OTRA asesora:
+    // pregunta. Si = queda a su nombre; No = el pago queda a nombre de la duena de las prendas.
+    if (pagoEditState.esNuevo) {
+      const _duena = _duenaUnicaPrendas(nro);
+      const _selP = qId('pago-f-asesora'), _yoP = _miAsesoraERP();
+      const _elegP = String(_selP ? _selP.value : '').trim().toUpperCase();
+      if (_duena && _yoP && _elegP === _yoP && _duena !== _yoP) {
+        const _esMio = await npConfirm('Las prendas de este pedido son de ' + _duena + '.\n\n¿Este pago es tuyo?\n\nSi eliges «No», el pago queda a nombre de ' + _duena + '.');
+        if (!_esMio && _selP) _selP.value = _duena;
+      }
+    }
     this.disabled = true; this.textContent = 'Guardando...';
 
     // K-16 (reforma jul-2026): Voucher upload EN PARALELO al guardado de pago (no bloquea).
@@ -25274,6 +25286,21 @@ function _esNombreAsesora(n) {
   const x = String(n || '').trim().toUpperCase();
   if (!x || x === 'OTROS' || /^N\/?A$/.test(x)) return false;
   try { return (ASESORAS || []).some(a => String(a || '').trim().toUpperCase() === x); } catch (_) { return false; }
+}
+/** 9-oct · si TODAS las prendas (con asesora) del pedido son de una sola asesora, su nombre; si no, '' */
+function _duenaUnicaPrendas(nro) {
+  try {
+    const set = {};
+    (pRaw || []).forEach(r => {
+      if (String(r['NroPedido'] || '').trim() !== String(nro || '').trim()) return;
+      const pr = String(r['Prenda'] || '').trim();
+      if (!pr || (typeof _esPago === 'function' && _esPago(pr))) return;
+      const a = String(r['Asesora'] || '').trim().toUpperCase();
+      if (_esNombreAsesora(a)) set[a] = true;
+    });
+    const k = Object.keys(set);
+    return k.length === 1 ? k[0] : '';
+  } catch (_) { return ''; }
 }
 async function _confirmarOtraAsesora(elegida, que, selId) {
   const yo = _miAsesoraERP();
