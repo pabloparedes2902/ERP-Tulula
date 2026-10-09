@@ -3017,7 +3017,7 @@ function pintarVerComo(d, real) {
   // que siempre.
   var cabecera = real
     ? '<div style="display:flex;justify-content:space-between;align-items:center;' +
-        'gap:10px;margin-bottom:14px;max-width:960px;margin-left:auto;margin-right:auto">' +
+        'gap:10px;margin-bottom:14px;max-width:1200px;margin-left:auto;margin-right:auto">' +
         '<div style="font-size:17px;font-weight:600">' +
           (VEND.preview ? 'Así lo ve ' + esc(VEND.preview.nombre) : 'Mis comisiones') + '</div>' +
         '<div style="display:flex;gap:8px;align-items:center">' +
@@ -3042,7 +3042,7 @@ function pintarVerComo(d, real) {
           '<span class="com-nom">' + esc(d.nombre) + '</span>' +
           '<span class="com-nom" style="color:' + colVer + '">' + p2(cumplVer) + '</span>' +
         '</div>' +
-        '<div class="com-sub">' + (cerrado ? '<b style="color:var(--gn)">Trimestre cerrado ✓</b>' : esc(qTxt)) + '</div>' +
+        (cerrado ? '<div class="com-sub"><b style="color:var(--gn)">Trimestre cerrado ✓</b></div>' : '') +   // 9-oct: sin el periodo (ya esta en el filtro)
         '<div style="text-align:center;margin:20px 0 8px">' +
           '<div class="ml">' + (cerrado ? 'Tu comisión' : 'Tu comisión del trimestre') + '</div>' +
           '<div style="font-size:36px;font-weight:700;letter-spacing:-1px;' +
@@ -3076,7 +3076,7 @@ function pintarVerComo(d, real) {
       '</div>';
 
   c.innerHTML = cabecera +
-    '<div style="max-width:960px;margin:0 auto">' +   // 9-oct (Pablo): mas ancho para que se lea el grafico
+    '<div style="max-width:1200px;margin:0 auto">' +   // 9-oct (Pablo): mas ancho para que se lea el grafico
       (real && !cerrado ? (d.__of ? _comOfCelebrar(d, R, yo) : bannerCelebracion(d, lvActual)) : '') +
       (real ? (d.__of ? _comOfMetaDia(d) : tarjetaMetaDia(d)) : '') +
       tarjetaPrincipal +
@@ -4968,7 +4968,7 @@ function _comOfGrafMeses(d, hoy) {
 
 function _comOfGrafSvg(g) {
   // 9-oct (Pablo): mas ancho, monto sobre cada barra y abajo dos filas: numero de dia y su letra
-  var W = 920, H = 300, L = 46, R = 10, T = 26, B = 44, n = g.dias.length, paso = (W - L - R) / n;
+  var W = 1160, H = 320, L = 130, R = 120, T = 26, B = 44, n = g.dias.length, paso = (W - L - R) / n;   // 9-oct: etiquetas afuera (izq. promedio, der. lineas)
   var maxV = Math.max(g.metaDia * 1.4, 1); g.dias.forEach(function (x) { if (x.v > maxV) maxV = x.v; });
   maxV = Math.ceil(maxV * 1.12 / 500) * 500 || 500;   // aire arriba para el numero de la barra mas alta
   var yy = function (v) { return T + (H - T - B) * (1 - v / maxV); };
@@ -5001,13 +5001,13 @@ function _comOfGrafSvg(g) {
     [[0.75, NIVEL_COLOR[1], '75%'], [1, NIVEL_COLOR[2], 'Meta'], [1.25, NIVEL_COLOR[3], '125%']].forEach(function (ln) {
       var my = yy(g.metaDia * ln[0]);
       h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + my + '" y2="' + my + '" stroke="' + ln[1] + '" stroke-width="' + (ln[0] === 1 ? 1.6 : 1.1) + '" stroke-dasharray="5 4"/>' +
-           '<text x="' + (W - R) + '" y="' + (my - 4) + '" text-anchor="end" font-size="11" fill="' + ln[1] + '">' + ln[2] + ' ' + fmt(g.metaDia * ln[0]) + '</text>';
+           '<text x="' + (W - R + 8) + '" y="' + (my + 4) + '" text-anchor="start" font-size="12" fill="' + ln[1] + '">' + ln[2] + ' ' + fmt(g.metaDia * ln[0]) + '</text>';
     });
   }
   if (g.promedio > 0) {   // 9-oct: linea de su promedio por dia de trabajo
     var py2 = yy(g.promedio);
     h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + py2 + '" y2="' + py2 + '" stroke="var(--tx, currentColor)" stroke-width="1.2" stroke-dasharray="2 3" opacity="0.8"/>' +
-         '<text x="' + (L + 6) + '" y="' + (py2 - 4) + '" font-size="11" fill="var(--tx, currentColor)" opacity="0.9">Tu promedio ' + fmt(g.promedio) + '</text>';
+         '<text x="2" y="' + (py2 + 4) + '" text-anchor="start" font-size="12" font-weight="600" fill="var(--tx, currentColor)">Promedio ' + fmt(g.promedio) + '</text>';
   }
   return h + '</svg>';
 }
@@ -5019,14 +5019,14 @@ function _comOfGrafCuerpo(d, ym) {
     return '<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap"><span style="width:10px;height:10px;border-radius:2px;background:' + col + ';display:inline-block"></span>' + txt + '</span>';
   };
   return _comOfGrafSvg(g) +
-    '<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:13px;margin-top:8px">' +
-      '<span>' + esc(NM[g.m]) + ': vendiste <b>' + fmt(g.total) + '</b></span>' +
-      (g.diasTrab > 0 ? '<span>Tu promedio por día de trabajo: <b>' + fmt(g.promedio) + '</b> <span class="ml">(' + g.diasTrab + ' día' + (g.diasTrab === 1 ? '' : 's') + ' de trabajo)</span></span>' : '') +
+    '<div style="display:flex;gap:56px;flex-wrap:wrap;justify-content:center;font-size:14px;margin-top:10px">' +
+      '<span>' + esc(NM[g.m]) + ': <b>' + fmt(g.total) + '</b></span>' +
+      (g.diasTrab > 0 ? '<span>Promedio diario: <b>' + fmt(g.promedio) + '</b></span>' : '') +
       (g.metaDia > 0 ? '' : '<span class="ml">sin meta cargada para este mes</span>') + '</div>' +
-    '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;margin-top:6px;color:var(--mu)">' +
+    '<div style="display:flex;gap:18px;flex-wrap:wrap;justify-content:center;font-size:11px;margin-top:8px;color:var(--mu)">' +
       chip(NIVEL_COLOR[0], 'Menos de 75%') + chip(NIVEL_COLOR[1], '75% o más') + chip(NIVEL_COLOR[2], '100% (meta) o más') +
       chip(NIVEL_COLOR[3], '125% o más') + chip('var(--mu)', 'Día de descanso (columna gris)') +
-      '<span style="white-space:nowrap">┈ Tu promedio</span>' +
+      '<span style="white-space:nowrap">┈ Promedio diario</span>' +
     '</div>';
 }
 
