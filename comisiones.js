@@ -2949,7 +2949,7 @@ function pintarVerComo(d, real) {
   // que siempre.
   var cabecera = real
     ? '<div style="display:flex;justify-content:space-between;align-items:center;' +
-        'gap:10px;margin-bottom:14px;max-width:620px;margin-left:auto;margin-right:auto">' +
+        'gap:10px;margin-bottom:14px;max-width:960px;margin-left:auto;margin-right:auto">' +
         '<div style="font-size:17px;font-weight:600">' +
           (VEND.preview ? 'Así lo ve ' + esc(VEND.preview.nombre) : 'Mis comisiones') + '</div>' +
         '<div style="display:flex;gap:8px;align-items:center">' +
@@ -2974,8 +2974,7 @@ function pintarVerComo(d, real) {
           '<span class="com-nom">' + esc(d.nombre) + '</span>' +
           '<span class="com-nom" style="color:' + colVer + '">' + p2(cumplVer) + '</span>' +
         '</div>' +
-        '<div class="com-sub">' + esc(qTxt) +
-          (cerrado ? ' · <b style="color:var(--gn)">Trimestre cerrado ✓</b>' : '') + '</div>' +
+        '<div class="com-sub">' + (cerrado ? '<b style="color:var(--gn)">Trimestre cerrado ✓</b>' : esc(qTxt)) + '</div>' +
         '<div style="text-align:center;margin:20px 0 8px">' +
           '<div class="ml">' + (cerrado ? 'Tu comisión' : 'Tu comisión del trimestre') + '</div>' +
           '<div style="font-size:36px;font-weight:700;letter-spacing:-1px;' +
@@ -3009,7 +3008,7 @@ function pintarVerComo(d, real) {
       '</div>';
 
   c.innerHTML = cabecera +
-    '<div style="max-width:620px;margin:0 auto">' +
+    '<div style="max-width:960px;margin:0 auto">' +   // 9-oct (Pablo): mas ancho para que se lea el grafico
       (real && !cerrado ? (d.__of ? _comOfCelebrar(d, R, yo) : bannerCelebracion(d, lvActual)) : '') +
       (real ? (d.__of ? _comOfMetaDia(d) : tarjetaMetaDia(d)) : '') +
       tarjetaPrincipal +
@@ -4847,7 +4846,9 @@ function _comOfCelebrar(d, R, yo) {
    · Sin pedidos (se podia leer "3 pedidos = ya cobro"). El dia que no le toca: no aparece.
    · Celebra: 🎯 meta de hoy cumplida · 🔥 racha de dias de turno seguidos cumpliendo
      (los dias que no atiende no cortan la racha) · 🏆 100% de la meta del mes. */
-var COM_TURNOS = { ANGIE: [1, 2, 3, 4, 5], DAYANN: [4, 5, 6, 0, 1], LUCIA: [6, 0] };   // 0 = domingo
+// 9-oct (Pablo): Dayann de viernes a martes (el 1-oct, jueves, descansó y el 6-oct, martes, trabajó),
+// igual que el módulo Ventas (flujo.html TURNO_ASESORA). Antes aquí figuraba jueves a lunes.
+var COM_TURNOS = { ANGIE: [1, 2, 3, 4, 5], DAYANN: [5, 6, 0, 1, 2], LUCIA: [6, 0] };   // 0 = domingo
 
 /* ── 9-oct (Pablo) · VENTAS POR DIA de la asesora, con la linea de su meta ──
    Desde octubre-2026. Un mes a la vez (los meses del trimestre hasta hoy); el mes en curso
@@ -4892,33 +4893,41 @@ function _comOfGrafMeses(d, hoy) {
 }
 
 function _comOfGrafSvg(g) {
-  var W = 620, H = 210, L = 44, R = 8, T = 14, B = 26, n = g.dias.length, paso = (W - L - R) / n;
+  // 9-oct (Pablo): mas ancho, monto sobre cada barra y abajo dos filas: numero de dia y su letra
+  var W = 920, H = 300, L = 46, R = 10, T = 26, B = 44, n = g.dias.length, paso = (W - L - R) / n;
   var maxV = Math.max(g.metaDia * 1.4, 1); g.dias.forEach(function (x) { if (x.v > maxV) maxV = x.v; });
-  maxV = Math.ceil(maxV / 500) * 500 || 500;
+  maxV = Math.ceil(maxV * 1.12 / 500) * 500 || 500;   // aire arriba para el numero de la barra mas alta
   var yy = function (v) { return T + (H - T - B) * (1 - v / maxV); };
   var NM = ['', 'ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'set', 'oct', 'nov', 'dic'];
+  var LET = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
+  var corto = function (v) { return v >= 1000 ? (Math.round(v / 100) / 10).toFixed(1).replace(/\.0$/, '') + 'K' : String(Math.round(v)); };
   var h = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block" role="img" aria-label="Ventas por día">';
   [0, 0.5, 1].forEach(function (f) {
     var v = maxV * f, py = yy(v);
     h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + py + '" y2="' + py + '" stroke="var(--bd2)" stroke-width="1"/>' +
-         '<text x="' + (L - 6) + '" y="' + (py + 4) + '" text-anchor="end" font-size="10" fill="var(--mu)">' + (v >= 1000 ? (v / 1000).toFixed(v % 1000 ? 1 : 0) + 'K' : Math.round(v)) + '</text>';
+         '<text x="' + (L - 6) + '" y="' + (py + 4) + '" text-anchor="end" font-size="12" fill="var(--mu)">' + corto(v) + '</text>';
   });
   g.dias.forEach(function (x, i) {
-    var x0 = L + i * paso, bw = Math.max(2, paso * 0.66), bx = x0 + (paso - bw) / 2;
-    if (!x.turno) h += '<rect x="' + x0 + '" y="' + T + '" width="' + paso + '" height="' + (H - T - B) + '" fill="var(--bd2)" opacity="0.25"/>';
+    var x0 = L + i * paso, cx = x0 + paso / 2, bw = Math.max(3, paso * 0.62), bx = x0 + (paso - bw) / 2;
+    var dow = new Date(g.y, g.m - 1, x.dia).getDay();
+    if (!x.turno) {   // dia de descanso: columna gris marcada
+      h += '<rect x="' + (x0 + 1) + '" y="' + T + '" width="' + (paso - 2) + '" height="' + (H - T - B) + '" fill="var(--mu)" opacity="0.13" rx="2"/>';
+    }
     if (x.v > 0) {
       var col = (x.nivel == null) ? 'var(--mu)' : NIVEL_COLOR[x.nivel];
       h += '<rect x="' + bx + '" y="' + yy(x.v) + '" width="' + bw + '" height="' + Math.max(1, yy(0) - yy(x.v)) + '" rx="2" fill="' + col + '">' +
-           '<title>' + x.dia + ' ' + NM[g.m] + ': ' + fmt(x.v) + (x.pct != null ? ' · ' + Math.round(x.pct) + '% de la meta del día' : ' · día libre') + '</title></rect>';
+           '<title>' + x.dia + ' ' + NM[g.m] + ': ' + fmt(x.v) + (x.pct != null ? ' · ' + Math.round(x.pct) + '% de la meta del día' : ' · día de descanso') + '</title></rect>' +
+           '<text x="' + cx + '" y="' + (yy(x.v) - 5) + '" text-anchor="middle" font-size="11" font-weight="600" fill="var(--tx, currentColor)">' + corto(x.v) + '</text>';
     }
-    if (x.dia === 1 || (x.dia % 5 === 0 && n - x.dia >= 2) || x.dia === n)
-      h += '<text x="' + (x0 + paso / 2) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="var(--mu)">' + x.dia + '</text>';
+    var colEje = x.turno ? 'var(--tx, currentColor)' : 'var(--mu)';
+    h += '<text x="' + cx + '" y="' + (H - B + 16) + '" text-anchor="middle" font-size="11" fill="' + colEje + '">' + x.dia + '</text>' +
+         '<text x="' + cx + '" y="' + (H - B + 32) + '" text-anchor="middle" font-size="11" font-weight="' + (x.turno ? '600' : '400') + '" fill="' + colEje + '">' + LET[dow] + '</text>';
   });
-  if (g.metaDia > 0) {   // 9-oct (Pablo): tres lineas, 75% · meta (100%) · 125%, con el color de cada nivel
+  if (g.metaDia > 0) {   // tres lineas: 75% · meta (100%) · 125%, con el color de cada nivel
     [[0.75, NIVEL_COLOR[1], '75%'], [1, NIVEL_COLOR[2], 'Meta'], [1.25, NIVEL_COLOR[3], '125%']].forEach(function (ln) {
       var my = yy(g.metaDia * ln[0]);
       h += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + my + '" y2="' + my + '" stroke="' + ln[1] + '" stroke-width="' + (ln[0] === 1 ? 1.6 : 1.1) + '" stroke-dasharray="5 4"/>' +
-           '<text x="' + (W - R) + '" y="' + (my - 3) + '" text-anchor="end" font-size="10" fill="' + ln[1] + '">' + ln[2] + ' ' + fmt(g.metaDia * ln[0]) + '</text>';
+           '<text x="' + (W - R) + '" y="' + (my - 4) + '" text-anchor="end" font-size="11" fill="' + ln[1] + '">' + ln[2] + ' ' + fmt(g.metaDia * ln[0]) + '</text>';
     });
   }
   return h + '</svg>';
@@ -4935,7 +4944,7 @@ function _comOfGrafCuerpo(d, ym) {
       (g.metaDia > 0 ? '' : ' · <span class="ml">sin meta cargada para este mes</span>') + '</div>' +
     '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:11px;margin-top:6px;color:var(--mu)">' +
       chip(NIVEL_COLOR[0], 'Menos de 75%') + chip(NIVEL_COLOR[1], '75% o más') + chip(NIVEL_COLOR[2], '100% (meta) o más') +
-      chip(NIVEL_COLOR[3], '125% o más') + chip('var(--mu)', 'Día libre') +
+      chip(NIVEL_COLOR[3], '125% o más') + chip('var(--mu)', 'Día de descanso (columna gris)') +
     '</div>';
 }
 
