@@ -9463,7 +9463,50 @@ function renderMacroBand(mk){
   h += '</div>';
   return h;
 }
+// 10-oct (Pablo) · VENTAS DEL MES POR ASESORA (tarjeta del Dashboard). Lee el calculo oficial de
+// Comisiones (rpc comisiones_trimestre): ventas = sus prendas sin envio, cobradas en el mes;
+// % = margen del mes / su meta del mes, con los colores de los niveles de Comisiones.
+const _dashAsesMemo = {};
+async function _dashAsesorasCargar(mk){
+  const z = document.getElementById('dash-sec-asesoras'); if (!z || !mk) return;
+  const y = +mk.slice(0, 4), m = +mk.slice(5, 7), q = Math.ceil(m / 3), clave = y + '-' + q;
+  const tit = document.getElementById('dash-ases-tit'); if (tit) tit.textContent = 'Ventas del mes por asesora · ' + _fmtMesKey(mk);
+  try {
+    let t = _dashAsesMemo[clave];
+    if (!t || Date.now() - t.ts > 120000) {
+      const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesion');
+      const r = await fetch(SB_URL + '/rest/v1/rpc/comisiones_trimestre', { method: 'POST',
+        headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' },
+        body: JSON.stringify({ p_year: y, p_q: q }) });
+      if (!r.ok) throw new Error('rpc ' + r.status);
+      t = { d: await r.json(), ts: Date.now() }; _dashAsesMemo[clave] = t;
+    }
+    z.innerHTML = _renderAsesorasMes(t.d, m);
+  } catch (e) { z.innerHTML = '<div class="empty">No se pudo leer el cálculo de comisiones</div>'; }
+}
+function _renderAsesorasMes(d, mes){
+  const filas = ((d && d.asesoras) || []).map(a => {
+    const x = (a.meses || []).find(k => +k.mes === +mes) || {};
+    const pct = (+x.meta > 0) ? (+x.margen || 0) / (+x.meta) * 100 : null;
+    return { n: String(a.nombre || '').charAt(0) + String(a.nombre || '').slice(1).toLowerCase(), v: +x.ventas || 0, p: +x.pedidos || 0, pct: pct };
+  }).filter(f => f.v > 0 || f.pct != null).sort((a, b) => b.v - a.v);
+  if (!filas.length) return '<div class="empty">Sin ventas de asesoras en el mes</div>';
+  const col = p => p == null ? 'var(--mu)' : p >= 125 ? '#38bdf8' : p >= 100 ? 'var(--gn)' : p >= 75 ? 'var(--am)' : 'var(--rd)';
+  let h = '';
+  filas.forEach(f => {
+    const w = f.pct == null ? 0 : Math.min(100, f.pct);
+    h += '<div class="crw">'
+      + '<span style="font-size:14px;width:80px;flex-shrink:0">' + esc(f.n) + '</span>'
+      + '<div class="cbw"><div class="cbar" style="width:' + w + '%;background:' + col(f.pct) + '"></div></div>'
+      + '<span style="font-size:13px;color:var(--tx);width:62px;text-align:right">' + f.p + ' ped.</span>'
+      + '<span style="font-size:15px;font-weight:500;width:100px;text-align:right;color:var(--ac)">S/' + fmt(f.v) + '</span>'
+      + '<span style="font-size:13px;font-weight:600;width:60px;text-align:right;color:' + col(f.pct) + '">' + (f.pct == null ? '—' : Math.round(f.pct) + '%') + '</span>'
+      + '</div>';
+  });
+  return h + '<div style="font-size:10px;color:var(--mu);margin-top:6px;text-align:right">sus prendas, sin envío, cobradas en el mes · % de su meta del mes</div>';
+}
 function onDashPeriodoGlobal(mk){
+  try { _dashAsesorasCargar(mk); } catch(e){}
   const el = document.getElementById('dash-macro'); if (el) el.innerHTML = renderMacroBand(mk);
   _dashHeroMes = mk; try { renderHeroDiario(); } catch(e){}
 }
@@ -9529,9 +9572,11 @@ function renderDash(r) {
 
   h += '</div><div class="g2">';
 
-  // Cambios y devoluciones (default mes vigente)
-  h += '<div class="card">'+_dashCardHdr('Cambios y devoluciones', 'cambios')
-    +'<div id="dash-sec-cambios">'+_renderCambios(_cm?(_cm.cambiosPrendas||0):c30.count, _cm?(_cm.totalPrendas||0):c30.prendas, _cm?(_cm.cambiosPct||0):c30.pct)+'</div></div>';
+  // 10-oct (Pablo): "Cambios y devoluciones" se reemplaza por VENTAS DEL MES POR ASESORA (opcion A).
+  // Mismos numeros que Comisiones: sus prendas, sin envio, cobradas en el mes; % de su meta del mes.
+  h += '<div class="card"><div class="ct" id="dash-ases-tit">Ventas del mes por asesora</div>'
+    +'<div id="dash-sec-asesoras"><div class="ld"><div class="sp"></div>Cargando…</div></div></div>';
+  setTimeout(function(){ try { _dashAsesorasCargar(mesActualKey); } catch(e){} }, 0);
 
   // Bar chart meses · 10-oct (Pablo): los 12 meses del año, letra 2 tamaños mas grande y aire arriba
   const _anio = mesActualKey ? mesActualKey.slice(0, 4) : String(new Date().getFullYear());
