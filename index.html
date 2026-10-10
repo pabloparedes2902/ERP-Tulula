@@ -9122,12 +9122,12 @@ function _renderTicketCanal(data) {
 
 // Regla 80/20: acumula los principales hasta sumar ≥80%; el resto se junta en "Otros" (≤20%).
 // Devuelve filas con _pct, y una fila Otros con _otros/_otrosN si corresponde.
-function _pareto8020(data, valKey) {
+function _pareto8020(data, valKey, maxN) {   // 10-oct (Pablo): maxN = tope de filas (productos: 10)
   const arr = (data||[]).slice().sort((a,b)=>(b[valKey]||0)-(a[valKey]||0));
   const total = arr.reduce((s,r)=>s+(r[valKey]||0),0) || 1;
   const out=[]; let acc=0, otros=0, otrosN=0;
   arr.forEach(r => {
-    if (acc/total < 0.80) { const o=Object.assign({}, r); o._pct=(r[valKey]||0)/total*100; out.push(o); acc+=(r[valKey]||0); }
+    if (acc/total < 0.80 && (!maxN || out.length < maxN)) { const o=Object.assign({}, r); o._pct=(r[valKey]||0)/total*100; out.push(o); acc+=(r[valKey]||0); }
     else { otros+=(r[valKey]||0); otrosN++; }
   });
   if (otros>0) { const o={_otros:true, _otrosN:otrosN, _pct:otros/total*100}; o[valKey]=otros; out.push(o); }
@@ -9139,7 +9139,7 @@ function _renderTopProductos(data) {
   // si no, cae a unidades. 80/20 + Otros + %.
   const hasV = (data||[]).some(r => typeof r.ventas === 'number' && r.ventas > 0);
   const valKey = hasV ? 'ventas' : 'unidades';
-  const rows = _pareto8020(data, valKey);
+  const rows = _pareto8020(data, valKey, 10);   // 10-oct (Pablo): los que hacen el 80%, maximo 10 + Otros
   if (!rows.length) return '<div class="empty">Sin datos</div>';
   const maxU = Math.max(...rows.map(r=>r[valKey]||0), 1);
   let h = '';
@@ -40204,6 +40204,7 @@ startAuth();
     const t = [['nuevo', '➕ Registrar'], ['lista', '📋 Egresos del mes'], ['caja', '🪙 Caja chica']];
     if (admin) t.splice(2, 0, ['reemb', '💸 Reembolsos']);
     if (admin) t.push(['cuadre', '⚖️ Cuadre']);
+    if (admin) t.push(['bonos', '🎯 Bonos socios']);
     if (!_egrPuedoEditar()) t.shift();
     if (!t.find(x => x[0] === EGR.tab)) EGR.tab = t[0][0];
     return '<div class="egr-tabs">' + t.map(x => '<button class="egr-tab' + (EGR.tab === x[0] ? ' on' : '') + '" onclick="_egrIr(\'' + x[0] + '\')">' + x[1] + '</button>').join('') + '</div>';
@@ -40220,6 +40221,7 @@ startAuth();
     else if (EGR.tab === 'reemb') _egrReembolsos();
     else if (EGR.tab === 'caja') _egrCaja();
     else if (EGR.tab === 'cuadre') _egrCuadre();
+    else if (EGR.tab === 'bonos') _egrBonos();
   }
 
   // ── Registrar / editar ──
@@ -40394,6 +40396,57 @@ startAuth();
     c.innerHTML = sel + kpis + tAv + tEmp + '<div style="display:flex;gap:12px;flex-wrap:wrap">' + _egrCuadreSocio('Ana', d.ana, d.acumulado_ana) + _egrCuadreSocio('Pablo', d.pablo, d.acumulado_pablo) + '</div>' + tSerie +
       '<div style="font-size:11px;color:var(--mu);margin-top:8px">Se calcula solo: ingresos = pagos de pedidos por cuenta (fecha de pago; los pagos de cambio van a la cuenta anotada en el cambio) · egresos = módulo Egresos por cuenta (fecha del gasto). Solo lo ven Ana y Pablo.</div>';
   }
+
+  // ── Bonos de socios (10-oct-2026 · reemplaza la hoja Escala Bonificaciones) · solo Admin ──
+  const EGR_FORMAS_BONO = ['ANA EMPRESA','PABLO EMPRESA','BCP','IBK','BBVA','EFECTIVO','ANA EMPRESA / IBK'];
+  function _egrPer(p){ return String(p || '').replace(/^(\d{4})-T(\d)$/, (m, a, t) => 'T' + t + ' ' + a) + (p === '2025-T4' ? ' (set-dic)' : ''); }
+  async function _egrBonos(){
+    const c = document.getElementById('egr-cuerpo');
+    let d = null;
+    try { d = await _egrRpc('bonos_socios', {}); }
+    catch (e) { c.innerHTML = '<div class="egr-err">' + _egrEsc(e.message) + '</div>'; return; }
+    d = d || {}; const per = d.periodos || []; const act = per.find(p => !p.cerrado) || per[0] || {};
+    const kpis = '<div class="egr-kpis">' +
+      '<div class="egr-kpi"><b>' + _egrSoles(act.utilidad) + '</b><span>Utilidad ' + _egrEsc(_egrPer(act.periodo)) + ' (' + Number(act.meses_transcurridos || 0) + ' mes/es)</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(act.bono_por_socio) + '</b><span>Bono que corresponde a cada socio</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(act.utilidad_neta_empresa) + '</b><span>Utilidad neta de la empresa</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(act.adelanto_min) + ' – ' + _egrSoles(act.adelanto_max) + '</b><span>Adelanto sugerido del mes por socio (25%–50%)</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(d.saldo_ana) + '</b><span>Saldo Ana (trimestres cerrados)</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(d.saldo_pablo) + '</b><span>Saldo Pablo (trimestres cerrados)</span></div></div>' +
+      '<div style="font-size:11px;color:var(--mu);margin:-4px 0 10px">' + _egrEsc(act.regla || '') + '</div>';
+    const col = v => Number(v) < 0 ? 'var(--am)' : (Number(v) > 0 ? 'var(--gn)' : 'var(--tx)');
+    const tPer = '<div class="card"><h3 style="margin:0 0 8px">Por trimestre</h3><div class="tw" style="overflow-x:auto"><table class="egr-t"><thead><tr><th>Trimestre</th><th class="n">Utilidad</th><th class="n">Bono c/socio</th><th class="n">Empresa</th><th class="n">Pagado Ana</th><th class="n">Saldo Ana</th><th class="n">Pagado Pablo</th><th class="n">Saldo Pablo</th><th>Origen</th></tr></thead><tbody>' +
+      per.map(p => '<tr><td>' + _egrEsc(_egrPer(p.periodo)) + (p.cerrado ? '' : ' <span class="egr-chip">en curso</span>') + '</td><td class="n">' + _egrSoles(p.utilidad) + '</td><td class="n">' + _egrSoles(p.bono_por_socio) + '</td><td class="n">' + _egrSoles(p.utilidad_neta_empresa) + '</td>' +
+        '<td class="n">' + _egrSoles(p.pagado_ana) + '</td><td class="n" style="color:' + col(p.saldo_ana) + '">' + _egrSoles(p.saldo_ana) + '</td><td class="n">' + _egrSoles(p.pagado_pablo) + '</td><td class="n" style="color:' + col(p.saldo_pablo) + '">' + _egrSoles(p.saldo_pablo) + '</td>' +
+        '<td style="font-size:11px;color:var(--mu)">' + (p.historial ? 'Hoja (congelado)' : 'ERP') + '</td></tr>').join('') + '</tbody></table></div>' +
+      '<div style="font-size:11px;color:var(--mu);margin-top:6px">Saldo positivo = falta pagarle. Negativo = se le pagó de más (se descuenta del siguiente). Base = utilidad en caja del mes + bonos pagados; el salario es gasto de la empresa.</div></div>';
+    const hoy = _egrHoy();
+    const form = '<div class="card egr-form"><h3 style="margin:0 0 8px">Registrar pago de bono</h3><div class="fr" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
+      '<label>Socio<select id="bon-socio"><option value="AMBOS">Ambos</option><option value="ANA">Ana</option><option value="PABLO">Pablo</option></select></label>' +
+      '<label>Mes al que corresponde<input type="month" id="bon-mes" value="' + _egrEsc(hoy.slice(0, 7)) + '"></label>' +
+      '<label>Fecha de pago<input type="date" id="bon-fecha" value="' + _egrEsc(hoy) + '"></label>' +
+      '<label>Monto (c/u)<input type="number" step="0.01" id="bon-monto"></label>' +
+      '<label>Forma de pago<select id="bon-forma">' + EGR_FORMAS_BONO.map(f => '<option>' + f + '</option>').join('') + '</select></label>' +
+      '<label>Nota<input id="bon-nota"></label></div><div id="bon-err" class="egr-err"></div><button class="btn bp" onclick="_egrBonoGuardar()">Guardar pago</button></div>';
+    const pg = d.pagos || [];
+    const tPag = '<div class="card"><h3 style="margin:0 0 8px">Pagos registrados</h3><div class="tw" style="overflow-x:auto"><table class="egr-t"><thead><tr><th>Mes</th><th>Trimestre</th><th>Socio</th><th>Fecha</th><th class="n">Monto</th><th>Forma</th><th></th></tr></thead><tbody>' +
+      pg.map(x => '<tr><td>' + _egrEsc(x.mes) + '</td><td>' + _egrEsc(_egrPer(x.periodo)) + '</td><td>' + (x.socio === 'ANA' ? 'Ana' : 'Pablo') + '</td><td>' + _egrEsc(String(x.fecha_pago || '').slice(0, 10)) + '</td><td class="n">' + _egrSoles(x.monto) + '</td><td>' + _egrEsc(x.forma_pago || '') + '</td>' +
+        '<td>' + (x.fuente === 'erp' ? '<button class="btn bs" onclick="_egrBonoBorrar(' + Number(x.id) + ')">Borrar</button>' : '<span class="egr-chip">hoja</span>') + '</td></tr>').join('') + '</tbody></table></div></div>';
+    c.innerHTML = kpis + tPer + form + tPag;
+  }
+  window._egrBonoGuardar = async function(){
+    const v = id => (document.getElementById(id) || {}).value;
+    const p = { socio: v('bon-socio'), mes: v('bon-mes'), fecha_pago: v('bon-fecha'), monto: v('bon-monto'), forma_pago: v('bon-forma'), nota: v('bon-nota') };
+    const err = document.getElementById('bon-err');
+    if (!(Number(p.monto) > 0) || !p.mes) { if (err) err.textContent = 'Falta el mes o el monto'; return; }
+    try { const n = await _egrRpc('bono_pago_guardar', { p: p }); toast(n + ' pago(s) de bono registrados', 'ok'); _egrBonos(); }
+    catch (e) { if (err) err.textContent = e.message; }
+  };
+  window._egrBonoBorrar = async function(id){
+    if (!(await npConfirm('¿Borrar este pago de bono?'))) return;
+    try { await _egrRpc('bono_pago_eliminar', { p_id: id }); toast('Pago borrado', 'ok'); _egrBonos(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
 
   // ── Caja chica: cuadre automatico ──
   async function _egrCaja(){
