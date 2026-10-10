@@ -9178,9 +9178,9 @@ function _renderTicketCanal(data) {
     h += '<div class="crw">'
       +'<span style="font-size:12px;color:var(--mu);width:90px;flex-shrink:0">'+esc(r.canal)+'</span>'
       +'<div class="cbw"><div class="cbar" style="width:'+Math.round(r.ventas/maxV*100)+'%"></div></div>'
-      +'<span style="font-size:12px;width:75px;text-align:right">S/'+fmt(r.ventas)+'</span>'
-      +'<span style="font-size:11px;color:var(--mu);width:70px;text-align:right">'+r.pedidos+' ped.</span>'
-      +'<span style="font-size:12px;font-weight:600;width:75px;text-align:right;color:var(--ac)">S/'+fmt(r.ticket)+'</span>'
+      +'<span style="font-size:12px;font-weight:600;width:75px;text-align:right;color:var(--ac)">S/'+fmt(r.ventas)+'</span>'   /* 10-oct (Pablo): total morado */
+      +'<span style="font-size:11px;color:var(--tx);width:70px;text-align:right">'+r.pedidos+' ped.</span>'                   /* pedidos blanco */
+      +'<span style="font-size:12px;width:75px;text-align:right;color:var(--mu)">S/'+fmt(r.ticket)+'</span>'
       +'</div>';
   });
   h += '<div style="font-size:10px;color:var(--mu);margin-top:6px;text-align:right">ticket = ventas ÷ pedidos por canal</div>';
@@ -9192,12 +9192,12 @@ function _renderTicketCanal(data) {
 function _pareto8020(data, valKey, maxN) {   // 10-oct (Pablo): maxN = tope de filas (productos: 10)
   const arr = (data||[]).slice().sort((a,b)=>(b[valKey]||0)-(a[valKey]||0));
   const total = arr.reduce((s,r)=>s+(r[valKey]||0),0) || 1;
-  const out=[]; let acc=0, otros=0, otrosN=0;
+  const out=[]; let acc=0, otros=0, otrosN=0, oPed=0, oUds=0;   // 10-oct: Otros suma pedidos y unidades
   arr.forEach(r => {
     if (acc/total < 0.80 && (!maxN || out.length < maxN)) { const o=Object.assign({}, r); o._pct=(r[valKey]||0)/total*100; out.push(o); acc+=(r[valKey]||0); }
-    else { otros+=(r[valKey]||0); otrosN++; }
+    else { otros+=(r[valKey]||0); otrosN++; oPed+=(+r.pedidos||0); oUds+=(+r.unidades||0); }
   });
-  if (otros>0) { const o={_otros:true, _otrosN:otrosN, _pct:otros/total*100}; o[valKey]=otros; out.push(o); }
+  if (otros>0) { const o={_otros:true, _otrosN:otrosN, _pct:otros/total*100, pedidos:oPed, unidades:oUds}; o[valKey]=otros; out.push(o); }
   return out;
 }
 
@@ -9217,6 +9217,7 @@ function _renderTopProductos(data) {
       +'<span style="font-size:13px;color:var(--mu);width:18px;flex-shrink:0">'+(p._otros?'·':(i+1))+'</span>'
       +'<span style="font-size:14px;flex:1;margin-left:8px">'+esc(nombre)+'</span>'
       +'<div class="cbw" style="max-width:70px"><div class="cbar" style="width:'+Math.round((p[valKey]||0)/maxU*100)+'%;background:'+(p._otros?'var(--mu)':'var(--ac2)')+'"></div></div>'
+      +(hasV ? '<span style="margin-left:8px;font-size:12px;color:var(--tx);width:52px;text-align:right">'+(p.unidades||0)+' uds</span>' : '')   /* 10-oct (Pablo): unidades en blanco */
       +'<span class="badge bpu" style="margin-left:8px;font-size:12px">'+lbl+'</span>'
       +'<span style="font-size:13px;color:var(--mu);width:50px;text-align:right">'+p._pct.toFixed(1)+'%</span>'
       +'</div>';
@@ -9225,6 +9226,7 @@ function _renderTopProductos(data) {
 }
 
 function _renderRegion(data) {
+  const hasP = (data||[]).some(r => r && r.pedidos != null);   // 10-oct: pedidos solo si la base ya los manda
   const rows = _pareto8020(data, 'ventas');
   if (!rows.length) return '<div class="empty">Sin datos</div>';
   const maxV = Math.max(...rows.map(r=>r.ventas), 1);
@@ -9234,7 +9236,8 @@ function _renderRegion(data) {
     h += '<div class="crw">'
       +'<span style="font-size:14px;color:var(--mu);width:110px;flex-shrink:0">'+esc(nombre)+'</span>'
       +'<div class="cbw"><div class="cbar" style="width:'+Math.round(r.ventas/maxV*100)+'%'+(r._otros?';background:var(--mu)':'')+'"></div></div>'
-      +'<span style="font-size:15px;font-weight:500;width:90px;text-align:right">S/'+fmt(r.ventas)+'</span>'
+      +(hasP ? '<span style="font-size:13px;color:var(--tx);width:62px;text-align:right">'+r.pedidos+' ped.</span>' : '')   /* 10-oct (Pablo): pedidos en blanco */
+      +'<span style="font-size:15px;font-weight:500;width:100px;text-align:right;color:var(--ac)">S/'+fmt(r.ventas)+'</span>'
       +'<span style="font-size:13px;color:var(--mu);width:50px;text-align:right">'+r._pct.toFixed(1)+'%</span>'
       +'</div>';
   });
@@ -9447,13 +9450,16 @@ function renderMacroBand(mk){
   const md = (mk && r.porMes && r.porMes[mk]) ? r.porMes[mk] : {};
   const ltv = r.ltv||0, margenPct = md.margenPct||0;
   const ltgp = Math.round(ltv*margenPct/100*100)/100;
-  let h = '<div class="mts">';
+  // 10-oct (Pablo): numeros y textos centrados; utilidades sin decimales; recurrentes del mes elegido
+  const sinDec = v => Math.round(+v||0).toLocaleString('es-PE');
+  let h = '<style>.dash-kpis .mt{text-align:center}</style><div class="mts dash-kpis">';
   h += mkMt('Facturación mes', 'S/ '+fmt(md.ventas||0), 'valor ordenado (incluye envío)');
-  h += mkMt('Utilidad bruta', 'S/ '+fmt(md.utilidadBruta||0), 'margen '+margenPct.toFixed(1)+'%', 'gn');
-  h += mkMt('Utilidad neta', 'S/ '+fmt(_UTILIDAD_NETA_MANUAL.valor), _UTILIDAD_NETA_MANUAL.mes+' · dato manual (Matriz)', 'gn');
+  h += mkMt('Utilidad bruta', 'S/ '+sinDec(md.utilidadBruta), 'margen '+margenPct.toFixed(1)+'%', 'gn');
+  h += mkMt('Utilidad neta', 'S/ '+sinDec(_UTILIDAD_NETA_MANUAL.valor), _UTILIDAD_NETA_MANUAL.mes+' · dato manual (Matriz)', 'gn');
   h += mkMt('Ticket promedio (sin envío)', 'S/ '+fmt(md.ticketSinEnvio||0), '');
   h += mkMt('LTGP', 'S/ '+fmt(ltgp), 'LTV S/'+fmt(ltv));
-  h += mkMt('Recurrentes', (r.pctRecurrentes||0)+'%', '≥ 2 compras');
+  const rec = (md.pctRecurrentes != null) ? md.pctRecurrentes : (r.pctRecurrentes||0);
+  h += mkMt('Recurrentes', rec+'%', 'compraron este mes y ya habían comprado');
   h += '</div>';
   return h;
 }
@@ -9527,14 +9533,18 @@ function renderDash(r) {
   h += '<div class="card">'+_dashCardHdr('Cambios y devoluciones', 'cambios')
     +'<div id="dash-sec-cambios">'+_renderCambios(_cm?(_cm.cambiosPrendas||0):c30.count, _cm?(_cm.totalPrendas||0):c30.prendas, _cm?(_cm.cambiosPct||0):c30.pct)+'</div></div>';
 
-  // Bar chart meses (fixed)
-  h += '<div class="card"><div class="ct">Ventas por mes</div><div style="display:flex;align-items:flex-end;gap:6px;height:80px;margin-top:8px">';
-  meses.forEach((m,i) => {
-    const pct = Math.round(tots[i]/maxT*100);
-    h += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">'
-      +'<div style="font-size:9px;color:var(--mu)">'+(pct>5?'S/'+Math.round(tots[i]/1000)+'k':'')+'</div>'
-      +'<div style="width:100%;background:var(--ac2);border-radius:3px 3px 0 0;height:'+Math.max(pct*.7,2)+'px;opacity:'+(0.4+pct*.005)+'"></div>'
-      +'<div style="font-size:9px;color:var(--mu)">'+esc(m)+'</div></div>';
+  // Bar chart meses · 10-oct (Pablo): los 12 meses del año, letra 2 tamaños mas grande y aire arriba
+  const _anio = mesActualKey ? mesActualKey.slice(0, 4) : String(new Date().getFullYear());
+  const _MCORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Set','Oct','Nov','Dic'];
+  const _vm = _MCORTO.map((n, i) => { const k = _anio + '-' + String(i + 1).padStart(2, '0'); const x = r.porMes && r.porMes[k]; return { n: n, v: x ? (+x.ventas || 0) : 0 }; });
+  const _maxM = Math.max(..._vm.map(x => x.v), 1);
+  h += '<div class="card"><div class="ct">Ventas por mes · '+_anio+'</div><div style="display:flex;align-items:flex-end;gap:6px;height:130px;margin-top:26px">';
+  _vm.forEach(x => {
+    const pct = Math.round(x.v / _maxM * 100);
+    h += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;height:100%">'
+      +'<div style="font-size:12px;color:var(--mu);white-space:nowrap">'+(x.v>0?'S/'+Math.round(x.v/1000)+'k':'')+'</div>'
+      +'<div style="width:100%;background:var(--ac2);border-radius:3px 3px 0 0;height:'+(x.v>0?Math.max(pct*.85,2):0)+'px;opacity:'+(0.4+pct*.005)+'"></div>'
+      +'<div style="font-size:12px;color:var(--mu)">'+x.n+'</div></div>';
   });
   h += '</div></div>';
 
@@ -40531,7 +40541,7 @@ startAuth();
     catch (e) { c.innerHTML = '<div class="egr-err">' + _egrEsc(e.message) + '</div>'; return; }
     d = d || {}; const per = d.periodos || []; const act = per.find(p => !p.cerrado) || per[0] || {};
     const kpis = '<div class="egr-kpis">' +
-      '<div class="egr-kpi"><b>' + _egrSoles(act.utilidad) + '</b><span>Utilidad ' + _egrEsc(_egrPer(act.periodo)) + ' (' + Number(act.meses_transcurridos || 0) + ' mes/es)</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(act.utilidad) + '</b><span>Utilidad ' + _egrEsc(_egrPer(act.periodo)) + (act.cerrado ? '' : ' a la fecha') + ' (' + Number(act.meses_transcurridos || 0) + ' mes/es)' + (act.cerrado ? '' : ' · lo proyectado está en «Proyección del mes»') + '</span></div>' +
       '<div class="egr-kpi"><b>' + _egrSoles(act.bono_por_socio) + '</b><span>Bono que corresponde a cada socio</span></div>' +
       '<div class="egr-kpi"><b>' + _egrSoles(act.utilidad_neta_empresa) + '</b><span>Utilidad neta de la empresa</span></div>' +
       '<div class="egr-kpi"><b>' + _egrSoles(act.adelanto_min) + ' – ' + _egrSoles(act.adelanto_max) + '</b><span>Adelanto sugerido del mes por socio (25%–50%)</span></div>' +
