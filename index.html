@@ -40203,6 +40203,7 @@ startAuth();
     const admin = _egrSoyAdmin();
     const t = [['nuevo', '➕ Registrar'], ['lista', '📋 Egresos del mes'], ['caja', '🪙 Caja chica']];
     if (admin) t.splice(2, 0, ['reemb', '💸 Reembolsos']);
+    if (admin) t.push(['cuadre', '⚖️ Cuadre']);
     if (!_egrPuedoEditar()) t.shift();
     if (!t.find(x => x[0] === EGR.tab)) EGR.tab = t[0][0];
     return '<div class="egr-tabs">' + t.map(x => '<button class="egr-tab' + (EGR.tab === x[0] ? ' on' : '') + '" onclick="_egrIr(\'' + x[0] + '\')">' + x[1] + '</button>').join('') + '</div>';
@@ -40218,6 +40219,7 @@ startAuth();
     else if (EGR.tab === 'lista') _egrLista();
     else if (EGR.tab === 'reemb') _egrReembolsos();
     else if (EGR.tab === 'caja') _egrCaja();
+    else if (EGR.tab === 'cuadre') _egrCuadre();
   }
 
   // ── Registrar / editar ──
@@ -40344,6 +40346,54 @@ startAuth();
     try { const n = await _egrRpc('egresos_marcar_reembolsado', { p_persona: persona, p_mes: mes }); toast(n + ' egresos marcados como reembolsados', 'ok'); _egrReembolsos(); }
     catch (e) { toast(e.message, 'err'); }
   };
+
+  // ── Cuadre mensual de caja (10-oct-2026 · reemplaza la hoja Cuadre de la Matriz) · solo Admin ──
+  function _egrMesAnterior(){ const d = new Date(_egrHoy() + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); }
+  window._egrCuadreMes = function(v){ EGR.cmes = v || _egrMesAnterior(); _egrCuadre(); };
+  function _egrCuadreSocio(nombre, s, acum){
+    s = s || {}; const p = s.personal || {};
+    const fila = (t, v, neg) => '<tr><td>' + t + '</td><td class="n"' + (neg && Number(v) ? ' style="color:var(--mu)"' : '') + '>' + (neg && Number(v) ? '−' : '') + _egrSoles(v) + '</td></tr>';
+    const tot = Number(s.total) || 0;
+    return '<div class="card" style="flex:1;min-width:260px"><h3 style="margin:0 0 8px">Cuadre ' + nombre + '</h3><table class="egr-t"><tbody>' +
+      '<tr><th colspan="2">Cuenta ' + nombre + ' empresa</th></tr>' + fila('Entró', s.empresa_ingresos) + fila('Salió', s.empresa_egresos, true) +
+      '<tr><td><b>Neto cuenta empresa</b></td><td class="n"><b>' + _egrSoles(s.empresa_neto) + '</b></td></tr>' +
+      '<tr><th colspan="2">Cuentas personales</th></tr>' + fila('Ingresos de ventas a cuentas personales', s.personal_ingresos) +
+      fila('Gastos de la empresa que pagó', p.Gastos, true) + fila('Facebook Ads', p['Facebook Ads'], true) + fila('Salario', p.Salario, true) +
+      fila('Bono', p.Bono, true) + fila('Préstamo', p.Prestamo, true) +
+      '<tr><td><b>Neto personal</b></td><td class="n"><b>' + _egrSoles(s.personal_neto) + '</b></td></tr>' +
+      '<tr><td><b>TOTAL CUADRE ' + nombre.toUpperCase() + '</b></td><td class="n"><b style="color:' + (tot < 0 ? 'var(--am)' : 'var(--gn)') + '">' + _egrSoles(tot) + '</b></td></tr>' +
+      '<tr><td>Acumulado desde ene-2026</td><td class="n">' + _egrSoles(acum) + '</td></tr></tbody></table>' +
+      '<div style="font-size:11px;color:var(--mu);margin-top:6px">Positivo = ' + nombre + ' tiene plata de la empresa en sus cuentas. Negativo = puso de su bolsillo más de lo que recibió.</div></div>';
+  }
+  async function _egrCuadre(){
+    const c = document.getElementById('egr-cuerpo');
+    if (!EGR.cmes) EGR.cmes = _egrMesAnterior();
+    let d = null;
+    try { d = await _egrRpc('cuadre_caja', { p_mes: EGR.cmes }); }
+    catch (e) { c.innerHTML = '<div class="egr-err">' + _egrEsc(e.message) + '</div>'; return; }
+    d = d || {}; const emp = d.empresa || {};
+    const sel = '<div style="margin-bottom:10px"><label style="font-size:12px;color:var(--mu)">Mes </label><input type="month" value="' + _egrEsc(EGR.cmes) + '" onchange="_egrCuadreMes(this.value)"></div>';
+    const kpis = '<div class="egr-kpis"><div class="egr-kpi"><b style="color:' + (Number(emp.cuadre) < 0 ? 'var(--rd)' : 'var(--gn)') + '">' + _egrSoles(emp.cuadre) + '</b><span>Cuadre empresa del mes</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(d.acumulado_empresa) + '</b><span>Acumulado empresa (desde ene-2026)</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(d.total_ingresos) + '</b><span>Ingresos totales</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(d.total_egresos) + '</b><span>Egresos totales</span></div>' +
+      '<div class="egr-kpi"><b>' + _egrSoles(d.margen) + '</b><span>Margen del mes</span></div></div>';
+    const cuentas = (emp.cuentas || []);
+    const tEmp = '<div class="card"><h3 style="margin:0 0 8px">Cuadre empresa por cuenta</h3><div class="tw" style="overflow-x:auto"><table class="egr-t"><thead><tr><th>Cuenta</th><th class="n">Ingresos</th><th class="n">Egresos</th><th class="n">Neto</th></tr></thead><tbody>' +
+      cuentas.map(k => '<tr><td>' + _egrEsc(k.cuenta === 'TARJETA' ? 'Tarjeta de crédito' : k.cuenta) + '</td><td class="n">' + _egrSoles(k.ingresos) + '</td><td class="n">' + _egrSoles(k.egresos) + '</td><td class="n">' + _egrSoles(k.neto) + '</td></tr>').join('') +
+      '<tr><td><b>Total empresa</b></td><td class="n"><b>' + _egrSoles(emp.ingresos) + '</b></td><td class="n"><b>' + _egrSoles(emp.egresos) + '</b></td><td class="n"><b>' + _egrSoles(emp.cuadre) + '</b></td></tr></tbody></table></div></div>';
+    const avisos = [];
+    if (Number(d.no_es_caja)) avisos.push('No se cuentan ' + _egrSoles(d.no_es_caja) + ' de ajustes ("AJUSTE CUADRE DRIVE", saldos aplicados o traslados): no es plata que entró.');
+    (d.sin_cuenta || []).forEach(x => avisos.push('Pago sin cuenta: pedido <b>#' + _egrEsc(x.pedido) + '</b> del ' + _egrEsc(String(x.fecha || '').slice(0, 10)) + ' por ' + _egrSoles(x.monto) + ' (forma de pago "' + _egrEsc(x.forma || 'vacía') + '"). Corrige la forma de pago en el pedido para que entre a su cuenta.'));
+    if (Number(d.egresos_sin_cuenta)) avisos.push('Hay ' + _egrSoles(d.egresos_sin_cuenta) + ' de egresos sin cuenta de origen.');
+    const tAv = avisos.length ? '<div class="card" style="border-color:var(--am)"><b>Para revisar</b><ul style="margin:6px 0 0 18px;font-size:12px">' + avisos.map(a => '<li>' + a + '</li>').join('') + '</ul></div>' : '';
+    const serie = (d.serie || []);
+    const tSerie = '<div class="card"><h3 style="margin:0 0 8px">Evolución 2026</h3><div class="tw" style="overflow-x:auto"><table class="egr-t"><thead><tr><th>Mes</th><th class="n">Cuadre empresa</th><th class="n">Margen</th><th class="n">Cuadre Ana</th><th class="n">Cuadre Pablo</th></tr></thead><tbody>' +
+      serie.map(m => '<tr' + (m.mes === EGR.cmes ? ' style="background:var(--bg2)"' : '') + '><td>' + _egrEsc(m.mes) + '</td><td class="n">' + _egrSoles(m.cuadre_empresa) + '</td><td class="n">' + _egrSoles(m.margen) + '</td><td class="n">' + _egrSoles(m.ana) + '</td><td class="n">' + _egrSoles(m.pablo) + '</td></tr>').join('') +
+      '</tbody></table></div></div>';
+    c.innerHTML = sel + kpis + tAv + tEmp + '<div style="display:flex;gap:12px;flex-wrap:wrap">' + _egrCuadreSocio('Ana', d.ana, d.acumulado_ana) + _egrCuadreSocio('Pablo', d.pablo, d.acumulado_pablo) + '</div>' + tSerie +
+      '<div style="font-size:11px;color:var(--mu);margin-top:8px">Se calcula solo: ingresos = pagos de pedidos por cuenta (fecha de pago; los pagos de cambio van a la cuenta anotada en el cambio) · egresos = módulo Egresos por cuenta (fecha del gasto). Solo lo ven Ana y Pablo.</div>';
+  }
 
   // ── Caja chica: cuadre automatico ──
   async function _egrCaja(){
