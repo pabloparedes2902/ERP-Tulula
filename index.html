@@ -7281,6 +7281,64 @@ function _cfwModeloJuntar() {
   if (vr && cb) { cb.style.display = vr.checked ? 'grid' : 'none';
     if (CFW.f) { const nc = {}; if (vr.checked) cb.querySelectorAll('select').forEach(x => { if (x.value !== '') nc[x.dataset.color] = _cfwNotaDe(COS_MODELOS[+x.value]); }); CFW.f.nota_color = nc; } }
 }
+// 10-oct (Pablo) · TABLA DE MEDIDAS (custom.tabla_tallas): se edita aquí y se puede copiar de otro producto.
+// Formato de la tienda: bloques «|||», filas «;;»; «Nombre|Blazer» = título del bloque; «#|Busto|Cintura» = columnas; «S|S · 28|90–94|…» = talla | etiqueta | medidas.
+const CTB = { v: null, gid: '', b: [] };
+function _ctbLeer(txt) {
+  return String(txt || '').split('|||').map(bl => { const o = { nombre: '', cols: [], filas: [] };
+    bl.split(';;').map(x => x.trim()).filter(Boolean).forEach(l => { const p = l.split('|').map(x => x.trim());
+      if (/^(Nombre|@)$/i.test(p[0])) o.nombre = p.slice(1).join(' '); else if (p[0] === '#') o.cols = p.slice(1); else o.filas.push(p); });
+    if (!o.cols.length && o.filas.length) o.cols = ['Cintura', 'Cadera', 'Largo'].slice(0, Math.max(0, o.filas[0].length - 2));
+    return o; }).filter(o => o.filas.length || o.cols.length);
+}
+function _ctbTexto(B) {
+  return B.map(o => [].concat(o.nombre ? ['Nombre|' + o.nombre] : [], ['#|' + o.cols.join('|')], o.filas.filter(f => String(f[0] || '').trim()).map(f => { const r = f.slice(0, o.cols.length + 2); while (r.length < o.cols.length + 2) r.push(''); if (!r[1]) r[1] = r[0]; return r.join('|'); })).join(' ;; ')).join(' ||| ');
+}
+async function _cfwTablaAbrir(v) {
+  const w = document.getElementById('cfw-tablaw'); if (!w) return; CTB.v = v; CTB.gid = v.ShopifyId || '';
+  if (!CTB.gid) { w.innerHTML = ''; return; }
+  w.innerHTML = '<div style="font-size:12px;color:var(--mu);margin:8px 0">Leyendo la tabla de medidas…</div>';
+  try { const r = await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: v.Diseno, ShopifyId: CTB.gid }); CTB.b = _ctbLeer(r && r.tabla); _cfwTablaPintar(CTB.b.length ? '' : 'Este producto todavía no tiene tabla de medidas.'); }
+  catch (e) { w.innerHTML = '<div style="font-size:12px;color:var(--rd)">' + esc(e.message || e) + '</div>'; }
+}
+function _cfwTablaSync() { const w = document.getElementById('cfw-tablaw'); if (!w) return;
+  w.querySelectorAll('[data-tb]').forEach(el => { const [b, k, i, j] = el.dataset.tb.split('|'), o = CTB.b[+b]; if (!o) return;
+    if (k === 'n') o.nombre = el.value; else if (k === 'c') o.cols[+i] = el.value; else { o.filas[+i] = o.filas[+i] || []; o.filas[+i][+j] = el.value; } }); }
+function _cfwTablaPintar(msg) {
+  const w = document.getElementById('cfw-tablaw'); if (!w) return;
+  const st = 'width:100%;min-width:56px;padding:5px 6px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:12px;text-align:center';
+  const ins = (k, val, ph) => '<input data-tb="' + k + '" value="' + esc(val || '') + '" placeholder="' + esc(ph || '') + '" style="' + st + '">';
+  const otros = (COS.data || []).filter(x => x.ShopifyId && x.Diseno !== (CTB.v && CTB.v.Diseno) && x.Activo !== false).sort((a, b) => String(a.Diseno).localeCompare(String(b.Diseno)));
+  const bloques = CTB.b.map((o, b) => (CTB.b.length > 1 || o.nombre ? '<div style="margin:8px 0 4px">' + ins(b + '|n', o.nombre, 'Nombre del bloque (ej. Blazer)').replace('text-align:center', 'text-align:left;max-width:240px') + '</div>' : '')
+    + '<div style="overflow-x:auto"><table style="border-collapse:separate;border-spacing:4px"><tr><th style="font-size:11px;color:var(--mu)">Talla</th><th style="font-size:11px;color:var(--mu)">Etiqueta</th>'
+    + o.cols.map((c, i) => '<th>' + ins(b + '|c|' + i, c, 'Medida') + '</th>').join('') + '<th><button type="button" class="btn bg bs ctb-col" data-b="' + b + '" title="Agregar columna">＋</button></th></tr>'
+    + o.filas.map((f, i) => '<tr>' + [0, 1].concat(o.cols.map((_, j) => j + 2)).map(j => '<td>' + ins(b + '|f|' + i + '|' + j, f[j], j === 0 ? 'S' : (j === 1 ? 'S · 28' : '')) + '</td>').join('')
+      + '<td><button type="button" class="btn bg bs ctb-del" data-b="' + b + '" data-i="' + i + '" title="Quitar fila" style="color:var(--rd)">✕</button></td></tr>').join('')
+    + '</table></div><button type="button" class="btn bg bs ctb-fila" data-b="' + b + '" style="font-size:12px;margin-top:4px">＋ Fila</button>').join('');
+  w.innerHTML = '<div style="border:1px solid var(--bd);border-radius:var(--r);padding:10px 12px;margin:6px 0 10px">'
+    + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span style="font-size:12px;font-weight:600">📐 Tabla de medidas</span>'
+    + '<select id="ctb-copia" style="' + st + ';width:auto;text-align:left;min-width:220px"><option value="">Copiar de otro producto…</option>' + otros.map(x => '<option value="' + esc(x.ShopifyId) + '">' + esc(x.Diseno) + '</option>').join('') + '</select>'
+    + (CTB.b.length ? '' : '<button type="button" class="btn bg bs" id="ctb-nueva" style="font-size:12px">Empezar tabla</button>')
+    + '<button type="button" class="btn bg bs" id="ctb-bloque" style="font-size:12px" title="Para conjuntos: una tabla arriba y otra abajo">＋ Otra tabla (conjunto)</button></div>'
+    + bloques
+    + '<div style="display:flex;gap:10px;align-items:center;margin-top:8px"><button type="button" class="btn bp bs" id="ctb-guardar">💾 Guardar tabla</button><span id="ctb-st" style="font-size:12px;color:var(--mu)">' + esc(msg || '') + '</span></div></div>';
+  const nueva = () => ({ nombre: '', cols: ['Busto', 'Cintura', 'Largo'], filas: ['S', 'M', 'L', 'XL'].map(t => [t, t]) });
+  const on = (sel, fn) => w.querySelectorAll(sel).forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); _cfwTablaSync(); fn(b); _cfwTablaPintar(); }));
+  on('#ctb-nueva', () => { CTB.b = [nueva()]; });
+  on('#ctb-bloque', () => { if (!CTB.b.length) CTB.b.push(nueva()); CTB.b.push(Object.assign(nueva(), { nombre: 'Pantalón', cols: ['Cintura', 'Cadera', 'Largo'] })); if (!CTB.b[0].nombre) CTB.b[0].nombre = 'Blazer'; });
+  on('.ctb-fila', b => { const o = CTB.b[+b.dataset.b]; o.filas.push(['', '']); });
+  on('.ctb-col', b => { CTB.b[+b.dataset.b].cols.push(''); });
+  on('.ctb-del', b => { CTB.b[+b.dataset.b].filas.splice(+b.dataset.i, 1); });
+  const cp = document.getElementById('ctb-copia'); if (cp) cp.addEventListener('change', async () => { if (!cp.value) return; const st2 = document.getElementById('ctb-st'); if (st2) st2.textContent = 'Copiando…';
+    try { const r = await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: '', ShopifyId: cp.value }); const B = _ctbLeer(r && r.tabla);
+      if (!B.length) { if (st2) { st2.style.color = 'var(--rd)'; st2.textContent = 'Ese producto no tiene tabla de medidas.'; } return; }
+      CTB.b = B; _cfwTablaPintar('Copiada de ' + (cp.options[cp.selectedIndex] || {}).text + '. Ajusta lo que cambie y guarda.'); } catch (e) { if (st2) st2.textContent = e.message; } });
+  const g = document.getElementById('ctb-guardar'); if (g) g.addEventListener('click', async ev => { ev.preventDefault(); _cfwTablaSync(); const st2 = document.getElementById('ctb-st'), txt = _ctbTexto(CTB.b);
+    if (!CTB.b.some(o => o.filas.some(f => String(f[0] || '').trim()))) { st2.style.color = 'var(--rd)'; st2.textContent = 'Agrega al menos una talla.'; return; }
+    g.disabled = true; st2.style.color = 'var(--mu)'; st2.textContent = 'Guardando…';
+    try { const r = await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: CTB.v.Diseno, ShopifyId: CTB.gid, guardar: txt }); CTB.b = _ctbLeer(r.tabla); _cfwTablaPintar('✓ ' + r.texto); const s3 = document.getElementById('ctb-st'); if (s3) s3.style.color = 'var(--gn)'; toast('Tabla de medidas guardada', 'ok'); }
+    catch (e) { g.disabled = false; st2.style.color = 'var(--rd)'; st2.textContent = e.message || String(e); } });
+}
 function _cosFichaWebPintar(estado) {
   const box = document.getElementById('cfw-box'); if (!box || !CFW.f) return;
   const st = 'width:100%;padding:7px 9px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px';
@@ -7518,9 +7576,10 @@ function _cosMediaShopPintar(v) {
 // 6-oct · «Historia en la tienda» en su propio lugar (antes vivía dentro del panel de fotos y se borraba cada vez que este se refrescaba)
 function _cosHistCabecera(v) {
   const w = document.getElementById('cf-histw'); if (!w) return;
-  w.innerHTML = '<div style="font-size:13px;font-weight:700;margin-top:10px">🛍️ Lo que ve la clienta <button type="button" class="btn bg bs" id="cfw-abrir" style="font-size:11px" title="Volver a leer de la tienda">↻</button></div><div id="cfw-box"></div>';
+  w.innerHTML = '<div style="font-size:13px;font-weight:700;margin-top:10px">🛍️ Lo que ve la clienta <button type="button" class="btn bg bs" id="cfw-abrir" style="font-size:11px" title="Volver a leer de la tienda">↻</button></div><div id="cfw-box"></div><div id="cfw-tablaw"></div>';   // 10-oct · + tabla de medidas
   document.getElementById('cfw-abrir').addEventListener('click', ev => { ev.preventDefault(); _cosFichaWebAbrir(v); });   // 5-oct · historia de la tienda (FichaWeb.gs)
   _cosFichaWebAbrir(v);   // 8-oct · pestaña Tienda: se abre sola, sin «Editar»
+  try { _cfwTablaAbrir(v); } catch (_) {}
 }
 
 // 4-oct · las DOS cápsulas de la ficha: ERP (activo/inactivo) y Shopify (activo = publicado / inactivo = borrador). Son independientes.
