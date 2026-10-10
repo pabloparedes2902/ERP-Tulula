@@ -5697,8 +5697,6 @@ window.comOficialPintar = comOficialPintar;
   window.loadComisiones = envuelta;
 })();
 
-})();
-
 /* ── 9-oct (Pablo) · LOGROS DE LAS ASESORAS en el Panel de Comisiones ──
    La base anota cada logro (erp.comisiones_logros, revisa sola cada 2 min): meta del dia,
    semana completa, 100% del mes, 75% y 100% del trimestre, tramo del equipo. El aviso con
@@ -5736,3 +5734,5 @@ function comLogrosPintar() {
   }).catch(function () {});
 }
 window.comLogrosPintar = comLogrosPintar;
+
+})();
