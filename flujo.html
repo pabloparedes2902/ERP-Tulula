@@ -3094,7 +3094,7 @@ function pintarSerie(idx){
   fechas.forEach(f => quienes.forEach(v => {
     const k = v+'|'+f, dow = new Date(f+'T12:00:00').getDay();
     if (!enRango.has(f)){ val[k] = null; return; }
-    if (!val[k]) val[k] = (SER || (TURNO_ASESORA[v]||[]).indexOf(dow) > -1) ? 0 : null;
+    if (!val[k]) val[k] = (SER || _trabajaV(v, new Date(f+'T12:00:00'))) ? 0 : null;
   }));
   let maxV = 0; Object.keys(val).forEach(k => { if ((val[k]||0) > maxV) maxV = val[k]; });
   const techo = Math.max(SER ? 3 : META_VENTAS_DIA + 1, Math.ceil(maxV));
@@ -3212,6 +3212,38 @@ try{ if (parent !== window) parent.postMessage({tipo:'erp-tema-pedir'}, '*'); }c
 const ASESORAS_VENTAS = ['Angie', 'Dayann', 'Lucia', 'Tula'];
 const META_VENTAS_DIA = 4;   /* 5-oct-2026 (Pablo): 4 ventas diarias por asesora */
 const TURNO_ASESORA = { Angie: [1,2,3,4,5], Dayann: [5,6,0,1,2], Lucia: [6,0], Tula: [0,1,2,3,4,5,6] };
+/* 9-oct-2026 (OK de Pablo): los dias de trabajo salen de la MISMA base que Comisiones > Asesoras
+   (erp.turnos_leer: dias fijos + cambios de una fecha puntual). Lo de arriba queda solo de respaldo
+   si no hay sesion. Tula (el bot) trabaja todos los dias y no se toca. */
+let TURNO_CAMBIOS = {};
+function _turnosVentasAplicar(tt){
+  if (!tt || !tt.dias) return false;
+  const antes = JSON.stringify([TURNO_ASESORA, TURNO_CAMBIOS]);
+  Object.keys(tt.dias).forEach(k => { const n = nomAsesora(k); if (n && n !== 'Tula' && Array.isArray(tt.dias[k])) TURNO_ASESORA[n] = tt.dias[k].map(Number); });
+  const cam = {};
+  (tt.cambios || []).forEach(c => { const n = nomAsesora(c.nombre); if (n && n !== 'Tula') cam[n + '|' + String(c.fecha || '').slice(0, 10)] = !!c.trabaja; });
+  TURNO_CAMBIOS = cam;
+  return antes !== JSON.stringify([TURNO_ASESORA, TURNO_CAMBIOS]);
+}
+function _trabajaV(nombre, d){
+  const p = x => String(x).padStart(2, '0');
+  const k = nombre + '|' + d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  if (Object.prototype.hasOwnProperty.call(TURNO_CAMBIOS, k)) return TURNO_CAMBIOS[k];
+  const t = TURNO_ASESORA[nombre]; return !!t && t.indexOf(d.getDay()) > -1;
+}
+async function _turnosVentasTraer(){
+  try {
+    const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
+    const tok = (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null;
+    if (!tok) return;
+    const r = await fetch(FL_SB_URL + '/rest/v1/rpc/turnos_leer', { method: 'POST',
+      headers: { apikey: FL_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: '{}' });
+    if (!r.ok) return;
+    const tt = await r.json();
+    try { localStorage.setItem('com_turnos', JSON.stringify(tt)); } catch (e) {}
+    if (_turnosVentasAplicar(tt)) { try { if (typeof embData !== 'undefined' && embData && embData.d) pintarTodo(); } catch (e) {} }
+  } catch (e) { /* sin base: quedan los ultimos dias guardados */ }
+}
 function nomAsesora(x){
   const u = String(x || '').trim().toUpperCase();
   if (['', 'TULA', 'AGENTE', 'AGENTE IA TULULA', 'OTROS', 'N/A', '(SIN DATO)'].indexOf(u) > -1) return 'Tula';
@@ -3220,6 +3252,8 @@ function nomAsesora(x){
   if (u === 'LUCIA' || u === 'LUCÍA') return 'Lucia';
   return '';   /* Pablo Paredes y cualquier otro: fuera */
 }
+try { _turnosVentasAplicar(JSON.parse(localStorage.getItem('com_turnos') || 'null')); } catch (e) {}
+_turnosVentasTraer();
 function capsulaAsesora(n, grande){
   const col = COLOR_ASESORA[n] || '#8b93a7';
   return '<span style="display:inline-block;background:'+col+';color:#111;border-radius:999px;padding:'+(grande?'3px 12px':'2px 10px')+
@@ -3231,7 +3265,7 @@ function diasTurno(nombre, desdeSeg, hastaSeg){
   const d = new Date(desdeSeg * 1000); d.setHours(12, 0, 0, 0);
   const fin = new Date(Math.min(hastaSeg * 1000, Date.now())); fin.setHours(12, 0, 0, 0);
   let n = 0, guard = 0;
-  while (d <= fin && guard++ < 400){ if (t.indexOf(d.getDay()) > -1) n++; d.setDate(d.getDate() + 1); }
+  while (d <= fin && guard++ < 400){ if (_trabajaV(nombre, d)) n++; d.setDate(d.getDate() + 1); }
   return n;
 }
 function _fHoy(){ const d = new Date(), p = x => String(x).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
@@ -3240,7 +3274,7 @@ function diasTurnoEntre(nombre, d1, d2){
   const t = TURNO_ASESORA[nombre]; if (!t) return 0;
   const d = new Date(d1); d.setHours(12, 0, 0, 0); const f = new Date(d2); f.setHours(12, 0, 0, 0);
   let n = 0, g = 0;
-  while (d <= f && g++ < 400){ if (t.indexOf(d.getDay()) > -1) n++; d.setDate(d.getDate() + 1); }
+  while (d <= f && g++ < 400){ if (_trabajaV(nombre, d)) n++; d.setDate(d.getDate() + 1); }
   return n;
 }
 const MESES_ES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
