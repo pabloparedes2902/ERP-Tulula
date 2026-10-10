@@ -40349,6 +40349,33 @@ startAuth();
     catch (e) { toast(e.message, 'err'); }
   };
 
+  // ── Proyección del mes (10-oct-2026 · fase D): previsto por rubro (vacío = promedio 3 meses), cierre = mayor entre previsto y real ──
+  function _egrProyeccion(p){
+    if (!p || !p.rubros) return '';
+    const col = Number(p.utilidad_proyectada) < 0 ? 'var(--rd)' : (Number(p.margen_para_gastar) < 0 ? 'var(--am)' : 'var(--gn)');
+    const k = (v, t, c) => '<div class="egr-kpi"><b' + (c ? ' style="color:' + c + '"' : '') + '>' + _egrSoles(v) + '</b><span>' + t + '</span></div>';
+    const filas = p.rubros.map(r => '<tr><td>' + _egrEsc(r.rubro) + '</td>' +
+      '<td class="n">' + (p.cerrado ? _egrSoles(r.previsto == null ? r.sugerido : r.previsto) :
+        '<input type="number" step="1" style="width:100px;text-align:right" value="' + (r.previsto == null ? '' : Number(r.previsto)) + '" placeholder="' + Math.round(Number(r.sugerido) || 0) + '" onchange="_egrPresGuardar(\'' + _egrEsc(r.rubro) + '\', this.value)">') + '</td>' +
+      '<td class="n">' + _egrSoles(r.real) + '</td><td class="n"><b>' + _egrSoles(r.cierre) + '</b></td><td class="n" style="color:var(--mu)">' + _egrSoles(r.falta) + '</td></tr>').join('');
+    return '<div class="card"><h3 style="margin:0 0 8px">' + (p.cerrado ? 'Previsto vs real del mes' : 'Proyección del mes (' + Number(p.dias_transcurridos) + ' de ' + Number(p.dias_mes) + ' días)') + '</h3>' +
+      '<div class="egr-kpis">' + k(p.ingresos_real, 'Cobrado a la fecha') + (p.cerrado ? '' : k(p.ingresos_proyectados, 'Ingresos al ritmo actual')) +
+      k(p.egresos_cierre, p.cerrado ? 'Gastos del mes' : 'Gastos para el cierre (pesimista)') + k(p.utilidad_proyectada, p.cerrado ? 'Utilidad del mes' : 'Utilidad proyectada', col) +
+      (p.cerrado ? '' : k(p.margen_para_gastar, 'Puedes gastar de más sin bajar del mínimo', col)) + '</div>' +
+      (p.cerrado || p.utilidad_con_prom3 == null ? '' : '<div style="font-size:12px;color:var(--mu);margin:-4px 0 8px">Si el mes llega al promedio de cobro de los últimos 3 meses (' + _egrSoles(p.ingresos_prom3) + '), la utilidad sería ' + _egrSoles(p.utilidad_con_prom3) + '.</div>') +
+      '<div style="font-size:12px;margin-bottom:8px">Utilidad mínima del mes: <input type="number" step="500" style="width:110px;text-align:right" value="' + Number(p.utilidad_minima || 0) + '" onchange="_egrMinGuardar(this.value)"></div>' +
+      '<div class="tw" style="overflow-x:auto"><table class="egr-t"><thead><tr><th>Rubro</th><th class="n">Previsto</th><th class="n">Real a la fecha</th><th class="n">Para el cierre</th><th class="n">Falta gastar</th></tr></thead><tbody>' + filas + '</tbody></table></div>' +
+      '<div style="font-size:11px;color:var(--mu);margin-top:6px">Previsto vacío = promedio de los últimos 3 meses (en gris). Pon un monto pesimista en pauta, comisiones o bonos; "para el cierre" usa siempre el mayor entre lo previsto y lo real. Al terminar el mes queda solo lo real.</div></div>';
+  }
+  window._egrPresGuardar = async function(rubro, v){
+    try { await _egrRpc('presupuesto_guardar', { p_mes: EGR.cmes, p_rubro: rubro, p_monto: v === '' ? null : Number(v) }); toast('Previsto de ' + rubro + ' guardado', 'ok'); _egrCuadre(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  window._egrMinGuardar = async function(v){
+    try { await _egrRpc('presupuesto_minimo_guardar', { p_monto: Number(v) }); toast('Utilidad mínima guardada', 'ok'); _egrCuadre(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+
   // ── Cuadre mensual de caja (10-oct-2026 · reemplaza la hoja Cuadre de la Matriz) · solo Admin ──
   function _egrMesAnterior(){ const d = new Date(_egrHoy() + 'T12:00:00'); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7); }
   window._egrCuadreMes = function(v){ EGR.cmes = v || _egrMesAnterior(); _egrCuadre(); };
@@ -40370,8 +40397,8 @@ startAuth();
   async function _egrCuadre(){
     const c = document.getElementById('egr-cuerpo');
     if (!EGR.cmes) EGR.cmes = _egrMesAnterior();
-    let d = null;
-    try { d = await _egrRpc('cuadre_caja', { p_mes: EGR.cmes }); }
+    let d = null, pr = null;
+    try { const rs = await Promise.all([_egrRpc('cuadre_caja', { p_mes: EGR.cmes }), _egrRpc('proyeccion_mes', { p_mes: EGR.cmes }).catch(() => null)]); d = rs[0]; pr = rs[1]; }
     catch (e) { c.innerHTML = '<div class="egr-err">' + _egrEsc(e.message) + '</div>'; return; }
     d = d || {}; const emp = d.empresa || {};
     const sel = '<div style="margin-bottom:10px"><label style="font-size:12px;color:var(--mu)">Mes </label><input type="month" value="' + _egrEsc(EGR.cmes) + '" onchange="_egrCuadreMes(this.value)"></div>';
@@ -40393,7 +40420,7 @@ startAuth();
     const tSerie = '<div class="card"><h3 style="margin:0 0 8px">Evolución 2026</h3><div class="tw" style="overflow-x:auto"><table class="egr-t"><thead><tr><th>Mes</th><th class="n">Cuadre empresa</th><th class="n">Margen</th><th class="n">Cuadre Ana</th><th class="n">Cuadre Pablo</th></tr></thead><tbody>' +
       serie.map(m => '<tr' + (m.mes === EGR.cmes ? ' style="background:var(--bg2)"' : '') + '><td>' + _egrEsc(m.mes) + '</td><td class="n">' + _egrSoles(m.cuadre_empresa) + '</td><td class="n">' + _egrSoles(m.margen) + '</td><td class="n">' + _egrSoles(m.ana) + '</td><td class="n">' + _egrSoles(m.pablo) + '</td></tr>').join('') +
       '</tbody></table></div></div>';
-    c.innerHTML = sel + kpis + tAv + tEmp + '<div style="display:flex;gap:12px;flex-wrap:wrap">' + _egrCuadreSocio('Ana', d.ana, d.acumulado_ana) + _egrCuadreSocio('Pablo', d.pablo, d.acumulado_pablo) + '</div>' + tSerie +
+    c.innerHTML = sel + _egrProyeccion(pr) + kpis + tAv + tEmp + '<div style="display:flex;gap:12px;flex-wrap:wrap">' + _egrCuadreSocio('Ana', d.ana, d.acumulado_ana) + _egrCuadreSocio('Pablo', d.pablo, d.acumulado_pablo) + '</div>' + tSerie +
       '<div style="font-size:11px;color:var(--mu);margin-top:8px">Se calcula solo: ingresos = pagos de pedidos por cuenta (fecha de pago; los pagos de cambio van a la cuenta anotada en el cambio) · egresos = módulo Egresos por cuenta (fecha del gasto). Solo lo ven Ana y Pablo.</div>';
   }
 
