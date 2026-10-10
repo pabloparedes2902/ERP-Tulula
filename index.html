@@ -3856,7 +3856,78 @@ async function _fetchJsonCrudo(buildReq, action) {
   throw (ultimoError || new Error('No se pudo conectar con el servidor.'));
 }
 
+// >>> 10-oct-2026 · PUERTA ÚNICA (vía rápida tanda A · Puerta.gs + PEGAR_EN_SUPABASE_puerta_unica_10oct.sql)
+// Toda llamada a Apps Script pasa por api()/apiSend(). Si la acción está ENCENDIDA en la base (erp_puerta_config,
+// lista que llega con rpc puerta_lista), se pide primero la respuesta guardada en la base (rpc puerta_leer, ≈0,4 s):
+//   · fresca → se usa tal cual · vieja (pasó su tiempo) → se usa y se renueva en segundo plano por Apps Script
+//   · sucia (alguien guardó algo de ese módulo) o no existe o la base no responde → Apps Script, como siempre.
+// Apps Script guarda cada lectura en la base al terminar (_puertaTrasAccion_). Las pantallas no cambian.
+const PUERTA = { lista: null, enVuelo: {}, _p: null };
+try { const _pl = JSON.parse(localStorage.getItem('erp_puerta_lista') || 'null'); if (Array.isArray(_pl)) PUERTA.lista = _pl; } catch (_) {}
+function _puertaEstable(v) {
+  if (v === null || v === undefined) return 'null';
+  if (Array.isArray(v)) return '[' + v.map(x => _puertaEstable(x === undefined ? null : x)).join(',') + ']';
+  if (typeof v === 'object') return '{' + Object.keys(v).filter(k => v[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + _puertaEstable(v[k])).join(',') + '}';
+  return JSON.stringify(v);
+}
+function _puertaClave(action, body) {
+  const o = {};
+  if (body && typeof body === 'object' && !Array.isArray(body)) Object.keys(body).forEach(k => { if (k.charAt(0) !== '_' && body[k] !== undefined) o[k] = body[k]; });
+  return String(action) + '|' + _puertaEstable(o);
+}
+async function _puertaRpc(fn, params, ms) {
+  if (typeof SB_URL === 'undefined' || !SB_ANON || (typeof SB_APAGADO !== 'undefined' && SB_APAGADO)) return null;
+  let tok = null; try { tok = await _sbSesionAsegurar(); } catch (_) {}
+  if (!tok) return null;
+  const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  const tm = ctl ? setTimeout(() => { try { ctl.abort(); } catch (_) {} }, ms || 2500) : null;
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify(params || {}), signal: ctl ? ctl.signal : undefined });
+    if (!r.ok) { if (r.status === 401 && typeof _sbVencerTok === 'function') { try { _sbVencerTok(); } catch (_) {} } return null; }
+    return await r.json();
+  } catch (_) { return null; } finally { if (tm) clearTimeout(tm); }
+}
+function _puertaCargarLista() {
+  if (PUERTA._p) return PUERTA._p;
+  PUERTA._p = _puertaRpc('puerta_lista', {}, 4000).then(j => {
+    if (Array.isArray(j)) { PUERTA.lista = j; try { localStorage.setItem('erp_puerta_lista', JSON.stringify(j)); } catch (_) {} }
+  }).catch(() => {}).finally(() => { setTimeout(() => { PUERTA._p = null; }, 10 * 60 * 1000); });
+  return PUERTA._p;
+}
+function _puertaAplica(action, body) {
+  if (typeof window !== 'undefined' && window._modoContenido) return false;
+  if (!PUERTA.lista) { try { _puertaCargarLista(); } catch (_) {} return false; }
+  const c = PUERTA.lista.find(x => x && x.a === action);
+  if (!c) return false;
+  if (c.c) { const val = (body && body[c.c] != null) ? String(body[c.c]) : ''; return Array.isArray(c.v) && c.v.indexOf(val) >= 0; }
+  return true;
+}
+/** undefined = no hay respuesta guardada utilizable (sigue por Apps Script). */
+async function _puertaIntentar(action, body, porApps) {
+  let aplica = false; try { aplica = _puertaAplica(action, body); } catch (_) {}
+  if (!aplica) return undefined;
+  const clave = _puertaClave(action, body);
+  const _c = _cronAbrir('puerta.' + action + (body && body.op ? ' ' + body.op : (body && body.accion ? ' ' + body.accion : '')));
+  let ok = false;
+  try {
+    const j = await _puertaRpc('puerta_leer', { p_clave: clave }, 2500);
+    if (!j || typeof j !== 'object' || j.e === 'sucio' || !Object.prototype.hasOwnProperty.call(j, 'r') || j.r == null) return undefined;
+    ok = true;
+    if (j.e === 'viejo' && !PUERTA.enVuelo[clave]) {
+      PUERTA.enVuelo[clave] = 1;
+      Promise.resolve().then(porApps).catch(() => {}).finally(() => { delete PUERTA.enVuelo[clave]; });
+    }
+    return j.r;
+  } catch (_) { return undefined; }
+  finally { try { _cronCerrar(_c, ok); } catch (_) {} }
+}
+// <<< PUERTA ÚNICA
 async function api(action, params) {
+  { const _pr = await _puertaIntentar(action, params, () => _apiApps(action, params)); if (_pr !== undefined) return _pr; }
+  return _apiApps(action, params);
+}
+async function _apiApps(action, params) {
   return _fetchJson(() => {
     const u = new URL(API);
     u.searchParams.set('action', action);
@@ -3877,6 +3948,10 @@ function _conAlias(a, b) {
 }
 async function apiSend(action, body) {
   { const _al = _conAlias(action, body); if (_al) action = _al; }
+  { const _pr = await _puertaIntentar(action, body, () => _apiSendApps(action, body)); if (_pr !== undefined) return _pr; }   // 10-oct · PUERTA ÚNICA
+  return _apiSendApps(action, body);
+}
+async function _apiSendApps(action, body) {
   // 13/07 ANTI-DUPLICADO: id único por operación. Los reintentos automáticos de red
   // llevan el MISMO id → si el servidor ya la procesó (y la respuesta se perdió en el
   // camino), NO la repite: re-entrega la misma respuesta. Evita pagos duplicados.
@@ -39940,6 +40015,7 @@ async function startAuth(){
     _hideLogin(); bootApp();
     _authChequeo();   // 1-oct · 1 vez por hora (antes en cada arranque). Inválida→login vía _onSessionExpired; red→ignorar
     try { _sbPasePrecalentar(); } catch(_){}   // Etapa 1.5: el pase, antes de que haga falta
+    try { setTimeout(_puertaCargarLista, 2500); } catch(_){}   // 10-oct · PUERTA ÚNICA: lista de pantallas encendidas (por si se encendió una nueva)
     return;
   }
   // Sin sesión guardada (o sin rol): flujo clásico con validación bloqueante.
