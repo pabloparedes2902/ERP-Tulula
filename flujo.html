@@ -4295,29 +4295,31 @@ function cargarCalidad(){
     .catch(()=>{ document.getElementById('calZona').innerHTML = '<div class="cq">Todavía no hay datos. El análisis corre cada noche a las 4am.</div>'; });
 }
 /* ══════════════════════════════════════════════════════════════════════════
-   CALIDAD DE TULA — AUDITORIA SEMANAL (10-oct-2026, pedido de Pablo)
-   Cada noche (23:30) un juez calibrado con los criterios de Pablo lee TODAS las
-   conversaciones del dia y marca: veredicto (bien / dudosa / mal) + fallas.
-   Aqui se ve por SEMANA (lunes a domingo): que % de conversaciones sale mal,
-   cuanto inventa, cuanto deja de escalar, etc., contra la semana anterior y la meta.
-   Calibracion: Pablo marca 10 chats a ciegas por semana; si el acuerdo con el
-   juez baja de 80%, se ajusta el juez antes de confiar en los numeros.
-   Fuente: n8n /webhook/calidad-tula  (bot.eval_diario, bot.trazas, bot.calibracion)
+   CALIDAD DE TULA — AUDITORIA SEMANAL (10-oct-2026, rediseño con Pablo 18:07)
+   Solo 3 indicadores, en positivo (mas alto = mejor):
+     1. Responde adecuadamente  = % de conversaciones sin ninguna respuesta mala
+     2. No inventa datos        = % de conversaciones sin datos inventados
+     3. Escala cuando debe      = de las conversaciones que NECESITABAN una asesora,
+                                  % en que Tula si la paso (denominador propio)
+   Debajo, solo como diagnostico: POR QUE no responde adecuadamente (causas).
+   Juez: bot.config juez_pablo_v3, cada noche 23:30 (n8n "Medidor diario de Tula").
+   Calibracion: Pablo marca 10 chats a ciegas por semana; acuerdo minimo 80%.
+   Fuente: n8n /webhook/calidad-tula  (bot.eval_diario, bot.calibracion)
    ══════════════════════════════════════════════════════════════════════════ */
 const URL_CT = BASE_N8N + '/calidad-tula';
 const CT_FALLAS = [
-  {k:'inventa',            t:'Inventa datos',                         meta:2,  d:'Da un dato falso o sin respaldo (tela, promo, banco, plazo, talla mal convertida) o una asesora la corrige.'},
-  {k:'no_escala',          t:'No escala cuando debe',                 meta:2,  d:'Cuotas/tarjeta, comprobante, cita o videollamada, reclamo o pedido ya hecho, pide una persona, o dice "dame un ratito" y no pasa a la asesora.'},
-  {k:'pierde_hilo',        t:'Pierde el hilo / no responde lo que preguntan', meta:5, d:'Cambia de prenda, responde por la categoria o no contesta la pregunta.'},
-  {k:'ignora_datos',       t:'Ignora lo que la clienta ya dijo',      meta:5,  d:'No usa su talla, ciudad o cuerpo, o asume una talla o color que no dijo.'},
-  {k:'repite',             t:'Repite o entra en bucle',               meta:5,  d:'Vuelve a preguntar o a dar datos ya dados.'},
-  {k:'sin_precio_cantidad',t:'No da precios 1x / 2x / 3x',            meta:5,  d:'Le preguntaron precio o descuento y no mostro los precios por cantidad.'},
-  {k:'cierre_incompleto',  t:'Cierre incompleto',                     meta:3,  d:'Con talla, color y ciudad no cotiza total con envio y datos de pago, o abandona una videollamada aceptada.'},
-  {k:'asume_compra',       t:'Asume compra o pago',                   meta:1,  d:'Da por hecha una compra o un pago sin cotizacion o sin comprobante.'},
-  {k:'medidas_texto',      t:'Escribe medidas en texto',              meta:1,  d:'Escribe medidas en vez de mandar la imagen con la tabla.'},
-  {k:'tono',               t:'Tono (presiona / suena a robot)',       meta:3,  d:'"te lo llevo", presiona tras un gracias, frases de bot.'},
-  {k:'escala_de_mas',      t:'Escala de mas',                         meta:5,  d:'Pasa a la asesora algo que podia responder (precio, tallas, envio normal).'}
+  {k:'sin_precio_cantidad',t:'No da precios 1x / 2x / 3x',              d:'Le preguntaron precio o descuento y no mostro los precios por cantidad.'},
+  {k:'pierde_hilo',        t:'No responde lo que preguntan / cambia de prenda', d:'Cambia de prenda, responde por la categoria o no contesta la pregunta.'},
+  {k:'ignora_datos',       t:'Ignora lo que la clienta ya dijo',        d:'No usa su talla, ciudad o cuerpo, o asume una talla o color que no dijo.'},
+  {k:'repite',             t:'Repite o entra en bucle',                 d:'Vuelve a preguntar o a dar datos ya dados.'},
+  {k:'cierre_incompleto',  t:'Cierre incompleto',                       d:'Con talla, color y ciudad no cotiza total con envio y datos de pago, o abandona una videollamada aceptada.'},
+  {k:'inventa',            t:'Inventa un dato',                         d:'Da un dato falso o sin respaldo (tela, promo, banco, plazo, talla mal convertida) o una asesora la corrige.'},
+  {k:'no_escala',          t:'No pasa a la asesora cuando debe',        d:'Cuotas/tarjeta, comprobante, cita o videollamada, reclamo o pedido ya hecho, pide una persona, o dice "dame un ratito" y no escala.'},
+  {k:'asume_compra',       t:'Asume compra o pago',                     d:'Da por hecha una compra o un pago sin cotizacion o sin comprobante.'},
+  {k:'medidas_texto',      t:'Escribe medidas en texto',                d:'Escribe medidas en vez de mandar la imagen con la tabla.'},
+  {k:'tono',               t:'Tono (presiona / suena a robot)',         d:'"te lo llevo", presiona tras un gracias, frases de bot.'}
 ];
+const CT_META = { ok:90, inv:98, esc:95 };
 const CT = { datos:null, semana:null, cal:null, calI:0, abierto:{} };
 
 function ctLunes(f){ const d=new Date(f+'T12:00:00Z'); const w=(d.getUTCDay()+6)%7; d.setUTCDate(d.getUTCDate()-w); return d.toISOString().slice(0,10); }
@@ -4329,33 +4331,21 @@ function ctPost(body){ return fetch(URL_CT,{method:'POST',headers:{'Content-Type
 function cargarCalidadTula(){
   const z=document.getElementById('ctZona'); if(!z) return;
   if(!CT.datos) z.innerHTML='<div style="color:var(--txt2);font-size:12px;padding:8px 2px">Cargando calidad de Tula…</div>';
-  const desde = ctMas(ctLunes(new Date(Date.now()-5*3600e3).toISOString().slice(0,10)), -7*9);
+  const desde = ctMas(new Date(Date.now()-5*3600e3).toISOString().slice(0,10), -45);
   ctPost({accion:'resumen', desde}).then(d=>{ CT.datos=d; if(!CT.semana) CT.semana=ctSemanaDefault(); pintarCalidadTula(); })
     .catch(()=>{ z.innerHTML='<div style="color:var(--bad);font-size:12px">No se pudo leer la calidad de Tula (n8n /calidad-tula).</div>'; });
 }
-function ctSemanas(){
-  const s=new Set((CT.datos&&CT.datos.evals||[]).map(e=>ctLunes(e.f)));
-  return [...s].sort();
-}
+function ctSemanas(){ return [...new Set((CT.datos&&CT.datos.evals||[]).map(e=>ctLunes(e.f)))].sort(); }
 function ctSemanaDefault(){ const s=ctSemanas(); return s[s.length-1]||ctLunes(new Date().toISOString().slice(0,10)); }
 
-/* agregado de una semana: n conversaciones, % por veredicto y por falla */
-function ctAgg(sem){
-  const ev=(CT.datos.evals||[]).filter(e=>ctLunes(e.f)===sem);
-  const n=ev.length, r={n, ev, mal:0, dudosa:0, bien:0, f:{}};
-  for(const e of ev){ r[e.v]=(r[e.v]||0)+1; for(const x of (e.x||[])) r.f[x]=(r.f[x]||0)+1; }
-  const p=v=>n?100*v/n:null;
-  r.pMal=p(r.mal); r.pBien=p(r.bien); r.pF={}; for(const F of CT_FALLAS) r.pF[F.k]=p(r.f[F.k]||0);
-  const es=(CT.datos.esc||[]).filter(x=>ctLunes(x.f)===sem);
-  const cv=es.reduce((a,x)=>a+(+x.cv||0),0), ce=es.reduce((a,x)=>a+(+x.ce||0),0);
-  r.pEsc = cv? 100*ce/cv : null; r.cv=cv; r.ce=ce;
-  return r;
+/* los 3 indicadores sobre un conjunto de conversaciones evaluadas */
+function ctKpi(ev){
+  const n=ev.length, mal=ev.filter(e=>e.v==='mal').length, inv=ev.filter(e=>(e.x||[]).includes('inventa')).length;
+  const debe=ev.filter(e=>e.e===true||(e.x||[]).includes('no_escala')), falla=debe.filter(e=>(e.x||[]).includes('no_escala')).length;
+  return { n, mal, inv, debe:debe.length, escOk:debe.length-falla,
+    ok: n?100*(n-mal)/n:null, noInv: n?100*(n-inv)/n:null, esc: debe.length?100*(debe.length-falla)/debe.length:null };
 }
-function ctAggDia(d){
-  const ev=(CT.datos.evals||[]).filter(e=>e.f===d); const n=ev.length;
-  const mal=ev.filter(e=>e.v==='mal').length, inv=ev.filter(e=>(e.x||[]).includes('inventa')).length;
-  return {n, pMal:n?100*mal/n:0, pF:{inventa:n?100*inv/n:0}};
-}
+function ctEvSem(sem){ return (CT.datos.evals||[]).filter(e=>ctLunes(e.f)===sem); }
 /* acuerdo juez-Pablo: binario (mal vs no-mal), como se valido el 10-oct */
 function ctAcuerdo(sem){
   const c=(CT.datos.cal||[]).filter(x=>!sem||x.s===sem);
@@ -4367,77 +4357,63 @@ function ctAcuerdo(sem){
 function pintarCalidadTula(){
   const z=document.getElementById('ctZona'); if(!z||!CT.datos) return;
   const sems=ctSemanas(); const sem=CT.semana; const i=sems.indexOf(sem); const prev=i>0?sems[i-1]:null;
-  const A=ctAgg(sem), P=prev?ctAgg(prev):null;
-  const pc=v=>v==null?'—':(v<10&&v>0?v.toFixed(1):Math.round(v))+'%';
-  const delta=(a,b,menosEsMejor)=>{ if(a==null||b==null) return '<span style="color:var(--txt2)">sin semana anterior</span>';
+  const evA=ctEvSem(sem), A=ctKpi(evA), P=prev?ctKpi(ctEvSem(prev)):null;
+  const pc=v=>v==null?'—':Math.round(v)+'%';
+  const delta=(a,b)=>{ if(a==null||b==null) return '<span style="color:var(--txt2)">sin semana anterior</span>';
     const d=a-b; if(Math.abs(d)<0.5) return '<span style="color:var(--txt2)">= igual que la semana anterior</span>';
-    const mejor = menosEsMejor ? d<0 : d>0; return '<span style="color:'+(mejor?'var(--ok)':'var(--bad)')+'">'+(d>0?'▲ +':'▼ ')+d.toFixed(1)+' pts vs semana anterior</span>'; };
-  const ac=ctAcuerdo(), acS=ctAcuerdo(sem);
-  const tile=(tit,val,meta,ok,dlt,sub)=>'<div style="flex:1 1 170px;min-width:160px;border:1px solid var(--bd);border-radius:14px;padding:13px 15px;background:var(--card)">'
+    return '<span style="color:'+(d>0?'var(--ok)':'var(--bad)')+'">'+(d>0?'▲ +':'▼ ')+d.toFixed(1)+' pts vs semana anterior</span>'; };
+  const ac=ctAcuerdo();
+  const tile=(tit,val,meta,ok,dlt,sub)=>'<div style="flex:1 1 220px;min-width:200px;border:1px solid var(--bd);border-radius:14px;padding:13px 15px;background:var(--card)">'
     +'<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.4px">'+tit+'</div>'
-    +'<div style="font-size:30px;font-weight:900;line-height:1.25;color:'+(ok==null?'inherit':ok?'var(--ok)':'var(--bad)')+'">'+val+'</div>'
+    +'<div style="font-size:32px;font-weight:900;line-height:1.25;color:'+(ok==null?'inherit':ok?'var(--ok)':'var(--bad)')+'">'+val+'</div>'
     +'<div style="font-size:10.5px;color:var(--txt2)">'+(sub||'')+'</div>'
     +'<div style="font-size:10.5px;margin-top:5px">'+dlt+'</div>'
-    +(meta?'<div style="font-size:9.5px;color:var(--txt2);margin-top:3px">meta '+meta+'</div>':'')+'</div>';
+    +'<div style="font-size:9.5px;color:var(--txt2);margin-top:3px">meta '+meta+'</div></div>';
   let h='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px 2px">'
-    +'<div style="font-size:12.5px;font-weight:800;letter-spacing:1.6px;color:var(--txt2);text-transform:uppercase">Calidad de Tula · auditoría semanal</div>'
+    +'<div style="font-size:12.5px;font-weight:800;letter-spacing:1.6px;color:var(--txt2);text-transform:uppercase">Calidad de Tula</div>'
     +'<select id="ctSem" onchange="CT.semana=this.value;pintarCalidadTula()" style="background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:4px 8px;font-size:12px">'
     + sems.slice().reverse().map(s=>'<option value="'+s+'"'+(s===sem?' selected':'')+'>Semana '+ctFmt(s)+' – '+ctFmt(ctMas(s,6))+'</option>').join('')+'</select>'
-    +'<span style="font-size:11px;color:var(--txt2)">'+A.n+' conversaciones evaluadas por el juez</span>'
+    +'<span style="font-size:11px;color:var(--txt2)">'+A.n+' conversaciones evaluadas</span>'
     +'<span style="flex:1"></span>'
-    +'<span style="font-size:11px;color:'+(ac&&ac.pct>=80?'var(--ok)':ac?'var(--bad)':'var(--txt2)')+'">'+(ac?'Juez calibrado: '+Math.round(ac.pct)+'% de acuerdo contigo ('+ac.n+' chats)':'Juez validado 10/10 el 10-oct')+'</span>'
+    +'<span style="font-size:11px;color:'+(ac&&ac.pct>=80?'var(--ok)':ac?'var(--bad)':'var(--txt2)')+'">'+(ac?'Juez: '+Math.round(ac.pct)+'% de acuerdo contigo ('+ac.n+' chats)':'Juez validado 10/10 el 10-oct')+'</span>'
     +'<button class="btn" onclick="ctCalibrar()">🎯 Calibrar juez (10 chats)</button>'
     +'<button class="btn" onclick="ctToggleGuia()">📋 Rutina semanal</button></div>';
   h+='<div id="ctGuia" style="display:'+(CT.abierto.guia?'block':'none')+';border:1px dashed var(--bd);border-radius:12px;padding:12px 16px;margin-bottom:10px;font-size:12px;line-height:1.6;background:var(--card)">'
     +'<b>Cada lunes (20 min):</b><br>'
-    +'1. <b>Mira los 4 números de arriba</b> contra la semana anterior y la meta.<br>'
+    +'1. <b>Mira los 3 números</b> contra la semana anterior y la meta.<br>'
     +'2. <b>Calibra el juez:</b> marca 10 chats a ciegas. Si el acuerdo baja de 80%, se ajusta el juez antes de creerle a los números.<br>'
-    +'3. <b>Elige las 3 fallas más altas</b> (marcadas 🎯 en la tabla). Abre sus chats y confirma el patrón.<br>'
-    +'4. <b>Se corrige</b> en este orden: código (regla fija) → datos (ERP/políticas) → prompt. Cada corrección se vuelve un caso de prueba.<br>'
+    +'3. <b>Abre "¿Por qué no responde adecuadamente?"</b> y mira la causa #1 (🎯). Toca la fila para leer sus chats.<br>'
+    +'4. <b>Se corrige esa causa</b> en este orden: código (regla fija) → datos (ERP/políticas) → prompt. Cada corrección se vuelve un caso de prueba.<br>'
     +'5. <b>Antes de publicar</b>, el simulador corre todos los casos: no se publica si algo que pasaba se rompe.<br>'
-    +'6. <b>La semana siguiente</b> esa falla debe bajar. Si no baja, el arreglo no sirvió y se revisa.</div>';
-  const okMal=A.pMal!=null?A.pMal<=10:null, okInv=A.pF.inventa!=null?A.pF.inventa<=2:null, okEsc=A.pF.no_escala!=null?A.pF.no_escala<=2:null, okBien=A.pBien!=null?A.pBien>=70:null;
+    +'6. <b>La semana siguiente</b> esa causa debe bajar y "Responde adecuadamente" subir. Si no, el arreglo no sirvió y se revisa.</div>';
   h+='<div style="display:flex;gap:12px;flex-wrap:wrap">'
-    + tile('Responde mal', pc(A.pMal), 'menos de 10%', okMal, delta(A.pMal,P&&P.pMal,true), A.mal+' de '+A.n+' conversaciones con al menos una respuesta mala')
-    + tile('Inventa datos', pc(A.pF.inventa), 'menos de 2%', okInv, delta(A.pF.inventa,P&&P.pF.inventa,true), (A.f.inventa||0)+' conversaciones')
-    + tile('No escala cuando debe', pc(A.pF.no_escala), 'menos de 2%', okEsc, delta(A.pF.no_escala,P&&P.pF.no_escala,true), (A.f.no_escala||0)+' conversaciones')
-    + tile('Conversaciones perfectas', pc(A.pBien), 'más de 70%', okBien, delta(A.pBien,P&&P.pBien,false), A.bien+' sin ningún reparo')
-    + tile('Pasa a asesora', pc(A.pEsc), '', null, (P&&P.pEsc!=null&&A.pEsc!=null)?'<span style="color:var(--txt2)">'+(A.pEsc>=P.pEsc?'▲ +':'▼ ')+(A.pEsc-P.pEsc).toFixed(1)+' pts vs semana anterior</span>':'', (A.ce||0)+' de '+(A.cv||0)+' conversaciones (dato del sistema)')
+    + tile('Responde adecuadamente', pc(A.ok), CT_META.ok+'% o más', A.ok==null?null:A.ok>=CT_META.ok, delta(A.ok,P&&P.ok), (A.n-A.mal)+' de '+A.n+' conversaciones sin ninguna respuesta mala')
+    + tile('No inventa datos', pc(A.noInv), CT_META.inv+'% o más', A.noInv==null?null:A.noInv>=CT_META.inv, delta(A.noInv,P&&P.noInv), (A.n-A.inv)+' de '+A.n+' conversaciones sin datos inventados')
+    + tile('Escala cuando debe', pc(A.esc), CT_META.esc+'% o más', A.esc==null?null:A.esc>=CT_META.esc, delta(A.esc,P&&P.esc), A.escOk+' de '+A.debe+' conversaciones que necesitaban una asesora')
     +'</div>';
-  /* tendencia: % mal por semana (ultimas 8) */
-  const dias=[...new Set((CT.datos.evals||[]).map(e=>e.f))].sort().slice(-14);
-  const serie=dias.map(d=>({s:d, a:ctAggDia(d)}));
-  h+='<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px">'
-    +'<div style="flex:1 1 320px;min-width:280px;border:1px solid var(--bd);border-radius:14px;padding:12px 16px;background:var(--card)">'
-    +'<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Día a día · % responde mal y % inventa (últimos 14 días)</div>'
-    + ctGrafico(serie) +'</div>';
-  /* A/B banco de ejemplos (desde 10-oct) */
-  const ab=A.ev.filter(e=>e.f>='2026-10-10');
-  if(ab.length){ const g=k=>{const x=ab.filter(e=>e.g===k);const m=x.filter(e=>e.v==='mal').length;return {n:x.length,p:x.length?100*m/x.length:0};}; const c=g('con_ejemplos'), s=g('sin_ejemplos');
-    h+='<div style="flex:0 1 260px;min-width:220px;border:1px solid var(--bd);border-radius:14px;padding:12px 16px;background:var(--card);font-size:12px">'
-     +'<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Prueba A/B · banco de ejemplos</div>'
-     +'<div>Con ejemplos: <b>'+Math.round(c.p)+'%</b> mal <span style="color:var(--txt2)">('+c.n+')</span></div>'
-     +'<div>Sin ejemplos: <b>'+Math.round(s.p)+'%</b> mal <span style="color:var(--txt2)">('+s.n+')</span></div>'
-     +'<div style="color:var(--txt2);font-size:10.5px;margin-top:6px">Se decide con ~100 conversaciones por grupo.</div></div>'; }
-  h+='</div>';
-  /* tabla de fallas */
-  const filas=CT_FALLAS.map(F=>({F, a:A.pF[F.k]||0, n:A.f[F.k]||0, b:P?(P.pF[F.k]||0):null})).sort((x,y)=>y.a-x.a);
-  const top=new Set(filas.filter(x=>x.n>0).slice(0,3).map(x=>x.F.k));
   h+='<div style="margin-top:10px;border:1px solid var(--bd);border-radius:14px;padding:12px 16px;background:var(--card)">'
-    +'<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Fallas por tipo · % de conversaciones de la semana (toca una fila para ver los chats)</div>'
-    +'<div style="display:grid;grid-template-columns:minmax(150px,2.2fr) 3fr 64px 92px 70px;gap:4px 10px;align-items:center;font-size:12px">'
-    +'<span style="color:var(--txt2);font-size:10.5px">Falla</span><span></span><span style="color:var(--txt2);font-size:10.5px;text-align:right">Semana</span><span style="color:var(--txt2);font-size:10.5px;text-align:right">vs anterior</span><span style="color:var(--txt2);font-size:10.5px;text-align:right">Meta</span>';
-  for(const r of filas){ const ok=r.a<=r.F.meta; const d=r.b==null?'—':(Math.abs(r.a-r.b)<0.5?'=':(r.a>r.b?'▲ +':'▼ ')+(r.a-r.b).toFixed(1));
+    +'<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Día a día · más alto es mejor</div>'
+    + ctGrafico() +'</div>';
+  /* desagregado: causas de las conversaciones que NO respondieron adecuadamente */
+  const malas=evA.filter(e=>e.v==='mal'); const malasP=prev?ctEvSem(prev).filter(e=>e.v==='mal'):null;
+  const filas=CT_FALLAS.map(F=>{ const n=malas.filter(e=>(e.x||[]).includes(F.k)).length; const nb=malasP?malasP.filter(e=>(e.x||[]).includes(F.k)).length:null;
+    return {F, n, a:malas.length?100*n/malas.length:0, b:(malasP&&malasP.length)?100*nb/malasP.length:null}; }).filter(r=>r.n>0).sort((x,y)=>y.n-x.n);
+  h+='<div style="margin-top:10px;border:1px solid var(--bd);border-radius:14px;padding:12px 16px;background:var(--card)">'
+    +'<div style="font-size:10.5px;color:var(--txt2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">¿Por qué no responde adecuadamente? · '+malas.length+' conversaciones de la semana</div>'
+    +'<div style="font-size:10.5px;color:var(--txt2);margin-bottom:8px">Una conversación puede tener más de una causa. Toca una fila para leer los chats.</div>'
+    +'<div style="display:grid;grid-template-columns:minmax(180px,2.4fr) 3fr 70px 92px;gap:4px 10px;align-items:center;font-size:12px">'
+    +'<span style="color:var(--txt2);font-size:10.5px">Causa</span><span></span><span style="color:var(--txt2);font-size:10.5px;text-align:right">% de las malas</span><span style="color:var(--txt2);font-size:10.5px;text-align:right">vs anterior</span>';
+  filas.forEach((r,ix)=>{ const d=r.b==null?'—':(Math.abs(r.a-r.b)<0.5?'=':(r.a>r.b?'▲ +':'▼ ')+(r.a-r.b).toFixed(0));
     const dc=r.b==null||Math.abs(r.a-r.b)<0.5?'var(--txt2)':(r.a<r.b?'var(--ok)':'var(--bad)');
-    h+='<span style="cursor:pointer;font-weight:700" title="'+ctEsc(r.F.d)+'" onclick="ctVerFalla(\''+r.F.k+'\')">'+(top.has(r.F.k)?'🎯 ':'')+r.F.t+' <span style="color:var(--txt2);font-weight:400">('+r.n+')</span></span>'
-      +'<div style="background:rgba(127,127,127,.15);border-radius:6px;height:14px;overflow:hidden;cursor:pointer" onclick="ctVerFalla(\''+r.F.k+'\')"><div style="width:'+Math.max(1,Math.min(100,r.a*2))+'%;height:100%;background:'+(ok?'var(--ok)':'var(--bad)')+';border-radius:6px"></div></div>'
-      +'<b style="text-align:right;color:'+(ok?'var(--ok)':'var(--bad)')+'">'+pc(r.a)+'</b>'
-      +'<span style="text-align:right;color:'+dc+'">'+d+'</span>'
-      +'<span style="text-align:right;color:var(--txt2)">≤ '+r.F.meta+'%</span>';
-    if(CT.abierto.falla===r.F.k){ const ev=A.ev.filter(e=>(e.x||[]).includes(r.F.k));
-      h+='<div style="grid-column:1/-1;border-left:3px solid var(--bot);padding:6px 10px;margin:4px 0 8px;font-size:11.5px">'+ctEsc(r.F.d)+'<br>'
-        + (ev.length? ev.map(e=>'<div style="margin-top:5px"><a href="javascript:void 0" onclick="ctVerChat(\''+e.f+'\','+e.c+')" style="color:var(--bot);font-weight:700">#'+e.c+'</a> <span style="color:var(--txt2)">'+ctFmt(e.f)+' · '+e.v+'</span> — '+ctEsc(e.p)+'<div id="ctChat_'+e.f+'_'+e.c+'"></div></div>').join('') : '<i>Sin casos esta semana.</i>')+'</div>'; }
-  }
+    h+='<span style="cursor:pointer;font-weight:700" title="'+ctEsc(r.F.d)+'" onclick="ctVerFalla(\''+r.F.k+'\')">'+(ix===0?'🎯 ':'')+r.F.t+' <span style="color:var(--txt2);font-weight:400">('+r.n+')</span></span>'
+      +'<div style="background:rgba(127,127,127,.15);border-radius:6px;height:14px;overflow:hidden;cursor:pointer" onclick="ctVerFalla(\''+r.F.k+'\')"><div style="width:'+Math.max(1,Math.min(100,r.a))+'%;height:100%;background:'+(ix===0?'var(--bad)':'var(--warn)')+';border-radius:6px"></div></div>'
+      +'<b style="text-align:right">'+Math.round(r.a)+'%</b>'
+      +'<span style="text-align:right;color:'+dc+'">'+d+'</span>';
+    if(CT.abierto.falla===r.F.k){ const ev=malas.filter(e=>(e.x||[]).includes(r.F.k));
+      h+='<div style="grid-column:1/-1;border-left:3px solid var(--bot);padding:6px 10px;margin:4px 0 8px;font-size:11.5px">'+ctEsc(r.F.d)
+        + ev.map(e=>'<div style="margin-top:5px"><a href="javascript:void 0" onclick="ctVerChat(\''+e.f+'\','+e.c+')" style="color:var(--bot);font-weight:700">#'+e.c+'</a> <span style="color:var(--txt2)">'+ctFmt(e.f)+'</span> — '+ctEsc(e.p)+'<div id="ctChat_'+e.f+'_'+e.c+'"></div></div>').join('')+'</div>'; }
+  });
+  if(!filas.length) h+='<i style="grid-column:1/-1">Sin conversaciones mal esta semana.</i>';
   h+='</div></div>';
   h+='<div id="ctCal" style="margin-top:10px"></div>';
   z.innerHTML=h;
@@ -4453,18 +4429,25 @@ function ctChatHtml(chat){
 }
 function ctVerChat(f,c){ const box=document.getElementById('ctChat_'+f+'_'+c); if(!box) return; if(box.innerHTML){ box.innerHTML=''; return; }
   box.innerHTML='<i style="color:var(--txt2)">cargando…</i>'; ctPost({accion:'chat',fecha:f,conversacion:c}).then(d=>{ box.innerHTML=ctChatHtml(d.chat); }).catch(()=>{ box.innerHTML='error'; }); }
-function ctGrafico(serie){
-  if(!serie.length) return '<i>Sin datos</i>';
-  const W=560,H=150,pl=30,pr=10,pt=10,pb=24; const n=serie.length;
-  const vals=serie.flatMap(x=>[x.a.pMal||0,x.a.pF.inventa||0]); const mx=Math.max(20,Math.ceil(Math.max(...vals)/10)*10);
-  const X=i=>pl+(n===1?(W-pl-pr)/2:i*(W-pl-pr)/(n-1)), Y=v=>pt+(H-pt-pb)*(1-v/mx);
-  const line=(k,col)=>{ const pts=serie.map((x,i)=>[X(i),Y(k(x.a)||0)]); return '<polyline fill="none" stroke="'+col+'" stroke-width="2.5" points="'+pts.map(p=>p.join(',')).join(' ')+'"/>'+pts.map((p,i)=>'<circle cx="'+p[0]+'" cy="'+p[1]+'" r="3.5" fill="'+col+'"><title>'+ctFmt(serie[i].s)+': '+(k(serie[i].a)||0).toFixed(1)+'% de '+serie[i].a.n+' conversaciones</title></circle>').join(''); };
-  let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:760px;height:auto;display:block">';
-  for(let v=0;v<=mx;v+=mx/4){ g+='<line x1="'+pl+'" x2="'+(W-pr)+'" y1="'+Y(v)+'" y2="'+Y(v)+'" stroke="var(--bd)" stroke-width="1" opacity=".5"/><text x="'+(pl-5)+'" y="'+(Y(v)+3)+'" font-size="9" text-anchor="end" fill="var(--txt2)">'+Math.round(v)+'%</text>'; }
-  g+='<line x1="'+pl+'" x2="'+(W-pr)+'" y1="'+Y(10)+'" y2="'+Y(10)+'" stroke="var(--ok)" stroke-dasharray="4 4" stroke-width="1.2"/><text x="'+(W-pr)+'" y="'+(Y(10)-3)+'" font-size="9" text-anchor="end" fill="var(--ok)">meta 10%</text>';
-  serie.forEach((x,i)=>{ g+='<text x="'+X(i)+'" y="'+(H-8)+'" font-size="9" text-anchor="middle" fill="var(--txt2)">'+ctFmt(x.s)+'</text>'; });
-  g+=line(a=>a.pMal,'var(--bad)')+line(a=>a.pF.inventa,'var(--warn)')+'</svg>';
-  g+='<div style="font-size:10.5px;color:var(--txt2);display:flex;gap:14px;margin-top:2px"><span><b style="color:var(--bad)">●</b> Responde mal</span><span><b style="color:var(--warn)">●</b> Inventa datos</span><span>(cada punto = un día; el día de hoy es parcial hasta las 23:30)</span></div>';
+function ctGrafico(){
+  /* ultimos 30 dias con al menos 5 conversaciones evaluadas. "Escala cuando debe" usa los
+     ultimos 7 dias en cada punto: por dia hay 1 a 5 casos y una sola conversacion lo movia 30 pts. */
+  const ev=CT.datos.evals||[]; const porDia={}; ev.forEach(e=>{ (porDia[e.f]=porDia[e.f]||[]).push(e); });
+  const dias=Object.keys(porDia).sort().filter(d=>porDia[d].length>=5).slice(-30);
+  if(!dias.length) return '<i>Sin datos</i>';
+  const pts=dias.map(d=>{ const k=ctKpi(porDia[d]); const ven=ev.filter(e=>e.f>ctMas(d,-7)&&e.f<=d); const k7=ctKpi(ven); return {d, n:k.n, ok:k.ok, inv:k.noInv, esc:k7.esc, debe7:k7.debe}; });
+  const W=760,H=220,pl=34,pr=12,pt=10,pb=26; const n=pts.length;
+  const X=i=>pl+(n===1?(W-pl-pr)/2:i*(W-pl-pr)/(n-1)), Y=v=>pt+(H-pt-pb)*(1-v/100);
+  const S=[{k:'ok',t:'Responde adecuadamente',c:'var(--bot)'},{k:'inv',t:'No inventa datos',c:'var(--warn)'},{k:'esc',t:'Escala cuando debe (últimos 7 días)',c:'var(--ab)'}];
+  let g='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:980px;height:auto;display:block">';
+  for(let v=0;v<=100;v+=25){ g+='<line x1="'+pl+'" x2="'+(W-pr)+'" y1="'+Y(v)+'" y2="'+Y(v)+'" stroke="var(--bd)" stroke-width="1" opacity=".5"/><text x="'+(pl-5)+'" y="'+(Y(v)+3)+'" font-size="9" text-anchor="end" fill="var(--txt2)">'+v+'%</text>'; }
+  const paso=Math.ceil(n/12); pts.forEach((p,i)=>{ if(i%paso===0||i===n-1) g+='<text x="'+X(i)+'" y="'+(H-8)+'" font-size="9" text-anchor="middle" fill="var(--txt2)">'+ctFmt(p.d)+'</text>'; });
+  for(const s of S){ const q=pts.map((p,i)=>p[s.k]==null?null:[X(i),Y(p[s.k]),p,i]).filter(Boolean);
+    g+='<polyline fill="none" stroke="'+s.c+'" stroke-width="2.5" stroke-linejoin="round" points="'+q.map(x=>x[0]+','+x[1]).join(' ')+'"/>';
+    g+=q.map(x=>'<circle cx="'+x[0]+'" cy="'+x[1]+'" r="3" fill="'+s.c+'"><title>'+ctFmt(x[2].d)+' · '+s.t+': '+Math.round(x[2][s.k])+'%'+(s.k==='esc'?' ('+x[2].debe7+' casos en 7 días)':' ('+x[2].n+' conversaciones)')+'</title></circle>').join(''); }
+  g+='</svg><div style="font-size:10.5px;color:var(--txt2);display:flex;gap:14px;flex-wrap:wrap;margin-top:2px">'
+    + S.map(s=>'<span><b style="color:'+s.c+'">●</b> '+s.t+'</span>').join('')
+    + '<span>· pasa el mouse por un punto para ver el detalle · hoy es parcial hasta las 23:30</span></div>';
   return g;
 }
 
