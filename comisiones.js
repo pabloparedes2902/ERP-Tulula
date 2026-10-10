@@ -803,6 +803,7 @@ function pintarHome() {
     '<div id="com-hist"></div>' +
     tarjetaEquipo(R, P, qTxt, meses, d.year) +
     tarjetaRanking(R, qTxt) +
+    '<div id="com-logros"></div>' +   // 9-oct (Pablo): logros de las asesoras
     '<div class="ct">Asesoras · ' + esc(qTxt) + '</div>' +
     '<div class="com-grid">' +
       R.rows.map(function (r, i) { return tarjetaAsesora(r, P.rows[i], R, meses, i); }).join('') +
@@ -825,6 +826,7 @@ function pintarHome() {
   // PRECARGA "Ver como" (2-ago): con el panel ya pintado, traer en segundo
   // plano la vista de cada asesora para que el switch abra al instante.
   setTimeout(vcPrecache, 1500);
+  try { comLogrosPintar(); } catch (e) {}
   // Números frescos de la base espejo (~2 s), en silencio.
   setTimeout(sbRefrescarPanel, 300);
 }
@@ -1767,6 +1769,7 @@ function _comTurnosCardHtml() {
   var est = 'background:var(--bg3);border:1px solid var(--bd);color:var(--tx);padding:6px 8px;border-radius:var(--r);font-size:13px;font-family:inherit';
   return '<div class="ct" style="margin:0 0 4px">Días de trabajo</div>' +
     '<div class="ml" style="margin-bottom:6px">Los días marcados son los que trabaja cada asesora. Con esto se arma su meta del día y su gráfico.</div>' +
+    '<div class="ml" style="margin-bottom:6px;font-weight:600">Se usa en Comisiones y en Ventas.</div>' +
     filas +
     '<div style="margin-top:14px;font-weight:600;font-size:13px">Cambio de una fecha</div>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">' +
@@ -5202,7 +5205,7 @@ function _comOfFiestaHoy(d, e, porSemana) {
   else if (e.ok && e.racha > 0 && e.racha % porSemana === 0) cola.push(['semana', '🔥', '¡Semana completa!']);
   else if (e.ok) cola.push(['dia', '🎯', '¡Meta de hoy cumplida!']);
   cola.forEach(function (x) {
-    var k = 'com_anim_' + n + '_' + hoyT + '_' + x[0];
+    var k = 'com_anim_' + n + '_' + (x[0] === 'mes' ? hoyT.slice(0, 7) : hoyT) + '_' + x[0];   // 9-oct (Pablo): el 🏆 del mes sale UNA vez por mes, no cada dia
     try { if (localStorage.getItem(k)) return; localStorage.setItem(k, '1'); } catch (er) { return; }
     setTimeout(function () { _comFiesta(x[0] === 'semana' ? 'fuego' : 'confeti', x[1], x[2]); }, 400);
   });
@@ -5695,3 +5698,41 @@ window.comOficialPintar = comOficialPintar;
 })();
 
 })();
+
+/* ── 9-oct (Pablo) · LOGROS DE LAS ASESORAS en el Panel de Comisiones ──
+   La base anota cada logro (erp.comisiones_logros, revisa sola cada 2 min): meta del dia,
+   semana completa, 100% del mes, 75% y 100% del trimestre, tramo del equipo. El aviso con
+   celebracion le sale a Pablo en cualquier pantalla del ERP (index.html _logrosRevisar). */
+var COMLOG = { todos: false };
+function _comLogrosHtml(lista) {
+  if (!lista || !lista.length) {
+    return '<div class="card"><div class="ct">🎉 Logros del equipo</div><div class="ml">Todavía no hay logros este trimestre.</div></div>';
+  }
+  var ver = COMLOG.todos ? lista : lista.slice(0, 8);
+  return '<div class="card"><div class="ct">🎉 Logros del equipo</div>' +
+    ver.map(function (l) {
+      var f = String(l.fecha || '').slice(0, 10).split('-');
+      return '<div class="com-row" style="align-items:flex-start;gap:10px">' +
+        '<span class="com-mut" style="min-width:44px">' + esc(f[2] + '/' + f[1]) + '</span>' +
+        '<span style="font-size:18px;line-height:1.2">' + esc(l.emoji || '🎉') + '</span>' +
+        '<span style="flex:1"><b>' + esc(l.titulo || '') + '</b>' +
+          (l.detalle ? '<div class="com-mut" style="font-size:12px">' + esc(l.detalle) + '</div>' : '') + '</span>' +
+      '</div>';
+    }).join('') +
+    (lista.length > 8 ? '<div style="margin-top:8px"><button class="btn bg bs" onclick="comLogrosTodos()">' +
+      (COMLOG.todos ? 'Ver menos' : 'Ver todos (' + lista.length + ')') + '</button></div>' : '') +
+  '</div>';
+}
+window.comLogrosTodos = function () { COMLOG.todos = !COMLOG.todos; comLogrosPintar(); };
+function comLogrosPintar() {
+  var z = document.getElementById('com-logros'); if (!z) return;
+  var j = window.__logros;
+  if (j && j.recientes) { z.innerHTML = _comLogrosHtml(j.recientes); }
+  if (j && Date.now() - (window.__logrosT || 0) < 60000) return;
+  _comOfRpc('comisiones_logros_admin', {}).then(function (r) {
+    if (!r || !r.recientes) return;
+    window.__logros = r; window.__logrosT = Date.now();
+    var z2 = document.getElementById('com-logros'); if (z2) z2.innerHTML = _comLogrosHtml(r.recientes);
+  }).catch(function () {});
+}
+window.comLogrosPintar = comLogrosPintar;

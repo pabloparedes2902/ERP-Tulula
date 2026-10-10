@@ -25334,6 +25334,52 @@ function npConfirm(msg) {
 // Cada asesora registra lo suyo. Si elige a OTRA asesora (pedido, prenda o pago) se le
 // pregunta: Si = sigue; No = no se guarda nada y el selector vuelve a su nombre.
 // Admin / logistica (sin asesora propia) no reciben la pregunta.
+// 9-oct-2026 (Pablo) · LOGROS DE LAS ASESORAS. La base anota cada logro (erp.comisiones_logros,
+// revisa sola cada 2 min): 🎯 meta del dia · 🔥 semana completa · 🏆 100% del mes · 🎉 75% y
+// 🥇 100% del trimestre · 🚀 tramo del equipo. Al admin le sale aqui, en cualquier pantalla:
+// celebracion + aviso que queda hasta que lo cierra. Cada logro se avisa UNA sola vez.
+let _logrosOcupado = false;
+async function _logrosRevisar(){
+  if (_logrosOcupado || document.hidden) return;
+  try { if (MY_ROLE !== 'Administrador') return; } catch (_) { return; }
+  _logrosOcupado = true;
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const h = { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' };
+    const r = await fetch(SB_URL + '/rest/v1/rpc/comisiones_logros_admin', { method: 'POST', headers: h, body: '{}' });
+    if (!r.ok) return;
+    const j = await r.json();
+    window.__logros = j; window.__logrosT = Date.now();
+    const nuevos = (j && j.nuevos) || [];
+    if (!nuevos.length) return;
+    _logrosMostrar(nuevos);
+    await fetch(SB_URL + '/rest/v1/rpc/comisiones_logros_visto', { method: 'POST', headers: h, body: JSON.stringify({ p_ids: nuevos.map(x => x.id) }) });
+    try { if (typeof comLogrosPintar === 'function') comLogrosPintar(); } catch (_) {}
+  } catch (_) {} finally { _logrosOcupado = false; }
+}
+function _logrosMostrar(nuevos){
+  const esc2 = x => String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const top = nuevos[nuevos.length - 1];
+  try {
+    if (typeof _comFiesta === 'function') _comFiesta(top.tipo === 'semana' ? 'fuego' : 'confeti', top.emoji || '🎉', nuevos.length > 1 ? nuevos.length + ' logros nuevos del equipo' : top.titulo);
+  } catch (_) {}
+  let box = document.getElementById('logros-aviso');
+  if (!box) {
+    box = document.createElement('div'); box.id = 'logros-aviso';
+    box.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:9990;max-width:360px;width:calc(100% - 32px);background:var(--bg2,#1d1d24);color:var(--tx,#fff);' +
+      'border:2px solid var(--gn,#22c55e);border-radius:14px;padding:12px 14px;box-shadow:0 10px 30px rgba(0,0,0,.35);font-size:13px;max-height:50vh;overflow:auto';
+    document.body.appendChild(box);
+  }
+  const previos = box.querySelector('.logros-filas') ? box.querySelector('.logros-filas').innerHTML : '';
+  const filas = nuevos.slice().reverse().map(l => {
+    const f = String(l.fecha || '').slice(0, 10).split('-');
+    return '<div style="display:flex;gap:8px;align-items:flex-start;margin:6px 0"><span style="font-size:18px;line-height:1.2">' + esc2(l.emoji || '🎉') + '</span>' +
+      '<span><b>' + esc2(l.titulo) + '</b><div style="opacity:.75;font-size:12px">' + esc2((f[2] || '') + '/' + (f[1] || '')) + (l.detalle ? ' · ' + esc2(l.detalle) : '') + '</div></span></div>';
+  }).join('');
+  box.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="color:var(--gn,#22c55e)">🎉 Logros del equipo</b>' +
+    '<button onclick="document.getElementById(\'logros-aviso\').remove()" style="background:none;border:none;color:inherit;font-size:18px;cursor:pointer;line-height:1" title="Cerrar">×</button></div>' +
+    '<div class="logros-filas">' + filas + previos + '</div>';
+}
 function _soyAdminERP() {
   try { return MY_ROLE === 'Administrador' || MY_ROLE === 'Admin'; } catch (_) { return false; }
 }
@@ -39636,6 +39682,11 @@ function bootApp(){
   }
   setTimeout(_pollAlertBadge, 20000);
   setInterval(_pollAlertBadge, 10*60*1000); // Refrescar cada 10 min
+  if(MY_ROLE==='Administrador'){            // 9-oct (Pablo): logros de las asesoras con celebracion
+    setTimeout(_logrosRevisar, 25000);
+    setInterval(_logrosRevisar, 2*60*1000);
+    document.addEventListener('visibilitychange', function(){ if (!document.hidden) setTimeout(_logrosRevisar, 1500); });
+  }
   if(MY_ROLE==='Administrador'){            // badge de errores de envío a Meta (solo admin)
     setTimeout(_pollMetaCapiBadge, 22000);
     setInterval(_pollMetaCapiBadge, 10*60*1000);
