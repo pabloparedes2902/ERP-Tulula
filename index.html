@@ -3952,9 +3952,48 @@ function _conAlias(a, b) {
 }
 async function apiSend(action, body) {
   { const _al = _conAlias(action, body); if (_al) action = _al; }
+  if (_salidaAplica(action, body)) { const _sr = await _salidaMandar(action, body); if (_sr !== undefined) return _sr; }   // 11-oct · D4 SALIDA A LA TIENDA
   { const _pr = await _puertaIntentar(action, body, () => _apiSendApps(action, body)); if (_pr !== undefined) return _pr; }   // 10-oct · PUERTA ÚNICA
   return _apiSendApps(action, body);
 }
+// >>> 11-oct-2026 · VÍA RÁPIDA D4 · SALIDA A LA TIENDA (decisión de Pablo: «el ERP es la fuente; Shopify se alimenta del ERP»)
+// Los cambios de Costos / Ficha web / Shopify se guardan PRIMERO en la base (rpc salida_encolar → tabla erp_salida, ~0,2 s)
+// y la base despierta al instante a Apps Script (Salida.gs) para llevarlos a la tienda por detrás. La pantalla puede
+// seguir sin esperar (opción alEncolar) o esperar el resultado (salida_esperar: la base responde apenas termina).
+// Si la base no recibe el cambio, se va por Apps Script como siempre. Si la tienda falla → alerta en Alertas.
+const SALIDA_ACCIONES = ['costos.guardar', 'costos.desactivar', 'costos.shopify', 'costos.ordenFotos', 'costos.plantilla', 'costos.fichaWeb'];
+function _salidaAplica(action, body) {
+  if (SALIDA_ACCIONES.indexOf(action) < 0) return false;
+  if (action !== 'costos.fichaWeb') return true;
+  const a = String((body && body.accion) || 'leer');
+  return a === 'guardar' || a === 'vista' || a === 'packs' || a === 'plantilla' || (a === 'tabla' && body && body.guardar !== undefined);
+}
+async function _salidaEsperar(id, topeMs) {
+  const t0 = Date.now(), tope = topeMs || 10 * 60 * 1000;
+  while (Date.now() - t0 < tope) {
+    const r = await _puertaRpc('salida_esperar', { p_id: id }, 9000);
+    if (r && (r.estado === 'ok' || r.estado === 'error')) return r;
+    if (!r) await new Promise(res => setTimeout(res, 2000));   // la base no respondió: se vuelve a preguntar en 2 s
+  }
+  return { estado: 'demora' };
+}
+/** Encola y (si se pide) avisa apenas quedó guardado en la base. Devuelve undefined si la base no lo recibió (→ Apps Script). */
+async function _salidaMandar(action, body, alEncolar) {
+  if (typeof _puertaRpc !== 'function') return undefined;
+  const det = action === 'costos.fichaWeb' ? String((body && body.accion) || '') : '';
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.salida', action + (det ? ' ' + det : '')) : null;
+  let enc = null; try { enc = await _puertaRpc('salida_encolar', { p_accion: action, p_cuerpo: body || {} }, 6000); } catch (_) { enc = null; }
+  try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, !!(enc && enc.id)); } catch (_) {}
+  if (!(enc && enc.id)) return undefined;
+  try { if (alEncolar) alEncolar(enc.id); } catch (_) {}
+  const _c2 = (typeof _cronAbrir === 'function') ? _cronAbrir('salida.tienda', action + (det ? ' ' + det : '')) : null;
+  const r = await _salidaEsperar(enc.id);
+  try { if (_c2 && typeof _cronCerrar === 'function') _cronCerrar(_c2, r.estado === 'ok'); } catch (_) {}
+  if (r.estado === 'ok') return r.resultado || { ok: true };
+  if (r.estado === 'error') throw new Error(r.error || 'La tienda no aceptó el cambio.');
+  throw new Error('Quedó guardado en el ERP y la tienda lo sigue procesando. Si falla, aparece en Alertas.');
+}
+// <<< SALIDA A LA TIENDA
 async function _apiSendApps(action, body) {
   // 13/07 ANTI-DUPLICADO: id único por operación. Los reintentos automáticos de red
   // llevan el MISMO id → si el servidor ya la procesó (y la respuesta se perdió en el
@@ -7519,7 +7558,13 @@ async function _cosFichaWebGuardar() {
   const out = document.getElementById('cfw-st'), g = document.getElementById('cfw-guardar');
   if (g) g.disabled = true; if (out) { out.style.color = 'var(--mu)'; out.textContent = 'Guardando en la tienda…'; }
   try {
-    const r = await apiSend('costos.fichaWeb', { accion: 'guardar', Diseno: CFW.v.Diseno, ShopifyId: CFW.gid, ficha: CFW.f });
+    // 11-oct · D4: queda guardada en la base al instante; la tienda la recibe por detrás (puedes cerrar o seguir con otro producto)
+    const _cuerpoFw = { accion: 'guardar', Diseno: CFW.v.Diseno, ShopifyId: CFW.gid, ficha: CFW.f };
+    let r = await _salidaMandar('costos.fichaWeb', _cuerpoFw, () => {
+      const o1 = document.getElementById('cfw-st'); if (o1) { o1.style.color = 'var(--gn)'; o1.textContent = '✓ Guardado en el ERP. Llevándolo a la tienda…'; }
+      toast('✓ Historia guardada · enviándola a la tienda', 'ok');
+    });
+    if (r === undefined) r = await apiSend('costos.fichaWeb', _cuerpoFw);
     if (!r || !r.ok) throw new Error((r && r.texto) || 'La tienda no respondió.');
     CFW.f = _cfwArmar(r.ficha); CFW.nueva = false;
     try { const k = _cftGid(CFW.gid); if (CFT.por && CFT.por[k]) { CFT.por[k].ficha = r.ficha || null; localStorage.setItem(CFT_KEY, JSON.stringify({ t: CFT.t, por: CFT.por })); } } catch (_) {}   // 6-oct · la copia queda al día
@@ -7702,8 +7747,10 @@ function _cosEstadosPintar(v) {
     if (!quiere && !(await npConfirm('Vas a marcar INACTIVO en el ERP:\n\n' + v.Diseno + '\n\nNo se borra nada, y no cambia lo que está publicado en Shopify (eso se maneja aparte).\n\n¿Seguimos?'))) { e.checked = true; e.disabled = false; return; }
     try {
       msg('Guardando…');
-      const r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: quiere, Canal: 'ERP' });
-      _cosAplicar(r); sincronizar(); msg('✓ ERP: ' + (quiere ? 'activo' : 'inactivo'), 'var(--gn)');
+      // 11-oct · D4: guardado en la base al instante; el resto confirma por detrás
+      let r = await _salidaMandar('costos.desactivar', { Diseno: v.Diseno, Activar: quiere, Canal: 'ERP' }, () => { msg('✓ ERP: ' + (quiere ? 'activo' : 'inactivo') + ' · confirmando…', 'var(--gn)'); });
+      if (r === undefined) r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: quiere, Canal: 'ERP' });
+      _cosAplicar(r && r.rows ? r : null); sincronizar(); msg('✓ ERP: ' + (quiere ? 'activo' : 'inactivo'), 'var(--gn)');
     } catch (er) { e.checked = !quiere; e.disabled = false; msg('Error: ' + er.message, 'var(--rd)'); }
   });
   const sh = document.getElementById('cf-sw-shop');
@@ -7845,11 +7892,18 @@ async function _cosGuardar(original, v) {
   const btn = document.getElementById('cf-save');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
   try {
-    const r = await apiSend('costos.guardar', body);
-    COS.editing = null;
-    _cosAplicar(r); _cosRender();
-    try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: true, r: r })); } catch (_) {}
-    toast('✓ Guardado: ' + esc(r.guardado || (tipo + ' ' + mod).trim()), 'ok');
+    // 11-oct · VÍA RÁPIDA D4: queda guardado en la base al instante y la ficha se cierra; el cálculo de costos y la tienda siguen por detrás
+    let _cerrado = false;
+    const _nomG = (tipo + ' ' + mod).trim() || (v && v.Diseno) || '';
+    let r = await _salidaMandar('costos.guardar', body, () => {
+      _cerrado = true; COS.editing = null; _cosRender();
+      toast('✓ Guardado: ' + esc(_nomG) + ' · aplicando costos y tienda…', 'ok');
+    });
+    if (r === undefined) r = await apiSend('costos.guardar', body);
+    if (!_cerrado) COS.editing = null;
+    _cosAplicar(r && r.rows ? r : null); _cosRender();
+    if (r && r.rows) { try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: true, r: r })); } catch (_) {} }
+    toast('✓ ' + (_cerrado ? 'Listo en costos y tienda: ' : 'Guardado: ') + esc(r.guardado || _nomG), 'ok');
     if (!original && COS.pend) { COS.pend = COS.pend.filter(x => !(String(x.TipoPrenda) === String(tipo).toUpperCase() && String(x.Modelo) === String(mod).toUpperCase())); }   // ya no está pendiente
     if (r && r.aviso) toast(r.aviso, 'warn');
     clearTimeout(window._cosSinT); window._cosSinT = setTimeout(() => { if (document.getElementById('cos-tabla')) loadCostosSin(); }, 20000);   // 4-oct · la revisión de ventas es lenta: no se pide en cada guardado
@@ -7898,9 +7952,14 @@ async function _cosDesactivar(diseno, activar) {
     if (!ok) return;
   }
   try {
-    const r = await apiSend('costos.desactivar', { Diseno: diseno, Activar: !!activar });
-    _cosAplicar(r); _cosRender();
-    toast(activar ? ('✓ Reactivado: ' + esc(diseno)) : ('✓ Marcado inactivo: ' + esc(diseno)), 'ok');
+    // 11-oct · D4: se ve al instante; la base y la tienda confirman por detrás
+    const _f = (COS.data || []).find(x => x.Diseno === diseno), _antes = _f ? _f.Activo : undefined;
+    let r = await _salidaMandar('costos.desactivar', { Diseno: diseno, Activar: !!activar }, () => {
+      if (_f) { _f.Activo = !!activar; _cosRender(); }
+      toast(activar ? ('✓ Reactivado: ' + esc(diseno)) : ('✓ Marcado inactivo: ' + esc(diseno)), 'ok');
+    }).catch(e => { if (_f) { _f.Activo = _antes; _cosRender(); } throw e; });
+    if (r === undefined) { r = await apiSend('costos.desactivar', { Diseno: diseno, Activar: !!activar }); toast(activar ? ('✓ Reactivado: ' + esc(diseno)) : ('✓ Marcado inactivo: ' + esc(diseno)), 'ok'); }
+    _cosAplicar(r && r.rows ? r : null); _cosRender();
     if (r && r.aviso) toast(r.aviso, 'warn');
   } catch (e) { toast('Error: ' + esc(e.message), 'err'); }
 }
@@ -13696,6 +13755,25 @@ async function _inmAplicarYa(req) {
 }
 // ══ fin STOCK INMEDIATO ══
 
+// 11-oct-2026 · VÍA RÁPIDA D6 · los ajustes de stock (conteo, lote, recuperar falla) ya NO esperan a la hoja.
+// Medido 30 días (cola_espejo): ajustar lote 17 s de espera mirando la pantalla, 0 rechazos. (Recuperar falla sigue esperando: regla de Pablo 3-oct.)
+// La base ya lo guardó (rpc) y la pantalla ya pintó el cambio; la hoja lo escribe por detrás. Cuando termina,
+// el inventario se vuelve a leer solo; si la hoja lo RECHAZA, aviso rojo y se repinta con lo real (no queda nada falso).
+// Reversa: D6_STOCK_EN_FONDO = false.
+const D6_STOCK_EN_FONDO = true;
+function _inmEnFondo(req, nombre) {
+  (async () => {
+    let motivo = '';
+    try {
+      const inm = await _inmAplicarYa(req);
+      if (!inm) { const fin = await _colaConfirmar(req, 180000); if (fin && fin.abandonado) motivo = fin.error || 'la hoja lo rechazó'; }
+    } catch (e) { motivo = (e && e._negocio) ? String(e.message || e).replace(/^No se aplicó: /, '') : ''; }
+    if (motivo) { try { toast('✗ La hoja NO aceptó: ' + nombre + ' — ' + motivo + '. Se volvió a mostrar el stock real.', 'err'); } catch (_) {} }
+    try { _stDataTs = 0; _refrescarInv(); } catch (_) {}
+  })();
+  return null;
+}
+
 const SB_PILOTO_DEVREG = true;
 
 async function _registrarDevolucion(body) {
@@ -13758,6 +13836,7 @@ async function _recuperarFalla(body) {
                                   cantidad: parseInt(it.cantidad, 10) || 0,
                                   lote: String(it.lote || '') })),
       p_request: req });
+    // 11-oct · D6: recuperar falla SIGUE esperando el veredicto a propósito (decisión de Pablo 3-oct: no decir «listo» si la hoja puede rechazar)
     if (d) {
       const inm = await _inmAplicarYa(req);
       // 3-oct (Pablo): si no se aplico al instante, se ESPERA el resultado real. Antes la pantalla decia
@@ -13784,6 +13863,7 @@ async function _ajustarConteo(body) {
   const d = await _sbRpcAjuste('conteo_ajustar', {
     p_prenda: String(body.prenda || ''), p_delta: parseInt(body.delta, 10),
     p_comentario: String(body.comentario || ''), p_request: req });
+  if (d && D6_STOCK_EN_FONDO) { _inmEnFondo(req, 'conteo ' + (body.delta > 0 ? '+' : '') + body.delta + ' ' + (body.prenda || '')); return { ok: true, delta: parseInt(body.delta, 10), via: 'base', inmediato: null, enFondo: true }; }   // 11-oct · D6
   if (d) { const inm = await _inmAplicarYa(req); return { ok: true, delta: parseInt(body.delta, 10), via: 'base', inmediato: inm }; }
   return apiSend('stock.ajustarConteo', body);
 }
@@ -13795,6 +13875,7 @@ async function _ajustarLote(body) {
     p_codigo: String(body.codigo || ''), p_prenda: String(body.prenda || ''),
     p_dis: String(body.dis || ''), p_col: String(body.col || ''),
     p_talla: String(body.talla || ''), p_nueva: parseInt(body.nueva, 10), p_request: req });
+  if (d && D6_STOCK_EN_FONDO) { _inmEnFondo(req, 'lote ' + (body.codigo || '') + ' a ' + body.nueva); return { ok: true, nueva: parseInt(body.nueva, 10), via: 'base', inmediato: null, enFondo: true }; }   // 11-oct · D6
   if (d) { const inm = await _inmAplicarYa(req); return { ok: true, nueva: parseInt(body.nueva, 10), via: 'base', inmediato: inm }; }
   return apiSend('lote.ajustar', body);
 }
