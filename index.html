@@ -3394,7 +3394,7 @@ const _CRON_TOPE = 400;
 // pasa los 3 s, y las vías rápidas tardan 176-470 ms. Se registraban sólo las
 // llamadas lentas a Apps Script — justo el sesgo que esto viene a corregir.
 // Sin esta línea, verLentos() seguiría mostrando una sola columna.
-const _CRON_SIEMPRE = /^(rapido\.|marca\.|pedido\.|stock\.|dup\.|puerta\.|(api\.)?(pedidos\.crear|pedidos\.detectarDuplicados|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
+const _CRON_SIEMPRE = /^(rapido\.|marca\.|pedido\.|stock\.|dup\.|puerta\.|pantalla\.|(api\.)?(pedidos\.crear|pedidos\.detectarDuplicados|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
 
 function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
 function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
@@ -4704,6 +4704,23 @@ function _tscFitViewport() {
 }
 window.addEventListener('resize', _tscFitViewport);
 
+// 11-oct-2026 · VÍA RÁPIDA E1 · RELOJ DE PANTALLA. La meta de Pablo es «cada clic < 0,5 s». Los relojes de abajo
+// (rapido.*, puerta.*) miden viajes a la base, muchos en segundo plano: no dicen cuánto ESPERÓ la persona.
+// Este mide clic en el menú → la pantalla sin el «Cargando…» (girador .sp) y con contenido. Queda en erp_lentos
+// como pantalla.<módulo> (siempre, aunque sea rápido). Tope 30 s (si no terminó, se anota como no terminada).
+function _pantallaMedir(pg, t0) {
+  const el = document.getElementById('pg-' + pg); if (!el || typeof _cronAbrir !== 'function') return;
+  const c = _cronAbrir('pantalla.' + pg, ''); let fin = false, obs = null;
+  const listo = () => !el.querySelector('.sp') && el.textContent.trim().length > 0;
+  const cerrar = (ok) => {
+    if (fin) return; fin = true; try { if (obs) obs.disconnect(); } catch (_) {}
+    try { if (ok && typeof _cronForzar === 'function') _cronForzar(c, Math.round(performance.now() - t0)); else _cronCerrar(c, ok); } catch (_) {}
+  };
+  if (listo()) { requestAnimationFrame(() => cerrar(true)); return; }
+  obs = new MutationObserver(() => { if (listo()) cerrar(true); });
+  obs.observe(el, { childList: true, subtree: true });
+  setTimeout(() => cerrar(false), 30000);
+}
 document.querySelectorAll('.nb[data-pg]').forEach(btn => {
   btn.addEventListener('click', function() {
     const pg = this.getAttribute('data-pg');
@@ -4712,7 +4729,9 @@ document.querySelectorAll('.nb[data-pg]').forEach(btn => {
     document.querySelectorAll('.pg').forEach(p => p.classList.remove('on'));
     document.getElementById('pg-'+pg).classList.add('on');
     document.getElementById('ptit').textContent = TITLES[pg]||pg;
+    const _tPg = performance.now();   // 11-oct · VÍA RÁPIDA E1: lo que de verdad espera la persona (clic → pantalla con datos)
     curPg = pg; loadPg(pg);
+    try { _pantallaMedir(pg, _tPg); } catch (_) {}
     if (pg !== 'pedidos') _pedOcultarContador();   // el contador solo aplica a Pedidos
     try { localStorage.setItem('erp_last_pg', pg); } catch(e){}   // recordar el último módulo para el próximo reload
     _applyVpFix(pg);
@@ -20312,6 +20331,7 @@ setInterval(function () { try { _fantasmaVigilar(); } catch (_) {} }, 3 * 60 * 1
 
 let _rtPulsoDesde = 0;
 function _rtPulsoPedido(p) {
+  try { _alertBadgeProgramar(); } catch (_) {}   // 11-oct · E2: el globito de alertas se recalcula por EVENTO (cambió un pedido)
   try {
     const nro = String((p && p.new && p.new.nro) || (p && p.old && p.old.nro) || '').trim();
     _rtPulsoDesde = Date.now();
@@ -20537,6 +20557,14 @@ async function _rtConectar() {
         .subscribe(st => { try { console.log('[RT] canal espejo:', st); } catch (_) {}
           try { window._rtEspVivo = (st === 'SUBSCRIBED'); } catch (_) {} });
     } catch (e) { try { console.warn('[RT] espejo no disponible:', e && e.message); } catch (_) {} }
+
+    // 11-oct-2026 · VÍA RÁPIDA E2 · TIMBRE GENERAL (public.timbre: una fila por tema, la base la toca cuando algo cambia).
+    try {
+      _rtCliente.channel('timbre-rt')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'timbre' },
+            p => { try { const tema = String((p && p.new && p.new.tema) || ''); if (tema === 'alertas') _alertBadgeProgramar(1500); } catch (_) {} })
+        .subscribe(st => { try { console.log('[RT] canal timbre:', st); } catch (_) {} });
+    } catch (e) { try { console.warn('[RT] timbre no disponible:', e && e.message); } catch (_) {} }
 
     // 10-oct-2026 · TIMBRE DE LOGROS DE LAS ASESORAS (ver _logrosTimbre). Una fila chiquita por logro.
     try {
@@ -39605,6 +39633,9 @@ function _updateAlertBadge(n) {
   try { _alBanner(n); } catch (e) {}
 }
 
+// 11-oct · E2: varias campanadas seguidas (ej. 5 pedidos en un minuto) = UNA sola lectura.
+let _alertBadgeT = null;
+function _alertBadgeProgramar(ms) { clearTimeout(_alertBadgeT); _alertBadgeT = setTimeout(_pollAlertBadge, ms == null ? 10000 : ms); }
 async function _pollAlertBadge() {
   try {
     const [r, buzon, espera] = await Promise.all([
@@ -40219,14 +40250,16 @@ function bootApp(){
     }, 120000);
   }
   setTimeout(_pollAlertBadge, 20000);
-  setInterval(_pollAlertBadge, 10*60*1000); // Refrescar cada 10 min
+  // 11-oct-2026 · VÍA RÁPIDA E2 (Pablo: «nada que consulte cada X minutos»). Antes: cada 10 min por pestaña abierta
+  // (medido: 335 lecturas en 20 h). Ahora por EVENTO: cambió un pedido (timbre pedidos-pulso-rt), se abrió/cambió una
+  // alerta (timbre 'alertas' en public.timbre) o la persona vuelve a la pestaña. Reversa: volver a poner el setInterval.
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) { _alertBadgeProgramar(800); if (MY_ROLE==='Administrador') setTimeout(_pollMetaCapiBadge, 1500); } });
   // 10-oct (Pablo): logros SIN sondeo. Una sola revision al entrar (lo que paso mientras no
   // estaba) y despues solo cuando suena el timbre en vivo 'logros-rt' (ver _rtConectar).
   setTimeout(_logrosRevisar, 25000);
   document.addEventListener('visibilitychange', function(){ if (!document.hidden && _logrosPend) { _logrosPend = false; setTimeout(_logrosRevisar, 800); } });
   if(MY_ROLE==='Administrador'){            // badge de errores de envío a Meta (solo admin)
-    setTimeout(_pollMetaCapiBadge, 22000);
-    setInterval(_pollMetaCapiBadge, 10*60*1000);
+    setTimeout(_pollMetaCapiBadge, 22000);   // 11-oct · E2: sin reloj de 10 min; se revisa al volver a la pestaña (arriba)
   }
 }
 
