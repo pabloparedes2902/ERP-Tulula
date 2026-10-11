@@ -371,6 +371,7 @@
   .mkchip.acc-esperar{color:var(--warn);background:rgba(224,166,61,.14)}
   .mkchip.acc-apagar{color:var(--bad);background:rgba(255,93,93,.14)}
   .mkchip.acc-encender{color:var(--ok);background:rgba(67,201,138,.14)}
+  .mkchip.acc-mantener{color:var(--ok);background:transparent;box-shadow:inset 0 0 0 1.5px var(--ok)}
   .mkchip.acc-nada{color:var(--txt2);background:rgba(140,140,140,.16)}
   /* 7-sep-2026 — minigrafica de 30 dias: una barra por dia. Alto = gasto del
      dia, verde = ese dia hubo venta, rayita = no corrio. Sirve para reconocer
@@ -721,153 +722,321 @@ function mkIrSub(cual){
   document.getElementById('mkReglas').style.display   = MKSUB === 'reglas'      ? 'block' : 'none';
   /* la barra de canal manda en Anuncios y en Que funciona, no en Contenido */
   const bc = document.querySelector('.mkhead');
-  if (bc) bc.style.display = (MKSUB === 'contenido') ? 'none' : 'flex';
+  if (bc) bc.style.display = (MKSUB === 'contenido' || MKSUB === 'reglas') ? 'none' : 'flex';   /* 11-oct · Reglas trae su propio botón WhatsApp / Web */
   if (MKSUB === 'quefunciona' && MK) qfPintar();
-  if (MKSUB === 'reglas') rgPintar();
+  if (MKSUB === 'reglas'){ if (typeof MKCANAL !== 'undefined' && MKCANAL !== 'all') RG_CANAL = MKCANAL === 'web' ? 'web' : 'wa'; rgPintar(); }
   /* avisarle a la barra del ERP cuál quedó encendido */
   try { parent.postMessage({tipo:'mkt-sub-activo', cual: MKSUB}, '*'); } catch(_){}
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   REGLAS (11-oct-2026, pedido de Pablo) — cuándo APAGAR o ESCALAR un anuncio.
-   Versión 1: solo se ven. Los montos van según la prenda del anuncio:
-   G = ganancia bruta promedio de un pedido que trae esa prenda
-   (hoja MargenWhatsAppAds del ERP, 304 pedidos jun–set 2026, margen 65%).
-   La misma regla corre cada mañana en la tarea "Revisión diaria de anuncios"
-   (8:50 Lima), que solo propone: nada se apaga sin el OK de Pablo.
-   Embudo WhatsApp (13-ago a 11-oct): conversación S/2.93 · fría S/3.56 ·
-   tibia S/6.75 · caliente S/34.6 · venta S/80.8 (43% de las calientes compra).
+   MOTOR ÚNICO DE REGLAS (11-oct-2026, aprobado por Pablo)
+   Un solo motor alimenta: la columna Acción, la pestaña 📏 Reglas y la
+   revisión diaria de las 8:50. Los parámetros viven en la base
+   (public.mk_motor_param) y se editan desde la pestaña Reglas.
+   T (tope) por diseño = (precio − costo) × t_factor (public.costos_erp vía
+   mk_motor_topes). Con ≥ t_ventas compras: T = ticket real × margen.
+   Escalera (encendidos): NO TOCAR → ESCALAR → MANTENER → cortes duros
+   (APAGAR) → EVALUAR → APAGAR. Apagados: ENCENDER o APAGADO (sin acción).
+   Embudo: N1 sesiones/conversaciones · N2 carrito/tibias ·
+           N3 checkout/calientes · N4 compras/ventas.
    ══════════════════════════════════════════════════════════════════════ */
-const RG_G = { top:129, blusa:119, pantalon:139, blazer:223, conjunto:223, abrigo:223, gabardina:223, vestido:223, chaleco:139, otro:139 };
-const RG_NOM = { top:'Top', blusa:'Blusa', pantalon:'Pantalón', blazer:'Blazer', conjunto:'Conjunto', abrigo:'Abrigo', gabardina:'Gabardina', vestido:'Vestido', chaleco:'Chaleco', otro:'Otro' };
-const RG_WEB = [
-  { p:'1',  t:'Sin visitas a la web',                    pct:0.08, min:8, campo:'sesiones' },
-  { p:'2',  t:'Sin carritos',                            pct:0.25, campo:'agregado_carrito' },
-  { p:'3',  t:'Sin checkouts',                           pct:0.50, campo:'checkout_iniciado' },
-  { p:'4a', t:'Sin compras y menos de 3 checkouts',      pct:1.00 },
-  { p:'4b', t:'Sin compras con 3 o más checkouts',       pct:1.50 },
-  { p:'5',  t:'Ya vende: devuelve menos de S/2 por S/1 → apagar · S/4 o más → subir 20%', pct:2.00 }
-];
-const RG_WA = [
-  { p:'1',  t:'Sin conversaciones',                      pct:0.08, min:8, campo:'conversaciones' },
-  { p:'2',  t:'Sin frías (escribieron 2 o más veces)',   pct:0.10, min:8, campo:'frias' },
-  { p:'3',  t:'Sin tibias (dieron 2 de los 4 datos)',    pct:0.15, campo:'tibias' },
-  { p:'4',  t:'Sin calientes (ya cotizadas)',            pct:0.50, campo:'calientes' },
-  { p:'5a', t:'Sin ventas y menos de 3 calientes',       pct:1.00 },
-  { p:'5b', t:'Sin ventas con 3 o más calientes',        pct:1.50 },
-  { p:'6',  t:'Ya vende: devuelve menos de S/2 por S/1 → apagar · S/4 o más → subir 20%', pct:2.00 }
-];
-function rgTipo(nombre){
-  const p = String(nombre||'').split('/');
-  const x = _mkNorm(p.length > 1 ? p[1] : p[0]).trim();
-  if (/^tops?\b/.test(x)) return 'top';
-  if (/^(blu|blusa)/.test(x)) return 'blusa';
-  if (/^(pan|pantal)/.test(x)) return 'pantalon';
-  if (/^(bla|blazer)/.test(x)) return 'blazer';
-  if (/^(con|conjunto)/.test(x)) return 'conjunto';
-  if (/^(abr|abrigo)/.test(x)) return 'abrigo';
-  if (/^(gab|gabard)/.test(x)) return 'gabardina';
-  if (/^(ves|vestido)/.test(x)) return 'vestido';
-  if (/^(cha|chaleco)/.test(x)) return 'chaleco';
-  return 'otro';
+const MOTOR_ON = true;
+const MOTOR_DEF = {
+  min_gasto:25, min_dias:4, sin_datos:10,
+  t_factor:1.5, t_ventas:3, t_piso:50,
+  esc_roas7:5, esc_comp7:2, esc_frec:3, esc_pct:20, esc_top:10, esc_top_pct:30,
+  man_roas:3, man_profit:100, man_comp:3, roas_caja:1.9,
+  ev_plazo_v:2, ev_n2_web:20, ev_n2_wa:45, ev_n3_web:10, ev_n3_wa:8, ev_plazo_i:1.5,
+  ev_hook:30, ev_ctr:2.5, ev_plazo_c:1, ev_freno:0.5, ev_barato:0.5,
+  c_n1:8, c_n1_min:8, c_n2:15, c_n3:50, c_comp:1, c_comp_i:1.5, c_comp_n3:3,
+  enc_roas:1.9, av_cierre:20, av_cierre_n3:5
+};
+let MOTOR_P = Object.assign({}, MOTOR_DEF);
+let MOTOR_TOPES = [];          /* [{tipo, modelo, u}] u = precio − costo */
+let MOTOR_CARGADO = false;
+const _mp = k => { const v = Number(MOTOR_P[k]); return isNaN(v) ? MOTOR_DEF[k] : v; };
+
+async function motorCargar(){
+  const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+  const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON) };
+  try {
+    const r = await fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor', { headers: hdr });
+    if (r.ok){
+      const arr = await r.json();
+      (Array.isArray(arr) ? arr : []).forEach(x => { if (x && x.clave in MOTOR_DEF && !isNaN(+x.valor)) MOTOR_P[x.clave] = +x.valor; });
+    }
+  } catch (e) { /* sin base: quedan los valores aprobados */ }
+  if (tok){
+    try {
+      const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_motor_topes', { method:'POST',
+        headers: Object.assign({ 'Content-Type':'application/json' }, hdr), body:'{}' });
+      if (r.ok){
+        const arr = await r.json();
+        MOTOR_TOPES = (Array.isArray(arr) ? arr : []).map(x => ({
+          tipo: _mkNorm(x.tipo), modelo: _mkNorm(x.modelo), diseno: String(x.diseno || ''),
+          u: (+x.precio || 0) - (+x.costo || 0) })).filter(x => x.u > 0);
+      }
+    } catch (e) {}
+  }
+  MOTOR_CARGADO = true;
+  return MOTOR_P;
 }
-function rgLim(regla, G){ return Math.max(regla.min || 0, Math.round(G * regla.pct)); }
-/* Devuelve {d:'APAGAR'|'ESCALAR'|'ALERTA'|'SIGUE', por:'...', lim:n} */
-function rgDecidir(r){
-  const a = r.act || {}, n = k => +a[k] || 0;
-  const tipo = rgTipo(r.anuncio), G = RG_G[tipo];
+async function motorGuardar(cambios){
+  const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+  if (!tok) throw new Error('Inicia sesión en el ERP para guardar');
+  const filas = Object.keys(cambios).filter(k => k in MOTOR_DEF && !isNaN(+cambios[k]))
+                      .map(k => ({ clave:k, valor:+cambios[k], actualizado:new Date().toISOString() }));
+  if (!filas.length) return 0;
+  const r = await fetch(MK_SB_URL + '/rest/v1/mk_motor_param', { method:'POST',
+    headers: { apikey: MK_SB_ANON, Authorization:'Bearer ' + tok, 'Content-Type':'application/json',
+               Prefer:'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(filas) });
+  if (!r.ok) throw new Error('La base respondió ' + r.status);
+  filas.forEach(f => MOTOR_P[f.clave] = f.valor);
+  return filas.length;
+}
+
+/* ── prenda del anuncio y su tope ─────────────────────────────────────── */
+const MOTOR_ABR = { pan:'pantalon', bla:'blazer', blu:'blusa', con:'conjunto', abr:'abrigo', gab:'gabardina',
+                    ves:'vestido', cha:'chaleco', top:'top', tops:'top', fal:'falda' };
+function motorPrenda(nombre){
+  const p = String(nombre || '').replace(/^🆕\s*/, '').split('/');
+  const seg = _mkNorm(p.length > 1 ? p[1] : p[0]).trim().split(/\s+/);
+  const k = seg[0] || '';
+  let tipo = MOTOR_ABR[k] || MOTOR_ABR[k.slice(0,3)] || 'otro';
+  return { tipo, modelo: seg.slice(1).join(' ') };
+}
+function _motorProm(arr){ return arr.length ? arr.reduce((s,x) => s + x.u, 0) / arr.length : null; }
+function motorMargenUnit(nombre){
+  if (!MOTOR_TOPES.length) return null;
+  const pr = motorPrenda(nombre);
+  const deTipo = t => MOTOR_TOPES.filter(x => x.tipo.slice(0,3) === t.slice(0,3));
+  const deMod  = (arr, m) => m ? arr.filter(x => x.modelo === m || (' ' + _mkNorm(x.diseno) + ' ').includes(' ' + m + ' ')) : [];
+  if (pr.tipo === 'conjunto'){
+    const b = _motorProm(deMod(deTipo('blazer'), pr.modelo)), q = _motorProm(deMod(deTipo('pantalon'), pr.modelo));
+    if (b && q) return b + q;
+    const bb = _motorProm(deTipo('blazer')), qq = _motorProm(deTipo('pantalon'));
+    return (bb && qq) ? bb + qq : null;
+  }
+  const t = deTipo(pr.tipo);
+  return _motorProm(deMod(t, pr.modelo)) || _motorProm(t) || _motorProm(MOTOR_TOPES);
+}
+/* T: cuánto se le deja gastar al anuncio por compra. Devuelve {T, base} */
+function motorTope(r, h){
+  const ven = h ? (+h.ventas_vida || 0) : 0, ing = h ? (+h.ing_vida || 0) : 0;
+  const piso = _mp('t_piso');
+  if (ven >= _mp('t_ventas') && ing > 0){
+    const m = mkMargenDe(r);
+    return { T: Math.max(piso, (ing / ven) * m), base: 'ticket real S/' + Math.round(ing/ven) + ' × margen ' + Math.round(m*100) + '% (' + ven + ' compras)' };
+  }
+  const u = motorMargenUnit(r.anuncio);
+  if (u) return { T: Math.max(piso, u * _mp('t_factor')), base: '(precio − costo) S/' + Math.round(u) + ' × ' + _mp('t_factor') };
+  const c = (typeof mkCacMax === 'function') ? mkCacMax(r) : 150;
+  return { T: Math.max(piso, c), base: 'CAC máximo S/' + Math.round(c) + ' (sin costo del diseño)' };
+}
+/* ── datos que mira el motor (vida + 7 días) ──────────────────────────── */
+function motorDatos(r, h){
   const canal = mkCanalDe(r) === 'web' ? 'web' : 'wa';
-  const gasto = n('gasto'), ventas = n('pedidos'), roas = gasto > 0 ? n('ingreso') / gasto : 0;
-  const R = canal === 'web' ? RG_WEB : RG_WA;
-  const out = (d, por, lim) => ({ d, por, lim: lim || null, tipo, G, canal });
-  /* pasos de intención: si gastó el límite y no tiene ni uno → apagar */
-  for (const x of R){
-    if (!x.campo) continue;
-    const lim = rgLim(x, G);
-    if (gasto >= lim && n(x.campo) === 0) return out('APAGAR', 'Paso ' + x.p + ': gastó S/' + Math.round(gasto) + ' (límite S/' + lim + ') ' + x.t.toLowerCase(), lim);
-  }
-  /* sin ventas */
-  if (ventas === 0){
-    const calor = canal === 'web' ? n('checkout_iniciado') : n('calientes');
-    const x = calor >= 3 ? R.find(y => /b$/.test(y.p)) : R.find(y => /a$/.test(y.p));
-    const lim = rgLim(x, G);
-    if (gasto >= lim) return out('APAGAR', 'Paso ' + x.p + ': gastó S/' + Math.round(gasto) + ' sin ventas (límite S/' + lim + ')', lim);
-  } else {
-    const lim = Math.round(G * 2);
-    if (gasto >= lim && roas < 2)  return out('APAGAR',  'Ya vende pero devuelve S/' + roas.toFixed(1) + ' por S/1 (mínimo S/2)', lim);
-    if (gasto >= lim && roas >= 4) return out('ESCALAR', 'Devuelve S/' + roas.toFixed(1) + ' por S/1 → subir 20% (si los últimos 3 días también van bien)', lim);
-  }
-  /* alertas de calidad (no apagan solas) */
-  if (canal === 'wa'){
-    const conv = n('conversaciones');
-    if (conv >= 20 && n('tibias') / conv < 0.20) return out('ALERTA', 'Trae curiosas: solo ' + Math.round(100*n('tibias')/conv) + '% llega a tibia (promedio 43%) → revisar el copy', null);
-    if (n('calientes') >= 5 && ventas / n('calientes') < 0.20) return out('ALERTA', 'Problema de cierre, no del anuncio: ' + n('calientes') + ' cotizadas y ' + ventas + ' ventas (promedio 43%) → avisar a Ventas', null);
-  } else {
-    if (n('checkout_iniciado') >= 10 && ventas / n('checkout_iniciado') < 0.05) return out('ALERTA', n('checkout_iniciado') + ' checkouts y ' + ventas + ' ventas: algo frena en el pago', null);
-  }
-  return out('SIGUE', 'Todavía dentro de los límites', null);
+  const a = r.act || {}, n = k => +a[k] || 0, d = (x, y) => (y > 0 ? x / y : null);
+  const gasto = +h.gasto_vida || 0, ven = +h.ventas_vida || 0, ing = +h.ing_vida || 0;
+  const g7 = +h.g7 || 0, vt7 = +h.vt7 || 0, in7 = +h.in7 || 0;
+  const pf = canal === 'web' ? 'web_' : 'wa_';
+  const tieneVida = h[pf + 'n1'] != null;
+  const N = tieneVida
+    ? [+h[pf+'n1'] || 0, +h[pf+'n2'] || 0, +h[pf+'n3'] || 0]
+    : (canal === 'web' ? [n('sesiones'), n('agregado_carrito'), n('checkout_iniciado')]
+                       : [n('conversaciones'), n('tibias'), n('calientes')]);
+  const estatico = (typeof mkEsEstatico === 'function') ? mkEsEstatico(r) : false;
+  const hook = (!estatico && n('impresiones') > 0) ? n('v3s') / n('impresiones') * 100 : null;
+  return {
+    canal, gasto, ven, ing, g7, vt7, in7,
+    roas: d(ing, gasto), roas7: d(in7, g7),
+    frec7: _accFrec(h, '7'), frecP: _accFrec(h, '7p'),
+    ctr7: _accCtr(h, '7'), ctrP: _accCtr(h, '7p'),
+    ctr: (d(+h.clic_vida || 0, +h.imp_vida || 0) || 0) * 100,
+    clics: +h.clic_vida || 0, hook, edad: _accDiasEntre(h.f1),
+    n1: N[0], n2: N[1], n3: N[2], fuenteN: tieneVida ? 'vida' : 'período'
+  };
 }
-function rgTablaReglas(R, titulo){
-  const cols = ['top','blusa','pantalon','blazer'];
-  let h = '<div style="font-weight:800;margin:14px 0 6px">' + titulo + '</div>'
-        + '<div style="overflow:auto"><table class="qftab" style="width:100%;border-collapse:collapse;font-size:12px">'
-        + '<tr><th style="text-align:left;padding:6px">Paso</th><th style="text-align:left;padding:6px">Apagar si…</th><th style="padding:6px">% de G</th>'
-        + cols.map(c => '<th style="padding:6px">' + RG_NOM[c] + (c === 'blazer' ? ' / conjunto' : '') + '</th>').join('') + '</tr>';
-  R.forEach(x => {
-    h += '<tr style="border-top:1px solid var(--bd)"><td style="padding:6px;font-weight:800">' + x.p + '</td><td style="padding:6px">' + esc(x.t) + '</td>'
-       + '<td style="padding:6px;text-align:center">' + Math.round(x.pct*100) + '%' + (x.min ? ' (mín. S/' + x.min + ')' : '') + '</td>'
-       + cols.map(c => '<td style="padding:6px;text-align:center">S/' + rgLim(x, RG_G[c]) + (x.pct === 2 ? ' o más' : '') + '</td>').join('') + '</tr>';
+const _mx = v => (v == null ? '—' : v.toFixed(1) + 'x');
+const _ms = v => 'S/' + Math.round(v || 0);
+function motorAvisos(x){
+  const out = [];
+  if (x.frec7 != null && x.frecP != null && x.ctr7 != null && x.ctrP != null
+      && x.frec7 > x.frecP * 1.15 && x.ctr7 < x.ctrP * 0.85)
+    out.push('⚠️ Cansado: frec 7d ' + x.frec7.toFixed(1) + ' (antes ' + x.frecP.toFixed(1) + ') y CTR cae');
+  if (x.n3 >= _mp('av_cierre_n3') && x.ven / x.n3 < _mp('av_cierre') / 100)
+    out.push('⚠️ Cierre: ' + x.n3 + ' N3 y ' + x.ven + ' compras (< ' + _mp('av_cierre') + '%) → revisar Ventas');
+  return out.length ? ' · ' + out.join(' · ') : '';
+}
+/* Devuelve {a, regla, por, pide, T} — la única fuente de la acción */
+function motorDecidir(r){
+  const on = !!r._on;
+  const h = MKH && MKH[String(r.ad_id)];
+  if (!h) return { a: on ? 'NO TOCAR' : 'APAGADO', regla:'carga', pide:false, T:null, por:'Cargando la historia del anuncio…' };
+  const tp = motorTope(r, h), T = tp.T, x = motorDatos(r, h);
+  const cac = x.ven > 0 ? x.gasto / x.ven : null;
+  const base = ' | T ' + _ms(T) + ' = ' + tp.base + ' · Vida: gasto ' + _ms(x.gasto) + ', ' + x.ven + ' compras, ROAS ' + _mx(x.roas)
+             + ' · 7d: gasto ' + _ms(x.g7) + ', ROAS ' + _mx(x.roas7)
+             + ' · N1 ' + x.n1 + ' · N2 ' + x.n2 + ' · N3 ' + x.n3 + ' (' + x.fuenteN + ')';
+  const R = (a, regla, txt, pide) => ({ a, regla, pide: !!pide, T, por: txt + base + (on ? motorAvisos(x) : '') });
+
+  /* ── APAGADOS ── */
+  if (!on){
+    if (x.ven > 0 && x.roas != null && x.roas >= _mp('enc_roas') && cac <= T)
+      return R('ENCENDER', 'enc', 'Apagado que sí vendía: ROAS vida ' + _mx(x.roas) + ' ≥ ' + _mp('enc_roas') + 'x y CAC ' + _ms(cac) + ' ≤ T', true);
+    return R('APAGADO', 'off', 'Ya apagado: no cumple ENCENDER (ROAS vida ' + _mx(x.roas) + (cac != null ? ', CAC ' + _ms(cac) : ', 0 compras') + '). Nada que hacer', false);
+  }
+  /* ── 1 · NO TOCAR ── */
+  if (x.g7 <= 0) return R('NO TOCAR', 'nt0', 'Sin entrega 7d (gasto 7d = 0): el conjunto no le da presupuesto', false);
+  if (x.gasto < _mp('min_gasto')) return R('NO TOCAR', 'nt1', 'Gasto vida ' + _ms(x.gasto) + ' < S/' + _mp('min_gasto'), false);
+  if (x.edad != null && x.edad < _mp('min_dias')) return R('NO TOCAR', 'nt2', 'Edad ' + x.edad + 'd < ' + _mp('min_dias') + 'd (aprendizaje)', false);
+  if (x.clics >= _mp('sin_datos') && x.n1 === 0) return R('NO TOCAR', 'nt3', 'SIN DATOS: ' + x.clics + ' clics y N1 = 0 → revisar atribución', false);
+  /* ── 2 · ESCALAR ── */
+  const frenado = x.ven > 0 && x.roas7 != null && x.roas7 < _mp('roas_caja') && x.g7 >= _mp('ev_freno') * T;
+  if (x.roas7 != null && x.roas7 >= _mp('esc_roas7') && x.vt7 >= _mp('esc_comp7') && (x.frec7 == null || x.frec7 < _mp('esc_frec'))){
+    const pct = x.roas7 >= _mp('esc_top') ? _mp('esc_top_pct') : _mp('esc_pct');
+    return R('ESCALAR', 'esc', 'ROAS 7d ' + _mx(x.roas7) + ' ≥ ' + _mp('esc_roas7') + 'x · compras 7d ' + x.vt7 + ' ≥ ' + _mp('esc_comp7')
+             + ' · frec 7d ' + (x.frec7 == null ? '—' : x.frec7.toFixed(1)) + ' < ' + _mp('esc_frec') + ' → +' + pct + '%', true);
+  }
+  /* ── 3 · MANTENER ── */
+  const profit = x.ing * mkMargenDe(r) - x.gasto;
+  const man = [];
+  if (x.roas != null && x.roas >= _mp('man_roas')) man.push('ROAS vida ' + _mx(x.roas) + ' ≥ ' + _mp('man_roas') + 'x');
+  if (x.roas7 != null && x.roas7 >= _mp('man_roas')) man.push('ROAS 7d ' + _mx(x.roas7) + ' ≥ ' + _mp('man_roas') + 'x');
+  if (profit >= _mp('man_profit')) man.push('Profit vida ' + _ms(profit) + ' ≥ S/' + _mp('man_profit'));
+  if (x.ven >= _mp('man_comp') && x.roas != null && x.roas >= _mp('roas_caja')) man.push('Compras ' + x.ven + ' ≥ ' + _mp('man_comp') + ' y ROAS ≥ ' + _mp('roas_caja') + 'x');
+  if (man.length && !frenado) return R('MANTENER', 'man', man.join(' · '), false);
+  /* ── 4 · cortes duros → APAGAR ── */
+  const lim1 = Math.max(_mp('c_n1_min'), _mp('c_n1') / 100 * T), lim2 = _mp('c_n2') / 100 * T, lim3 = _mp('c_n3') / 100 * T;
+  const limC = (x.n3 >= _mp('c_comp_n3') ? _mp('c_comp_i') : _mp('c_comp')) * T;
+  if (x.n1 === 0 && x.gasto >= lim1) return R('APAGAR', 'c1', 'N1 = 0 con gasto ' + _ms(x.gasto) + ' ≥ ' + _ms(lim1), true);
+  if (x.n2 === 0 && x.gasto >= lim2) return R('APAGAR', 'c2', 'N2 = 0 con gasto ' + _ms(x.gasto) + ' ≥ ' + _mp('c_n2') + '%·T (' + _ms(lim2) + ')', true);
+  if (x.n3 === 0 && x.gasto >= lim3) return R('APAGAR', 'c3', 'N3 = 0 con gasto ' + _ms(x.gasto) + ' ≥ ' + _mp('c_n3') + '%·T (' + _ms(lim3) + ')', true);
+  if (x.ven === 0 && x.gasto >= limC) return R('APAGAR', 'c4', '0 compras con gasto ' + _ms(x.gasto) + ' ≥ ' + (limC / T).toFixed(1) + '·T (' + _ms(limC) + ')', true);
+  /* ── 5 · EVALUAR (con plazo) ── */
+  const pv = _mp('ev_plazo_v') * T, pi = _mp('ev_plazo_i') * T, pc = _mp('ev_plazo_c') * T;
+  if (frenado && x.gasto <= pv) return R('EVALUAR', 'ev_f', 'Frenado: vende pero ROAS 7d ' + _mx(x.roas7) + ' < ' + _mp('roas_caja') + 'x · plazo hasta ' + _ms(pv), false);
+  if (x.ven >= 1 && x.roas != null && x.roas >= _mp('roas_caja') && x.gasto <= pv)
+    return R('EVALUAR', 'ev_v', 'Vende: ROAS vida ' + _mx(x.roas) + ' ≥ ' + _mp('roas_caja') + 'x · plazo hasta ' + _ms(pv), false);
+  const r2 = x.n1 > 0 ? x.n2 / x.n1 * 100 : 0, r3 = x.n1 > 0 ? x.n3 / x.n1 * 100 : 0;
+  const u2 = _mp('ev_n2_' + x.canal), u3 = _mp('ev_n3_' + x.canal);
+  if ((r2 >= u2 || r3 >= u3) && x.gasto <= pi)
+    return R('EVALUAR', 'ev_i', 'Intención: N2/N1 ' + r2.toFixed(0) + '% (≥' + u2 + '%) · N3/N1 ' + r3.toFixed(0) + '% (≥' + u3 + '%) · plazo hasta ' + _ms(pi), false);
+  if (((x.hook != null && x.hook >= _mp('ev_hook')) || x.ctr >= _mp('ev_ctr')) && x.gasto <= pc)
+    return R('EVALUAR', 'ev_c', 'Creativo: hook ' + (x.hook == null ? 'NA' : x.hook.toFixed(0) + '%') + ' (≥' + _mp('ev_hook') + '%) · CTR ' + x.ctr.toFixed(1) + '% (≥' + _mp('ev_ctr') + '%) · plazo hasta ' + _ms(pc), false);
+  if (x.gasto < _mp('ev_barato') * T)
+    return R('EVALUAR', 'ev_b', 'Aún barato: gasto ' + _ms(x.gasto) + ' < ' + _mp('ev_barato') + '·T (' + _ms(_mp('ev_barato') * T) + ')', false);
+  /* ── 6 · nada lo sostiene ── */
+  return R('APAGAR', 'c5', 'No cumple MANTENER ni ningún EVALUAR' + (frenado ? ' (frenado y pasó ' + _ms(pv) + ')' : ''), true);
+}
+/* color de la cápsula: fijo por estado; NO TOCAR y APAGADO van en plomo */
+function mkAccClase(a, pide){
+  const M = { ESCALAR:'acc-escalar', ENCENDER:'acc-encender', MANTENER:'acc-mantener', EVALUAR:'acc-esperar',
+              APAGAR:'acc-apagar', ESPERAR: pide ? 'acc-esperar' : 'acc-nada' };
+  return M[a] || 'acc-nada';
+}
+const MOTOR_ESTADOS = ['ESCALAR','ENCENDER','MANTENER','EVALUAR','APAGAR','NO TOCAR','APAGADO'];
+
+/* ══ Pestaña 📏 Reglas: un solo cuadro, botón WhatsApp / Web, editable ══ */
+let RG_CANAL = 'wa', RG_EDIT = false, RG_INFO = {};
+const RG_EMBUDO = {
+  wa:  ['Conversaciones', 'Tibias (2 de 4 datos)', 'Calientes (4 datos + cotizada)', 'Ventas'],
+  web: ['Sesiones', 'Carrito', 'Checkout', 'Compras']
+};
+const RG_FILAS = [
+  { a:'T · Tope', col:'var(--txt)', apl:'Todos', reglas:[
+      'T = (precio − costo) × [t_factor]',
+      'Con ≥ [t_ventas] compras: T = ticket real × margen',
+      'Piso: T ≥ S/[t_piso]'],
+    info:'Cuánto se le deja gastar a un anuncio por cada compra. Sale del precio y el costo del diseño en Costos (un conjunto = blazer + pantalón). Cuando el anuncio ya tiene compras suficientes, manda su ganancia real por pedido. Todos los cortes y plazos se miden en múltiplos de T.' },
+  { a:'NO TOCAR', col:'var(--txt2)', apl:'Encendidos', reglas:[
+      'Gasto vida < S/[min_gasto]', 'Edad < [min_dias] días', 'Gasto 7d = 0 (sin entrega)', 'SIN DATOS: clics ≥ [sin_datos] y N1 = 0'],
+    info:'Todavía no hay con qué juzgar: muy poco gasto, en aprendizaje de Meta, sin entrega, o con clics pero sin conversaciones/sesiones registradas (falla de atribución, no del anuncio). Basta con una.' },
+  { a:'ESCALAR', col:'var(--cel)', apl:'Encendidos', reglas:[
+      'ROAS 7d ≥ [esc_roas7]x', 'y Compras 7d ≥ [esc_comp7]', 'y Frec 7d < [esc_frec]', '→ +[esc_pct]% · si ROAS 7d ≥ [esc_top]x → +[esc_top_pct]%'],
+    info:'Tienen que cumplirse las tres a la vez. Con ROAS 7d de 4.9x no escala: queda en MANTENER. Subir como máximo una vez cada 3 días; duplicar reinicia el aprendizaje.' },
+  { a:'MANTENER', col:'var(--ok)', apl:'Encendidos', reglas:[
+      'ROAS vida ≥ [man_roas]x ó ROAS 7d ≥ [man_roas]x', 'ó Profit vida ≥ S/[man_profit]', 'ó Compras ≥ [man_comp] y ROAS ≥ [roas_caja]x', 'y NO frenado (ROAS 7d < [roas_caja]x con gasto 7d ≥ [ev_freno]·T)'],
+    info:'Gana plata: se deja como está, sin tocar presupuesto. Basta con una de las tres primeras, siempre que la última semana no se haya frenado.' },
+  { a:'EVALUAR', col:'var(--warn)', apl:'Encendidos', reglas:[
+      'Frenado o vende con ROAS ≥ [roas_caja]x → hasta [ev_plazo_v]·T',
+      'N2/N1 ≥ [ev_n2_*]% ó N3/N1 ≥ [ev_n3_*]% → hasta [ev_plazo_i]·T',
+      'Hook ≥ [ev_hook]% ó CTR ≥ [ev_ctr]% → hasta [ev_plazo_c]·T',
+      'Gasto < [ev_barato]·T → sigue'],
+    info:'Muestra señales pero todavía no gana: se le da un plazo medido en T. Pasado el plazo sin llegar a MANTENER, cae en APAGAR.' },
+  { a:'APAGAR', col:'var(--bad)', apl:'Encendidos', reglas:[
+      'N1 = 0 con gasto ≥ máx(S/[c_n1_min], [c_n1]%·T)', 'N2 = 0 con gasto ≥ [c_n2]%·T', 'N3 = 0 con gasto ≥ [c_n3]%·T',
+      '0 compras con gasto ≥ [c_comp]·T ([c_comp_i]·T si N3 ≥ [c_comp_n3])', 'ó no cumple ningún EVALUAR'],
+    info:'Los cortes duros se revisan ANTES que EVALUAR: si gastó su límite sin pasar de una etapa del embudo, se apaga aunque tenga buen hook. Nada se apaga solo: tú das el OK.' },
+  { a:'ENCENDER', col:'var(--ok)', apl:'Apagados', reglas:[
+      'Compras vida ≥ 1', 'y ROAS vida ≥ [enc_roas]x', 'y CAC vida ≤ T'],
+    info:'Un anuncio apagado que sí era rentable. Vale prenderlo de nuevo.' },
+  { a:'APAGADO', col:'var(--txt2)', apl:'Apagados', reglas:[ 'No cumple ENCENDER → sin acción' ],
+    info:'Ya está apagado y está bien así. No hay nada que hacer.' }
+];
+function _rgVal(k){
+  const kk = k.replace('*', RG_CANAL);
+  const v = _mp(kk);
+  return RG_EDIT
+    ? '<input data-rgk="' + kk + '" value="' + v + '" style="width:54px;padding:2px 4px;border-radius:6px;border:1.5px solid var(--hover);background:var(--card);color:var(--txt);font:inherit;font-weight:800;text-align:center">'
+    : '<b>' + v + '</b>';
+}
+function _rgTxt(s){ return esc(s).replace(/\[([a-z0-9_*]+)\]/g, (m, k) => _rgVal(k)); }
+function rgCanal(c){ RG_CANAL = c === 'web' ? 'web' : 'wa'; rgPintar(); }
+function rgInfo(i){ RG_INFO[i] = !RG_INFO[i]; rgPintar(); }
+function rgEditar(){ RG_EDIT = true; rgPintar(); }
+async function rgGuardar(){
+  const cambios = {};
+  document.querySelectorAll('#rgCuerpo input[data-rgk]').forEach(i => {
+    const v = Number(String(i.value).replace(',', '.'));
+    if (!isNaN(v) && v !== _mp(i.dataset.rgk)) cambios[i.dataset.rgk] = v;
   });
-  return h + '</table></div>';
+  const msg = document.getElementById('rgMsg');
+  try {
+    const n = await motorGuardar(cambios);
+    RG_EDIT = false; rgPintar();
+    const m2 = document.getElementById('rgMsg'); if (m2) m2.textContent = n ? '✅ ' + n + ' cambio(s) guardado(s) en la base' : 'Sin cambios';
+    if (n && typeof mkPintar === 'function' && MK) mkPintar();
+  } catch (e) { if (msg) msg.textContent = '❌ ' + e.message; }
+}
+function rgTopesTabla(){
+  if (!MOTOR_TOPES.length) return '<div class="qfnota">Topes por diseño: inicia sesión para leer precio y costo desde Costos.</div>';
+  const f = _mp('t_factor');
+  const filas = MOTOR_TOPES.slice().sort((a,b) => b.u - a.u)
+    .map(x => '<tr><td style="padding:3px 8px">' + esc(x.diseno) + '</td><td style="padding:3px 8px;text-align:right">S/' + Math.round(x.u) + '</td><td style="padding:3px 8px;text-align:right;font-weight:800">S/' + Math.round(Math.max(_mp('t_piso'), x.u * f)) + '</td></tr>').join('');
+  return '<div style="max-height:220px;overflow:auto;margin-top:6px"><table style="border-collapse:collapse;font-size:11px"><tr><th style="text-align:left;padding:3px 8px">Diseño</th><th style="padding:3px 8px">Precio − costo</th><th style="padding:3px 8px">T</th></tr>' + filas + '</table></div>';
 }
 function rgPintar(){
   const cont = document.getElementById('rgCuerpo'); if (!cont) return;
-  let h = '<div class="qfintro"><b>📏 Reglas para apagar o escalar anuncios.</b> Los montos van según la prenda del anuncio: '
-        + '<b>G</b> = ganancia bruta promedio de un pedido que trae esa prenda. Cada mañana a las 8:50 la revisión diaria aplica estas reglas '
-        + 'y te propone qué apagar o escalar; nada cambia sin tu OK.</div>';
-  /* 1 · Parámetros */
-  h += '<div style="font-weight:800;margin:6px 0">1 · Parámetros (del ERP)</div><div class="qfnota">Hoja MargenWhatsAppAds · 304 pedidos jun–set 2026 · margen 65%.</div>'
-     + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">'
-     + ['top','blusa','pantalon','blazer'].map(c => '<div class="qfintro" style="margin:0;padding:8px 12px"><div class="qfnota">' + RG_NOM[c] + (c === 'blazer' ? ' / conjunto / abrigo' : '') + '</div><div style="font-size:16px;font-weight:900">G = S/' + RG_G[c] + '</div></div>').join('')
-     + '</div>';
-  /* 2 · Reglas */
-  h += '<div style="font-weight:800;margin:14px 0 0">2 · Reglas</div>';
-  h += rgTablaReglas(RG_WEB, '🛒 Página web (visita → carrito → checkout → compra)');
-  h += rgTablaReglas(RG_WA,  '💬 WhatsApp (conversación → fría → tibia → caliente → venta)');
-  h += '<div class="qfnota" style="margin-top:6px">Alertas que no apagan solas: WhatsApp con 20+ conversaciones y menos de 20% de tibias (trae curiosas) · '
-     + '5+ calientes y menos de 20% de cierre (problema de cierre, avisar a Ventas) · Web con 10+ checkouts y menos de 5% de compra (algo frena en el pago). '
-     + 'Subir presupuesto: máximo +20% cada 3 días y solo si los últimos 3 días también van bien.</div>';
-  /* 3 · Hoy */
-  h += '<div style="font-weight:800;margin:16px 0 4px">3 · Qué dicen las reglas hoy (anuncios activos)</div>'
-     + '<div class="qfnota">Se calcula con las fechas elegidas en Anuncios. Para decidir apagar, mira el período más largo posible: la regla va sobre el gasto total del anuncio.</div>';
-  if (!MK || !MK.filas){ cont.innerHTML = h + '<div class="qfnota" style="margin-top:8px">Todavía no hay datos cargados. Abre Anuncios una vez y vuelve.</div>'; return; }
-  const ORD = { APAGAR:0, ESCALAR:1, ALERTA:2, SIGUE:3 };
-  const COL = { APAGAR:'var(--bad)', ESCALAR:'var(--ok)', ALERTA:'var(--warn)', SIGUE:'var(--txt2)' };
-  const filas = _qfFilas().filter(r => r._on).map(r => ({ r, x: rgDecidir(r) }))
-                          .sort((a,b) => (ORD[a.x.d] - ORD[b.x.d]) || ((+b.r.act.gasto||0) - (+a.r.act.gasto||0)));
-  if (!filas.length){ cont.innerHTML = h + '<div class="qfnota" style="margin-top:8px">No hay anuncios activos en este canal.</div>'; return; }
-  const cnt = {}; filas.forEach(f => cnt[f.x.d] = (cnt[f.x.d]||0) + 1);
-  h += '<div style="display:flex;gap:8px;margin:8px 0">' + ['APAGAR','ESCALAR','ALERTA','SIGUE'].map(k => '<span class="mkpill" style="border:1.5px solid ' + COL[k] + ';color:' + COL[k] + ';padding:3px 9px;border-radius:12px;font-weight:800;font-size:11px">' + k + ': ' + (cnt[k]||0) + '</span>').join('') + '</div>';
-  h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr>'
-     + ['Anuncio','Canal','Prenda (G)','Gastado','Intención','Ventas','S/ por S/1','Decisión','Por qué'].map(t => '<th style="text-align:left;padding:6px">' + t + '</th>').join('') + '</tr>';
-  filas.forEach(({r, x}) => {
-    const a = r.act || {}, n = k => +a[k] || 0, g = n('gasto');
-    const intencion = x.canal === 'web'
-      ? n('sesiones') + ' visitas · ' + n('agregado_carrito') + ' carritos · ' + n('checkout_iniciado') + ' checkouts'
-      : n('conversaciones') + ' conv · ' + n('frias') + ' frías · ' + n('tibias') + ' tibias · ' + n('calientes') + ' calientes';
-    const nom = String(r.anuncio||'').split('/').slice(0,3).join('/');
-    h += '<tr style="border-top:1px solid var(--bd)">'
-       + '<td style="padding:6px;max-width:260px" title="' + esc(r.anuncio) + '">' + esc(nom) + '</td>'
-       + '<td style="padding:6px">' + (x.canal === 'web' ? 'Web' : 'WhatsApp') + '</td>'
-       + '<td style="padding:6px">' + RG_NOM[x.tipo] + ' (S/' + x.G + ')</td>'
-       + '<td style="padding:6px">S/' + Math.round(g) + '</td>'
-       + '<td style="padding:6px;color:var(--txt2)">' + intencion + '</td>'
-       + '<td style="padding:6px">' + n('pedidos') + '</td>'
-       + '<td style="padding:6px">' + (g > 0 && n('pedidos') ? (n('ingreso')/g).toFixed(1) : '—') + '</td>'
-       + '<td style="padding:6px;font-weight:900;color:' + COL[x.d] + '">' + x.d + '</td>'
-       + '<td style="padding:6px">' + esc(x.por) + '</td></tr>';
+  const btn = (c, t) => '<button onclick="rgCanal(\'' + c + '\')" style="padding:6px 14px;border-radius:10px;font-weight:800;cursor:pointer;border:1.5px solid '
+      + (RG_CANAL === c ? 'var(--hover);background:var(--hover);color:#fff' : 'var(--bd);background:var(--card);color:var(--txt)') + '">' + t + '</button>';
+  const E = RG_EMBUDO[RG_CANAL];
+  let h = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+        + btn('wa', '💬 WhatsApp') + btn('web', '🛒 Web')
+        + '<span style="flex:1"></span>'
+        + (RG_EDIT ? '<button onclick="rgGuardar()" style="padding:6px 14px;border-radius:10px;font-weight:800;cursor:pointer;border:1.5px solid var(--ok);background:var(--ok);color:#fff">💾 Guardar</button>'
+                   : '<button onclick="rgEditar()" style="padding:6px 14px;border-radius:10px;font-weight:800;cursor:pointer;border:1.5px solid var(--bd);background:var(--card);color:var(--txt)">✏️ Editar</button>')
+        + '<span id="rgMsg" class="qfnota"></span></div>';
+  h += '<div class="qfnota" style="margin-bottom:8px">Embudo: <b>N1</b> ' + E[0] + ' → <b>N2</b> ' + E[1] + ' → <b>N3</b> ' + E[2] + ' → <b>N4</b> ' + E[3] + '</div>';
+  h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">'
+     + '<tr><th style="text-align:left;padding:6px">Estado</th><th style="text-align:left;padding:6px">Aplica a</th><th style="text-align:left;padding:6px">Regla</th></tr>';
+  RG_FILAS.forEach((f, i) => {
+    h += '<tr style="border-top:1px solid var(--bd);vertical-align:top">'
+       + '<td style="padding:7px 6px;white-space:nowrap"><span style="font-weight:900;color:' + f.col + '">' + f.a + '</span> '
+       + '<button onclick="rgInfo(' + i + ')" title="Explicación" style="border:none;background:none;cursor:pointer;color:var(--txt2);font-size:13px">ⓘ</button></td>'
+       + '<td style="padding:7px 6px;color:var(--txt2);white-space:nowrap">' + f.apl + '</td>'
+       + '<td style="padding:7px 6px;line-height:1.7">' + f.reglas.map(_rgTxt).join('<br>')
+       + (RG_INFO[i] ? '<div class="qfintro" style="margin:6px 0 0">' + esc(f.info) + (i === 0 ? rgTopesTabla() : '') + '</div>' : '')
+       + '</td></tr>';
   });
-  cont.innerHTML = h + '</table></div>';
+  h += '</table></div>';
+  h += '<div class="qfnota" style="margin-top:10px;line-height:1.7"><b>Leyenda</b> · Se revisa de arriba hacia abajo y gana la primera que se cumple; los cortes de APAGAR van antes que EVALUAR. '
+     + 'Vida = desde el primer gasto · 7d = últimos 7 días · ROAS = venta real del ERP ÷ gasto · T = tope por compra · '
+     + 'Avisos que no cambian el estado: ⚠️ Cansado (frec 7d sube +15% y CTR cae −15%) · ⚠️ Cierre (≥ ' + _rgVal('av_cierre_n3') + ' N3 y compras/N3 < ' + _rgVal('av_cierre') + '%). '
+     + 'La revisión diaria de las 8:50 usa estos mismos valores y solo propone.</div>';
+  cont.innerHTML = h;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -1249,11 +1418,24 @@ async function mkHistoriaVentasERP(){
     return o;
   };
   try {
-    const [vida, s7, s7p] = await Promise.all([
+    const [vida, s7, s7p, ewa, eweb] = await Promise.all([
       pide('2025-01-01', hoy),                                   /* toda la vida */
       pide(_mkDiaMenos(hoy, 6),  hoy),                           /* ultimos 7 dias */
-      pide(_mkDiaMenos(hoy, 13), _mkDiaMenos(hoy, 7))            /* los 7 anteriores */
+      pide(_mkDiaMenos(hoy, 13), _mkDiaMenos(hoy, 7)),           /* los 7 anteriores */
+      _mkGetJSON(URL_EMBUDO_P + '?desde=2025-01-01&hasta=' + hoy).catch(() => null),          /* 11-oct · embudo WA de toda la vida */
+      fetch(URL_EMBUDO_ANUNCIO_P + '?desde=2025-01-01&hasta=' + hoy).then(r => r.json()).catch(() => null)   /* 11-oct · embudo web de toda la vida */
     ]);
+    /* 11-oct-2026 · motor: N1-N3 de toda la vida (si el endpoint falla, el motor usa el período) */
+    if (Array.isArray(ewa)){
+      const W = {}; ewa.filter(x => (x.tipo || 'ad') === 'ad').forEach(x => { W[String(x.clave != null ? x.clave : x.anuncio)] = x; });
+      Object.keys(MKH).forEach(id => { const x = W[id] || {}; const h = MKH[id];
+        h.wa_n1 = +x.conversaciones || 0; h.wa_n2 = +x.tibias || 0; h.wa_n3 = +x.calientes || 0; });
+    }
+    if (Array.isArray(eweb)){
+      const B2 = {}; eweb.forEach(x => { B2[String(x.ad_id)] = x; });
+      Object.keys(MKH).forEach(id => { const x = B2[id] || {}; const h = MKH[id];
+        h.web_n1 = +x.sesiones || 0; h.web_n2 = +x.agregado_carrito || 0; h.web_n3 = +x.checkout_iniciado || 0; });
+    }
     const V = mapa(vida), A = mapa(s7), B = mapa(s7p);
     Object.keys(MKH).forEach(id => {
       const h = MKH[id], v = V[id], a = A[id], b = B[id];
@@ -2056,7 +2238,7 @@ async function mkCargar(refrescarMeta){
        `fetch(url).then(r => r.json())` no espera nada aca: devuelve la promesa
        y las cinco salen juntas, que es lo que Promise.all promete.
        ══════════════════════════════════════════════════════════════════ */
-    const [datos] = await Promise.all([ (_mkSbTok() ? _mkGetJSON(url) : fetch(url).then(r => r.json())), mkCargarHistoria().then(mkHistoriaVentasERP), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH), mkCargarEmbudoAnuncio(_mkD, _mkH), mkCargarHistoriaDia() ]);
+    const [datos] = await Promise.all([ (_mkSbTok() ? _mkGetJSON(url) : fetch(url).then(r => r.json())), mkCargarHistoria().then(mkHistoriaVentasERP), motorCargar(), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH), mkCargarEmbudoAnuncio(_mkD, _mkH), mkCargarHistoriaDia() ]);
     MK = datos;
     if (!MK || !MK.filas) throw new Error('respuesta vacía');
     mkAplicarVentas();
@@ -2421,6 +2603,7 @@ function mkPopSparkAbrir(adId){
 }
 
 function mkAccionFinal(r){
+  if (MOTOR_ON) return motorDecidir(r);   /* 11-oct-2026 · motor único (lo de abajo queda de respaldo) */
   const on = r._on;
   const h  = MKH && MKH[String(r.ad_id)];
 
@@ -2982,7 +3165,7 @@ function mkPintar(){
       : ('<span class="mkchip clic est-' + (r._on ? 'on' : 'off') + '" onclick="mkFiltrarPor(\'estado\',\''
       + (r._on ? 'ACTIVE' : 'PAUSED') + '\')" title="Ver solo los ' + (r._on ? 'activos' : 'inactivos') + '">'
       + (r._on ? 'ACTIVO' : 'INACTIVO') + '</span>');
-    const claseAcc = r._pide ? ('acc-' + String(r._au.a).toLowerCase()) : 'acc-nada';
+    const claseAcc = mkAccClase(r._au.a, r._pide);
     /* 8-sep-2026 (pedido de Pablo) — el boton va en TODAS las filas, no solo
        donde el ERP recomienda actuar. El ERP no sabe que te quedaste sin stock,
        ni que una prenda salio de temporada: la recomendacion es una opinion,
@@ -3005,8 +3188,8 @@ function mkPintar(){
       + ((!r._grupo && r.ad_id && !r._nuevo) ? '<button class="mkejec" title="Duplicar este anuncio (mismo video y textos) en el conjunto que elijas. Nace apagado."'
         + ' onclick="mkDupAbrir(\'' + String(r.ad_id) + '\')">&#10697;</button>' : '');   /* 7-oct · F4 */
     const chipAcc = r._grupo
-      ? (['ESCALAR','ENCENDER','ESPERAR','APAGAR'].filter(a => r._accCount[a])
-          .map(a => '<span class="mkchip acc-' + a.toLowerCase() + '" style="margin:0 2px">' + r._accCount[a] + ' ' + a + '</span>').join('')
+      ? (MOTOR_ESTADOS.concat(['ESPERAR']).filter(a => r._accCount[a])
+          .map(a => '<span class="mkchip ' + mkAccClase(a, true) + '" style="margin:0 2px">' + r._accCount[a] + ' ' + a + '</span>').join('')
         || '<span class="mkchip acc-nada">—</span>')
       : ('<span class="mkchip clic ' + claseAcc + '"'
         + ' onclick="mkFiltrarPor(\'accion\',\'' + String(r._au.a).toLowerCase() + '\')"'
@@ -3562,7 +3745,7 @@ function mkAccNivel(n){
     av.style.display = 'block';
     av.innerHTML = '⚠️ Esto afecta <b>todos los anuncios</b> del ' + MKACC_QUE[n]
       + ', no solo este. El ERP recomendó a nivel anuncio.';
-  } else if (reco === 'ESPERAR' || reco === 'ESCALAR'){
+  } else if (['ESPERAR','ESCALAR','EVALUAR','MANTENER','NO TOCAR'].includes(reco)){
     av.style.display = 'block';
     av.innerHTML = 'ℹ️ El ERP recomienda <b>' + reco + '</b> para este anuncio. Vos sabés cosas que él no '
       + '(stock, temporada, una foto que ya no representa el producto): decidí con eso.';
