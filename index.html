@@ -11053,9 +11053,34 @@ window._sbEspejoEnVuelo = _sbEspejoEnVuelo;
 
 // Trae las filas crudas de una tabla espejo. Devuelve null si no se puede —
 // y entonces quien llama se va por Apps Script.
+// >>> 10-oct-2026 · VÍA RÁPIDA C1 · "¿CAMBIÓ ALGO?" (PEGAR_EN_SUPABASE_via_rapida_c1_versiones_10oct.sql)
+// Medido: Cambios (405 KB) y Listas (307 KB) tardaban 0,8-0,9 s por el TAMAÑO, no por la base (<1 ms).
+// Cada tabla vigilada tiene una versión que sube sola cuando alguien la cambia (trigger, por evento).
+// Acá: se pregunta la versión (≈0,2 s); si es la misma que la copia guardada, se usa la copia (memoria o
+// localStorage); si cambió o no hay copia, se baja todo como antes y se guarda. Nunca muestra algo viejo:
+// la versión se lee ANTES de bajar, así que una escritura en el medio obliga a bajar de nuevo la próxima vez.
+const MEMOV = { mem: {}, vuelo: {} };
+function _memoClon(d) { try { return (typeof structuredClone === 'function') ? structuredClone(d) : JSON.parse(JSON.stringify(d)); } catch (_) { return d; } }
+async function _memoVersion(clave, tablas, cargar) {
+  let ver = null;
+  try { ver = await _puertaRpc('datos_version', { p_tablas: tablas }, 2500); } catch (_) { ver = null; }
+  const firma = (ver && typeof ver === 'object' && tablas.every(t => ver[t] != null)) ? tablas.map(t => t + ':' + ver[t]).join('|') : '';
+  if (firma) {
+    let c = MEMOV.mem[clave];
+    if (!c) { try { c = JSON.parse(localStorage.getItem('erp_memov_' + clave) || 'null'); if (c) MEMOV.mem[clave] = c; } catch (_) { c = null; } }
+    if (c && c.f === firma && c.d != null) return _memoClon(c.d);
+  }
+  const d = await cargar();
+  if (firma && d != null) {
+    MEMOV.mem[clave] = { f: firma, d: _memoClon(d) };
+    try { localStorage.setItem('erp_memov_' + clave, JSON.stringify(MEMOV.mem[clave])); } catch (_) { try { localStorage.removeItem('erp_memov_' + clave); } catch (__) {} }
+  }
+  return d;
+}
+// <<< VÍA RÁPIDA C1
 function _sbFilasEspejo(tabla) {
   if (_sbEspejoEnVuelo[tabla]) return _sbEspejoEnVuelo[tabla];
-  const p = _sbFilasEspejoAhora(tabla);
+  const p = (tabla === 'cambios2' || tabla === 'devoluciones') ? _memoVersion('espejo_' + tabla, [tabla], () => _sbFilasEspejoAhora(tabla)) : _sbFilasEspejoAhora(tabla);   // 10-oct · C1
   _sbEspejoEnVuelo[tabla] = p;
   p.then(function () { delete _sbEspejoEnVuelo[tabla]; },
          function () { delete _sbEspejoEnVuelo[tabla]; });
@@ -12235,17 +12260,19 @@ function _c2ComoFilasHist_(grupos) {
 // 1-oct · los cambios VIEJOS (v1, historicos: 85, ya no se escriben) se leen directo de la tabla
 // cambios_historico, igual que cambiosListar (Code.js): mismas filas, orden por FechaSolicitud desc.
 async function _cambiosViejosDeLaBase() {
-  const f = await _sbTablaLeer('cambios_historico?select=row_json&order=id.asc');
+  const f = await _memoVersion('cambios_historico', ['cambios_historico'], () => _sbTablaLeer('cambios_historico?select=row_json&order=id.asc'));   // 10-oct · C1
   if (!Array.isArray(f) || !f.length) return null;
   return f.map(function (x) { return x && x.row_json; }).filter(Boolean)
     .sort(function (a, b) { return new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0); });
 }
 async function _cambiosListarRapido() {
+  // 10-oct · C1: los dos pedidos a la base salen A LA VEZ (antes uno después del otro)
+  const _pNuevo = _c2ListarRapido().then(x => x, e => { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} return null; });
   let viejo = null;
   try { viejo = await _cambiosViejosDeLaBase(); } catch (_) { viejo = null; }
   if (!viejo) { const d = await _sbCacheLeer('cambios.listar'); viejo = (Array.isArray(d) && d.length) ? d : await api('cambios.listar', {}); }
   let nuevo = [];
-  try { nuevo = _c2ComoFilasHist_(await _c2ListarRapido()); } catch (e) { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} }
+  try { const _x = await _pNuevo; nuevo = _x ? _c2ComoFilasHist_(_x) : []; } catch (e) { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} }
   return (Array.isArray(viejo) ? viejo : []).concat(nuevo);
 }
 // 1-oct-2026 · F2 · BLOQUE A (cierre). colores / maestros / vistas de stock los calcula la BASE
@@ -12254,7 +12281,8 @@ async function _cambiosListarRapido() {
 // Apps Script. Si la base no contesta (o la funcion aun no existe) se sigue por la copia de siempre.
 async function _listaDeLaBase(fn, valida) {
   if (window._sbSaltarBase) return null;   // 1-oct F3b: ver _sbSaltarBase
-  const d = await _sbRpcLeer(fn, {});
+  const _tv = { maestros_listar_calc: ['maestros_hoja'], colores_listar_calc: ['colores_hoja'], vistas_stock_listar_calc: ['vistas_stock'] }[fn];   // 10-oct · C1
+  const d = _tv ? await _memoVersion('rpc_' + fn, _tv, () => _sbRpcLeer(fn, {})) : await _sbRpcLeer(fn, {});
   try { return (d != null && valida(d)) ? d : null; } catch (_) { return null; }
 }
 function _esMapaLleno(d) { return !!d && typeof d === 'object' && !Array.isArray(d) && Object.keys(d).length > 0; }
