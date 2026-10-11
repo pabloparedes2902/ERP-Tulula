@@ -11778,20 +11778,28 @@ async function _sbLibroDirecto(forzar) {
     // El catalogo NO depende del libro, asi que va en paralelo. Y ademas se
     // guarda en memoria unos minutos: cambia solo cuando se crea o se borra un
     // SKU, o sea casi nunca dentro de una sesion.
+    // 10-oct · VÍA RÁPIDA C2 (medido 0,65 s): las 3 primeras páginas del libro (≈2.500 filas hoy) salen A LA VEZ,
+    // no una tras otra; si la 3ª llega llena, sigue de a una como antes. Sigue preguntando PRIMERO si el libro está
+    // limpio (regla de regresion_lectura_pesados: con el libro sucio no se lee stock_saldos). Mismas filas, mismo orden.
     const pLibro = (async () => {
-      const acc = [];
-      for (let off = 0; off < 50000; off += 1000) {
-        const r = await fetch(SB_URL + '/rest/v1/stock_saldos' +
+      const pag = (off) => fetch(SB_URL + '/rest/v1/stock_saldos' +
           '?select=prenda,diseno,color,talla,cat,conf,ventas,fallas,fecha_ms' +
-          '&order=prenda.asc,diseno.asc,color.asc,talla.asc&limit=1000&offset=' + off, { headers: H });
-        if (!r.ok) return null;
-        const p = await r.json();
+          '&order=prenda.asc,diseno.asc,color.asc,talla.asc&limit=1000&offset=' + off, { headers: H })
+        .then(r => r.ok ? r.json() : null);
+      const tres = await Promise.all([pag(0), pag(1000), pag(2000)]);
+      if (tres.some(x => !Array.isArray(x))) return null;
+      const acc = [];
+      for (let i = 0; i < 3; i++) { acc.push.apply(acc, tres[i]); if (tres[i].length < 1000) return acc; }
+      for (let off = 3000; off < 50000; off += 1000) {
+        const p = await pag(off);
+        if (!Array.isArray(p)) return null;
         if (!p.length) break;
         acc.push.apply(acc, p);
         if (p.length < 1000) break;
       }
       return acc;
     })();
+    pLibro.catch(() => {});
     const pCat = _libroCatalogoMemo();
 
     const filas = await pLibro;
