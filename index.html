@@ -27306,7 +27306,17 @@ function _stHideKey(){ return 'erp_st_hide_'+_stEmail(); }
 // Guarda el orden en el equipo (instantáneo) Y en el servidor (para sincronizar entre dispositivos).
 function _stOrdenSave(v){
   try{ localStorage.setItem(_stOrdenKey(), v); }catch(e){}
-  try{ if(_stEmail()) apiSend('pref.storden.set',{email:_stEmail(),valor:v}).catch(()=>{}); }catch(e){}
+  // 11-oct · VÍA RÁPIDA D7: la preferencia va a la base (pref_set); Apps Script solo si la base no responde.
+  try{ if(_stEmail()) _puertaRpc('pref_set',{p_clave:'storden',p_valor:String(v)},2500).then(ok=>{ if(ok!==true) apiSend('pref.storden.set',{email:_stEmail(),valor:v}).catch(()=>{}); }).catch(()=>{}); }catch(e){}
+}
+// 11-oct · VÍA RÁPIDA D7: lee el orden de la base (pref_get). Si la base aún no lo tiene, lo trae
+// de Apps Script UNA vez y lo deja copiado en la base (desde ahí ya no se vuelve a Apps Script).
+async function _stOrdenDelServidor(){
+  var v = null; try { v = await _puertaRpc('pref_get',{p_clave:'storden'},2500); } catch(_){}
+  if (typeof v === 'string' && v) return { valor: v };
+  var r = await api('pref.storden.get',{email:_stEmail()});
+  try { if (r && r.valor) _puertaRpc('pref_set',{p_clave:'storden',p_valor:String(r.valor)},2500); } catch(_){}
+  return r;
 }
 function _stOrdenLoad(){ try{ return localStorage.getItem(_stOrdenKey()); }catch(e){ return null; } }
 function _stHideSave(b){ try{ localStorage.setItem(_stHideKey(), b?'1':'0'); }catch(e){} }
@@ -27404,7 +27414,7 @@ async function loadStock() {
     try{ const hs=localStorage.getItem(_stHideKey()); if(hs!=null) stHideNoStock=(hs==='1'); }catch(e){}
     _stOrdenInit=true;
     // Servidor: trae la última vista del usuario (sincroniza entre dispositivos) y aplica si difiere.
-    try{ if(_stEmail()) api('pref.storden.get',{email:_stEmail()}).then(r=>{
+    try{ if(_stEmail()) _stOrdenDelServidor().then(r=>{
       if(r && r.valor && r.valor!==stOrden){ stOrden=r.valor; try{localStorage.setItem(_stOrdenKey(),r.valor);}catch(e){}
         const _el=document.getElementById('st-w'); if(_el) renderStock(_el); }
     }).catch(()=>{}); }catch(e){}
@@ -40004,7 +40014,25 @@ function _permVerComoAplicar(){
 // 1 vez por hora por equipo. El servidor igual valida la sesion en CADA llamada (_validarSesion).
 // Un cambio de permisos de Pablo llega en <= 1 hora (o al cerrar y abrir sesion).
 var AUTH_CHK_MIN = 60;
+// 11-oct · VÍA RÁPIDA D5: la sesión y los permisos se leen de la base (rpc mi_sesion, ~0,2 s)
+// en CADA arranque (un cambio de permisos de Pablo llega al abrir). Solo si la base no responde
+// o no conoce el correo, cae al ping viejo de Apps Script (1 vez por hora, como antes).
+var AUTH_CHK_RAPIDO_MIN = 5;
 async function _authChequeo(){
+  try {
+    var u0 = parseInt(localStorage.getItem('erp_auth_chk_r') || '0', 10) || 0;
+    if (Date.now() - u0 < AUTH_CHK_RAPIDO_MIN * 60000) return null;   // la base ya respondió hace poco
+    if (typeof _puertaRpc === 'function') {
+      var _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.mi_sesion', '') : null;
+      var rs = await _puertaRpc('mi_sesion', {}, 2500);
+      try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, !!(rs && rs.pong)); } catch(_){}
+      if (rs && rs.pong) {
+        try { localStorage.setItem('erp_auth_chk_r', String(Date.now())); } catch(_){}
+        _permRefrescar(rs);
+        return rs;
+      }
+    }
+  } catch(_){}
   try { var u = parseInt(localStorage.getItem('erp_auth_chk') || '0', 10) || 0; if (Date.now() - u < AUTH_CHK_MIN * 60000) return null; } catch(_){}
   try {
     var r = await apiSend('auth.ping', {});
