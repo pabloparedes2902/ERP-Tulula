@@ -1009,7 +1009,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
     </div>
     <div id="pg-confeccion" class="pg"><div id="conf-w"><div class="ld"><div class="sp"></div>Cargando confección...</div></div></div>
     <div id="pg-productos" class="pg"><div id="prod-w"><div class="ld"><div class="sp"></div>Cargando productos...</div></div></div>
-    <div id="pg-contenido" class="pg"><div id="con-w"><div class="ld"><div class="sp"></div>Cargando productos...</div></div></div>
+    <div id="pg-contenido" class="pg"><div id="con-tabs"></div><div id="res-w" style="display:none"></div><div id="con-w"><div class="ld"><div class="sp"></div>Cargando productos...</div></div></div>
     <div id="pg-costos" class="pg"><div id="cos-w"><div class="ld"><div class="sp"></div>Cargando costos...</div></div></div>
     <div id="pg-homologaciones" class="pg"><div id="hom-w"><div class="ld"><div class="sp"></div>Cargando homologaciones...</div></div></div>
     <div id="pg-multimedia" class="pg"><div id="mul-w"><div class="ld"><div class="sp"></div>Cargando multimedia...</div></div></div>
@@ -3394,7 +3394,7 @@ const _CRON_TOPE = 400;
 // pasa los 3 s, y las vías rápidas tardan 176-470 ms. Se registraban sólo las
 // llamadas lentas a Apps Script — justo el sesgo que esto viene a corregir.
 // Sin esta línea, verLentos() seguiría mostrando una sola columna.
-const _CRON_SIEMPRE = /^(rapido\.|marca\.|pedido\.|stock\.|dup\.|(api\.)?(pedidos\.crear|pedidos\.detectarDuplicados|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
+const _CRON_SIEMPRE = /^(rapido\.|marca\.|pedido\.|stock\.|dup\.|puerta\.|(api\.)?(pedidos\.crear|pedidos\.detectarDuplicados|cambios2?\.|devoluciones\.|pago\.|voucher\.|constancia\.|flujo\.|fondo\.|srv\.))/;
 
 function _cronLeer(k) { try { const v = JSON.parse(localStorage.getItem(k) || '[]'); return Array.isArray(v) ? v : []; } catch (_) { return []; } }
 function _cronGuardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} }
@@ -3924,7 +3924,9 @@ async function _puertaIntentar(action, body, porApps) {
 }
 // <<< PUERTA ÚNICA
 async function api(action, params) {
-  { const _pr = await _puertaIntentar(action, params, () => _apiApps(action, params)); if (_pr !== undefined) return _pr; }
+  // GET: los valores viajan como texto en la dirección → la llave se arma con texto (igual que la ve Apps Script)
+  const _pk = {}; if (params) Object.keys(params).forEach(k => { if (params[k] !== undefined) _pk[k] = String(params[k]); });
+  { const _pr = await _puertaIntentar(action, _pk, () => _apiApps(action, params)); if (_pr !== undefined) return _pr; }
   return _apiApps(action, params);
 }
 async function _apiApps(action, params) {
@@ -8181,6 +8183,7 @@ const CTN = { rows: [], q: '', editing: null };
 const CON_KEY = 'erp_swr_contenido1';
 async function loadContenido() {
   window._modoContenido = true;
+  _conTabs();   // 10-oct · pestaña «Reseñas por aprobar» (solo Ana y Pablo)
   const w = document.getElementById('con-w');
   let pintado = false;
   try { const g = JSON.parse(localStorage.getItem(CON_KEY) || 'null'); if (g && g.r && (Date.now() - g.t) < 7 * 86400000) { _conAplicar(g.r); _conRender(); pintado = true; } } catch (_) {}
@@ -8294,6 +8297,71 @@ async function _conGuardarTextos(v) {
   if (go) go.disabled = false;
 }
 // <<< CONTENIDO DE PRODUCTO
+// >>> 10-oct-2026 · RESEÑAS POR APROBAR (Pablo y Ana). Las reseñas llegan de tulula.com.pe/pages/tu-opinion (WhatsApp).
+// Estrellas y comentario se publican solos; la FOTO solo se ve en la web cuando aquí se aprueba (resenas.fotos_ok).
+// Va directo a la base con la sesión (rpc resenas_admin_lista / resena_admin_decidir, solo rol Admin).
+const RES = { ver: 'pendientes', rows: [], tab: 'prod' };
+async function _resRpc(fn, body) {
+  const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('Sin sesión con la base. Vuelve a entrar al ERP.');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  if (!r.ok) { if (r.status === 401) _sbVencerTok(); const t = await r.text(); throw new Error(/Solo Administrador/.test(t) ? 'Solo Administrador' : ('La base respondió ' + r.status)); }
+  return r.json();
+}
+function _resBadge(n) { const b = document.getElementById('res-badge'); if (!b) return; b.textContent = n; b.style.display = n > 0 ? '' : 'none'; }
+async function loadResenas() {
+  const w = document.getElementById('res-w'); if (!w) return;
+  w.innerHTML = '<div class="ld"><div class="sp"></div>Cargando reseñas...</div>';
+  try { const d = await _resRpc('resenas_admin_lista', { p_ver: RES.ver }); RES.rows = d.rows || []; _resBadge(d.pendientes || 0); _resPintar(d.pendientes || 0); }
+  catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudieron leer las reseñas: ' + esc(e.message) + '</div>'; }
+}
+function _resPintar(pend) {
+  const w = document.getElementById('res-w');
+  const est = n => '<span style="color:#E2A21B;letter-spacing:1px">' + '★★★★★'.slice(0, n) + '</span><span style="color:var(--bd)">' + '★★★★★'.slice(0, 5 - n) + '</span>';
+  const tit = s => String(s || '').toLowerCase().replace(/(^|\s)\S/g, m => m.toUpperCase());
+  const fecha = s => { try { return new Date(s).toLocaleDateString('es-PE', { day: 'numeric', month: 'short' }); } catch (_) { return ''; } };
+  const estado = r => !(r.fotos || []).length ? '' : r.fotos_ok === true ? '<span style="color:var(--gn);font-size:12px">✓ foto publicada</span>' : r.fotos_ok === false ? '<span style="color:var(--rd);font-size:12px">✗ foto no publicada</span>' : '<span style="color:#B7791F;font-size:12px">● foto por revisar</span>';
+  const card = r => '<div class="res-c" data-id="' + r.id + '" style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:14px;display:flex;gap:14px;flex-wrap:wrap' + (r.publicar ? '' : ';opacity:.55') + '">'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">' + (r.fotos || []).map(u => '<a href="' + esc(u) + '" target="_blank" rel="noopener"><img src="' + esc(u) + '" alt="" style="width:150px;height:200px;object-fit:cover;border-radius:10px;background:var(--bg3)"></a>').join('') + '</div>'
+    + '<div style="flex:1 1 260px;min-width:220px">'
+      + '<div style="font-weight:800">' + esc(tit(r.diseno)) + (r.color ? ' <span style="font-weight:400;color:var(--mu)">· ' + esc(tit(r.color)) + '</span>' : '') + (r.prueba ? ' <span style="font-size:11px;background:var(--bg3);border-radius:6px;padding:1px 6px">PRUEBA</span>' : '') + '</div>'
+      + '<div style="margin:2px 0 6px">' + est(r.estrellas) + ' <span style="font-size:12px;color:var(--mu)">' + esc(r.nombre || '') + ' · pedido ' + esc(r.pedido || '') + ' · ' + fecha(r.creado) + '</span></div>'
+      + (r.comentario ? '<div style="font-size:14px;white-space:pre-wrap;margin-bottom:8px">“' + esc(r.comentario) + '”</div>' : '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Sin comentario</div>')
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+        + ((r.fotos || []).length ? '<button type="button" class="btn bp bs res-ok">✓ Publicar foto</button><button type="button" class="btn bg bs res-no">✗ No publicar foto</button>' : '')
+        + '<button type="button" class="btn bg bs res-oc" style="font-size:11px">' + (r.publicar ? 'Ocultar reseña' : 'Volver a mostrar reseña') + '</button>' + estado(r)
+        + (r.revisado_por ? '<span style="font-size:11px;color:var(--mu)">revisó ' + esc(r.revisado_por.split('@')[0]) + '</span>' : '')
+      + '</div><div class="res-st" style="font-size:12px;margin-top:6px"></div></div></div>';
+  w.innerHTML = '<div style="padding:16px;max-width:1000px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h2 style="margin:0;font-size:20px">Reseñas por aprobar</h2>'
+    + '<div style="display:flex;gap:6px">' + [['pendientes', 'Fotos por revisar (' + pend + ')'], ['todas', 'Todas']].map(t => '<button type="button" class="btn ' + (RES.ver === t[0] ? 'bp' : 'bg') + ' bs res-ver" data-v="' + t[0] + '">' + t[1] + '</button>').join('') + '</div></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">Las estrellas y el comentario ya se ven en la tienda. La foto solo aparece cuando aquí la apruebas: que la prenda se vea completa, con luz y nítida. El cupón ya se le dio a la clienta al subirla.</div>'
+    + (RES.rows.length ? '<div style="display:grid;gap:12px">' + RES.rows.map(card).join('') + '</div>' : '<div style="padding:30px;text-align:center;color:var(--mu)">' + (RES.ver === 'pendientes' ? '✓ No hay fotos por revisar.' : 'Todavía no hay reseñas.') + '</div>')
+    + '</div>';
+  w.querySelectorAll('.res-ver').forEach(b => b.addEventListener('click', () => { RES.ver = b.dataset.v; loadResenas(); }));
+  w.querySelectorAll('.res-c').forEach(c => {
+    const id = Number(c.dataset.id), r = RES.rows.find(x => x.id === id), st = c.querySelector('.res-st');
+    const decidir = async (fotos, pub, txt) => {
+      c.querySelectorAll('button').forEach(b => b.disabled = true); st.style.color = 'var(--mu)'; st.textContent = 'Guardando…';
+      try { const x = await _resRpc('resena_admin_decidir', { p_id: id, p_fotos_ok: fotos, p_publicar: pub }); if (!x || !x.ok) throw new Error('no se encontró la reseña');
+        toast(txt, 'ok'); loadResenas(); }
+      catch (e) { st.style.color = 'var(--rd)'; st.textContent = 'No se guardó: ' + e.message; c.querySelectorAll('button').forEach(b => b.disabled = false); }
+    };
+    const ok = c.querySelector('.res-ok'), no = c.querySelector('.res-no'), oc = c.querySelector('.res-oc');
+    if (ok) ok.addEventListener('click', () => decidir(true, null, '✓ Foto publicada en la tienda'));
+    if (no) no.addEventListener('click', () => decidir(false, null, 'Foto no publicada (la reseña sigue visible)'));
+    oc.addEventListener('click', () => decidir(null, !r.publicar, r.publicar ? 'Reseña oculta de la tienda' : 'Reseña visible otra vez'));
+  });
+}
+function _conTabs() {
+  const box = document.getElementById('con-tabs'); if (!box) return;
+  if (!_esAdminCuadre()) { box.innerHTML = ''; return; }
+  const ver = t => { RES.tab = t; document.getElementById('con-w').style.display = t === 'res' ? 'none' : ''; document.getElementById('res-w').style.display = t === 'res' ? '' : 'none';
+    box.querySelectorAll('.con-ptab').forEach(b => { b.classList.toggle('bp', b.dataset.t === t); b.classList.toggle('bg', b.dataset.t !== t); }); if (t === 'res') loadResenas(); };
+  box.innerHTML = '<div style="display:flex;gap:6px;margin:0 0 12px">' + [['prod', 'Productos'], ['res', '⭐ Reseñas por aprobar<span id="res-badge" style="display:none;margin-left:6px;background:var(--rd);color:#fff;border-radius:9px;padding:0 6px;font-size:11px"></span>']].map(t => '<button type="button" class="btn ' + ((RES.tab || 'prod') === t[0] ? 'bp' : 'bg') + ' bs con-ptab" data-t="' + t[0] + '">' + t[1] + '</button>').join('') + '</div>';
+  box.querySelectorAll('.con-ptab').forEach(b => b.addEventListener('click', () => ver(b.dataset.t)));
+  if (RES.tab === 'res') ver('res'); else _resRpc('resenas_admin_lista', { p_ver: 'pendientes' }).then(d => _resBadge(d.pendientes || 0)).catch(() => {});
+}
+// <<< RESEÑAS POR APROBAR
 // >>> 6-oct-2026 · VÍA RÁPIDA DE FOTOS Y VIDEO: la base directo (rpc ficha_media_admin, solo Admin) ≈0,4 s en vez de Apps Script (6-11 s).
 // Mismo armado que multimediaResumen / multimediaTodos (MultimediaBase.gs). Si la base no responde, se sigue por Apps Script como antes.
 // Los colores de cada producto salen del catálogo de SKUs (cambian solo al crear SKU): se toman de la última copia y Apps Script los renueva por detrás.
