@@ -551,6 +551,7 @@
     <button class="btn on" id="mkSubAnuncios"  onclick="mkIrSub('anuncios')">📣 Anuncios</button>
     <button class="btn"    id="mkSubQF"        onclick="mkIrSub('quefunciona')">🏆 Qué funciona</button>
     <button class="btn"    id="mkSubContenido" onclick="mkIrSub('contenido')">🎬 Contenido</button>
+    <button class="btn"    id="mkSubReglas"    onclick="mkIrSub('reglas')">📏 Reglas</button>
   </div>
   <!-- 6-sep-2026 — QUE FUNCIONA: el mismo dato, leido por atributo del creativo
        en vez de por anuncio. La taxonomia sale del NOMBRE del anuncio, que en
@@ -616,6 +617,8 @@
       TikTok, Reels y publicaciones — alcance, guardados y qué termina en venta.
     </div>
   </div>
+  <!-- 11-oct-2026 · REGLAS para apagar / escalar anuncios (pedido de Pablo). Versión 1: solo ver. -->
+  <div id="mkReglas" style="display:none"><div id="rgCuerpo"></div></div>
   <div id="mkAnuncios">
 
   <div class="mkkpis" id="mkKpis"></div>
@@ -707,19 +710,164 @@ const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
    que se vea que viene, no escondido. */
 let MKSUB = 'anuncios';
 function mkIrSub(cual){
-  MKSUB = (cual === 'contenido' || cual === 'quefunciona') ? cual : 'anuncios';
+  MKSUB = (cual === 'contenido' || cual === 'quefunciona' || cual === 'reglas') ? cual : 'anuncios';
   document.getElementById('mkSubAnuncios').classList.toggle('on',  MKSUB === 'anuncios');
   document.getElementById('mkSubQF').classList.toggle('on',        MKSUB === 'quefunciona');
   document.getElementById('mkSubContenido').classList.toggle('on', MKSUB === 'contenido');
   document.getElementById('mkAnuncios').style.display = MKSUB === 'anuncios'    ? 'flex' : 'none';
   document.getElementById('mkQF').style.display       = MKSUB === 'quefunciona' ? 'block' : 'none';
   document.getElementById('mkProximo').style.display  = MKSUB === 'contenido'   ? 'block' : 'none';
+  document.getElementById('mkSubReglas').classList.toggle('on',    MKSUB === 'reglas');
+  document.getElementById('mkReglas').style.display   = MKSUB === 'reglas'      ? 'block' : 'none';
   /* la barra de canal manda en Anuncios y en Que funciona, no en Contenido */
   const bc = document.querySelector('.mkhead');
   if (bc) bc.style.display = (MKSUB === 'contenido') ? 'none' : 'flex';
   if (MKSUB === 'quefunciona' && MK) qfPintar();
+  if (MKSUB === 'reglas') rgPintar();
   /* avisarle a la barra del ERP cuál quedó encendido */
   try { parent.postMessage({tipo:'mkt-sub-activo', cual: MKSUB}, '*'); } catch(_){}
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   REGLAS (11-oct-2026, pedido de Pablo) — cuándo APAGAR o ESCALAR un anuncio.
+   Versión 1: solo se ven. Los montos van según la prenda del anuncio:
+   G = ganancia bruta promedio de un pedido que trae esa prenda
+   (hoja MargenWhatsAppAds del ERP, 304 pedidos jun–set 2026, margen 65%).
+   La misma regla corre cada mañana en la tarea "Revisión diaria de anuncios"
+   (8:50 Lima), que solo propone: nada se apaga sin el OK de Pablo.
+   Embudo WhatsApp (13-ago a 11-oct): conversación S/2.93 · fría S/3.56 ·
+   tibia S/6.75 · caliente S/34.6 · venta S/80.8 (43% de las calientes compra).
+   ══════════════════════════════════════════════════════════════════════ */
+const RG_G = { top:129, blusa:119, pantalon:139, blazer:223, conjunto:223, abrigo:223, gabardina:223, vestido:223, chaleco:139, otro:139 };
+const RG_NOM = { top:'Top', blusa:'Blusa', pantalon:'Pantalón', blazer:'Blazer', conjunto:'Conjunto', abrigo:'Abrigo', gabardina:'Gabardina', vestido:'Vestido', chaleco:'Chaleco', otro:'Otro' };
+const RG_WEB = [
+  { p:'1',  t:'Sin visitas a la web',                    pct:0.08, min:8, campo:'sesiones' },
+  { p:'2',  t:'Sin carritos',                            pct:0.25, campo:'agregado_carrito' },
+  { p:'3',  t:'Sin checkouts',                           pct:0.50, campo:'checkout_iniciado' },
+  { p:'4a', t:'Sin compras y menos de 3 checkouts',      pct:1.00 },
+  { p:'4b', t:'Sin compras con 3 o más checkouts',       pct:1.50 },
+  { p:'5',  t:'Ya vende: devuelve menos de S/2 por S/1 → apagar · S/4 o más → subir 20%', pct:2.00 }
+];
+const RG_WA = [
+  { p:'1',  t:'Sin conversaciones',                      pct:0.08, min:8, campo:'conversaciones' },
+  { p:'2',  t:'Sin frías (escribieron 2 o más veces)',   pct:0.10, min:8, campo:'frias' },
+  { p:'3',  t:'Sin tibias (dieron 2 de los 4 datos)',    pct:0.15, campo:'tibias' },
+  { p:'4',  t:'Sin calientes (ya cotizadas)',            pct:0.50, campo:'calientes' },
+  { p:'5a', t:'Sin ventas y menos de 3 calientes',       pct:1.00 },
+  { p:'5b', t:'Sin ventas con 3 o más calientes',        pct:1.50 },
+  { p:'6',  t:'Ya vende: devuelve menos de S/2 por S/1 → apagar · S/4 o más → subir 20%', pct:2.00 }
+];
+function rgTipo(nombre){
+  const p = String(nombre||'').split('/');
+  const x = _mkNorm(p.length > 1 ? p[1] : p[0]).trim();
+  if (/^tops?\b/.test(x)) return 'top';
+  if (/^(blu|blusa)/.test(x)) return 'blusa';
+  if (/^(pan|pantal)/.test(x)) return 'pantalon';
+  if (/^(bla|blazer)/.test(x)) return 'blazer';
+  if (/^(con|conjunto)/.test(x)) return 'conjunto';
+  if (/^(abr|abrigo)/.test(x)) return 'abrigo';
+  if (/^(gab|gabard)/.test(x)) return 'gabardina';
+  if (/^(ves|vestido)/.test(x)) return 'vestido';
+  if (/^(cha|chaleco)/.test(x)) return 'chaleco';
+  return 'otro';
+}
+function rgLim(regla, G){ return Math.max(regla.min || 0, Math.round(G * regla.pct)); }
+/* Devuelve {d:'APAGAR'|'ESCALAR'|'ALERTA'|'SIGUE', por:'...', lim:n} */
+function rgDecidir(r){
+  const a = r.act || {}, n = k => +a[k] || 0;
+  const tipo = rgTipo(r.anuncio), G = RG_G[tipo];
+  const canal = mkCanalDe(r) === 'web' ? 'web' : 'wa';
+  const gasto = n('gasto'), ventas = n('pedidos'), roas = gasto > 0 ? n('ingreso') / gasto : 0;
+  const R = canal === 'web' ? RG_WEB : RG_WA;
+  const out = (d, por, lim) => ({ d, por, lim: lim || null, tipo, G, canal });
+  /* pasos de intención: si gastó el límite y no tiene ni uno → apagar */
+  for (const x of R){
+    if (!x.campo) continue;
+    const lim = rgLim(x, G);
+    if (gasto >= lim && n(x.campo) === 0) return out('APAGAR', 'Paso ' + x.p + ': gastó S/' + Math.round(gasto) + ' (límite S/' + lim + ') ' + x.t.toLowerCase(), lim);
+  }
+  /* sin ventas */
+  if (ventas === 0){
+    const calor = canal === 'web' ? n('checkout_iniciado') : n('calientes');
+    const x = calor >= 3 ? R.find(y => /b$/.test(y.p)) : R.find(y => /a$/.test(y.p));
+    const lim = rgLim(x, G);
+    if (gasto >= lim) return out('APAGAR', 'Paso ' + x.p + ': gastó S/' + Math.round(gasto) + ' sin ventas (límite S/' + lim + ')', lim);
+  } else {
+    const lim = Math.round(G * 2);
+    if (gasto >= lim && roas < 2)  return out('APAGAR',  'Ya vende pero devuelve S/' + roas.toFixed(1) + ' por S/1 (mínimo S/2)', lim);
+    if (gasto >= lim && roas >= 4) return out('ESCALAR', 'Devuelve S/' + roas.toFixed(1) + ' por S/1 → subir 20% (si los últimos 3 días también van bien)', lim);
+  }
+  /* alertas de calidad (no apagan solas) */
+  if (canal === 'wa'){
+    const conv = n('conversaciones');
+    if (conv >= 20 && n('tibias') / conv < 0.20) return out('ALERTA', 'Trae curiosas: solo ' + Math.round(100*n('tibias')/conv) + '% llega a tibia (promedio 43%) → revisar el copy', null);
+    if (n('calientes') >= 5 && ventas / n('calientes') < 0.20) return out('ALERTA', 'Problema de cierre, no del anuncio: ' + n('calientes') + ' cotizadas y ' + ventas + ' ventas (promedio 43%) → avisar a Ventas', null);
+  } else {
+    if (n('checkout_iniciado') >= 10 && ventas / n('checkout_iniciado') < 0.05) return out('ALERTA', n('checkout_iniciado') + ' checkouts y ' + ventas + ' ventas: algo frena en el pago', null);
+  }
+  return out('SIGUE', 'Todavía dentro de los límites', null);
+}
+function rgTablaReglas(R, titulo){
+  const cols = ['top','blusa','pantalon','blazer'];
+  let h = '<div style="font-weight:800;margin:14px 0 6px">' + titulo + '</div>'
+        + '<div style="overflow:auto"><table class="qftab" style="width:100%;border-collapse:collapse;font-size:12px">'
+        + '<tr><th style="text-align:left;padding:6px">Paso</th><th style="text-align:left;padding:6px">Apagar si…</th><th style="padding:6px">% de G</th>'
+        + cols.map(c => '<th style="padding:6px">' + RG_NOM[c] + (c === 'blazer' ? ' / conjunto' : '') + '</th>').join('') + '</tr>';
+  R.forEach(x => {
+    h += '<tr style="border-top:1px solid var(--bd)"><td style="padding:6px;font-weight:800">' + x.p + '</td><td style="padding:6px">' + esc(x.t) + '</td>'
+       + '<td style="padding:6px;text-align:center">' + Math.round(x.pct*100) + '%' + (x.min ? ' (mín. S/' + x.min + ')' : '') + '</td>'
+       + cols.map(c => '<td style="padding:6px;text-align:center">S/' + rgLim(x, RG_G[c]) + (x.pct === 2 ? ' o más' : '') + '</td>').join('') + '</tr>';
+  });
+  return h + '</table></div>';
+}
+function rgPintar(){
+  const cont = document.getElementById('rgCuerpo'); if (!cont) return;
+  let h = '<div class="qfintro"><b>📏 Reglas para apagar o escalar anuncios.</b> Los montos van según la prenda del anuncio: '
+        + '<b>G</b> = ganancia bruta promedio de un pedido que trae esa prenda. Cada mañana a las 8:50 la revisión diaria aplica estas reglas '
+        + 'y te propone qué apagar o escalar; nada cambia sin tu OK.</div>';
+  /* 1 · Parámetros */
+  h += '<div style="font-weight:800;margin:6px 0">1 · Parámetros (del ERP)</div><div class="qfnota">Hoja MargenWhatsAppAds · 304 pedidos jun–set 2026 · margen 65%.</div>'
+     + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">'
+     + ['top','blusa','pantalon','blazer'].map(c => '<div class="qfintro" style="margin:0;padding:8px 12px"><div class="qfnota">' + RG_NOM[c] + (c === 'blazer' ? ' / conjunto / abrigo' : '') + '</div><div style="font-size:16px;font-weight:900">G = S/' + RG_G[c] + '</div></div>').join('')
+     + '</div>';
+  /* 2 · Reglas */
+  h += '<div style="font-weight:800;margin:14px 0 0">2 · Reglas</div>';
+  h += rgTablaReglas(RG_WEB, '🛒 Página web (visita → carrito → checkout → compra)');
+  h += rgTablaReglas(RG_WA,  '💬 WhatsApp (conversación → fría → tibia → caliente → venta)');
+  h += '<div class="qfnota" style="margin-top:6px">Alertas que no apagan solas: WhatsApp con 20+ conversaciones y menos de 20% de tibias (trae curiosas) · '
+     + '5+ calientes y menos de 20% de cierre (problema de cierre, avisar a Ventas) · Web con 10+ checkouts y menos de 5% de compra (algo frena en el pago). '
+     + 'Subir presupuesto: máximo +20% cada 3 días y solo si los últimos 3 días también van bien.</div>';
+  /* 3 · Hoy */
+  h += '<div style="font-weight:800;margin:16px 0 4px">3 · Qué dicen las reglas hoy (anuncios activos)</div>'
+     + '<div class="qfnota">Se calcula con las fechas elegidas en Anuncios. Para decidir apagar, mira el período más largo posible: la regla va sobre el gasto total del anuncio.</div>';
+  if (!MK || !MK.filas){ cont.innerHTML = h + '<div class="qfnota" style="margin-top:8px">Todavía no hay datos cargados. Abre Anuncios una vez y vuelve.</div>'; return; }
+  const ORD = { APAGAR:0, ESCALAR:1, ALERTA:2, SIGUE:3 };
+  const COL = { APAGAR:'var(--bad)', ESCALAR:'var(--ok)', ALERTA:'var(--warn)', SIGUE:'var(--txt2)' };
+  const filas = _qfFilas().filter(r => r._on).map(r => ({ r, x: rgDecidir(r) }))
+                          .sort((a,b) => (ORD[a.x.d] - ORD[b.x.d]) || ((+b.r.act.gasto||0) - (+a.r.act.gasto||0)));
+  if (!filas.length){ cont.innerHTML = h + '<div class="qfnota" style="margin-top:8px">No hay anuncios activos en este canal.</div>'; return; }
+  const cnt = {}; filas.forEach(f => cnt[f.x.d] = (cnt[f.x.d]||0) + 1);
+  h += '<div style="display:flex;gap:8px;margin:8px 0">' + ['APAGAR','ESCALAR','ALERTA','SIGUE'].map(k => '<span class="mkpill" style="border:1.5px solid ' + COL[k] + ';color:' + COL[k] + ';padding:3px 9px;border-radius:12px;font-weight:800;font-size:11px">' + k + ': ' + (cnt[k]||0) + '</span>').join('') + '</div>';
+  h += '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><tr>'
+     + ['Anuncio','Canal','Prenda (G)','Gastado','Intención','Ventas','S/ por S/1','Decisión','Por qué'].map(t => '<th style="text-align:left;padding:6px">' + t + '</th>').join('') + '</tr>';
+  filas.forEach(({r, x}) => {
+    const a = r.act || {}, n = k => +a[k] || 0, g = n('gasto');
+    const intencion = x.canal === 'web'
+      ? n('sesiones') + ' visitas · ' + n('agregado_carrito') + ' carritos · ' + n('checkout_iniciado') + ' checkouts'
+      : n('conversaciones') + ' conv · ' + n('frias') + ' frías · ' + n('tibias') + ' tibias · ' + n('calientes') + ' calientes';
+    const nom = String(r.anuncio||'').split('/').slice(0,3).join('/');
+    h += '<tr style="border-top:1px solid var(--bd)">'
+       + '<td style="padding:6px;max-width:260px" title="' + esc(r.anuncio) + '">' + esc(nom) + '</td>'
+       + '<td style="padding:6px">' + (x.canal === 'web' ? 'Web' : 'WhatsApp') + '</td>'
+       + '<td style="padding:6px">' + RG_NOM[x.tipo] + ' (S/' + x.G + ')</td>'
+       + '<td style="padding:6px">S/' + Math.round(g) + '</td>'
+       + '<td style="padding:6px;color:var(--txt2)">' + intencion + '</td>'
+       + '<td style="padding:6px">' + n('pedidos') + '</td>'
+       + '<td style="padding:6px">' + (g > 0 && n('pedidos') ? (n('ingreso')/g).toFixed(1) : '—') + '</td>'
+       + '<td style="padding:6px;font-weight:900;color:' + COL[x.d] + '">' + x.d + '</td>'
+       + '<td style="padding:6px">' + esc(x.por) + '</td></tr>';
+  });
+  cont.innerHTML = h + '</table></div>';
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -752,7 +900,7 @@ function mkCanal(c, btn){
   /* 8-sep-2026 — cada canal trae su propia vista guardada (o su preset). */
   mkVistaDeCanal();
   mkPintar();
-  if (MKSUB === 'quefunciona') qfPintar();
+  if (MKSUB === 'quefunciona') qfPintar(); if (MKSUB === 'reglas') rgPintar();
 }
 const URL_MARKETING = 'https://n8n-production-4e716.up.railway.app/webhook/marketing2';
 
@@ -1796,7 +1944,7 @@ function _mkSnapUsar(k){
     MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD;
     mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
     mkPintarCols(); mkPintar();
-    if (MKSUB === 'quefunciona') qfPintar();
+    if (MKSUB === 'quefunciona') qfPintar(); if (MKSUB === 'reglas') rgPintar();
     return o.ts || 1;
   } catch (e) { return 0; }
 }
@@ -1915,7 +2063,7 @@ async function mkCargar(refrescarMeta){
     mkAplicarEmbudo();
     mkAplicarEmbudoAnuncio();
     mkPintarCols(); mkPintar();
-    if (MKSUB === 'quefunciona') qfPintar();
+    if (MKSUB === 'quefunciona') qfPintar(); if (MKSUB === 'reglas') rgPintar();
     _mkSnapGuardar(_snapK);
     if (_snapTs && refrescarMeta !== true) sub.style.display = 'none';
     /* 30-set-2026 · PINTAR PRIMERO, REFRESCAR DESPUES. Antes la tabla esperaba
@@ -1938,7 +2086,7 @@ async function mkCargar(refrescarMeta){
         MK = d2;
         mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
         mkPintarCols(); mkPintar();
-        if (MKSUB === 'quefunciona') qfPintar();
+        if (MKSUB === 'quefunciona') qfPintar(); if (MKSUB === 'reglas') rgPintar();
         _mkSnapGuardar(_snapK);
       } catch (e2) { /* queda lo ya pintado */ }
     });
