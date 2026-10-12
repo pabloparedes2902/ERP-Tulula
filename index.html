@@ -11709,6 +11709,24 @@ function _f1Aviso(edad) {
 
 // Trae de la base el resultado ya calculado de una pantalla.
 // Devuelve null si no se puede o si está vencido → quien llama usa Apps Script.
+// 12-oct · VÍA RÁPIDA E3 · EL SELLO LLEGA SOLO. Cada copia nueva en espejo_cache avisa por el canal 'espejo_pulso'
+// (trigger espejo_pulso_tg, por fila). Mientras el canal esté vivo, el sello de una clave que no avisó se reusa
+// hasta 5 min sin preguntarlo. Canal caído/reconectado o aviso sin clave → se olvida todo y se pregunta. REVERSA: SELLO_VIVO_ON = false.
+const SELLO_VIVO_ON = true;
+const SELLO_VIVO = { ep: 0, vivo: false, s: {}, toques: {}, todo: 0 };
+function _selloVivoTomar(cl) {
+  if (!SELLO_VIVO_ON || !SELLO_VIVO.vivo) return null;
+  const x = SELLO_VIVO.s[cl];
+  if (!x || x.ep !== SELLO_VIVO.ep || Date.now() - x.t > 300000) return null;
+  return x.g;
+}
+function _selloVivoSnap(cl) { return SELLO_VIVO.ep + '|' + (SELLO_VIVO.toques[cl] || 0) + '|' + SELLO_VIVO.todo; }
+function _selloVivoGuardar(cl, g, snap) { if (snap !== _selloVivoSnap(cl)) return; SELLO_VIVO.s[cl] = { g: g, ep: SELLO_VIVO.ep, t: Date.now() }; }
+function _selloVivoAviso(cl) {
+  if (cl) { SELLO_VIVO.toques[cl] = (SELLO_VIVO.toques[cl] || 0) + 1; delete SELLO_VIVO.s[cl]; }
+  else { SELLO_VIVO.todo++; SELLO_VIVO.s = {}; }
+}
+function _selloVivoEstado(st) { SELLO_VIVO.ep++; SELLO_VIVO.s = {}; SELLO_VIVO.vivo = (st === 'SUBSCRIBED'); }
 async function _sbCacheLeer(clave, venceMs) {
   // venceMs: cuanto se tolera que este vieja esa clave. Por defecto 45 min (lo
   // que tarda la vuelta mas lenta del espejo). Las claves del ARCHIVO cambian
@@ -11746,9 +11764,18 @@ async function _sbCacheLeer(clave, venceMs) {
     }
 
     // ── PASO 1 · SOLO EL SELLO (~60 bytes) ────────────────────────────────
-    const rSello = await fetch(_base + '&select=generado&limit=1', { headers: _hdr });
-    if (!rSello.ok) return null;
-    const jS = await rSello.json();
+    // 12-oct · VÍA RÁPIDA E3: si el canal del espejo está vivo y esta clave NO avisó cambios desde la última vez
+    // (y hace menos de 5 min), el sello ya se sabe: 0 viajes. Alertas, Meta CAPI y el resto de copias.
+    const _gVivo = (typeof _selloVivoTomar === 'function') ? _selloVivoTomar(clave) : null;
+    let jS;
+    if (_gVivo) jS = [{ generado: _gVivo }];
+    else {
+      const _snapS = (typeof _selloVivoSnap === 'function') ? _selloVivoSnap(clave) : null;
+      const rSello = await fetch(_base + '&select=generado&limit=1', { headers: _hdr });
+      if (!rSello.ok) return null;
+      jS = await rSello.json();
+      if (_snapS && Array.isArray(jS) && jS.length && jS[0].generado) _selloVivoGuardar(clave, jS[0].generado, _snapS);
+    }
     if (!Array.isArray(jS) || !jS.length || !jS[0].generado) return null;
     const _gen  = new Date(jS[0].generado).getTime();
     const edad  = Date.now() - _gen;
@@ -20657,11 +20684,13 @@ async function _rtConectar() {
               // (los borrados). Si no se sabe que pantalla se rehizo, se revalida
               // el stock igual: es barato (lee la copia, no recalcula nada).
               const cl = String((p && p.new && p.new.clave) || (p && p.old && p.old.clave) || '');
+              try { _selloVivoAviso(cl); } catch (_) {}   // 12-oct E3: primero se olvida el sello, después se avisa a la pantalla
               if (cl) { _rtEspejoAviso(cl); }
               else { clearTimeout(_rtEspTimer); _rtEspTimer = setTimeout(_stRefrescarYa, 900); }
             } catch (_) {} })
         .subscribe(st => { try { console.log('[RT] canal espejo:', st); } catch (_) {}
-          try { window._rtEspVivo = (st === 'SUBSCRIBED'); } catch (_) {} });
+          try { window._rtEspVivo = (st === 'SUBSCRIBED'); } catch (_) {}
+          try { _selloVivoEstado(st); } catch (_) {} });
     } catch (e) { try { console.warn('[RT] espejo no disponible:', e && e.message); } catch (_) {} }
 
     // 11-oct-2026 · VÍA RÁPIDA E2 · TIMBRE GENERAL (public.timbre: una fila por tema, la base la toca cuando algo cambia).
@@ -40845,7 +40874,30 @@ startAuth();
   if (!document.body.contains(barra)) document.body.appendChild(barra);
   if (!document.body.contains(badge)) document.body.appendChild(badge);
 }, 5000);
-  badge.addEventListener('click', function(){ estado.detalle = !estado.detalle; pintar(); });
+  badge.addEventListener('click', function(){
+    /* 12-oct-2026 (Pablo): en modo asesora el globito vuelve a abrir la barra cerrada con la X */
+    if (MODO === 'jefe') estado.detalle = !estado.detalle;
+    else { try { localStorage.removeItem('campanaCerradas'); } catch (e) {} }
+    pintar();
+  });
+  /* 12-oct-2026 (Pablo): la barra tapaba parte del ERP. Se cierra con la X y se oculta solo en la
+     pantalla de quien la cerro (se guarda en este navegador). Vuelve sola si empieza a esperar
+     una clienta NUEVA; mientras tanto queda un globito abajo a la derecha para volver a abrirla. */
+  function campanaFirma() { return estado.esperando.map(function (e) { return String(e.url || e.nombre || ''); }); }
+  function campanaCerradas() { try { return JSON.parse(localStorage.getItem('campanaCerradas') || '[]') || []; } catch (e) { return []; } }
+  function campanaBotonX() {
+    return '<span id="campana-cerrar" title="Cerrar (solo en tu pantalla)" style="float:right;cursor:pointer;font-weight:bold;font-size:18px;line-height:1;padding:2px 8px;margin-left:12px;border-radius:4px;background:rgba(0,0,0,.18);">\u2715</span>';
+  }
+  function campanaConectarX() {
+    var x = document.getElementById('campana-cerrar');
+    if (!x) return;
+    x.onclick = function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      if (MODO === 'jefe') { estado.detalle = false; }
+      else { try { localStorage.setItem('campanaCerradas', JSON.stringify(campanaFirma())); } catch (e) {} }
+      pintar();
+    };
+  }
 
   function pintar() {
     var n = estado.esperando.length;
@@ -40867,16 +40919,34 @@ startAuth();
       badge.style.cursor = 'pointer';
       badge.title = 'Clic para ver qui\u00E9nes son';
       if (estado.detalle) {
-        barra.innerHTML = '\uD83D\uDD14 <b>' + n + ' CLIENTA' + (n > 1 ? 'S' : '') + ' ESPERANDO</b> &nbsp;\u2192&nbsp; ' + partesLinks.join(' &nbsp;\u00B7&nbsp; ');
+        barra.innerHTML = campanaBotonX() + '\uD83D\uDD14 <b>' + n + ' CLIENTA' + (n > 1 ? 'S' : '') + ' ESPERANDO</b> &nbsp;\u2192&nbsp; ' + partesLinks.join(' &nbsp;\u00B7&nbsp; ');
         barra.style.display = 'block';
+        campanaConectarX();
       } else {
         barra.style.display = 'none';
       }
       return; // jefe: sin sonido ni parpadeo; la lista se abre con un clic
     }
     var partes = partesLinks;
-    barra.innerHTML = '🔔 <b>' + n + ' CLIENTA' + (n > 1 ? 'S' : '') + ' ESPERANDO RESPUESTA</b> &nbsp;→&nbsp; ' + partes.join(' &nbsp;·&nbsp; ');
+    var cerradas = campanaCerradas();
+    var hayNueva = campanaFirma().some(function (f) { return cerradas.indexOf(f) < 0; });
+    if (!hayNueva) {
+      /* la cerro y no hay ninguna clienta nueva: sin barra, sin sonido; queda el globito */
+      barra.style.display = 'none';
+      badge.innerHTML = '\uD83D\uDD14 ' + n + ' clienta' + (n > 1 ? 's' : '') + ' esperando \u00B7 ver';
+      badge.title = 'Clic para volver a mostrar la barra';
+      badge.style.cursor = 'pointer';
+      badge.style.display = 'block';
+      clearInterval(estado.beepTimer); estado.beepTimer = null;
+      clearInterval(estado.parpadeo); estado.parpadeo = null;
+      document.title = estado.tituloOriginal;
+      return;
+    }
+    try { localStorage.removeItem('campanaCerradas'); } catch (e) {}
+    badge.style.display = 'none';
+    barra.innerHTML = campanaBotonX() + '🔔 <b>' + n + ' CLIENTA' + (n > 1 ? 'S' : '') + ' ESPERANDO RESPUESTA</b> &nbsp;→&nbsp; ' + partes.join(' &nbsp;·&nbsp; ');
     barra.style.display = 'block';
+    campanaConectarX();
     if (!estado.beepTimer) { beep(); estado.beepTimer = setInterval(beep, BEEP_MS); }
     if (!estado.parpadeo) {
       var visible = true;
