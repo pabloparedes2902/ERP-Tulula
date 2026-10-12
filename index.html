@@ -4713,13 +4713,23 @@ window.addEventListener('resize', _tscFitViewport);
 // como pantalla.<módulo> (siempre, aunque sea rápido). Tope 30 s (si no terminó, se anota como no terminada).
 function _pantallaMedir(pg, t0) {
   const el = document.getElementById('pg-' + pg); if (!el || typeof _cronAbrir !== 'function') return;
-  const c = _cronAbrir('pantalla.' + pg, ''); let fin = false, obs = null;
+  // 12-oct · E3: con la pestaña OCULTA el navegador frena los relojes (1 s por vuelta): esa medida no sirve, no se anota.
+  if (document.hidden) return;
+  const c = _cronAbrir('pantalla.' + pg, ''); let fin = false, obs = null, oculta = false;
+  const _alOcultar = () => { if (document.hidden) { oculta = true; cerrar(false); } };
+  // 12-oct · E3: Marketing y Flujo son una página dentro de otra (iframe): «lista» = cuando terminó de cargar (1 sola vez por sesión)
+  const ifr = el.querySelector(':scope > iframe');
   // solo el «Cargando…» PRINCIPAL (hasta 3 niveles: #pg-x > #x-w > .ld); los giradores de sub-paneles (fotos, pestañas) no cuentan
-  const listo = () => !el.querySelector(':scope > .ld, :scope > * > .ld, :scope > * > * > .ld') && el.textContent.trim().length > 0;
+  const listo = () => ifr ? !!ifr._cargado : (!el.querySelector(':scope > .ld, :scope > * > .ld, :scope > * > * > .ld') && el.textContent.trim().length > 0);
   const cerrar = (ok) => {
     if (fin) return; fin = true; try { if (obs) obs.disconnect(); } catch (_) {}
+    try { document.removeEventListener('visibilitychange', _alOcultar); } catch (_) {}
+    if (oculta) { try { const ab = _cronLeer(_CRON_ABIERTAS), i = ab.findIndex(x => x.id === c); if (i >= 0) { ab.splice(i, 1); _cronGuardar(_CRON_ABIERTAS, ab); } } catch (_) {} return; }   // se descarta
     try { if (ok && typeof _cronForzar === 'function') _cronForzar(c, Math.round(performance.now() - t0)); else _cronCerrar(c, ok); } catch (_) {}
   };
+  document.addEventListener('visibilitychange', _alOcultar);
+  if (ifr && !ifr._escucha) { ifr._escucha = true; ifr.addEventListener('load', () => { if (ifr.getAttribute('src')) ifr._cargado = true; }); }
+  if (ifr && !ifr._cargado) { ifr.addEventListener('load', () => { if (ifr.getAttribute('src')) cerrar(true); }, { once: true }); setTimeout(() => cerrar(false), 30000); return; }
   if (listo()) { requestAnimationFrame(() => cerrar(true)); return; }
   obs = new MutationObserver(() => { if (listo()) cerrar(true); });
   obs.observe(el, { childList: true, subtree: true });
@@ -11198,10 +11208,44 @@ window._sbEspejoEnVuelo = _sbEspejoEnVuelo;
 // localStorage); si cambió o no hay copia, se baja todo como antes y se guarda. Nunca muestra algo viejo:
 // la versión se lee ANTES de bajar, así que una escritura en el medio obliga a bajar de nuevo la próxima vez.
 const MEMOV = { mem: {}, vuelo: {} };
+// 12-oct · VÍA RÁPIDA E3 · LA VERSIÓN LLEGA SOLA. Cada vez que una tabla vigilada cambia, la base toca el timbre
+// 'ver:<tabla>' (PEGAR_EN_SUPABASE_via_rapida_e3_12oct.sql). Si el canal del timbre está vivo y esa tabla NO sonó desde la
+// última vez que se preguntó su versión, la pantalla ya sabe que no cambió: usa su copia SIN viajar a la base (0 ms).
+// Ante cualquier duda pregunta como antes: canal caído o reconectado, escritura propia en los últimos 5 s, tabla 'stat:'.
+const VER_VIVO_ON = true;   // REVERSA: false y publicar
+const VER_VIVO = { ep: 0, vivo: false, v: {}, toques: {}, escrito: 0 };
+function _verVivoTomar(tablas) {
+  if (!VER_VIVO_ON || !VER_VIVO.vivo || Date.now() - VER_VIVO.escrito < 5000) return null;
+  const o = {};
+  for (const t of tablas) { const x = VER_VIVO.v[t]; if (/^stat:/.test(t) || !x || x.ep !== VER_VIVO.ep) return null; o[t] = x.ver; }
+  return o;
+}
+function _verVivoSnap(tablas) { return { ep: VER_VIVO.ep, t: tablas.map(t => VER_VIVO.toques[t] || 0).join(',') }; }
+function _verVivoGuardar(ver, tablas, snap) {
+  if (!ver || typeof ver !== 'object' || !snap || snap.ep !== VER_VIVO.ep || snap.t !== tablas.map(t => VER_VIVO.toques[t] || 0).join(',')) return;
+  tablas.forEach(t => { if (!/^stat:/.test(t) && ver[t] != null) VER_VIVO.v[t] = { ver: ver[t], ep: VER_VIVO.ep }; });
+}
+function _verVivoTimbre(tema) { if (String(tema || '').indexOf('ver:') !== 0) return; const t = tema.slice(4); VER_VIVO.toques[t] = (VER_VIVO.toques[t] || 0) + 1; delete VER_VIVO.v[t]; }
+function _verVivoEstado(st) {
+  VER_VIVO.ep++; VER_VIVO.v = {}; VER_VIVO.vivo = false;
+  if (st !== 'SUBSCRIBED') return;
+  if (VER_VIVO.base === true) { VER_VIVO.vivo = true; return; }
+  // 1 sola vez: ¿la base ya toca el timbre de versiones? (si el SQL de E3 no se corrió, no hay filas 'ver:' y se sigue preguntando siempre)
+  const ep = VER_VIVO.ep;
+  (async () => { try {
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const r = await fetch(SB_URL + '/rest/v1/timbre?select=tema&tema=like.ver%3A*&limit=1', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    const a = r.ok ? await r.json() : null;
+    if (Array.isArray(a) && a.length) { VER_VIVO.base = true; if (VER_VIVO.ep === ep) VER_VIVO.vivo = true; }
+  } catch (_) {} })();
+}
+function _verVivoEscribi() { VER_VIVO.escrito = Date.now(); }
 function _memoClon(d) { try { return (typeof structuredClone === 'function') ? structuredClone(d) : JSON.parse(JSON.stringify(d)); } catch (_) { return d; } }
 async function _memoVersion(clave, tablas, cargar) {
-  let ver = null;
-  try { ver = await _puertaRpc('datos_version', { p_tablas: tablas }, 2500); } catch (_) { ver = null; }
+  let ver = _verVivoTomar(tablas);   // 12-oct E3: el timbre confirma que no cambió → sin viaje
+  if (!ver) { const _snap = _verVivoSnap(tablas);
+    try { ver = await _puertaRpc('datos_version', { p_tablas: tablas }, 2500); } catch (_) { ver = null; }
+    _verVivoGuardar(ver, tablas, _snap); }
   const firma = (ver && typeof ver === 'object' && tablas.every(t => ver[t] != null)) ? tablas.map(t => t + ':' + ver[t]).join('|') : '';
   if (firma) {
     let c = MEMOV.mem[clave];
@@ -11794,6 +11838,7 @@ const SB_LECTURA_LIBRO = true;           // 31-ago: encendido con 0 diferencias
   REVERSA INMEDIATA: SB_STOCK_MOVIMIENTOS = false y publicar.
 ═══════════════════════════════════════════════════════════════════════════*/
 const SB_STOCK_MOVIMIENTOS = true;
+const SB_LIBRO_META = true;   // 12-oct · VÍA RÁPIDA E3: Inventario pide el libro resumido (rpc stock_libro_meta). REVERSA: false
 async function _sbLibroMovimientos() {
   try {
     if (!SB_STOCK_MOVIMIENTOS || window._sbSaltarBase) return null;
@@ -11896,7 +11941,15 @@ async function _sbLibroDirecto(forzar) {
     const pMov = forzar ? Promise.resolve(null) : _sbLibroMovimientos();
     // 1) ¿Se puede confiar? Esto va PRIMERO y decide todo lo demas.
     //    Con movimientos el libro solo aporta categoria y fecha: si esta sucio no importa.
-    const re = await fetch(SB_URL + '/rest/v1/libro_estado?id=eq.1&select=sucio,ts,motivo', { headers: H });
+    const pRe = fetch(SB_URL + '/rest/v1/libro_estado?id=eq.1&select=sucio,ts,motivo', { headers: H });
+    // 12-oct · VÍA RÁPIDA E3 (medido: Inventario p50 981 ms). Con movimientos, del libro solo se usan categoría y fecha
+    // por producto: se piden ya resumidas (≈400 filas, 1 viaje, A LA VEZ que la pregunta de arriba) en vez de las
+    // 2.500 filas en 3 páginas DESPUÉS de la pregunta. Sin movimientos sigue el camino de siempre. REVERSA: SB_LIBRO_META = false.
+    const pMeta = (!forzar && typeof SB_LIBRO_META !== 'undefined' && SB_LIBRO_META)
+      ? fetch(SB_URL + '/rest/v1/rpc/stock_libro_meta', { headers: H })   // GET: la función solo lee
+          .then(r => r.ok ? r.json() : null).catch(() => null)
+      : Promise.resolve(null);
+    const re = await pRe;
     if (!re.ok) { if (re.status === 401 || re.status === 403) _sbVencerTok(); if (!(await pMov)) return null; }
     else {
       const est = (await re.json())[0];
@@ -11920,6 +11973,9 @@ async function _sbLibroDirecto(forzar) {
     // no una tras otra; si la 3ª llega llena, sigue de a una como antes. Sigue preguntando PRIMERO si el libro está
     // limpio (regla de regresion_lectura_pesados: con el libro sucio no se lee stock_saldos). Mismas filas, mismo orden.
     const pLibro = (async () => {
+      const _mv = await pMov, _mt = await pMeta;   // 12-oct E3: con movimientos alcanza el resumen por producto
+      if (Array.isArray(_mv) && _mv.length && Array.isArray(_mt) && _mt.length && _mt.every(x => x && typeof x.prenda === 'string' && typeof x.diseno === 'string' && typeof x.color === 'string'))
+        return _mt.map(x => ({ prenda: x.prenda, diseno: x.diseno, color: x.color, talla: '', cat: x.cat || '', conf: null, ventas: 0, fallas: null, fecha_ms: x.fecha_ms }));
       const pag = (off) => fetch(SB_URL + '/rest/v1/stock_saldos' +
           '?select=prenda,diseno,color,talla,cat,conf,ventas,fallas,fecha_ms' +
           '&order=prenda.asc,diseno.asc,color.asc,talla.asc&limit=1000&offset=' + off, { headers: H })
@@ -20612,8 +20668,9 @@ async function _rtConectar() {
     try {
       _rtCliente.channel('timbre-rt')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'timbre' },
-            p => { try { const tema = String((p && p.new && p.new.tema) || ''); if (tema === 'alertas') _alertBadgeProgramar(1500); } catch (_) {} })
-        .subscribe(st => { try { console.log('[RT] canal timbre:', st); } catch (_) {} });
+            p => { try { const tema = String((p && p.new && p.new.tema) || ''); if (tema === 'alertas') _alertBadgeProgramar(1500); _verVivoTimbre(tema); } catch (_) {} })
+        .subscribe(st => { try { console.log('[RT] canal timbre:', st); _verVivoEstado(st); } catch (_) {} });
+      _verVivoVigilarEscrituras();   // 12-oct E3
     } catch (e) { try { console.warn('[RT] timbre no disponible:', e && e.message); } catch (_) {} }
 
     // 10-oct-2026 · TIMBRE DE LOGROS DE LAS ASESORAS (ver _logrosTimbre). Una fila chiquita por logro.
@@ -20631,6 +20688,21 @@ async function _rtConectar() {
   } catch (e) { try { console.warn('[RT] no disponible:', e && e.message); } catch (_) {} }
 }
 setTimeout(_rtConectar, 6000);   // arrancar cuando login + token ya existieron
+// 12-oct · VÍA RÁPIDA E3 · cualquier escritura de ESTA pantalla (a la base o a Apps Script) pone 5 s de "duda":
+// en ese rato las versiones se preguntan siempre (el timbre de la propia escritura puede llegar unos ms después).
+// Las lecturas conocidas no cuentan; si una escritura no está en la lista, igual cuenta (duda de más = solo un viaje).
+const VER_LECTURAS_RX = /\/rpc\/(datos_version|mi_sesion|pref_get|salida_esperar|erp_lento_registrar|puerta_[a-z_]*|stock_libro_[a-z_]*|pedidos_(pagina|buscar|huella|contadores|pendiente_de|pendientes|duplicados|cambios_desde|colores_snapshot)|clientes_buscar|dashboard_[a-z_]*|comisiones_trimestre|cola_estado|prendas_no_reconocidas|catalogo_listar|pedido_por_request|[a-z_]*_(listar|calc|leer))(\?|$)/;
+function _verVivoVigilarEscrituras() {
+  if (window._verVivoFetch) return; window._verVivoFetch = true;
+  const f0 = window.fetch;
+  window.fetch = function (u, o) {
+    try {
+      const m = String((o && o.method) || 'GET').toUpperCase(), url = String((u && u.url) || u || '');
+      if (m !== 'GET' && m !== 'HEAD' && (url.indexOf('/rest/v1/') >= 0 || url.indexOf('script.google') >= 0) && !VER_LECTURAS_RX.test(url)) _verVivoEscribi();
+    } catch (_) {}
+    return f0.apply(this, arguments);
+  };
+}
 
 let _pRescTimer = null, _pRescInFlight = false, _pRescLastSig = '';
 function _pedsRescateServidor() {
@@ -39066,6 +39138,7 @@ async function loadPapelera() {
     return _out;
   };
   const _extraNow = _overlayRows();
+  try { await Promise.race([_lnCargar(), new Promise(r => setTimeout(r, 1500))]); } catch (_) {}   // 12-oct · lista negra
   if (_extraNow.length) _renderPapelera(w, _extraNow);          // ← se ve al instante
   else w.innerHTML = spin('Cargando papelera...');
   try {
@@ -39122,16 +39195,19 @@ function _renderPapelera(w, rows) {
     const felimTxt = felimDate && !isNaN(felimDate.getTime())
       ? felimDate.getDate().toString().padStart(2,'0')+'/'+(felimDate.getMonth()+1).toString().padStart(2,'0')+'/'+felimDate.getFullYear()
       : '—';
+    // 12-oct · LISTA NEGRA: se ve en la Papelera y no se puede restaurar (la base igual lo frena)
+    const _lnP = (typeof _lnMatch === 'function') ? _lnMatch(p.dni, [p.tel]) : null;
     h += '<tr>'
       + '<td style="font-family:monospace;color:var(--ac);font-weight:600">#'+esc(p.nro)+'</td>'
-      + '<td>'+esc(p.nombre||'—')+'</td>'
+      + '<td>'+esc(p.nombre||'—')+(_lnP ? ' <span class="badge" style="background:#501313;color:#fecaca;border:1px solid #ef4444;margin-left:4px" title="'+esc(_lnTexto(_lnP))+'">🚫 LISTA NEGRA</span>' : '')+'</td>'
       + '<td>'+esc(p.dni||'—')+'</td>'
       + '<td>'+esc(p.tel||'—')+'</td>'
       + '<td style="font-size:11px;color:var(--mu)">'+esc(p.prendas.slice(0,3).join(', ')+(p.prendas.length>3?' +'+(p.prendas.length-3):''))+'</td>'
       + '<td style="font-size:11px">'+esc(felimTxt)+'</td>'
       + '<td style="font-size:11px;color:var(--mu)">'+esc(p.who||'—')+'</td>'
       + '<td style="text-align:center;white-space:nowrap">'
-      +   '<button class="btn bg bs pap-restaurar" data-nro="'+esc(p.nro)+'" style="font-size:11px;margin-right:4px">↶ Restaurar</button>'
+      +   (_lnP ? '<span style="font-size:11px;color:var(--rd);margin-right:6px" title="Clienta en lista negra: no se puede restaurar">🚫 No se restaura</span>'
+              : '<button class="btn bg bs pap-restaurar" data-nro="'+esc(p.nro)+'" style="font-size:11px;margin-right:4px">↶ Restaurar</button>')
       +   '<button class="btn bg bs pap-eliminar" data-nro="'+esc(p.nro)+'" style="font-size:11px;color:var(--rd);border-color:var(--rd)44">✕ Eliminar definitivamente</button>'
       + '</td>'
       + '</tr>';
