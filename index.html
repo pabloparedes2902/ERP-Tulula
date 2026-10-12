@@ -808,6 +808,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
     <div id="pg-nuevo" class="pg">
       <div style="margin-bottom:12px"><button class="btn bg bs" onclick="navegarA('pedidos')" style="font-size:12px">← Volver a Pedidos</button></div>
       <div id="np-vbox" style="display:none"></div>
+      <div id="np-ln-aviso" style="display:none"></div>
 
       <!-- MODO: 3 botones -->
       <div style="display:flex;gap:0;margin-bottom:16px;border:1px solid var(--bd);border-radius:var(--r);overflow:hidden">
@@ -961,6 +962,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
               <option value="SIN_CLASIFICAR">Sin clasificar</option>
             </select>
           </div>
+          <button class="btn bg bs" id="cli-lista-negra" style="flex-shrink:0;align-self:flex-end;color:var(--rd)">🚫 Lista negra</button>
           <button class="btn bg bs" id="cli-exportar" style="flex-shrink:0;align-self:flex-end">⬇ Exportar Excel</button>
         </div>
       </div>
@@ -23552,6 +23554,7 @@ function npRellenar(c, resEl) {
   // rechazaba — sobre un campo que el ERP acababa de llenar solo.
   const _telLimpio = t => String(t).replace(/\D/g, '').slice(0, 9);
   const tels = String(c.t || '').split('/').map(t => _telLimpio(t)).filter(Boolean);
+  setTimeout(() => { try { _lnAvisoForm(); } catch (_) {} }, 0);   // 12-oct · lista negra al autollenar
   document.getElementById('np-tels').innerHTML = '';
   tels.forEach((t, i) => {
     npAddTel(i === 0);
@@ -25774,6 +25777,7 @@ const _NP_MOTIVOS_ELIM = [
   { k: 'DUPLICADO', t: 'Pedido duplicado', ay: 'Se cargó dos veces lo mismo.' },
   { k: 'CANCELADO', t: 'La clienta canceló', ay: 'Ya no quiere el pedido.' },
   { k: 'ERROR',     t: 'Cargado por error', ay: 'Datos equivocados desde el inicio.' },
+  { k: 'ESTAFA',    t: 'Estafa / pago falso', ay: 'El pago nunca llegó (comprobante falso). La clienta pasa a LISTA NEGRA: su DNI y celular no podrán volver a registrar pedidos.' },
   { k: 'OTRO',      t: 'Otro motivo', pideTexto: true, ay: '' },
 ];
 function npMotivoEliminar(nro) {
@@ -25816,9 +25820,17 @@ function npMotivoEliminar(nro) {
       } else { extra.style.display = 'none'; }
       ok.disabled = false;
     }));
-    ok.addEventListener('click', () => {
+    ok.addEventListener('click', async () => {
       if (!elegido) return;
       const v = String(txt.value || '').trim();
+      // 12-oct · LISTA NEGRA: con motivo Estafa la clienta queda bloqueada ANTES de ir a Papelera.
+      if (elegido.k === 'ESTAFA') {
+        ok.disabled = true; ok.textContent = 'Bloqueando a la clienta…';
+        const _ln = await _lnDesdePedido(nro);
+        if (!_ln.ok) { extra.style.display = 'block'; txt.style.display = 'none'; hint.style.color = 'var(--rd)';
+          hint.textContent = 'No se pudo pasar a la lista negra: ' + _ln.error + '. El pedido NO se eliminó. Reintenta.';
+          ok.disabled = false; ok.textContent = 'Enviar a Papelera'; return; }
+      }
       if (elegido.pideNro && !v) { txt.focus(); hint.textContent = 'Falta el número del pedido que queda.'; return; }
       if (elegido.pideTexto && !v) { txt.focus(); hint.textContent = 'Escribí el motivo.'; return; }
       cerrar(elegido.k === 'FUSION' ? { motivo: 'Fusionado en el pedido '+v, fusionadoEn: v }
@@ -25829,6 +25841,159 @@ function npMotivoEliminar(nro) {
     o.addEventListener('click', e => { if (e.target === o) cerrar(null); });
   });
 }
+
+// ══ 12-oct-2026 · LISTA NEGRA (pedido de Pablo) ═══════════════════════════════
+// Una clienta que intentó estafar (pago falso) queda bloqueada por DNI y celular.
+//   · El muro de verdad está en la base (trigger aaa_lista_negra_muro en public.pedidos,
+//     PEGAR_EN_SUPABASE_lista_negra_12oct.sql): ningún canal puede registrarle un pedido.
+//   · Acá: aviso rojo al instante en Nuevo pedido, motivo "Estafa" al eliminar,
+//     y la sección 🚫 Lista negra en Clientes (ver, agregar, quitar = solo Admin).
+let _LN = { lista: [], t: 0, cargando: null };
+function _lnRpc(fn, params) {
+  if (typeof window._egrRpc !== 'function') return Promise.reject(new Error('Sin conexión con la base'));
+  return window._egrRpc(fn, params || {});
+}
+function _lnDoc(t) {
+  const d = String(t == null ? '' : t).replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+  if (!d || /^(NA|SD|SINDOCUMENTO|SINDNI)$/.test(d) || /^0+$/.test(d) || d.length < 6) return '';
+  return d;
+}
+function _lnCels(t) {
+  return String(t == null ? '' : t).split(/[\/,;|]|\s{2,}| y /).map(p => p.replace(/\D/g, ''))
+    .filter(d => d.length >= 7 && !/^0+$/.test(d)).map(d => d.slice(-9));
+}
+function _lnCargar(force) {
+  if (!force && _LN.t && Date.now() - _LN.t < 120000) return Promise.resolve(_LN.lista);
+  if (_LN.cargando) return _LN.cargando;
+  if (!_LN.t) { try { const c = JSON.parse(localStorage.getItem('erp_lista_negra') || 'null'); if (Array.isArray(c)) _LN.lista = c; } catch (_) {} }
+  _LN.cargando = _lnRpc('lista_negra_claves').then(j => {
+    _LN.lista = Array.isArray(j) ? j : []; _LN.t = Date.now();
+    try { localStorage.setItem('erp_lista_negra', JSON.stringify(_LN.lista)); } catch (_) {}
+    try { _lnAvisoForm(); } catch (_) {}
+    try { const pc = document.getElementById('pg-clientes'); if (pc && pc.classList.contains('on') && typeof renderClis === 'function') renderClis(); } catch (_) {}
+    return _LN.lista;
+  }).catch(() => _LN.lista).finally(() => { _LN.cargando = null; });
+  return _LN.cargando;
+}
+// ¿Esta persona está bloqueada? Devuelve la ficha {d,c,n,m,f} o null.
+function _lnMatch(doc, cels) {
+  const d = _lnDoc(doc);
+  const cs = [].concat(cels || []).reduce((a, x) => a.concat(_lnCels(x)), []);
+  if (!d && !cs.length) return null;
+  return (_LN.lista || []).find(l => (d && l.d === d) || (cs.length && (l.c || []).some(c => cs.includes(c)))) || null;
+}
+function _lnTexto(l) {
+  return '🚫 LISTA NEGRA: ' + (l.n || 'esta clienta') + ' está bloqueada desde el ' + (l.f || '?') + ' (' + (l.m || 'ESTAFA')
+    + '). No se le puede registrar pedidos.';
+}
+function _lnMatchForm() {
+  const dn = document.getElementById('np-dnum');
+  const tels = [...document.querySelectorAll('#np-tels input')].map(i => i.value || '');
+  return _lnMatch(dn ? dn.value : '', tels);
+}
+function _lnAvisoForm() {
+  const box = document.getElementById('np-ln-aviso'); if (!box) return;
+  const l = _lnMatchForm();
+  if (!l) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.innerHTML = '<div style="background:#501313;border:1px solid #ef4444;color:#fecaca;border-radius:var(--r);padding:10px 14px;margin-bottom:12px;font-size:13px;font-weight:600">'
+    + esc(_lnTexto(l)) + '<div style="font-weight:400;font-size:12px;margin-top:4px">Si crees que es un error, avísale a un Administrador (Clientes › 🚫 Lista negra).</div></div>';
+  box.style.display = 'block';
+}
+let _lnDeb = null;
+document.addEventListener('input', ev => {
+  const t = ev.target; if (!t || !t.closest) return;
+  if (t.id === 'np-dnum' || t.closest('#np-tels')) { clearTimeout(_lnDeb); _lnDeb = setTimeout(_lnAvisoForm, 200); }
+});
+document.addEventListener('focusin', ev => {
+  const t = ev.target; if (!t || !t.closest) return;
+  if (t.id === 'np-dnum' || t.closest('#np-tels') || t.id === 'np-nom') _lnCargar();
+});
+// Motivo "Estafa" al eliminar un pedido: la base lee DNI, celulares y nombre del propio pedido.
+async function _lnDesdePedido(nro) {
+  try {
+    const r = await _lnRpc('lista_negra_desde_pedido', { p_nro: String(nro), p_detalle: 'Pago falso en el pedido #' + nro });
+    _lnCargar(true);
+    toast('🚫 ' + ((r && r.nombre) || 'La clienta') + (r && r.ya_estaba ? ' ya estaba en lista negra (ficha completada)' : ' quedó en LISTA NEGRA'), 'ok');
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message || String(e) }; }
+}
+
+// ── Clientes › 🚫 Lista negra ──
+function lnAbrir(pre) {
+  let o = document.getElementById('modal-ln');
+  if (!o) {
+    o = document.createElement('div'); o.id = 'modal-ln';
+    o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:flex;align-items:flex-start;justify-content:center;padding:30px 16px;overflow:auto';
+    document.body.appendChild(o);
+    o.addEventListener('click', e => { if (e.target === o) o.remove(); });
+  }
+  const inp = (id, ph, v) => '<input id="' + id + '" type="text" autocomplete="off" placeholder="' + ph + '" value="' + esc(v || '') + '" style="width:100%;padding:8px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px">';
+  pre = pre || {};
+  o.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);padding:20px;max-width:900px;width:100%">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><h3 style="margin:0">🚫 Lista negra</h3><button class="btn bg bs" id="ln-cerrar">✕</button></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:14px">Clientas bloqueadas: su DNI y sus celulares no pueden registrar pedidos por ningún canal. Sirve también para alguien que nunca llegó a tener pedido.</div>'
+    + '<div style="border:1px solid var(--bd);border-radius:var(--r);padding:12px;margin-bottom:14px">'
+    +   '<div style="font-weight:600;margin-bottom:8px">Agregar a la lista negra</div>'
+    +   '<div style="display:grid;grid-template-columns:2fr 1fr 1.4fr;gap:8px;margin-bottom:8px">' + inp('ln-nom', 'Nombre', pre.nombre) + inp('ln-dni', 'DNI / CE', pre.dni) + inp('ln-cel', 'Celular(es): 987654321 / 912345678', pre.celular) + '</div>'
+    +   '<div style="display:flex;gap:8px">' + inp('ln-det', 'Qué pasó (ej: voucher BCP trucado, pedido #22900)', pre.detalle)
+    +   '<button class="btn bp bs" id="ln-agregar" style="white-space:nowrap">🚫 Bloquear</button></div>'
+    +   '<div id="ln-msg" style="font-size:12px;margin-top:6px;color:var(--rd)"></div>'
+    + '</div>'
+    + '<div id="ln-lista"><div class="ld"><div class="sp"></div>Cargando...</div></div></div>';
+  o.querySelector('#ln-cerrar').addEventListener('click', () => o.remove());
+  o.querySelector('#ln-agregar').addEventListener('click', lnAgregar);
+  lnPintar();
+}
+async function lnPintar() {
+  const w = document.getElementById('ln-lista'); if (!w) return;
+  let L;
+  try { L = await _lnRpc('lista_negra_listar'); } catch (e) { w.innerHTML = '<div class="empty">No se pudo leer la lista: ' + esc(e.message) + '</div>'; return; }
+  L = Array.isArray(L) ? L : [];
+  if (!L.length) { w.innerHTML = '<div class="empty">Nadie en la lista negra 🎉</div>'; return; }
+  const admin = (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador');
+  const td = (x, st) => '<td style="padding:6px 8px;' + (st || '') + '">' + x + '</td>';
+  let h = '<div style="overflow:auto"><table class="pt" style="width:100%"><thead><tr><th>Nombre</th><th>DNI</th><th>Celulares</th><th>Motivo</th><th>Qué pasó</th><th>Pedido</th><th>Bloqueada</th><th></th></tr></thead><tbody>';
+  L.forEach(l => {
+    const gris = l.activo ? '' : 'opacity:.45;';
+    h += '<tr>' + td(esc(l.nombre || '—'), gris + 'font-weight:500') + td(esc(l.dni || '—'), gris) + td(esc((l.celulares || []).join(' / ') || '—'), gris)
+      + td(esc(l.motivo || ''), gris) + td(esc(l.detalle || ''), gris + 'white-space:normal;max-width:240px')
+      + td(l.nro_pedido ? '#' + esc(l.nro_pedido) : '—', gris)
+      + td(esc(l.creado_txt || '') + '<div style="font-size:10px;color:var(--mu)">' + esc(l.creado_por || '') + '</div>', gris)
+      + td(l.activo ? (admin ? '<button class="btn bg bs ln-quitar" data-id="' + l.id + '" style="font-size:11px">Quitar</button>' : '')
+                    : '<span style="font-size:11px;color:var(--mu)">Quitada ' + esc(l.quitado_txt || '') + ' · ' + esc(l.motivo_quitar || '') + '</span>', 'white-space:nowrap')
+      + '</tr>';
+  });
+  w.innerHTML = h + '</tbody></table></div>';
+  w.querySelectorAll('.ln-quitar').forEach(b => b.addEventListener('click', () => lnQuitar(b.dataset.id, b)));
+}
+async function lnAgregar() {
+  const v = id => (document.getElementById(id) || {}).value || '';
+  const msg = document.getElementById('ln-msg'), btn = document.getElementById('ln-agregar');
+  if (!_lnDoc(v('ln-dni')) && !_lnCels(v('ln-cel')).length) { msg.textContent = 'Falta el DNI o el celular: sin uno de los dos no hay cómo bloquearla.'; return; }
+  btn.disabled = true; msg.textContent = '';
+  try {
+    const r = await _lnRpc('lista_negra_agregar', { p: { nombre: v('ln-nom').trim(), dni: v('ln-dni'), celular: v('ln-cel'), detalle: v('ln-det').trim(), motivo: 'ESTAFA' } });
+    toast('🚫 ' + (v('ln-nom').trim() || 'Clienta') + (r && r.ya_estaba ? ' ya estaba: se completó su ficha' : ' quedó en LISTA NEGRA'), 'ok');
+    ['ln-nom', 'ln-dni', 'ln-cel', 'ln-det'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+    await _lnCargar(true); lnPintar();
+    try { if (typeof renderClis === 'function' && document.getElementById('pg-clientes')) renderClis(); } catch (_) {}
+  } catch (e) { msg.textContent = e.message; }
+  finally { btn.disabled = false; }
+}
+async function lnQuitar(id, btn) {
+  const motivo = prompt('¿Por qué la sacas de la lista negra? (queda anotado)');
+  if (motivo == null) return;
+  if (!motivo.trim()) { toast('Escribe por qué se quita', 'err'); return; }
+  btn.disabled = true;
+  try { await _lnRpc('lista_negra_quitar', { p_id: Number(id), p_motivo: motivo.trim() }); toast('Quitada de la lista negra', 'ok'); await _lnCargar(true); lnPintar(); }
+  catch (e) { toast('Error: ' + e.message, 'err'); btn.disabled = false; }
+}
+document.addEventListener('click', ev => {
+  const b = ev.target && ev.target.closest ? ev.target.closest('#cli-lista-negra') : null;
+  if (b) { _lnCargar(); lnAbrir(); }
+});
+setTimeout(() => { try { _lnCargar(); } catch (_) {} }, 4000);
+// ══ fin LISTA NEGRA ══════════════════════════════════════════════════════════
 
 function npConfirm(msg) {
   return new Promise(resolve => {
@@ -26018,6 +26183,8 @@ function _prendaEnCatalogo(nombre) {
 }
 function npValidar() {
   const errs = [];
+  // 12-oct · LISTA NEGRA (la base igual lo frena: esto es para avisar antes)
+  try { const _ln = _lnMatchForm(); if (_ln) errs.push(_lnTexto(_ln)); _lnAvisoForm(); } catch (_) {}
   if (!(document.getElementById('np-nom').value || '').trim()) errs.push('Nombres y Apellidos es obligatorio');
   // Fecha del pedido OPCIONAL: si se deja vacía, el pedido se crea como RESERVA (sin número).
   // 16-set: bloqueo de fecha futura en el propio formulario (pedido de Pablo). El backend rápido
@@ -26096,6 +26263,7 @@ function npLimpiar() {
   document.getElementById('np-pagos').innerHTML = '';
   document.getElementById('np-tels').innerHTML = '';
   document.getElementById('np-vbox').style.display = 'none';
+  { const _lna = document.getElementById('np-ln-aviso'); if (_lna) { _lna.style.display = 'none'; _lna.innerHTML = ''; } }
   document.getElementById('np-buscador').style.display = 'none';
   document.getElementById('np-bresultados').innerHTML = '';
   document.getElementById('np-bq').value = '';
@@ -26476,6 +26644,8 @@ function renderClis() {
     const segTxt=String(c.Segmento||'SIN_CLASIFICAR').replace('_',' ');
     let segHtml='<span class="badge" style="'+_segBadgeStyle(segColor)+'">'+esc(segTxt)+'</span>';
     if(c.Problematica) segHtml+=' <span class="badge" style="'+_segBadgeStyle('#ef4444')+';margin-left:4px" title="Cliente con ≥3 devoluciones o ratio &gt;40%">⚠ PROBLEMÁTICA</span>';
+    const _lnC = (typeof _lnMatch === 'function') ? _lnMatch(c.DNI, [c.Telefono]) : null;   // 12-oct
+    if(_lnC) segHtml=' <span class="badge" style="'+_segBadgeStyle('#ef4444')+'" title="'+esc(_lnTexto(_lnC))+'">🚫 LISTA NEGRA</span> '+segHtml;
     const td = (content, extra) => '<td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'+(extra||'')+'">'+content+'</td>';
     h+='<tr data-key="'+esc(key)+'">'
       + td(esc(c.Nombre), 'font-weight:500')
@@ -26493,6 +26663,7 @@ function renderClis() {
             : '<span style="color:var(--mu)" title="A varias de sus prendas les falta el costo cargado">—</span>', 'font-weight:500;text-align:right') : '')
       +'<td style="white-space:nowrap">'
         +'<button class="btn bg bs cli-btn-hist" data-key="'+esc(key)+'" style="margin-right:4px" title="Ver historial">📋</button>'
+        +(_lnC ? '' : '<button class="btn bg bs cli-btn-ln" data-key="'+esc(key)+'" style="margin-right:4px" title="Pasar a lista negra">🚫</button>')
         +(MY_ROLE!=='Ventas' ? '<button class="btn bg bs cli-btn-edit" data-key="'+esc(key)+'" style="margin-right:4px" title="Editar">✎</button>'
         +'<button class="btn bg bs cli-btn-del" data-key="'+esc(key)+'" style="color:var(--rd)" title="Eliminar">✕</button>' : '')
       +'</td></tr>';
@@ -26519,6 +26690,10 @@ function renderClis() {
   el.querySelectorAll('.cli-btn-edit').forEach(b=>b.addEventListener('click',()=>cliOpenEdit(b.dataset.key)));
   el.querySelectorAll('.cli-btn-del').forEach(b=>b.addEventListener('click',()=>cliDelete(b.dataset.key)));
   el.querySelectorAll('.cli-btn-hist').forEach(b=>b.addEventListener('click',()=>cliOpenHistorial(b.dataset.key)));
+  el.querySelectorAll('.cli-btn-ln').forEach(b=>b.addEventListener('click',()=>{   // 12-oct · lista negra
+    const c=cliData.find(x=>(x.Telefono||x.Nombre)===b.dataset.key); if(!c) return;
+    lnAbrir({ nombre:c.Nombre, dni:c.DNI, celular:c.Telefono, detalle:'' });
+  }));
   // Sort handlers
   el.querySelectorAll('.cli-sort-lbl').forEach(sp => sp.addEventListener('click', () => {
     const k = sp.getAttribute('data-col');
@@ -39191,6 +39366,7 @@ const AL_ORIGEN = {
   'comisiones':            { nivel: a => _alEscala24(a), q: 'Operación' },
   'vigía de la tienda':    { nivel: a => (a.nivel === 'info' ? 'historial' : 'amarillo'), t: () => 'Revisión automática de la tienda web', s: 'Lo revisa sistemas.', q: 'Sistemas' },
   'reconciliador-pagos':   { nivel: 'amarillo', q: 'Operación' },
+  'lista-negra':           { nivel: 'naranja', t: a => String(a.titulo || 'Compra de una clienta en lista negra'), s: 'No despachar hasta confirmar el pago en Shopify.', q: 'Ventas' },   // 12-oct
   'recordatorio':          { nivel: 'amarillo', q: 'Dirección' },
   // 7-oct: el «estado de hoy» y las pruebas son informes, no pendientes
   'correo':                { nivel: a => /estado de hoy|prueba del correo|todo ok/i.test(String(a.titulo || '')) ? 'historial' : (a.nivel === 'critica' ? 'rojo' : 'amarillo'), q: 'Sistemas' }   // 6-oct: copia y archivado mensual (antes, tareas programadas)
