@@ -11240,6 +11240,25 @@ function _verVivoEstado(st) {
   } catch (_) {} })();
 }
 function _verVivoEscribi() { VER_VIVO.escrito = Date.now(); }
+// 12-oct · VÍA RÁPIDA E3d · "¿el libro está limpio?" también por timbre ('ver:libro_estado', lo toca la base en cada cambio y
+// en cada latido). Mientras no suene (y hasta 5 min), se reusa la última respuesta: la edad se sigue midiendo con su `ts`,
+// así que si el latido se corta, la regla de LIBRO_ESTADO_MAX_MIN la sigue viendo vieja igual que antes.
+const _ESTADO_MEMO = { d: null, ep: -1, tq: -1, t: 0 };
+async function _libroEstadoPedir(url, H) {
+  const tq = VER_VIVO.toques['libro_estado'] || 0;
+  if (VER_VIVO_ON && VER_VIVO.vivo && _ESTADO_MEMO.d && _ESTADO_MEMO.ep === VER_VIVO.ep && _ESTADO_MEMO.tq === tq
+      && Date.now() - _ESTADO_MEMO.t < 300000 && Date.now() - VER_VIVO.escrito >= 5000) {
+    const d = JSON.parse(JSON.stringify(_ESTADO_MEMO.d));
+    return { ok: true, status: 200, json: async () => d };
+  }
+  const ep = VER_VIVO.ep;
+  const r = await fetch(url, { headers: H });
+  if (!r.ok) return r;
+  const d = await r.json();
+  if (Array.isArray(d) && d.length && VER_VIVO.ep === ep && (VER_VIVO.toques['libro_estado'] || 0) === tq)
+    Object.assign(_ESTADO_MEMO, { d: JSON.parse(JSON.stringify(d)), ep: ep, tq: tq, t: Date.now() });
+  return { ok: true, status: r.status, json: async () => d };
+}
 function _memoClon(d) { try { return (typeof structuredClone === 'function') ? structuredClone(d) : JSON.parse(JSON.stringify(d)); } catch (_) { return d; } }
 async function _memoVersion(clave, tablas, cargar) {
   let ver = _verVivoTomar(tablas);   // 12-oct E3: el timbre confirma que no cambió → sin viaje
@@ -11976,13 +11995,16 @@ async function _sbLibroDirecto(forzar) {
     const pMov = forzar ? Promise.resolve(null) : _sbLibroMovimientos();
     // 1) ¿Se puede confiar? Esto va PRIMERO y decide todo lo demas.
     //    Con movimientos el libro solo aporta categoria y fecha: si esta sucio no importa.
-    const pRe = fetch(SB_URL + '/rest/v1/libro_estado?id=eq.1&select=sucio,ts,motivo', { headers: H });
+    const _urlEst = SB_URL + '/rest/v1/libro_estado?id=eq.1&select=sucio,ts,motivo';
+    const pRe = (!forzar && typeof _libroEstadoPedir === 'function') ? _libroEstadoPedir(_urlEst, H) : fetch(_urlEst, { headers: H });   // 12-oct E3d: por timbre
     // 12-oct · VÍA RÁPIDA E3 (medido: Inventario p50 981 ms). Con movimientos, del libro solo se usan categoría y fecha
     // por producto: se piden ya resumidas (≈400 filas, 1 viaje, A LA VEZ que la pregunta de arriba) en vez de las
     // 2.500 filas en 3 páginas DESPUÉS de la pregunta. Sin movimientos sigue el camino de siempre. REVERSA: SB_LIBRO_META = false.
+    const _traerMeta = () => fetch(SB_URL + '/rest/v1/rpc/stock_libro_meta', { headers: H })   // GET: la función solo lee
+          .then(r => r.ok ? r.json() : null).catch(() => null);
+    // 12-oct E3d: el resumen se baja solo si cambió stock_saldos (versión por evento + timbre)
     const pMeta = (!forzar && typeof SB_LIBRO_META !== 'undefined' && SB_LIBRO_META)
-      ? fetch(SB_URL + '/rest/v1/rpc/stock_libro_meta', { headers: H })   // GET: la función solo lee
-          .then(r => r.ok ? r.json() : null).catch(() => null)
+      ? ((typeof _memoVersion === 'function') ? _memoVersion('libro_meta', ['stock_saldos'], _traerMeta).catch(() => null) : _traerMeta())
       : Promise.resolve(null);
     const re = await pRe;
     if (!re.ok) { if (re.status === 401 || re.status === 403) _sbVencerTok(); if (!(await pMov)) return null; }
