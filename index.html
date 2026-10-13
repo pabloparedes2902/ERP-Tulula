@@ -3947,6 +3947,7 @@ async function _apiApps(action, params) {
 // 7-oct · CONTENIDO DE PRODUCTO: en esa pantalla, los paneles que comparte con Costos (fotos, video, historia, envío a la tienda)
 // llaman a las rutas contenido.* (Marketing puede; no traen costos). Fuera de esa pantalla no cambia nada.
 const CON_ALIAS = { 'multimedia.deProducto': 'contenido.media', 'multimedia.firmar': 'contenido.firmar', 'multimedia.guardar': 'contenido.guardarMedia',
+  'multimedia.firmarVarios': 'contenido.firmarVarios', 'multimedia.guardarVarios': 'contenido.guardarVarios',   // 13-oct · lote
   'multimedia.desactivar': 'contenido.quitar', 'costos.ordenFotos': 'contenido.orden', 'costos.shopify': 'contenido.enviar' };
 function _conAlias(a, b) {
   if (!window._modoContenido) return '';
@@ -9150,7 +9151,90 @@ async function _mulReducir(f) {
   } catch (e) {}
   return out;
 }
+/** 13-oct-2026 (vía rápida · medido: Angie, 8 s firmar + 8 s guardar POR FOTO) · VARIAS FOTOS EN 2 VIAJES:
+ *  1 viaje para firmar todas, subidas de a 3 a la vez directo al almacén, 1 viaje para guardarlas todas EN ORDEN.
+ *  Mismas reglas que antes (optimizar, tabla de medidas, la 1ª foto de cada color = PRINCIPAL). Si Apps Script todavía no
+ *  conoce la ruta por lote, sigue el camino de antes (de a una), sin haber guardado nada. */
 async function _mulSubirVarios(files, opt) {
+  if (!files.length) return;
+  opt = opt || {};
+  const g = id => String((document.getElementById(id) || {}).value || '').trim();
+  const st = document.getElementById(opt.st || 'mf-up-st');
+  const dis = opt.dis != null ? opt.dis : g('mf-dis'), col = opt.col != null ? opt.col : g('mf-col');
+  const canal = opt.canal || g('mf-can');
+  if (!dis) { toast('Escribí primero de qué prenda son (campo Prenda o diseño)', 'err'); return; }
+  const extTipo = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm' };
+  const norm = x => String(x || '').toUpperCase().trim();
+  const hayPrincipal = (c, co) => (MUL.data || []).some(r => r.Activo !== false && r.Tipo === 'PRINCIPAL' && norm(r.Diseno) === norm(dis) && r.Canal === c && norm(r.Color) === norm(co));
+  const errores = [], avisos = [];
+  files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  // 1) preparar en este navegador (rápido)
+  const prep = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i], ext = (f.name.split('.').pop() || '').toLowerCase(), ct = f.type || extTipo[ext] || '';
+    const esVideo = /^video\//.test(ct);
+    const p = { f: f, sub: f, nombre: f.name, ct: ct, esVideo: esVideo };
+    if (!esVideo) {
+      if (st) st.textContent = 'Preparando ' + (i + 1) + ' de ' + files.length + ' · ' + f.name + ' …';
+      try {
+        const rd = await _mulReducir(f);
+        p.sub = rd.blob; p.nombre = rd.nombre; if (rd.tipo) p.ct = rd.tipo;
+        if (rd.aviso) avisos.push(rd.aviso);
+        try { if (await _mulEsTabla(p.sub)) { p.nombre = 'tabla-medidas-' + p.nombre; avisos.push(f.name + ': es una tabla de medidas, no se mostrará en la galería de la tienda'); } } catch (_) {}
+      } catch (_) {}
+    }
+    prep.push(p);
+  }
+  // 2) firmar todas en un viaje (si la ruta por lote no existe todavía: camino de antes)
+  if (st) st.textContent = 'Preparando la subida de ' + files.length + ' archivo(s) …';
+  let fir;
+  try { fir = await apiSend('multimedia.firmarVarios', { archivos: prep.map(p => ({ Nombre: p.nombre, Tipo: p.ct, Bytes: p.sub.size, Diseno: dis })) }); }
+  catch (e) { return _mulSubirVariosUnoAUno(files, opt); }
+  const firmas = (fir && fir.firmas) || [];
+  // 3) subir de a 3 a la vez, directo al almacén
+  let listos = 0, sig = 0;
+  const pinta = () => { if (st) st.textContent = 'Subiendo · ' + listos + ' de ' + prep.length + ' listos'; };
+  pinta();
+  const trabajador = async () => {
+    while (sig < prep.length) {
+      const i = sig++, p = prep[i], fm = firmas[i];
+      if (!fm || fm.ok === false || !fm.uploadUrl) { p.error = (fm && fm.error) || 'no se pudo preparar'; continue; }
+      try { await _mulPut(fm.uploadUrl, p.sub, fm.contentType || p.ct, () => {}); p.url = fm.publicUrl; }
+      catch (e) { p.error = e.message || 'falló la subida'; }
+      listos++; pinta();
+    }
+  };
+  await Promise.all([trabajador(), trabajador(), trabajador()]);
+  // 4) guardar todas en un viaje, en el orden de los nombres (la 1ª de cada color = PRINCIPAL, como antes)
+  const nuevos = {}, items = [], cuales = [];
+  prep.forEach(p => {
+    if (p.error) { errores.push(p.f.name + ': ' + p.error); return; }
+    const cn = p.esVideo ? 'BOT' : canal, clave = cn + '|' + norm(col);
+    const tipo = p.esVideo ? 'VIDEO' : (((opt.hay || hayPrincipal)(cn, col) || nuevos[clave]) ? 'EXTRA' : 'PRINCIPAL');
+    if (tipo === 'PRINCIPAL') nuevos[clave] = true;
+    items.push({ Diseno: dis, Canal: cn, Tipo: tipo, Url: p.url, Color: p.esVideo ? '' : col, Origen: 'subido desde el ERP', Rapido: true });
+    cuales.push(p.f.name);
+  });
+  let hechos = 0;
+  if (items.length) {
+    if (st) st.textContent = 'Guardando ' + items.length + ' archivo(s) …';
+    try {
+      const r = await apiSend('multimedia.guardarVarios', { items: items });
+      ((r && r.res) || []).forEach((x, k) => { if (x && x.ok !== false) { hechos++; if (x.aviso) avisos.push(x.aviso); } else errores.push(cuales[k] + ': ' + ((x && x.error) || 'no se guardó')); });
+    } catch (e) { cuales.forEach(n => errores.push(n + ': ' + e.message)); }
+  }
+  return _mulSubirFin(st, opt, hechos, files.length, errores, avisos);
+}
+/** El cierre de una subida (los dos caminos): aviso con lo que salió y recarga de lo que corresponda. */
+async function _mulSubirFin(st, opt, hechos, total, errores, avisos) {
+  if (st) st.textContent = '';
+  if (!opt.dis) MUL.editing = null;
+  toast(hechos + ' de ' + total + ' archivos guardados' + (errores.length ? (' · fallaron: ' + errores.join(' | ')) : '') + (avisos.length ? (' · ojo: ' + avisos.join(' | ')) : ''), (errores.length || avisos.length) ? 'warn' : 'ok');
+  if (opt.alTerminar) { try { await opt.alTerminar(); } catch (e) {} return; }
+  try { await loadMultimediaAvanzado(); } catch (e) {}
+}
+/** El camino de antes (de a una): respaldo mientras Apps Script no tenga las rutas por lote. */
+async function _mulSubirVariosUnoAUno(files, opt) {
   if (!files.length) return;
   opt = opt || {};
   const g = id => String((document.getElementById(id) || {}).value || '').trim();
@@ -9187,11 +9271,7 @@ async function _mulSubirVarios(files, opt) {
       hechos++;
     } catch (e) { errores.push(f.name + ': ' + e.message); }
   }
-  if (st) st.textContent = '';
-  if (!opt.dis) MUL.editing = null;
-  toast(hechos + ' de ' + files.length + ' archivos guardados' + (errores.length ? (' · fallaron: ' + errores.join(' | ')) : '') + (avisos.length ? (' · ojo: ' + avisos.join(' | ')) : ''), (errores.length || avisos.length) ? 'warn' : 'ok');
-  if (opt.alTerminar) { try { await opt.alTerminar(); } catch (e) {} return; }
-  try { await loadMultimediaAvanzado(); } catch (e) {}
+  return _mulSubirFin(st, opt, hechos, files.length, errores, avisos);
 }
 
 async function _mulGuardar(original) {
