@@ -8488,13 +8488,42 @@ async function _conGuardarPrecios(v) {
   if (go) go.disabled = true;
   try {
     msg('Guardando…');
-    const r = await apiSend('costos.precios', { Diseno: v.Diseno, precios: precios });
+    // 13-oct (Pablo, propuesta 1) · camino rápido: la base guarda con las mismas reglas (≈1 s); Shopify y la hoja Cost van por detrás.
+    const d = await _conPreciosBase(v.Diseno, precios);
+    if (d) {
+      if (d.nuevos) v.precios = Object.assign({}, v.precios || {}, d.nuevos);
+      try { localStorage.removeItem(CON_KEY); } catch (_) {}
+      _conTabla();
+      if (!d.cambios) { msg('No había cambios.'); return; }
+      msg('✓ Guardado' + (d.aviso ? ' · ' + d.aviso : '') + (d.shopify_id ? ' · actualizando la tienda…' : ''), 'var(--gn)');
+      apiSend('costos.preciosTras', { Diseno: v.Diseno })
+        .then(t => { if (d.shopify_id) msg('✓ Guardado' + (d.aviso ? ' · ' + d.aviso : '') + (t && t.shop && /no se pudo|falló/i.test(t.shop) ? ' · ⚠ ' + t.shop : ' · tienda actualizada'), t && t.shop && /no se pudo|falló/i.test(t.shop) ? 'var(--am)' : 'var(--gn)'); })
+        .catch(e => msg('✓ Guardado en el ERP · ⚠ la tienda no se actualizó: ' + e.message, 'var(--am)'));
+      return;
+    }
+    const r = await apiSend('costos.precios', { Diseno: v.Diseno, precios: precios });   // respaldo: la base no respondió
     v.precios = r.precios || v.precios;
     try { localStorage.removeItem(CON_KEY); } catch (_) {}
     msg('✓ ' + (r.aviso || 'Precios guardados'), 'var(--gn)');
     _conTabla();
   } catch (e) { msg('No se guardó: ' + e.message, 'var(--rd)'); }
   finally { if (go) go.disabled = false; }
+}
+/** 13-oct · RPC productos_precios_guardar. null = la base no respondió (se sigue por Apps Script); un rechazo (candado, permiso) se lanza tal cual. */
+async function _conPreciosBase(diseno, precios) {
+  let r;
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON || (typeof SB_APAGADO !== 'undefined' && SB_APAGADO)) return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    r = await fetch(SB_URL + '/rest/v1/rpc/productos_precios_guardar', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_diseno: diseno, p_precios: precios }) });
+  } catch (_) { return null; }
+  if (r.ok) { try { return await r.json(); } catch (_) { return null; } }
+  if (r.status === 401) { _sbVencerTok(); return null; }
+  if (r.status === 404 || r.status >= 500) return null;   // función no instalada o base caída: respaldo por Apps Script
+  let j = null; try { j = await r.json(); } catch (_) {}
+  if (j && j.message) throw new Error(j.message);   // candado, sin permiso, producto inexistente
+  return null;
 }
 async function _conGuardarTextos(v) {
   const out = document.getElementById('con-tx-st'), go = document.getElementById('con-tx-go');
