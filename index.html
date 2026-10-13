@@ -5234,7 +5234,12 @@ function _flujoLazy(){
           }).catch(function () {});
         }
       }
-      api('margen.calcular', { desde: rango.inicio, hasta: rango.fin })
+      // 13-oct · fase B: con MG_LOCAL_ON el cálculo exacto se hace AQUÍ (sin Apps Script); si falla, Apps Script como siempre.
+      var _mgCalc = MG_LOCAL_ON
+        ? _mgLocalCargar().then(function (okL) { return okL ? window.margenLocalCalcular(rango.inicio, rango.fin) : Promise.reject(new Error('sin motor local')); })
+            .catch(function () { return api('margen.calcular', { desde: rango.inicio, hasta: rango.fin }); })
+        : api('margen.calcular', { desde: rango.inicio, hasta: rango.fin });
+      _mgCalc
         .then(function (data) {
           if (_mgTk !== window._mgTk) return;   // ya eligieron otro periodo
           try {
@@ -5271,6 +5276,40 @@ function _flujoLazy(){
       } catch (_) {}
     }
     setTimeout(_mgPrecalentar, 120000);
+
+    // 13-oct · VÍA RÁPIDA MARGEN FASE B · el MISMO motor de Margen del servidor (publico/margen_local.js, generado
+    // tal cual desde MargenEngine/MargenBase/MargenVistaAds/AdsAtribucion) corriendo aquí con datos de la base.
+    // NACE APAGADO (MG_LOCAL_ON = false): primero Claude lo compara contra las fotos de Apps Script (mgLocalComparar).
+    var MG_LOCAL_ON = false;
+    var _mgLocalProm = null;
+    function _mgLocalCargar() {
+      if (window.margenLocalCalcular) return Promise.resolve(true);
+      if (_mgLocalProm) return _mgLocalProm;
+      _mgLocalProm = new Promise(function (ok) {
+        var s = document.createElement('script');
+        s.src = 'margen_local.js?v=' + new Date().toISOString().slice(0, 13);
+        s.onload = function () { ok(!!window.margenLocalCalcular); };
+        s.onerror = function () { _mgLocalProm = null; ok(false); };
+        document.head.appendChild(s);
+      });
+      return _mgLocalProm;
+    }
+    /** Para Claude: calcula los dos y dice producto por producto si son iguales. */
+    window.mgLocalComparar = async function (desde, hasta) {
+      if (!(await _mgLocalCargar())) return { error: 'no cargo margen_local.js' };
+      var t0 = Date.now(), loc = await window.margenLocalCalcular(desde, hasta), tL = Date.now() - t0;
+      var t1 = Date.now(), srv = await _apiApps('margen.calcular', { desde: desde, hasta: hasta }), tS = Date.now() - t1;
+      var m = {}, dif = [];
+      (srv.productos || []).forEach(function (p) { m[p.Producto] = p; });
+      (loc.productos || []).forEach(function (p) {
+        var q = m[p.Producto]; delete m[p.Producto];
+        if (!q) { dif.push(p.Producto + ': solo local'); return; }
+        Object.keys(q).forEach(function (k) { if (JSON.stringify(q[k]) !== JSON.stringify(p[k])) dif.push(p.Producto + ' · ' + k + ': ' + JSON.stringify(q[k]) + ' → ' + JSON.stringify(p[k])); });
+      });
+      Object.keys(m).forEach(function (k) { dif.push(k + ': solo servidor'); });
+      ['gastoAdminTotalPeriodo', 'inversionBaldes', 'listaExacta'].forEach(function (k) { if (JSON.stringify(srv[k]) !== JSON.stringify(loc[k])) dif.push(k + ' distinto'); });
+      return { iguales: !dif.length, productos: (loc.productos || []).length, msLocal: tL, msServidor: tS, local: loc.__local, diferencias: dif.slice(0, 30) };
+    };
 
     // 12-oct · VÍA RÁPIDA MARGEN: la foto de la base (por el lector único _sbCacheLeer): ese periodo exacto, o la última
     // calculada con el mismo "desde" si su "hasta" no pasa del pedido. Hasta 7 días de antigüedad (se avisa hasta qué día es).
