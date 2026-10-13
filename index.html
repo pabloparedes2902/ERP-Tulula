@@ -5265,7 +5265,8 @@ function _flujoLazy(){
         var k = rango.inicio + '_' + rango.fin, g = {};
         try { g = JSON.parse(localStorage.getItem('erp_swr_margen') || '{}') || {}; } catch (_) { g = {}; }
         if (g[k] && (Date.now() - g[k].t) < 3 * 60 * 60 * 1000) return;
-        api('margen.calcular', { desde: rango.inicio, hasta: rango.fin }).then(function (data) {
+        (MG_LOCAL_ON ? _mgLocalCargar().then(function (okL) { return okL ? window.margenLocalCalcular(rango.inicio, rango.fin) : api('margen.calcular', { desde: rango.inicio, hasta: rango.fin }); })
+                     : api('margen.calcular', { desde: rango.inicio, hasta: rango.fin })).then(function (data) {
           try {
             var g2 = JSON.parse(localStorage.getItem('erp_swr_margen') || '{}') || {};
             g2[k] = { t: Date.now(), d: data };
@@ -5280,7 +5281,9 @@ function _flujoLazy(){
     // 13-oct · VÍA RÁPIDA MARGEN FASE B · el MISMO motor de Margen del servidor (publico/margen_local.js, generado
     // tal cual desde MargenEngine/MargenBase/MargenVistaAds/AdsAtribucion) corriendo aquí con datos de la base.
     // NACE APAGADO (MG_LOCAL_ON = false): primero Claude lo compara contra las fotos de Apps Script (mgLocalComparar).
-    var MG_LOCAL_ON = false;
+    // 13-oct · ENCENDIDO: comparado en el Chrome de Pablo contra Apps Script en 5 periodos (1-12 oct 13 productos, sept 28, ago 12,
+    // 12-oct 1, jul-sep 35): 0 diferencias campo por campo; local 1,2-1,8 s vs Apps Script 5,6-16,6 s. REVERSA: false.
+    var MG_LOCAL_ON = true;
     var _mgLocalProm = null;
     function _mgLocalCargar() {
       if (window.margenLocalCalcular) return Promise.resolve(true);
@@ -32455,7 +32458,12 @@ async function camBuscarPorCelular(celular) {
   try {
     const peds = await _pedDatosRapido({ celular, tipo: 'celular_ultimos' });
     if (!peds || !peds.length) { hint.textContent = '✗ No se encontraron pedidos con el teléfono ' + esc(celular); hint.style.color = 'var(--rd)'; return; }
-    camRellenar(peds[0], peds);
+    // 13-oct-2026: el teléfono también se busca por "contiene": si hay uno EXACTO
+    // (mismos últimos 9 dígitos), manda ese.
+    const _D = s => String(s || '').replace(/\D/g, '').slice(-9);
+    const _exactos = _D(celular).length >= 7 ? peds.filter(p => _D(p.Celular) === _D(celular)) : [];
+    const _lista = _exactos.length ? _exactos : peds;
+    camRellenar(_lista[0], _lista);
   } catch(e) {
     hint.textContent = '✗ Error: ' + esc(e.message);
     hint.style.color = 'var(--rd)';
@@ -32492,7 +32500,13 @@ async function camBuscarPorNombre(nombre) {
       hint.textContent = '✗ No se encontraron pedidos para "' + esc(nombre) + '"';
       hint.style.color = 'var(--rd)'; return;
     }
-    camRellenar(peds[0], peds);
+    // 13-oct-2026: la búsqueda es "contiene": "SUSANA RAMOS" traía primero el
+    // pedido más nuevo de "SUSANA RAMOS MERINO" (otra clienta). Si hay alguna
+    // con el nombre EXACTO, mandan esas.
+    const _N = s => String(s || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    const _exactos = peds.filter(p => _N(p.Nombre) === _N(nombre));
+    const _lista = _exactos.length ? _exactos : peds;
+    camRellenar(_lista[0], _lista);
   } catch(e) {
     hint.textContent = '✗ Error: ' + esc(e.message);
     hint.style.color = 'var(--rd)';
@@ -32659,6 +32673,10 @@ function camRellenar(d, allPeds) {
         + (ped.fecha ? '<span style="font-size:10px;color:var(--mu)">' + esc(ped.fecha) + '</span>' : '')
         + '</div><div style="display:flex;flex-direction:column;gap:6px">';
       ped.prendas.forEach((p, _i) => {
+        // 13-oct-2026: las líneas que NO son ropa (cobro "CAMBIO CAM-… (diferencia/envío)",
+        // "Reserva Showroom…", "Pendiente prenda…") no se pueden devolver: no se muestran.
+        // Se salta sin mover _i, para que cada prenda siga con SU precio.
+        if (_pscEsTecnica(_pscNorm(p))) return;
         const _precio = _camPrecioUnidad(ped, _precioMap, p, _i);
         const _precioTxt = _precio > 0
           ? '<span style="margin-left:auto;font-family:monospace;font-size:12px;color:var(--ac);font-weight:600">S/ ' + _precio.toFixed(2) + '</span>'
@@ -36317,6 +36335,8 @@ function devRellenar(d) {
   set('dev-prov', d.Provincia||''); set('dev-reg',  d.Region||'');
 
   const area = document.getElementById('dev-pdev-area');
+  // 13-oct-2026: fuera las líneas que no son ropa (ver _pscEsTecnica).
+  if (Array.isArray(DEV.prendas)) DEV.prendas = DEV.prendas.filter(o => !_pscEsTecnica(_pscNorm(typeof o === 'string' ? o : (o && o.prenda))));
   if (DEV.prendas && DEV.prendas.length) {
     const fmtMoney = n => 'S/ ' + (parseFloat(n)||0).toFixed(2);
     // K-11: render checkboxes con precio y forma de pago (no editables) al costado
@@ -36384,6 +36404,39 @@ function devRellenar(d) {
   }
 }
 
+// 13-oct-2026 · Misma regla que el servidor (DevolucionesBase.gs, GUARDA 2 por
+// UNIDAD), pero ANTES de mandar: la base acepta al toque y el rechazo llegaba
+// después, en segundo plano, cuando la asesora ya vio "✓ registrada". Si no se
+// puede leer, no frena (el servidor igual revisa). Devuelve '' o el motivo.
+async function _devChequeoUnidades(nro, prendas) {
+  try {
+    nro = String(nro || '').trim();
+    if (!nro || !prendas || !prendas.length || typeof SB_URL === 'undefined' || !SB_ANON) return '';
+    const tok = await _sbSesionAsegurar(); if (!tok) return '';
+    const H = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
+    const [rp, rd] = await Promise.all([
+      fetch(SB_URL + '/rest/v1/pedidos?select=prenda&nro_pedido=eq.' + encodeURIComponent(nro) + '&eliminado=is.null&limit=500', { headers: H }),
+      fetch(SB_URL + '/rest/v1/devoluciones?select=nro_devolucion,prenda_devuelta,estado&nro_pedido=eq.' + encodeURIComponent(nro) + '&limit=500', { headers: H }),
+    ]);
+    if (!rp.ok || !rd.ok) return '';
+    const ped = await rp.json(), dev = await rd.json();
+    if (!Array.isArray(ped) || !Array.isArray(dev)) return '';
+    const K = s => String(s || '').trim().toUpperCase();
+    const unid = {}, usadas = {}, ultima = {};
+    ped.forEach(f => { const k = K(f.prenda); if (k) unid[k] = (unid[k] || 0) + 1; });
+    dev.forEach(d => { if (K(d.estado).indexOf('CANCEL') >= 0) return; const k = K(d.prenda_devuelta); usadas[k] = (usadas[k] || 0) + 1; ultima[k] = d.nro_devolucion || '?'; });
+    for (const p of prendas) {
+      const k = K(p); if (!k) continue;
+      const tope = Math.max(1, unid[k] || 0);
+      usadas[k] = (usadas[k] || 0) + 1;
+      if (usadas[k] > tope) return ultima[k]
+        ? p + ' del pedido #' + nro + ' ya tiene la devolución ' + ultima[k] + ' (el pedido tiene ' + tope + ' unidad' + (tope > 1 ? 'es' : '') + ').'
+        : 'El pedido #' + nro + ' tiene solo ' + tope + ' unidad' + (tope > 1 ? 'es' : '') + ' de ' + p + '.';
+    }
+    return '';
+  } catch (e) { return ''; }
+}
+
 async function devRegistrar() {
   const btn = document.getElementById('btn-dev');
   const nom = (document.getElementById('dev-nom')?.value||'').trim();
@@ -36397,6 +36450,10 @@ async function devRegistrar() {
     ? chks
     : [(document.getElementById('dev-pdev')?.value||'').trim()].filter(Boolean);
   if (!prendasDev.length) { toast('Seleccioná o escribe la prenda a devolver', 'err'); return; }
+  {
+    const _motU = await _devChequeoUnidades(DEV.nro, prendasDev);
+    if (_motU) { toast(_motU, 'err'); return; }
+  }
 
   btn.disabled = true; btn.textContent = 'Registrando...';
   const getV = id => document.getElementById(id)?.value || '';

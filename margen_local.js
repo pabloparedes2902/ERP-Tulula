@@ -2549,6 +2549,19 @@ async function __bajar(f) {
   var tok = await _sbSesionAsegurar(); if (!tok) throw new Error('margen_local: sin sesion');
   var h = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
   if (f.perfil) h['Accept-Profile'] = f.perfil;
+  // costos y configuracion de Margen no se leen tabla por tabla (son privados): van por public.margen_fuente,
+  // que devuelve LO MISMO que la tabla y solo a Admin/Marketing. El paginado se respeta: pagina > 0 = vacia.
+  var mF = /^(cost_hoja|margen_config)\?/.exec(f.ruta);
+  if (mF) {
+    var off = /[?&]offset=(\d+)/.exec(f.ruta), pes = /[?&]pestana=eq\.([^&]+)/.exec(f.ruta), cuerpo = '[]', st = 200;
+    if (!(off && +off[1] > 0)) {
+      var rr = await fetch(SB_URL + '/rest/v1/rpc/margen_fuente', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, h),
+        body: JSON.stringify({ p_tabla: mF[1], p_pestana: pes ? decodeURIComponent(pes[1]) : null }) });
+      st = rr.status; cuerpo = await rr.text();
+    }
+    __RUTAS[f.k] = { code: st, body: cuerpo };
+    return;
+  }
   var r = await fetch(SB_URL + '/rest/v1/' + f.ruta, { headers: h });
   var body = await r.text();
   __RUTAS[f.k] = { code: r.status, body: body, getResponseCode: function () { return r.status; }, getContentText: function () { return body; } };
@@ -2563,8 +2576,9 @@ window.margenLocalCalcular = async function (desde, hasta) {
     var res = null, err = null;
     try { res = margenCalcular(desde, hasta); } catch (e) { err = e; }
     if (!__FALTAN.length) {
-      if (err) throw err;
+      if (err) { try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {} throw err; }
       res.__local = { ms: Date.now() - t0, vueltas: vuelta + 1, viajes: viajes };
+      try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {}
       return res;
     }
     var vistos = {}, pedir = __FALTAN.filter(function (f) { if (vistos[f.k]) return false; vistos[f.k] = 1; return true; });
