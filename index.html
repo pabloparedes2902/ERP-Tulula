@@ -13442,6 +13442,7 @@ async function _cliHistorialRapido(body) {
       Prenda:      String(f['Prenda'] || ''),
       Precio:      parseFloat(f['Precio']) || 0,
       Envio:       parseFloat(f['Envio']) || 0,
+      Descuento:   parseFloat(f['Descuento']) || 0,   // 13-oct: para no restarlo una vez por fila (ver _cliSaldosDe)
       Subtotal:    parseFloat(f['Subtotal']) || 0,
       Pago:        parseFloat(f['Pago']) || 0,
       FormaPago:   String(f['Forma pago'] || ''),
@@ -13533,6 +13534,7 @@ function _cliSaldosDe(hist, body) {
     if (!esPago) {
       g.Subtotal += parseFloat(p.Subtotal) || 0;
       if (prenda) g.Prendas.push(p.Prenda);
+      _saldoAnotarEnvioDesc(g, p);
     }
     const pago = parseFloat(p.Pago) || 0;
     if (pago > 0) {
@@ -13551,7 +13553,8 @@ function _cliSaldosDe(hist, body) {
   const pedidosConSaldo = orden.map(n => porNro[n])
     .filter(p => String(p.Estado || '').trim().toUpperCase() !== 'CANCELADO')
     .map(p => {
-      const q = Object.assign({}, p); delete q._pagosKeys;
+      _saldoEnvioDescUnaVez(p);
+      const q = Object.assign({}, p); delete q._pagosKeys; delete q._envInc; delete q._desInc;
       q.Saldo = p.Subtotal - p.Pagado;
       return q;
     })
@@ -14247,6 +14250,33 @@ async function _skuEliminarRapido(pr, dis, col) {
     }
   } catch (e) { if (e && e._negocio) throw e; }
   return apiSend('sku.eliminar', { prenda: pr, dis: dis, col: col });
+}
+
+// 13-oct-2026 · ENVÍO Y DESCUENTO UNA VEZ POR PEDIDO.
+// Al crear un pedido, CADA fila guarda Subtotal = precio + envío − descuento del
+// pedido (Code.js, C.SUBTOTAL). Con 2+ prendas el saldo sumaba el envío (y restaba
+// el descuento) una vez por fila → "saldo pendiente S/10" falso. Medido el 13-oct:
+// 354 pedidos vivos con envío repetido; 301 quedan pagados exactos contando el
+// envío UNA vez, 7 pagaron todos los envíos (21494, 21689, 21707, 21890, 22778,
+// 22784, 22904), 46 deben de verdad. Misma regla que la grilla de Pedidos (max).
+// Solo se corrige la fila cuyo Subtotal SÍ incluye envío/descuento.
+function _saldoAnotarEnvioDesc(g, p) {
+  const s = parseFloat(p.Subtotal) || 0, pr = parseFloat(p.Precio) || 0;
+  const e = parseFloat(p.Envio) || 0, d = parseFloat(p.Descuento) || 0;
+  if (e <= 0 && d <= 0) return;
+  if (Math.abs(s - (pr + e - d)) < 0.01) {
+    (g._envInc = g._envInc || []).push(e);
+    (g._desInc = g._desInc || []).push(d);
+  } else if (e > 0 && Math.abs(s - (pr + e)) < 0.01) {
+    (g._envInc = g._envInc || []).push(e);
+  }
+}
+function _saldoEnvioDescUnaVez(g) {
+  const sum = a => (a || []).reduce((x, y) => x + y, 0);
+  const max = a => (a && a.length) ? Math.max.apply(null, a) : 0;
+  if ((g._envInc || []).length > 1) g.Subtotal = g.Subtotal - sum(g._envInc) + max(g._envInc);
+  if ((g._desInc || []).filter(x => x > 0).length > 1) g.Subtotal = g.Subtotal + sum(g._desInc) - max(g._desInc);
+  g._envInc = null; g._desInc = null;
 }
 
 // REVERSA INMEDIATA: poner SB_PILOTO_ELIMINAR = false y publicar.
@@ -32778,7 +32808,9 @@ function camRellenar(d, allPeds) {
   if (courierSel && d.Courier) courierSel.value = d.Courier;
 
   const hint = document.getElementById('cam-hint');
-  hint.textContent = '✓ Pedido #' + d.NroPedido + ' · ' + (d.Nombre||'—') + ' · ' + (d.Estado||'—') + (d.Prendas&&d.Prendas.length ? ' · ' + d.Prendas.length + ' prenda(s)' : '');
+  // 13-oct: el conteo no incluye las líneas que no son ropa (CAMBIO CAM-…, reservas).
+  const _nRopa = (d.Prendas || []).filter(p => !_pscEsTecnica(_pscNorm(p))).length;
+  hint.textContent = '✓ Pedido #' + d.NroPedido + ' · ' + (d.Nombre||'—') + ' · ' + (d.Estado||'—') + (_nRopa ? ' · ' + _nRopa + ' prenda(s)' : ((d.Prendas && d.Prendas.length) ? ' · sin prendas para devolver (solo cobros o reservas)' : ''));
   hint.style.color = 'var(--gn)';
 
   document.getElementById('cam-form-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -34899,6 +34931,25 @@ function _hcDashCargarPedidos() {
     .finally(() => { _hcDashPedPromise = null; });
   return _hcDashPedPromise;
 }
+// 13-oct-2026 · Los dashboards de Cambios y Devoluciones leían r['FechaPedido']
+// || r['Fecha'], pero la fila trae 'Fecha Pedido' (con espacio) → la fecha salía
+// vacía, "0 prendas vendidas" y el % siempre 0. Fecha 'AAAA-MM-DD' se lee en hora
+// de Lima (new Date('2026-10-13') es UTC = 12-oct 19:00 en Lima).
+function _hcDashFechaPed(r) {
+  const v = r && (r['Fecha Pedido'] || r['FechaPedido'] || r['Fecha']);
+  if (!v) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v).trim());
+  const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(v);
+  return isNaN(d) ? null : d;
+}
+// Fila que cuenta como venta: no borrada, no cancelada, y que sea ropa (no
+// _PAGO_, ni "CAMBIO CAM-…", ni reserva de showroom).
+function _hcDashEsVenta(r) {
+  if (!r) return false;
+  if (String(r['Eliminado'] || '').trim().toUpperCase() === 'SI') return false;
+  if (String(r['Estado'] || '').trim().toUpperCase() === 'CANCELADO') return false;
+  return !_pscEsTecnica(_pscNorm(r['Prenda']));
+}
 // Estado del dashboard (persistente entre re-renders del módulo)
 let _hcDashState = null;
 
@@ -34939,7 +34990,8 @@ async function hcRenderDashboard(rows) {
       return f && f >= dIni && f <= dFin;
     });
     const prendas = _hcDashPedRows.filter(r => {
-      const f = parseD(r['FechaPedido'] || r['Fecha']);
+      if (!_hcDashEsVenta(r)) return false;
+      const f = _hcDashFechaPed(r);
       return f && f >= dIni && f <= dFin;
     }).length;
     const montoEmp = cambios.reduce((s,r) => s + (parseFloat(_g(r,'MontoAsumidoEmpresa','PagoEmpresa'))||0), 0);
@@ -35121,7 +35173,8 @@ async function hdRenderDashboard(rows) {
     // Pedidos únicos en el mismo período (para % de devoluciones)
     const pedidosEnRango = new Set();
     (_hcDashPedRows||[]).forEach(r => {
-      const f = parseD(r['FechaPedido']||r['Fecha']);
+      if (!_hcDashEsVenta(r)) return;
+      const f = _hcDashFechaPed(r);
       if (f && f >= dIni && f <= dFin) { const np = String(r['NroPedido']||'').trim(); if (np) pedidosEnRango.add(np); }
     });
     const totalPedidos = pedidosEnRango.size;
