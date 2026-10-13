@@ -8537,7 +8537,9 @@ async function _conGuardarTextos(v) {
     const r = await apiSend('contenido.textos', { Diseno: v.Diseno, Descripcion: desc, Cuidados: cui });
     v.Descripcion = r.Descripcion; v.Cuidados = r.Cuidados;
     try { localStorage.removeItem(CON_KEY); } catch (_) {}
-    if (v.ShopifyId) { msg('Guardado ✓ · mandando a la tienda…'); const e = await _cosFichaEnviar(v, true); msg(e.ok ? '✓ Guardado y enviado a la tienda' : ('Guardado en el ERP, pero la tienda respondió: ' + e.texto), e.ok ? 'var(--gn)' : 'var(--rd)'); }
+    // 13-oct (vía rápida · medido: «mandar a la tienda» 19,9 s) · ya no se espera: el botón se libera al guardar y la tienda se actualiza por detrás.
+    if (v.ShopifyId) { msg('✓ Guardado · la tienda se actualiza por detrás (puedes seguir)', 'var(--gn)');
+      _cosFichaEnviar(v, true).then(e => msg(e.ok ? '✓ Guardado y enviado a la tienda' : ('Guardado en el ERP, pero la tienda respondió: ' + e.texto), e.ok ? 'var(--gn)' : 'var(--rd)')); }
     else msg('✓ Guardado (este producto todavía no está enlazado a la tienda)', 'var(--gn)');
     _conSem(v); _conTabla();
   } catch (e) { msg('No se guardó: ' + e.message, 'var(--rd)'); }
@@ -11449,6 +11451,25 @@ window._sbEspejoEnVuelo = _sbEspejoEnVuelo;
 // localStorage); si cambió o no hay copia, se baja todo como antes y se guarda. Nunca muestra algo viejo:
 // la versión se lee ANTES de bajar, así que una escritura en el medio obliga a bajar de nuevo la próxima vez.
 const MEMOV = { mem: {}, vuelo: {} };
+// 13-oct-2026 (vía rápida · medido en el Chrome de Pablo: 9,7 MB usados de ~10 MB). El almacén del navegador estaba LLENO,
+// sobre todo por fotos viejas de Marketing (mkSnap:* de periodos pasados, ~850 KB cada una). Al no haber espacio, las copias
+// rápidas (cambios, catálogo…) no se podían guardar y CADA apertura bajaba todo de nuevo (Cambios/Stock p90 1-4 s).
+// Limpieza: quedan solo las 2 fotos de Marketing más recientes; y si igual no entra, se borra lo descartable y se reintenta.
+function _lsLiberar(todoMk) {
+  try {
+    const mk = Object.keys(localStorage).filter(k => k.indexOf('mkSnap:') === 0).map(k => {
+      let ts = 0; try { ts = (JSON.parse(localStorage.getItem(k) || '{}') || {}).ts || 0; } catch (_) {}
+      return { k: k, ts: ts }; }).sort((a, b) => b.ts - a.ts);
+    mk.slice(todoMk ? 0 : 2).forEach(x => { try { localStorage.removeItem(x.k); } catch (_) {} });
+    return mk.length;
+  } catch (_) { return 0; }
+}
+function _lsGuardar(k, v) {
+  try { localStorage.setItem(k, v); return true; } catch (_) {}
+  _lsLiberar(true);   // sin espacio: fuera TODAS las fotos de Marketing (se rehacen solas al abrir Marketing)
+  try { localStorage.setItem(k, v); return true; } catch (_) { return false; }
+}
+try { setTimeout(() => _lsLiberar(false), 3000); } catch (_) {}
 // 12-oct · VÍA RÁPIDA E3 · LA VERSIÓN LLEGA SOLA. Cada vez que una tabla vigilada cambia, la base toca el timbre
 // 'ver:<tabla>' (PEGAR_EN_SUPABASE_via_rapida_e3_12oct.sql). Si el canal del timbre está vivo y esa tabla NO sonó desde la
 // última vez que se preguntó su versión, la pantalla ya sabe que no cambió: usa su copia SIN viajar a la base (0 ms).
@@ -11515,7 +11536,7 @@ async function _memoVersion(clave, tablas, cargar) {
   const d = await cargar();
   if (firma && d != null) {
     MEMOV.mem[clave] = { f: firma, d: _memoClon(d) };
-    try { localStorage.setItem('erp_memov_' + clave, JSON.stringify(MEMOV.mem[clave])); } catch (_) { try { localStorage.removeItem('erp_memov_' + clave); } catch (__) {} }
+    if (!_lsGuardar('erp_memov_' + clave, JSON.stringify(MEMOV.mem[clave]))) { try { localStorage.removeItem('erp_memov_' + clave); } catch (__) {} }   // 13-oct · con lugar
   }
   return d;
 }
@@ -13641,6 +13662,31 @@ function _cliFechaISO(v) { return String(v == null ? '' : v); }
 // Se calcula sobre el historial (igual que el servidor: allá también empieza
 // llamando a clientesHistorial). Si el historial vino por Apps Script, esta
 // cuenta sale igual: son las mismas filas.
+// 13-oct-2026 · SALDO DE LA CLIENTA = EL OFICIAL. El saldo se calculaba con el
+// "Pago" anotado en las filas del pedido, que en algunos pedidos no coincide con
+// la tabla de pagos (pago registrado solo en la tabla, pago partido en varias
+// filas, un 10 sin PagoId...). Medido el 13-oct en 7 pedidos (19976, 21600,
+// 22666, 22033, 20879, 21313, 22622): la clienta salia debiendo o con saldo a
+// favor que no existia. erp.v_pedido_pago es lo que usan el cuadre y los
+// informes (total con envio una vez + tabla de pagos): manda esa. Si no se
+// puede leer, se queda la cuenta de siempre. {nro:{total,pagado}} | null.
+async function _cliPagoOficial(nros) {
+  const lista = [...new Set((nros || []).map(n => String(n || '').trim()).filter(Boolean))];
+  if (!lista.length || typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  const tok = await _sbSesionAsegurar(); if (!tok) return null;
+  const H = { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Accept-Profile': 'erp' };
+  const out = {};
+  for (let i = 0; i < lista.length; i += 150) {
+    const t = lista.slice(i, i + 150);
+    const r = await fetch(SB_URL + '/rest/v1/v_pedido_pago?select=numero,total,pagado&numero=in.(' +
+      t.map(n => encodeURIComponent('"' + n.replace(/"/g, '') + '"')).join(',') + ')', { headers: H });
+    if (!r.ok) return null;
+    const j = await r.json(); if (!Array.isArray(j)) return null;
+    j.forEach(x => { out[String(x.numero)] = { total: parseFloat(x.total) || 0, pagado: parseFloat(x.pagado) || 0 }; });
+  }
+  return out;
+}
+
 async function _cliSaldosRapido(body) {
   body = body || {};
   const porApps = () => apiSend('clientes.saldosVigentes', body);
@@ -13649,6 +13695,8 @@ async function _cliSaldosRapido(body) {
   try {
     const hist = await _cliHistorialRapido(body);
     if (!hist || !Array.isArray(hist.pedidos)) return porApps();
+    // 13-oct: lo pagado OFICIAL (lo mismo que usan el cuadre y los informes).
+    try { hist.oficial = await _cliPagoOficial(hist.pedidos.map(p => p.NroPedido)); } catch (_) { hist.oficial = null; }
     return _cliSaldosDe(hist, body);
   } catch (e) { try { _errLog('sb.cli.saldos', e); } catch (_) {} return porApps(); }
 }
@@ -13704,6 +13752,11 @@ function _cliSaldosDe(hist, body) {
     .filter(p => String(p.Estado || '').trim().toUpperCase() !== 'CANCELADO')
     .map(p => {
       _saldoEnvioDescUnaVez(p);
+      // 13-oct: lo PAGADO oficial (erp.v_pedido_pago = tabla de pagos) manda. El TOTAL
+      // se queda con la cuenta de arriba (envio una vez): la vista oficial todavia
+      // suma el envio de cada fila en algunos pedidos (22752: 185 en vez de 175).
+      const _of = hist && hist.oficial && hist.oficial[String(p.NroPedido)];
+      if (_of) { p.Pagado = _of.pagado; }
       const q = Object.assign({}, p); delete q._pagosKeys; delete q._envInc; delete q._desInc;
       q.Saldo = p.Subtotal - p.Pagado;
       return q;
