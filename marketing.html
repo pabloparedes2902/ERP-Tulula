@@ -386,6 +386,29 @@
   .mkest{display:flex;flex-direction:column;gap:3px;align-items:flex-start}
   .mkchip.clic{cursor:pointer}
   .mkchip.clic:hover{filter:brightness(1.35)}
+  /* 13-oct-2026 · detalle de cada venta (celda Ventas) */
+  td.mkvcel{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+  td.mkvcel:hover{color:var(--sel)}
+  #mkVen{position:fixed;z-index:205;width:min(380px,92vw);max-height:70vh;overflow:auto;background:var(--panel);border:1.5px solid var(--bd);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);display:none;font-size:12px;color:var(--txt);text-align:left;text-transform:none;letter-spacing:0;font-weight:400}
+  #mkVen.fijo{border-color:var(--sel)}
+  #mkVen .mkv-cab{position:sticky;top:0;background:var(--panel);display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:9px 11px 7px;border-bottom:1px solid var(--bd)}
+  #mkVen .mkv-cab b{display:block;font-size:12.5px;color:var(--txt);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #mkVen .mkv-cab small{color:var(--txt2);font-size:10.5px}
+  #mkVen .mkv-x{border:none;background:none;color:var(--txt2);cursor:pointer;font-size:13px;padding:0 2px}
+  #mkVen .mkv-ped{padding:7px 11px;border-bottom:1px solid var(--bd)}
+  #mkVen .mkv-l1{display:flex;align-items:baseline;gap:8px}
+  #mkVen .mkv-f{color:var(--txt2);font-weight:700;min-width:44px}
+  #mkVen .mkv-n{flex:1;font-weight:800}
+  #mkVen .mkv-n i{font-style:normal;font-size:10px;font-weight:800;color:var(--txt2);border:1px solid var(--bd);border-radius:4px;padding:0 3px}
+  #mkVen .mkv-n small,#mkVen .mkv-m small{color:var(--txt2);font-weight:400}
+  #mkVen a{color:var(--sel);text-decoration:none}
+  #mkVen a:hover{text-decoration:underline}
+  #mkVen .mkv-m{font-weight:800;white-space:nowrap}
+  #mkVen .mkv-p{margin:4px 0 0 52px;padding:0;list-style:none;color:var(--txt);font-size:11.5px;line-height:1.45}
+  #mkVen .mkv-p li.dev{color:var(--txt2)}
+  #mkVen .mkv-vacio{padding:12px 11px;color:var(--txt2)}
+  #mkVen .mkv-pie{position:sticky;bottom:0;background:var(--panel);padding:7px 11px;border-top:1px solid var(--bd);font-weight:800;font-size:11.5px}
+  #mkVen .mkv-pie .ok{color:var(--ok)} #mkVen .mkv-pie .no{color:#f59e0b}
   /* tooltip propio con retardo */
   #mkTip{position:fixed;z-index:200;max-width:300px;background:var(--panel);border:1.5px solid var(--bd);border-radius:9px;padding:8px 11px;font-size:11.5px;line-height:1.5;color:var(--txt);box-shadow:0 6px 22px rgba(0,0,0,.45);display:none;pointer-events:none;white-space:normal;text-transform:none;letter-spacing:0;font-weight:400;text-align:left}
   #mkTip b{color:var(--sel)}
@@ -696,6 +719,7 @@
   </div>
 </div>
 <div id="mkTip"></div>
+<div id="mkVen" onmouseenter="mkVenSobre=true" onmouseleave="mkVenSobre=false;mkVenOut()"></div>
 <div id="mkLupa" onclick="mkLupaCerrar(event)">
   <img alt="" ondblclick="mkLupaAbrir()">
   <div class="cap"></div>
@@ -1144,10 +1168,15 @@ async function mkCargarVentas(desde, hasta){
      el bicho que dejaba Marketing en cero. */
   /* 5-oct: el costo del ERP sale a la vez (nunca lanza: devuelve null si falla) */
   const _costoProm = Promise.all([ _mkCostoPeriodo(desde, hasta), _mkCostoPeriodo(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
+  const _det = (typeof _mkDetalleVentas === 'function') ? _mkDetalleVentas : (() => Promise.resolve(null));   /* 13-oct */
+  const _detProm = Promise.all([ _det(desde, hasta), _det(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
   [MKV, MKVP] = await Promise.all([
     leer(desde, hasta),
     leer(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1))
   ]);
+  /* 13-oct · detalle de cada venta + ingreso SOLO prendas (regla de Pablo: el envío no suma) */
+  [MKDET, MKDETP] = await _detProm;
+  if (typeof _mkIngresoPrendas === 'function'){ _mkIngresoPrendas(MKV, MKDET); _mkIngresoPrendas(MKVP, MKDETP); }
   [MKC, MKCP] = await _costoProm;
 }
 
@@ -1213,6 +1242,147 @@ function mkAplicarVentas(){
     if (r.prev && cp !== null) r.prev.costo = cp;
   });
 }
+
+/* ══ 13-oct-2026 · DETALLE DE CADA VENTA (pedido de Pablo) ══════════════════════════════
+   Al pasar el mouse por el número de Ventas sale un recuadro con cada pedido:
+   fecha de pago (la del pago que lo dejó COMPLETO: es la que cuenta) · Nº de pedido
+   (ERP en WhatsApp, Shopify en web; clic = abre el pedido) · monto SOLO de prendas ·
+   prendas con SKU completo (devueltas tachadas). Un clic en el número lo deja fijo.
+   Fuente: public.mk_ventas_detalle (PEGAR_EN_SUPABASE_mk_ventas_detalle_13oct.sql), que
+   lee la MISMA tabla que cuenta las ventas (erp.mv_compras_ads).
+   REGLA DE PABLO: el ingreso es solo prendas, el envío nunca suma. /ventas-periodo (n8n)
+   manda el total CON envío; con el detalle a mano, el ingreso de cada anuncio se rehace
+   con las prendas (_mkIngresoPrendas). Si el detalle no llega, todo queda como antes. */
+let MKDET = null, MKDETP = null;     /* [{n,c,a,f,m,e,as,s,si,p:[{k,d}]}] */
+let MK_VEN_VIS = new Set();           /* ad_id visibles en la tabla (para la fila sin anuncio) */
+let MK_VEN_REG = [];                  /* lo que abre cada celda de Ventas */
+async function _mkDetalleVentas(desde, hasta){
+  try {
+    const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+    if (!tok) return null;
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_ventas_detalle', { method: 'POST',
+      headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_desde: desde, p_hasta: hasta }) });
+    if (!r.ok) return null;
+    const a = await r.json();
+    return Array.isArray(a) ? a : null;
+  } catch (e) { return null; }
+}
+function _mkIngresoPrendas(o, det){
+  if (!o || !det) return;
+  const acc = {};
+  det.forEach(x => { const k = x.a || 'SIN_ID'; const e = acc[k] || (acc[k] = { wa: 0, web: 0 }); e[x.c === 'web' ? 'web' : 'wa'] += +x.m || 0; });
+  const r2 = v => Math.round(v * 100) / 100;
+  const ap = (f, k) => {
+    if (!f) return;
+    const e = acc[k] || { wa: 0, web: 0 };
+    f.ingreso_whatsapp = f.ingreso_whatsapp_pagado = r2(e.wa);
+    f.ingreso_web = f.ingreso_web_pagado = r2(e.web);
+    f.ingreso = r2(e.wa + e.web);
+  };
+  Object.keys(o.porAd || {}).forEach(k => ap(o.porAd[k], k));
+  ap(o.sinId, 'SIN_ID');
+}
+/* los pedidos del canal que se está viendo */
+function _mkVenCanal(){ return (MKDET || []).filter(x => MKCANAL === 'all' || x.c === MKCANAL); }
+/* registra qué abre una celda y devuelve los atributos del <td> */
+function _mkVenAttr(tipo, ids, nombre, enColumna){
+  const i = MK_VEN_REG.push({ tipo: tipo, ids: ids || [], nombre: nombre || '', col: enColumna || null }) - 1;
+  return ' class="mkvcel" onmouseenter="mkVenIn(event,' + i + ')" onmouseleave="mkVenOut()" onclick="mkVenFijar(event,' + i + ')"';
+}
+function _mkVenLista(reg){
+  const base = _mkVenCanal();
+  if (reg.tipo === 'ads'){ const s = new Set(reg.ids.map(String)); return base.filter(x => x.a && s.has(String(x.a))); }
+  if (reg.tipo === 'sin') return base.filter(x => !x.a || !MK_VEN_VIS.has(String(x.a)));
+  if (reg.tipo === 'tot'){
+    const filtro = mkFiltroActivoEn('__cam') || mkFiltroActivoEn('__con');
+    return base.filter(x => (x.a && MK_VEN_VIS.has(String(x.a))) || !filtro);
+  }
+  return [];
+}
+const _MK_MES = ['ene','feb','mar','abr','may','jun','jul','ago','set','oct','nov','dic'];
+function _mkVenFecha(f){ const p = String(f || '').split('-'); return p.length === 3 ? (+p[2]) + '-' + _MK_MES[(+p[1]) - 1] : (f || '—'); }
+function _mkVenEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function _mkVenHtml(reg){
+  const L = _mkVenLista(reg);
+  const tot = L.reduce((s, x) => s + (+x.m || 0), 0);
+  const canalTxt = MKCANAL === 'wa' ? 'WhatsApp' : MKCANAL === 'web' ? 'Página web' : 'todos los canales';
+  let h = '<div class="mkv-cab"><div><b>' + _mkVenEsc(reg.nombre) + '</b><small>' + canalTxt + ' · fecha = día del pago completo</small></div>'
+        + '<button class="mkv-x" onclick="mkVenCerrar()" title="Cerrar">✕</button></div>';
+  if (!L.length) h += '<div class="mkv-vacio">Sin ventas en este periodo.</div>';
+  h += '<div class="mkv-lista">' + L.map(x => {
+    const web = x.c === 'web';
+    const nro = web
+      ? (x.s ? (x.si ? '<a href="https://admin.shopify.com/store/tulula-ecom/orders/' + encodeURIComponent(x.si) + '" target="_blank" rel="noopener" title="Abrir en Shopify">' + _mkVenEsc(x.s) + '</a>' : _mkVenEsc(x.s)) : '<span title="Sin número de Shopify enlazado">sin Nº Shopify</span>')
+        + ' <small>· ERP <a href="#" onclick="return mkVenAbrirPedido(\'' + _mkVenEsc(x.n) + '\')">' + _mkVenEsc(x.n) + '</a></small>'
+      : '<a href="#" onclick="return mkVenAbrirPedido(\'' + _mkVenEsc(x.n) + '\')" title="Abrir el pedido en el ERP">' + _mkVenEsc(x.n) + '</a>'
+        + (x.as && x.as !== 'N/A' ? ' <small>· ' + _mkVenEsc(x.as) + '</small>' : '');
+    const prendas = (x.p || []).map(p => p.d
+      ? '<li class="dev" title="Devuelta: no suma al monto"><s>' + _mkVenEsc(p.k) + '</s> <small>devuelta</small></li>'
+      : '<li>' + _mkVenEsc(p.k) + '</li>').join('') || '<li><small>sin prendas registradas</small></li>';
+    return '<div class="mkv-ped"><div class="mkv-l1"><span class="mkv-f">' + _mkVenFecha(x.f) + '</span>'
+      + '<span class="mkv-n">' + (MKCANAL === 'all' ? '<i>' + (web ? 'Web' : 'WA') + '</i> ' : '') + nro + '</span>'
+      + '<span class="mkv-m">' + mkSol(+x.m || 0) + (+x.e ? '<small> + envío ' + mkSol(+x.e) + '</small>' : '') + '</span></div>'
+      + '<ul class="mkv-p">' + prendas + '</ul></div>';
+  }).join('') + '</div>';
+  /* línea de control: el detalle tiene que dar lo mismo que la columna */
+  let ctl = L.length + ' pedido' + (L.length === 1 ? '' : 's') + ' · ' + mkSol(tot);
+  if (reg.col){
+    const okN = (+reg.col.pedidos || 0) === L.length, okM = Math.abs((+reg.col.ingreso || 0) - tot) < 0.5;
+    ctl += (okN && okM) ? ' <span class="ok">✓ cuadra con la columna</span>'
+      : ' <span class="no">⚠ la columna dice ' + (+reg.col.pedidos || 0) + ' · ' + mkSol(+reg.col.ingreso || 0) + '</span>';
+  }
+  return h + '<div class="mkv-pie">' + ctl + '</div>';
+}
+let mkVenT = null, mkVenFijo = false, mkVenSobre = false;
+function _mkVenPos(ev){
+  const b = document.getElementById('mkVen'); if (!b) return;
+  const td = ev.currentTarget || ev.target, rc = td.getBoundingClientRect();
+  b.style.display = 'block';
+  const w = b.offsetWidth, hh = b.offsetHeight, W = window.innerWidth, H = window.innerHeight;
+  let x = rc.right + 8; if (x + w > W - 8) x = Math.max(8, rc.left - w - 8);
+  let y = rc.top - 10; if (y + hh > H - 8) y = Math.max(8, H - hh - 8);
+  b.style.left = x + 'px'; b.style.top = y + 'px';
+}
+function mkVenIn(ev, i){
+  if (mkVenFijo) return;
+  if (!MKDET) return;                       /* sin detalle (sin sesión o falló): la celda se porta como antes */
+  clearTimeout(mkVenT);
+  const td = ev.currentTarget;
+  mkVenT = setTimeout(() => {
+    const b = document.getElementById('mkVen'); if (!b) return;
+    b.innerHTML = _mkVenHtml(MK_VEN_REG[i] || { tipo: '', ids: [] });
+    b.classList.remove('fijo');
+    _mkVenPos({ currentTarget: td });
+  }, 250);
+}
+function mkVenOut(){
+  clearTimeout(mkVenT);
+  if (mkVenFijo) return;
+  mkVenT = setTimeout(() => { if (!mkVenSobre && !mkVenFijo){ const b = document.getElementById('mkVen'); if (b) b.style.display = 'none'; } }, 300);
+}
+function mkVenFijar(ev, i){
+  if (!MKDET) return;
+  ev.stopPropagation();
+  clearTimeout(mkVenT);
+  const b = document.getElementById('mkVen'); if (!b) return;
+  b.innerHTML = _mkVenHtml(MK_VEN_REG[i] || { tipo: '', ids: [] });
+  b.classList.add('fijo'); mkVenFijo = true;
+  _mkVenPos(ev);
+}
+function mkVenCerrar(){ mkVenFijo = false; mkVenSobre = false; const b = document.getElementById('mkVen'); if (b){ b.style.display = 'none'; b.classList.remove('fijo'); } }
+function mkVenAbrirPedido(nro){
+  try {
+    const P = window.parent;
+    if (P && P !== window && typeof P._abrirPedidoDesdeBusqueda === 'function'){ P._abrirPedidoDesdeBusqueda(String(nro)); return false; }
+  } catch (e) {}
+  try { navigator.clipboard.writeText(String(nro)); } catch (e) {}
+  _mkVenAviso('Pedido ' + nro + ' copiado: búscalo en Pedidos');
+  return false;
+}
+function _mkVenAviso(t){ const b = document.getElementById('mkVen'); if (b){ const p = b.querySelector('.mkv-pie'); if (p) p.textContent = t; } }
+document.addEventListener('click', ev => { const b = document.getElementById('mkVen'); if (mkVenFijo && b && !b.contains(ev.target)) mkVenCerrar(); });
+document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && mkVenFijo) mkVenCerrar(); });
 
 /* ── 8-sep-2026 · FUENTE UNICA DEL EMBUDO ──────────────────────────────────
    Las CONVERSACIONES y las ETAPAS (frias/tibias/calientes) ya no se toman de
@@ -1355,7 +1525,7 @@ function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
     + '<td class="fijo borde" style="width:' + aEst + 'px;left:' + L4 + 'px"></td>'
     + '<td><span class="acc rev">REVISAR</span></td>'
     + cols.map(c => {
-        if (c === 'pedidos') return '<td>' + (s ? mkNum(s.pedidos) : '—') + '</td>';
+        if (c === 'pedidos') return '<td' + ((s && MKDET) ? _mkVenAttr('sin', [], 'Sin anuncio identificado', { pedidos: s.pedidos, ingreso: s.ingreso }) : '') + '>' + (s ? mkNum(s.pedidos) : '—') + '</td>';
         if (c === 'pagados') return '<td>' + (s ? mkNum(s.pagados) : '—') + '</td>';
         if (c === 'ingreso') return '<td>' + (s && s.ingreso ? mkSol(s.ingreso) : '—') + '</td>';
         if (e && (c === 'conversaciones' || c === 'frias' || c === 'tibias' || c === 'calientes'))
@@ -2119,7 +2289,7 @@ function _mkSnapClave(){ return 'mkSnap:' + (mkPers ? ('p' + (document.getElemen
 function _mkSnapGuardar(k){
   try {
     localStorage.setItem(k, JSON.stringify({ v: MK_SNAP_V, ts: Date.now(),
-      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP }));
+      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP, MKDET: MKDET }));
   } catch (e) { /* sin espacio o sin permiso: no pasa nada */ }
 }
 function _mkSnapUsar(k){
@@ -2127,7 +2297,7 @@ function _mkSnapUsar(k){
     const o = JSON.parse(localStorage.getItem(k) || 'null');
     if (!o || o.v !== MK_SNAP_V || !o.MK || !Array.isArray(o.MK.filas)) return 0;
     MK = o.MK; MKV = o.MKV; MKVP = o.MKVP; MKC = o.MKC || null; MKCP = o.MKCP || null; MKE = o.MKE; MKEP = o.MKEP; MKTXT = o.MKTXT || {};
-    MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD;
+    MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD; MKDET = o.MKDET || null;
     mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar(); if (MKSUB === 'reglas') rgPintar();
@@ -2854,6 +3024,7 @@ function mkAgruparNivel(filas, nivel){
       _grupo: true,
       _nivelGrupo: nivel,
       _adRef: String(((hijos.filter(h => h._on)[0]) || hijos[0]).ad_id || ''),   /* 5-oct: para Escalar */
+      _ads: hijos.map(h => String(h.ad_id || '')).filter(Boolean),   /* 13-oct: detalle de ventas */
       _activos: activos,
       _inactivos: hijos.length - activos,
       _accCount: accCount,
@@ -3015,6 +3186,10 @@ function mkPintar(){
      de arriba, el de la fila y el de la base de datos no puedan separarse. */
   MK_RES = mkResiduo('act', rows);
   MK_RESV = mkResiduoVentas('act', rows);
+  /* 13-oct · detalle de ventas: qué anuncios se ven (la fila sin anuncio = el resto) */
+  MK_VEN_REG = [];
+  MK_VEN_VIS = new Set();
+  rows.forEach(r => (r._grupo ? (r._ads || []) : [String(r.ad_id || '')]).forEach(id => { if (id) MK_VEN_VIS.add(id); }));
   (function(){
     const d = (a, b) => (b ? a / b : null);
     [['act', A], ['prev', P]].forEach(function(par){
@@ -3224,6 +3399,10 @@ function mkPintar(){
       if (c === 'roas' && val !== null) cuerpo = '<span class="mkpill ' + (val >= MK_PAR.roas.v ? 'b' : val >= MK_PAR.roas.a ? 'm' : 'r') + '">' + val.toFixed(2) + 'x</span>';   /* 6-oct: umbrales de Parámetros */
       if (c === 'hook_rate' && val !== null) cuerpo = '<span class="mkpill ' + (val >= 30 ? 'b' : val >= 15 ? 'm' : 'r') + '">' + val.toFixed(1) + '%</span>';
       if (c === 'ganancia' && val !== null) cuerpo = '<span class="mkpill ' + (val >= MK_PAR.ganancia.v ? 'b' : val >= MK_PAR.ganancia.a ? 'm' : 'r') + '">' + mkSol(val) + '</span>';
+      if (c === 'pedidos' && MKDET){   /* 13-oct · pasar el mouse = detalle de cada venta */
+        const _ids = r._grupo ? (r._ads || []) : [String(r.ad_id || '')];
+        return '<td' + _mkVenAttr('ads', _ids, (r._grupo ? (r._nivelGrupo === 'campana' ? r.campana : r.conjunto) : r.anuncio) || 'Ventas', { pedidos: mkN(r.act.pedidos) || 0, ingreso: mkN(r.act.ingreso) || 0 }).replace('class="mkvcel"', 'class="mkvcel ' + (mkFam(c) || '').trim() + '"') + '>' + cuerpo + '</td>';
+      }
       return '<td' + (mkFam(c) ? ' class="' + mkFam(c).trim() + '"' : '') + '>' + cuerpo + '</td>';
     }).join('');
     const celdaAnuncio = r._grupo
@@ -3267,6 +3446,7 @@ function mkPintar(){
         if (c === 'roas')            cuerpo = v.toFixed(2) + 'x';
         else if (c === 'frecuencia') cuerpo = v.toFixed(2);
         else                         cuerpo = MK_COLS[c].f(v);
+        if (c === 'pedidos' && MKDET) return '<td' + _mkVenAttr('tot', [], 'TOTAL', { pedidos: v, ingreso: mkN(T.ingreso) || 0 }) + '>' + cuerpo + '</td>';   /* 13-oct */
         return '<td>' + cuerpo + '</td>';
       }).join('')
     + '</tr>';

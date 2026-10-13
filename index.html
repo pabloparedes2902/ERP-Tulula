@@ -16916,6 +16916,9 @@ function _pedPintarCabecera(total, hayMas) {
           });
         } catch (_e) {}
         cnt.innerHTML = 'Mostrando <strong style="color:var(--tx)">' + total + '</strong> pedidos'
+          + ((_pf.length && typeof window._pUnidadesFiltro === 'number')
+              ? ' · <strong style="color:var(--tx)">' + window._pUnidadesFiltro + '</strong> unidad' + (window._pUnidadesFiltro === 1 ? '' : 'es') + ' del filtro'
+              : '')
           + (_pf.length
               ? ' <span id="ped-filtaviso" style="display:inline-flex;align-items:center;gap:7px;background:#fde68a;color:#78350f;'
                 + 'border:1px solid #f59e0b;border-radius:8px;padding:1px 9px;font-size:12px;font-weight:700;margin-left:8px;vertical-align:middle">'
@@ -19857,6 +19860,14 @@ function pAply() {
     'Provincia','Region','Cliente','DNI','Celular','Email','Fecha Pedido','Fecha Envio','NroPedido']);
   const _filtraPorPedido = Object.entries(pFlt||{}).some(([c,f]) =>
     _COLS_PEDIDO.has(c) && f && (f.lib ? String(f.val||'').trim() !== '' : (f.val && f.val.size)));
+  // 13-oct (Pablo): con un filtro de prenda/detalle se ven los pedidos COMPLETOS, pero el contador también dice
+  // cuántas UNIDADES cumplen el filtro (las filas que coinciden, sin contar marcadores de pago ni cargos de cambio).
+  try {
+    const _hayFiltro = Object.values(pFlt||{}).some(f => f && (f.lib ? String(f.val||'').trim() !== '' : (f.val && f.val.size)));
+    window._pUnidadesFiltro = _hayFiltro
+      ? filtered.filter(r => !_filaEsMarcadorPago(r) && String(r['Prenda']||'').trim() && !/^CAMBIO\s/i.test(String(r['Prenda']||'').trim())).length
+      : null;
+  } catch (_) { window._pUnidadesFiltro = null; }
   if (!_filtraPorPedido) filtered = _pedsCompletarPedidos(filtered, _filasPestana);
 
   // Paso 2: agrupar por pedido
@@ -40214,7 +40225,15 @@ function _alBanner(n) {
     document.body.appendChild(b);
   }
   b.style.background = _AL_HAY_ROJO ? 'var(--rd)' : AL_COL.naranja;
-  b.textContent = (_AL_HAY_ROJO ? '🔴 El ERP tiene algo parado' : '🟠 Hay ' + n + ' error' + (n !== 1 ? 'es' : '') + ' por corregir') + ' · Ver ›';
+  // 13-oct (Pablo): se cierra con la X ("ya me di por enterado"), solo en esta pantalla. Vuelve sola si cambia
+  // la cantidad de errores o aparece algo parado (rojo).
+  const _firma = (_AL_HAY_ROJO ? 'R' : 'N') + n;
+  let _cerrada = ''; try { _cerrada = localStorage.getItem('alBarraCerrada') || ''; } catch (_) {}
+  if (_cerrada === _firma) { b.style.display = 'none'; return; }
+  b.innerHTML = esc((_AL_HAY_ROJO ? '🔴 El ERP tiene algo parado' : '🟠 Hay ' + n + ' error' + (n !== 1 ? 'es' : '') + ' por corregir') + ' · Ver ›')
+    + ' <span id="al-barra-x" title="Cerrar (vuelve si aparece algo nuevo)" style="margin-left:10px;padding:0 7px;border-radius:999px;background:rgba(0,0,0,.25);cursor:pointer">✕</span>';
+  const _x = b.querySelector('#al-barra-x');
+  if (_x) _x.addEventListener('click', function (ev) { ev.stopPropagation(); try { localStorage.setItem('alBarraCerrada', _firma); } catch (_) {} b.style.display = 'none'; });
   b.style.display = '';
 }
 function _alIrARojas() {
@@ -41208,8 +41227,34 @@ startAuth();
     };
   }
 
+  /* 13-oct-2026 (Pablo): el globito de abajo a la derecha también se cierra con la X ("ya me di por enterado").
+     Se oculta solo en esta pantalla y vuelve si empieza a esperar una clienta NUEVA. */
+  function campanaGloboCerrado() {
+    var c = []; try { c = JSON.parse(localStorage.getItem('campanaGloboCerradas') || '[]') || []; } catch (e) {}
+    return !campanaFirma().some(function (f) { return c.indexOf(f) < 0; });
+  }
+  function campanaGloboX() {
+    return ' <span id="campana-globo-x" title="Cerrar (vuelve si espera una clienta nueva)" style="margin-left:8px;padding:0 6px;border-radius:10px;background:rgba(0,0,0,.25);cursor:pointer;font-weight:bold">\u2715</span>';
+  }
+  function campanaConectarGloboX() {
+    var x = document.getElementById('campana-globo-x');
+    if (!x) return;
+    x.onclick = function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      try { localStorage.setItem('campanaGloboCerradas', JSON.stringify(campanaFirma())); } catch (e) {}
+      estado.detalle = false; pintar();
+    };
+  }
+
   function pintar() {
     var n = estado.esperando.length;
+    if (n > 0 && campanaGloboCerrado() && !estado.detalle) {
+      barra.style.display = 'none'; badge.style.display = 'none';
+      clearInterval(estado.beepTimer); estado.beepTimer = null;
+      clearInterval(estado.parpadeo); estado.parpadeo = null;
+      document.title = estado.tituloOriginal;
+      return;
+    }
     if (n === 0) {
       barra.style.display = 'none'; badge.style.display = 'none';
       clearInterval(estado.beepTimer); estado.beepTimer = null;
@@ -41223,8 +41268,9 @@ startAuth();
     });
     if (MODO === 'jefe') {
       var max = estado.esperando[0].minutos;
-      badge.innerHTML = '\uD83D\uDD14 ' + n + ' clienta(s) esperando \u00B7 m\u00E1x ' + max + ' min ' + (estado.detalle ? '\u25B2' : '\u25BC');
+      badge.innerHTML = '\uD83D\uDD14 ' + n + ' clienta(s) esperando \u00B7 m\u00E1x ' + max + ' min ' + (estado.detalle ? '\u25B2' : '\u25BC') + campanaGloboX();
       badge.style.display = 'block';
+      campanaConectarGloboX();
       badge.style.cursor = 'pointer';
       badge.title = 'Clic para ver qui\u00E9nes son';
       if (estado.detalle) {
@@ -41242,10 +41288,11 @@ startAuth();
     if (!hayNueva) {
       /* la cerro y no hay ninguna clienta nueva: sin barra, sin sonido; queda el globito */
       barra.style.display = 'none';
-      badge.innerHTML = '\uD83D\uDD14 ' + n + ' clienta' + (n > 1 ? 's' : '') + ' esperando \u00B7 ver';
+      badge.innerHTML = '\uD83D\uDD14 ' + n + ' clienta' + (n > 1 ? 's' : '') + ' esperando \u00B7 ver' + campanaGloboX();
       badge.title = 'Clic para volver a mostrar la barra';
       badge.style.cursor = 'pointer';
       badge.style.display = 'block';
+      campanaConectarGloboX();
       clearInterval(estado.beepTimer); estado.beepTimer = null;
       clearInterval(estado.parpadeo); estado.parpadeo = null;
       document.title = estado.tituloOriginal;
