@@ -5278,8 +5278,10 @@ function _flujoLazy(){
       try {
         if (typeof _sbCacheLeer !== 'function') return null;
         var ok = function (d) { return !!(d && d.r && Array.isArray(d.r.productos) && d.desde === desde && d.hasta && d.hasta <= hasta); };
-        var d = await _sbCacheLeer('margen.foto|' + desde + '|' + hasta, 7 * 86400000); if (ok(d)) return d;
-        d = await _sbCacheLeer('margen.foto.ult|' + desde, 7 * 86400000); return ok(d) ? d : null;
+        // las dos a la vez (medido 12-oct: una tras otra 1,06 s cuando el periodo exacto no existe)
+        var dd = await Promise.all([_sbCacheLeer('margen.foto|' + desde + '|' + hasta, 7 * 86400000),
+                                    _sbCacheLeer('margen.foto.ult|' + desde, 7 * 86400000)]);
+        return ok(dd[0]) ? dd[0] : (ok(dd[1]) ? dd[1] : null);
       } catch (_) { return null; }
     }
 
@@ -32566,6 +32568,9 @@ function camRellenar(d, allPeds) {
 
   // [FIX-2] Fuente de prendas: 1) allPeds (API), 2) pRaw, 3) solo pedido actual
   let _pedsParaMostrar = null;
+  // 12-oct-2026: la búsqueda por nombre/teléfono es "contiene" → puede traer
+  // pedidos de OTRA clienta parecida. Solo quedan los de la misma persona.
+  if (allPeds && allPeds.length) allPeds = allPeds.filter(p => String(p.NroPedido) === String(d.NroPedido) || _camMismaClienta(p, d));
   if (allPeds && allPeds.length) {
     // Convertir formato API → formato interno de renderizado
     _pedsParaMostrar = allPeds.map(ped => {
@@ -32596,6 +32601,16 @@ function camRellenar(d, allPeds) {
   if (_pedsParaMostrar && _pedsParaMostrar.length) {
     // P4 — mostrar SOLO el último pedido; botón "Ver pedido anterior" revela uno más por clic.
     _pedsParaMostrar.sort((a, b) => (parseInt(b.nro)||0) - (parseInt(a.nro)||0)); // más reciente primero
+    // 12-oct-2026: el pedido BUSCADO va siempre primero (antes salía el más nuevo
+    // de la clienta —o de otra— y había que darle a "Ver pedido anterior").
+    {
+      const _iAct = _pedsParaMostrar.findIndex(p => String(p.nro) === String(d.NroPedido));
+      if (_iAct > 0) _pedsParaMostrar.unshift(_pedsParaMostrar.splice(_iAct, 1)[0]);
+      else if (_iAct < 0) {
+        const _u = (d.PrendasUnidadesNombres && d.PrendasUnidadesNombres.length) ? d.PrendasUnidadesNombres : (d.Prendas || []);
+        if (_u.length) _pedsParaMostrar.unshift({ nro: String(d.NroPedido), fecha: d.FechaPedido || '', prendas: _u.slice(), precioMap: Object.assign({}, _precioMap), precios: _precios });
+      }
+    }
 
     const _pedBlockHtml = (ped) => {
       const _esActual = String(ped.nro) === String(d.NroPedido);
@@ -32722,13 +32737,38 @@ function _camResetPdev() {
   _camBindPdev();
 }
 
+// 12-oct-2026 · ¿Este DNI/celular identifica a UNA persona? "N/A", "-", "0",
+// "00000000" o un número corto son relleno: los comparten cientos de clientas.
+function _camIdValido(v, minDig) {
+  const dig = String(v == null ? '' : v).replace(/\D/g, '');
+  if (dig.length < (minDig || 7)) return false;
+  if (/^(\d)\1+$/.test(dig)) return false;          // 00000000, 99999999…
+  return true;
+}
+// 12-oct-2026 · ¿Dos pedidos son de la MISMA clienta? Nombre igual (normalizado)
+// o DNI/celular válidos iguales. Se usa para no mezclar pedidos de otra persona.
+function _camMismaClienta(a, b) {
+  if (!a || !b) return false;
+  const N = s => String(s||'').trim().toUpperCase().replace(/\s+/g,' ');
+  const D = s => String(s||'').replace(/\D/g, '');
+  const na = N(a.Nombre || a.NombreApellido), nb = N(b.Nombre || b.NombreApellido);
+  if (na && nb && na === nb) return true;
+  if (_camIdValido(a.DNI, 8) && _camIdValido(b.DNI, 8) && D(a.DNI) === D(b.DNI)) return true;
+  if (_camIdValido(a.Celular, 7) && _camIdValido(b.Celular, 7) && D(a.Celular).slice(-9) === D(b.Celular).slice(-9)) return true;
+  return false;
+}
+
 // [FIX-2] Busca en pRaw los últimos N pedidos del cliente para mostrar prendas en Cambios
 function camObtenerUltimosPedidos(d, limite) {
   limite = limite || 3;
   if (!Array.isArray(pRaw) || !pRaw.length) return null;
   const _nrm = s => String(s||'').trim().toUpperCase().replace(/\s+/g,' ');
-  const dni = _nrm(d.DNI || '');
-  const cel = _nrm(d.Celular || '');
+  // 12-oct-2026 · BUG 22752: con DNI "N/A" (≈2.000 clientas lo tienen) este
+  // filtro juntaba los pedidos de TODAS esas clientas y mostraba primero el más
+  // nuevo de otra persona (#22923). Ahora un DNI/celular de relleno no sirve
+  // para identificar: ver _camIdValido.
+  const dni = _camIdValido(d.DNI, 8)     ? _nrm(d.DNI) : '';
+  const cel = _camIdValido(d.Celular, 7) ? _nrm(d.Celular) : '';
   const nom = _nrm(d.Nombre || d.NombreApellido || '');
   if (!dni && !cel && !nom) return null;
 
@@ -32778,24 +32818,39 @@ function camObtenerUltimosPedidos(d, limite) {
 
 // ── REGISTRAR ────────────────────────────────────────────────
 async function _camRevalidarPedidoAntesDeGuardar() {
-  if (!CAM || !CAM.nro) return { ok: true }; // nada que revalidar (prenda por texto libre)
-  let fresco;
-  try {
-    fresco = await _pedDatosRapido({ nro: CAM.nro, tipo: 'nro' });
-  } catch (e) {
-    return { ok: false, motivo: 'No se pudo recargar el pedido #' + CAM.nro + ' antes de guardar: ' + (e && e.message || 'error de red') + '. Vuelve a intentar.' };
-  }
-  if (!fresco) {
-    return { ok: false, motivo: 'No se pudo recargar el pedido #' + CAM.nro + ' antes de guardar (sin respuesta del servidor). Vuelve a intentar.' };
-  }
-  const firma = list => (list || [])
-    .map(p => [p.Prenda || p.prenda || '', p.Estado || p.estado || ''].join(':'))
-    .sort().join('|');
-  const firmaVieja = firma(CAM.prendas);
-  const firmaFresca = firma(fresco.Prendas);
-  if (firmaVieja !== firmaFresca) {
-    try { camRellenar(fresco); } catch (_) {}
-    return { ok: false, motivo: 'El pedido #' + CAM.nro + ' cambió mientras tenías el formulario abierto. Se recargó con los datos actuales — revisa tu selección y vuelve a guardar.' };
+  // 12-oct-2026 · REESCRITA. La versión del 2-set comparaba CAM.prendas (una
+  // lista de TEXTOS) leyendo p.Prenda → siempre '' → solo comparaba CUÁNTAS
+  // prendas había. Al buscar por NOMBRE/DNI/teléfono CAM.prendas venía vacía,
+  // así que SIEMPRE decía "el pedido cambió", recargaba y borraba la selección:
+  // el cambio no se podía registrar. Ahora se revisa lo que importa: que cada
+  // prenda ELEGIDA siga en SU pedido y que ese pedido sea de la misma clienta.
+  const chks = [...document.querySelectorAll('.cam-pdev-chk:checked')]
+    .map(c => ({ prenda: String(c.value || '').trim(), nro: String(c.dataset.pedido || '').trim() }))
+    .filter(x => x.prenda && x.nro);
+  if (!chks.length) return { ok: true };   // prenda por texto libre: nada que revalidar
+  const N = s => String(s||'').trim().toUpperCase().replace(/\s+/g,' ');
+  const nomForm = N((document.getElementById('cam-nom') || {}).value);
+  const porNro = {};
+  chks.forEach(x => { (porNro[x.nro] = porNro[x.nro] || []).push(x.prenda); });
+  for (const nro of Object.keys(porNro)) {
+    let fresco;
+    try { fresco = await _pedDatosRapido({ nro, tipo: 'nro' }); }
+    catch (e) { return { ok: false, motivo: 'No se pudo recargar el pedido #' + nro + ' antes de guardar: ' + (e && e.message || 'error de red') + '. Vuelve a intentar.' }; }
+    if (!fresco) return { ok: false, motivo: 'No se pudo recargar el pedido #' + nro + ' antes de guardar (sin respuesta del servidor). Vuelve a intentar.' };
+    if (nomForm && N(fresco.Nombre) && N(fresco.Nombre) !== nomForm) {
+      return { ok: false, motivo: 'La prenda elegida es del pedido #' + nro + ' de ' + fresco.Nombre + ', no de ' + (document.getElementById('cam-nom') || {}).value + '. Vuelve a elegir las prendas a devolver.' };
+    }
+    const quedan = {};
+    ((fresco.PrendasUnidadesNombres && fresco.PrendasUnidadesNombres.length) ? fresco.PrendasUnidadesNombres : (fresco.Prendas || []))
+      .forEach(p => { const k = N(p); quedan[k] = (quedan[k] || 0) + 1; });
+    for (const p of porNro[nro]) {
+      const k = N(p);
+      if (!quedan[k]) {
+        try { camRellenar(fresco); } catch (_) {}
+        return { ok: false, motivo: 'La prenda ' + p + ' ya no está en el pedido #' + nro + ' (alguien lo modificó). Se recargó el pedido: vuelve a elegir y guarda.' };
+      }
+      quedan[k]--;
+    }
   }
   return { ok: true };
 }
@@ -36207,7 +36262,11 @@ function devLimpiar() {
 function devRellenar(d) {
   DEV.nro = d.NroPedido;
   // K-11: guardar PrendasConPrecio (con precio por prenda) en lugar de solo strings
-  DEV.prendas = (d.PrendasConPrecio && d.PrendasConPrecio.length) ? d.PrendasConPrecio : (d.Prendas || []).map(p => ({prenda:p, precio:0}));
+  // 12-oct-2026: UNA casilla por UNIDAD física (PrendasUnidades), igual que Cambios.
+  // Antes PrendasConPrecio (sin repetir): con 2 unidades de la misma prenda solo
+  // salía 1 casilla y no se podían devolver las dos; y el precio iba por nombre.
+  DEV.prendas = (d.PrendasUnidades && d.PrendasUnidades.length) ? d.PrendasUnidades
+    : (d.PrendasConPrecio && d.PrendasConPrecio.length) ? d.PrendasConPrecio : (d.Prendas || []).map(p => ({prenda:p, precio:0}));
   DEV.formasPago = d.FormasPago || '';
   const badge = document.getElementById('dev-nro-badge');
   if (badge) badge.textContent = 'Pedido #' + d.NroPedido;
@@ -36229,7 +36288,7 @@ function devRellenar(d) {
       const pName = typeof pObj === 'string' ? pObj : pObj.prenda;
       const precio = typeof pObj === 'string' ? 0 : (pObj.precio || 0);
       html += '<label style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);cursor:pointer;font-size:12px">'
-        + '<input type="checkbox" class="dev-pdev-chk" value="' + esc(pName) + '" checked style="accent-color:var(--ac)">'
+        + '<input type="checkbox" class="dev-pdev-chk" value="' + esc(pName) + '" data-precio="' + (parseFloat(precio) || 0) + '" checked style="accent-color:var(--ac)">'
         + '<span style="flex:1">' + esc(pName) + '</span>'
         + '<span style="font-family:monospace;color:var(--gn);font-weight:600;min-width:70px;text-align:right">' + fmtMoney(precio) + '</span>'
         + '<span style="color:var(--mu);font-size:11px;min-width:90px;text-align:right" title="Forma de pago del pedido">' + esc(DEV.formasPago || '—') + '</span>'
@@ -36241,7 +36300,9 @@ function devRellenar(d) {
 
     // Confirmar → colapsar a resumen (manteniendo precio + forma de pago como referencia)
     document.getElementById('dev-pdev-confirmar').addEventListener('click', () => {
-      const sel = [...document.querySelectorAll('.dev-pdev-chk:checked')].map(c=>c.value);
+      const _selChks = [...document.querySelectorAll('.dev-pdev-chk:checked')];
+      const sel = _selChks.map(c=>c.value);
+      const _selPrecio = _selChks.map(c => parseFloat(c.dataset.precio) || 0);   // 12-oct: precio de ESA unidad
       if (!sel.length) { toast('Seleccioná al menos una prenda', 'err'); return; }
       const div = document.createElement('div');
       div.style.cssText = 'display:flex;flex-direction:column;gap:6px';
@@ -36251,11 +36312,11 @@ function devRellenar(d) {
         const m = DEV.prendas.find(o => (typeof o === 'string' ? o : o.prenda) === name);
         return m && typeof m === 'object' ? (m.precio || 0) : 0;
       };
-      sel.forEach(p => {
+      sel.forEach((p, _i) => {
         div.innerHTML += '<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#14532d33;border:1px solid #4ade8066;border-radius:var(--r);font-size:12px;color:#4ade80">'
           + '<span style="font-weight:600">✓</span>'
           + '<span style="flex:1">' + esc(p) + '</span>'
-          + '<span style="font-family:monospace;font-weight:600;min-width:70px;text-align:right">' + fmtMoney(precioDe(p)) + '</span>'
+          + '<span style="font-family:monospace;font-weight:600;min-width:70px;text-align:right">' + fmtMoney(_selPrecio[_i] || precioDe(p)) + '</span>'
           + '<span style="color:var(--mu);font-size:11px;min-width:90px;text-align:right" title="Forma de pago del pedido">' + esc(DEV.formasPago || '—') + '</span>'
           + '</div>';
       });
@@ -36263,9 +36324,10 @@ function devRellenar(d) {
       // Mantener checkboxes ocultos para que devRegistrar los lea
       const hidden = document.createElement('div');
       hidden.style.display = 'none'; hidden.id = 'dev-pdev-hidden';
-      sel.forEach(p => {
+      sel.forEach((p, _i) => {
         const c = document.createElement('input');
         c.type='checkbox'; c.className='dev-pdev-chk'; c.value=p; c.checked=true;
+        c.dataset.precio = String(_selPrecio[_i] || precioDe(p) || 0);
         hidden.appendChild(c);
       });
       area.innerHTML = '';
@@ -36289,7 +36351,9 @@ async function devRegistrar() {
   if (!nom) { toast('Nombre del cliente requerido', 'err'); return; }
 
   // Obtener prendas seleccionadas
-  const chks = [...document.querySelectorAll('.dev-pdev-chk:checked')].map(c=>c.value);
+  const _devChkEls = [...document.querySelectorAll('.dev-pdev-chk:checked')];
+  const chks = _devChkEls.map(c=>c.value);
+  const _devChkPrecio = _devChkEls.map(c => c.dataset.precio != null && c.dataset.precio !== '' ? (parseFloat(c.dataset.precio) || 0) : null);
   const prendasDev = chks.length
     ? chks
     : [(document.getElementById('dev-pdev')?.value||'').trim()].filter(Boolean);
@@ -36305,9 +36369,10 @@ async function devRegistrar() {
   if (!condicionGlobal) { toast('Selecciona la Condición de la prenda', 'err'); btn.disabled=false; btn.textContent='Registrar devolución'; return; }
   const reingresoGlobal = getV('dev-reingreso') || '';
   if (!reingresoGlobal) { toast('Selecciona Reingreso al stock', 'err'); btn.disabled=false; btn.textContent='Registrar devolución'; return; }
-  const prendasObj = prendasDev.map(name => {
+  const prendasObj = prendasDev.map((name, _i) => {
     let precio = precioUnico;
-    if (Array.isArray(DEV.prendas) && DEV.prendas.length) {
+    if (chks.length && _devChkPrecio[_i] != null) precio = _devChkPrecio[_i];   // 12-oct: precio de ESA unidad
+    else if (Array.isArray(DEV.prendas) && DEV.prendas.length) {
       const m = DEV.prendas.find(p => String(p.prenda||p).trim().toUpperCase() === String(name).trim().toUpperCase());
       if (m && m.precio !== undefined) precio = parseFloat(m.precio) || precioUnico;
     }
