@@ -7559,6 +7559,20 @@ function _cfwModeloJuntar() {
 // 10-oct (Pablo) · TABLA DE MEDIDAS (custom.tabla_tallas): se edita aquí y se puede copiar de otro producto.
 // Formato de la tienda: bloques «|||», filas «;;»; «Nombre|Blazer» = título del bloque; «#|Busto|Cintura» = columnas; «S|S · 28|90–94|…» = talla | etiqueta | medidas.
 const CTB = { v: null, gid: '', b: [] };
+/** 14-oct (Pablo) · «CONJUNTO PATRICK (BLAZER)» → [Blazer Patrick, Pantalón Patrick]. La parte de abajo es la que exista: pantalón, falda o short.
+ *  null = no es un conjunto (o falta alguna pieza en el ERP). */
+function _ctbPiezasConjunto(dis) {
+  const m = /^CONJUNTO\s+(.+?)\s*\((.+?)\)\s*$/i.exec(String(dis || '').trim()); if (!m) return null;
+  const N = x => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+  const todos = {}; Object.keys((typeof MCT !== 'undefined' && MCT.todos) || {}).forEach(d => { todos[N(d)] = d; });
+  try { ((COS && (Array.isArray(COS.data) ? COS.data : (COS.data && COS.data.rows))) || []).forEach(r => { if (r && r.Diseno) todos[N(r.Diseno)] = r.Diseno; }); } catch (_) {}
+  const nom = N(m[1]), arriba = N(m[2]);
+  const bonito = { PANTALON: 'Pantalón', FALDA: 'Falda', SHORT: 'Short' };
+  const pA = todos[arriba + ' ' + nom]; if (!pA) return null;
+  const abajo = ['PANTALON', 'FALDA', 'SHORT'].find(t => todos[t + ' ' + nom]); if (!abajo) return null;
+  const cap = t => t.charAt(0) + t.slice(1).toLowerCase();
+  return [{ d: pA, nombre: cap(arriba) }, { d: todos[abajo + ' ' + nom], nombre: bonito[abajo] }];
+}
 function _ctbLeer(txt) {
   return String(txt || '').split('|||').map(bl => { const o = { nombre: '', cols: [], filas: [] };
     bl.split(';;').map(x => x.trim()).filter(Boolean).forEach(l => { const p = l.split('|').map(x => x.trim());
@@ -7633,6 +7647,16 @@ function _cfwTablaPintar(msg) {
       CTB.b = B; _cfwTablaPintar('Copiada de ' + (cp.options[cp.selectedIndex] || {}).text + '. Ajusta lo que cambie y guarda.'); } catch (e) { if (st2) st2.textContent = e.message; } });
   const ia = document.getElementById('ctb-ia'); if (ia) ia.addEventListener('click', async ev => { ev.preventDefault(); _cfwTablaSync();   // 13-oct 19:00 (Pablo) · tabla leída por la IA
     const st2 = document.getElementById('ctb-st'), mm = (CTB.v && CTB.v._mm) || ((COS.editing || {})._mm) || [];
+    // 14-oct (Pablo) · un CONJUNTO no se lee de la foto: es la tabla de cada pieza tal cual (ej. Conjunto Patrick (Blazer) = Blazer Patrick + Pantalón Patrick)
+    const pz = _ctbPiezasConjunto(CTB.v && CTB.v.Diseno);
+    if (pz) { ia.disabled = true; st2.style.color = 'var(--mu)'; st2.textContent = 'Armando la tabla con las piezas: ' + pz.map(x => x.d).join(' + ') + '…';
+      try { const B = [];
+        for (const x of pz) { const r = await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: x.d, ShopifyId: '' }); const b1 = _ctbLeer(r && r.tabla);
+          if (!b1.length) throw new Error('«' + x.d + '» todavía no tiene tabla de medidas: cárgala primero en su ficha.');
+          b1.forEach(o => { o.nombre = x.nombre; B.push(o); }); }
+        CTB.b = B; _cfwTablaPintar('🧩 Armada con las tablas de ' + pz.map(x => x.d).join(' + ') + ': revisa y guarda.'); }
+      catch (e) { ia.disabled = false; st2.style.color = 'var(--rd)'; st2.textContent = e.message || String(e); }
+      return; }
     const cat = mm.find(r => r.Canal === 'BOT' && r.Tipo !== 'VIDEO' && r.Activo !== false);
     if (!cat) { st2.style.color = 'var(--rd)'; st2.textContent = 'Primero sube la foto de catálogo (sección Fotos y video).'; return; }
     ia.disabled = true; st2.style.color = 'var(--mu)'; st2.textContent = 'La IA está leyendo la foto de catálogo… (unos 10 s)';
@@ -9429,17 +9453,86 @@ async function _bgFoto(v, clave, volver) {
     else {
       msg('Quitando el fondo… (la 1ª vez baja el programa, ~1 min)');
       const ob = await (await fetch(r.Url)).blob(), png = await _bgQuitar(ob);
-      const fir = await apiSend('multimedia.firmarVarios', { archivos: [{ Nombre: 'sinfondo-' + (r.Url.split('/').pop() || 'foto').replace(/\.[a-z0-9]+$/i, '') + '.png', Tipo: 'image/png', Bytes: png.size, Diseno: v.Diseno }] });
-      const fm = (fir && fir.firmas || [])[0]; if (!fm || fm.ok === false) throw new Error((fm && fm.error) || 'no se pudo preparar la subida');
-      await _mulPut(fm.uploadUrl, png, 'image/png', () => {}); nueva = fm.publicUrl; notas = 'original:' + r.Url;
+      const nomSF = 'sinfondo-' + (r.Url.split('/').pop() || 'foto').replace(/\.[a-z0-9]+$/i, '') + '.png';
+      let fm = null;
+      if (_mulDirOn()) { try { if (await _sbSesionAsegurar()) fm = _mulDirFirma(nomSF, 'image/png', png.size, v.Diseno); } catch (_) { fm = null; } }   // 14-oct · directo a la base
+      if (!fm) { const fir = await apiSend('multimedia.firmarVarios', { archivos: [{ Nombre: nomSF, Tipo: 'image/png', Bytes: png.size, Diseno: v.Diseno }] }); fm = (fir && fir.firmas || [])[0]; }
+      if (!fm || fm.ok === false) throw new Error((fm && fm.error) || 'no se pudo preparar la subida');
+      nueva = await _mulSubirUna(Object.assign({ contentType: 'image/png' }, fm), png); notas = 'original:' + r.Url;
     }
-    await apiSend('multimedia.guardar', { original: r.Clave, Diseno: r.Diseno || v.Diseno, Canal: r.Canal, Tipo: r.Tipo, Url: nueva, Color: r.Color || '', Notas: notas, Origen: 'subido desde el ERP', Rapido: true });
+    const gr = await _mulGuardarLote([{ original: r.Clave, Diseno: r.Diseno || v.Diseno, Canal: r.Canal, Tipo: r.Tipo, Url: nueva, Color: r.Color || '', Notas: notas, Origen: 'subido desde el ERP', Rapido: true }]);
+    const g0 = (gr && gr.res || [])[0]; if (g0 && g0.ok === false) throw new Error(g0.error || 'no se guardó');
     if (Array.isArray(v._ord)) { v._ord = v._ord.map(u => u === r.Url ? nueva : u); try { await apiSend('costos.ordenFotos', { Diseno: v.Diseno, Urls: v._ord }); } catch (_) {} }   // misma posición
     msg(volver ? '✓ Volvió la original' : '✓ Fondo quitado (↺ para volver a la original)');
     v._recargar = true; await _cosMediaPintar(v); if (v.ShopifyId) _cosFichaEnviar(v, true);
   } catch (e) { msg(''); toast('No se pudo: ' + esc(e.message || e), 'err'); }
 }
 // <<< QUITAR EL FONDO
+// 14-oct-2026 (Pablo, camino B) · FOTOS DIRECTO A LA BASE: el navegador sube al almacén «producto-media» con el pase de la
+// persona y guarda con la función erp_mm_guardar_varios (mismas reglas que Apps Script). Antes: firmar ~9 s + guardar ~9 s por tanda.
+// Si algo del camino directo falla (sin pase, sin permiso, la base no contesta), esa foto sigue por Apps Script como antes.
+// REVERSA: SB_FOTOS_DIRECTO = false y publicar (o borrar la política producto_media_subir en Supabase).
+const SB_FOTOS_DIRECTO = true;
+let _mulDirFalloHasta = 0;   // si el almacén rechaza (falta el permiso en la base), 10 min por el camino de antes sin reintentar
+const _mulDirOn = () => SB_FOTOS_DIRECTO && Date.now() > _mulDirFalloHasta;
+const _MUL_EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm' };
+function _mulDirFirma(nombre, ct, bytes, dis) {
+  const tipo = String(ct || '').toLowerCase(), ext = _MUL_EXT[tipo];
+  if (!ext) return { ok: false, error: 'Ese tipo de archivo no sirve (' + (tipo || 'desconocido') + '). Usá fotos JPG, PNG o WEBP, o videos MP4, MOV o WEBM.' };
+  if ((Number(bytes) || 0) > 50 * 1024 * 1024) return { ok: false, error: 'El archivo pesa ' + Math.round(bytes / 1048576) + ' MB y el máximo es 50 MB. Comprimilo y probá de nuevo.' };
+  const limpio = x => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const carpeta = limpio(dis || 'sin-prenda').replace(/[_-]/g, ' ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'sin-prenda';
+  const base = limpio(nombre).replace(/\.[a-z0-9]+$/, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'archivo';
+  const ruta = carpeta + '/' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6) + '-' + base + '.' + ext;
+  return { ok: true, directo: true, ruta: ruta, contentType: tipo, nombre: nombre, dis: dis, bytes: bytes,
+           publicUrl: SB_URL + '/storage/v1/object/public/producto-media/' + ruta };
+}
+async function _mulDirSubir(fm, blob) {
+  const tok = await _sbSesionAsegurar();
+  if (!tok) throw new Error('sin pase');
+  const r = await fetch(SB_URL + '/storage/v1/object/producto-media/' + fm.ruta, {
+    method: 'POST', headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': fm.contentType, 'x-upsert': 'false', 'cache-control': '3600' }, body: blob });
+  if (!r.ok) { let t = ''; try { t = (await r.text()).slice(0, 120); } catch (_) {} throw new Error('almacén ' + r.status + ' ' + t); }
+  return fm.publicUrl;
+}
+/** Sube una foto: directo; si falla, por Apps Script (firma) como antes. Devuelve la URL pública. */
+async function _mulSubirUna(fm, blob) {
+  if (fm && fm.directo) {
+    try { return await _mulDirSubir(fm, blob); }
+    catch (e) {
+      try { console.warn('[fotos directo] respaldo Apps Script:', e && e.message); } catch (_) {}
+      if (/almacén (400|401|403)/.test(String(e && e.message))) _mulDirFalloHasta = Date.now() + 600000;
+      const f2 = await apiSend('multimedia.firmar', { Nombre: fm.nombre, Tipo: fm.contentType, Bytes: fm.bytes, Diseno: fm.dis });
+      await _mulPut(f2.uploadUrl, blob, f2.contentType || fm.contentType, () => {});
+      return f2.publicUrl;
+    }
+  }
+  await _mulPut(fm.uploadUrl, blob, fm.contentType, () => {});
+  return fm.publicUrl;
+}
+/** Guarda varias filas: directo en la base; si la base no contesta, por Apps Script. Mismo formato de respuesta { res: [...] }. */
+async function _mulGuardarLote(items) {
+  if (SB_FOTOS_DIRECTO) {
+    try {
+      const tok = await _sbSesionAsegurar();
+      if (tok) {
+        const r = await fetch(SB_URL + '/rest/v1/rpc/erp_mm_guardar_varios', {
+          method: 'POST', headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ p_items: items.map(it => { const o = Object.assign({}, it); delete o.Rapido; return o; }) }) });
+        if (r.ok) {
+          const d = await r.json();
+          if (d && Array.isArray(d.res) && d.res.length === items.length) {
+            // el video (canal BOT) también va a la pestaña Multimedia de respaldo: eso lo hace Apps Script por detrás, sin esperar
+            const bot = items.filter((it, k) => it.Canal === 'BOT' && d.res[k] && d.res[k].ok !== false);
+            if (bot.length) apiSend('multimedia.guardarVarios', { items: bot }).catch(() => {});
+            return d;
+          }
+        }
+      }
+    } catch (e) { try { console.warn('[fotos directo] guardar por Apps Script:', e && e.message); } catch (_) {} }
+  }
+  return await apiSend('multimedia.guardarVarios', { items: items });
+}
 async function _mulSubirVarios(files, opt) {
   if (!files.length) return;
   opt = opt || {};
@@ -9484,7 +9577,8 @@ async function _mulSubirVarios(files, opt) {
   // 2) firmar todas en un viaje (si la ruta por lote no existe todavía: camino de antes)
   if (st) st.textContent = 'Preparando la subida de ' + files.length + ' archivo(s) …';
   let fir;
-  try { fir = await apiSend('multimedia.firmarVarios', { archivos: prep.concat(extra).map(p => ({ Nombre: p.nombre, Tipo: p.ct, Bytes: p.sub.size, Diseno: dis })) }); }
+  if (_mulDirOn()) { try { if (await _sbSesionAsegurar()) fir = { firmas: prep.concat(extra).map(p => _mulDirFirma(p.nombre, p.ct, p.sub.size, dis)) }; } catch (_) { fir = null; } }
+  if (!fir) try { fir = await apiSend('multimedia.firmarVarios', { archivos: prep.concat(extra).map(p => ({ Nombre: p.nombre, Tipo: p.ct, Bytes: p.sub.size, Diseno: dis })) }); }
   catch (e) {
     if (!opt.colDe) return _mulSubirVariosUnoAUno(files, opt);
     const gr = {}; files.forEach(f => { const c = opt.colDe.get(f) || ''; (gr[c] = gr[c] || []).push(f); });   // respaldo: de a un color, como antes
@@ -9500,14 +9594,14 @@ async function _mulSubirVarios(files, opt) {
   const trabajador = async () => {
     while (sig < prep.length) {
       const i = sig++, p = prep[i], fm = firmas[i];
-      if (!fm || fm.ok === false || !fm.uploadUrl) { p.error = (fm && fm.error) || 'no se pudo preparar'; continue; }
-      try { await _mulPut(fm.uploadUrl, p.sub, fm.contentType || p.ct, () => {}); p.url = fm.publicUrl; }
+      if (!fm || fm.ok === false || (!fm.uploadUrl && !fm.directo)) { p.error = (fm && fm.error) || 'no se pudo preparar'; continue; }
+      try { p.url = await _mulSubirUna(Object.assign({ contentType: p.ct }, fm), p.sub); }
       catch (e) { p.error = e.message || 'falló la subida'; }
       listos++; pinta();
     }
   };
   await Promise.all([trabajador(), trabajador(), trabajador()]);
-  await Promise.all(extra.map(async o => { try { if (o.fm && o.fm.uploadUrl) { await _mulPut(o.fm.uploadUrl, o.sub, o.fm.contentType || o.ct, () => {}); o.url = o.fm.publicUrl; } } catch (_) {} }));
+  await Promise.all(extra.map(async o => { try { if (o.fm && (o.fm.uploadUrl || o.fm.directo)) o.url = await _mulSubirUna(Object.assign({ contentType: o.ct }, o.fm), o.sub); } catch (_) {} }));
   // 4) guardar todas en un viaje, en el orden de los nombres (la 1ª de cada color = PRINCIPAL, como antes)
   const nuevos = {}, items = [], cuales = [];
   prep.forEach(p => {
@@ -9522,7 +9616,7 @@ async function _mulSubirVarios(files, opt) {
   if (items.length) {
     if (st) st.textContent = 'Guardando ' + items.length + ' archivo(s) …';
     try {
-      const r = await apiSend('multimedia.guardarVarios', { items: items });
+      const r = await _mulGuardarLote(items);
       ((r && r.res) || []).forEach((x, k) => { if (x && x.ok !== false) { hechos++; if (x.aviso) avisos.push(x.aviso); } else errores.push(cuales[k] + ': ' + ((x && x.error) || 'no se guardó')); });
     } catch (e) { cuales.forEach(n => errores.push(n + ': ' + e.message)); }
   }
