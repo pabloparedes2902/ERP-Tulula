@@ -8848,7 +8848,7 @@ function _otOrdenar_(prods, conf) {
 async function loadOrdenTienda() {
   const w = document.getElementById('ord-w'); if (!w) return;
   w.innerHTML = '<div class="ld"><div class="sp"></div>Leyendo las categorías de la tienda…</div>';
-  try { const r = await apiSend('costos.fichaWeb', { accion: 'ordenTienda', op: 'lista' }); OTI.cols = (r && r.colecciones) || [];
+  try { const r = await apiSend('costos.fichaWeb', { accion: 'ordenTienda', op: 'lista' }); OTI.cols = (r && r.colecciones) || []; OTI.diario = !!(r && r.diario);
     if (!OTI.sel || !OTI.cols.some(c => c.handle === OTI.sel)) OTI.sel = (OTI.cols.find(c => !c.auto && c.n) || OTI.cols[0] || {}).handle || '';
     _ordPintar(); if (OTI.sel) _ordVer(OTI.sel); }
   catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudo leer la tienda: ' + esc(e.message || e) + '</div>'; }
@@ -8879,7 +8879,7 @@ function _ordPintar() {
         + '<div style="width:26px;text-align:right;font-weight:800;color:var(--mu)">' + (i + 1) + '</div>'
         + (p.foto ? '<img src="' + esc(p.foto) + '" alt="" style="width:40px;height:52px;object-fit:cover;border-radius:6px;background:var(--bg3)">' : '<div style="width:40px;height:52px;border-radius:6px;background:var(--bg3)"></div>')
         + '<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(p.titulo) + (p.activo ? '' : ' <span style="font-size:11px;font-weight:400">(borrador: no se ve en la tienda)</span>') + '</div>'
-          + '<div style="font-size:12px;color:var(--mu)">S/ ' + Number(p.precio || 0).toFixed(2) + ' · stock ' + (p.stock == null ? '—' : p.stock) + ' · subido ' + fecha(p.creado) + (p.rankVenta != null ? ' · #' + (p.rankVenta + 1) + ' en ventas web' : '') + '</div></div>'
+          + '<div style="font-size:12px;color:var(--mu)">S/ ' + Number(p.precio || 0).toFixed(2) + ' · stock ' + (p.stock == null ? '—' : p.stock) + ' · subido ' + fecha(p.creado) + (p.vendidas30 != null ? ' · ' + p.vendidas30 + ' vendidas en 30 días' : (p.rankVenta != null ? ' · #' + (p.rankVenta + 1) + ' en ventas web' : '')) + '</div></div>'
         + (man ? '<button type="button" class="btn bg bs ord-up" title="Subir">↑</button><button type="button" class="btn bg bs ord-dn" title="Bajar">↓</button>' : '')
         + '<button type="button" class="btn ' + (fijo(h) ? 'bp' : 'bg') + ' bs ord-pin" title="' + (fijo(h) ? 'Quitar de arriba' : 'Fijar arriba') + '">📌</button></div>'; };
     cuerpo = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' + ORD_CRIT.map(c => '<button type="button" class="btn ' + (OTI.conf.criterio === c[0] ? 'bp' : 'bg') + ' bs ord-cr" data-c="' + c[0] + '">' + c[1] + '</button>').join('') + '</div>'
@@ -8890,7 +8890,7 @@ function _ordPintar() {
       + '<div id="ord-lista" style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);overflow:hidden">' + OTI.orden.map(fila).join('') + '</div>';
   }
   w.innerHTML = '<div style="padding:16px;max-width:1000px"><h2 style="margin:0 0 4px;font-size:20px">Orden de la tienda</h2>'
-    + '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Elige la categoría y cómo se ordena. Lo que guardes aquí manda: si alguien lo cambia en Shopify, el ERP lo vuelve a dejar así cada mañana.</div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Elige la categoría y cómo se ordena. Lo que guardes aquí manda: si alguien lo cambia en Shopify, el ERP lo vuelve a dejar así cada mañana. «Más vendido» = unidades de los últimos 30 días en todos los canales (WhatsApp, TikTok y web). ' + (OTI.diario ? '<span style="color:var(--gn)">● Reorden diario 5 a. m. activo</span>' : '<span style="color:#B7791F">● Reorden diario: se activa al guardar un orden</span>') + '</div>'
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">' + OTI.cols.map(chip).join('') + '</div>' + cuerpo + '</div>';
   w.querySelectorAll('.ord-col').forEach(b => b.addEventListener('click', () => _ordVer(b.dataset.h)));
   if (!OTI.d) return;
@@ -15231,6 +15231,24 @@ async function _sbRpcDevolucionEditar(payload) {
 }
 
 // Puerta unica: primero la base, y si no puede, Apps Script como siempre.
+// 14-oct-2026 (Pablo, incidencia 225) · DEVOLUCION CON VARIAS PRENDAS.
+// Una devolucion de 2 prendas son 2 lineas (DEV-0037-1 y DEV-0037-2). Los pasos "Recibida" y
+// "Reembolso realizado" pintaban las dos en pantalla pero guardaban SOLO la clicada. Ahora la pantalla
+// guarda tambien las hermanas, una tras otra (el servidor mueve el stock de cada una).
+function _devHermanas(r) {
+  const nd = String((r && r['NroDevolucion']) || '').trim();
+  if (!nd || typeof histDevData === 'undefined' || !Array.isArray(histDevData)) return [];
+  return histDevData.filter(d => d && String(d['NroDevolucion'] || '').trim() === nd && String(d['ID']) !== String(r['ID']));
+}
+async function _devGuardarHermanas(lista) {
+  lista = Array.isArray(lista) ? lista : [];
+  for (const p of lista) {
+    try { await _devolucionActualizar(p); }
+    catch (e) { throw new Error('la prenda ' + p.ID + ' de la misma devolución no se guardó (' + e.message + ')'); }
+  }
+  if (lista.length) { try { toast('✓ También se guardaron las otras ' + lista.length + ' prenda(s) de la devolución', 'ok'); } catch (_) {} }
+}
+
 async function _devolucionActualizar(payload) {
   const _t0 = Date.now();
   const r = await _sbRpcDevolucionEditar(payload);
@@ -38451,6 +38469,9 @@ function hdVerDetalle(r, containerEl) {
         const newEstado = derivarEstadoDev(r['FechaSolicitud'], fecha, r['FechaReembolso']);
         const payload = { ID: r['ID'], FechaRecepcionPrenda: fecha, Estado: newEstado };
         if (fotoBase64) payload.FotoRecepcion = fotoBase64;
+        // 14-oct · las otras prendas de la MISMA devolucion (DEV-0037-1, -2...) tambien se guardan
+        const _herm2 = _devHermanas(r).map(d => ({ ID: d['ID'], FechaRecepcionPrenda: fecha,
+          Estado: derivarEstadoDev(d['FechaSolicitud'], fecha, d['FechaReembolso']) }));
         if (Array.isArray(histDevData)) {
           histDevData.forEach(d => {
             if (String(d['NroDevolucion']||d['ID']) === String(r['NroDevolucion']||r['ID'])) {
@@ -38463,7 +38484,7 @@ function hdVerDetalle(r, containerEl) {
         toast('✓ Prenda recibida registrada', 'ok');
         const wEl = document.getElementById('histdev-w');
         if (wEl && typeof renderDevoluciones === 'function') renderDevoluciones(wEl, histDevData || []);
-        _devolucionActualizar(payload).catch(e => {
+        _devolucionActualizar(payload).then(() => _devGuardarHermanas(_herm2)).catch(e => {
           toast('No se pudo guardar la recepción: ' + esc(e.message) + '. Se recarga la lista.', 'err');
           histDevData = null; _hdLsDel(); loadDevoluciones(true);
         });
@@ -38560,10 +38581,20 @@ function hdVerDetalle(r, containerEl) {
             MontoReembolsoCash:cashTotal2, DetalleReembolsoCash:detalleCash,
             ConstanciaReembolso:constancia, Estado:newEstado,
           };
+          // 14-oct · DEV-0037: la pantalla marcaba reembolsadas TODAS las prendas de la devolucion pero solo
+          // se guardaba la clicada (una blusa quedo sin reembolso, sin stock y el pedido en ENTREGADO).
+          // Ahora se guardan todas. El dinero (cash/constancia) va solo en la clicada para no contarlo dos veces.
+          const _herm3 = _devHermanas(r).filter(d => !/REEMBOLSO REALIZADO/i.test(String(d['Estado']||''))).map(d => ({
+            ID: d['ID'], FechaReembolso: fecha, FormaPagoReembolso: forma,
+            Estado: derivarEstadoDev(d['FechaSolicitud'], d['FechaRecepcionPrenda'], fecha) }));
           _devolucionActualizar(_payload3).catch(e => {
             toast('No se pudo guardar el reembolso: '+esc(e.message)+'. Se recarga la lista.','err');
             histDevData=null; _hdLsDel(); loadDevoluciones(true);
-          });
+            return '__fallo';
+          }).then(x => { if (x !== '__fallo') return _devGuardarHermanas(_herm3).catch(e2 => {
+            toast('No se pudo guardar el reembolso completo: '+esc(e2.message)+'. Se recarga la lista.','err');
+            histDevData=null; _hdLsDel(); loadDevoluciones(true);
+          }); });
           if (Array.isArray(histDevData)) {
             histDevData.forEach(d => {
               if (String(d['NroDevolucion']||d['ID'])===String(r['NroDevolucion']||r['ID'])) {
