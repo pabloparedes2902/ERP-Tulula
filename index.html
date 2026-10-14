@@ -34801,7 +34801,9 @@ function editarCambios2(nc){
     +'<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px"><span style="'+lbl+'">Comentario</span><textarea id="c2e-com" rows="2" style="'+inp+';resize:vertical">'+esc(c.Comentario||'')+'</textarea></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center">'
         +'<button class="btn bg bs" data-c2del style="font-size:12px;color:#f87171;border-color:#f8717155">🗑 Anular cambio</button>'
-    +'<button class="btn bg bs" data-c2borrar style="font-size:12px;color:#f87171;border-color:#f8717155">🗑🗑 Eliminar cambio (prueba)</button>'
+    // 14-oct (Pablo) · el boton "Eliminar cambio (prueba)" siempre daba error (la funcion no existe desde el 19-set) y confundia
+    // a las asesoras (incidencias 222/223). En su lugar: "Corregir" SOLO para administradores.
+    +((typeof _soyAdminERP === 'function' && _soyAdminERP()) ? '<button class="btn bg bs" data-c2corregir style="font-size:12px;color:#7cc4ff;border-color:#7cc4ff55" title="Solo administradores: corrige prendas de un cambio ya cerrado, con motivo e historial">🛠 Corregir (admin)</button>' : '')
     +'<div style="display:flex;gap:8px"><button class="btn bg bs" data-close style="font-size:12px">Cerrar</button><button class="btn bp bs" data-c2save style="font-size:12px">Guardar</button></div>'
     +'</div>';
   var ov=_c2Modal(html);
@@ -34981,23 +34983,107 @@ function editarCambios2(nc){
             toast('Cambio anulado','ok'); refresca(); }
     catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑 Anular cambio'; }
   });
-  var borrar=ov.querySelector('[data-c2borrar]');
-  if(borrar) borrar.addEventListener('click', async function(){
-    if(this.dataset.armado!=='1'){
-      this.dataset.armado='1'; this.textContent='¿Seguro? Se borra para siempre. Clic de nuevo';
-      var _b=this; setTimeout(function(){ if(_b.dataset.armado==='1'){ _b.dataset.armado=''; _b.textContent='🗑🗑 Eliminar cambio (prueba)'; } }, 4000);
+  var corr=ov.querySelector('[data-c2corregir]');
+  if(corr) corr.addEventListener('click', function(){ ov.remove(); _c2CorregirAdmin(nc); });
+}
+// ══════════════════════════════════════════════════════════════════════════
+// 14-oct-2026 (aprobado por Pablo) · CORREGIR CAMBIO CERRADO — SOLO ADMINISTRADOR
+// Un cambio con la prenda nueva ya enviada no se puede anular ni editar (candados 7-oct). Aqui el admin
+// corrige la prenda de una linea o PARTE una devuelta (ej. CONJUNTO → BLAZER + PANTALON), con motivo
+// obligatorio. La base (rpc cambio_corregir_admin) revisa que sea admin, que la prenda exista en el
+// catalogo, corrige la fila del pedido (la nueva = venta viva, el stock la sigue) y guarda el historial.
+// ══════════════════════════════════════════════════════════════════════════
+async function _c2CorregirRpc(nc, ops, motivo) {
+  const tok = await _sbSesionAsegurar();
+  if (!tok) throw new Error('Sin sesión con la base. Vuelve a entrar al ERP.');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_corregir_admin', {
+    method: 'POST',
+    headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_nc: nc, p_ops: ops, p_motivo: motivo }),
+  });
+  if (!r.ok) {
+    let t = ''; try { const j = await r.json(); t = (j && (j.message || j.hint)) || ''; } catch (_) {}
+    if (r.status === 401) { try { _sbVencerTok(); } catch (_) {} }
+    throw new Error(String(t || ('la base respondió ' + r.status)).replace(/^[A-Z_]+: /, ''));
+  }
+  return r.json();
+}
+// Arma la lista de correcciones comparando lo que habia con lo que quedo en pantalla. Pura (se prueba sin navegador).
+function _c2CorregirOps(lineas) {
+  const ops = [];
+  (lineas || []).forEach(l => {
+    const partes = (l.partes || []).map(p => ({ prenda: String(p.prenda || '').trim().toUpperCase(), precio: Number(p.precio) || 0 })).filter(p => p.prenda);
+    if (!partes.length) return;
+    if (l.rol === 'DEVUELTA' && partes.length > 1) { ops.push({ op: 'partir', rid: l.rid, prendas: partes }); return; }
+    const a = partes[0];
+    const cambioPrenda = a.prenda !== String(l.prenda || '').trim().toUpperCase();
+    const cambioPrecio = l.rol === 'DEVUELTA' && Math.abs(a.precio - (Number(l.precio) || 0)) > 0.004;
+    if (cambioPrenda || cambioPrecio) ops.push(Object.assign({ op: 'renombrar', rid: l.rid, prenda: a.prenda }, l.rol === 'DEVUELTA' ? { precio: a.precio } : {}));
+  });
+  return ops;
+}
+function _c2CorregirAdmin(nc) {
+  if (!(typeof _soyAdminERP === 'function' && _soyAdminERP())) { toast('Solo un administrador puede corregir un cambio cerrado', 'err'); return; }
+  const c = _c2Buscar(nc); if (!c) { toast('No encontrado', 'err'); return; }
+  const inp = 'width:100%;padding:7px 9px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
+  const lineas = [].concat(
+    (c.devueltas || []).map(d => ({ rol: 'DEVUELTA', rid: d.ID, prenda: d.Prenda, precio: Number(d.Precio) || 0 })),
+    (c.nuevas || []).map(n => ({ rol: 'NUEVA', rid: n.ID, prenda: n.Prenda, precio: Number(n.Precio) || 0 })));
+  const fila = (li, k, p) => '<div class="c2c-parte" data-li="' + li + '" style="display:flex;gap:8px;margin:4px 0">'
+    + '<input class="c2c-pr" style="' + inp + ';flex:3" value="' + esc(p.prenda || '') + '" placeholder="PRENDA DISEÑO COLOR TALLA">'
+    + (lineas[li].rol === 'DEVUELTA' ? '<input class="c2c-prec" type="number" step="0.01" style="' + inp + ';flex:1" value="' + (p.precio || 0) + '" title="Precio de esta prenda">' : '')
+    + (k > 0 ? '<button class="btn bg bs c2c-quitar" style="font-size:11px">✕</button>' : '') + '</div>';
+  let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+    + '<div style="font-size:16px;font-weight:600">🛠 Corregir cambio ' + esc(nc) + '</div><button class="btn bg bs" data-close style="font-size:12px">✕</button></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">Solo administradores. Para cambios ya cerrados: corrige la prenda (debe existir en el catálogo) o parte una devuelta en varias (ej. un conjunto en blazer + pantalón). Si corriges una prenda NUEVA, también se corrige el pedido y el stock la sigue. Queda en el historial con tu correo y el motivo.</div>';
+  lineas.forEach((l, li) => {
+    h += '<div style="border:1px solid var(--bd);border-radius:var(--r);padding:8px 10px;margin-bottom:8px" data-bloque="' + li + '">'
+      + '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.5px">' + (l.rol === 'DEVUELTA' ? '↩️ Devuelta' : '📦 Nueva') + ' · ' + esc(l.rid || '') + '</div>'
+      + '<div class="c2c-partes">' + fila(li, 0, l) + '</div>'
+      + (l.rol === 'DEVUELTA' ? '<button class="btn bg bs c2c-partir" data-li="' + li + '" style="font-size:11px;margin-top:4px">➕ Partir (agregar otra prenda)</button>' : '')
+      + '</div>';
+  });
+  h += '<div style="font-size:12px;color:var(--mu);margin:8px 0 4px">Motivo (obligatorio)</div>'
+    + '<textarea id="c2c-motivo" rows="2" style="' + inp + ';resize:vertical" placeholder="Ej.: el conjunto se registró en una sola línea; son blazer y pantalón"></textarea>'
+    + '<div id="c2c-msg" style="font-size:12px;margin-top:6px;min-height:16px"></div>'
+    + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn bg bs" data-close style="font-size:12px">Cancelar</button>'
+    + '<button class="btn bp bs" id="c2c-guardar" style="font-size:12px">Guardar corrección</button></div>';
+  const ov = _c2Modal(h);
+  ov.addEventListener('click', function (e) {
+    const b = e.target.closest('.c2c-partir');
+    if (b) {
+      const li = +b.getAttribute('data-li'), cont = ov.querySelector('[data-bloque="' + li + '"] .c2c-partes');
+      const n = cont.querySelectorAll('.c2c-parte').length;
+      // el precio se reparte en partes iguales entre las prendas (se puede ajustar a mano)
+      const tot = lineas[li].precio, cada = Math.round(tot / (n + 1) * 100) / 100;
+      cont.insertAdjacentHTML('beforeend', fila(li, n, { prenda: '', precio: 0 }));
+      const precs = cont.querySelectorAll('.c2c-prec');
+      precs.forEach((x, i) => { x.value = (i === precs.length - 1) ? Math.round((tot - cada * (precs.length - 1)) * 100) / 100 : cada; });
       return;
     }
-    this.dataset.armado='';
-    this.disabled=true; this.textContent='...';
-    try{
-      // 1-oct-2026 · 'cambios2.eliminar' NO EXISTE en el servidor (3 intentos, 30-set:
-      // "Accion no reconocida"). El borrado definitivo de un cambio se jubilo con el
-      // corte del 19-set; lo que existe es ANULAR (devuelve el stock). Se avisa claro.
-      throw new Error('Eliminar un cambio ya no existe. Usa "🗑 Anular cambio": devuelve el stock y lo deja anulado.');
-      try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){}
-      toast('Cambio '+nc+' eliminado','ok'); refresca(); }
-    catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='🗑🗑 Eliminar cambio (prueba)'; }
+    const q = e.target.closest('.c2c-quitar'); if (q) { q.closest('.c2c-parte').remove(); }
+  });
+  ov.querySelector('#c2c-guardar').addEventListener('click', async function () {
+    const msg = ov.querySelector('#c2c-msg');
+    const motivo = (ov.querySelector('#c2c-motivo').value || '').trim();
+    const datos = lineas.map((l, li) => Object.assign({}, l, { partes: [].slice.call(ov.querySelectorAll('[data-bloque="' + li + '"] .c2c-parte')).map(r => ({
+      prenda: (r.querySelector('.c2c-pr').value || ''), precio: r.querySelector('.c2c-prec') ? parseFloat(r.querySelector('.c2c-prec').value) || 0 : l.precio })) }));
+    const ops = _c2CorregirOps(datos);
+    if (!ops.length) { msg.style.color = 'var(--rd)'; msg.textContent = 'No cambiaste nada.'; return; }
+    if (motivo.length < 5) { msg.style.color = 'var(--rd)'; msg.textContent = 'Escribe el motivo de la corrección.'; return; }
+    this.disabled = true; this.textContent = 'Guardando...';
+    try {
+      await _c2CorregirRpc(nc, ops, motivo);
+      toast('✓ Cambio ' + nc + ' corregido', 'ok');
+      ov.remove();
+      try { _stockMovido(['stock.resumen', 'catalogo.stock', 'reposicion.calc'], ['stock.resumen', 'catalogo.stock']); } catch (_) {}
+      try { _c2Hist = null; _c2List = null; histCamData = null; _hcLsDel(); } catch (_) {}
+      try { if (typeof _pedsRefrescarNros === 'function') _pedsRefrescarNros([].concat(c.pedidos || []).map(String)); } catch (_) {}
+      try { loadCambios2(); } catch (_) {}
+    } catch (err) {
+      msg.style.color = 'var(--rd)'; msg.textContent = 'No se guardó: ' + err.message;
+      this.disabled = false; this.textContent = 'Guardar corrección';
+    }
   });
 }
 function timelineCambios2(nc){
