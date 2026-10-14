@@ -3245,6 +3245,20 @@ function _fillNpOrigen(canal, current){
     + lista.map(o => `<option value="${o}"${_normCO(o)===_normCO(cur)?' selected':''}>${o}</option>`).join('');
 }
 
+// 13-oct-2026 (regla de Pablo) · un pedido de PAGINA WEB no lleva asesora: la asesora atiende WhatsApp.
+// Al elegir PAGINA WEB, Asesora queda en N/A y bloqueada. La base tambien lo frena (trigger a2_web_sin_asesora,
+// PEGAR_EN_SUPABASE_web_y_actualizar_13oct.sql), asi que ningun otro camino puede saltarselo.
+function _npEsWeb(){ return String((document.getElementById('np-canal') || {}).value || '').trim().toUpperCase() === 'PAGINA WEB'; }
+function _npWebSinAsesora(){
+  const a = document.getElementById('np-asesora');
+  if (!a) return;
+  if (_npEsWeb()){
+    if (![...a.options].some(o => o.value === 'N/A')) a.insertAdjacentHTML('beforeend', '<option value="N/A">N/A</option>');
+    a.value = 'N/A'; a.disabled = true; a.title = 'Un pedido de PAGINA WEB no lleva asesora (va N/A). Si lo atendiste por WhatsApp, el canal es WHATSAPP.';
+  } else if (a.disabled){
+    a.disabled = false; a.title = ''; if (a.value === 'N/A') a.selectedIndex = 0;
+  }
+}
 // Rellena los selects del formulario "Nuevo Pedido" con datos de Maestros
 function applyMaestrosToSelects() {
   const canalSel = document.getElementById('np-canal');
@@ -3252,7 +3266,7 @@ function applyMaestrosToSelects() {
     const opts = mOpts('Canal');
     const cur = canalSel.value;
     canalSel.innerHTML = '<option value="">— Elegir canal —</option>' + opts.map(o => `<option value="${o}"${o===cur?' selected':''}>${o}</option>`).join('');
-    canalSel.onchange = function(){ _fillNpOrigen(canalSel.value, ''); };
+    canalSel.onchange = function(){ _fillNpOrigen(canalSel.value, ''); _npWebSinAsesora(); };
   }
   const estSel = document.getElementById('np-est');
   if (estSel) {
@@ -9284,9 +9298,30 @@ const BG_LIB = 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+es
 let _bgMod = null;
 async function _bgCargar() { if (!_bgMod) _bgMod = await import(BG_LIB); return _bgMod; }
 async function _bgQuitar(blob) {
+  // 13-oct (Pablo) · FOTOS CON FONDO VERDE (pantalla verde): se recorta por el COLOR, sin IA. Así las prendas BLANCAS salen perfectas
+  // (el programa con IA no distingue blanco sobre blanco). Si la foto no tiene fondo verde, sigue el camino de siempre.
+  try { const v = await _bgVerde(blob); if (v) return v; } catch (_) {}
   const m = await _bgCargar();
   const res = await m.removeBackground(blob, { model: 'isnet_fp16', output: { format: 'image/png', quality: 0.9 } });
   try { return await _bgLimpiarHuecos(blob, res); } catch (_) { return res; }
+}
+// Recorte por color verde (chroma key). null = la foto no tiene fondo verde (≥ 60 % del borde verde).
+async function _bgVerde(blob) {
+  const bm = await createImageBitmap(blob), W = bm.width, H = bm.height;
+  const c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d'); x.drawImage(bm, 0, 0);
+  const D = x.getImageData(0, 0, W, H), P = D.data, verde = i => P[i + 1] - Math.max(P[i], P[i + 2]);
+  let n = 0, v = 0; const paso = Math.max(1, Math.round((W + H) / 400));
+  for (let k = 0; k < W; k += paso) for (const y of [0, H - 1]) { n++; if (verde((y * W + k) * 4) > 40) v++; }
+  for (let k = 0; k < H; k += paso) for (const xx of [0, W - 1]) { n++; if (verde((k * W + xx) * 4) > 40) v++; }
+  if (!n || v / n < 0.6) return null;
+  for (let i = 0; i < P.length; i += 4) {
+    const g = verde(i);   // cuánto más verde que rojo/azul
+    const a = g <= 15 ? 255 : g >= 60 ? 0 : Math.round(255 * (60 - g) / 45);
+    P[i + 3] = a;
+    if (g > 0) P[i + 1] = Math.max(P[i], P[i + 2]);   // quita el reflejo verde en bordes y pelo
+  }
+  x.putImageData(D, 0, 0);
+  return await new Promise(r => c.toBlob(b => r(b), 'image/png'));
 }
 // Borra solo los «bolsillos» de fondo que quedaron (ej. entre las piernas). Reglas conservadoras: ver arriba.
 async function _bgLimpiarHuecos(origBlob, resBlob) {
@@ -24312,6 +24347,7 @@ function npRellenar(c, resEl) {
       if (typeof _fillNpOrigen === 'function') _fillNpOrigen(d.Canal || '', d.Origen || '');
       setSel('np-origen',  d.Origen);
       setSel('np-asesora', d.Asesora);
+      try { _npWebSinAsesora(); } catch (_) {}   /* 13-oct · web = N/A */
       // Item-2: copiar también el Comentario de envío del pedido base (editable).
       const _obs = document.getElementById('np-obs');
       if (_obs && d.Comentario && !_obs.value) _obs.value = d.Comentario;
@@ -26925,6 +26961,9 @@ function npValidar() {
     if (_npF && _npF > hoyLima()) errs.push('La Fecha Pedido no puede ser futura (' + _npF + '). Se registra el día que ocurre.'); }
   if (!(document.getElementById('np-canal').value || '').trim()) errs.push('Canal es obligatorio');
   if (!(document.getElementById('np-origen').value || '').trim()) errs.push('Origen es obligatorio');
+  { const _ase = String((document.getElementById('np-asesora') || {}).value || '').trim().toUpperCase();   /* 13-oct · regla de Pablo */
+    const _web = String((document.getElementById('np-canal') || {}).value || '').trim().toUpperCase() === 'PAGINA WEB';
+    if (_web && _ase && _ase !== 'N/A' && _ase !== 'NA') errs.push('Un pedido de PAGINA WEB no lleva asesora (va N/A). Si lo atendiste por WhatsApp, elige el canal WHATSAPP.'); }
   // Al menos una prenda con nombre
   const prendasValidas = [...document.querySelectorAll('#np-prendas .np-prenda')].filter(i => i.value.trim());
   if (!prendasValidas.length) errs.push('Debes ingresar al menos una Prenda');
@@ -26990,6 +27029,7 @@ function npLimpiar() {
   // estaba en readOnly, y sin esto el formulario nuevo nacia bloqueado)
   try { _npAplicarTipoDoc('DNI'); } catch (_) {}
   ['np-courier','np-origen','np-asesora'].forEach(id => { const e = document.getElementById(id); if (e) e.selectedIndex = 0; });
+  try { const _a = document.getElementById('np-asesora'); if (_a){ _a.disabled = false; _a.title = ''; } _npWebSinAsesora(); } catch (_) {}   /* 13-oct */
   ['np-env','np-dsc'].forEach(id => { const e = document.getElementById(id); if (e) e.value = '0'; });
   document.getElementById('np-prendas').innerHTML = '';
   document.getElementById('np-pagos').innerHTML = '';

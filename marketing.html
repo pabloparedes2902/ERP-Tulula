@@ -1152,7 +1152,7 @@ async function mkCargarVentas(desde, hasta){
         const u = URL_VENTAS + '?desde=' + d1 + '&hasta=' + d2;
         /* via rapida si esta cargada; si no (o en las pruebas), n8n directo como antes */
         const j = await (typeof _mkGetJSON === 'function'
-          ? _mkGetJSON(u, intento > 0)
+          ? _mkGetJSON(u, intento > 0 || (typeof MK_VENTAS_VIVO !== 'undefined' && MK_VENTAS_VIVO))   /* 13-oct · 🔄 = sin copia */
           : fetch(u).then(r => (r.ok ? r.json() : null)));
         if (Array.isArray(j)) return arma(j);
       } catch (e) { /* reintentamos abajo */ }
@@ -1384,6 +1384,54 @@ function _mkVenAviso(t){ const b = document.getElementById('mkVen'); if (b){ con
 document.addEventListener('click', ev => { const b = document.getElementById('mkVen'); if (mkVenFijo && b && !b.contains(ev.target)) mkVenCerrar(); });
 document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && mkVenFijo) mkVenCerrar(); });
 
+/* ══ 13-oct-2026 · 🔄 = TODO AL DÍA (pedido de Pablo) ══════════════════════════════════════════════
+   Pablo corrigió un pedido (web → WhatsApp), tocó 🔄 y Marketing lo seguía mostrando: las ventas por anuncio
+   salen de una copia (erp.mv_compras_ads) que se rehacía cada hora, y la pantalla además leía una copia
+   precalculada de n8n de hasta 20 min. Ahora el 🔄: (1) le pide a la base rehacer las ventas (la tarea
+   ventas-ads-rapido lo hace en ~20 s), (2) espera a que termine mirando public.ventas_ads_estado, y
+   (3) vuelve a leer ventas, detalle e historia SIN copias. PEGAR_EN_SUPABASE_web_y_actualizar_13oct.sql */
+let MK_VENTAS_VIVO = false;
+let MK_RANGO = null;   /* [desde, hasta] de lo que está en pantalla */
+async function _mkRpc(nombre){
+  const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+  if (!tok) return null;
+  try {
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/' + nombre, { method: 'POST',
+      headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    return r.ok ? r.json() : null;
+  } catch (e) { return null; }
+}
+async function mkVentasPedir(){
+  const e = await _mkRpc('ventas_ads_estado');          /* la hora de la base ANTES de pedir */
+  await _mkRpc('ventas_pedir_refresco');
+  return e && e.ahora ? e.ahora : null;
+}
+async function mkVentasAlDia(pedidoProm){
+  const desde0 = await pedidoProm;
+  if (!desde0 || !MK_RANGO) return;
+  const sub = document.getElementById('mkSub');
+  const aviso = (t, color) => { if (!sub) return; sub.style.display = ''; sub.style.color = color || 'var(--txt2)'; sub.textContent = t; };
+  aviso('Actualizando ventas con los últimos cambios del ERP…');
+  let listo = false;
+  for (let i = 0; i < 30 && !listo; i++){                 /* hasta ~90 s */
+    const e = await _mkRpc('ventas_ads_estado');
+    if (e && e.ts_ads && Date.parse(e.ts_ads) > Date.parse(desde0)) { listo = true; break; }
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  if (!listo){ aviso('La base sigue rehaciendo las ventas: vuelve a tocar 🔄 en un minuto.', 'var(--warn)'); return; }
+  MK_VENTAS_VIVO = true;
+  try {
+    await mkCargarVentas(MK_RANGO[0], MK_RANGO[1]);
+    await mkHistoriaVentasERP();
+  } finally { MK_VENTAS_VIVO = false; }
+  mkAplicarVentas(); mkPintar();
+  if (typeof MKSUB !== 'undefined' && MKSUB === 'reglas' && typeof rgPintar === 'function') rgPintar();
+  /* la copia precalculada de n8n también se rehace, para que al volver a entrar no aparezca lo viejo */
+  try { fetch('https://n8n-production-4e716.up.railway.app/webhook/mk-precalcular', { mode: 'no-cors', keepalive: true }); } catch (e) {}
+  aviso('✓ Ventas al día', 'var(--ok)');
+  setTimeout(() => { if (sub) sub.style.display = 'none'; }, 4000);
+}
+
 /* ── 8-sep-2026 · FUENTE UNICA DEL EMBUDO ──────────────────────────────────
    Las CONVERSACIONES y las ETAPAS (frias/tibias/calientes) ya no se toman de
    /marketing2: salen de /embudo-periodo, que lee bot.conversacion_clasificada
@@ -1604,7 +1652,7 @@ async function mkHistoriaVentasERP(){
   if (!MKH) return MKH;
   const hoy = new Date(Date.now() - 5 * 3600 * 1000).toISOString().slice(0, 10);
   const pide = (desde, hasta) =>
-    _mkGetJSON(URL_VENTAS + '?desde=' + desde + '&hasta=' + hasta).catch(() => []);
+    _mkGetJSON(URL_VENTAS + '?desde=' + desde + '&hasta=' + hasta, (typeof MK_VENTAS_VIVO !== 'undefined' && MK_VENTAS_VIVO)).catch(() => []);   /* 13-oct · 🔄 = sin copia */
   const mapa = (arr) => {
     const o = {};
     (Array.isArray(arr) ? arr : []).forEach(x => { o[String(x.anuncio)] = { p: +x.pedidos || 0, i: +x.ingreso || 0 }; });
@@ -2439,7 +2487,7 @@ async function mkCargar(refrescarMeta){
        `fetch(url).then(r => r.json())` no espera nada aca: devuelve la promesa
        y las cinco salen juntas, que es lo que Promise.all promete.
        ══════════════════════════════════════════════════════════════════ */
-    const [datos] = await Promise.all([ (_mkSbTok() ? _mkGetJSON(url) : fetch(url).then(r => r.json())), mkCargarHistoria().then(mkHistoriaVentasERP), motorCargar(), mkCargarVentas(_mkD, _mkH), mkCargarEmbudo(_mkD, _mkH), mkCargarEmbudoAnuncio(_mkD, _mkH), mkCargarHistoriaDia() ]);
+    const [datos] = await Promise.all([ (_mkSbTok() ? _mkGetJSON(url) : fetch(url).then(r => r.json())), mkCargarHistoria().then(mkHistoriaVentasERP), motorCargar(), (MK_RANGO = [_mkD, _mkH], mkCargarVentas(_mkD, _mkH)), mkCargarEmbudo(_mkD, _mkH), mkCargarEmbudoAnuncio(_mkD, _mkH), mkCargarHistoriaDia() ]);
     MK = datos;
     if (!MK || !MK.filas) throw new Error('respuesta vacía');
     mkAplicarVentas();
@@ -4475,8 +4523,10 @@ window.addEventListener('message', function(e){
   if (e && e.data && e.data.tipo === 'mkt-ir-sub'){ mkIrSub(e.data.cual); return; }
   if (e && e.data && e.data.tipo === 'erp-refrescar'){
     try { e.source.postMessage({tipo:'erp-refrescar-ok'}, '*'); } catch(_){}
+    const _pedido = mkVentasPedir();   /* 13-oct · la base empieza YA a rehacer las ventas por anuncio */
     mkRefrescarHistoria();   /* ventas frescas para la columna Acción */
-    mkCargar(true);          /* y el gasto fresco de Meta */
+    const _cargaMeta = mkCargar(true);          /* y el gasto fresco de Meta */
+    _cargaMeta.then(() => mkVentasAlDia(_pedido));   /* 13-oct · cuando la base termina, ventas al día */
   }
 });
 </script>
