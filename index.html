@@ -7630,6 +7630,29 @@ function _cfwTablaPintar(msg) {
     try { const r = await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: CTB.v.Diseno, ShopifyId: CTB.gid, guardar: txt }); CTB.b = _ctbLeer(r.tabla); _cfwTablaPintar('✓ ' + r.texto); const s3 = document.getElementById('ctb-st'); if (s3) s3.style.color = 'var(--gn)'; toast('Tabla de medidas guardada', 'ok'); }
     catch (e) { g.disabled = false; st2.style.color = 'var(--rd)'; st2.textContent = e.message || String(e); } });
 }
+// 13-oct 19:30 (Pablo) · las fotos de «Así se siente» también van SIN FONDO (igual que la portada de cada color).
+// Se quita el fondo de esa foto en el ERP (✂, misma posición, ↺ para volver), viaja a la tienda y el beneficio pasa a usar la versión sin fondo.
+async function _cfwBenSinFondo(sec, i, archivo) {
+  const v = CFW.v, tallo = s => decodeURIComponent(String(s || '').split('?')[0].split('/').pop() || '').replace(/\.[a-z0-9]+$/i, '').toLowerCase();
+  const a = tallo(archivo); if (!v || !a || /^sinfondo-/.test(a)) return;
+  const r = (v._mm || []).find(x => x.Activo !== false && x.Tipo !== 'VIDEO' && x.Canal === 'SHOPIFY' && tallo(x.Url) && a.indexOf(tallo(x.Url)) >= 0);
+  if (!r || /^original:/.test(String(r.Notas || ''))) return;   // no es del ERP o ya está sin fondo
+  const st = () => document.getElementById('cfw-st'), msg = t => { const e = st(); if (e) e.textContent = t; };
+  msg('✂ Quitando el fondo de la foto de «Así se siente»… (la 1ª vez baja el programa, ~1 min)');
+  await _bgFoto(v, r.Clave);
+  const nuevo = 'sinfondo-' + tallo(r.Url);
+  for (let k = 0; k < 8; k++) {   // la tienda tarda unos segundos en tener la foto nueva
+    await new Promise(z => setTimeout(z, 8000));
+    try { const rr = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: CFW.gid || '' });
+      const f = (rr && rr.fotos || []).find(x => (String(x.archivo || '') + ' ' + String(x.mini || '')).toLowerCase().indexOf(nuevo) >= 0);
+      if (!f) continue;
+      if (CFW.v !== v) return;   // ya abrió otra ficha
+      _cfwLeer(); CFW.fotos = rr.fotos; const fila = (CFW.f[sec] || [])[i]; if (fila && tallo(fila.foto) === a) fila.foto = f.archivo;
+      _cosFichaWebPintar('✓ Foto sin fondo puesta en «Así se siente»'); if (!CFW._guardando) _cosFichaWebGuardar(); return;
+    } catch (_) {}
+  }
+  msg('El fondo se quitó; la tienda todavía no muestra la foto nueva. Vuelve a abrir la ficha en un minuto y elígela.');
+}
 function _cosFichaWebPintar(estado) {
   const box = document.getElementById('cfw-box'); if (!box || !CFW.f) return;
   const st = 'width:100%;padding:7px 9px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px';
@@ -7694,9 +7717,11 @@ function _cosFichaWebPintar(estado) {
       const p = tallo && (CFW.fotos || []).find(x => (String(x.archivo || '') + ' ' + String(x.mini || '')).toLowerCase().indexOf(tallo) >= 0);
       if (!p) { toast('Esa foto todavía no llegó a la tienda: espera unos segundos y vuelve a soltarla.', 'warn'); return; }
       _cfwLeer(); const fila = CFW.f[b.dataset.s][+b.dataset.i]; fila.foto = p.archivo; CFW.abierto = ''; _cosFichaWebPintar();
-      clearTimeout(CFW._tAuto); CFW._tAuto = setTimeout(() => { if (!CFW._guardando) _cosFichaWebGuardar(); }, 800); });
+      clearTimeout(CFW._tAuto); CFW._tAuto = setTimeout(() => { if (!CFW._guardando) _cosFichaWebGuardar(); }, 800);
+      if (b.dataset.s === 'beneficios') _cfwBenSinFondo(b.dataset.s, +b.dataset.i, p.archivo); });
   });
-  box.querySelectorAll('.cfw-pick').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); _cfwLeer(); const fila = CFW.f[b.dataset.s][+b.dataset.i]; fila.foto = fila.foto === b.dataset.a ? '' : b.dataset.a; CFW.abierto = ''; _cosFichaWebPintar(); }));
+  box.querySelectorAll('.cfw-pick').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); _cfwLeer(); const fila = CFW.f[b.dataset.s][+b.dataset.i]; fila.foto = fila.foto === b.dataset.a ? '' : b.dataset.a; CFW.abierto = ''; _cosFichaWebPintar();
+    if (fila.foto && b.dataset.s === 'beneficios') _cfwBenSinFondo(b.dataset.s, +b.dataset.i, fila.foto); }));
   box.querySelectorAll('select[data-cfp]').forEach(el => el.addEventListener('change', () => { _cfwLeer(); _cosFichaWebPintar(); }));   // 8-oct · al cambiar el tipo cambian los campos
   box.querySelectorAll('.cfw-chip').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); _cfwLeer(); const k = b.dataset.cfo, x = b.dataset.val, l = [].concat(CFW.f.prenda.v[k] || []), i = l.indexOf(x); CFW.abre = k.split('_')[0]; if (i >= 0) l.splice(i, 1); else l.push(x); CFW.f.prenda.v[k] = l; _cosFichaWebPintar(); }));   // 8-oct · una o más opciones
   const cp = box.querySelector('[data-cfcopia]'); if (cp) cp.addEventListener('change', () => { const o = CFT.por && CFT.por[cp.value]; if (!o || !o.ficha || !o.ficha.prenda) return; _cfwLeer(); CFW.f.prenda.v = Object.assign({}, o.ficha.prenda.v || {}); _cosFichaWebPintar('Copiado de ' + esc(o.titulo) + '. Revisa y guarda.'); });
@@ -9270,7 +9295,9 @@ async function _bgLimpiarHuecos(origBlob, resBlob) {
   const O = x1.getImageData(0, 0, W, H).data, Rd = x2.getImageData(0, 0, W, H), R = Rd.data;
   // PRENDAS BLANCAS (probado 13-oct con Top Valentina hueso): el programa deja la tela blanca SEMITRANSPARENTE (se ve el fondo a través).
   // Se endurece: lo que el programa dejó al menos un poco (alfa ≥ 12) se vuelve sólido rápido (×3,5); los bordes quedan suaves.
-  for (let i = 3; i < R.length; i += 4) { const a = R[i]; R[i] = a < 12 ? 0 : Math.min(255, Math.round(a * 3.5)); }
+  // el color sale SIEMPRE de la foto original (el programa deja en negro lo que borró; si se rescata, debe verse la tela real)
+  for (let i = 3; i < R.length; i += 4) { const a = R[i]; R[i] = a < 12 ? 0 : Math.min(255, Math.round(a * 3.5)); R[i - 3] = O[i - 3]; R[i - 2] = O[i - 2]; R[i - 1] = O[i - 1]; }
+  _bgRescatar(O, R, W, H);
   // color del fondo: lo que el programa SÍ quitó en el borde de la foto
   let n = 0, sr = 0, sg = 0, sb = 0, s2 = 0; const borde = Math.max(2, Math.round(Math.min(W, H) * 0.02));
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
@@ -9307,6 +9334,53 @@ async function _bgLimpiarHuecos(origBlob, resBlob) {
       fr = nx; } }
   x2.putImageData(Rd, 0, 0);   // siempre (también por el endurecido de las prendas blancas)
   return await new Promise(r => c2.toBlob(b => r(b || resBlob), 'image/png'));
+}
+// RESCATE DE PRENDA BORRADA (probado 13-oct con Top Valentina hueso, foto de cerca): el programa se quedó solo con la manga y
+// BORRÓ TODO EL TORSO blanco porque su brillo es casi igual al del fondo. Lo que los separa es el TONO (fondo lila/frío vs tela cálida).
+// 1) color del fondo = el tono más repetido en lo borrado del borde de la foto; 2) se inunda el fondo desde el borde solo por pixeles de
+// ese tono (la sombra o el brillo no importan); 3) lo borrado que NO se alcanzó, grande (≥1 % de la foto) y de OTRO tono → se devuelve.
+// Los huecos de fondo entre las piernas tienen el tono del fondo → siguen borrados.
+function _bgRescatar(O, R, W, H) {
+  const N = W * H, TOL = 8, ch = i => [O[i] - O[i + 1], O[i + 2] - O[i + 1], (O[i] + O[i + 1] + O[i + 2]) / 12];
+  const bins = new Map(), borde = [];
+  for (let p = 0; p < N; p++) { const x = p % W, y = (p / W) | 0; if (x && y && x < W - 1 && y < H - 1) continue; const i = p * 4; if (R[i + 3] >= 128) continue;
+    borde.push(p); const c = ch(i), k = Math.round(c[0] / 4) + ',' + Math.round(c[1] / 4); bins.set(k, (bins.get(k) || 0) + 1); }
+  if (borde.length < 50) return 0;
+  let kMax = '', nMax = 0; bins.forEach((v, k) => { if (v > nMax) { nMax = v; kMax = k; } });
+  let a0 = 0, a1 = 0, m = 0; for (const p of borde) { const c = ch(p * 4); if (Math.round(c[0] / 4) + ',' + Math.round(c[1] / 4) === kMax) { a0 += c[0]; a1 += c[1]; m++; } }
+  a0 /= m; a1 /= m; const dch = i => Math.hypot(O[i] - O[i + 1] - a0, O[i + 2] - O[i + 1] - a1);
+  const fondo = new Uint8Array(N), cola = new Int32Array(N); let ini = 0, fin = 0;
+  for (const p of borde) if (dch(p * 4) < TOL) { fondo[p] = 1; cola[fin++] = p; }
+  while (ini < fin) { const p = cola[ini++], x = p % W;
+    for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, p >= W ? p - W : -1, p < N - W ? p + W : -1]) {
+      if (q < 0 || fondo[q] || R[q * 4 + 3] >= 128 || dch(q * 4) >= TOL) continue; fondo[q] = 1; cola[fin++] = q; } }
+  const visto = new Uint8Array(N); let devueltos = 0;
+  for (let p0 = 0; p0 < N; p0++) {
+    if (visto[p0] || fondo[p0] || R[p0 * 4 + 3] >= 128) continue;
+    ini = 0; fin = 0; cola[fin++] = p0; visto[p0] = 1; let sd = 0, tocaFondo = false;
+    while (ini < fin) { const p = cola[ini++], x = p % W; sd += dch(p * 4);
+      for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, p >= W ? p - W : -1, p < N - W ? p + W : -1]) {
+        if (q < 0 || visto[q]) continue; if (fondo[q]) { tocaFondo = true; continue; } if (R[q * 4 + 3] >= 128) continue; visto[q] = 1; cola[fin++] = q; } }
+    // grande, o manchita transparente DENTRO de la tela (no toca el fondo) — siempre que sea de otro tono que el fondo
+    if (!((fin >= N * 0.01 && sd / fin >= TOL * 1.5) || (!tocaFondo && fin >= 4 && sd / fin >= TOL))) continue;
+    // si lo rescatable queda «deshilachado» contra el fondo (camisa blanca sobre fondo blanco, probado 13-oct con Pantalón Navigata),
+    // devolverlo a pedazos se ve peor que dejarlo como lo dejó el programa → solo se devuelve si el corte es limpio.
+    let cont = 0; for (let k = 0; k < fin; k++) { const p = cola[k], x = p % W; if ((x > 0 && fondo[p - 1]) || (x < W - 1 && fondo[p + 1]) || (p >= W && fondo[p - W]) || (p < N - W && fondo[p + W])) cont++; }
+    if (cont > 4 * Math.sqrt(fin)) continue;
+    for (let k = 0; k < fin; k++) R[cola[k] * 4 + 3] = 255; devueltos += fin;
+  }
+  // manchas semitransparentes DENTRO de la tela (no tocan nada borrado) → sólidas. Los bordes (que sí tocan lo borrado) quedan suaves.
+  visto.fill(0);
+  for (let p0 = 0; p0 < N; p0++) {
+    const al = R[p0 * 4 + 3]; if (visto[p0] || al === 0 || al === 255) continue;
+    ini = 0; fin = 0; cola[fin++] = p0; visto[p0] = 1; let borde2 = false;
+    while (ini < fin) { const p = cola[ini++], x = p % W;
+      for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, p >= W ? p - W : -1, p < N - W ? p + W : -1]) {
+        if (q < 0) { borde2 = true; continue; } const a = R[q * 4 + 3]; if (a === 0) { borde2 = true; continue; }
+        if (a === 255 || visto[q]) continue; visto[q] = 1; cola[fin++] = q; } }
+    if (!borde2) { for (let k = 0; k < fin; k++) R[cola[k] * 4 + 3] = 255; devueltos += fin; }
+  }
+  return devueltos;
 }
 // ✂ / ↺ sobre UNA foto ya cargada: sube la versión sin fondo (o vuelve a la original) y deja todo igual (mismo color, mismo lugar).
 async function _bgFoto(v, clave, volver) {
