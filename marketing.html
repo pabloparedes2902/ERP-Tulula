@@ -643,7 +643,23 @@
   .mkcr-mas:hover{border-color:var(--txt2)}
   .mkcr-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))!important}
   .mkcr-card .mkcr-acc{flex-wrap:nowrap;gap:4px}
+  .mkcr-card .mkcr-acc{flex-wrap:wrap}
   .mkcr-card .mkcr-acc .btn{padding:4px 6px;font-size:10.5px;white-space:nowrap}
+  /* 15-oct 16:50 · números por creativo, 🚀 Anuncio y arrastrar y soltar */
+  .mkcr-kpi{display:flex;gap:4px;padding:2px 9px 7px;flex-wrap:nowrap}
+  .mkcr-kpi .k{display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;font-size:10.5px}
+  .mkcr-kpi .k i{font-style:normal;font-size:9px;color:var(--txt2);font-weight:800}
+  .mkcr-kpi .k b{font-weight:800;padding:1px 4px}
+  .mkcr-kpi .k b.na{color:var(--txt2)}
+  .mkcr-kpi.vacio{font-size:10px;color:var(--txt2)}
+  .mkcr-fila .mkcr-kpi{padding:0;width:230px;flex:0 0 230px}
+  .mkcr-fila .mkcr-kpi.vacio{justify-content:center}
+  .mkcr-acc .btn.mkcr-usar{color:#c084fc!important;border-color:rgba(168,85,247,.55)!important}
+  .mkcr-cab .mkl-f{font-weight:600}
+  #mkProximo.mkcr-soltando{outline:3px dashed #6d8dff;outline-offset:-6px;border-radius:14px;background:rgba(109,141,255,.06)}
+  #mkProximo.mkcr-soltando::after{content:'⬆️ Suelta aquí para subir a la biblioteca';position:fixed;left:50%;top:45%;transform:translateX(-50%);background:#6d8dff;color:#fff;font-weight:800;padding:12px 20px;border-radius:12px;pointer-events:none}
+  #mkcrArchivoBox.mkcr-soltando{outline:2px dashed #6d8dff;border-radius:10px}
+  @media (max-width:700px){ .mkcr-fila .mkcr-kpi{width:100%;flex-basis:100%} }
   .mkmodal-in .niv{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 10px;font-size:11px;color:var(--txt2)}
   .mkmodal-in .niv span{margin-right:2px;font-weight:700}
   .mkmodal-in button.accn{background:transparent;border:1.5px solid var(--bd);color:var(--txt2);
@@ -4763,6 +4779,7 @@ async function mkcrCargar(){
   } catch (e) { MKCR.err = 'No pude leer la biblioteca (' + e.message + ').'; if (!MKCR.filas) MKCR.filas = []; }
 }
 async function mkcrAbrir(){
+  _mkcrSoltarIni();   /* 15-oct 16:50 · arrastrar y soltar */
   const el = document.getElementById('mkcrCuerpo');
   if (MKCR.filas === null){ el.innerHTML = '<div class="mkl-vacio">Cargando creativos…</div>'; await mkcrCargar(); }
   mkcrPintar();
@@ -4781,7 +4798,8 @@ function _mkcrAcc(f){
   if (!MKCR.puede) return '';
   const usado = (f.usos || 0) > 0 || f.meta_video_id || f.meta_image_hash;
   const img = f.tipo === 'estatico' || f.tipo === 'carrusel';
-  return '<button class="btn" title="Editar el nombre y sus campos' + (img ? ', y agregar, quitar u ordenar imágenes (carrusel)' : '') + '" onclick="mkcrSubirAbrir(' + f.id + ')">✏️ Editar</button>'
+  return (f.estado !== 'archivado' ? '<button class="btn mkcr-usar" title="Crear un anuncio con este creativo: abre ➕ Nuevo anuncio con él ya elegido (solo eliges campaña y conjunto)" onclick="mkcrUsar(' + f.id + ')">🚀 Anuncio</button>' : '')
+    + '<button class="btn" title="Editar el nombre y sus campos' + (img ? ', y agregar, quitar u ordenar imágenes (carrusel)' : '') + '" onclick="mkcrSubirAbrir(' + f.id + ')">✏️ Editar</button>'
     + (f.estado === 'archivado'
       ? '<button class="btn" title="Volver a ponerlo en la biblioteca" onclick="mkcrPreguntar(' + f.id + ',\'restaurar\')">↩︎ Restaurar</button>'
       : '<button class="btn" title="Sacarlo de la lista sin borrarlo: no sale al crear anuncios y se puede restaurar" onclick="mkcrPreguntar(' + f.id + ',\'archivar\')">🗄️ Archivar</button>')
@@ -4796,6 +4814,72 @@ function mkcrNoBorrar(id){
 function _mkcrMini(f){
   return f.tipo === 'video' ? '<img src="' + esc(f.miniatura || '') + '" alt="" loading="lazy" onerror="this.style.visibility=\'hidden\'"><span class="mkcr-play">▶</span>'
     : '<img src="' + esc(f.miniatura || f.url) + '" alt="" loading="lazy">' + (f.tipo === 'carrusel' ? '<span class="mkcr-play" style="font-size:20px">🗂️</span>' : '');
+}
+/* 15-oct 16:50 (pedido de Pablo) · cada creativo con sus 4 números: ROAS, Hook rate, Hold rate y CTR, sumando TODOS los
+   anuncios que lo usan (se reconocen por el código del nombre, ej. 116-1015), en el período y canal elegidos en Anuncios.
+   Estático o carrusel: hook y hold = NA. Colores con los mismos parámetros de Anuncios; menos de S/ 20 de gasto = poca data (sin color). */
+function _mkcrCod(t){ const m = String(t || '').match(/(\d{1,4}-\d{4})/); return m ? m[1] : ''; }
+function _mkcrMetricas(){
+  const out = {};
+  (typeof _qfFilas === 'function' ? _qfFilas() : []).forEach(r => {
+    if (r._nuevo || r._grupo) return;
+    const k = _mkcrCod(String(r.anuncio || '').split('/')[0]); if (!k) return;
+    const a = r.act || {}, o = out[k] || (out[k] = { ads: 0, gasto: 0, imp: 0, impv: 0, v3s: 0, thru: 0, clics: 0, ingreso: 0 });
+    o.ads++; o.gasto += +a.gasto || 0; o.imp += +a.impresiones || 0; o.clics += +a.link_clicks || 0; o.ingreso += +a.ingreso || 0;
+    if (!mkEsEstatico(r)){ o.impv += +a.impresiones || 0; o.v3s += +a.v3s || 0; o.thru += +a.thruplays || 0; }
+  });
+  return out;
+}
+function _mkcrKpi(f, met){
+  const o = met[_mkcrCod((f.campos && f.campos.cod) || f.nombre)];
+  if (!o || !o.gasto) return '<div class="mkcr-kpi vacio" title="Ningún anuncio con este código tuvo gasto en el período y canal elegidos en Anuncios">Sin datos en el período</div>';
+  const img = f.tipo !== 'video', poca = o.gasto < 20;
+  const pill = (t, v, k, u) => {
+    if (v === null) return '<span class="k"><i>' + t + '</i><b class="na">NA</b></span>';
+    const par = (typeof MK_PAR !== 'undefined' && MK_PAR[k]) || null;
+    const cls = poca || !par ? '' : (v >= par.v ? ' b' : v >= par.a ? ' m' : ' r');
+    return '<span class="k"><i>' + t + '</i><b class="mkpill' + cls + '">' + (u === 'x' ? v.toFixed(2) + 'x' : v.toFixed(1) + '%') + '</b></span>';
+  };
+  return '<div class="mkcr-kpi" title="' + o.ads + ' anuncio' + (o.ads > 1 ? 's' : '') + ' · S/ ' + Math.round(o.gasto) + ' de gasto' + (poca ? ' · poca data (menos de S/ 20): sin colores' : '') + '">'
+    + pill('ROAS', o.ingreso / o.gasto, 'roas', 'x')
+    + pill('Hook', img || !o.impv ? null : o.v3s / o.impv * 100, 'hook_rate')
+    + pill('Hold', img || !o.impv ? null : o.thru / o.impv * 100, 'hold_rate')
+    + pill('CTR', o.imp ? o.clics / o.imp * 100 : null, 'ctr') + '</div>';
+}
+function _mkcrPeriodoTxt(){
+  const per = (document.getElementById('mkPeriodo') || {}).selectedOptions;
+  const c = typeof MKCANAL !== 'undefined' ? ({ all: 'Todo', wa: 'WhatsApp', web: 'Web' }[MKCANAL] || MKCANAL) : '';
+  return (per && per[0] ? per[0].textContent : 'período de Anuncios') + (c ? ' · ' + c : '');
+}
+/* 15-oct 16:50 · 🚀 Crear anuncio desde el creativo: abre el mismo ➕ Nuevo anuncio con este creativo ya elegido */
+async function mkcrUsar(id){
+  const f = (MKCR.filas || []).find(x => x.id === id); if (!f) return;
+  if (typeof MK === 'undefined' || !MK || !MK.filas){ MKCR.msg = '<span class="mal">Espera unos segundos a que cargue Marketing y vuelve a intentar.</span>'; mkcrPintar(); return; }
+  mkNuevoAbrir();
+  const t = document.querySelector('input[name="mknTipo"][value="' + f.tipo + '"]'); if (t){ t.checked = true; mkNuevoTipo(); }
+  await mkNuevoCargarCreativos();
+  const sel = document.getElementById('mknCreativo'); sel.value = String(id);
+  if (sel.value === String(id)) mkNuevoCreativo();
+}
+/* 15-oct 16:50 · arrastrar y soltar: los archivos soltados sobre la biblioteca abren «Subir creativo» con ellos ya cargados */
+function _mkcrSoltarIni(){
+  const el = document.getElementById('mkProximo'); if (!el || el.dataset.soltar) return; el.dataset.soltar = '1';
+  const hay = e => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+  let n = 0;
+  el.addEventListener('dragenter', e => { if (!MKCR.puede || !hay(e)) return; e.preventDefault(); n++; el.classList.add('mkcr-soltando'); });
+  el.addEventListener('dragover', e => { if (!MKCR.puede || !hay(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  el.addEventListener('dragleave', () => { n = Math.max(0, n - 1); if (!n) el.classList.remove('mkcr-soltando'); });
+  el.addEventListener('drop', e => {
+    if (!MKCR.puede || !hay(e)) return; e.preventDefault(); n = 0; el.classList.remove('mkcr-soltando');
+    const fs = [...e.dataTransfer.files]; if (!fs.length) return;
+    mkcrSubirAbrir(null); mkcrArchivo(fs);
+  });
+  const box = document.getElementById('mkcrArchivoBox');   /* también dentro de la ventana de subir */
+  if (box){
+    box.addEventListener('dragover', e => { if (hay(e)){ e.preventDefault(); box.classList.add('mkcr-soltando'); } });
+    box.addEventListener('dragleave', () => box.classList.remove('mkcr-soltando'));
+    box.addEventListener('drop', e => { if (!hay(e)) return; e.preventDefault(); e.stopPropagation(); box.classList.remove('mkcr-soltando'); mkcrArchivo([...e.dataTransfer.files]); });
+  }
 }
 function mkcrPintar(){
   const el = document.getElementById('mkcrCuerpo'); if (!el) return;
@@ -4812,21 +4896,23 @@ function mkcrPintar(){
   const vb = (k, t, tip) => '<button class="btn' + (MKCR.vista === k ? ' on' : '') + '" title="' + tip + '" onclick="mkcrVista(\'' + k + '\')">' + t + '</button>';
   const meta = f => esc(_mklQuien(f.quien)) + ' · ' + _mklFecha(f.creado) + (f.bytes ? ' · ' + _mkcrMb(f.bytes) : '') + (f.usos ? ' · usado en ' + f.usos + ' anuncio' + (f.usos > 1 ? 's' : '') : '');
   const tit = f => esc(f.nombre).replace(/"/g, '&quot;');
+  const met = _mkcrMetricas();   /* 15-oct 16:50 · ROAS · Hook · Hold · CTR por creativo */
   let cuerpo;
   if (MKCR.vista === 'lista'){
     cuerpo = !vis.length ? '' : '<div class="mkcr-lista">' + vis.map(f => '<div class="mkcr-fila">'
       + '<div class="mkcr-th" title="Ver en grande" onclick="mkcrVer(' + f.id + ')">' + _mkcrMini(f) + '</div>'
       + '<div class="mkcr-fi"><div class="mkcr-nom1" title="' + tit(f) + '">' + esc(f.nombre) + '</div><div class="mkcr-meta">' + _mkcrTipoTxt(f) + ' · ' + meta(f) + '</div></div>'
+      + _mkcrKpi(f, met)
       + '<div class="mkcr-acc">' + _mkcrAcc(f) + '</div></div>').join('') + '</div>';
   } else {
     cuerpo = !vis.length ? '' : '<div class="mkcr-grid">' + vis.map(f => '<div class="mkcr-card"><div class="mkcr-prev" title="Ver en grande" onclick="mkcrVer(' + f.id + ')">' + _mkcrMini(f)
       + '<span class="mkcr-tipo">' + _mkcrTipoTxt(f) + '</span></div>'
       + '<div class="mkcr-nom1" title="' + tit(f) + '">' + esc(f.nombre) + '</div>'
-      + '<div class="mkcr-meta">' + meta(f) + '</div>'
+      + '<div class="mkcr-meta">' + meta(f) + '</div>' + _mkcrKpi(f, met)
       + '<div class="mkcr-acc">' + _mkcrAcc(f) + '</div></div>').join('') + '</div>';
   }
   el.innerHTML = '<div class="mkl mkcr-wrap">'
-    + '<div class="mkcr-cab"><b>Biblioteca de creativos</b>' + (MKCR.puede ? '' : '<span class="mkl-tag" title="Suben y editan Admin y Marketing con Edición">Solo lectura</span>')
+    + '<div class="mkcr-cab"><b>Biblioteca de creativos</b><span class="mkl-f" title="Los números de cada creativo salen de este período y canal (se cambian en 📣 Anuncios)">📊 ' + esc(_mkcrPeriodoTxt()) + '</span>' + (MKCR.puede ? '' : '<span class="mkl-tag" title="Suben y editan Admin y Marketing con Edición">Solo lectura</span>')
     + '<span style="flex:1"></span>' + vb('lista', '☰ Lista', 'Ver en lista: una fila por creativo') + vb('tarjetas', '▦ Tarjetas', 'Ver en tarjetas con la miniatura grande')
     + (MKCR.puede ? '<button class="btn on" title="Subir un video, una imagen o un carrusel desde tu computadora" onclick="mkcrSubirAbrir(null)">⬆️ Subir creativo</button>' : '') + '</div>'
     + '<div class="mkl-bar">' + b('por_usar', 'Por usar', 'Todavía no se usaron en un anuncio') + b('usados', 'Usados', 'Ya están en al menos un anuncio') + b('archivados', 'Archivados', 'Sacados de la lista (se pueden restaurar)')
@@ -5785,7 +5871,7 @@ window.addEventListener('message', function(e){
     <h3 id="mkcrTit">⬆️ Subir creativo</h3>
     <div class="mkcr-dos">
       <div class="mkcr-col">
-        <div class="mkn-f" id="mkcrArchivoBox"><label>1 · Archivo: un video (MP4/MOV), una imagen, o de 2 a 10 imágenes para un carrusel (máximo 50 MB cada uno)</label>
+        <div class="mkn-f" id="mkcrArchivoBox"><label>1 · Archivo: un video (MP4/MOV), una imagen, o de 2 a 10 imágenes para un carrusel (máximo 50 MB cada uno). También puedes arrastrarlos aquí</label>
           <input id="mkcrArchivo" type="file" accept="video/mp4,video/quicktime,image/jpeg,image/png,image/webp" multiple onchange="mkcrArchivo(this.files)">
           <div class="dato" id="mkcrArchivoEst" style="margin:4px 0 0;font-size:11px"></div></div>
         <div class="mkn-f" id="mkcrImgsBox" style="display:none"><label>Imágenes: ordénalas con ◀ ▶ y quita con ✕. Con 2 o más es un carrusel</label>
