@@ -582,6 +582,9 @@
   .mkcr-vacia{font-size:11.5px;color:var(--txt2);padding:20px;text-align:center}
   #mkcrBox select,#mkcrBox input[list]{-webkit-appearance:none;appearance:none;padding-right:26px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%238a8fa3' d='M0 0h10L5 6z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 9px center;background-size:10px 6px}
   #mkcrBox input[list]::-webkit-calendar-picker-indicator{opacity:0;cursor:pointer}
+  .mkn-previa{margin-top:8px;max-width:260px;border-radius:10px;overflow:hidden;background:#000}
+  .mkn-previa:empty{display:none}
+  .mkn-previa video,.mkn-previa img{width:100%;display:block;max-height:320px;object-fit:contain}
   .mkmodal-in .niv{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 10px;font-size:11px;color:var(--txt2)}
   .mkmodal-in .niv span{margin-right:2px;font-weight:700}
   .mkmodal-in button.accn{background:transparent;border:1.5px solid var(--bd);color:var(--txt2);
@@ -4196,7 +4199,7 @@ function mkNuevoFaltantes(campos, listas){
   const norm = x => String(x || '').trim().toLowerCase().replace(/\s+/g, ' ');
   const out = [];
   Object.keys(MKN_CAMPO_POS).forEach(c => {
-    const v = String(campos[c] || '').trim(); if (!v) return;
+    const v = String(campos[c] || '').trim(); if (!v || (c === 'hook' && v.toUpperCase() === 'NA')) return;   /* 15-oct · NA = imagen */
     const L = listas && listas[MKN_CAMPO_POS[c]];
     const hay = L && [...L.keys()].some(x => norm(x) === norm(v));
     if (!hay) out.push({ campo: c, valor: v });
@@ -4231,7 +4234,9 @@ function mkNuevoAbrir(){
   document.getElementById('mknRes').innerHTML = '';
   document.getElementById('mknOk').disabled = false;
   { const nn = document.getElementById('mknNombre'); if (nn) nn.dataset.manual = ''; }
-  MKN.video = null; MKN.subiendo = false;
+  MKN.video = null; MKN.subiendo = false; MKN.imagen = null; MKN.creativo = null;
+  { const t = document.querySelector('input[name="mknTipo"][value="video"]'); if (t) t.checked = true; const fu = document.querySelector('input[name="mknFuente"][value="biblio"]'); if (fu) fu.checked = true; }
+  mkNuevoTipo(); mkNuevoCargarCreativos();
   mkNuevoDestino();
   _mknListaCargar();
   mkNuevoNombre();
@@ -4362,13 +4367,13 @@ function mkNuevoValidar(v){
   const faltan = [];
   if (!v.campana) faltan.push('la campaña');
   if (!v.conjunto) faltan.push('el conjunto');
-  if (!v.video_url) faltan.push('el video (subido)');
+  if (v.tipo === 'estatico' ? !v.image_url : !v.video_url) faltan.push(v.tipo === 'estatico' ? 'la imagen' : 'el video (subido)');   /* 15-oct · T4 */
   const c = v.campos;
   ['cod','prod','hook','ang','form','tc','cta','tal'].forEach(k => { if (!String(c[k] || '').trim()) faltan.push({cod:'código',prod:'producto',hook:'hook',ang:'ángulo',form:'formato',tc:'T/C',cta:'CTA',tal:'talento'}[k]); });
   if (String(v.texto || '').trim().length < 10) faltan.push('el texto principal');
   if (v.destino === 'WA'){   /* 15-oct · WhatsApp: producto del mensaje y los 2 botones; sin enlace */
     if (!String(v.producto_msg || '').trim()) faltan.push('el producto del mensaje de WhatsApp');
-    if (!String(v.msg1 || '').trim() || !String(v.msg2 || '').trim()) faltan.push('los 2 mensajes de WhatsApp');
+    if (!String(v.msg1 || '').trim() || (v.tipo !== 'estatico' && !String(v.msg2 || '').trim())) faltan.push(v.tipo === 'estatico' ? 'el mensaje de WhatsApp' : 'los 2 mensajes de WhatsApp');
     if (String(v.msg1 || '').length > 80 || String(v.msg2 || '').length > 80) faltan.push('mensajes de WhatsApp de 80 letras o menos');
   } else {                  /* web: enlace obligatorio */
     if (!/^https:\/\/(www\.)?tulula\.com\.pe\//i.test(v.link || '')) faltan.push('el enlace web del producto (https://tulula.com.pe/...)');
@@ -4383,13 +4388,14 @@ async function mkNuevoAceptarNuevos(){
 }
 async function mkNuevoCrear(){
   const res = document.getElementById('mknRes'), ok = document.getElementById('mknOk');
-  if (MKN.subiendo){ res.innerHTML = '<span class="mal">Espera a que termine de subir el video.</span>'; return; }
+  if (MKN.subiendo){ res.innerHTML = '<span class="mal">Espera a que termine de subir el archivo.</span>'; return; }
   const g = id => String((document.getElementById(id) || {}).value || '').trim();
   const x = MKN.sel || {};
   const wa = x.destino === 'WA';
-  const v = { campana: x.campana || '', conjunto: x.nombre || '', ad_ref: x.ad_ref || '', adset_id: x.id || '', destino: x.destino || '', video_url: MKN.video,
+  const v = { campana: x.campana || '', conjunto: x.nombre || '', ad_ref: x.ad_ref || '', adset_id: x.id || '', destino: x.destino || '', video_url: MKN.tipo === 'estatico' ? '' : MKN.video, tipo: MKN.tipo || 'video', image_url: MKN.tipo === 'estatico' ? MKN.imagen : '',
+              creativo_id: MKN.creativo ? MKN.creativo.id : '', meta_video_id: (MKN.creativo && MKN.creativo.meta_video_id) || '', meta_image_hash: (MKN.creativo && MKN.creativo.meta_image_hash) || '',
               campos: _mknCampos(), texto: g('mknTexto'), titulo: g('mknTit'), desc1: g('mknD1'), desc2: g('mknD2'),
-              producto_msg: wa ? g('mknMsg') : '', msg1: wa ? g('mknM1') : '', msg2: wa ? g('mknM2') : '', link: wa ? '' : g('mknLink') };
+              producto_msg: wa ? g('mknMsg') : '', msg1: wa ? g('mknM1') : '', msg2: wa && MKN.tipo !== 'estatico' ? g('mknM2') : '', link: wa ? '' : g('mknLink') };
   const faltan = mkNuevoValidar(v);
   if (faltan.length){ res.innerHTML = '<span class="mal">Falta: ' + esc(faltan.join(', ')) + '.</span>'; return; }
   /* 6-oct · valores que no están en la lista: avisar y ofrecer agregarlos */
@@ -4409,7 +4415,8 @@ async function mkNuevoCrear(){
   try {
     const r = await fetch(URL_ANUNCIO_CREAR, { method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ ad_ref: v.ad_ref, adset_id: v.ad_ref ? '' : v.adset_id, campana: v.campana, conjunto: v.conjunto, nombre: nombre, video_url: v.video_url, texto: v.texto,
-                             titulo: v.titulo, desc1: v.desc1, desc2: v.desc2, producto_msg: v.producto_msg, msg1: v.msg1, msg2: v.msg2, link: v.link, quien: _mkQuien() }) });
+                             titulo: v.titulo, desc1: v.desc1, desc2: v.desc2, producto_msg: v.producto_msg, msg1: v.msg1, msg2: v.msg2, link: v.link, quien: _mkQuien(),
+                             tipo: v.tipo, image_url: v.image_url, creativo_id: v.creativo_id, meta_video_id: v.meta_video_id, meta_image_hash: v.meta_image_hash }) });
     d = await r.json(); if (Array.isArray(d)) d = d[0] || {};
   } catch (e) { d = { ok: false, motivo: 'No hubo respuesta del servidor. No se creó nada.' }; }
   if (!(d.ok === true || d.ok === 'true')){ res.innerHTML = '<span class="mal">✕ ' + esc(d.motivo || 'No se pudo.') + '</span>'; ok.disabled = false; return; }
@@ -4419,6 +4426,7 @@ async function mkNuevoCrear(){
     try { e = await fetch(URL_ANUNCIO_ESTADO + '?id=' + encodeURIComponent(id)).then(x => x.json()); if (Array.isArray(e)) e = e[0] || {}; } catch (x) {}
     const seg = Math.round((Date.now() - t0) / 1000);
     if (e.estado === 'LISTO'){
+      if (v.creativo_id && typeof MKCR !== 'undefined') MKCR.filas = null;   /* 15-oct · T4: la biblioteca lo muestra como Usado */
       mkNuevoRegistrar(e.ad_id, e.nombre || nombre, v.ad_ref, v.conjunto);   /* 15-oct · la campaña sale de MKN.sel */   /* 7-oct · F5: a la tabla al instante */
       res.innerHTML = '<span class="bien">✓ Anuncio creado APAGADO en Meta: <b>' + esc(e.nombre || nombre) + '</b>' + (e.error ? '<br><span class="esp">' + esc(e.error) + '</span>' : '')
         + '<br>Ya está en la tabla (🆕, apagado) dentro de su conjunto: revísalo y préndelo con ⏻.</span>';
@@ -4430,6 +4438,88 @@ async function mkNuevoCrear(){
     setTimeout(tick, 5000);
   };
   setTimeout(tick, 4000);
+}
+
+/* ═══ 15-oct-2026 · T4 · ➕ Nuevo anuncio con la 🎬 BIBLIOTECA y anuncios de IMAGEN (pedido de Pablo) ═══════
+   Tipo Video o Estático. El creativo se elige de la biblioteca (Contenido) o se sube desde la computadora.
+   Al elegirlo de la biblioteca, el nombre se llena solo con su nomenclatura. Si ese creativo ya se usó en Meta,
+   n8n reusa su código (no lo vuelve a subir) y al crear el anuncio el creativo pasa a «Usados».
+   Imagen: hook = NA y la clienta de WhatsApp ve 1 mensaje ya escrito (no 2 botones). */
+function _mknTipoSel(){ const t = document.querySelector('input[name="mknTipo"]:checked'); return t && t.value === 'estatico' ? 'estatico' : 'video'; }
+function mkNuevoTipo(){
+  MKN.tipo = _mknTipoSel();
+  const est = MKN.tipo === 'estatico';
+  const h = document.getElementById('mknHook');
+  if (h){ h.disabled = est; if (est) h.value = 'NA'; else if (h.value === 'NA') h.value = ''; }
+  const inp = document.getElementById('mknVideo');
+  if (inp){ inp.accept = est ? 'image/jpeg,image/png,image/webp' : 'video/mp4,video/quicktime'; inp.value = ''; }
+  const m2 = document.getElementById('mknM2Fila'); if (m2) m2.style.display = est ? 'none' : '';
+  const nota = document.getElementById('mknWaNota');
+  if (nota) nota.innerHTML = est ? 'En un anuncio de imagen la clienta ve <b>1 mensaje ya escrito</b>: es el que nos llega por WhatsApp. Puedes editarlo (máximo 80 letras).'
+                                 : 'Son los 2 botones que le salen. <b>El que ella toca es el mensaje que nos llega</b> por WhatsApp. Puedes editarlos (máximo 80 letras cada uno).';
+  MKN.video = null; MKN.imagen = null; MKN.creativo = null;
+  document.getElementById('mknVideoEst').innerHTML = ''; document.getElementById('mknPrevia').innerHTML = '';
+  mkNuevoLlenarCreativos(); mkNuevoNombre();
+}
+function mkNuevoFuente(){
+  const pc = (document.querySelector('input[name="mknFuente"]:checked') || {}).value === 'pc';
+  document.getElementById('mknBiblioBox').style.display = pc ? 'none' : '';
+  document.getElementById('mknPcBox').style.display = pc ? '' : 'none';
+  MKN.video = null; MKN.imagen = null; MKN.creativo = null;
+  document.getElementById('mknVideoEst').innerHTML = ''; document.getElementById('mknPrevia').innerHTML = '';
+  const sel = document.getElementById('mknCreativo'); if (sel) sel.value = '';
+}
+async function mkNuevoCargarCreativos(){
+  const sel = document.getElementById('mknCreativo'); if (!sel) return;
+  sel.innerHTML = '<option value="">Cargando la biblioteca…</option>';
+  try {
+    if (typeof MKCR !== 'undefined' && MKCR.filas === null) await mkcrCargar();
+    MKN.creativos = ((typeof MKCR !== 'undefined' && MKCR.filas) || []).filter(f => f.estado !== 'archivado');
+  } catch (e) { MKN.creativos = []; }
+  mkNuevoLlenarCreativos();
+}
+function mkNuevoLlenarCreativos(){
+  const sel = document.getElementById('mknCreativo'); if (!sel || !MKN.creativos) return;
+  const t = MKN.tipo || 'video';
+  const L = MKN.creativos.filter(f => f.tipo === t);
+  const op = f => '<option value="' + f.id + '">' + esc(f.nombre) + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</option>';
+  const nuevos = L.filter(f => f.estado === 'nuevo'), usados = L.filter(f => f.estado !== 'nuevo');
+  sel.innerHTML = !L.length ? '<option value="">No hay ' + (t === 'video' ? 'videos' : 'imágenes') + ' en la biblioteca: súbelos en 🎬 Contenido o elige «Desde la computadora»</option>'
+    : '<option value="">— elige el ' + (t === 'video' ? 'video' : 'imagen') + ' —</option>'
+      + (nuevos.length ? '<optgroup label="Por usar">' + nuevos.map(op).join('') + '</optgroup>' : '')
+      + (usados.length ? '<optgroup label="Ya usados">' + usados.map(op).join('') + '</optgroup>' : '');
+}
+function mkNuevoCreativo(){
+  const id = Number(document.getElementById('mknCreativo').value);
+  const f = (MKN.creativos || []).find(x => x.id === id) || null;
+  MKN.creativo = f; MKN.video = null; MKN.imagen = null;
+  const pv = document.getElementById('mknPrevia'), st = document.getElementById('mknVideoEst');
+  if (!f){ pv.innerHTML = ''; st.innerHTML = ''; return; }
+  if (f.tipo === 'video') MKN.video = f.url; else MKN.imagen = f.url;
+  pv.innerHTML = f.tipo === 'video' ? '<video src="' + esc(f.url) + '" controls playsinline muted preload="metadata"' + (f.miniatura ? ' poster="' + esc(f.miniatura) + '"' : '') + '></video>' : '<img src="' + esc(f.url) + '">';
+  st.innerHTML = '<span class="esp">' + (f.meta_video_id || f.meta_image_hash ? '✓ Ya está en Meta: no se vuelve a subir (más rápido).' : 'Se sube a Meta al crear el anuncio.') + '</span>';
+  /* el nombre sale de la nomenclatura del creativo */
+  const c = Object.assign({}, f.campos || {}); if (!c.prod) { const p = mkNomParse(f.nombre); if (p) Object.assign(c, p); }
+  mkNomEscribir('mkn', c);
+  const nn = document.getElementById('mknNombre'); if (nn) nn.dataset.manual = '';
+  mkNuevoNombre();
+}
+/* desde la computadora: video como siempre; imagen directo al almacén del ERP */
+async function mkNuevoArchivo(f){
+  if ((MKN.tipo || 'video') === 'video') { await mkNuevoVideo(f); const pv = document.getElementById('mknPrevia'); if (f && MKN.video) pv.innerHTML = '<video src="' + URL.createObjectURL(f) + '" controls playsinline muted></video>'; return; }
+  const st = document.getElementById('mknVideoEst'), pv = document.getElementById('mknPrevia');
+  MKN.imagen = null; if (!f) return;
+  if (!/^image\/(jpeg|png|webp)$/.test(f.type)){ st.innerHTML = '<span class="mal">Tiene que ser JPG, PNG o WEBP.</span>'; return; }
+  if (f.size > MKN_MAX){ st.innerHTML = '<span class="mal">Pesa más de 50 MB.</span>'; return; }
+  pv.innerHTML = '<img src="' + URL.createObjectURL(f) + '">';
+  MKN.subiendo = true;
+  try {
+    const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[f.type];
+    MKN.imagen = await _mkcrSubirDirecto('creativos/anuncio-' + Date.now().toString(36) + '-' + _mkcrSlug(f.name.replace(/\.[a-z0-9]+$/i, '')) + '.' + ext, f, f.type,
+      p => { st.innerHTML = '<span class="esp">Subiendo imagen… ' + p + '%</span>'; });
+    st.innerHTML = '<span class="bien" style="color:var(--ok)">✓ Imagen subida</span>';
+  } catch (e) { st.innerHTML = '<span class="mal">No se pudo subir: ' + esc(e.message || e) + '</span>'; }
+  MKN.subiendo = false;
 }
 
 /* ═══ 15-oct-2026 · NOMBRE INTELIGENTE (pedido de Pablo) ═════════════════════════════════════════════════════
@@ -5159,11 +5249,19 @@ window.addEventListener('message', function(e){
     <div class="dato" id="mknConjEst" style="margin:-4px 0 8px;font-size:11px"></div>
     <div class="mkn-f"><label>3 · Tipo</label>
       <div class="mkn-tipo">
-        <label><input type="radio" name="mknTipo" value="video" checked> &#127916; Video</label>
-        <label class="off" title="Llega en la próxima entrega"><input type="radio" name="mknTipo" value="estatico" disabled> &#128444;&#65039; Estático (pronto)</label>
+        <label><input type="radio" name="mknTipo" value="video" checked onchange="mkNuevoTipo()"> &#127916; Video</label>
+        <label><input type="radio" name="mknTipo" value="estatico" onchange="mkNuevoTipo()"> &#128444;&#65039; Estático (imagen)</label>
       </div></div>
-    <div class="mkn-f"><label>4 · Video (MP4 o MOV, máximo 50 MB)</label><input id="mknVideo" type="file" accept="video/mp4,video/quicktime" onchange="mkNuevoVideo(this.files[0])">
-      <div class="dato" id="mknVideoEst" style="margin:4px 0 0;font-size:11px"></div></div>
+    <!-- 15-oct · T4: el creativo sale de la 🎬 biblioteca (Contenido) o se sube desde la computadora (máximo 50 MB) -->
+    <div class="mkn-f"><label>4 · Creativo</label>
+      <div class="mkn-tipo">
+        <label><input type="radio" name="mknFuente" value="biblio" checked onchange="mkNuevoFuente()"> &#128218; De la biblioteca</label>
+        <label><input type="radio" name="mknFuente" value="pc" onchange="mkNuevoFuente()"> &#11014;&#65039; Desde la computadora</label>
+      </div>
+      <div id="mknBiblioBox" style="margin-top:6px"><select id="mknCreativo" onchange="mkNuevoCreativo()"></select></div>
+      <div id="mknPcBox" style="display:none;margin-top:6px"><input id="mknVideo" type="file" accept="video/mp4,video/quicktime" onchange="mkNuevoArchivo(this.files[0])"></div>
+      <div class="dato" id="mknVideoEst" style="margin:4px 0 0;font-size:11px"></div>
+      <div class="mkn-previa" id="mknPrevia"></div></div>
     <label style="display:block;font-size:10.5px;font-weight:800;color:var(--txt2);margin-bottom:4px">5 · Nombre (se arma solo con tu nomenclatura)</label>
     <div class="mkn-grid">
       <div><label>Código</label><input id="mknCod" oninput="mkNuevoNombre()"></div>
@@ -5192,8 +5290,8 @@ window.addEventListener('message', function(e){
         <div style="font-size:10.5px;font-weight:800;color:var(--txt2)">Lo que ve la clienta al tocar el anuncio</div>
         <div class="burb" id="mknSaludo"></div>
         <div class="bot"><input id="mknM1" maxlength="80" oninput="this.dataset.manual='1';mkNuevoMsgCuenta()"><span class="mkn-cnt" id="mknM1c"></span></div>
-        <div class="bot"><input id="mknM2" maxlength="80" oninput="this.dataset.manual='1';mkNuevoMsgCuenta()"><span class="mkn-cnt" id="mknM2c"></span></div>
-        <div class="nota">Son los 2 botones que le salen. <b>El que ella toca es el mensaje que nos llega</b> por WhatsApp. Puedes editarlos (máximo 80 letras cada uno).</div>
+        <div class="bot" id="mknM2Fila"><input id="mknM2" maxlength="80" oninput="this.dataset.manual='1';mkNuevoMsgCuenta()"><span class="mkn-cnt" id="mknM2c"></span></div>
+        <div class="nota" id="mknWaNota">Son los 2 botones que le salen. <b>El que ella toca es el mensaje que nos llega</b> por WhatsApp. Puedes editarlos (máximo 80 letras cada uno).</div>
       </div>
     </div>
     <div class="btns">
