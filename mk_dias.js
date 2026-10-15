@@ -90,7 +90,7 @@
     var o = {}; B.forEach(function (k) { o[k] = t[k] || 0; });
     var imp = o.impresiones, conv = o.conversaciones, ped = o.pedidos;
     o.hook_rate  = imp ? 100 * o.v3s / imp : null;
-    o.hold_rate  = imp ? 100 * o.thruplays / imp : null;
+    o.hold_rate  = o.v3s ? 100 * o.thruplays / o.v3s : null;   // 15-oct · hold estándar: ThruPlays ÷ vistas de 3 s
     o.retencion  = o.v3s ? 100 * o.p100 / o.v3s : null;
     o.ctr        = imp ? 100 * o.link_clicks / imp : null;
     o.ctr_todos  = imp ? 100 * o.clics / imp : null;
