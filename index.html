@@ -30142,6 +30142,8 @@ function renderInv(el){
   // Clic en 🕑 → kardex (historial completo del SKU).
   el.querySelectorAll('.iv-kardex').forEach(b=>b.addEventListener('click',(ev)=>{ ev.stopPropagation(); _invKardex(b.dataset.pren||'', b.dataset.dis||'', b.dataset.col||''); }));
   // 23-ago — doble clic en una celda de Confección Total → panel "qué pasó" (única puerta de edición).
+  el.querySelectorAll('.iv-stk-cell').forEach(c=>c.addEventListener('mouseenter',()=>{ clearTimeout(c._hisT); c._hisT=setTimeout(()=>_hisAdelantar(c),180); }));
+  el.querySelectorAll('.iv-stk-cell').forEach(c=>c.addEventListener('mouseleave',()=>clearTimeout(c._hisT)));
   el.querySelectorAll('.iv-stk-cell').forEach(c=>c.addEventListener('dblclick',(ev)=>{ ev.preventDefault(); ev.stopPropagation(); _invHistorialSku(c.dataset.pren||'', c.dataset.dis||'', c.dataset.colr||'', c.dataset.tal||'', c.dataset.v); }));
   el.querySelectorAll('.iv-tot-cell').forEach(c=>c.addEventListener('dblclick',(ev)=>{ ev.preventDefault(); ev.stopPropagation(); _ivTotAbrir(c.dataset.pren||'', c.dataset.dis||'', c.dataset.colr||'', c.dataset.tal||'', el); }));
   // Eventos — filtros
@@ -30723,29 +30725,49 @@ function _hisVuelve(destino, motivo) {
 }
 function _hisFecha(f) { const s = String(f || '').slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return esc(String(f || '—')); const p = s.split('-'); return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
 function _hisNum(n) { n = Number(n) || 0; return (n > 0 ? '+' : '') + n; }
-// Arma los bloques a partir de los movimientos (pura: se prueba sin navegador).
+// 15-oct-2026 (Pablo, v2) · UNA sola tabla con UN solo encabezado (Fecha · Qué · Cant. · Motivo · Destino · ¿Vuelve?),
+// agrupada en Confección / No disponibles / Ventas. Misma cuenta que la celda de Stock:
+// stock = confección real − ventas (la confección real ya viene sin las no disponibles; estas se muestran aparte).
 function _hisArmar(movs) {
-  const B = { conf: [], nd: [], ven: [], tl: [], tot: { conf: 0, nd: 0, ven: 0 } };
-  let saldo = 0;
+  const B = { conf: [], nd: [], ven: [], tot: { conf: 0, nd: 0, ven: 0 } };
   (movs || []).forEach(m => {
     const c = Number(m.d_conf) || 0, f = Number(m.d_fallas) || 0, v = Number(m.d_ventas) || 0;
     if (c) { B.conf.push(m); B.tot.conf += c; }
     if (f) { B.nd.push(m); B.tot.nd += f; }
     if (v) { B.ven.push(m); B.tot.ven += v; }
-    saldo += c - f - v;
-    B.tl.push(Object.assign({}, m, { _saldo: saldo }));
   });
-  B.stock = B.tot.conf - B.tot.nd - B.tot.ven;
+  B.total = B.tot.conf + B.tot.nd;
+  B.stock = B.tot.conf - B.tot.ven;
   return B;
 }
+// Memoria del historial: el doble clic abre al instante si ya se leyó (o si se adelantó al pasar el mouse).
+const _HIS_CACHE = {};
+function _hisClave(pren, dis, col, tal) { return [pren, dis, col, tal || ''].join('|'); }
+function _hisTraer(pren, dis, col, tal) {
+  const k = _hisClave(pren, dis, col, tal), c = _HIS_CACHE[k];
+  if (c && (Date.now() - c.t) < 60000) return c.p;
+  const p = (async () => {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) throw new Error('sin sesión con la base, vuelve a entrar al ERP');
+    const r = await fetch(SB_URL + '/rest/v1/rpc/stock_historial', { method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_prenda: pren, p_diseno: dis, p_color: col, p_talla: tal || null }) });
+    if (!r.ok) { if (r.status === 401) { try { _sbVencerTok(); } catch (_) {} } throw new Error('la base respondió ' + r.status); }
+    return r.json();
+  })();
+  _HIS_CACHE[k] = { t: Date.now(), p: p };
+  p.catch(() => { delete _HIS_CACHE[k]; });
+  return p;
+}
+function _hisAdelantar(c) { try { _hisTraer(c.dataset.pren || '', c.dataset.dis || '', c.dataset.colr || '', c.dataset.tal || '').catch(() => {}); } catch (_) {} }
 async function _invHistorialSku(pren, dis, col, tal, vCelda) {
   const titulo = [pren, dis, col, tal].filter(Boolean).join(' ');
   const ov = document.createElement('div');
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:2vh 2vw';
-  ov.innerHTML = '<div id="his-box" style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);width:96vw;max-width:1500px;height:94vh;display:flex;flex-direction:column;overflow:hidden">'
-    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--bd)"><div><div style="font-size:18px;font-weight:700">📦 Historial · ' + esc(titulo) + (tal ? '' : ' <span style="font-size:12px;color:var(--mu)">(todas las tallas)</span>') + '</div><div style="font-size:12px;color:var(--mu)">De dónde salió cada unidad, cuáles no están disponibles, cuáles se vendieron y cuántas quedan.</div></div>'
-    + '<button class="btn bg bs" data-his-x style="font-size:13px">✕ Cerrar</button></div>'
-    + '<div id="his-body" style="flex:1;overflow:auto;padding:14px 18px"><div class="empty">Cargando el historial…</div></div></div>';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  ov.innerHTML = '<div id="his-box" style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);width:min(920px,96vw);max-height:86vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--bd)"><div style="font-size:15px;font-weight:700">📦 ' + esc(titulo) + (tal ? '' : ' <span style="font-size:12px;color:var(--mu)">(todas las tallas)</span>') + '</div>'
+    + '<button class="btn bg bs" data-his-x style="font-size:12px">✕</button></div>'
+    + '<div id="his-body" style="overflow:auto;padding:0 0 6px"><div class="empty">Cargando…</div></div></div>';
   document.body.appendChild(ov);
   const alTeclado = e => { if (e.key === 'Escape') cerrar(); };
   const cerrar = () => { ov.remove(); document.removeEventListener('keydown', alTeclado); };
@@ -30753,53 +30775,36 @@ async function _invHistorialSku(pren, dis, col, tal, vCelda) {
   ov.addEventListener('click', e => { if (e.target === ov || e.target.closest('[data-his-x]')) cerrar(); });
   const body = ov.querySelector('#his-body');
   let d;
-  try {
-    const tok = await _sbSesionAsegurar();
-    if (!tok) throw new Error('sin sesión con la base, vuelve a entrar al ERP');
-    const r = await fetch(SB_URL + '/rest/v1/rpc/stock_historial', { method: 'POST',
-      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ p_prenda: pren, p_diseno: dis, p_color: col, p_talla: tal || null }) });
-    if (!r.ok) { if (r.status === 401) { try { _sbVencerTok(); } catch (_) {} } throw new Error('la base respondió ' + r.status); }
-    d = await r.json();
-  } catch (e) { body.innerHTML = '<div class="empty" style="color:var(--rd)">No se pudo leer el historial: ' + esc(e.message) + '</div>'; return; }
+  try { d = await _hisTraer(pren, dis, col, tal); }
+  catch (e) { body.innerHTML = '<div class="empty" style="color:var(--rd)">No se pudo leer el historial: ' + esc(e.message) + '</div>'; return; }
   const B = _hisArmar(d.movs || []);
-  const TH = 'text-align:left;padding:6px 8px;font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--bd);position:sticky;top:0;background:var(--bg2)';
-  const TD = 'padding:6px 8px;font-size:12.5px;border-bottom:1px solid var(--bd)';
-  const tabla = (cols, filas) => '<div style="max-height:34vh;overflow:auto;border:1px solid var(--bd);border-radius:8px"><table style="width:100%;border-collapse:collapse"><thead><tr>' + cols.map(c => '<th style="' + TH + '">' + c + '</th>').join('') + '</tr></thead><tbody>' + (filas.join('') || '<tr><td colspan="' + cols.length + '" style="' + TD + ';color:var(--mu)">Sin movimientos</td></tr>') + '</tbody></table></div>';
-  const tr = celdas => '<tr>' + celdas.map(x => '<td style="' + TD + '">' + x + '</td>').join('') + '</tr>';
-  const ped = m => (m.info && m.info.nro) ? '<b>#' + esc(m.info.nro) + '</b>' : (/^\d{4,6}$/.test(String(m.ref || '')) ? '<b>#' + esc(m.ref) + '</b>' : esc(String(m.ref || '')));
-  const det = m => { const i = m.info || {}; return esc([i.lote ? 'Lote ' + i.lote : '', i.obs || '', i.origen || '', (!i.lote && !i.obs && m.ref && !/^\d+$/.test(String(m.ref))) ? m.ref : ''].filter(Boolean).join(' · ') || '—'); };
-  const chip = (t, n, c) => '<div style="flex:1;min-width:150px;border:1px solid var(--bd);border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:var(--mu);text-transform:uppercase">' + t + '</div><div style="font-size:26px;font-weight:800;color:' + c + '">' + n + '</div></div>';
-  const op = s => '<div style="font-size:26px;font-weight:300;color:var(--mu);align-self:center">' + s + '</div>';
-  let h = '<div style="display:flex;gap:10px;align-items:stretch;flex-wrap:wrap;margin-bottom:6px">'
-    + chip('Confección total', B.tot.conf, '#8ec3ff') + op('−') + chip('No disponibles', B.tot.nd, '#fca5a5') + op('−') + chip('Ventas', B.tot.ven, '#c4b5fd') + op('=') + chip('Stock', B.stock, '#fcd34d') + '</div>';
-  if (vCelda !== undefined && vCelda !== '' && Number(vCelda) !== B.stock)
-    h += '<div style="font-size:12px;color:#fbbf24;margin:4px 0 8px">⚠️ La tabla muestra ' + esc(String(vCelda)) + ' y la historia suma ' + B.stock + ': la tabla puede estar desactualizada (🔄 en Stock).</div>';
-  const sec = (abierto, titulo, n, contenido) => '<details ' + (abierto ? 'open' : '') + ' style="margin-top:12px;border:1px solid var(--bd);border-radius:10px;padding:8px 12px"><summary style="cursor:pointer;font-weight:700;font-size:14px">' + titulo + ' <span style="color:var(--mu);font-weight:400">· ' + n + '</span></summary><div style="margin-top:8px">' + contenido + '</div></details>';
-  h += sec(true, '1 · Confección total', B.tot.conf + ' unid.', tabla(['Fecha', 'Qué', 'Cant.', 'Detalle'],
-    B.conf.map(m => tr([_hisFecha(m.fecha), esc(_HIS_TIPO[m.tipo] || m.tipo), '<b>' + _hisNum(m.d_conf) + '</b>', det(m)]))));
-  h += sec(true, '2 · No disponibles', B.tot.nd + ' unid.', tabla(['Fecha', 'Qué', 'Cant.', 'Motivo', 'Destino', '¿Vuelve?'],
-    B.nd.map(m => { const i = m.info || {}; const v = _hisVuelve(i.destino, i.motivo || i.obs); const rec = /^(SI|TRUE)$/i.test(String(i.recuperado || ''));
-      return tr([_hisFecha(m.fecha), esc(_HIS_TIPO[m.tipo] || m.tipo), '<b>' + _hisNum(m.d_fallas) + '</b>', esc(i.motivo || i.obs || m.ref || '—'), esc(i.destino || '—'),
-        rec ? '<span style="color:#86efac">Ya volvió</span>' : (v.si === true ? '<span style="color:#86efac">' + v.t + '</span>' : v.si === false ? '<span style="color:#fca5a5">' + v.t + '</span>' : esc(v.t))]); })));
-  const cnt = t => B.ven.filter(m => m.tipo === t).reduce((s, m) => s + (Number(m.d_ventas) || 0), 0);
-  const resumenV = 'Ventas ' + (cnt('VENTA') + cnt('YAYITA')) + (cnt('VENTA_HISTORICA') ? ' · antes del ERP ' + cnt('VENTA_HISTORICA') : '')
-    + ((cnt('CAMBIO') + cnt('REINGRESO')) ? ' · cambios ' + _hisNum(cnt('CAMBIO') + cnt('REINGRESO')) : '')
-    + ((cnt('DEVOLUCION_CLIENTE') + cnt('DEVOLUCION_CLIENTE_REV')) ? ' · devoluciones ' + _hisNum(cnt('DEVOLUCION_CLIENTE') + cnt('DEVOLUCION_CLIENTE_REV')) : '');
-  let hv = '<div style="font-size:12px;color:var(--mu);margin-bottom:6px">' + esc(resumenV) + '</div>'
-    + tabla(['Fecha', 'Qué', 'Cant.', 'Pedido', 'Clienta', 'Canal · asesora'],
-      B.ven.map(m => { const i = m.info || {}; return tr([_hisFecha(m.fecha), esc(_HIS_TIPO[m.tipo] || m.tipo), '<b>' + _hisNum(m.d_ventas) + '</b>', ped(m), esc(i.clienta || '—'), esc([i.canal, i.asesora].filter(Boolean).join(' · ') || '—')]); }));
-  const ex = d.extras || [];
-  if (ex.length) hv += '<div style="margin-top:10px;font-size:12px;font-weight:700">↩️ Ventas que ya NO cuentan (la clienta la devolvió o la cambió) · ' + ex.length + '</div>'
-    + tabla(['Pedido', 'Clienta', 'Qué pasó'], ex.map(x => tr(['<b>#' + esc(x.nro) + '</b>', esc(x.clienta || '—'),
-      x.clase === 'DEVUELTA' ? 'Devuelta' + (x.dev ? ' (' + esc(x.dev) + ')' : '') + ' — volvió al stock'
-      : /^C2DEV /.test(String(x.marca || '')) ? 'Devuelta en ' + esc(String(x.marca).slice(6)) + ' — volvió al stock'
-      : 'Cambiada por otra prenda (' + esc(String(x.marca || '').replace(/^C2ORIG:/, 'era ')) + ')'])));
-  h += sec(false, '3 · Ventas', B.tot.ven + ' unid.', hv);
-  h += sec(true, '4 · Stock final', B.stock + ' unid.', '<div style="font-size:14px">' + B.tot.conf + ' confeccionadas − ' + B.tot.nd + ' no disponibles − ' + B.tot.ven + ' vendidas = <b style="font-size:16px;color:#fcd34d">' + B.stock + '</b> para vender</div>');
-  h += sec(false, '5 · Línea de tiempo (todo en orden, con el stock que iba quedando)', B.tl.length + ' movimientos', tabla(['Fecha', 'Qué', 'Conf.', 'No disp.', 'Venta', 'Quedan', 'Detalle'],
-    B.tl.map(m => tr([_hisFecha(m.fecha), esc(_HIS_TIPO[m.tipo] || m.tipo), (Number(m.d_conf) ? _hisNum(m.d_conf) : ''), (Number(m.d_fallas) ? _hisNum(m.d_fallas) : ''), (Number(m.d_ventas) ? _hisNum(m.d_ventas) : ''), '<b>' + m._saldo + '</b>', (m.fuente === 'pedidos' ? ped(m) + ' ' + esc((m.info && m.info.clienta) || '') : det(m))]))));
-  body.innerHTML = h;
+  const TH = 'text-align:left;padding:5px 8px;font-size:11px;color:var(--mu);text-transform:uppercase;border-bottom:1px solid var(--bd2);position:sticky;top:0;background:var(--bg2);z-index:1';
+  const TD = 'padding:4px 8px;font-size:12.5px;border-bottom:1px solid var(--bd)';
+  const fila = (cs, grp) => '<tr data-his-g="' + grp + '"' + (grp === 'ven' ? ' style="display:none"' : '') + '>' + cs.map(x => '<td style="' + TD + '">' + x + '</td>').join('') + '</tr>';
+  const grupo = (g, t, n, abierto) => '<tr data-his-grp="' + g + '" style="cursor:pointer;background:var(--bg3,rgba(255,255,255,.04))"><td colspan="6" style="padding:6px 8px;font-weight:700;font-size:13px;border-bottom:1px solid var(--bd2)"><span data-his-flecha>' + (abierto ? '▾' : '▸') + '</span> ' + t + ' <span style="font-weight:800">' + n + '</span></td></tr>';
+  const qué = m => esc(_HIS_TIPO[m.tipo] || m.tipo);
+  const nro = m => (m.info && m.info.nro) ? '#' + esc(m.info.nro) : (/^\d{4,6}$/.test(String(m.ref || '')) ? '#' + esc(m.ref) : '');
+  const det = m => { const i = m.info || {}; return esc([i.lote ? 'Lote ' + i.lote : '', i.obs || '', (!i.lote && !i.obs && m.ref && !/^\d+$/.test(String(m.ref))) ? m.ref : ''].filter(Boolean).join(' · ') || '—'); };
+  let h = '<table style="width:100%;border-collapse:collapse"><thead><tr>' + ['Fecha', 'Qué', 'Cant.', 'Motivo', 'Destino', '¿Vuelve?'].map(c => '<th style="' + TH + '">' + c + '</th>').join('') + '</tr></thead><tbody>';
+  h += grupo('conf', 'Confección real', B.tot.conf, true);
+  B.conf.forEach(m => { h += fila([_hisFecha(m.fecha), qué(m), '<b>' + _hisNum(m.d_conf) + '</b>', det(m), '', ''], 'conf'); });
+  h += grupo('nd', 'No disponibles', B.tot.nd, true);
+  B.nd.forEach(m => { const i = m.info || {}; const v = _hisVuelve(i.destino, i.motivo || i.obs); const rec = /^(SI|TRUE)$/i.test(String(i.recuperado || ''));
+    h += fila([_hisFecha(m.fecha), qué(m), '<b>' + _hisNum(m.d_fallas) + '</b>', esc(i.motivo || i.obs || m.ref || '—'), esc(i.destino || ''),
+      rec ? '<span style="color:#86efac">Ya volvió</span>' : v.si === true ? '<span style="color:#86efac">Sí</span>' : v.si === false ? '<span style="color:#fca5a5">No</span>' : ''], 'nd'); });
+  h += grupo('ven', 'Ventas', B.tot.ven, false);
+  B.ven.forEach(m => { const i = m.info || {}; const dev = /^DEVOLUCION_CLIENTE$/.test(m.tipo);
+    h += fila([_hisFecha(m.fecha), qué(m) + (nro(m) ? ' <b>' + nro(m) + '</b>' : ''), '<b>' + _hisNum(-(Number(m.d_ventas) || 0)) + '</b>', esc([i.clienta, i.canal, i.asesora].filter(Boolean).join(' · ') || det(m)), '',
+      dev ? '<span style="color:#86efac">Volvió al stock</span>' : ''], 'ven'); });
+  h += '<tr><td colspan="6" style="padding:8px;font-size:13.5px;border-top:2px solid var(--bd2)">Stock para vender: ' + B.tot.conf + ' − ' + B.tot.ven + ' = <b style="font-size:15px;color:#fcd34d">' + B.stock + '</b>'
+    + ' <span style="color:var(--mu);font-size:12px">· confección total ' + B.total + ' (' + B.tot.conf + ' reales + ' + B.tot.nd + ' no disponibles)</span>'
+    + ((vCelda !== undefined && vCelda !== '' && Number(vCelda) !== B.stock) ? ' <span style="color:#fbbf24;font-size:12px">· la tabla dice ' + esc(String(vCelda)) + ' (🔄 en Stock)</span>' : '') + '</td></tr>';
+  body.innerHTML = h + '</tbody></table>';
+  body.querySelectorAll('[data-his-grp]').forEach(g => g.addEventListener('click', () => {
+    const k = g.dataset.hisGrp, filas = body.querySelectorAll('[data-his-g="' + k + '"]'), abrir = filas.length && filas[0].style.display === 'none';
+    filas.forEach(f => { f.style.display = abrir ? '' : 'none'; });
+    g.querySelector('[data-his-flecha]').textContent = abrir ? '▾' : '▸';
+  }));
 }
 
 async function _invKardex(pren, dis, col){

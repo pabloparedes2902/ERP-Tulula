@@ -603,6 +603,18 @@
   .mkcr-c button{border:1px solid var(--bd)!important;background:var(--card)!important;color:var(--txt)!important;border-radius:6px!important;padding:1px 7px!important;font-size:10px!important;cursor:pointer}
   .mkn-previa .mkcr-carr{background:var(--bg)}
   .mkl-canal{margin-left:auto;display:inline-flex;gap:5px;align-items:center;font-size:11px;color:var(--txt2);font-weight:700}
+  /* 15-oct 15:00 · tabla de Nomenclatura como la de Anuncios */
+  .mkl-scroll{overflow-x:auto}
+  .mkl-t th,.mkl-t td{text-align:center!important}
+  .mkl-t td.a{text-align:center!important}
+  .mkl-t th{position:relative;user-select:none;white-space:nowrap}
+  .mkl-t th.ord{cursor:pointer}
+  .mkl-t th.ord:hover,.mkl-t th.act{color:var(--txt)}
+  .mkl-t tbody tr:hover td{background:rgba(109,141,255,.16)}
+  .mkl-nuevo{flex-wrap:nowrap!important}
+  .mkl-nuevo .btn{white-space:nowrap}
+  .mkl-nuevo input{min-width:170px!important}
+  .mkl-nuevo .mkl-tipos{flex-wrap:nowrap}
   .mkmodal-in .niv{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 10px;font-size:11px;color:var(--txt2)}
   .mkmodal-in .niv span{margin-right:2px;font-weight:700}
   .mkmodal-in button.accn{background:transparent;border:1.5px solid var(--bd);color:var(--txt2);
@@ -4209,7 +4221,7 @@ const MKN_CAMPO_NOM = { prod: 'producto', hook: 'hook', ang: 'ángulo', form: 'f
 async function _mknListaCargar(){
   try {
     const tok = _mkSbTok(); if (!tok) return;
-    const r = await fetch(MK_SB_URL + '/rest/v1/mk_nomenclatura?select=campo,valor,activo,tipo,usos', { headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok } });
+    const r = await fetch(MK_SB_URL + '/rest/v1/mk_nomenclatura?select=campo,valor,activo,tipo,usos,alias', { headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok } });
     if (r.ok){ MKN.extra = await r.json(); mkNuevoOpciones(); }
   } catch (e) {}
 }
@@ -4616,7 +4628,9 @@ function mkNomLista(campo){
   return (MKN.listas && MKN.listas[k]) ? [...MKN.listas[k].keys()] : [];
 }
 function mkNomBuscar(campo, v){
-  const n = _mkNomNorm(v); if (!n) return { vacio: true };
+  const n = _mkNomNorm(campo === 'tal' && typeof _mklTalCanon === 'function' ? _mklTalCanon(v) : v); if (!n) return { vacio: true };
+  { const al = ((typeof MKN !== 'undefined' && MKN.extra) || []).find(x => x.campo === campo && x.activo && (x.alias || []).some(a => _mkNomNorm(a) === _mkNomNorm(v) || _mkNomNorm(a) === n));
+    if (al) return { ok: true, valor: al.valor }; }   /* 15-oct 15:00 · nombre viejo fusionado → el valor nuevo */
   if (campo === 'hook' && n === 'na') return { ok: true, valor: 'NA' };
   const L = mkNomLista(campo);
   const exacto = L.find(x => _mkNomNorm(x) === n); if (exacto) return { ok: true, valor: exacto };
@@ -4964,7 +4978,7 @@ async function _mklSb(ruta, opt){
 async function mklCargar(){
   try {
     const [f, p] = await Promise.all([
-      _mklSb('/rest/v1/mk_nomenclatura?select=campo,valor,activo,tipo,usos,ultimo_uso,creado,quien,editado,editado_por&order=usos.desc,valor.asc'),
+      _mklSb('/rest/v1/mk_nomenclatura?select=campo,valor,activo,tipo,usos,ultimo_uso,creado,quien,editado,editado_por,alias&order=usos.desc,valor.asc'),
       _mklSb('/rest/v1/rpc/_mk_puede_editar', { method: 'POST', body: '{}' }).catch(() => false)]);
     MKL.filas = Array.isArray(f) ? f : []; MKL.puede = p === true; MKL.err = '';
     MKN.extra = MKL.filas; if (typeof mkNuevoOpciones === 'function') mkNuevoOpciones();
@@ -4984,45 +4998,139 @@ async function mklAbrir(){
   mklPintar();
 }
 function mklIr(l){ MKL.lista = l; MKL.edit = null; MKL.msg = ''; MKL.q = ''; mklPintar(); }
+/* 15-oct-2026 15:00 (pedido de Pablo) · la tabla de 🏷️ Nomenclatura se comporta como la de Anuncios:
+   fila iluminada al pasar el mouse, columnas que se ensanchan arrastrando el borde, clic en el título para ordenar
+   (mayor→menor o A→Z, y al revés), todo centrado. Productos: ROAS + CAC. Talentos: ROAS + Hook rate. */
+let MKL_ANCHOS = (() => { try { return JSON.parse(localStorage.getItem('mkl_anchos') || '{}') || {}; } catch (e) { return {}; } })();
+function _mklCols(){
+  const L = MKL.lista, c = [{ k: 'valor', t: 'Valor', s: 'txt' }];
+  if (L === 'form') c.push({ k: 'tipo', t: 'Tipo', s: 'txt' });
+  c.push({ k: 'met', t: { hook_rate: 'Hook rate', ctr: 'CTR', roas: 'ROAS' }[_mklMetTipo()], s: 'num', tit: _mklMetTitulo() });
+  if (L === 'prod') c.push({ k: 'cac', t: 'CAC', s: 'num', inv: 1, tit: 'CAC = gasto ÷ ventas: cuánto cuesta cada venta de esta prenda. Más bajo es mejor.' });
+  if (L === 'tal') c.push({ k: 'hook', t: 'Hook rate', s: 'num', tit: 'Hook rate del talento: si la persona hace que se frenen a mirar (solo videos).' });
+  c.push({ k: 'usos', t: 'Anuncios', s: 'num', tit: 'Anuncios que lo usaban al 15-oct-2026' },
+         { k: 'ult', t: 'Último uso', s: 'txt' }, { k: 'creado', t: 'Creado', s: 'txt' }, { k: 'cambio', t: 'Último cambio', s: 'txt' }, { k: 'acc', t: '', s: '' });
+  return c;
+}
+function _mklMetVal(o, t){
+  if (!o || !o.gasto) return null;
+  if (t === 'hook_rate') return o.impv ? o.v3s / o.impv * 100 : null;
+  if (t === 'ctr') return o.imp ? o.clics / o.imp * 100 : null;
+  if (t === 'cac') return o.pedidos ? o.gasto / o.pedidos : null;
+  return o.ingreso / o.gasto;
+}
+function _mklCelda(o, t){
+  const v = _mklMetVal(o, t);
+  if (!o || !o.gasto) return '<span class="mkl-f">—</span>';
+  if (v === null) return '<span class="mkl-f">' + (t === 'cac' ? 'sin ventas' : 'NA') + '</span>';
+  const P = (typeof MK_PAR !== 'undefined' && MK_PAR) || {}, par = P[t];
+  let cls = '';
+  if (o.gasto >= 20 && par) cls = t === 'cac' ? (v <= par.v ? 'b' : v <= par.a ? 'm' : 'r') : (v >= par.v ? 'b' : v >= par.a ? 'm' : 'r');
+  const txt = t === 'roas' ? v.toFixed(2) + 'x' : t === 'cac' ? 'S/ ' + Math.round(v) : v.toFixed(1) + '%';
+  return cls ? '<span class="mkpill ' + cls + '">' + txt + '</span>' : '<span title="' + (o.gasto < 20 ? 'Poca data (menos de S/ 20 de gasto)' : '') + '">' + txt + '</span>';
+}
+function mklOrdenar(k){
+  if (MKL._arrastro){ MKL._arrastro = false; return; }
+  const col = _mklCols().find(c => c.k === k); if (!col || !col.s) return;
+  if (MKL.orden && MKL.orden.k === k) MKL.orden.dir = -MKL.orden.dir;
+  else MKL.orden = { k: k, dir: col.s === 'txt' && (k === 'valor' || k === 'tipo') ? 1 : (col.inv ? 1 : -1) };
+  mklPintar();
+}
 function mklPintar(){
   const el = document.getElementById('mklCuerpo'); if (!el) return;
   const filas = MKL.filas || [], L = MKL.lista, esForm = L === 'form';
   const deLista = filas.filter(f => f.campo === L);
   const q = MKL.q.trim().toLowerCase();
-  const vis = deLista.filter(f => (MKL.verOff || f.activo) && (!q || String(f.valor).toLowerCase().includes(q)))
-    .sort((a, b) => (Number(b.activo) - Number(a.activo)) || String(b.creado || '').localeCompare(String(a.creado || '')) || ((b.usos || 0) - (a.usos || 0)) || String(a.valor).localeCompare(String(b.valor)));   /* 15-oct · lo nuevo arriba */
+  const met = _mklMetricas(), cols = _mklCols(), tM = _mklMetTipo();
+  const datos = deLista.filter(f => (MKL.verOff || f.activo) && (!q || String(f.valor).toLowerCase().includes(q))).map(f => {
+    const o = met[L + '\t' + _mklClave(L, f.valor)];
+    return { f: f, o: o, met: _mklMetVal(o, tM), cac: _mklMetVal(o, 'cac'), hook: _mklMetVal(o, 'hook_rate'),
+             valor: String(f.valor), tipo: String(f.tipo || ''), usos: f.usos || 0, ult: f.ultimo_uso || '', creado: f.creado || '', cambio: f.editado || '' };
+  });
+  const base = (a, b) => (Number(b.f.activo) - Number(a.f.activo)) || String(b.creado).localeCompare(String(a.creado)) || (b.usos - a.usos) || a.valor.localeCompare(b.valor);
+  const O = MKL.orden;
+  datos.sort((a, b) => {
+    if (!O) return base(a, b);
+    const x = a[O.k], y = b[O.k];
+    const vx = (x === null || x === '' || x === undefined), vy = (y === null || y === '' || y === undefined);
+    if (vx !== vy) return vx ? 1 : -1;   /* vacíos siempre al final */
+    if (vx && vy) return base(a, b);
+    const r = typeof x === 'number' ? (x - y) : String(x).localeCompare(String(y), 'es', { sensitivity: 'base' });
+    return (r * O.dir) || base(a, b);
+  });
   const off = deLista.filter(f => !f.activo).length;
   const pills = MKL_LISTAS.map(([k, t]) => '<button class="btn' + (k === L ? ' on' : '') + '" onclick="mklIr(\'' + k + '\')">' + t
     + ' <span class="mkl-n">' + filas.filter(f => f.campo === k && f.activo).length + '</span></button>').join('');
   const tipoSel = (id, v) => '<span class="mkl-tipos" id="' + id + '">' + Object.keys(MKL_TIPOS).map(k => '<label><input type="checkbox" value="' + k + '"' + (String(v || 'video').split(',').includes(k) ? ' checked' : '') + '> ' + MKL_TIPOS[k] + '</label>').join('') + '</span>';   /* 15-oct · uno o varios */
   const nuevo = MKL.puede ? '<div class="mkl-nuevo"><input id="mklNuevo" maxlength="60" placeholder="Nuevo valor para ' + esc(MKL_LISTAS.find(x => x[0] === L)[1]) + '…" onkeydown="if(event.key===\'Enter\')mklGuardar(\'\')">'
     + (esForm ? tipoSel('mklNuevoTipo', 'video') : '') + '<button class="btn on" onclick="mklGuardar(\'\')">➕ Agregar</button></div>' : '';
-  const met = _mklMetricas();   /* 15-oct · indicador propio de cada lista */
-  const filasHtml = vis.map((f, i) => {
-    const ed = MKL.edit === f.valor;
+  const ancho = k => { const w = MKL_ANCHOS[L + ':' + k]; return w ? ' style="width:' + w + 'px;min-width:' + w + 'px"' : ''; };
+  const thead = cols.map(c => '<th data-k="' + c.k + '"' + ancho(c.k) + (c.tit ? ' title="' + esc(c.tit).replace(/"/g, '&quot;') + '"' : '')
+    + (c.s ? ' class="ord' + (O && O.k === c.k ? ' act' : '') + '" onclick="mklOrdenar(\'' + c.k + '\')"' : '') + '>' + c.t
+    + (O && O.k === c.k ? (O.dir > 0 ? ' ▲' : ' ▼') : '') + '<span class="mkgrip" data-k="' + c.k + '" onmousedown="mklRZ(event,\'' + c.k + '\')"></span></th>').join('');
+  const filasHtml = datos.map(d => {
+    const f = d.f, ed = MKL.edit === f.valor;
     const val = ed ? '<input id="mklEdVal" maxlength="60" value="' + esc(f.valor).replace(/"/g, '&quot;') + '" onkeydown="if(event.key===\'Enter\')mklGuardar(MKL.edit)">' : esc(f.valor);
-    const tipo = esForm ? '<td>' + (ed ? tipoSel('mklEdTipo', f.tipo) : String(f.tipo || 'video').split(',').map(k => MKL_TIPOS[k] || k).join(' · ')) + '</td>' : '';
     const cambio = f.editado ? _mklQuien(f.editado_por) + ' · ' + _mklFecha(f.editado) : '';
     const acc = !MKL.puede ? '' : ed
       ? '<button class="btn on" onclick="mklGuardar(MKL.edit)">Guardar</button> <button class="btn" onclick="MKL.edit=null;mklPintar()">Cancelar</button>'
       : '<button class="btn" title="Editar" onclick="MKL.edit=' + esc(JSON.stringify(f.valor)).replace(/"/g, '&quot;') + ';MKL.msg=\'\';mklPintar()">✏️</button> '
         + '<button class="btn" onclick="mklActivo(' + esc(JSON.stringify(f.valor)).replace(/"/g, '&quot;') + ',' + (!f.activo) + ')">' + (f.activo ? 'Desactivar' : 'Activar') + '</button>';
-    return '<tr class="' + (f.activo ? '' : 'off') + '"><td class="v">' + val + (f.activo ? '' : ' <span class="mkl-tag">desactivado</span>') + '</td>' + tipo
-      + '<td class="n">' + _mklMetCelda(met[MKL.lista + '\t' + _qfClave(f.valor)]) + '</td>'
-      + '<td class="n">' + (f.usos || 0) + '</td><td>' + (f.ultimo_uso ? String(f.ultimo_uso).split('-').reverse().join('/') : '—') + '</td>'
-      + '<td>' + esc(_mklQuien(f.quien)) + (f.creado ? '<br><span class="mkl-f">' + _mklFecha(f.creado) + '</span>' : '') + '</td>'
-      + '<td>' + esc(cambio || '—') + '</td><td class="a">' + acc + '</td></tr>';
+    const pie = d.o && d.o.gasto ? '<br><span class="mkl-f">S/ ' + Math.round(d.o.gasto) + ' · ' + d.o.ads + ' anuncio' + (d.o.ads > 1 ? 's' : '') + (d.o.gasto < 20 ? ' · poca data' : '') + '</span>' : '';
+    const celda = { valor: '<td class="v">' + val + (f.activo ? '' : ' <span class="mkl-tag">desactivado</span>') + '</td>',
+      tipo: '<td>' + (ed ? tipoSel('mklEdTipo', f.tipo) : String(f.tipo || 'video').split(',').map(k => MKL_TIPOS[k] || k).join(' · ')) + '</td>',
+      met: '<td class="n">' + _mklCelda(d.o, tM) + pie + '</td>',
+      cac: '<td class="n">' + _mklCelda(d.o, 'cac') + '</td>',
+      hook: '<td class="n">' + _mklCelda(d.o, 'hook_rate') + '</td>',
+      usos: '<td class="n">' + d.usos + '</td>',
+      ult: '<td>' + (f.ultimo_uso ? String(f.ultimo_uso).split('-').reverse().join('/') : '—') + '</td>',
+      creado: '<td>' + esc(_mklQuien(f.quien)) + (f.creado ? '<br><span class="mkl-f">' + _mklFecha(f.creado) + '</span>' : '') + '</td>',
+      cambio: '<td>' + esc(cambio || '—') + '</td>',
+      acc: '<td class="a">' + acc + '</td>' };
+    return '<tr class="' + (f.activo ? '' : 'off') + '">' + cols.map(c => celda[c.k]).join('') + '</tr>';
   }).join('');
   el.innerHTML = '<div class="mkl">'
     + '<div class="mkl-cab"><b>Listas para nombrar anuncios</b><span>Lo que está activo acá es lo que ofrece ➕ Nuevo anuncio. '
-    + (MKL.puede ? 'Puedes crear, editar y desactivar.' : '<b>Solo lectura</b>: editan Admin y Marketing con Edición.') + '</span></div>'
+    + (MKL.puede ? 'Puedes crear, editar y desactivar.' : '<b>Solo lectura</b>: editan Admin y Marketing con Edición.') + ' Clic en un título para ordenar; arrastra su borde para cambiar el ancho.</span></div>'
     + '<div class="mkl-pills">' + pills + '<span class="mkl-canal">Resultados de: ' + [['all', 'Todo'], ['wa', 'WhatsApp'], ['web', 'Web']].map(([k, t]) => '<button class="btn' + ((typeof MKCANAL !== 'undefined' ? MKCANAL : 'all') === k ? ' on' : '') + '" onclick="mklCanal(\'' + k + '\')">' + t + '</button>').join('') + '</span></div>'
     + '<div class="mkl-bar"><input id="mklQ" placeholder="🔍 Buscar" value="' + esc(MKL.q).replace(/"/g, '&quot;') + '" oninput="MKL.q=this.value;mklPintar();const x=document.getElementById(\'mklQ\');x.focus();x.setSelectionRange(x.value.length,x.value.length)">'
     + '<label><input type="checkbox"' + (MKL.verOff ? ' checked' : '') + ' onchange="MKL.verOff=this.checked;mklPintar()"> Ver desactivados (' + off + ')</label>' + nuevo + '</div>'
     + (MKL.err ? '<div class="mkl-msg mal">' + esc(MKL.err) + '</div>' : '') + (MKL.msg ? '<div class="mkl-msg">' + MKL.msg + '</div>' : '')
-    + '<table class="mkl-t"><thead><tr><th>Valor</th>' + (esForm ? '<th>Tipo</th>' : '') + '<th title="' + esc(_mklMetTitulo()) + '">' + _mklMetNombre() + '</th><th title="Anuncios que lo usaban al 15-oct-2026">Anuncios</th><th>Último uso</th><th>Creado</th><th>Último cambio</th><th></th></tr></thead><tbody>'
-    + (filasHtml || '<tr><td colspan="8" class="mkl-vacio">Nada para mostrar.</td></tr>') + '</tbody></table></div>';
+    + '<div class="mkl-scroll"><table class="mkl-t"><thead><tr>' + thead + '</tr></thead><tbody>'
+    + (filasHtml || '<tr><td colspan="' + cols.length + '" class="mkl-vacio">Nada para mostrar.</td></tr>') + '</tbody></table></div></div>';
   if (MKL.edit !== null){ const x = document.getElementById('mklEdVal'); if (x) x.focus(); }
+}
+/* ancho de columna: arrastrar el borde derecho del título (igual que en Anuncios); se recuerda por lista */
+function mklRZ(e, k){
+  e.preventDefault(); e.stopPropagation();
+  const th = e.target.closest('th'); if (!th) return;
+  MKL.rz = { k: k, x0: e.clientX, w0: th.offsetWidth, th: th };
+  document.body.style.cursor = 'col-resize';
+}
+document.addEventListener('mousemove', e => {
+  const z = typeof MKL !== 'undefined' && MKL.rz; if (!z) return;
+  if (Math.abs(e.clientX - z.x0) > 2) MKL._arrastro = true;
+  const w = Math.max(50, z.w0 + (e.clientX - z.x0));
+  z.th.style.width = w + 'px'; z.th.style.minWidth = w + 'px';
+  MKL_ANCHOS[MKL.lista + ':' + z.k] = w;
+});
+document.addEventListener('mouseup', () => {
+  if (typeof MKL === 'undefined' || !MKL.rz) return;
+  MKL.rz = null; document.body.style.cursor = '';
+  try { localStorage.setItem('mkl_anchos', JSON.stringify(MKL_ANCHOS)); } catch (e) {}
+  setTimeout(() => { MKL._arrastro = false; }, 50);
+});
+/* clave para juntar los anuncios con el valor de la lista: sin tildes ni mayúsculas; los nombres viejos fusionados
+   (alias) cuentan para el valor nuevo; en Talento, «Karina y Daniela» = «Daniela, Karina». */
+function _mklTalCanon(s){
+  return String(s || '').split(/\s*(?:,|;|&|\+|\.|\s-\s|-|\sy\s)\s*/i).map(x => x.trim()).filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' })).join(', ');
+}
+function _mklClave(campo, v){ return _qfClave(campo === 'tal' ? _mklTalCanon(v) : v); }
+function _mklAlias(){
+  const m = {};
+  ((typeof MKL !== 'undefined' && MKL.filas) || []).forEach(f => (f.alias || []).forEach(a => { m[f.campo + '\t' + _mklClave(f.campo, a)] = f.campo + '\t' + _mklClave(f.campo, f.valor); }));
+  return m;
 }
 /* 15-oct-2026 (decisión de Pablo) · cada lista se mide con SU indicador, no con las ventas de la prenda:
    Hook → Hook rate (se frenaron a mirar ÷ impresiones de video) · CTA → CTR (clics en el enlace ÷ impresiones) ·
@@ -5045,16 +5153,16 @@ function _mklMetTitulo(){
            roas: 'ROAS = ingreso (solo prendas) ÷ gasto. Mide si lo que se pautó con este valor vende.' }[_mklMetTipo()] + ' Período: ' + txt + ' (pestaña Anuncios). Canal: ' + ({ all: 'WhatsApp + web', wa: 'WhatsApp', web: 'web' }[typeof MKCANAL !== 'undefined' ? MKCANAL : 'all'] || 'todos') + '.' + (MKL.lista === 'tal' ? ' Talento lleva además su hook rate (si la persona hace que se frenen a mirar).' : '');
 }
 function _mklMetricas(){
-  const pos = { prod: 1, hook: 2, ang: 3, form: 4, tc: 5, cta: 6, tal: 7 }, out = {};
+  const pos = { prod: 1, hook: 2, ang: 3, form: 4, tc: 5, cta: 6, tal: 7 }, out = {}, alias = _mklAlias();
   /* 15-oct 13:00 · solo los anuncios del canal elegido: las ventas de cada anuncio se cargan por canal (en «Todo» cuentan las dos) */
   (typeof _qfFilas === 'function' ? _qfFilas() : []).forEach(r => {
     if (r._nuevo) return;
     const p = _qfPartes(r); if (!p) return;
     const a = r.act || {}, est = mkEsEstatico(r);
     Object.keys(pos).forEach(c => {
-      const k = c + '\t' + _qfClave(p[pos[c]]);
-      const o = out[k] || (out[k] = { ads: 0, gasto: 0, imp: 0, impv: 0, v3s: 0, clics: 0, ingreso: 0 });
-      o.ads++; o.gasto += +a.gasto || 0; o.imp += +a.impresiones || 0; o.clics += +a.link_clicks || 0; o.ingreso += +a.ingreso || 0;
+      let k = c + '\t' + _mklClave(c, p[pos[c]]); k = alias[k] || k;   /* 15-oct 15:00 · alias y talentos en cualquier orden */
+      const o = out[k] || (out[k] = { ads: 0, gasto: 0, imp: 0, impv: 0, v3s: 0, clics: 0, ingreso: 0, pedidos: 0 });
+      o.ads++; o.gasto += +a.gasto || 0; o.imp += +a.impresiones || 0; o.clics += +a.link_clicks || 0; o.ingreso += +a.ingreso || 0; o.pedidos += +a.pedidos || 0;
       if (!est){ o.impv += +a.impresiones || 0; o.v3s += +a.v3s || 0; }
     });
   });
@@ -5071,12 +5179,7 @@ function _mklMetCelda(o){
   const par = (typeof MK_PAR !== 'undefined' && MK_PAR[t]) || { v: 0, a: 0 };
   const cls = o.gasto < 20 ? '' : (v >= par.v ? 'b' : v >= par.a ? 'm' : 'r');
   const txt = t === 'roas' ? v.toFixed(2) + 'x' : v.toFixed(1) + '%';
-  /* 15-oct 13:00 (pedido de Pablo) · Talento: además del ROAS, su hook rate */
-  let extra = '';
-  if (MKL.lista === 'tal'){
-    const hr = o.impv ? o.v3s / o.impv * 100 : null, ph = (typeof MK_PAR !== 'undefined' && MK_PAR.hook_rate) || { v: 30, a: 15 };
-    extra = hr === null ? ' <span class="mkl-f">· hook NA</span>' : ' <span class="mkpill ' + (o.gasto < 20 ? '' : (hr >= ph.v ? 'b' : hr >= ph.a ? 'm' : 'r')) + '" title="Hook rate del talento">hook ' + hr.toFixed(1) + '%</span>';
-  }
+  const extra = '';   /* 15-oct 15:00 · el hook rate del Talento va en su propia columna (ordenable) */
   return (cls ? '<span class="mkpill ' + cls + '">' + txt + '</span>' : '<span title="Poca data (menos de S/ 20 de gasto)">' + txt + '</span>') + extra
     + '<br><span class="mkl-f">S/ ' + Math.round(o.gasto) + ' · ' + o.ads + ' anuncio' + (o.ads > 1 ? 's' : '') + (o.gasto < 20 ? ' · poca data' : '') + '</span>';
 }
