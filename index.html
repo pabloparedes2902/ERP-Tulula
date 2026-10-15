@@ -8727,42 +8727,179 @@ async function loadResenas() {
   try { const d = await _resRpc('resenas_admin_lista', { p_ver: RES.ver }); RES.rows = d.rows || []; _resBadge(d.pendientes || 0); _resPintar(d.pendientes || 0); }
   catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudieron leer las reseñas: ' + esc(e.message) + '</div>'; }
 }
+// 15-oct-2026 (Pablo) · EDICIÓN DE FOTOS DE RESEÑAS: recorte fijo 4:5 (mover + acercar), luz y contraste.
+// La original nunca se toca: la editada se guarda aparte en resenas/editadas/ y es la que ve la tienda.
+// Se elige foto por foto cuál se publica (rpc resena_admin_fotos). El cupón se libera recién al aprobar.
+const RES_ED = { W: 360, H: 450, OUT_W: 1080, OUT_H: 1350 };
+RES.sel = RES.sel || {};
+function _resRecorte(iw, ih, W, H, zoom, ox, oy) {
+  const z = Math.max(1, Math.min(4, Number(zoom) || 1));
+  const s = Math.max(W / iw, H / ih) * z, w = iw * s, h = ih * s;
+  const cx = (a, lo, hi) => Math.max(lo, Math.min(hi, a));
+  return { s, w, h, ox: cx(ox == null ? (W - w) / 2 : ox, W - w, 0), oy: cx(oy == null ? (H - h) / 2 : oy, H - h, 0) };
+}
+window._resRecorte = _resRecorte;
+function _resFiltro(luz, con) { return 'brightness(' + (1 + (Number(luz) || 0) / 100) + ') contrast(' + (1 + (Number(con) || 0) / 100) + ')'; }
+window._resFiltro = _resFiltro;
+// Safari viejo no aplica ctx.filter: se ajusta píxel por píxel con la misma fórmula (brillo y luego contraste)
+function _resAjustePix(c, W, H, luz, con) {
+  const b = 1 + (Number(luz) || 0) / 100, k = 1 + (Number(con) || 0) / 100; if (b === 1 && k === 1) return;
+  const d = c.getImageData(0, 0, W, H), p = d.data;
+  for (let j = 0; j < p.length; j += 4) for (let q = 0; q < 3; q++) p[j + q] = Math.max(0, Math.min(255, ((p[j + q] * b) / 255 - 0.5) * k * 255 + 127.5));
+  c.putImageData(d, 0, 0);
+}
+window._resAjustePix = _resAjustePix;
+const _RES_FILTRO_OK = (() => { try { return 'filter' in document.createElement('canvas').getContext('2d'); } catch (_) { return false; } })();
+function _resSelDe(r) {
+  if (RES.sel[r.id]) return RES.sel[r.id];
+  const pub = r.fotos_pub || [], ed = (r.fotos_edit && r.fotos_edit.fotos) || [];
+  RES.sel[r.id] = (r.fotos || []).map((u, i) => {
+    const e = ed.find(x => x && x.i === i) || null;
+    const url = e && e.url ? e.url : u;
+    return { orig: u, url, edit: e ? e.edit : null, pub: r.fotos_ok === true ? pub.indexOf(url) >= 0 : false };
+  });
+  return RES.sel[r.id];
+}
+async function _resSubirEditada(blob, nombre) {
+  const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('Sin sesión con la base. Vuelve a entrar al ERP.');
+  const ruta = 'editadas/' + nombre;
+  const r = await fetch(SB_URL + '/storage/v1/object/resenas/' + ruta, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'image/jpeg', 'x-upsert': 'false' }, body: blob });
+  if (!r.ok) { if (r.status === 401) _sbVencerTok(); throw new Error('No se pudo guardar la foto (' + r.status + ')'); }
+  return SB_URL + '/storage/v1/object/public/resenas/' + ruta;
+}
+function _resEditor(r, i, alListo) {
+  const f = _resSelDe(r)[i], E = Object.assign({ zoom: 1, ox: null, oy: null, luz: 0, con: 0 }, f.edit || {});
+  const ov = document.createElement('div');
+  ov.id = 'resEdOv';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;padding:12px';
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:14px;padding:16px;max-width:760px;width:100%;max-height:96vh;overflow:auto;display:flex;gap:18px;flex-wrap:wrap">'
+    + '<div><canvas width="' + RES_ED.W + '" height="' + RES_ED.H + '" style="width:' + RES_ED.W + 'px;height:' + RES_ED.H + 'px;border-radius:10px;background:#111;touch-action:none;cursor:grab;display:block"></canvas>'
+    + '<div style="font-size:11px;color:var(--mu);margin-top:6px;text-align:center">Arrastra la foto para encuadrar · formato 4:5 vertical</div></div>'
+    + '<div style="flex:1 1 260px;min-width:240px;display:flex;flex-direction:column;gap:12px">'
+      + '<h3 style="margin:0;font-size:17px">Editar foto ' + (i + 1) + ' · ' + esc(String(r.nombre || '')) + '</h3>'
+      + '<label style="font-size:13px">🔍 Acercar <input type="range" class="ed-z" min="1" max="4" step="0.01" style="width:100%"></label>'
+      + '<label style="font-size:13px">☀️ Luz <span class="ed-lv"></span><input type="range" class="ed-l" min="-40" max="40" step="1" style="width:100%"></label>'
+      + '<label style="font-size:13px">◐ Contraste <span class="ed-cv"></span><input type="range" class="ed-c" min="-30" max="30" step="1" style="width:100%"></label>'
+      + '<div style="font-size:12px;color:var(--mu);line-height:1.5">Solo encuadre y luz: no cambiamos la apariencia de la clienta ni la prenda. ' + (r.permiso_editar === true ? '<b style="color:var(--gn)">Ella autorizó el encuadre.</b>' : r.permiso_editar === false ? '<b style="color:var(--rd)">Ella NO autorizó editar: publica la original o no la publiques.</b>' : 'Foto enviada antes de pedir permiso.') + '</div>'
+      + '<div class="ed-st" style="font-size:12px;min-height:16px"></div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:auto"><button type="button" class="btn bp bs ed-ok">Guardar edición</button><button type="button" class="btn bg bs ed-rs">Restablecer</button><button type="button" class="btn bg bs ed-x">Cancelar</button></div>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  const cv = ov.querySelector('canvas'), ctx = cv.getContext('2d'), st = ov.querySelector('.ed-st');
+  const zI = ov.querySelector('.ed-z'), lI = ov.querySelector('.ed-l'), cI = ov.querySelector('.ed-c');
+  const img = new Image(); img.crossOrigin = 'anonymous';
+  let lista = false;
+  function pinta() {
+    if (!lista) return;
+    const k = _resRecorte(img.naturalWidth, img.naturalHeight, RES_ED.W, RES_ED.H, E.zoom, E.ox, E.oy); E.ox = k.ox; E.oy = k.oy;
+    ctx.clearRect(0, 0, RES_ED.W, RES_ED.H); ctx.filter = _resFiltro(E.luz, E.con);
+    ctx.drawImage(img, k.ox, k.oy, k.w, k.h); ctx.filter = 'none';
+    if (!_RES_FILTRO_OK) _resAjustePix(ctx, RES_ED.W, RES_ED.H, E.luz, E.con);
+    ov.querySelector('.ed-lv').textContent = (E.luz > 0 ? '+' : '') + E.luz; ov.querySelector('.ed-cv').textContent = (E.con > 0 ? '+' : '') + E.con;
+  }
+  function sync() { zI.value = E.zoom; lI.value = E.luz; cI.value = E.con; pinta(); }
+  img.onload = () => { lista = true; sync(); };
+  img.onerror = () => { st.style.color = 'var(--rd)'; st.textContent = 'No se pudo abrir la foto.'; };
+  img.src = f.orig;
+  zI.addEventListener('input', () => { // acercar desde el centro del encuadre
+    const a = _resRecorte(img.naturalWidth, img.naturalHeight, RES_ED.W, RES_ED.H, E.zoom, E.ox, E.oy);
+    const cxI = (RES_ED.W / 2 - a.ox) / a.s, cyI = (RES_ED.H / 2 - a.oy) / a.s;
+    E.zoom = Number(zI.value);
+    const b = _resRecorte(img.naturalWidth, img.naturalHeight, RES_ED.W, RES_ED.H, E.zoom, 0, 0);
+    E.ox = RES_ED.W / 2 - cxI * b.s; E.oy = RES_ED.H / 2 - cyI * b.s; pinta();
+  });
+  lI.addEventListener('input', () => { E.luz = Number(lI.value); pinta(); });
+  cI.addEventListener('input', () => { E.con = Number(cI.value); pinta(); });
+  let drag = null;
+  cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, ox: E.ox, oy: E.oy }; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; });
+  cv.addEventListener('pointermove', e => { if (!drag) return; E.ox = drag.ox + (e.clientX - drag.x); E.oy = drag.oy + (e.clientY - drag.y); pinta(); });
+  const suelta = () => { drag = null; cv.style.cursor = 'grab'; };
+  cv.addEventListener('pointerup', suelta); cv.addEventListener('pointercancel', suelta);
+  cv.addEventListener('wheel', e => { e.preventDefault(); zI.value = Math.max(1, Math.min(4, E.zoom + (e.deltaY < 0 ? 0.08 : -0.08))); zI.dispatchEvent(new Event('input')); }, { passive: false });
+  const cerrar = () => ov.remove();
+  ov.querySelector('.ed-x').addEventListener('click', cerrar);
+  ov.addEventListener('click', e => { if (e.target === ov) cerrar(); });
+  ov.querySelector('.ed-rs').addEventListener('click', () => { Object.assign(E, { zoom: 1, ox: null, oy: null, luz: 0, con: 0 }); sync(); });
+  ov.querySelector('.ed-ok').addEventListener('click', async () => {
+    if (!lista) return;
+    const bt = ov.querySelectorAll('button'); bt.forEach(b => b.disabled = true); st.style.color = 'var(--mu)'; st.textContent = 'Guardando la foto editada…';
+    try {
+      const k = _resRecorte(img.naturalWidth, img.naturalHeight, RES_ED.W, RES_ED.H, E.zoom, E.ox, E.oy), m = RES_ED.OUT_W / RES_ED.W;
+      const oc = document.createElement('canvas'); oc.width = RES_ED.OUT_W; oc.height = RES_ED.OUT_H;
+      const o = oc.getContext('2d'); o.filter = _resFiltro(E.luz, E.con); o.drawImage(img, k.ox * m, k.oy * m, k.w * m, k.h * m);
+      if (!_RES_FILTRO_OK) _resAjustePix(o, RES_ED.OUT_W, RES_ED.OUT_H, E.luz, E.con);
+      const blob = await new Promise((ok, no) => oc.toBlob(b => b ? ok(b) : no(new Error('No se pudo armar la foto')), 'image/jpeg', 0.88));
+      const url = await _resSubirEditada(blob, r.id + '-' + (i + 1) + '-' + Date.now() + '.jpg');
+      f.url = url; f.edit = { zoom: E.zoom, ox: E.ox, oy: E.oy, luz: E.luz, con: E.con }; f.pub = true;
+      toast('✓ Foto editada. Márcala y aprueba para publicarla.', 'ok'); cerrar(); alListo && alListo();
+    } catch (e) { st.style.color = 'var(--rd)'; st.textContent = e.message; bt.forEach(b => b.disabled = false); }
+  });
+}
 function _resPintar(pend) {
   const w = document.getElementById('res-w');
   const est = n => '<span style="color:#E2A21B;letter-spacing:1px">' + '★★★★★'.slice(0, n) + '</span><span style="color:var(--bd)">' + '★★★★★'.slice(0, 5 - n) + '</span>';
   const tit = s => String(s || '').toLowerCase().replace(/(^|\s)\S/g, m => m.toUpperCase());
   const fecha = s => { try { return new Date(s).toLocaleDateString('es-PE', { day: 'numeric', month: 'short' }); } catch (_) { return ''; } };
-  const estado = r => !(r.fotos || []).length ? '' : r.fotos_ok === true ? '<span style="color:var(--gn);font-size:12px">✓ foto publicada</span>' : r.fotos_ok === false ? '<span style="color:var(--rd);font-size:12px">✗ foto no publicada</span>' : '<span style="color:#B7791F;font-size:12px">● foto por revisar</span>';
+  const estado = r => !(r.fotos || []).length ? '' : r.fotos_ok === true ? '<span style="color:var(--gn);font-size:12px">✓ foto aprobada</span>' : r.fotos_ok === false ? '<span style="color:var(--rd);font-size:12px">✗ foto no publicada</span>' : '<span style="color:#B7791F;font-size:12px">● foto por revisar</span>';
+  const permiso = r => !(r.fotos || []).length ? '' : r.permiso_editar === true ? '<span style="font-size:11px;color:var(--gn)">✓ autorizó encuadrar</span>' : r.permiso_editar === false ? '<span style="font-size:11px;color:var(--rd)">✗ no autorizó editar</span>' : '<span style="font-size:11px;color:var(--mu)">permiso: no se le preguntó</span>';
+  const cupon = r => {
+    if (r.fotos_ok !== true || !r.cupon) return '';
+    const txt = 'Hola ' + (r.nombre || '') + ' 💙 ¡Gracias por tu foto con tu ' + tit(r.diseno) + '! Ya la aprobamos. Este es tu cupón de S/ 50 para tu próxima compra: ' + r.cupon + ' (en prendas, compra mínima S/ 150, un uso por clienta).';
+    return '<div style="margin-top:8px;font-size:12px;background:var(--bg3);border-radius:8px;padding:8px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">🎁 Cupón <b>' + esc(r.cupon) + '</b> '
+      + (r.cupon_enviado_at ? '<span style="color:var(--gn)">✓ enviado ' + fecha(r.cupon_enviado_at) + '</span>'
+        : (r.celular ? '<a class="btn bp bs res-cup" target="_blank" rel="noopener" href="https://wa.me/' + esc(r.celular) + '?text=' + encodeURIComponent(txt) + '">📲 Enviar cupón por WhatsApp</a>' : '<span style="color:var(--rd)">sin celular</span>')) + '</div>';
+  };
+  const fotosHtml = r => _resSelDe(r).map((f, i) => '<div style="display:flex;flex-direction:column;gap:4px;align-items:center">'
+      + '<a href="' + esc(f.url) + '" target="_blank" rel="noopener" style="position:relative"><img src="' + esc(f.url) + '" alt="" style="width:150px;height:188px;object-fit:cover;border-radius:10px;background:var(--bg3)">'
+      + (f.url !== f.orig ? '<span style="position:absolute;left:6px;top:6px;font-size:10px;background:#173B61;color:#fff;border-radius:6px;padding:1px 6px">editada</span>' : '') + '</a>'
+      + '<div style="display:flex;gap:6px;align-items:center"><button type="button" class="btn bg bs res-ed" data-i="' + i + '" style="font-size:11px">✏️ Editar</button>'
+      + '<label style="font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" class="res-pub" data-i="' + i + '"' + (f.pub ? ' checked' : '') + '> Publicar</label></div></div>').join('');
   const card = r => '<div class="res-c" data-id="' + r.id + '" style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:14px;display:flex;gap:14px;flex-wrap:wrap' + (r.publicar ? '' : ';opacity:.55') + '">'
-    + '<div style="display:flex;gap:8px;flex-wrap:wrap">' + (r.fotos || []).map(u => '<a href="' + esc(u) + '" target="_blank" rel="noopener"><img src="' + esc(u) + '" alt="" style="width:150px;height:200px;object-fit:cover;border-radius:10px;background:var(--bg3)"></a>').join('') + '</div>'
+    + '<div style="display:flex;gap:10px;flex-wrap:wrap">' + fotosHtml(r) + '</div>'
     + '<div style="flex:1 1 260px;min-width:220px">'
       + '<div style="font-weight:800">' + esc(tit(r.diseno)) + (r.color ? ' <span style="font-weight:400;color:var(--mu)">· ' + esc(tit(r.color)) + '</span>' : '') + (r.prueba ? ' <span style="font-size:11px;background:var(--bg3);border-radius:6px;padding:1px 6px">PRUEBA</span>' : '') + '</div>'
       + '<div style="margin:2px 0 6px">' + est(r.estrellas) + ' <span style="font-size:12px;color:var(--mu)">' + esc(r.nombre || '') + ' · pedido ' + esc(r.pedido || '') + ' · ' + fecha(r.creado) + '</span></div>'
       + (r.comentario ? '<div style="font-size:14px;white-space:pre-wrap;margin-bottom:8px">“' + esc(r.comentario) + '”</div>' : '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Sin comentario</div>')
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-        + ((r.fotos || []).length ? '<button type="button" class="btn bp bs res-ok">✓ Publicar foto</button><button type="button" class="btn bg bs res-no">✗ No publicar foto</button>' : '')
-        + '<button type="button" class="btn bg bs res-oc" style="font-size:11px">' + (r.publicar ? 'Ocultar reseña' : 'Volver a mostrar reseña') + '</button>' + estado(r)
+        + ((r.fotos || []).length ? '<button type="button" class="btn bp bs res-ok">✓ Aprobar fotos marcadas</button><button type="button" class="btn bg bs res-no">✗ No publicar ninguna</button>' : '')
+        + '<button type="button" class="btn bg bs res-oc" style="font-size:11px">' + (r.publicar ? 'Ocultar reseña' : 'Volver a mostrar reseña') + '</button>' + estado(r) + ' ' + permiso(r)
         + (r.revisado_por ? '<span style="font-size:11px;color:var(--mu)">revisó ' + esc(r.revisado_por.split('@')[0]) + '</span>' : '')
-      + '</div><div class="res-st" style="font-size:12px;margin-top:6px"></div></div></div>';
+      + '</div>' + cupon(r) + '<div class="res-st" style="font-size:12px;margin-top:6px"></div></div></div>';
   w.innerHTML = '<div style="padding:16px;max-width:1000px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h2 style="margin:0;font-size:20px">Reseñas por aprobar</h2>'
     + '<div style="display:flex;gap:6px">' + [['pendientes', 'Fotos por revisar (' + pend + ')'], ['todas', 'Todas']].map(t => '<button type="button" class="btn ' + (RES.ver === t[0] ? 'bp' : 'bg') + ' bs res-ver" data-v="' + t[0] + '">' + t[1] + '</button>').join('') + '</div></div>'
-    + '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">Las estrellas y el comentario ya se ven en la tienda. La foto solo aparece cuando aquí la apruebas: que la prenda se vea completa, con luz y nítida. El cupón ya se le dio a la clienta al subirla.</div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:12px;line-height:1.6">Revisión final de Tulula. Aprueba solo si: <b>sale solo la clienta</b> · <b>la prenda se ve completa y bien puesta</b> · <b>nítida y con luz</b> · <b>no es captura de pantalla</b>. Con ✏️ Editar recortas en 4:5 y ajustas luz; la original no se toca. Las estrellas y el comentario ya se ven en la tienda; la foto, solo la que marques. Al aprobar se libera el cupón de S/ 50 para enviárselo por WhatsApp.</div>'
     + (RES.rows.length ? '<div style="display:grid;gap:12px">' + RES.rows.map(card).join('') + '</div>' : '<div style="padding:30px;text-align:center;color:var(--mu)">' + (RES.ver === 'pendientes' ? '✓ No hay fotos por revisar.' : 'Todavía no hay reseñas.') + '</div>')
     + '</div>';
-  w.querySelectorAll('.res-ver').forEach(b => b.addEventListener('click', () => { RES.ver = b.dataset.v; loadResenas(); }));
+  w.querySelectorAll('.res-ver').forEach(b => b.addEventListener('click', () => { RES.ver = b.dataset.v; RES.sel = {}; loadResenas(); }));
   w.querySelectorAll('.res-c').forEach(c => {
     const id = Number(c.dataset.id), r = RES.rows.find(x => x.id === id), st = c.querySelector('.res-st');
-    const decidir = async (fotos, pub, txt) => {
-      c.querySelectorAll('button').forEach(b => b.disabled = true); st.style.color = 'var(--mu)'; st.textContent = 'Guardando…';
-      try { const x = await _resRpc('resena_admin_decidir', { p_id: id, p_fotos_ok: fotos, p_publicar: pub }); if (!x || !x.ok) throw new Error('no se encontró la reseña');
-        toast(txt, 'ok'); loadResenas(); }
-      catch (e) { st.style.color = 'var(--rd)'; st.textContent = 'No se guardó: ' + e.message; c.querySelectorAll('button').forEach(b => b.disabled = false); }
+    const bloquear = v => c.querySelectorAll('button').forEach(b => b.disabled = v);
+    c.querySelectorAll('.res-ed').forEach(b => b.addEventListener('click', () => _resEditor(r, Number(b.dataset.i), () => _resPintar(pend))));
+    c.querySelectorAll('.res-pub').forEach(x => x.addEventListener('change', () => { _resSelDe(r)[Number(x.dataset.i)].pub = x.checked; }));
+    const fotos = async (pub, txt) => {
+      bloquear(true); st.style.color = 'var(--mu)'; st.textContent = 'Guardando…';
+      try {
+        const S = _resSelDe(r), edit = { fotos: S.map((f, i) => f.url !== f.orig ? { i, url: f.url, edit: f.edit } : null).filter(Boolean) };
+        const x = await _resRpc('resena_admin_fotos', { p_id: id, p_pub: pub ? S.filter(f => f.pub).map(f => f.url) : [], p_edit: edit });
+        if (!x || !x.ok) throw new Error('no se encontró la reseña');
+        toast(txt, 'ok'); delete RES.sel[id]; loadResenas();
+      } catch (e) { st.style.color = 'var(--rd)'; st.textContent = 'No se guardó: ' + e.message; bloquear(false); }
     };
-    const ok = c.querySelector('.res-ok'), no = c.querySelector('.res-no'), oc = c.querySelector('.res-oc');
-    if (ok) ok.addEventListener('click', () => decidir(true, null, '✓ Foto publicada en la tienda'));
-    if (no) no.addEventListener('click', () => decidir(false, null, 'Foto no publicada (la reseña sigue visible)'));
-    oc.addEventListener('click', () => decidir(null, !r.publicar, r.publicar ? 'Reseña oculta de la tienda' : 'Reseña visible otra vez'));
+    const ok = c.querySelector('.res-ok'), no = c.querySelector('.res-no'), oc = c.querySelector('.res-oc'), cup = c.querySelector('.res-cup');
+    if (ok) ok.addEventListener('click', () => {
+      const n = _resSelDe(r).filter(f => f.pub).length;
+      if (!n) { st.style.color = 'var(--rd)'; st.textContent = 'Marca «Publicar» en al menos una foto (o usa «No publicar ninguna»).'; return; }
+      fotos(true, '✓ ' + n + (n > 1 ? ' fotos aprobadas' : ' foto aprobada') + '. Cupón listo para enviar.');
+    });
+    if (no) no.addEventListener('click', () => fotos(false, 'Fotos no publicadas (la reseña sigue visible)'));
+    if (cup) cup.addEventListener('click', () => { _resRpc('resena_admin_cupon_enviado', { p_id: id }).then(() => setTimeout(loadResenas, 800)).catch(() => {}); });
+    oc.addEventListener('click', async () => {
+      bloquear(true); st.style.color = 'var(--mu)'; st.textContent = 'Guardando…';
+      try { const x = await _resRpc('resena_admin_decidir', { p_id: id, p_fotos_ok: null, p_publicar: !r.publicar }); if (!x || !x.ok) throw new Error('no se encontró la reseña');
+        toast(r.publicar ? 'Reseña oculta de la tienda' : 'Reseña visible otra vez', 'ok'); loadResenas(); }
+      catch (e) { st.style.color = 'var(--rd)'; st.textContent = 'No se guardó: ' + e.message; bloquear(false); }
+    });
   });
 }
 // >>> 11-oct-2026 · CARRITOS ABANDONADOS (rpc carritos_admin_lista, solo Admin). Los mensajes los manda n8n «🛒 Carritos abandonados — WhatsApp».
