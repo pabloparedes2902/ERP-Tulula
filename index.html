@@ -16469,7 +16469,9 @@ function pExpandFlat(grouped) {
             // propia del pedido, la fila de la DEVUELTA no se pinta como la nueva (eso la duplicaba en
             // pantalla: 7 prendas en vez de 5). Se muestra tachada como "devuelta en CAM-xxxx".
             const po = _normP(c['PrendaOriginal']); if (po) { _activas.add(po); const _pnTxt = String(c['PrendaNueva']||'').trim(); if (_pnTxt) { const _pnN = _normP(_pnTxt); if (!c._devSinNueva && _pnN !== po && _filasCnt[_pnN] > 0 && _filasCnt[po] > 0) { _filasCnt[_pnN]--; _camDevSinMap[po] = c['NroCambio'] || 'CAM'; } else _camMap[po] = _pnTxt; } }
-            if (c._devSinNueva && po) { _camDevSinMap[po] = c['NroCambio'] || 'CAM'; return; }   // 1-oct
+            // 15-oct (Elisea 22378, CAM-0219) · la lista del historial de cambios trae la devuelta sin nueva como PrendaNueva vacía
+            // y SIN la bandera _devSinNueva (esa solo la ponía otro camino) → la prenda devuelta se veía como entregada. Ahora cuenta igual.
+            if ((c._devSinNueva || (c._esV2 && !String(c['PrendaNueva']||'').trim() && c.RecibidoOriginal)) && po) { _camDevSinMap[po] = c['NroCambio'] || c['Grupo'] || 'CAM'; return; }   // 1-oct
             // También la nueva, por si en algún flujo se agregó como fila propia.
             const pn = String(c['PrendaNueva']||'').split('|').map(s => _normP(s)).filter(Boolean);
             pn.forEach(x => { _activas.add(x); _camNuevasNorm.add(x); });
@@ -30055,12 +30057,13 @@ function renderInv(el){
             else if(bi===2){ v=cf; dash=(v===undefined); }
             else if(bi===3){ if(cf===undefined) dash=true; else v=_uSum(d.vtas)||0; }
             else { v=_uSum(d.stock); dash=(v===undefined); }
+            const _hiU=(bi===4 && !dash) ? ` class="iv-stk-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="" data-v="${v}" title="Doble clic: historial completo"` : '';
             const _tU = (d.total&&d.total.M!==undefined)?'M':(TALLAS_STD.find(x=>d.total&&d.total[x]!==undefined)||'M');
             const _edU=(bi===0 && !_stYayMode)
               ? ` class="iv-tot-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="${_tU}" title="Talla única · doble clic: mover stock"`
               : '';
-            if(dash) tr+=`<td${_edU}${_cs} style="${STEMPTY}${TB}${P}${_sepU}${C}color:#6b7280">–</td>`;
-            else tr+=`<td${_edU}${_cs} style="${dataSt}${TB}${P}${_sepU}${C}"><span style="font-size:9px;opacity:.75;margin-right:4px">U</span>${_capsula(v)}</td>`;
+            if(dash) tr+=`<td${_edU||_hiU}${_cs} style="${STEMPTY}${TB}${P}${_sepU}${C}color:#6b7280">–</td>`;
+            else tr+=`<td${_edU||_hiU}${_cs} style="${dataSt}${TB}${P}${_sepU}${C}${_hiU?'cursor:zoom-in;':''}"><span style="font-size:9px;opacity:.75;margin-right:4px">U</span>${_capsula(v)}</td>`;
             return;
           }
           const _lab = (d.tlab && d.tlab[t]) ? `<div style="font-size:9px;line-height:1;opacity:.8;margin-bottom:1px">${esc(d.tlab[t])}</div>` : '';
@@ -30085,6 +30088,8 @@ function renderInv(el){
                necesita — dentro del editor de la talla, cuando hay unidades
                no disponibles — que es el momento en que la pregunta aparece. */
             tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_lab}${_capsula(v)}</td>`; }
+          else if(bi===4){ /* 15-oct (Pablo) · doble clic en Stock = historial completo del SKU */
+            tr+=`<td class="iv-stk-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="${t}" data-v="${v}" title="Doble clic: historial completo de ${esc(d.diseno)} ${esc(d.color)} ${t}" style="${dataSt}${TB}${P}${sep}${C}cursor:zoom-in;">${_lab}${_capsula(v)}</td>`; }
           else { tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_lab}${_capsula(v)}</td>`; }
         });
       });
@@ -30137,6 +30142,7 @@ function renderInv(el){
   // Clic en 🕑 → kardex (historial completo del SKU).
   el.querySelectorAll('.iv-kardex').forEach(b=>b.addEventListener('click',(ev)=>{ ev.stopPropagation(); _invKardex(b.dataset.pren||'', b.dataset.dis||'', b.dataset.col||''); }));
   // 23-ago — doble clic en una celda de Confección Total → panel "qué pasó" (única puerta de edición).
+  el.querySelectorAll('.iv-stk-cell').forEach(c=>c.addEventListener('dblclick',(ev)=>{ ev.preventDefault(); ev.stopPropagation(); _invHistorialSku(c.dataset.pren||'', c.dataset.dis||'', c.dataset.colr||'', c.dataset.tal||'', c.dataset.v); }));
   el.querySelectorAll('.iv-tot-cell').forEach(c=>c.addEventListener('dblclick',(ev)=>{ ev.preventDefault(); ev.stopPropagation(); _ivTotAbrir(c.dataset.pren||'', c.dataset.dis||'', c.dataset.colr||'', c.dataset.tal||'', el); }));
   // Eventos — filtros
   el.querySelectorAll('.tab[data-ivcat]').forEach(btn=>btn.addEventListener('click',function(){ stCatActiva=this.getAttribute('data-ivcat'); renderInv(el); }));
@@ -30696,6 +30702,106 @@ async function _invNoDispDetalle(pren, dis, col){
 }
 
 // Kardex de un SKU: línea de vida completa (movimientos) + anomalías.
+// ══════════════════════════════════════════════════════════════════════════
+// 15-oct-2026 (Pablo) · HISTORIAL COMPLETO DE UN SKU — doble clic en una celda de STOCK.
+// Ventana grande con 4 bloques que suman como una cuenta (Confección total − No disponibles − Ventas = Stock)
+// y una Línea de tiempo. Cada bloque es desplegable: Confección y No disponibles abiertos; Ventas y
+// Línea de tiempo cerrados (puede haber cientos de ventas). Lee la base (rpc stock_historial): solo mira.
+// ══════════════════════════════════════════════════════════════════════════
+const _HIS_TIPO = {
+  SALDO_INICIAL: 'Saldo inicial (entró al ERP)', PRODUCCION: 'Producción / lote', AJUSTE: 'Ajuste de cuadre',
+  BAJA: 'Baja', RECUPERACION: 'Recuperada (vuelve a disponible)', FALLA: 'Pasa a no disponible',
+  FALLA_MONTON: 'No disponible (registro de fallas)', VENTA: 'Venta', VENTA_HISTORICA: 'Ventas antes del ERP (Drive)',
+  YAYITA: 'Venta yayita', CAMBIO: 'Sale por cambio', REINGRESO: 'Ajuste de cambio (compensa)',
+  DEVOLUCION_CLIENTE: '↩️ Devolución de clienta', DEVOLUCION_CLIENTE_REV: 'Devolución revertida'
+};
+function _hisVuelve(destino, motivo) {
+  const d = String(destino || '').toUpperCase(), m = String(motivo || '').toUpperCase();
+  if (/REPAR|ARREGL|LAVA|LIMPI|PLANCH/.test(d + ' ' + m)) return { si: true, t: 'Sí, vuelve' };
+  if (/OUTLET|YAYITA|BAJA|DEFINIT|DESCART|ROBAD|MUESTRA|PERDID/.test(d + ' ' + m)) return { si: false, t: 'No vuelve' };
+  return { si: null, t: d ? d : '—' };
+}
+function _hisFecha(f) { const s = String(f || '').slice(0, 10); if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return esc(String(f || '—')); const p = s.split('-'); return p[2] + '/' + p[1] + '/' + p[0].slice(2); }
+function _hisNum(n) { n = Number(n) || 0; return (n > 0 ? '+' : '') + n; }
+// Arma los bloques a partir de los movimientos (pura: se prueba sin navegador).
+function _hisArmar(movs) {
+  const B = { conf: [], nd: [], ven: [], tl: [], tot: { conf: 0, nd: 0, ven: 0 } };
+  let saldo = 0;
+  (movs || []).forEach(m => {
+    const c = Number(m.d_conf) || 0, f = Number(m.d_fallas) || 0, v = Number(m.d_ventas) || 0;
+    if (c) { B.conf.push(m); B.tot.conf += c; }
+    if (f) { B.nd.push(m); B.tot.nd += f; }
+    if (v) { B.ven.push(m); B.tot.ven += v; }
+    saldo += c - f - v;
+    B.tl.push(Object.assign({}, m, { _saldo: saldo }));
+  });
+  B.stock = B.tot.conf - B.tot.nd - B.tot.ven;
+  return B;
+}
+async function _invHistorialSku(pren, dis, col, tal, vCelda) {
+  const titulo = [pren, dis, col, tal].filter(Boolean).join(' ');
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:2vh 2vw';
+  ov.innerHTML = '<div id="his-box" style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);width:96vw;max-width:1500px;height:94vh;display:flex;flex-direction:column;overflow:hidden">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--bd)"><div><div style="font-size:18px;font-weight:700">📦 Historial · ' + esc(titulo) + (tal ? '' : ' <span style="font-size:12px;color:var(--mu)">(todas las tallas)</span>') + '</div><div style="font-size:12px;color:var(--mu)">De dónde salió cada unidad, cuáles no están disponibles, cuáles se vendieron y cuántas quedan.</div></div>'
+    + '<button class="btn bg bs" data-his-x style="font-size:13px">✕ Cerrar</button></div>'
+    + '<div id="his-body" style="flex:1;overflow:auto;padding:14px 18px"><div class="empty">Cargando el historial…</div></div></div>';
+  document.body.appendChild(ov);
+  const alTeclado = e => { if (e.key === 'Escape') cerrar(); };
+  const cerrar = () => { ov.remove(); document.removeEventListener('keydown', alTeclado); };
+  document.addEventListener('keydown', alTeclado);
+  ov.addEventListener('click', e => { if (e.target === ov || e.target.closest('[data-his-x]')) cerrar(); });
+  const body = ov.querySelector('#his-body');
+  let d;
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) throw new Error('sin sesión con la base, vuelve a entrar al ERP');
+    const r = await fetch(SB_URL + '/rest/v1/rpc/stock_historial', { method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_prenda: pren, p_diseno: dis, p_color: col, p_talla: tal || null }) });
+    if (!r.ok) { if (r.status === 401) { try { _sbVencerTok(); } catch (_) {} } throw new Error('la base respondió ' + r.status); }
+    d = await r.json();
+  } catch (e) { body.innerHTML = '<div class="empty" style="color:var(--rd)">No se pudo leer el historial: ' + esc(e.message) + '</div>'; return; }
+  const B = _hisArmar(d.movs || []);
+  const TH = 'text-align:left;padding:6px 8px;font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--bd);position:sticky;top:0;background:var(--bg2)';
+  const TD = 'padding:6px 8px;font-size:12.5px;border-bottom:1px solid var(--bd)';
+  const tabla = (cols, filas) => '<div style="max-height:34vh;overflow:auto;border:1px solid var(--bd);border-radius:8px"><table style="width:100%;border-collapse:collapse"><thead><tr>' + cols.map(c => '<th style="' + TH + '">' + c + '</th>').join('') + '</tr></thead><tbody>' + (filas.join('') || '<tr><td colspan="' + cols.length + '" style="' + TD + ';color:var(--mu)">Sin movimientos</td></tr>') + '</tbody></table></div>';
+  const tr = celdas => '<tr>' + celdas.map(x => '<td style="' + TD + '">' + x + '</td>').join('') + '</tr>';
+  const ped = m => (m.info && m.info.nro) ? '<b>#' + esc(m.info.nro) + '</b>' : (/^\d{4,6}$/.test(String(m.ref || '')) ? '<b>#' + esc(m.ref) + '</b>' : esc(String(m.ref || '')));
+  const det = m => { const i = m.info || {}; return esc([i.lote ? 'Lote ' + i.lote : '', i.obs || '', i.origen || '', (!i.lote && !i.obs && m.ref && !/^\d+$/.test(String(m.ref))) ? m.ref : ''].filter(Boolean).join(' · ') || '—'); };
+  const chip = (t, n, c) => '<div style="flex:1;min-width:150px;border:1px solid var(--bd);border-radius:10px;padding:10px 12px"><div style="font-size:11px;color:var(--mu);text-transform:uppercase">' + t + '</div><div style="font-size:26px;font-weight:800;color:' + c + '">' + n + '</div></div>';
+  const op = s => '<div style="font-size:26px;font-weight:300;color:var(--mu);align-self:center">' + s + '</div>';
+  let h = '<div style="display:flex;gap:10px;align-items:stretch;flex-wrap:wrap;margin-bottom:6px">'
+    + chip('Confección total', B.tot.conf, '#8ec3ff') + op('−') + chip('No disponibles', B.tot.nd, '#fca5a5') + op('−') + chip('Ventas', B.tot.ven, '#c4b5fd') + op('=') + chip('Stock', B.stock, '#fcd34d') + '</div>';
+  if (vCelda !== undefined && vCelda !== '' && Number(vCelda) !== B.stock)
+    h += '<div style="font-size:12px;color:#fbbf24;margin:4px 0 8px">⚠️ La tabla muestra ' + esc(String(vCelda)) + ' y la historia suma ' + B.stock + ': la tabla puede estar desactualizada (🔄 en Stock).</div>';
+  const sec = (abierto, titulo, n, contenido) => '<details ' + (abierto ? 'open' : '') + ' style="margin-top:12px;border:1px solid var(--bd);border-radius:10px;padding:8px 12px"><summary style="cursor:pointer;font-weight:700;font-size:14px">' + titulo + ' <span style="color:var(--mu);font-weight:400">· ' + n + '</span></summary><div style="margin-top:8px">' + contenido + '</div></details>';
+  h += sec(true, '1 · Confección total', B.tot.conf + ' unid.', tabla(['Fecha', 'Qué', 'Cant.', 'Detalle'],
+    B.conf.map(m => tr([_hisFecha(m.fecha), esc(_HIS_TIPO[m.tipo] || m.tipo), '<b>' + _hisNum(m.d_conf) + '</b>', det(m)]))));
+  h += sec(true, '2 · No disponibles', B.tot.nd + ' unid.', tabla(['Fecha', 'Qué', 'Cant.', 'Motivo', 'Destino', '¿Vuelve?'],
+    B.nd.map(m => { const i = m.info || {}; const v = _hisVuelve(i.destino, i.motivo || i.obs); const rec = /^(SI|TRUE)$/i.test(String(i.recuperado || ''));
+      return tr([_hisFecha(m.fecha), esc(_HIS_TIPO[m.tipo] || m.tipo), '<b>' + _hisNum(m.d_fallas) + '</b>', esc(i.motivo || i.obs || m.ref || '—'), esc(i.destino || '—'),
+        rec ? '<span style="color:#86efac">Ya volvió</span>' : (v.si === true ? '<span style="color:#86efac">' + v.t + '</span>' : v.si === false ? '<span style="color:#fca5a5">' + v.t + '</span>' : esc(v.t))]); })));
+  const cnt = t => B.ven.filter(m => m.tipo === t).reduce((s, m) => s + (Number(m.d_ventas) || 0), 0);
+  const resumenV = 'Ventas ' + (cnt('VENTA') + cnt('YAYITA')) + (cnt('VENTA_HISTORICA') ? ' · antes del ERP ' + cnt('VENTA_HISTORICA') : '')
+    + ((cnt('CAMBIO') + cnt('REINGRESO')) ? ' · cambios ' + _hisNum(cnt('CAMBIO') + cnt('REINGRESO')) : '')
+    + ((cnt('DEVOLUCION_CLIENTE') + cnt('DEVOLUCION_CLIENTE_REV')) ? ' · devoluciones ' + _hisNum(cnt('DEVOLUCION_CLIENTE') + cnt('DEVOLUCION_CLIENTE_REV')) : '');
+  let hv = '<div style="font-size:12px;color:var(--mu);margin-bottom:6px">' + esc(resumenV) + '</div>'
+    + tabla(['Fecha', 'Qué', 'Cant.', 'Pedido', 'Clienta', 'Canal · asesora'],
+      B.ven.map(m => { const i = m.info || {}; return tr([_hisFecha(m.fecha), esc(_HIS_TIPO[m.tipo] || m.tipo), '<b>' + _hisNum(m.d_ventas) + '</b>', ped(m), esc(i.clienta || '—'), esc([i.canal, i.asesora].filter(Boolean).join(' · ') || '—')]); }));
+  const ex = d.extras || [];
+  if (ex.length) hv += '<div style="margin-top:10px;font-size:12px;font-weight:700">↩️ Ventas que ya NO cuentan (la clienta la devolvió o la cambió) · ' + ex.length + '</div>'
+    + tabla(['Pedido', 'Clienta', 'Qué pasó'], ex.map(x => tr(['<b>#' + esc(x.nro) + '</b>', esc(x.clienta || '—'),
+      x.clase === 'DEVUELTA' ? 'Devuelta' + (x.dev ? ' (' + esc(x.dev) + ')' : '') + ' — volvió al stock'
+      : /^C2DEV /.test(String(x.marca || '')) ? 'Devuelta en ' + esc(String(x.marca).slice(6)) + ' — volvió al stock'
+      : 'Cambiada por otra prenda (' + esc(String(x.marca || '').replace(/^C2ORIG:/, 'era ')) + ')'])));
+  h += sec(false, '3 · Ventas', B.tot.ven + ' unid.', hv);
+  h += sec(true, '4 · Stock final', B.stock + ' unid.', '<div style="font-size:14px">' + B.tot.conf + ' confeccionadas − ' + B.tot.nd + ' no disponibles − ' + B.tot.ven + ' vendidas = <b style="font-size:16px;color:#fcd34d">' + B.stock + '</b> para vender</div>');
+  h += sec(false, '5 · Línea de tiempo (todo en orden, con el stock que iba quedando)', B.tl.length + ' movimientos', tabla(['Fecha', 'Qué', 'Conf.', 'No disp.', 'Venta', 'Quedan', 'Detalle'],
+    B.tl.map(m => tr([_hisFecha(m.fecha), esc(_HIS_TIPO[m.tipo] || m.tipo), (Number(m.d_conf) ? _hisNum(m.d_conf) : ''), (Number(m.d_fallas) ? _hisNum(m.d_fallas) : ''), (Number(m.d_ventas) ? _hisNum(m.d_ventas) : ''), '<b>' + m._saldo + '</b>', (m.fuente === 'pedidos' ? ped(m) + ' ' + esc((m.info && m.info.clienta) || '') : det(m))]))));
+  body.innerHTML = h;
+}
+
 async function _invKardex(pren, dis, col){
   try{
     const r = await _stockKardexRapido({prenda:pren, dis:dis, col:col});
