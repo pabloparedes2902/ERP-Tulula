@@ -562,6 +562,12 @@
   .mkl-vacio{padding:18px;text-align:center;color:var(--txt2);font-size:12px}
   /* 15-oct-2026 · nombre inteligente (rojo + sugerencia) y biblioteca de creativos */
   .mkn-mal{border-color:var(--bad)!important;background:rgba(239,68,68,.08)!important}
+  /* 16-oct · lista desplegable propia (siempre muestra todas las opciones) */
+  .mkcb{position:fixed;z-index:100000;display:none;max-height:240px;overflow:auto;background:var(--card);border:1.5px solid var(--bd);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px 0;font-size:12.5px}
+  .mkcb-op{padding:6px 10px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--txt)}
+  .mkcb-op:hover,.mkcb-op.on{background:rgba(124,58,237,.12)}
+  .mkcb-vacio{padding:6px 10px;color:var(--txt2);font-size:11.5px}
+  .mkcb-inp{background-image:linear-gradient(45deg,transparent 50%,var(--txt2) 50%),linear-gradient(135deg,var(--txt2) 50%,transparent 50%)!important;background-position:calc(100% - 13px) 50%,calc(100% - 8px) 50%!important;background-size:5px 5px,5px 5px!important;background-repeat:no-repeat!important;padding-right:22px!important}
   .mkn-sug{min-height:0;font-size:10.5px;color:var(--bad);margin-top:2px;font-weight:700}
   .mkn-sugb{background:transparent!important;border:1px dashed var(--bad)!important;color:var(--bad)!important;border-radius:7px!important;padding:2px 7px!important;font-size:10.5px!important;cursor:pointer}
   .mkcr-grid .mkl-vacio{grid-column:1/-1}
@@ -5910,6 +5916,70 @@ window.addEventListener('message', function(e){
     _cargaMeta.then(() => mkVentasAlDia(_pedido));   /* 13-oct · cuando la base termina, ventas al día */
   }
 });
+/* 16-oct-2026 (pedido de Pablo) · LISTAS SIEMPRE COMPLETAS en Nuevo anuncio y Subir/Editar creativo.
+   Antes: Producto, Hook, Ángulo, Contexto creativo, CTA y Talento usaban la lista nativa del navegador (<datalist>),
+   que FILTRA por lo que ya tiene escrito el campo: con un valor cargado (al elegir un creativo de la biblioteca o
+   editar uno) solo se veía esa misma opción, y en Safari a veces ninguna. Ahora: al hacer clic se ven TODAS las
+   opciones (la actual marcada ✓ arriba); se filtra solo cuando la persona escribe. Lee las mismas listas de la base. */
+const MKCB = { el: null, inp: null, idx: -1, filtrar: false };
+function _mkcbOpciones(inp){
+  const dl = document.getElementById(inp.dataset.mkcbLista || ''); if (!dl) return [];
+  return [...dl.querySelectorAll('option')].map(o => o.value).filter(Boolean);
+}
+function _mkcbNorm(x){ return String(x || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim(); }
+function _mkcbPintar(){
+  const inp = MKCB.inp, box = MKCB.el; if (!inp || !box) return;
+  const actual = String(inp.value || '').trim();
+  let L = _mkcbOpciones(inp);
+  if (MKCB.filtrar && actual){ const q = _mkcbNorm(actual); L = L.filter(v => _mkcbNorm(v).includes(q)); }
+  else if (actual){ const i = L.findIndex(v => _mkcbNorm(v) === _mkcbNorm(actual)); if (i > 0){ L.unshift(L.splice(i, 1)[0]); } }
+  if (!L.length){ box.innerHTML = '<div class="mkcb-vacio">' + (actual ? 'No está en la lista: se agregará al crear' : 'Lista vacía') + '</div>'; }
+  else box.innerHTML = L.map((v, i) => '<div class="mkcb-op' + (i === MKCB.idx ? ' on' : '') + '" data-v="' + esc(v).replace(/"/g, '&quot;') + '">' +
+    (_mkcbNorm(v) === _mkcbNorm(actual) ? '✓ ' : '') + esc(v) + '</div>').join('');
+  const r = inp.getBoundingClientRect();
+  box.style.left = r.left + 'px'; box.style.width = Math.max(r.width, 180) + 'px';
+  const abajo = window.innerHeight - r.bottom;
+  if (abajo < 220 && r.top > abajo){ box.style.top = ''; box.style.bottom = (window.innerHeight - r.top + 2) + 'px'; }
+  else { box.style.bottom = ''; box.style.top = (r.bottom + 2) + 'px'; }
+  box.style.display = 'block';
+}
+function _mkcbAbrir(inp, filtrar){
+  if (!MKCB.el){ MKCB.el = document.createElement('div'); MKCB.el.className = 'mkcb'; document.body.appendChild(MKCB.el);
+    MKCB.el.addEventListener('mousedown', ev => { ev.preventDefault(); const o = ev.target.closest('.mkcb-op'); if (o) _mkcbElegir(o.dataset.v); }); }
+  MKCB.inp = inp; MKCB.filtrar = !!filtrar; MKCB.idx = -1; _mkcbPintar();
+}
+function _mkcbCerrar(){ if (MKCB.el) MKCB.el.style.display = 'none'; MKCB.inp = null; MKCB.idx = -1; }
+function _mkcbElegir(v){
+  const inp = MKCB.inp; if (!inp) return;
+  inp.value = v; _mkcbCerrar();
+  inp.dispatchEvent(new Event('input', { bubbles: true }));   /* corre mkNuevoNombre / mkcrNombreArmar como si se hubiera escrito */
+}
+function mkComboPreparar(){
+  ['mkNuevoBox', 'mkcrBox'].forEach(caja => {
+    const c = document.getElementById(caja); if (!c) return;
+    c.querySelectorAll('input[list]').forEach(inp => {
+      inp.dataset.mkcbLista = inp.getAttribute('list'); inp.removeAttribute('list'); inp.setAttribute('autocomplete', 'off');
+      inp.classList.add('mkcb-inp');
+      inp.addEventListener('focus', () => _mkcbAbrir(inp, false));
+      inp.addEventListener('click', () => _mkcbAbrir(inp, false));
+      inp.addEventListener('input', ev => { if (ev.isTrusted) _mkcbAbrir(inp, true); });
+      inp.addEventListener('blur', () => setTimeout(() => { if (MKCB.inp === inp) _mkcbCerrar(); }, 120));
+      inp.addEventListener('keydown', ev => {
+        if (!MKCB.el || MKCB.el.style.display !== 'block' || MKCB.inp !== inp){ if (ev.key === 'ArrowDown') _mkcbAbrir(inp, false); return; }
+        const ops = MKCB.el.querySelectorAll('.mkcb-op');
+        if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp'){ ev.preventDefault(); if (!ops.length) return;
+          MKCB.idx = (MKCB.idx + (ev.key === 'ArrowDown' ? 1 : -1) + ops.length) % ops.length; _mkcbPintar();
+          const on = MKCB.el.querySelector('.mkcb-op.on'); if (on) on.scrollIntoView({ block: 'nearest' }); }
+        else if (ev.key === 'Enter' && MKCB.idx >= 0 && ops[MKCB.idx]){ ev.preventDefault(); _mkcbElegir(ops[MKCB.idx].dataset.v); }
+        else if (ev.key === 'Escape'){ ev.stopPropagation(); _mkcbCerrar(); }
+      });
+    });
+    c.addEventListener('scroll', () => { if (MKCB.inp && c.contains(MKCB.inp)) _mkcbPintar(); }, true);
+  });
+}
+if (typeof process === 'undefined' && typeof window !== 'undefined' && window.document){
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', mkComboPreparar); else setTimeout(mkComboPreparar, 0);
+}
 </script>
 <div id="mkAccBox" class="mkmodal" style="display:none">
   <div class="mkmodal-in">
