@@ -4856,7 +4856,8 @@ function _pesRestaurar(pg){
     //    elegir si algo la pisó después (hasta 4 veces), con 1,2 s entre intentos.
     if (sub && listo) {
       const cand = Array.prototype.find.call(pgEl.querySelectorAll('.tab'), x => x.getAttribute(sub[0]) === sub[1]);
-      if (cand && !cand.classList.contains('on')) {
+      const puesta = cand && cand.classList.contains('on') && (pg !== 'pedidos' || (typeof pEst !== 'undefined' && String(pEst) === String(sub[1])));
+      if (cand && !puesta) {
         subBien = false; okDesde = 0;
         if (clics < 4 && Date.now() - ultClic > 1200) { clics++; ultClic = Date.now(); cand.click(); }
       }
@@ -17460,7 +17461,9 @@ async function _ensureHistParaPedidos(estVal) {
       .catch(e => { if (!Array.isArray(_c2List)) _c2List = []; }));
   if (_jobs.length) await Promise.all(_jobs);
   if (need && Array.isArray(pRaw) && pRaw.length) {
-    try { _renderPedsDesde(pRaw, (estVal != null ? estVal : (typeof pEst !== 'undefined' ? pEst : ''))); } catch(e) {}
+    // 16-oct · se pinta la pestaña que está viendo la persona AHORA (pEst), no la del momento en que se pidió:
+    // si cambió de pestaña mientras llegaban las listas, antes la devolvía a la vieja.
+    try { if (typeof curPg === 'undefined' || curPg === 'pedidos') _renderPedsDesde(pRaw, (typeof pEst !== 'undefined' ? pEst : (estVal || '')), true); } catch(e) {}
   }
   // En las pestañas Cambio/Devoluciones, traer los pedidos referidos que no estén
   // dentro del período cargado, para que SIEMPRE se vean todos los activos.
@@ -17521,6 +17524,10 @@ async function loadPeds(est, force) {
   } catch(_){}
   const el = document.getElementById('ped-w');
   _pedsLoadToken++;   // cancela cualquier carga progresiva en curso (cambió de vista/scope)
+  const _miTok = _pedsLoadToken;
+  // 16-oct · si mientras esta carga esperaba la persona eligió OTRA pestaña, esta carga ya no pinta
+  // (antes pisaba la pestaña nueva con la vieja: el botón decía «Entregados» y se veían los Activos)
+  const _pedsVieja = () => _miTok !== _pedsLoadToken && String(pEst || '') !== String(estVal || '');
   _ensureHistParaPedidos(estVal); // fire-and-forget: filtro + amarillo de cambios siempre disponibles
 
   // ── 1. Cache localStorage: renderizar INMEDIATAMENTE si existe ────
@@ -17545,6 +17552,7 @@ async function loadPeds(est, force) {
     cached = lsGetPeds();
     _pedMarca('terminó la espera', cached ? (cached.length + ' filas') : 'seguía sin nada');
   }
+  if (_pedsVieja()) { _pedMarca('carga vieja descartada (cambió la pestaña)'); return; }
   if (cached) {
     _renderPedsDesde(cached, estVal);
     _pedMarca('PRIMER DIBUJADO desde lo guardado — ya se ve la tabla');
@@ -17577,6 +17585,7 @@ async function loadPeds(est, force) {
     const params = Object.assign({offset:0}, _pedsScopeParams());
     _pedMarca('pide la primera tanda', JSON.stringify(params));
     const res = await _pedListarPagina(params);
+    if (_pedsVieja()) { _pedMarca('carga vieja descartada (cambió la pestaña)'); return; }
     const rows = Array.isArray(res) ? res : (res.rows||[]);
     _pedMarca('llegó la primera tanda', rows.length + ' filas · hayMas=' + !!(res && res.hayMas));
     const serverTs = (res && res.serverTs) || Date.now();
@@ -22309,7 +22318,9 @@ function _excelPrendasASeparar(grupos) {
     cur.filas.push(f);
   });
   out.forEach((c, nro) => {
-    const conCambio = c.filas.some(f => camActivo(f._c2Nro) || camActivo(f._devSinNueva));
+    // cualquier cambio del pedido (abierto o ya enviado): las prendas originales ya no se separan
+    const conCambio = c.filas.some(f => f._c2Nro || f._devSinNueva);
+    const camsDelPedido = [...new Set(c.filas.map(f => f._c2Nro || f._devSinNueva).filter(Boolean))];
     const prendas = [], precios = [];
     const pend = c.filas.filter(f => !_DESP.has(String(f['Estado'] || '').trim().toUpperCase()));
     (conCambio ? c.filas : (pend.length ? pend : c.filas)).forEach(f => {
@@ -22323,7 +22334,10 @@ function _excelPrendasASeparar(grupos) {
       }
       prendas.push(pr); precios.push(parseFloat(f['Precio']) || 0);
     });
-    if (!prendas.length) { out.delete(nro); return; }
+    if (!prendas.length) {
+      if (conCambio) { const _env = camsDelPedido.every(nc => !camActivo(nc)); out.set(nro, { prendas: ['— nada que separar (' + camsDelPedido.join(', ') + (_env ? ' ya enviado' : ' sin prenda nueva') + ')'], precio: '', vacio: true }); return; }
+      out.delete(nro); return;
+    }
     out.set(nro, { prendas, precio: precios.length === prendas.length ? precios.reduce((a, b) => a + b, 0) : '' });
   });
   return out;
@@ -22363,7 +22377,7 @@ function exportarExcel() {
     const obj = {};
     allHeaders.forEach(k => { obj[k] = r[k] ?? ''; });
     const sp = _sepPrendas.get(String(r['NroPedido'] || '').trim());
-    if (sp) { obj['Prenda'] = sp.prendas.join(' + '); obj['Precio'] = sp.precio; obj['Cant. prendas'] = sp.prendas.length; }
+    if (sp) { obj['Prenda'] = sp.prendas.join(' + '); obj['Precio'] = sp.precio; obj['Cant. prendas'] = sp.vacio ? 0 : sp.prendas.length; }
     return obj;
   });
   if (!allHeaders.includes('Cant. prendas')) allHeaders.splice(allHeaders.indexOf('Prenda') + 1, 0, 'Cant. prendas');
