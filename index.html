@@ -19290,6 +19290,19 @@ function renderPT(el, rows, total, hayMas) {
       el.querySelectorAll('.row-chk').forEach(c => c.checked = false);
       if (chkAll) chkAll.checked = false;
       bulkBar.classList.remove('on');
+      // 16-oct (Pablo, punto 234) · antes solo se cambiaba el texto de la celda: el pedido marcado ENTREGADO
+      // seguía en Activos ~2 min. Ahora el dato entra a la lista y la pestaña se recalcula al toque; después se
+      // relee de la base cada pedido tocado (queda exactamente como lo guardó la base).
+      try {
+        const _setN = new Set(nros.map(String));
+        pRaw.forEach(r => {
+          if (!_setN.has(String(r['NroPedido'] || '').trim())) return;
+          if (sheetKey === 'Estado' && String(r['Estado'] || '').trim().toUpperCase() === 'DEVOLUCION') return;   // la devuelta no cambia (candado de la base)
+          r[sheetKey] = valEfectivo; if (dataKey && dataKey !== sheetKey) r[dataKey] = valEfectivo;
+        });
+        _renderPedsDesde(pRaw, pEst, true);
+      } catch (_) {}
+      try { _pedsRefrescarNros(nros.map(String)); } catch (_) {}
       try { if (typeof lsSetPeds === 'function') lsSetPeds(pRaw, (typeof pLastSyncTs!=='undefined'&&pLastSyncTs)?pLastSyncTs:Date.now()); } catch(_) {}
 
       // B — la franja de deshacer. Solo si quedo anotado en la bitacora: sin
@@ -20789,7 +20802,9 @@ function _celdaGuardar(nro, col, valor, esDeshacer){
 
   pRaw.forEach(r => { if (String(r['NroPedido']||'').trim() === nro) r[col] = valor; });
   try { if (typeof lsSetPeds === 'function') lsSetPeds(pRaw, (typeof pLastSyncTs!=='undefined'&&pLastSyncTs)?pLastSyncTs:Date.now()); } catch(_){}
-  try { pAply(); } catch(_){}
+  // 16-oct (Pablo, punto 234) · antes pAply() filtraba dentro de la lista VIEJA de la pestaña: un pedido marcado
+  // ENTREGADO seguía en Activos ~2 min, hasta que otro proceso recalculaba. Ahora se recalcula la pestaña al toque.
+  try { _renderPedsDesde(pRaw, pEst, true); } catch(_){ try { pAply(); } catch(__){} }
 
   if (!esDeshacer) {
     _celdaUndo.push({nro, col, valor: previo});
@@ -20816,7 +20831,8 @@ function _celdaGuardar(nro, col, valor, esDeshacer){
       return;
     }
     return apiPost('pedidos.actualizarMasivo', { nros:[nro], campo: def.campo, valor: valor });
-  })().catch(e => toast('⚠ No se pudo guardar #'+nro+': '+esc(e.message), 'err'));
+  })().then(() => { try { _pedsRefrescarNros([nro]); } catch (_) {} })   // 16-oct · la base confirma: se relee el pedido tal como quedó
+    .catch(e => toast('⚠ No se pudo guardar #'+nro+': '+esc(e.message), 'err'));
 
   toast('✓ #'+nro+' · '+col+' → '+(valor||'(vacío)'), 'ok');
 }
@@ -21113,14 +21129,17 @@ function pAply() {
   Object.entries(pFlt).forEach(([col, f]) => {
     if (AGG_COLS.has(col)) return; // manejar después de agrupar
     if (f.lib) {
-      const q = String(f.val||'').toLowerCase();
+      // 16-oct (Pablo, punto 233) · el texto se compara sin guiones bajos ni espacios dobles: «AZUL_NOCHE» y
+      // «AZUL NOCHE» son la misma prenda (el stock ya las contaba juntas; el filtro no las encontraba).
+      const _nTxt = t => String(t||'').toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+      const q = _nTxt(f.val);
       if (q) filtered = filtered.filter(r => {
         // FIX 25-jul: buscar en Prenda NO debe encontrar el marcador "_PAGO_"
         if (col === 'Prenda' && _filaEsMarcadorPago(r)) return false;
         // F1 8-ago: Estado Pago compara el valor CALCULADO (lo que se ve), no el crudo.
         // Para columnas de fecha: comparar contra DD/MM/YYYY formateado
         const val = (col==='Estado Pago') ? epValorFor(r) : (PF.has(col) ? fmtD(r[col]) : String(r[col]||''));
-        return String(val).toLowerCase().includes(q);
+        return _nTxt(val).includes(q);
       });
     } else if (f.val && f.val.size) {
       filtered = filtered.filter(r => {
