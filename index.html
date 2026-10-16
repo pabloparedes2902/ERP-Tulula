@@ -4789,9 +4789,77 @@ document.querySelectorAll('.nb[data-pg]').forEach(btn => {
     try { _pantallaMedir(pg, _tPg); } catch (_) {}
     if (pg !== 'pedidos') _pedOcultarContador();   // el contador solo aplica a Pedidos
     try { localStorage.setItem('erp_last_pg', pg); } catch(e){}   // recordar el último módulo para el próximo reload
+    try { _pesMemPg(pg); } catch(e){}   // 16-oct · memoria POR PESTAÑA del navegador (ver _pesMem*)
     _applyVpFix(pg);
   });
 });
+// ══════════════════════════════════════════════════════════════════════════
+// 16-oct-2026 · MEMORIA POR PESTAÑA (Pablo, punto 228). Con 3 pestañas abiertas
+// (Pedidos / Stock / Cambios), Ctrl+Shift+R devolvía las 3 al mismo módulo: el último
+// módulo se guardaba en localStorage, que es UNO SOLO para todo el navegador, así que
+// ganaba el último clic de cualquier pestaña. sessionStorage es propio de cada pestaña
+// y sobrevive a la recarga (también a la recarga fuerte). Se guarda: módulo, sub-pestaña
+// del módulo (Activos/Enviar…, categoría de Stock, etc.) y la posición del scroll
+// (de la ventana y de la tabla). Al recargar se reponen en ese orden. localStorage sigue
+// valiendo solo para una pestaña NUEVA (sin memoria propia).
+// ══════════════════════════════════════════════════════════════════════════
+const _PES_K = 'erp_tab_mem_v1';
+function _pesLeer(){ try { return JSON.parse(sessionStorage.getItem(_PES_K) || '{}') || {}; } catch(_) { return {}; } }
+function _pesGuardar(m){ try { sessionStorage.setItem(_PES_K, JSON.stringify(m)); } catch(_) {} }
+function _pesMemPg(pg){ if (window._pesBoot) return; const m = _pesLeer(); if (m.pg !== pg) { m.pg = pg; m.sc = null; } _pesGuardar(m); }
+// La sub-pestaña se identifica por su primer atributo data-* (data-e en Pedidos, data-ivcat en Stock…)
+function _pesTabClave(t){ if (!t || !t.attributes) return null; for (const at of t.attributes) { if (at.name.indexOf('data-') === 0 && at.name !== 'data-pg') return [at.name, at.value]; } return null; }
+document.addEventListener('click', function(e){
+  try {
+    if (window._pesRestaurando) return;
+    const t = e.target.closest && e.target.closest('.pg.on .tab');
+    if (!t || !e.isTrusted) return;
+    const k = _pesTabClave(t); if (!k) return;
+    const m = _pesLeer(); m.sub = m.sub || {}; m.sub[m.pg || curPg] = k; m.sc = null; _pesGuardar(m);
+  } catch(_) {}
+}, true);
+function _pesScroller(){ const pg = document.querySelector('.pg.on'); return pg ? pg.querySelector('.tsc') : null; }
+function _pesTomarScroll(){
+  if (window._pesRestaurando) return;
+  const m = _pesLeer(); if (!m.pg) return;
+  const t = _pesScroller();
+  m.sc = { w: window.scrollY || 0, t: t ? t.scrollTop : 0, l: t ? t.scrollLeft : 0 };
+  _pesGuardar(m);
+}
+let _pesScT = null;
+document.addEventListener('scroll', function(){ if (_pesScT) return; _pesScT = setTimeout(function(){ _pesScT = null; _pesTomarScroll(); }, 250); }, true);
+window.addEventListener('pagehide', _pesTomarScroll);   // también corre al recargar (F5 / Ctrl+Shift+R)
+/** Repone sub-pestaña y scroll de ESTA pestaña. Lo llama bootApp después de abrir el módulo. */
+function _pesRestaurar(pg){
+  const m = _pesLeer(); if (!m || m.pg !== pg) return;
+  const sub = m.sub && m.sub[pg], sc = m.sc;
+  let corto = false;
+  const cortar = () => { corto = true; window._pesRestaurando = false; };
+  ['wheel','mousedown','keydown','touchstart'].forEach(ev => window.addEventListener(ev, function f(e){ if (e.isTrusted) { cortar(); window.removeEventListener(ev, f, true); } }, true));
+  window._pesRestaurando = true;
+  const t0 = Date.now(); let subOk = !sub, okDesde = 0;
+  (function paso(){
+    if (corto || curPg !== pg) { window._pesRestaurando = false; return; }
+    const pgEl = document.getElementById('pg-' + pg);
+    if (!subOk && pgEl) {
+      const cand = Array.prototype.find.call(pgEl.querySelectorAll('.tab'), x => x.getAttribute(sub[0]) === sub[1]);
+      if (cand) { if (!cand.classList.contains('on')) cand.click(); subOk = true; }
+    }
+    if (subOk && sc) {
+      const listo = pgEl && !pgEl.querySelector('.ld');
+      if (listo) {
+        const tsc = _pesScroller();
+        if (tsc) { if (Math.abs(tsc.scrollTop - sc.t) > 2) tsc.scrollTop = sc.t; if (Math.abs(tsc.scrollLeft - sc.l) > 2) tsc.scrollLeft = sc.l; }
+        if (Math.abs((window.scrollY || 0) - sc.w) > 2) window.scrollTo(0, sc.w);
+        const ok = (!tsc || (Math.abs(tsc.scrollTop - sc.t) <= 2 && Math.abs(tsc.scrollLeft - sc.l) <= 2)) && Math.abs((window.scrollY || 0) - sc.w) <= 2;
+        // se sigue reponiendo hasta 4 s después de llegar (por si la pantalla se repinta al llegar los datos frescos)
+        if (ok && !okDesde) okDesde = Date.now();
+      }
+    } else if (subOk && !sc) { window._pesRestaurando = false; return; }
+    if ((okDesde && Date.now() - okDesde > 4000) || Date.now() - t0 > 15000) { window._pesRestaurando = false; return; }
+    setTimeout(paso, 150);
+  })();
+}
 // ══════════════════════════════════════════════════════════════════════════
 // EL BOTÓN 🔄 — QUE DE VERDAD TRAIGA DATOS NUEVOS (26-jul-2026)
 //
@@ -10060,6 +10128,7 @@ function navegarA(pg) {
   document.getElementById('ptit').textContent = TITLES[pg]||pg;
   curPg = pg; loadPg(pg);
   if (pg !== 'pedidos') _pedOcultarContador();   // el contador solo aplica a Pedidos
+  try { _pesMemPg(pg); } catch(e){}   // 16-oct · memoria por pestaña también para sub-pantallas
   _applyVpFix(pg);
 }
 
@@ -16722,7 +16791,8 @@ function _pedsDetectarSinPrenda(rows){
 
 // Renderiza pedidos desde un array de raw rows, aplicando filtro de tab local.
 // No hace ningún fetch — puro procesamiento en memoria.
-function _renderPedsDesde(rawRows, estVal) {
+function _renderPedsDesde(rawRows, estVal, _suave) {   // 16-oct · _suave=true → repintado de fondo (ver PARPADEO abajo)
+  try { _pedsHistMemo(); } catch (_) {}   // 16-oct · punto 229: nunca pintar un pedido con cambio «sin su cambio»
   // PERF v12 — los pedidos provisionales (guardándose en background) viven en una
   // lista separada (_npProvisionales) que SOBREVIVE a las recargas de pRaw.
   // Antes: al navegar a Pedidos, loadPeds sobreescribía pRaw y el provisional se perdía.
@@ -16935,7 +17005,26 @@ function _renderPedsDesde(rawRows, estVal) {
     pAll = pGroupByPedido(filtered);
     _pedsAplicarOrden(pAll);   // F5: el repintado de pestaña respeta el orden elegido
     pFlat = pExpandFlat(pAll);
-    renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false);
+    // 16-oct-2026 · PARPADEO (Pablo). Medido en vivo: con la pantalla quieta, cada aviso de la base
+    // (tiempo real, sondeo de cambios, relectura de pedidos) redibujaba la grilla ENTERA (cabecera +
+    // tabla, innerHTML completo) — 9 veces en 7 min sin que cambiara nada de lo que se ve. Eso es el
+    // parpadeo. Ahora, en los repintados de FONDO: si lo que se ve es idéntico, no se toca el DOM;
+    // si cambió algo, se cambia solo el cuerpo de la tabla (sin rehacer cabecera ni scroll).
+    const _pedW = document.getElementById('ped-w');
+    const _firma = _pedsFirma(pFlat, pAll.length);
+    const _hayTabla = !!(_pedW && _pedW.querySelector('table.pt tbody'));
+    const _fv = window._pedsFirmaVista || {};
+    const _fondo = (window._pedsRenderFondo || _suave === true) && _hayTabla && !window._pedsForceTop && _firma.cab === _fv.cab && _fv.est === estVal;
+    _firma.est = estVal;
+    if (_fondo && _firma.filas === _fv.filas) {
+      window._pedsSaltados = (window._pedsSaltados || 0) + 1;   // nada que mostrar distinto
+    } else if (_fondo) {
+      pRenderTBodyFast(_pedW, pFlat, pAll.length, false);
+      window._pedsFirmaVista = _firma;
+    } else {
+      renderPT(_pedW, pFlat, pAll.length, false);
+      window._pedsFirmaVista = _firma;
+    }
   }
 
   const _nCambio = [..._camActivoSet].filter(n => _allNrosFull.has(n)).length;
@@ -17201,12 +17290,58 @@ function _pedsVerificarDeriva(locales, b) {
   if (!_arrancando && CUADRE_ESTRUCTURAL_ON) {
     try { const _f = _cuadreFirma(locales, b, difs); (_curaFirmas[_f] = _curaFirmas[_f] || { recargas: 0, estructural: false }).recargas++; } catch (_) {}
   }
-  _pedsAvisoCura(true);
+  // 16-oct-2026 · PARPADEO (Pablo). Antes: loadPeds(pEst, true) → tiraba la copia, ponía «Cargando…»,
+  // dibujaba las primeras 3.000 filas y después el resto: la grilla se vaciaba y se volvía a llenar
+  // (medido en vivo: 1 vez al abrir y otra a los 3 min, sin tocar nada). Ahora la copia nueva se baja
+  // COMPLETA por detrás y se cambia de una sola vez, tocando solo las filas que cambiaron.
   setTimeout(function () {
-    try { loadPeds(pEst, true); } catch (_) {}
-    setTimeout(function () { _pedsAvisoCura(false); }, 3000);
+    try { _pedsCuraSilenciosa('deriva'); } catch (_) {}
   }, 50);
   return true;
+}
+
+/** 16-oct · Rehace la copia de Pedidos SIN tocar la pantalla hasta tener TODO; luego la cambia de una vez
+ *  por el camino de fondo (_renderPedsDesde suave: si lo visible no cambió, no se repinta nada). */
+async function _pedsCuraSilenciosa(motivo) {
+  if (window._pedsCuraEnCurso || window._pedsCargaEnCurso) return false;
+  window._pedsCuraEnCurso = true;
+  const tok = _pedsLoadToken;
+  _pedMarca('cura silenciosa', String(motivo || ''));
+  try {
+    let buf = [], off = 0, guard = 0, ts = null, res = null;
+    while (guard++ < 80) {
+      const prm = Object.assign(_pedsScopeParams(), { offset: off, limit: ((SB_ANON && _sbTok) ? 5000 : 2000) });
+      if (off === 0) prm.fresh = 1;
+      res = await _pedListarPagina(prm);
+      if (tok !== _pedsLoadToken) return false;          // la persona cambió de vista: se descarta
+      const rows = Array.isArray(res) ? res : (res && res.rows) || [];
+      if (off === 0) ts = (res && res.serverTs) || Date.now();
+      if (!rows.length) break;
+      buf = buf.concat(rows); off += rows.length;
+      if (!(res && res.hayMas)) break;
+      await new Promise(r => setTimeout(r, 40));
+    }
+    if (!buf.length) return false;
+    if (ts < (pLastSyncTs || 0) - 5000) return false;    // foto más vieja que lo que ya se ve: no pisar
+    const nuevo = _ordenarFilasDePedido(buf);
+    const extras = (pRaw || []).filter(r => r && r._extraCamDev);
+    // solo los pedidos que de verdad cambiaron recalculan el color del nombre (recálculo puntual)
+    // (se comparan las filas de cada pedido sin los campos calculados «_…» y sin importar su orden)
+    const _sin_ = (k, v) => (k && k[0] === '_') ? undefined : v;
+    const _huella = rows => { const m = new Map(); (rows || []).forEach(r => { if (!r || r._extraCamDev || r._provisional || r._reciente) return; const n = String(r['NroPedido'] || '').trim(); (m.get(n) || m.set(n, []).get(n)).push(JSON.stringify(r, _sin_)); }); const o = new Map(); m.forEach((a, n) => o.set(n, a.sort().join('\n'))); return o; };
+    const _hA = _huella(pRaw), _hN = _huella(nuevo), _distintos = [];
+    _hN.forEach((v, n) => { if (_hA.get(n) !== v) _distintos.push(n); });
+    _hA.forEach((v, n) => { if (!_hN.has(n)) _distintos.push(n); });
+    pLastSyncTs = ts;
+    window._pedTotalReal = (res && res.total) || nuevo.length;
+    if (Object.keys(pFlt || {}).length && typeof pAply === 'function') { pRaw = nuevo.concat(extras); pAply(); }
+    else _renderPedsDesde(nuevo.concat(extras), pEst, true);
+    try { if (_distintos.length) { _cliColorRecalcNros(_distintos); if (!Object.keys(pFlt || {}).length) _renderPedsDesde(pRaw, pEst, true); } } catch (_) {}
+    try { lsSetPeds(nuevo, ts, true); } catch (_) {}
+    _pedMarca('cura silenciosa lista', nuevo.length + ' filas · ' + _distintos.length + ' pedidos distintos');
+    return true;
+  } catch (e) { try { _errLog('peds.curaSilenciosa', e); } catch (_) {} return false; }
+  finally { window._pedsCuraEnCurso = false; }
 }
 
 // Cuenta pedidos únicos por estado y actualiza el span.cnt de cada tab.
@@ -17517,6 +17652,9 @@ async function _recargaSilenciosa() {
   _recargaSilUltima = Date.now();
   _recargaSilInFlight = true;
   try {
+    // 16-oct · PARPADEO: antes se cambiaba la pantalla por la PRIMERA tanda (3.000 filas) y luego se
+    // cargaba el resto → la grilla se achicaba y crecía. Ahora se baja todo por detrás y se cambia de una vez.
+    if (pScope !== 'activos') { await _pedsCuraSilenciosa('refetch'); return; }
     // fresh:1 → el servidor REGENERA su caché ahora (reloj nuevo) en vez de servir
     // una foto vieja cuyo reloj viejo re-disparaba el refetch en el próximo poll.
     const params = Object.assign({ offset: 0, fresh: 1 }, _pedsScopeParams());
@@ -18122,10 +18260,65 @@ function _pedsUserOcupado() {
   } catch(e) {}
   return false;
 }
+// ══════════════════════════════════════════════════════════════════════════
+// 16-oct-2026 · PUNTO 229 (Pablo): «un pedido con cambio a veces muestra el cambio y a veces el
+// pedido original» (22532 Silvia Manay, 2 cambios; 22180 Glenda Gadea). CAUSA: cada vez que
+// ALGUIEN tocaba un cambio o una devolución (aviso de la base, o guardar uno), se ponían en null
+// las listas de cambios/devoluciones (_c2Hist, _c2List, histCamData, histDevData) y NO se volvían
+// a pedir hasta reabrir Pedidos. Cualquier repintado de por medio dibujaba esos pedidos SIN su
+// cambio (prendas originales) y los sacaba de Activos/Cambio; al reabrir, volvía el cambio.
+// AHORA: si una lista está en null se usa la última buena (nunca «nada») y se pide la nueva por
+// detrás; al llegar, se repinta suave (solo las filas que cambian).
+// ══════════════════════════════════════════════════════════════════════════
+let _pedsHistPidiendo = null;
+function _pedsHistMemo() {
+  const M = window._pedsHistUlt || (window._pedsHistUlt = {});
+  let falta = false;
+  if (Array.isArray(_c2Hist)) M.c2Hist = _c2Hist; else if (M.c2Hist) { _c2Hist = M.c2Hist; falta = true; }
+  if (Array.isArray(_c2List)) M.c2List = _c2List; else if (M.c2List) { _c2List = M.c2List; falta = true; }
+  if (Array.isArray(histCamData)) M.histCam = histCamData; else if (M.histCam) { histCamData = M.histCam; falta = true; }
+  if (Array.isArray(histDevData)) M.histDev = histDevData; else if (M.histDev) { histDevData = M.histDev; falta = true; }
+  if (falta) _pedsHistRefrescar();
+}
+/** Trae las 4 listas frescas en paralelo; cada una se reemplaza SOLO si llegó bien. */
+function _pedsHistRefrescar() {
+  if (_pedsHistPidiendo) { _pedsHistPidiendo.otra = true; return _pedsHistPidiendo; }
+  const job = (async () => {
+    const r = await Promise.all([
+      _c2HistMapRapido().catch(() => null), _c2ListarRapido().catch(() => null),
+      _cambiosListarRapido().catch(() => null), _devListarRapido().catch(() => null)]);
+    if (Array.isArray(r[0])) _c2Hist = r[0];
+    if (Array.isArray(r[1])) _c2List = r[1];
+    if (Array.isArray(r[2])) { histCamData = r[2]; try { _hcLsSet(r[2]); } catch (_) {} }
+    if (Array.isArray(r[3])) { histDevData = r[3]; try { _hdLsSet(r[3]); } catch (_) {} }
+    if (typeof curPg !== 'undefined' && curPg === 'pedidos' && Array.isArray(pRaw) && pRaw.length) {
+      try { if (Object.keys(pFlt || {}).length && typeof pAply === 'function') pAply(); else _renderPedsDesde(pRaw, pEst, true); } catch (_) {}
+    }
+  })();
+  _pedsHistPidiendo = job;
+  job.finally(() => { const otra = job.otra; _pedsHistPidiendo = null; if (otra) setTimeout(_pedsHistRefrescar, 300); });
+  return job;
+}
+
+/** 16-oct · huellas de lo que muestra la grilla. cab = columnas/anchos/orden/pintar/filtros (si cambia: repintado completo);
+ *  filas = valores de cada fila visible (si no cambia: no se toca nada). */
+function _pedsHash(str, h) { h = (h === undefined ? 2166136261 : h) >>> 0; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h; }
+function _pedsFirma(rows, total) {
+  try {
+    let cab = PCOLS.map(c => c.k + ':' + _pColW(c.k)).join(',') + '|' + pSC + (pSA ? 1 : 0) + '|' + ((typeof _paintMode !== 'undefined' && _paintMode) ? 1 : 0)
+            + '|' + JSON.stringify(pFlt, (k, v) => (v instanceof Set) ? [...v] : v);
+    let h = _pedsHash(String(total) + '|' + (rows ? rows.length : 0));
+    (rows || []).forEach(r => { h = _pedsHash(JSON.stringify(r) + '#', h); });
+    try { if (typeof pHighlight !== 'undefined' && pHighlight && pHighlight.size) h = _pedsHash('H' + [...pHighlight].join(','), h); } catch (_) {}
+    return { cab: _pedsHash(cab).toString(36), filas: h.toString(36) + '.' + (rows ? rows.length : 0) };
+  } catch (e) { return { cab: 'x' + Date.now(), filas: 'x' + Date.now() }; }   // ante la duda, se repinta todo
+}
 function _pedsRenderSuave() {
   if (!_pedsUserOcupado()) {
     if (_pedsRenderPendTimer) { clearTimeout(_pedsRenderPendTimer); _pedsRenderPendTimer = null; }
+    window._pedsRenderFondo = true;   // 16-oct · repintado de fondo: solo si cambió lo visible (ver _renderPedsDesde)
     try { _renderPedsDesde(pRaw, pEst, true); } catch(e) { _errLog('renderSuave', e); }
+    finally { window._pedsRenderFondo = false; }
     return;
   }
   // Ocupado → reintentar en 800ms (se re-agenda hasta que esté libre; 1 solo timer)
@@ -18397,6 +18590,7 @@ function _pedCrsMousedown(e) {
 }
 
 function renderPT(el, rows, total, hayMas) {
+  window._pedsFirmaVista = null;   // 16-oct · la grilla cambia por otro camino: la huella de _renderPedsDesde deja de valer
   // #2 Antes de destruir el DOM (delta polling u optimistic), si el usuario tiene
   // foco en algún input de filtro, recordamos cuál para re-enfocar al final.
   try {
@@ -21532,10 +21726,12 @@ function _rtFlujoAplicar(que) {
     if (que === 'cambios') {
       try { _c2Hist = null; _c2List = null; } catch (_) {}
       try { histCamData = null; _hcLsDel(); } catch (_) {}
+      try { if (visible('pg-pedidos')) _pedsHistRefrescar(); } catch (_) {}   // 16-oct · punto 229: se repone por detrás, sin quedar «sin cambios»
       if (visible('pg-cambios')) { try { if (document.getElementById('cambios2-w')) loadCambios2(); } catch (_) {} }
 
     } else if (que === 'devoluciones') {
       try { histDevData = null; _hdLsDel(); } catch (_) {}
+      try { if (visible('pg-pedidos')) _pedsHistRefrescar(); } catch (_) {}   // 16-oct · punto 229
       if (visible('pg-devoluciones')) { try { loadDevoluciones(true); } catch (_) {} }
 
     } else if (que === 'confeccion') {
@@ -22042,6 +22238,7 @@ function _pedsRescateServidor() {
 // - Actualiza el value de los inputs .p-colf que NO tienen foco (para no pisar tipeo).
 // - Actualiza el contador "Mostrando N pedidos" y el botón "✕ Filtros".
 function pRenderTBodyFast(el, rows, total, hayMas) {
+  window._pedsFirmaVista = null;   // 16-oct · idem (ver PARPADEO en _renderPedsDesde)
   const tbody = el.querySelector('table.pt tbody');
   if (!tbody) { renderPT(el, rows, total, hayMas); return; }
   // P1 — modo virt si supera threshold
@@ -22076,6 +22273,44 @@ function pRenderTBodyFast(el, rows, total, hayMas) {
   // _updateTabCounts(pRaw) sin esos sets y ponía Activos/Cambio en 0 (bug).
 }
 
+/** 16-oct · punto 227: por pedido, la lista de prendas a SEPARAR (ver exportarExcel). */
+function _excelPrendasASeparar(grupos) {
+  const out = new Map();
+  const _FIN = new Set(['PRENDA NUEVA ENVIADA', 'CANCELADO']);
+  const estCam = {};
+  (Array.isArray(_c2List) ? _c2List : []).forEach(c => { estCam[String(c.NroCambio || '').trim()] = String(c.Estado || '').trim().toUpperCase(); });
+  const camActivo = nc => !!nc && estCam[nc] !== undefined && !_FIN.has(estCam[nc]);
+  const esLineaCambio = t => /^CAMBIO\s+CAM-\d+/i.test(String(t || '').trim());
+  const _DESP = new Set(['EN CAMINO', 'ENTREGADO', 'DEVOLUCION']);
+  let flat = [];
+  try { flat = pExpandFlat(grupos); } catch (e) { return out; }
+  let cur = null;
+  flat.forEach(f => {
+    const nro = String(f['NroPedido'] || (cur && cur.nro) || '').trim();
+    if (!f._isContinuacion || !cur || cur.nro !== nro) { cur = { nro, filas: [] }; out.set(nro, cur); }
+    cur.filas.push(f);
+  });
+  out.forEach((c, nro) => {
+    const conCambio = c.filas.some(f => camActivo(f._c2Nro) || camActivo(f._devSinNueva));
+    const prendas = [], precios = [];
+    const pend = c.filas.filter(f => !_DESP.has(String(f['Estado'] || '').trim().toUpperCase()));
+    (conCambio ? c.filas : (pend.length ? pend : c.filas)).forEach(f => {
+      const pr = String(f['Prenda'] || '').trim();
+      if (!pr || (typeof _esPago === 'function' && _esPago(pr)) || esLineaCambio(pr)) return;
+      if (conCambio) {
+        if (f._devSinNueva) return;                                   // devuelta sin prenda nueva: no se separa
+        if (f._prendaNuevaDisplay && camActivo(f._c2Nro)) { prendas.push(String(f._prendaNuevaDisplay).trim()); return; }
+        if (camActivo(f._c2Nro)) { prendas.push(pr); precios.push(parseFloat(f['Precio']) || 0); return; }   // la nueva ya es fila propia
+        return;                                                       // prenda del pedido original: ya se entregó
+      }
+      prendas.push(pr); precios.push(parseFloat(f['Precio']) || 0);
+    });
+    if (!prendas.length) { out.delete(nro); return; }
+    out.set(nro, { prendas, precio: precios.length === prendas.length ? precios.reduce((a, b) => a + b, 0) : '' });
+  });
+  return out;
+}
+
 function exportarExcel() {
   if (typeof XLSX === 'undefined') { toast('Librería XLSX no cargada. Recarga la página.','err'); return; }
   const desde = document.getElementById('exp-desde')?.value || '';
@@ -22099,12 +22334,22 @@ function exportarExcel() {
   const headers = PCOLS.map(c => c.k).filter(k => !k.startsWith('_'));
   const extraCols = ['Pago','Forma pago','Fecha Pago'];
   const allHeaders = [...headers, ...extraCols];
+  // 16-oct-2026 · PUNTO 227 (Pablo): el Excel es para SEPARAR prendas. Antes la columna Prenda traía
+  // la primera fila del pedido (en un cambio, la prenda DEVUELTA) y nada decía qué separar. Ahora
+  // Prenda = lo que hay que separar, igual que lo muestra la grilla:
+  //   · pedido con CAMBIO ACTIVO → solo las prendas NUEVAS del cambio (sin las del pedido original,
+  //     sin la devuelta y sin la línea «CAMBIO CAM-xxxx (diferencia/envío)»);
+  //   · pedido normal → sus prendas pendientes de despacho (sin _PAGO_ ni líneas de cambio).
+  const _sepPrendas = _excelPrendasASeparar(datos);
   const rows = datos.map(r => {
     const obj = {};
     allHeaders.forEach(k => { obj[k] = r[k] ?? ''; });
+    const sp = _sepPrendas.get(String(r['NroPedido'] || '').trim());
+    if (sp) { obj['Prenda'] = sp.prendas.join(' + '); obj['Precio'] = sp.precio; obj['Cant. prendas'] = sp.prendas.length; }
     return obj;
   });
-  const ws = XLSX.utils.json_to_sheet(rows);
+  if (!allHeaders.includes('Cant. prendas')) allHeaders.splice(allHeaders.indexOf('Prenda') + 1, 0, 'Cant. prendas');
+  const ws = XLSX.utils.json_to_sheet(rows, { header: allHeaders });
   // Ancho de columnas automático
   ws['!cols'] = allHeaders.map(k => ({wch: Math.max(k.length, 12)}));
   const wb = XLSX.utils.book_new();
@@ -27461,6 +27706,18 @@ function _logrosFiesta(tipo, emoji, texto) {
     })();
   } catch (er) {}
 }
+// 16-oct (Pablo): enlace «🔄 Actualizar ahora» de la planilla de cuadre → el ERP pide la corrida y avisa.
+async function _cuadreActualizarDesdeEnlace() {
+  if (location.hash !== '#actualizar-cuadre') return;
+  for (let i = 0; i < 60 && !(SESSION_TOKEN && MY_ROLE); i++) await new Promise(r => setTimeout(r, 1000));
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {}
+  if (!_soyAdminERP()) { toast('Solo un administrador puede actualizar la planilla de cuadre', 'err'); return; }
+  try {
+    const r = await apiPost('cuadre.planillaActualizar', {});
+    toast(r && r.yaEnCamino ? '⏳ La planilla ya se está actualizando: lista en unos 3 minutos' : '⏳ Actualizando la planilla de cuadre: lista en unos 3 minutos (puedes cerrar esta pestaña)', 'ok');
+  } catch (e) { toast('No se pudo pedir la actualización: ' + (e && e.message || e), 'err'); }
+}
+try { window.addEventListener('load', () => { _cuadreActualizarDesdeEnlace(); }); } catch (_) {}
 function _soyAdminERP() {
   try { return MY_ROLE === 'Administrador' || MY_ROLE === 'Admin'; } catch (_) { return false; }
 }
@@ -30857,7 +31114,7 @@ async function _invHistorialSku(pren, dis, col, tal, vCelda) {
       rec ? '<span style="color:#86efac">Ya volvió</span>' : v.si === true ? '<span style="color:#86efac">Sí</span>' : v.si === false ? '<span style="color:#fca5a5">No</span>' : ''], 'nd'); });
   h += grupo('ven', 'Ventas', B.tot.ven, false);
   B.ven.forEach(m => { const i = m.info || {}; const dev = /^DEVOLUCION_CLIENTE$/.test(m.tipo);
-    h += fila([_hisFecha(m.fecha), qué(m) + (nro(m) ? ' <b>' + nro(m) + '</b>' : ''), '<b>' + _hisNum(-(Number(m.d_ventas) || 0)) + '</b>', esc([i.clienta, i.canal, i.asesora].filter(Boolean).join(' · ') || det(m)), '',
+    h += fila([_hisFecha(m.fecha), qué(m) + (nro(m) ? ' <b>' + nro(m) + '</b>' : '') + ((m.rastro && i.obs) ? ' <span style="color:var(--mu);font-size:11.5px">· ' + esc(i.obs) + '</span>' : ''), '<b>' + _hisNum(-(Number(m.d_ventas) || 0)) + '</b>', esc([i.clienta, i.canal, i.asesora].filter(Boolean).join(' · ') || det(m)), '',
       dev ? '<span style="color:#86efac">Volvió al stock</span>' : ''], 'ven'); });
   h += '<tr><td colspan="6" style="padding:8px;font-size:13.5px;border-top:2px solid var(--bd2)">Stock para vender: ' + B.tot.conf + ' − ' + B.tot.ven + ' = <b style="font-size:15px;color:#fcd34d">' + B.stock + '</b>'
     + ' <span style="color:var(--mu);font-size:12px">· confección total ' + B.total + ' (' + B.tot.conf + ' reales + ' + B.tot.nd + ' no disponibles)</span>'
@@ -42180,14 +42437,24 @@ function bootApp(){
   // Restaurar el ÚLTIMO módulo visitado (persistido en localStorage). Si no hay historial
   // o el módulo está oculto para el rol, el default es Pedidos (decisión Pablo).
   var _lastPg=''; try{ _lastPg=localStorage.getItem('erp_last_pg')||''; }catch(e){}
+  var _pesPg=''; try{ _pesPg=(_pesLeer().pg)||''; }catch(e){}   // 16-oct · la memoria de ESTA pestaña manda
+  if(_pesPg) _lastPg=_pesPg;
   var _pgPorDefecto = (MY_ROLE === 'Marketing') ? 'marketing' : 'pedidos'; // 15-sep: Marketing no ve Pedidos
   var _goPg = _lastPg || _pgPorDefecto;
   var _goBtn = document.querySelector('.nb[data-pg="'+_goPg+'"]');
   if(!_goBtn || _goBtn.style.display==='none'){ _goPg=_pgPorDefecto; _goBtn=document.querySelector('.nb[data-pg="'+_pgPorDefecto+'"]'); }
   // 30-set · con matriz, la pagina por defecto puede estar apagada: ir al primer modulo visible
   if(_goBtn && _goBtn.style.display==='none'){ _goBtn = Array.prototype.find.call(document.querySelectorAll('.sb .nb[data-pg]'), function(x){ return x.style.display!=='none'; }) || null; if(_goBtn) _goPg=_goBtn.getAttribute('data-pg'); }
+  // 16-oct · sub-pantallas sin botón propio (Stock › Lotes, Historial de cambios…): abrir su módulo padre y luego la sub-pantalla
+  var _pesSubPg = (_pesPg && !document.querySelector('.nb[data-pg="'+_pesPg+'"]') && document.getElementById('pg-'+_pesPg) && _pgPermitida(_pesPg)) ? _pesPg : '';
+  if(_pesSubPg && PG_PADRE[_pesSubPg]){ var _pb=document.querySelector('.nb[data-pg="'+PG_PADRE[_pesSubPg]+'"]'); if(_pb && _pb.style.display!=='none'){ _goBtn=_pb; _goPg=PG_PADRE[_pesSubPg]; } }
+  window._pesBoot = !!_pesPg;   // 16-oct · los clics del arranque no borran la memoria guardada
+  try {
   if(_goBtn){ _goBtn.click(); }
   else if(MY_ROLE==='Administrador'){ loadDash(); }   // fallback extremo
+  if(_pesSubPg){ try{ navegarA(_pesSubPg); _goPg=_pesSubPg; }catch(e){} }
+  } finally { window._pesBoot = false; }
+  try{ _pesRestaurar(_goPg); }catch(e){}   // 16-oct · sub-pestaña + scroll de esta pestaña
   try{ _topbarPorModulo(_goPg); }catch(e){}   // 6-sep-2026: "Nuevo pedido" solo en Pedidos, tambien en el arranque
   loadMAESTROS(); // carga maestros en background al arrancar
   cargarColores(); // refresca el mapa de colores editable (override de ST_BG) en background
