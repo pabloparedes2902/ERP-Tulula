@@ -4818,7 +4818,15 @@ document.addEventListener('click', function(e){
     const m = _pesLeer(); m.sub = m.sub || {}; m.sub[m.pg || curPg] = k; m.sc = null; _pesGuardar(m);
   } catch(_) {}
 }, true);
-function _pesScroller(){ const pg = document.querySelector('.pg.on'); return pg ? pg.querySelector('.tsc') : null; }
+// el contenedor que de verdad se desliza en cada módulo (Pedidos/Cambios: .tsc · Stock: .st-wrap · otros: el que tenga barra)
+function _pesScroller(){
+  const pg = document.querySelector('.pg.on'); if (!pg) return null;
+  let mejor = null, alto = 0;
+  pg.querySelectorAll('.tsc, .st-wrap, .tw, div[style*="overflow"]').forEach(e => {
+    if (e.scrollHeight > e.clientHeight + 5 || e.scrollWidth > e.clientWidth + 5) { const s = getComputedStyle(e); if (/(auto|scroll)/.test(s.overflowY + s.overflowX) && e.scrollHeight > alto) { mejor = e; alto = e.scrollHeight; } }
+  });
+  return mejor;
+}
 function _pesTomarScroll(){
   if (window._pesRestaurando) return;
   const m = _pesLeer(); if (!m.pg) return;
@@ -4837,29 +4845,39 @@ function _pesRestaurar(pg){
   const cortar = () => { corto = true; window._pesRestaurando = false; };
   ['wheel','mousedown','keydown','touchstart'].forEach(ev => window.addEventListener(ev, function f(e){ if (e.isTrusted) { cortar(); window.removeEventListener(ev, f, true); } }, true));
   window._pesRestaurando = true;
-  const t0 = Date.now(); let subOk = !sub, okDesde = 0;
+  const t0 = Date.now(); let okDesde = 0, clics = 0, ultClic = 0;
+  const fin = () => { window._pesRestaurando = false; };
   (function paso(){
-    if (corto || curPg !== pg) { window._pesRestaurando = false; return; }
+    if (corto || curPg !== pg) return fin();
     const pgEl = document.getElementById('pg-' + pg);
-    if (!subOk && pgEl) {
+    const listo = !!pgEl && !pgEl.querySelector('.ld') && pgEl.textContent.trim().length > 0;
+    let subBien = true;
+    // 1) sub-pestaña: SOLO cuando el módulo ya pintó (si no, su primera carga la pisa); se vuelve a
+    //    elegir si algo la pisó después (hasta 4 veces), con 1,2 s entre intentos.
+    if (sub && listo) {
       const cand = Array.prototype.find.call(pgEl.querySelectorAll('.tab'), x => x.getAttribute(sub[0]) === sub[1]);
-      if (cand) { if (!cand.classList.contains('on')) cand.click(); subOk = true; }
-    }
-    if (subOk && sc) {
-      const listo = pgEl && !pgEl.querySelector('.ld');
-      if (listo) {
+      if (cand && !cand.classList.contains('on')) {
+        subBien = false; okDesde = 0;
+        if (clics < 4 && Date.now() - ultClic > 1200) { clics++; ultClic = Date.now(); cand.click(); }
+      }
+    } else if (sub) subBien = false;
+    // 2) scroll: recién con la sub-pestaña correcta y la pantalla pintada
+    if (subBien && listo) {
+      if (!sc) return fin();
+      if (Date.now() - ultClic > 500) {
         const tsc = _pesScroller();
         if (tsc) { if (Math.abs(tsc.scrollTop - sc.t) > 2) tsc.scrollTop = sc.t; if (Math.abs(tsc.scrollLeft - sc.l) > 2) tsc.scrollLeft = sc.l; }
         if (Math.abs((window.scrollY || 0) - sc.w) > 2) window.scrollTo(0, sc.w);
-        const ok = (!tsc || (Math.abs(tsc.scrollTop - sc.t) <= 2 && Math.abs(tsc.scrollLeft - sc.l) <= 2)) && Math.abs((window.scrollY || 0) - sc.w) <= 2;
+        const ok = (tsc ? (Math.abs(tsc.scrollTop - sc.t) <= 2 && Math.abs(tsc.scrollLeft - sc.l) <= 2) : !(sc.t || sc.l)) && Math.abs((window.scrollY || 0) - sc.w) <= 2;   // si había scroll de tabla, esperar a que la tabla exista
         // se sigue reponiendo hasta 4 s después de llegar (por si la pantalla se repinta al llegar los datos frescos)
         if (ok && !okDesde) okDesde = Date.now();
       }
-    } else if (subOk && !sc) { window._pesRestaurando = false; return; }
-    if ((okDesde && Date.now() - okDesde > 4000) || Date.now() - t0 > 15000) { window._pesRestaurando = false; return; }
+    }
+    if ((okDesde && Date.now() - okDesde > 4000) || Date.now() - t0 > 20000) return fin();
     setTimeout(paso, 150);
   })();
 }
+
 // ══════════════════════════════════════════════════════════════════════════
 // EL BOTÓN 🔄 — QUE DE VERDAD TRAIGA DATOS NUEVOS (26-jul-2026)
 //
