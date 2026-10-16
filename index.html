@@ -537,9 +537,9 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
       <div id="mkt-tabs" style="display:none;gap:6px;align-items:center;margin-right:4px">
         <button class="mkt-tab on" data-sub="anuncios">📣 Anuncios</button>
         <!-- 15-oct-2026 · 🏆 Qué funciona se juntó con 🏷️ Nomenclatura (decisión de Pablo) -->
-        <button class="mkt-tab" data-sub="contenido">🎬 Contenido</button>
+        <button class="mkt-tab" data-sub="contenido">🎬 Creativos</button>
         <button class="mkt-tab" data-sub="reglas">📏 Reglas</button>
-        <button class="mkt-tab" data-sub="config">🏷️ Nomenclatura</button>
+        <button class="mkt-tab" data-sub="config">🏷️ Listas</button>
       </div>
       <button id="btn-search-open" title="Buscar (Ctrl+K)" style="background:var(--bg3);border:1px solid var(--bd);color:var(--tx);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:6px">🔍 <span style="color:var(--mu);font-size:11px">Ctrl+K</span></button>
       <!-- CABECERA COMPACTA (25-jul): el contador de pedidos y el botón de recargar
@@ -11687,10 +11687,33 @@ async function _sbRpcPago(fn, params) {
       headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
-    if (!r.ok) { try { console.warn('[pago] RPC ' + fn + ' HTTP ' + r.status + ' → vía Apps Script'); } catch(_){} return null; }
+    if (!r.ok) {
+      // 15-oct-2026 · se guarda POR QUE la base rechazo (pedido 13924: "Falta la forma de pago").
+      // Antes se tiraba el motivo y el guardado caia a Apps Script, que con la hoja congelada
+      // tardaba 7-64 s y fallaba igual. Ver _sbRechazoPago.
+      let _m = '';
+      try { const _j = await r.json(); _m = String((_j && (_j.message || _j.hint || _j.details)) || ''); } catch (_) {}
+      try { window._sbUltimoError = { fn: fn, msg: String(_m || ('HTTP ' + r.status)).slice(0, 200), ts: Date.now(), status: r.status }; } catch (_) {}
+      try { console.warn('[pago] RPC ' + fn + ' HTTP ' + r.status + ' ' + _m); } catch(_){}
+      return null;
+    }
     const d = await r.json();
     return (d && d.ok === true) ? d : null;
   } catch (e) { try { console.warn('[pago] RPC ' + fn + ' falló → vía Apps Script'); } catch(_){} return null; }
+}
+
+// 15-oct-2026 · Si la BASE contesto que NO (error de negocio 4xx: falta forma de pago,
+// pago no encontrado, no coincide...), el camino viejo no tiene sentido: la hoja de
+// Pedidos esta congelada y solo agrega 7-64 s de espera para fallar igual. Devuelve el
+// motivo (texto) para cortar ya con un mensaje claro; '' si no hubo rechazo reciente
+// (red caida, sesion vencida) y entonces si se prueba el respaldo como siempre.
+function _sbRechazoPago(fn) {
+  try {
+    const u = window._sbUltimoError;
+    if (u && u.fn === fn && u.status >= 400 && u.status < 500 && u.status !== 401 && u.status !== 403
+        && (Date.now() - u.ts) < 15000) return String(u.msg || ('la base rechazo ' + fn));
+  } catch (_) {}
+  return '';
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -15578,6 +15601,16 @@ async function _pagoPrendaRapido(nro, prenda, monto, forma, fecha) {
       String(r['NroPedido']||'').trim() === String(nro) && String(r['Prenda']||'').trim() === String(prenda).trim());
     if (filas.length !== 1 || typeof _sbRpcPago !== 'function' || typeof _sbRpcMasivo !== 'function') return _lento();
     let pid = String(filas[0]['PagoId'] || '').trim();
+    // 15-oct-2026 · BORRAR un pago de fila de prenda (monto 0). Antes se mandaba
+    // pago_editar con forma vacia: la base lo rechaza ("Falta la forma de pago"), caia a
+    // la hoja congelada y NO se borraba nada (pedido 13924). Borrar es pago_eliminar.
+    if (!(parseFloat(monto) > 0)) {
+      if (!pid) throw new Error('Este pago es antiguo (sin código de pago) y no se puede borrar desde aquí. Avisale a Pablo con el número de pedido ' + nro + '.');
+      const rd = await _sbRpcPago('pago_eliminar', { p_nro: String(nro), p_pago_id: pid, p_monto: null, p_forma: null });
+      if (rd) { try { _sbEspejarYa([String(nro)]); } catch (_) {} return { ok: true, via: 'base', pagoId: pid }; }
+      const _rz = _sbRechazoPago('pago_eliminar');
+      throw new Error('NO se borró el pago' + (_rz ? ': ' + _rz : '') + '. Reintenta en un momento; si sigue, avisale a Pablo (pedido ' + nro + ').');
+    }
     if (!pid) {
       pid = _nuevoPagoIdCliente();
       const s = await _sbRpcMasivo('pedido_fila_editar', { p_nro: String(nro), p_prenda_ref: String(prenda).trim(),
@@ -15587,10 +15620,17 @@ async function _pagoPrendaRapido(nro, prenda, monto, forma, fecha) {
     }
     const r = await _sbRpcPago('pago_editar', { p_nro: String(nro), p_pago_id: pid,
       p_monto: parseFloat(monto) || 0, p_forma: String(forma || ''), p_fecha: String(fecha || ''), p_asesora: '' });
-    if (!r) return _lento();
+    if (!r) {
+      const _rz = _sbRechazoPago('pago_editar');
+      if (_rz) throw new Error('NO se guardó el pago: ' + _rz);
+      return _lento();
+    }
     try { _sbEspejarYa([String(nro)]); } catch (_) {}
     return { ok: true, via: 'base', pagoId: pid };
-  } catch (_) { return _lento(); }
+  } catch (e) {
+    if (e && /^(NO se |Este pago es antiguo)/.test(String(e.message || ''))) throw e;   // 15-oct · rechazo claro, sin ir a la hoja congelada
+    return _lento();
+  }
 }
 
 async function _sbRpcMasivo(receta, cuerpo) {
@@ -23383,6 +23423,14 @@ async function _guardarPedidoModal(nro, body) {
     const _meta = { NroPedido:1, action:1 };
     const campos = Object.keys(body || {}).filter(k => !k.startsWith('_') && !_meta[k]);
     if (!campos.length) return;
+    // 15-oct-2026 · Los "R-…" son numeros PROVISIONALES. Ponerles fecha los convertia en
+    // pedido real, pero esa conversion vivia en la hoja, que esta congelada: Estefany lo
+    // intento 13 veces el 15-oct y cada intento tardo 5-64 s y fallo. Ahora se avisa ya.
+    if (/^r-/i.test(String(nro || '').trim()) && campos.indexOf('FechaPedido') >= 0) {
+      const _eR = new Error('El pedido ' + nro + ' tiene número provisional: no se le puede poner fecha desde aquí. Avisale a Pablo para pasarlo a número real.');
+      _eR._sinRespaldo = true;
+      throw _eR;
+    }
 
     const rapidos = (typeof SB_CAMPOS_MASIVOS !== 'undefined') ? SB_CAMPOS_MASIVOS : [];
     // 31-ago — EL ENVIO TAMBIEN ES RAPIDO, pero por su propia puerta. No es un
@@ -23432,6 +23480,7 @@ async function _guardarPedidoModal(nro, body) {
     try { window._ultimoGuardadoMs = Date.now() - t0; } catch (_) {}
     return { ok:true, via:'base', ms: Date.now() - t0, campos: campos.length };
   } catch (e) {
+    if (e && e._sinRespaldo) throw e;                  // 15-oct · aviso claro: no ir a la hoja congelada
     return apiSend('pedidos.actualizar', body);        // ante cualquier duda, el camino de siempre
   }
 }
@@ -23634,6 +23683,8 @@ async function _guardarPedidoModal(nro, body) {
           // el RPC ahora rechaza en vez de borrar el pago equivocado, y cae a Apps Script.
           const _rpc = await _sbRpcPago('pago_eliminar', { p_nro: String(nro), p_pago_id: _pid, p_monto: parseFloat(oldM) || null, p_forma: oldF || null });
           if (_rpc) { _sbEspejarYa(nro); return; }
+          const _rz = _sbRechazoPago('pago_eliminar');
+          if (_rz) throw new Error('NO se borró el pago: ' + _rz);   // 15-oct · sin esperar a la hoja congelada
         }
         return apiSend('pago.eliminar', {NroPedido: nro, _pagoId: _pid, _pagoKey: pagoEditState.pagoKey});
       })()
@@ -23852,6 +23903,8 @@ async function _guardarPedidoModal(nro, body) {
                           && qId('pago-f-asesora').value.trim().toUpperCase() !== String(pagoEditState.asesora || '').trim().toUpperCase())
                          ? qId('pago-f-asesora').value.trim() : '' });
             if (_b) return _b;
+            const _rz = _sbRechazoPago('pago_editar');
+            if (_rz) throw new Error('NO se guardó el pago: ' + _rz);   // 15-oct · sin esperar a la hoja congelada
           }
           return apiSend('pedidos.actualizar', {NroPedido:nro, _pagoId:_pidEd, _pagoKey:pagoEditState.pagoKey, Pago:monto, FormaPago:forma, FechaPago:fecha});
         })()
