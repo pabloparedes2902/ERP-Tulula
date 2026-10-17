@@ -27800,6 +27800,78 @@ async function _cuadreActualizarDesdeEnlace() {
   } catch (e) { toast('No se pudo pedir la actualización: ' + (e && e.message || e), 'err'); }
 }
 try { window.addEventListener('load', () => { _cuadreActualizarDesdeEnlace(); }); } catch (_) {}
+// ═══ 17-oct (Pablo) · AVISO A LAS ASESORAS: ventas anotadas en el Drive que faltan en el ERP ═══
+// Va debajo de la barra «Clientas esperando respuesta». Cada asesora ve SOLO lo suyo; el admin ve todo.
+// Las de HOY no salen (se les da el día). Amarillo = de ayer · rojo = 2 días o más. Sin sonido.
+// «Registrar» abre Nuevo pedido ya lleno con los datos del Drive. Datos: cuadre.faltanErp (sale de la lista 2 del cuadre, cada 2 h).
+var _FE = { lista: [], abierto: false, hechas: {} };
+function _feEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+async function _feRevisar() {
+  try {
+    if (!(_soyAdminERP() || _miAsesoraERP())) return;
+    const r = await apiPost('cuadre.faltanErp', {});
+    try { _FE.hechas = JSON.parse(localStorage.getItem('fe_hechas') || '{}') || {}; } catch (_) { _FE.hechas = {}; }
+    _FE.lista = ((r && r.lista) || []).filter(x => !_FE.hechas[_feClave(x)]);
+    _FE.admin = !!(r && r.admin);
+    _fePintar();
+  } catch (_) {}
+}
+function _feClave(x){ return x.fecha + '|' + x.asesora + '|' + String(x.nombre || '').toUpperCase(); }
+function _fePintar() {
+  let b = document.getElementById('fe-barra');
+  const L = _FE.lista;
+  if (!L.length) { if (b) b.style.display = 'none'; return; }
+  if (!b) { b = document.createElement('div'); b.id = 'fe-barra'; document.body.appendChild(b); }
+  const rojo = L.some(x => x.nivel === 'rojo');
+  const camp = document.getElementById('campana-espera-barra');
+  const top = (camp && camp.style.display !== 'none') ? camp.offsetHeight : 0;
+  b.style.cssText = 'position:fixed;left:0;right:0;top:' + top + 'px;z-index:99998;font-family:system-ui,sans-serif;font-size:14px;padding:8px 16px;line-height:1.5;box-shadow:0 2px 8px rgba(0,0,0,.25);' +
+    (rojo ? 'background:#b45309;color:#fff' : 'background:#fde68a;color:#3b2a00');
+  const n = L.length;
+  const quien = _FE.admin ? (n + ' venta' + (n > 1 ? 's' : '') + ' anotada' + (n > 1 ? 's' : '') + ' en el Drive que falta' + (n > 1 ? 'n' : '') + ' en el ERP')
+    : ('Tienes ' + n + ' venta' + (n > 1 ? 's' : '') + ' anotada' + (n > 1 ? 's' : '') + ' en el Drive que falta' + (n > 1 ? 'n' : '') + ' en el ERP · no suma' + (n > 1 ? 'n' : '') + ' a tu comisión hasta que la' + (n > 1 ? 's' : '') + ' registres');
+  let h = '📝 <b>' + quien + '</b> &nbsp;<button id="fe-ver" style="margin-left:6px;border:0;border-radius:8px;padding:2px 10px;font-weight:600;cursor:pointer">' + (_FE.abierto ? 'Ocultar' : 'Ver') + '</button>';
+  if (_FE.abierto) {
+    h += '<div style="margin-top:8px;max-height:45vh;overflow:auto;background:rgba(255,255,255,.95);color:#111;border-radius:8px;padding:6px 8px">'
+      + '<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="text-align:left;color:#555"><th>Fecha</th>' + (_FE.admin ? '<th>Asesora</th>' : '') + '<th>Clienta</th><th>Prendas</th><th>Monto</th><th></th></tr>'
+      + L.map((x, i) => '<tr style="border-top:1px solid #eee' + (x.nivel === 'rojo' ? ';background:#fff1f2' : '') + '"><td>' + _feEsc(String(x.fecha).slice(5)) + (x.nivel === 'rojo' ? ' 🔴' : ' 🟡') + '</td>'
+        + (_FE.admin ? '<td>' + _feEsc(x.asesora) + '</td>' : '')
+        + '<td>' + _feEsc(x.nombre) + '</td><td>' + x.prendas.map(p => _feEsc(p.p)).join('<br>') + '</td><td>S/' + _feEsc(x.monto) + '</td>'
+        + '<td>' + (_FE.admin && x.asesora !== _miAsesoraERP() ? '' : '<button data-fe="' + i + '" style="border:0;border-radius:8px;padding:3px 10px;background:#7c3aed;color:#fff;cursor:pointer">Registrar</button>') + '</td></tr>').join('')
+      + '</table><div style="color:#666;font-size:12px;margin-top:6px">Al registrarla en el ERP desaparece de esta lista (la revisión corre cada 2 horas).</div></div>';
+  }
+  b.innerHTML = h;
+  document.getElementById('fe-ver').onclick = () => { _FE.abierto = !_FE.abierto; _fePintar(); };
+  b.querySelectorAll('button[data-fe]').forEach(bt => bt.onclick = () => _feRegistrar(L[Number(bt.getAttribute('data-fe'))]));
+}
+async function _feRegistrar(x) {
+  if (!x) return;
+  _FE.abierto = false; _fePintar();
+  navegarA('nuevo');
+  try { if (typeof npInit === 'function') await npInit(); } catch (_) {}
+  try { if (typeof npSetModo === 'function') npSetModo('nuevo'); } catch (_) {}
+  setTimeout(() => {
+    try {
+      npRellenar({ n: x.nombre, d: x.dni, t: x.cel, can: x.canal }, null);
+      const f = document.getElementById('np-fecha'); if (f && x.fecha) f.value = x.fecha;
+      const cont = document.getElementById('np-prendas');
+      x.prendas.forEach((p, i) => {
+        let ins = cont.querySelectorAll('.np-prenda');
+        if (i >= ins.length || ins[i].value) { npAddPrenda(); ins = cont.querySelectorAll('.np-prenda'); }
+        const inp = ins[ins.length - 1 >= i ? i : ins.length - 1];
+        inp.value = p.p; inp.dispatchEvent(new Event('input', { bubbles: true })); inp.dispatchEvent(new Event('change', { bubbles: true }));
+        const pr = cont.querySelectorAll('.np-prec')[i]; if (pr) { pr.value = p.precio; pr.dispatchEvent(new Event('input', { bubbles: true })); }
+      });
+      try { npCalc(); } catch (_) {}
+      _FE.hechas[_feClave(x)] = Date.now();
+      try { localStorage.setItem('fe_hechas', JSON.stringify(_FE.hechas)); } catch (_) {}
+      _FE.lista = _FE.lista.filter(y => y !== x); _fePintar();
+      toast('Revisa los datos (vienen del Drive), agrega el pago y guarda el pedido', 'ok');
+    } catch (e) { toast('No se pudo llenar el pedido: ' + (e && e.message || e), 'err'); }
+  }, 400);
+}
+try { window.addEventListener('load', () => { setTimeout(_feRevisar, 8000); setInterval(_feRevisar, 15 * 60 * 1000); setInterval(() => { if (_FE.lista.length) _fePintar(); }, 30000); }); } catch (_) {}
+
 function _soyAdminERP() {
   try { return MY_ROLE === 'Administrador' || MY_ROLE === 'Admin'; } catch (_) { return false; }
 }
