@@ -6784,6 +6784,7 @@ function _cosFilas() {
   const out = COS.data.filter(r => {
     if (COS.fest === 'ACTIVO' && r.Activo === false) return false;
     if (COS.fest === 'INACTIVO' && r.Activo !== false) return false;
+    if (COS.sinManga && COS.esAdmin && !_cosFaltaManga(r)) return false;   // 17-oct (Pablo) · filtro Sin manga
     if (COS.catSel.length && COS.catSel.indexOf(r.Categoria) < 0) return false;
     if (COS.rev && COS.esAdmin && _cosRevFlags(r).indexOf(COS.rev) < 0) return false;
     if (q && [r.Categoria, r.TipoPrenda, r.Modelo, r.Notas].join(' ').toLowerCase().indexOf(q) < 0) return false;
@@ -6925,6 +6926,7 @@ function _cosBindRowBtns(scope) {
   scope.querySelectorAll('.cos-act').forEach(b => b.addEventListener('change', async () => { await _cosDesactivar(b.dataset.d, b.checked); _cosRender(); }));
   scope.querySelectorAll('.cos-sortf').forEach(b => b.addEventListener('click', () => { COS.sortF = !COS.sortF ? 'asc' : (COS.sortF === 'asc' ? 'desc' : ''); _cosUpdateRows(); }));
   scope.querySelectorAll('.cos-festbtn').forEach(b => b.addEventListener('click', () => { COS.fest = COS.fest === '' ? 'ACTIVO' : (COS.fest === 'ACTIVO' ? 'INACTIVO' : ''); _cosRender(); }));
+  scope.querySelectorAll('.cos-mangabtn').forEach(b => b.addEventListener('click', () => { COS.sinManga = !COS.sinManga; _cosRender(); }));   // 17-oct (Pablo) · filtro Sin manga
   scope.querySelectorAll('.cos-catbtn').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); _cosCatPop(b); }));
   scope.querySelectorAll('.cos-hist').forEach(b => b.addEventListener('click', () => _cosHistorial(b.dataset.d)));
   scope.querySelectorAll('.cos-nuevo-de').forEach(b => b.addEventListener('click', () => _cosForm(_cosPrellenar(b.dataset.d))));
@@ -6996,6 +6998,7 @@ function _cosRender() {
     + (A ? '<button class="btn ' + ((COS.pend || []).length ? 'bp' : 'bg') + '" id="cos-pend" style="white-space:nowrap" title="Los productos nacen en Stock → Crear SKU. Aquí completas el costo, los precios y la ficha de los que ya tienen SKU">🆕 Por costear' + (COS.pend ? ' (' + COS.pend.length + ')' : '') + '</button>' : '')
     + '<input id="cos-q" placeholder="Buscar…" autocomplete="off" value="' + esc(COS.q) + '" style="width:150px;' + sel + '">'
     + (A ? '<button class="btn bp bs cos-festbtn" title="Tocá para alternar: todos → solo activos → solo inactivos (del ERP)" style="font-size:12px">' + ({ '': 'Todos', ACTIVO: 'Activos', INACTIVO: 'Inactivos' })[COS.fest || ''] + '</button>' : '')
+    + (A ? (() => { const n = (COS.data || []).filter(_cosFaltaManga).length; return '<button class="btn ' + (COS.sinManga ? 'bp' : 'bg') + ' bs cos-mangabtn" title="Prendas superiores enlazadas a la tienda que todavía no tienen la manga cargada. Tocá para ver solo esas (y otra vez para ver todas)." style="font-size:12px;white-space:nowrap">👕 Sin manga (' + n + ')</button>'; })() : '')   // 17-oct (Pablo)
     + chips.map(x => '<button class="btn ' + (COS.ver[x[0]] ? 'bp' : 'bg') + ' bs cos-ver" data-v="' + x[0] + '" style="font-size:12px">' + x[1] + '</button>').join('')
     + (A ? '<span style="flex:1"></span><button class="btn bg bs" id="cos-shopsync" title="Pregunta a Shopify cuáles productos están publicados y enlaza los que coinciden por nombre" style="font-size:12px;white-space:nowrap">🔄 Sincronizar con Shopify</button><button class="btn bg bs" id="cos-alertas" style="font-size:12px;white-space:nowrap">🔔 Alertas</button>' : '') + '</div>';
   h += '<div id="cos-form"></div>';
@@ -7601,17 +7604,23 @@ function _cfwTipoDe(v) {      // el tipo sale solo del ERP (Tipo de prenda / nom
 // Se guarda en la columna manga de shopify_ficha (Supabase) y en la web sale como fila «Manga: Larga». Ver FichaWeb.gs (_fwMangaFila_).
 const CFW_MANGAS = ['Larga', '3/4', 'Corta', 'Sin manga'];
 function _cfwLlevaManga() { const v = CFW.v || {}; return /BLUSA|TOP|BODY|BLAZER|CHALECO|ABRIGO|GABARDINA|VESTIDO|CONJUNTO/.test(_cosNormD(((CFW.titulo || '') + ' ' + (v.Diseno || '') + ' ' + (v.TipoPrenda || '')).toUpperCase()).toUpperCase()); }
+function _cfwMangaFija() { const v = CFW.v || {}; return /CHALECO/.test(_cosNormD((CFW.titulo || '') + ' ' + (v.Diseno || '') + ' ' + (v.TipoPrenda || ''))) ? 'Sin manga' : ''; }   // 17-oct (Pablo) · el chaleco siempre es sin manga
+// 17-oct (Pablo) · filtro «Sin manga» en Productos: prendas con manga, enlazadas a la tienda, sin manga cargada
+function _cosMangaDe(r) { const sh = _cosShopDe(r); if (!sh) return null; return ('manga' in sh) ? (sh.manga || '') : _cfwMangaDe(sh.ficha); }
+function _cosFaltaManga(r) { const sh = _cosShopDe(r); if (!sh) return false; if (!/BLUSA|TOP|BODY|BLAZER|CHALECO|ABRIGO|GABARDINA|VESTIDO|CONJUNTO/.test(_cosNormD([r.TipoPrenda, r.Modelo, r.Diseno, sh.titulo].join(' ')))) return false; return !_cosMangaDe(r); }
 function _cfwMangaDe(ficha) { const fl = (ficha && ficha.prenda && ficha.prenda.filas) || []; const x = fl.find(r => r && r.k === 'Manga'); return x ? String(x.v || '') : ''; }
 function _cfwMangaHtml(st, lbl) {
   if (!_cfwLlevaManga()) return '';
-  const m = CFW.manga || '';
-  return '<div style="margin-top:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:var(--r);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+  const m = CFW.manga || '', fija = _cfwMangaFija();
+  if (fija) return '<div style="margin-top:10px;padding:6px 10px;border:1px solid var(--bd);border-radius:var(--r);display:flex;gap:8px;align-items:baseline;font-size:12px"><b style="min-width:110px">Manga</b><span style="flex:1;color:var(--mu)">' + esc(fija) + ' (el chaleco siempre es sin manga)</span><span style="color:var(--gn)">✓</span></div>';
+  return '<div style="margin-top:10px;padding:8px 10px;border:1px solid ' + (m ? 'var(--bd)' : 'var(--yl,#c9a227)') + ';border-radius:var(--r);display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
     + '<b style="font-size:12px;min-width:110px">Manga</b><select data-cfmanga="1" style="' + st + ';max-width:200px"><option value="">—</option>'
     + CFW_MANGAS.map(x => '<option value="' + esc(x) + '"' + (x === m ? ' selected' : '') + '>' + esc(x) + '</option>').join('') + '</select>'
     + '<span style="' + lbl + '">' + (m ? 'En la web: «Manga: ' + esc(m) + '»' : 'Sin cargar') + '</span></div>';
 }
 function _cfwLleno(F, c) { return c.piezas.some(p => { const x = F.prenda.v[c.id + '_' + p.id]; return Array.isArray(x) ? x.length > 0 : !!String(x || '').trim(); }); }
-function _cfwFaltan(F) { const T = _cfwPlant()[F.prenda.tipo]; if (!T) return [0, 0]; const req = T.campos.filter(c => !c.opcional); return [req.filter(c => _cfwLleno(F, c)).length, req.length]; }
+function _cfwFaltan(F) { const T = _cfwPlant()[F.prenda.tipo]; if (!T) return [0, 0]; const req = T.campos.filter(c => !c.opcional); const m = (_cfwLlevaManga() && !_cfwMangaFija()) ? 1 : 0;   // 17-oct (Pablo) · Manga cuenta en «Completa X de Y» de las prendas superiores (no frena el guardado)
+  return [req.filter(c => _cfwLleno(F, c)).length + (m && CFW.manga ? 1 : 0), req.length + m]; }
 function _cfwMini(archivo) { const x = (CFW.fotos || []).find(p => p.archivo === archivo); return x ? x.mini : ''; }
 async function _cosFichaWebAbrir(v, shopifyId) {
   const box = document.getElementById('cfw-box'); if (!box) return;
@@ -7622,6 +7631,7 @@ async function _cosFichaWebAbrir(v, shopifyId) {
     CFW.abierto = ''; CFW.nueva = !sh.ficha; CFW.vistasOp = (CFT.vistas && CFT.vistas.length) ? CFT.vistas : CFW_VISTAS; CFW.vista = ('vista' in sh) ? sh.vista : undefined; CFW.editOp = false;
     CFW.f = _cfwArmar(sh.ficha);
     CFW.mangaOk = ('manga' in sh); CFW.manga = CFW.mangaOk ? (sh.manga || '') : _cfwMangaDe(sh.ficha); CFW.mangaToc = false;   // 16-oct · manga desde la base (o la que ya muestra la web)
+    if (_cfwMangaFija()) { CFW.manga = _cfwMangaFija(); CFW.mangaToc = true; }   // 17-oct · chaleco
     _cosFichaWebPintar();
     return;
   }
@@ -7640,6 +7650,7 @@ async function _cosFichaWebAbrir(v, shopifyId) {
     CFW.vistasOp = (r.vistas && r.vistas.length) ? r.vistas : CFW_VISTAS; if (r.plantillas) CFW.plant = r.plantillas; CFW.vista = r.vista; CFW.editOp = false;
     CFW.f = _cfwArmar(r.ficha);
     CFW.mangaOk = r.manga != null; CFW.manga = CFW.mangaOk ? (r.manga || '') : _cfwMangaDe(r.ficha); CFW.mangaToc = false;   // 16-oct · manga
+    if (_cfwMangaFija()) { CFW.manga = _cfwMangaFija(); CFW.mangaToc = true; }   // 17-oct · chaleco
     _cosFichaWebPintar();
   } catch (e) { box.innerHTML = '<div style="font-size:12px;color:var(--rd);padding:6px 0">' + esc(e.message || e) + '</div>'; }
 }
