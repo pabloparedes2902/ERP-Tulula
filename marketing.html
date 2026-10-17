@@ -6100,10 +6100,11 @@ function mktxPintar(){
     + (f.estado === 'activo' ? '<button class="btn" title="Archivar (deja de salir en Nuevo anuncio)" onclick="mktxEstado(' + f.id + ',\'archivado\')">📦</button>'
                              : '<button class="btn" title="Volver a activar" onclick="mktxEstado(' + f.id + ',\'activo\')">↩️</button>')
     + (f.usos ? '' : '<button class="btn mktx-borrar" title="Eliminar (solo si nunca se usó)" onclick="mktxEstado(' + f.id + ',\'eliminar\')">🗑️</button>');
+  const MET = _mktxMetricas();   /* 17-oct · qué texto vende */
   const td = (t, n, cls) => '<td' + (cls ? ' class="' + cls + '"' : '') + ' title="' + esc(t || '').replace(/"/g, '&quot;') + '">' + (t ? esc(_mktxCorto(t, n)) : '<span class="esp">—</span>') + '</td>';
   el.innerHTML = '<div class="mkl mkcr-wrap">'
     + '<div class="mkcr-cab"><b>Biblioteca de textos</b>' + (MKTX.puede ? '' : '<span class="mkl-tag" title="Crean y editan Admin y Marketing con Edición">Solo lectura</span>')
-    + '<span class="esp" style="margin-left:8px">Un juego por producto (o «General» para todos). En ➕ Nuevo anuncio se elige con un clic.</span><span style="flex:1"></span>'
+    + '<span class="esp" style="margin-left:8px">Un juego por producto (o «General» para todos). Gasto, CTR y ROAS = los anuncios creados con cada juego, en el período elegido en Anuncios.</span><span style="flex:1"></span>'
     + (MKTX.puede ? '<button class="btn mk-btn-morado" onclick="mktxEditar(null)">➕ Nuevo juego de textos</button>' : '') + '</div>'
     + '<div class="mkl-bar">' + b('activo', 'Activos', 'Los que salen en Nuevo anuncio') + b('archivado', 'Archivados', 'Sacados de la lista (se pueden reactivar)')
     + '<span style="width:8px"></span>' + cb('', 'Todos los canales') + cb('wa', '💬 WhatsApp') + cb('web', '🛒 Web')
@@ -6114,9 +6115,9 @@ function mktxPintar(){
     + (MKTX.err ? '<div class="mal" style="margin:8px 0">' + esc(MKTX.err) + '</div>' : '')
     + (MKTX.msg ? '<div style="margin:8px 0">' + MKTX.msg + '</div>' : '')
     + (!L.length ? '<div class="esp" style="padding:18px 4px">' + (MKTX.filas.length ? 'Nada con ese filtro.' : 'Todavía no hay textos guardados.' + (MKTX.puede ? ' Crea el primero con ➕ Nuevo juego de textos, o guárdalo desde ➕ Nuevo anuncio con 💾.' : '')) + '</div>'
-      : '<div class="mktx-tabla"><table><thead><tr><th>Nombre</th><th>Producto</th><th>Canal</th><th>Texto principal</th><th>Título</th><th>Descripción 1</th><th>Descripción 2</th><th title="Anuncios creados con este juego">Usos</th><th>Último uso</th><th></th></tr></thead><tbody>'
+      : '<div class="mktx-tabla"><table><thead><tr><th>Nombre</th><th>Producto</th><th>Canal</th><th>Texto principal</th><th>Título</th><th>Descripción 1</th><th>Descripción 2</th><th title="Anuncios creados con este juego">Usos</th><th title="Gasto de los anuncios de este juego en el período elegido en Anuncios">Gasto</th><th title="CTR del enlace de sus anuncios">CTR</th><th title="Ventas ÷ gasto de sus anuncios">ROAS</th><th>Último uso</th><th></th></tr></thead><tbody>'
         + L.map(f => '<tr>' + td(f.nombre, 40, 'n') + td(f.producto, 30) + '<td>' + (MKTX_CANAL[f.canal] || f.canal) + '</td>' + td(f.texto, 70, 'tx') + td(f.titulo, 40) + td(f.desc1, 30) + td(f.desc2, 30)
-          + '<td class="c">' + (f.usos || 0) + '</td><td class="c">' + _mktxDia(f.ultimo_uso) + '</td><td class="acc">' + acc(f) + '</td></tr>').join('')
+          + '<td class="c">' + (f.usos || 0) + '</td><td class="c">' + (MET[f.id] && MET[f.id].gasto ? 'S/ ' + Math.round(MET[f.id].gasto) : '<span class="mkl-f">—</span>') + '</td><td class="c">' + _mktxMetCelda(MET[f.id], 'ctr') + '</td><td class="c">' + _mktxMetCelda(MET[f.id], 'roas') + '</td><td class="c">' + _mktxDia(f.ultimo_uso) + '</td><td class="acc">' + acc(f) + '</td></tr>').join('')
         + '</tbody></table></div>')
     + '</div>';
 }
@@ -6200,9 +6201,12 @@ function mkNuevoTextoGuardar(){
   mktxEditar({ nombre: '', producto: g('mknProd') || 'General', canal: dest === 'WA' ? 'wa' : dest === 'WEB' ? 'web' : 'todos',
                texto: g('mknTexto'), titulo: g('mknTit'), desc1: g('mknD1'), desc2: g('mknD2'), msg_wa: g('mknMsg'), link: g('mknLink') });
 }
-async function _mktxMarcarUsado(){
+async function _mktxMarcarUsado(adId){
   const id = MKN && MKN.textoId; if (!id) return;
-  try { await _mklSb('/rest/v1/rpc/mk_texto_usado', { method: 'POST', body: JSON.stringify({ p_id: id }) }); MKTX.filas = null; } catch (e) {}
+  /* 17-oct · también anota QUÉ anuncio salió con este juego (para ver qué texto vende); si la base aún no lo acepta, solo suma el uso */
+  try { await _mklSb('/rest/v1/rpc/mk_texto_usado', { method: 'POST', body: JSON.stringify({ p_id: id, p_ad: adId ? String(adId) : null }) }); }
+  catch (e) { try { await _mklSb('/rest/v1/rpc/mk_texto_usado', { method: 'POST', body: JSON.stringify({ p_id: id }) }); } catch (x) {} }
+  MKTX.filas = null;
 }
 /* ── contador de caracteres (lo que Meta muestra sin cortar) ── */
 function _mkpvContar(pre){
@@ -6333,6 +6337,7 @@ function mkNuevoRevision(v){
     if (v.destino === 'WA' && String(v.producto_msg || '').trim() && nadaDe(v.producto_msg)) av.push('El producto es «' + v.campos.prod + '» pero el mensaje de WhatsApp dice «' + v.producto_msg + '».');
     if (v.destino !== 'WA' && String(v.link || '').trim() && nadaDe(v.link)) av.push('El producto es «' + v.campos.prod + '» pero el enlace web no lo menciona: revisa que lleve a la prenda correcta.');
   }
+  if (typeof _mkrvLinkAvisos === 'function') _mkrvLinkAvisos(v).forEach(t => av.push(t));   /* 17-oct · enlace roto / agotado */
   const tx = MKN && MKN.textoId && (MKTX.filas || []).find(f => f.id === MKN.textoId);
   if (tx && tx.producto !== 'General' && (v.campos || {}).prod && _mktxNorm(tx.producto) !== _mktxNorm(v.campos.prod)) av.push('Elegiste los textos «' + tx.nombre + '» que son de ' + tx.producto + ', no de ' + v.campos.prod + '.');
   return { rojos, avisos: av };
@@ -6436,7 +6441,7 @@ async function _mknEnviarTodos(v, nombre, avisoBib){
     }
     const r = await _mknEnviarUno(v, nombre, L[i], seg => pintar(i, seg));
     R.push(r);
-    if (r.ok){ _mktxMarcarUsado(); mkNuevoRegistrar(r.ad_id, r.nombre, L[i].ad_ref, L[i].nombre, L[i].campana); }
+    if (r.ok){ _mktxMarcarUsado(r.ad_id); mkNuevoRegistrar(r.ad_id, r.nombre, L[i].ad_ref, L[i].nombre, L[i].campana); }
     if (r.colgado) break;
   }
   if (v.creativo_id && typeof MKCR !== 'undefined') MKCR.filas = null;
@@ -6532,6 +6537,51 @@ function _mknBorrIni(){
 }
 if (typeof process === 'undefined' && typeof window !== 'undefined' && window.document){
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _mknBorrIni); else setTimeout(_mknBorrIni, 0);
+}
+/* ═══ 17-oct-2026 · QUÉ TEXTO VENDE + ENLACE ROTO (pedido de Pablo) ════════════════════════════════════════
+   1) Cada anuncio creado con un juego de ✍️ Textos queda anotado en ese juego (mk_textos.ads). En ✍️ Textos se ve, por
+      juego, el gasto, el CTR del enlace y el ROAS de SUS anuncios (período elegido en Anuncios, ambos canales), con los
+      mismos colores de ⚙️ Parámetros. Así se sabe qué copy vende.
+   2) En la revisión antes de crear: si el anuncio va a la WEB, el ERP abre el enlace en la tienda y avisa si no existe
+      (404), si el producto está AGOTADO en la web o si el enlace no lleva a un producto. */
+const MKRV_LINK = {};
+function _mkrvLinkHandle(u){ const m = String(u || '').match(/^https:\/\/(?:www\.)?tulula\.com\.pe\/(?:collections\/[^/]+\/)?products\/([a-z0-9\-]+)/i); return m ? m[1].toLowerCase() : ''; }
+function _mkrvLinkRevisar(u){
+  const h = _mkrvLinkHandle(u); if (!h || MKRV_LINK[h]) return;
+  MKRV_LINK[h] = { estado: 'cargando' };
+  fetch('https://tulula.com.pe/products/' + h + '.js').then(async r => {
+    if (r.status === 404){ MKRV_LINK[h] = { estado: '404' }; return; }
+    const j = await r.json().catch(() => null);
+    MKRV_LINK[h] = j ? { estado: j.available === false ? 'agotado' : 'ok', titulo: j.title || '' } : { estado: 'err' };
+  }).catch(() => { MKRV_LINK[h] = { estado: 'err' }; }).then(() => { if (typeof mkNuevoRevPintar === 'function') mkNuevoRevPintar(); });
+}
+function _mkrvLinkAvisos(v){
+  if (v.destino === 'WA') return [];
+  const u = String(v.link || '').trim(); if (!/^https:\/\/(www\.)?tulula\.com\.pe\//i.test(u)) return [];
+  const h = _mkrvLinkHandle(u);
+  if (!h) return ['El enlace web no lleva a un producto (debe ser tulula.com.pe/products/…): la clienta no va a caer en la prenda.'];
+  _mkrvLinkRevisar(u);
+  const e = MKRV_LINK[h] || {};
+  if (e.estado === '404') return ['El enlace web NO EXISTE en la tienda (da error): revisa cómo está escrito «' + h + '».'];
+  if (e.estado === 'agotado') return ['El producto del enlace está AGOTADO en la web' + (e.titulo ? ' («' + e.titulo + '»)' : '') + ': la clienta llega y no puede comprar.'];
+  return [];
+}
+/* ── métricas por juego de textos ── */
+function _mktxMetricas(){
+  const porAd = {}; ((typeof MK !== 'undefined' && MK && MK.filas) || []).forEach(r => { if (r.ad_id && !r._nuevo) porAd[String(r.ad_id)] = r.act || {}; });
+  const out = {};
+  (MKTX.filas || []).forEach(f => {
+    const o = { ads: 0, gasto: 0, imp: 0, impv: 0, v3s: 0, clics: 0, ingreso: 0, pedidos: 0 };
+    (f.ads || []).forEach(id => { const a = porAd[String(id)]; if (!a) return;
+      o.ads++; o.gasto += +a.gasto || 0; o.imp += +a.impresiones || 0; o.clics += +a.link_clicks || 0; o.ingreso += +a.ingreso || 0; o.pedidos += +a.pedidos || 0; });
+    out[f.id] = o;
+  });
+  return out;
+}
+function _mktxMetCelda(o, t){
+  if (!o || !o.ads) return '<span class="mkl-f">—</span>';
+  if (!o.gasto) return '<span class="mkl-f">sin gasto</span>';
+  return _mklCelda(o, t);
 }
 </script>
 <div id="mkAccBox" class="mkmodal" style="display:none">
