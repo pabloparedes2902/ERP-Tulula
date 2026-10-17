@@ -18082,7 +18082,8 @@ function _pedPintarCabecera(total, hayMas) {
         } catch (_e) {}
         cnt.innerHTML = 'Mostrando <strong style="color:var(--tx)">' + total + '</strong> pedidos'
           + ((_pf.length && typeof window._pUnidadesFiltro === 'number')
-              ? ' · <strong style="color:var(--tx)">' + window._pUnidadesFiltro + '</strong> unidad' + (window._pUnidadesFiltro === 1 ? '' : 'es') + ' del filtro'
+              ? ' · <strong style="color:var(--tx)">' + window._pUnidadesFiltro + '</strong> unidad' + (window._pUnidadesFiltro === 1 ? '' : 'es') + ' vendida' + (window._pUnidadesFiltro === 1 ? '' : 's') + ' del filtro'
+                + (window._pUnidadesDevueltas ? ' <span style="color:var(--mu)">(+' + window._pUnidadesDevueltas + ' devuelta' + (window._pUnidadesDevueltas === 1 ? '' : 's') + ', ya en stock)</span>' : '')
               : '')
           + (_pf.length
               ? ' <span id="ped-filtaviso" style="display:inline-flex;align-items:center;gap:7px;background:#fde68a;color:#78350f;'
@@ -21200,10 +21201,14 @@ function pAply() {
   // cuántas UNIDADES cumplen el filtro (las filas que coinciden, sin contar marcadores de pago ni cargos de cambio).
   try {
     const _hayFiltro = Object.values(pFlt||{}).some(f => f && (f.lib ? String(f.val||'').trim() !== '' : (f.val && f.val.size)));
-    window._pUnidadesFiltro = _hayFiltro
-      ? filtered.filter(r => !_filaEsMarcadorPago(r) && String(r['Prenda']||'').trim() && !/^CAMBIO\s/i.test(String(r['Prenda']||'').trim())).length
-      : null;
-  } catch (_) { window._pUnidadesFiltro = null; }
+    // 17-oct (Pablo, punto 232): las unidades DEVUELTAS (pedido en DEVOLUCION o devuelta de un cambio ya recibida,
+    // marca C2DEV) ya volvieron al stock → no cuentan como vendidas. La prenda de un cambio que AÚN no vuelve sí
+    // cuenta (igual que el stock). El contador dice cuántas se dejaron fuera.
+    const _uFil = _hayFiltro ? filtered.filter(r => !_filaEsMarcadorPago(r) && String(r['Prenda']||'').trim() && !/^CAMBIO\s/i.test(String(r['Prenda']||'').trim())) : [];
+    const _uDev = r => String(r['Estado']||'').trim().toUpperCase() === 'DEVOLUCION' || /^C2DEV\b/i.test(String(r['Cambio2']||r['cambio2']||r['_c2Marca']||'')) || !!r._devSinNueva;
+    window._pUnidadesDevueltas = _hayFiltro ? _uFil.filter(_uDev).length : 0;
+    window._pUnidadesFiltro = _hayFiltro ? (_uFil.length - window._pUnidadesDevueltas) : null;
+  } catch (_) { window._pUnidadesFiltro = null; window._pUnidadesDevueltas = 0; }
   if (!_filtraPorPedido) filtered = _pedsCompletarPedidos(filtered, _filasPestana);
 
   // Paso 2: agrupar por pedido
@@ -31306,6 +31311,43 @@ function _hisTraer(pren, dis, col, tal) {
   return p;
 }
 function _hisAdelantar(c) { try { _hisTraer(c.dataset.pren || '', c.dataset.dis || '', c.dataset.colr || '', c.dataset.tal || '').catch(() => {}); } catch (_) {} }
+// 17-oct-2026 (Pablo, punto 232) · Cambios ABIERTOS que tocan este SKU, leídos de la lista de cambios:
+//   · porVolver  = la clienta devuelve esta prenda y AÚN no llegó al almacén → sigue contada como vendida.
+//   · reservadas = esta prenda es la NUEVA de un cambio y aún no se envía → ya está descontada del stock.
+function _hisNormSku(t) { return String(t || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim(); }
+function _hisCambiosAbiertos(lista, sku) {
+  const out = { porVolver: [], reservadas: [], porCam: {} };
+  const k = _hisNormSku(sku); if (!k) return out;
+  const hoy = Date.now();
+  (Array.isArray(lista) ? lista : []).forEach(c => {
+    const nc = String(c.NroCambio || '').trim(), est = String(c.Estado || '').trim().toUpperCase();
+    if (!nc) return;
+    out.porCam[nc] = { nombre: String(c.Nombre || '').trim(), estado: est };
+    if (est === 'CANCELADO') return;
+    const fs = String(c.FechaSolicitud || '').slice(0, 10), dias = fs ? Math.max(0, Math.floor((hoy - Date.parse(fs)) / 864e5)) : null;
+    (Array.isArray(c.devueltas) ? c.devueltas : []).forEach(d => {
+      if (_hisNormSku(d.Prenda) !== k || c.RecibidoOriginal) return;
+      out.porVolver.push({ nc, nombre: String(c.Nombre || '').trim(), pedido: String(d.NroPedido || (c.pedidos || [])[0] || '').trim(), desde: fs, dias });
+    });
+    if (!c.EnviadaNueva && est !== 'PRENDA NUEVA ENVIADA') (Array.isArray(c.nuevas) ? c.nuevas : []).forEach(n => {
+      if (_hisNormSku(n.Prenda) !== k) return;
+      out.reservadas.push({ nc, nombre: String(c.Nombre || '').trim(), pedido: String(n.NroPedido || (c.pedidos || [])[0] || '').trim(), cant: Math.max(1, parseInt(n.Cant, 10) || 1), desde: fs, dias });
+    });
+  });
+  return out;
+}
+// Las filas internas de un cambio (Sale por cambio / Ajuste que compensa) se juntan en UNA línea por cambio con su neto.
+function _hisJuntarCambios(ven) {
+  const out = [], porCam = {};
+  (ven || []).forEach(m => {
+    const mm = String(m.ref || '').match(/CAM-\d+/), esC2 = mm && (m.tipo === 'CAMBIO' || m.tipo === 'REINGRESO');
+    if (!esC2) { out.push(m); return; }
+    const nc = mm[0];
+    if (!porCam[nc]) { porCam[nc] = { _cam: nc, tipo: '_CAMBIO', fecha: m.fecha, d_ventas: 0, pasos: 0, info: {} }; out.push(porCam[nc]); }
+    porCam[nc].d_ventas += Number(m.d_ventas) || 0; porCam[nc].pasos++;
+  });
+  return out;
+}
 async function _invHistorialSku(pren, dis, col, tal, vCelda) {
   const titulo = [pren, dis, col, tal].filter(Boolean).join(' ');
   const ov = document.createElement('div');
@@ -31324,24 +31366,62 @@ async function _invHistorialSku(pren, dis, col, tal, vCelda) {
   try { d = await _hisTraer(pren, dis, col, tal); }
   catch (e) { body.innerHTML = '<div class="empty" style="color:var(--rd)">No se pudo leer el historial: ' + esc(e.message) + '</div>'; return; }
   const B = _hisArmar(d.movs || []);
+  let _c2L = (typeof _c2List !== 'undefined' && Array.isArray(_c2List)) ? _c2List : null;
+  if (!_c2L && tal) { try { _c2L = await _c2ListarRapido(); } catch (_) { _c2L = []; } }
+  const CA = tal ? _hisCambiosAbiertos(_c2L || [], [pren, dis, col, tal].join(' ')) : { porVolver: [], reservadas: [], porCam: {} };
+  const _volverPorPed = {}; CA.porVolver.forEach(x => { if (x.pedido) _volverPorPed[x.pedido] = x; });
+  const _venJ = _hisJuntarCambios(B.ven);
   const TH = 'text-align:left;padding:5px 8px;font-size:11px;color:var(--mu);text-transform:uppercase;border-bottom:1px solid var(--bd2);position:sticky;top:0;background:var(--bg2);z-index:1';
   const TD = 'padding:4px 8px;font-size:12.5px;border-bottom:1px solid var(--bd)';
-  const fila = (cs, grp) => '<tr data-his-g="' + grp + '"' + (grp === 'ven' ? ' style="display:none"' : '') + '>' + cs.map(x => '<td style="' + TD + '">' + x + '</td>').join('') + '</tr>';
+  const fila = (cs, grp) => '<tr data-his-g="' + grp + '"' + (grp === 'ven' && !(_venJ.length <= 40) ? ' style="display:none"' : '') + '>' + cs.map(x => '<td style="' + TD + '">' + x + '</td>').join('') + '</tr>';
   const grupo = (g, t, n, abierto) => '<tr data-his-grp="' + g + '" style="cursor:pointer;background:var(--bg3,rgba(255,255,255,.04))"><td colspan="6" style="padding:6px 8px;font-weight:700;font-size:13px;border-bottom:1px solid var(--bd2)"><span data-his-flecha>' + (abierto ? '▾' : '▸') + '</span> ' + t + ' <span style="font-weight:800">' + n + '</span></td></tr>';
   const qué = m => esc(_HIS_TIPO[m.tipo] || m.tipo);
   const nro = m => (m.info && m.info.nro) ? '#' + esc(m.info.nro) : (/^\d{4,6}$/.test(String(m.ref || '')) ? '#' + esc(m.ref) : '');
   const det = m => { const i = m.info || {}; return esc([i.lote ? 'Lote ' + i.lote : '', i.obs || '', (!i.lote && !i.obs && m.ref && !/^\d+$/.test(String(m.ref))) ? m.ref : ''].filter(Boolean).join(' · ') || '—'); };
-  let h = '<table style="width:100%;border-collapse:collapse"><thead><tr>' + ['Fecha', 'Qué', 'Cant.', 'Motivo', 'Destino', '¿Vuelve?'].map(c => '<th style="' + TH + '">' + c + '</th>').join('') + '</tr></thead><tbody>';
+  // Resumen de arriba: la cuenta completa en cajas (de la confección total al stock para vender).
+  const _caja = (t, n, col2, sub) => '<div style="flex:1;min-width:110px;background:var(--bg3,rgba(255,255,255,.04));border:1px solid var(--bd);border-radius:10px;padding:8px 10px">'
+    + '<div style="font-size:10.5px;color:var(--mu);text-transform:uppercase;letter-spacing:.4px">' + t + '</div>'
+    + '<div style="font-size:20px;font-weight:800;color:' + (col2 || 'var(--tx)') + '">' + n + '</div>'
+    + (sub ? '<div style="font-size:10.5px;color:var(--mu)">' + sub + '</div>' : '') + '</div>';
+  const _op = t => '<div style="align-self:center;font-size:18px;font-weight:800;color:var(--mu)">' + t + '</div>';
+  let h = '<div style="display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px 6px">'
+    + _caja('Confección total', B.total, '', 'todo lo que se hizo')
+    + _op('−') + _caja('No disponibles', B.tot.nd, '#fca5a5', 'fallas, TikTok, UGC…')
+    + _op('=') + _caja('Confección real', B.tot.conf, '#86efac', 'lo que se puede vender')
+    + _op('−') + _caja('Vendidas', B.tot.ven, '#c4b5fd', CA.porVolver.length ? 'incluye ' + CA.porVolver.length + ' por volver' : 'ventas netas')
+    + _op('=') + _caja('Stock para vender', B.stock, '#fcd34d', CA.reservadas.length ? 'ya sin ' + CA.reservadas.reduce((a, x) => a + x.cant, 0) + ' reservada(s)' : '')
+    + '</div>';
+  if (CA.porVolver.length || CA.reservadas.length) {
+    h += '<div style="margin:2px 14px 8px;border:1px solid #f59e0b;background:rgba(245,158,11,.10);border-radius:10px;padding:8px 10px;font-size:12.5px">'
+      + '<div style="font-weight:700;margin-bottom:4px">🔄 Cambios abiertos de esta prenda</div>'
+      + CA.porVolver.map(x => '<div>↩️ <b>Por volver al almacén:</b> 1 · <b>' + esc(x.nc) + '</b> · ' + esc(x.nombre) + (x.pedido ? ' · pedido #' + esc(x.pedido) : '')
+          + (x.dias !== null ? ' · en tránsito hace <b>' + x.dias + ' día' + (x.dias === 1 ? '' : 's') + '</b>' : '')
+          + ' <span style="color:var(--mu)">— sigue contada como vendida hasta que llegue; al recibirla sube el stock.</span></div>').join('')
+      + CA.reservadas.map(x => '<div>📦 <b>Reservada para enviar:</b> ' + x.cant + ' · <b>' + esc(x.nc) + '</b> · ' + esc(x.nombre) + (x.pedido ? ' · pedido #' + esc(x.pedido) : '')
+          + ' <span style="color:var(--mu)">— ya descontada del stock (es la prenda nueva del cambio).</span></div>').join('')
+      + '</div>';
+  }
+  h += '<table style="width:100%;border-collapse:collapse"><thead><tr>' + ['Fecha', 'Qué', 'Cant.', 'Motivo', 'Destino', '¿Vuelve?'].map(c => '<th style="' + TH + '">' + c + '</th>').join('') + '</tr></thead><tbody>';
   h += grupo('conf', 'Confección real', B.tot.conf, true);
   B.conf.forEach(m => { h += fila([_hisFecha(m.fecha), qué(m), '<b>' + _hisNum(m.d_conf) + '</b>', det(m), '', ''], 'conf'); });
   h += grupo('nd', 'No disponibles', B.tot.nd, true);
   B.nd.forEach(m => { const i = m.info || {}; const v = _hisVuelve(i.destino, i.motivo || i.obs); const rec = /^(SI|TRUE)$/i.test(String(i.recuperado || ''));
     h += fila([_hisFecha(m.fecha), qué(m), '<b>' + _hisNum(m.d_fallas) + '</b>', esc(i.motivo || i.obs || m.ref || '—'), esc(i.destino || ''),
       rec ? '<span style="color:#86efac">Ya volvió</span>' : v.si === true ? '<span style="color:#86efac">Sí</span>' : v.si === false ? '<span style="color:#fca5a5">No</span>' : ''], 'nd'); });
-  h += grupo('ven', 'Ventas', B.tot.ven, false);
-  B.ven.forEach(m => { const i = m.info || {}; const dev = /^DEVOLUCION_CLIENTE$/.test(m.tipo);
-    h += fila([_hisFecha(m.fecha), qué(m) + (nro(m) ? ' <b>' + nro(m) + '</b>' : '') + ((m.rastro && i.obs) ? ' <span style="color:var(--mu);font-size:11.5px">· ' + esc(i.obs) + '</span>' : ''), '<b>' + _hisNum(-(Number(m.d_ventas) || 0)) + '</b>', esc([i.clienta, i.canal, i.asesora].filter(Boolean).join(' · ') || det(m)), '',
-      dev ? '<span style="color:#86efac">Volvió al stock</span>' : ''], 'ven'); });
+  const _venAbierto = _venJ.length <= 40;
+  h += grupo('ven', 'Vendidas', B.tot.ven, _venAbierto);
+  _venJ.forEach(m => { const i = m.info || {}; const dev = /^DEVOLUCION_CLIENTE$/.test(m.tipo);
+    if (m.tipo === '_CAMBIO') {   // un cambio = una línea con su neto (antes 2-4 filas «Sale por cambio» / «compensa»)
+      const pc = CA.porCam[m._cam] || {}, n = -(Number(m.d_ventas) || 0);
+      const que = n < 0 ? '⇄ Sale por cambio ' : n > 0 ? '⇄ Vuelve por cambio ' : '⇄ Cambio sin efecto ';
+      const res = CA.reservadas.some(x => x.nc === m._cam) ? '<span style="color:#fbbf24">Reservada, aún no se envía</span>' : (n < 0 ? 'Prenda nueva para la clienta' : '');
+      h += fila([_hisFecha(m.fecha), que + '<b>' + esc(m._cam) + '</b>', '<b>' + _hisNum(n) + '</b>', esc(pc.nombre || '') + (m.pasos > 1 ? ' <span style="color:var(--mu);font-size:11px">· ' + m.pasos + ' movimientos internos, neto ' + _hisNum(n) + '</span>' : ''), '', res], 'ven');
+      return;
+    }
+    const pv = (m.tipo === 'VENTA' && i.nro) ? _volverPorPed[String(i.nro).trim()] : (m.tipo === 'VENTA' && /^\d{4,6}$/.test(String(m.ref || '')) ? _volverPorPed[String(m.ref).trim()] : null);
+    h += fila([_hisFecha(m.fecha), qué(m) + (nro(m) ? ' <b>' + nro(m) + '</b>' : '') + ((m.rastro && i.obs) ? ' <span style="color:var(--mu);font-size:11.5px">· ' + esc(i.obs) + '</span>' : '')
+        + (pv ? ' <span style="color:#fbbf24;font-size:11.5px">· ⇄ en cambio ' + esc(pv.nc) + '</span>' : ''), '<b>' + _hisNum(-(Number(m.d_ventas) || 0)) + '</b>', esc([i.clienta, i.canal, i.asesora].filter(Boolean).join(' · ') || det(m)), '',
+      dev ? '<span style="color:#86efac">Volvió al stock</span>' : pv ? '<span style="color:#fbbf24">Por volver (en tránsito)</span>' : ''], 'ven'); });
   h += '<tr><td colspan="6" style="padding:8px;font-size:13.5px;border-top:2px solid var(--bd2)">Stock para vender: ' + B.tot.conf + ' − ' + B.tot.ven + ' = <b style="font-size:15px;color:#fcd34d">' + B.stock + '</b>'
     + ' <span style="color:var(--mu);font-size:12px">· confección total ' + B.total + ' (' + B.tot.conf + ' reales + ' + B.tot.nd + ' no disponibles)</span>'
     + ((vCelda !== undefined && vCelda !== '' && Number(vCelda) !== B.stock) ? ' <span style="color:#fbbf24;font-size:12px">· la tabla dice ' + esc(String(vCelda)) + ' (🔄 en Stock)</span>' : '') + '</td></tr>';
