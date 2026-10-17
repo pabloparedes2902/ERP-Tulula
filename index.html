@@ -6998,7 +6998,7 @@ function _cosRender() {
     + (A ? '<button class="btn ' + ((COS.pend || []).length ? 'bp' : 'bg') + '" id="cos-pend" style="white-space:nowrap" title="Los productos nacen en Stock → Crear SKU. Aquí completas el costo, los precios y la ficha de los que ya tienen SKU">🆕 Por costear' + (COS.pend ? ' (' + COS.pend.length + ')' : '') + '</button>' : '')
     + '<input id="cos-q" placeholder="Buscar…" autocomplete="off" value="' + esc(COS.q) + '" style="width:150px;' + sel + '">'
     + (A ? '<button class="btn bp bs cos-festbtn" title="Tocá para alternar: todos → solo activos → solo inactivos (del ERP)" style="font-size:12px">' + ({ '': 'Todos', ACTIVO: 'Activos', INACTIVO: 'Inactivos' })[COS.fest || ''] + '</button>' : '')
-    + (A ? (() => { const n = (COS.data || []).filter(_cosFaltaManga).length; return '<button class="btn ' + (COS.sinManga ? 'bp' : 'bg') + ' bs cos-mangabtn" title="Prendas superiores enlazadas a la tienda que todavía no tienen la manga cargada. Tocá para ver solo esas (y otra vez para ver todas)." style="font-size:12px;white-space:nowrap">👕 Sin manga (' + n + ')</button>'; })() : '')   // 17-oct (Pablo)
+    + (A ? (() => { return '<button class="btn ' + (COS.sinManga ? 'bp' : 'bg') + ' bs cos-mangabtn" title="Prendas superiores enlazadas a la tienda que todavía no tienen la manga cargada. Tocá para ver solo esas (y otra vez para ver todas)." style="font-size:12px;white-space:nowrap">' + _cosMangaBtnTxt() + '</button>'; })() : '')   // 17-oct (Pablo)
     + chips.map(x => '<button class="btn ' + (COS.ver[x[0]] ? 'bp' : 'bg') + ' bs cos-ver" data-v="' + x[0] + '" style="font-size:12px">' + x[1] + '</button>').join('')
     + (A ? '<span style="flex:1"></span><button class="btn bg bs" id="cos-shopsync" title="Pregunta a Shopify cuáles productos están publicados y enlaza los que coinciden por nombre" style="font-size:12px;white-space:nowrap">🔄 Sincronizar con Shopify</button><button class="btn bg bs" id="cos-alertas" style="font-size:12px;white-space:nowrap">🔔 Alertas</button>' : '') + '</div>';
   h += '<div id="cos-form"></div>';
@@ -7607,7 +7607,8 @@ function _cfwLlevaManga() { const v = CFW.v || {}; return /BLUSA|TOP|BODY|BLAZER
 function _cfwMangaFija() { const v = CFW.v || {}; return /CHALECO/.test(_cosNormD((CFW.titulo || '') + ' ' + (v.Diseno || '') + ' ' + (v.TipoPrenda || ''))) ? 'Sin manga' : ''; }   // 17-oct (Pablo) · el chaleco siempre es sin manga
 // 17-oct (Pablo) · filtro «Sin manga» en Productos: prendas con manga, enlazadas a la tienda, sin manga cargada
 function _cosMangaDe(r) { const sh = _cosShopDe(r); if (!sh) return null; return ('manga' in sh) ? (sh.manga || '') : _cfwMangaDe(sh.ficha); }
-function _cosFaltaManga(r) { const sh = _cosShopDe(r); if (!sh) return false; if (!/BLUSA|TOP|BODY|BLAZER|CHALECO|ABRIGO|GABARDINA|VESTIDO|CONJUNTO/.test(_cosNormD([r.TipoPrenda, r.Modelo, r.Diseno, sh.titulo].join(' ')))) return false; return !_cosMangaDe(r); }
+function _cosFaltaManga(r) { const sh = _cosShopDe(r); if (!sh || r.Activo === false) return false; if (!/BLUSA|TOP|BODY|BLAZER|CHALECO|ABRIGO|GABARDINA|VESTIDO|CONJUNTO/.test(_cosNormD([r.TipoPrenda, r.Modelo, r.Diseno, sh.titulo].join(' ')))) return false; if (!('manga' in sh) && !_cfwMangaDe(sh.ficha)) return false; return !_cosMangaDe(r); }   // 17-oct · copia vieja del navegador (sin el dato): no se cuenta hasta que llegue la de la base
+function _cosMangaBtnTxt() { return '👕 Sin manga (' + (COS.data || []).filter(_cosFaltaManga).length + ')'; }
 function _cfwMangaDe(ficha) { const fl = (ficha && ficha.prenda && ficha.prenda.filas) || []; const x = fl.find(r => r && r.k === 'Manga'); return x ? String(x.v || '') : ''; }
 function _cfwMangaHtml(st, lbl) {
   if (!_cfwLlevaManga()) return '';
@@ -9334,6 +9335,7 @@ async function _cftDirecto() {
 function _cftAplicar(por, t) {
   CFT.por = por; CFT.t = t || Date.now();
   try { localStorage.setItem(CFT_KEY, JSON.stringify({ t: CFT.t, por: CFT.por })); } catch (_) {}
+  try { const mb = document.querySelector('.cos-mangabtn'); if (mb) mb.textContent = _cosMangaBtnTxt(); } catch (_) {}   // 17-oct · el número del botón Sin manga se actualiza al llegar la copia de la tienda
   try { if (document.getElementById('cos-tabla')) _cosUpdateRows(); } catch (_) {}
   try { if (document.getElementById('con-tabla')) _conTabla(); if (CTN.editing) _conSem(CTN.editing); } catch (_) {}
   try { const v = COS.editing; if (v && v.Diseno) { _cosMeter(v); const m = document.getElementById('cf-media'); if (m && m.dataset.pintado && v._mm && !v._blq) _cosMediaPintar(v); else _cosMediaShopPintar(v); } } catch (_) {}   // 6-oct · repinta también las filas por color («ya está en Shopify» en vez de «Falta»)
@@ -22369,7 +22371,31 @@ function _excelPrendasASeparar(grupos) {
     if (!f._isContinuacion || !cur || cur.nro !== nro) { cur = { nro, filas: [] }; out.set(nro, cur); }
     cur.filas.push(f);
   });
+  // 17-oct · 227 bis: la fuente de verdad es la LISTA DE CAMBIOS (no las marcas de la fila). Un cambio
+  // recién registrado (CLIENTE SOLICITA CAMBIO / ORIGINAL RECIBIDA) aún no marca la fila con _c2Nro y
+  // el Excel sacaba TODO el pedido. Si el pedido tiene un cambio ABIERTO → solo sus prendas NUEVAS.
+  const camAbiertoPorPed = {};
+  (Array.isArray(_c2List) ? _c2List : []).forEach(c => {
+    const nc = String(c.NroCambio || '').trim(); if (!camActivo(nc)) return;
+    const peds = (Array.isArray(c.pedidos) ? c.pedidos : []).map(x => String(x).trim());
+    (Array.isArray(c.nuevas) ? c.nuevas : []).forEach(n => {
+      const pn = String(n.NroPedido || peds[0] || '').trim(); const pr = String(n.Prenda || '').trim();
+      if (!pn || !pr) return;
+      const cant = Math.max(1, parseInt(n.Cant, 10) || 1);
+      (camAbiertoPorPed[pn] = camAbiertoPorPed[pn] || { cams: new Set(), prendas: [], precio: 0 }).cams.add(nc);
+      for (let i = 0; i < cant; i++) camAbiertoPorPed[pn].prendas.push(pr);
+      camAbiertoPorPed[pn].precio += (parseFloat(n.Precio) || 0) * cant;
+    });
+    peds.forEach(pn => { if (!camAbiertoPorPed[pn]) camAbiertoPorPed[pn] = { cams: new Set([nc]), prendas: [], precio: 0 }; else camAbiertoPorPed[pn].cams.add(nc); });
+  });
   out.forEach((c, nro) => {
+    const ca = camAbiertoPorPed[nro];
+    if (ca) {
+      const _defs = ca.prendas.filter(x => !/^PENDIENTE\b/i.test(x));
+      if (_defs.length) { out.set(nro, { prendas: _defs, precio: ca.precio }); return; }
+      if (ca.prendas.length) { out.set(nro, { prendas: ['— nada que separar aún (' + [...ca.cams].join(', ') + ': prenda nueva por definir)'], precio: '', vacio: true }); return; }
+      out.set(nro, { prendas: ['— nada que separar (' + [...ca.cams].join(', ') + ' sin prenda nueva)'], precio: '', vacio: true }); return;
+    }
     // cualquier cambio del pedido (abierto o ya enviado): las prendas originales ya no se separan
     const conCambio = c.filas.some(f => f._c2Nro || f._devSinNueva);
     const camsDelPedido = [...new Set(c.filas.map(f => f._c2Nro || f._devSinNueva).filter(Boolean))];
@@ -27802,6 +27828,32 @@ async function _cuadreActualizarDesdeEnlace() {
   } catch (e) { toast('No se pudo pedir la actualización: ' + (e && e.message || e), 'err'); }
 }
 try { window.addEventListener('load', () => { _cuadreActualizarDesdeEnlace(); }); } catch (_) {}
+// ═══ 17-oct (Pablo) · TODO AVISO FLOTANTE TIENE ✕ ═══
+// «Muchas veces se sobreponen y tapan cosas que luego no puedo editar.» Cada aviso de esta lista recibe una ✕
+// arriba a la derecha; al cerrarlo queda oculto hasta recargar la página (regla CSS con !important, así el
+// código que lo vuelve a pintar no lo reabre). La barra de «clientas esperando» ya tenía su ✕ propia.
+var AVISOS_CON_X = ['fe-barra', 'al-barra-roja', 'logros-aviso', 'upd-banner', 'f1-aviso', 'masivo-franja', 'salud-sync-banner',
+  'ver-como-franja', 'espia-badge', 'paint-mode-badge', 'np-save-indicator', 'cam-save-indicator', 'c2-edit-indicator', 'dev-save-indicator'];
+function _avisosPonerX() {
+  try {
+    if (!document.getElementById('avx-css')) {
+      const st = document.createElement('style'); st.id = 'avx-css';
+      st.textContent = '[data-avx-cerrado="1"]{display:none!important}.avx-x{position:absolute;top:4px;right:6px;z-index:2;border:0;border-radius:50%;width:22px;height:22px;line-height:22px;padding:0;font-size:13px;font-weight:700;cursor:pointer;background:rgba(0,0,0,.35);color:#fff}.avx-x:hover{background:rgba(0,0,0,.6)}';
+      document.head.appendChild(st);
+    }
+    AVISOS_CON_X.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el || el.getAttribute('data-avx-cerrado') === '1' || el.querySelector(':scope > .avx-x')) return;
+      if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
+      const x = document.createElement('button'); x.className = 'avx-x'; x.type = 'button'; x.title = 'Cerrar este aviso (vuelve al recargar)'; x.textContent = '✕';
+      x.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); el.setAttribute('data-avx-cerrado', '1'); });
+      el.appendChild(x);
+      if (parseFloat(getComputedStyle(el).paddingRight) < 30) el.style.paddingRight = '34px';
+    });
+  } catch (_) {}
+}
+try { setInterval(_avisosPonerX, 1200); } catch (_) {}
+
 // ═══ 17-oct (Pablo) · AVISO A LAS ASESORAS: ventas anotadas en el Drive que faltan en el ERP ═══
 // Va debajo de la barra «Clientas esperando respuesta». Cada asesora ve SOLO lo suyo; el admin ve todo.
 // Las de HOY no salen (se les da el día). Amarillo = de ayer · rojo = 2 días o más. Sin sonido.
