@@ -22413,7 +22413,25 @@ function _excelPrendasASeparar(grupos) {
       prendas.push(pr); precios.push(parseFloat(f['Precio']) || 0);
     });
     if (!prendas.length) {
-      if (conCambio) { const _env = camsDelPedido.every(nc => !camActivo(nc)); out.set(nro, { prendas: ['— nada que separar (' + camsDelPedido.join(', ') + (_env ? ' ya enviado' : ' sin prenda nueva') + ')'], precio: '', vacio: true }); return; }
+      if (conCambio) {
+        // 17-oct · 227 ter (Pablo): aunque el cambio ya salió, el Excel muestra SOLO la prenda nueva
+        // (la que se separó/envió), nunca las del pedido original ni la línea «CAMBIO CAM-x».
+        const _nuevasEnv = [];
+        (Array.isArray(_c2List) ? _c2List : []).forEach(cc => {
+          const nc = String(cc.NroCambio || '').trim();
+          if (camsDelPedido.indexOf(nc) < 0 || String(cc.Estado || '').trim().toUpperCase() === 'CANCELADO') return;
+          const fe = String(cc.FechaEnvioNueva || '').slice(0, 10);
+          const feTxt = fe ? fe.slice(8, 10) + '/' + fe.slice(5, 7) : '';
+          (Array.isArray(cc.nuevas) ? cc.nuevas : []).forEach(n => {
+            const pr = String(n.Prenda || '').trim(); if (!pr || /^PENDIENTE\b/i.test(pr)) return;
+            if (n.NroPedido && String(n.NroPedido).trim() !== nro) return;
+            const cant = Math.max(1, parseInt(n.Cant, 10) || 1);
+            for (let i = 0; i < cant; i++) _nuevasEnv.push(pr + ' (' + nc + (camActivo(nc) ? '' : ' · ya enviada' + (feTxt ? ' ' + feTxt : '')) + ')');
+          });
+        });
+        if (_nuevasEnv.length) { out.set(nro, { prendas: _nuevasEnv, precio: '', vacio: true }); return; }
+        const _env = camsDelPedido.every(nc => !camActivo(nc)); out.set(nro, { prendas: ['— nada que separar (' + camsDelPedido.join(', ') + (_env ? ' ya enviado' : ' sin prenda nueva') + ')'], precio: '', vacio: true }); return;
+      }
       out.delete(nro); return;
     }
     out.set(nro, { prendas, precio: precios.length === prendas.length ? precios.reduce((a, b) => a + b, 0) : '' });
@@ -22474,12 +22492,12 @@ function exportarExcel() {
 function _loteRefreshModal(nro) {
   try {
     pEnrichPagos(pRaw);
-    pAll = pGroupByPedido(pRaw);
-    _pedsAplicarOrden(pAll);   // F5
-    pFlat = pExpandFlat(pAll);
-    renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false);
+    // 17-oct · punto 234: repintar respetando la pestaña (un lote marcado ENTREGADO sale de Activos al toque).
+    try { _renderPedsDesde(pRaw, pEst, true); }
+    catch (_e234) { pAll = pGroupByPedido(pRaw); _pedsAplicarOrden(pAll); pFlat = pExpandFlat(pAll); renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false); }
     try { lsSetPeds(pRaw, (typeof pLastSyncTs !== 'undefined' && pLastSyncTs) ? pLastSyncTs : Date.now()); } catch(_) {}
-    const p2 = pAll.find(x => String(x['NroPedido']) === String(nro));
+    const p2 = pAll.find(x => String(x['NroPedido']) === String(nro))
+      || pGroupByPedido(pRaw.filter(r => String(r['NroPedido'] || '').trim() === String(nro).trim()))[0];
     if (p2) verPed(p2);
   } catch(e) { _errLog('loteRefreshModal', e); }
 }
@@ -23720,10 +23738,11 @@ function verPed(p) {
       });
     }
     pEnrichPagos(pRaw);
-    pAll = pGroupByPedido(pRaw);
-    _pedsAplicarOrden(pAll);   // F5
-    pFlat = pExpandFlat(pAll);
-    renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false);
+    // 17-oct · PUNTO 234 (Pablo): al guardar el pedido desde la ficha (ej. Estado → ENTREGADO) se
+    // repintaba la grilla con TODOS los pedidos sin respetar la pestaña → el entregado seguía en
+    // Activos hasta la próxima sincronización (~2 min). Camino oficial: pestaña + filtros + scroll.
+    try { _renderPedsDesde(pRaw, pEst, true); }
+    catch (_e234) { pAll = pGroupByPedido(pRaw); _pedsAplicarOrden(pAll); pFlat = pExpandFlat(pAll); renderPT(document.getElementById('ped-w'), pFlat, pAll.length, false); }
     // FIX cache-persist: refrescar la caché local para que la edición sobreviva a
     // "Actualizar"/recargar (antes solo actualizaba memoria+hoja → ventana de ~15s).
     try { if (typeof lsSetPeds === 'function') lsSetPeds(pRaw, (typeof pLastSyncTs!=='undefined'&&pLastSyncTs)?pLastSyncTs:Date.now()); } catch(_) {}
