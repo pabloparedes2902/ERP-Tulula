@@ -1206,7 +1206,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <input id="cam-estado"       type="hidden">
         <input id="cam-courier"      type="hidden">
 
-        <!-- I-11 — Estado del pedido (default ENVIAR) -->
+        <!-- I-11 — Estado del pedido (18-oct: por defecto «No cambiar») -->
         <div class="fr" style="margin-top:12px">
           <div class="fg" style="max-width:240px">
             <label>Estado del pedido</label>
@@ -16601,6 +16601,16 @@ function pGroupByPedido(rows) {
 // Expande pedidos agrupados en filas flat (1 fila por prenda)
 // Primera prenda: lleva todos los datos del pedido (_isContinuacion=false)
 // Prendas adicionales: solo Prenda/Precio (_isContinuacion=true)
+// 18-oct · clic en «+N entregadas»: despliega / esconde las prendas entregadas de ESE pedido (no pinta, no abre nada más)
+if (typeof document !== 'undefined') document.addEventListener('click', function (ev) {
+  const el = ev.target && ev.target.closest ? ev.target.closest('[data-ver-todas]') : null;
+  if (!el) return;
+  ev.preventDefault(); ev.stopPropagation();
+  const nro = String(el.getAttribute('data-ver-todas') || '').trim(); if (!nro) return;
+  if (!(window._pedsVerTodas instanceof Set)) window._pedsVerTodas = new Set();
+  if (window._pedsVerTodas.has(nro)) window._pedsVerTodas.delete(nro); else window._pedsVerTodas.add(nro);
+  try { _renderPedsDesde(pRaw, pEst, true); } catch (e) { try { _errLog('peds.verTodas', e); } catch (_) {} }
+}, true);
 function pExpandFlat(grouped) {
   // PERF (ago-2026) — antes, por CADA pedido se recorrían histCamData + _c2Hist + histDevData
   // ENTEROS buscando su NroPedido: ~10.000 pedidos x ~400 registros = millones de comparaciones
@@ -16610,6 +16620,25 @@ function pExpandFlat(grouped) {
   (Array.isArray(histCamData) ? histCamData : []).forEach(c => _pushIdx(_idxCam, String(c['NroPedido']||'').trim(), c));
   (Array.isArray(_c2Hist)     ? _c2Hist     : []).forEach(c => _pushIdx(_idxCam, String(c['NroPedido']||'').trim(), c));
   (Array.isArray(histDevData) ? histDevData : []).forEach(d => _pushIdx(_idxDev, String(d['NroPedido']||'').trim(), d));
+  // 18-oct-2026 · Pablo (22610): pedido con un cambio ABIERTO → en las pestañas de trabajo se ve SOLO
+  // lo del cambio (+ lo pendiente de verdad); lo ya entregado va detrás de la marca «+N entregadas»,
+  // como hacen Shopify/Odoo (el cambio es su propio envío; el pedido original queda entregado).
+  // Fuente: la lista de cambios (_c2List), igual que la pestaña Cambio. En Todos y Entregados se ve todo.
+  const _camActPed = new Map();
+  const _nCA = s => String(s||'').trim().toUpperCase().replace(/_/g,' ').replace(/\s+/g,' ');
+  try {
+    ((typeof _c2List !== 'undefined' && Array.isArray(_c2List)) ? _c2List : []).forEach(c => {
+      const est = String(c.Estado||'').trim().toUpperCase();
+      if (est === 'PRENDA NUEVA ENVIADA' || est === 'CANCELADO') return;
+      const peds = (Array.isArray(c.pedidos) ? c.pedidos : []).map(x => String(x).trim()).filter(Boolean);
+      // nombre → cuántas unidades entran en el cambio (2 blusas iguales y se cambia 1 → se ve 1)
+      const add = (np, pr) => { const k = String(np || peds[0] || '').trim(), v = _nCA(pr); if (!k || !v) return; if (!_camActPed.has(k)) _camActPed.set(k, new Map()); const m = _camActPed.get(k); m.set(v, (m.get(v) || 0) + 1); };
+      (c.devueltas||[]).forEach(d => add(d.NroPedido, d.Prenda));
+      (c.nuevas||[]).forEach(n => add(n.NroPedido, n.Prenda));
+    });
+  } catch (_) {}
+  const _pestTrabajo = (typeof pEst === 'undefined') || (pEst !== '' && pEst !== 'ENTREGADO');
+  const _verTodas = (typeof window !== 'undefined' && window._pedsVerTodas && typeof window._pedsVerTodas.has === 'function') ? window._pedsVerTodas : new Set();
   const flat = [];
   grouped.forEach(ped => {
     const hasSaldo = (ped._totalPagado||0) < (parseFloat(ped['Subtotal'])||0) - 0.01;
@@ -16624,14 +16653,17 @@ function pExpandFlat(grouped) {
     let _camNuevasNorm = new Set(); // prendas NUEVAS de cambios (normalizadas) → para pintar amarillo aunque la fila ya tenga la nueva
      let _c2NroMap = {}; // [v2] normPrenda → NroCambio (para abrir Timeline v2 desde Pedidos)
     let _camDevSinMap = {}; // 1-oct: normPrenda → NroCambio de una devuelta SIN prenda nueva
+    let _ocultasCam = 0;    // 18-oct: prendas ya entregadas escondidas detrás de «+N entregadas» (negativo = desplegadas)
     try {
       const _nroPed = String(ped['NroPedido']||'').trim();
       if (_nroPed) {
         const _normP = s => String(s||'').trim().toUpperCase().replace(/\s+/g,' ');
         const _cambs = _idxCam.get(_nroPed) || [];   // PERF ago-2026: lookup, no barrido
         const _devs  = _idxDev.get(_nroPed) || [];
-        if (_cambs.length || _devs.length) {
+        const _caPed = _camActPed.get(_nroPed);
+        if (_cambs.length || _devs.length || _caPed) {
           const _activas = new Set();
+          if (_caPed) _caPed.forEach((_n, x) => _activas.add(x));
           const _filasCnt = {};   // 3-oct · cuantas filas del pedido hay de cada prenda (para el cambio contado 2 veces)
           (prendas || []).forEach(x => { const k = _normP(x && x.prenda); if (k) _filasCnt[k] = (_filasCnt[k] || 0) + 1; });
           _cambs.forEach(c => {
@@ -16656,7 +16688,20 @@ function pExpandFlat(grouped) {
           // un estado nuevo se trata como pendiente por defecto.
           const _DESPACHADO = new Set(['EN CAMINO','ENTREGADO','DEVOLUCION']);
           const _pendiente = p => !_DESPACHADO.has(String((p && p.estado) || '').trim().toUpperCase());
-          const _filtradas = prendas.filter(p => _activas.has(_normP(p.prenda)) || _pendiente(p));
+          const _filtradas = prendas.filter(p => _activas.has(_normP(p.prenda)) || _activas.has(_nCA(p.prenda)) || _pendiente(p));
+          // 18-oct · cambio ABIERTO en pestaña de trabajo: se esconde lo entregado aunque no quede nada pendiente
+          // (la marca «+N entregadas» deja claro que el Subtotal incluye esas prendas → no se lee como descuadre).
+          const _forzarCam = !!_caPed && _pestTrabajo;
+          if (_forzarCam) {   // por unidades: solo tantas filas de cada prenda como entran en el cambio; lo pendiente de verdad, siempre
+            const _cupo = new Map(_caPed);
+            _filtradas.length = 0;
+            prendas.forEach(p => { const k = _nCA(p.prenda), q = _cupo.get(k) || 0; if (q > 0) { _cupo.set(k, q - 1); _filtradas.push(p); } else if (_pendiente(p)) _filtradas.push(p); });
+          }
+          const _esLinCam = p => /^CAMBIO\s+CAM-/i.test(String((p && p.prenda) || '').trim());   // «CAMBIO CAM-x (diferencia/envío)»: no es prenda
+          const _nOc = prendas.filter(p => !_esLinCam(p)).length - _filtradas.filter(p => !_esLinCam(p)).length;
+          if (_forzarCam && _verTodas.has(_nroPed)) { if (_filtradas.length && _nOc > 0) _ocultasCam = -_nOc; }
+          else if (_forzarCam && _filtradas.length && _nOc > 0) { _ocultasCam = _nOc; prendas = _filtradas; }
+          else
           // 14-set-2026 · SI NO QUEDA NADA PENDIENTE, NO SE OCULTA NADA.
           // Esta regla (I-10) existe para que Logistica vea de un vistazo QUE FALTA
           // DESPACHAR en un pedido con cambio. Pero cuando el pedido ya esta todo
@@ -16711,6 +16756,7 @@ function pExpandFlat(grouped) {
           _devSinNueva,
           _prendaOcc: (pr && pr._occ) || 0,
           _prendaFilaId: (pr && pr._sbId != null) ? pr._sbId : null,   // FASE 2: id REAL de la fila
+          _ocultasCam,
         }));
       } else {
         flat.push({
@@ -20046,7 +20092,10 @@ function mkTBody(rows) {
             + ' data-pp-color="'+esc(_cp)+'"'
           : '';
         const _styleAttr2 = ' style="text-align:center;' + _txtColor + '"';
-        tds += '<td'+_tcNoStyle+_styleAttr2+_paintAttrs+'>'+_content+'</td>';
+        // 18-oct · «+N entregadas»: prendas ya entregadas de un pedido con cambio abierto (clic = verlas / esconderlas)
+        const _oc = (!p['_isContinuacion'] && p['_ocultasCam']) ? parseInt(p['_ocultasCam'], 10) || 0 : 0;
+        const _chipOc = _oc ? ' <span class="ped-oc-cam" data-ver-todas="'+esc(String(p['NroPedido']||''))+'" title="'+(_oc > 0 ? 'Prendas del pedido ya entregadas (no entran en el cambio). Clic para verlas.' : 'Clic para esconder las prendas ya entregadas')+'" style="display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;background:rgba(148,163,184,.18);color:var(--mu);font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap">'+(_oc > 0 ? '+'+_oc+' entregada'+(_oc>1?'s':'') : 'ocultar '+(-_oc)+' entregada'+(_oc<-1?'s':''))+'</span>' : '';
+        tds += '<td'+_tcNoStyle+_styleAttr2+_paintAttrs+'>'+_content+_chipOc+'</td>';
       } else if (c.k==='Nombres y Apellidos') {
         const t = esc(String(v||''));
         const nro = String(p['NroPedido']||'').trim();
@@ -33457,8 +33506,12 @@ function _camPopulateSelects() {
   // I-11 — Estado del PEDIDO (default ENVIAR)
   const estPed = document.getElementById('cam-estado-pedido');
   if (estPed) {
-    const prev = estPed.value || 'ENVIAR';
+    // 18-oct-2026 · Pablo (22610/22920): antes venía en ENVIAR y pasaba TODAS las prendas del pedido a ENVIAR,
+    // aunque ya estuvieran entregadas. Ya no hace falta: un pedido con cambio abierto entra solo a Activos y a
+    // Cambio. Por defecto NO se toca el estado del pedido (las prendas entregadas siguen ENTREGADO).
+    const prev = estPed.value || '';
     estPed.innerHTML = '';
+    const o0 = document.createElement('option'); o0.value = ''; o0.textContent = '— No cambiar (recomendado) —'; if (!prev) o0.selected = true; estPed.appendChild(o0);
     mOpts('Estado')
       .forEach(v => { const o = document.createElement('option'); o.textContent = v; o.value = v; if (v === prev) o.selected = true; estPed.appendChild(o); });
   }
@@ -41621,6 +41674,7 @@ const AL_ORIGEN = {
   'reconciliador-pagos':   { nivel: 'amarillo', q: 'Operación' },
   'lista-negra':           { nivel: 'naranja', t: a => String(a.titulo || 'Compra de una clienta en lista negra'), s: 'No despachar hasta confirmar el pago en Shopify.', q: 'Ventas' },   // 12-oct
   'recordatorio':          { nivel: 'amarillo', q: 'Dirección' },
+  'cambios-estancados':    { nivel: 'amarillo', t: a => String(a.titulo || 'Cambios con más de 14 días sin terminar'), s: 'Preguntar a la asesora si siguen vigentes: cancelarlos en Cambios o avanzarlos.', q: 'Logística' },   // 18-oct (Pablo)
   // 7-oct: el «estado de hoy» y las pruebas son informes, no pendientes
   'correo':                { nivel: a => /estado de hoy|prueba del correo|todo ok/i.test(String(a.titulo || '')) ? 'historial' : (a.nivel === 'critica' ? 'rojo' : 'amarillo'), q: 'Sistemas' }   // 6-oct: copia y archivado mensual (antes, tareas programadas)
 };
