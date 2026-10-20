@@ -704,6 +704,8 @@ async function __bajarDrive(desde) {
   filas.forEach(function (x) { v[x.fila - 1] = x.valores || []; });
   return { v: v, n: filas.length };
 }
+/** 20-oct · la fila del Drive tal cual (para la pantalla: columna Cambio y asesora de una fila de la lista 2). */
+window.cuadreLocalFilaDrive = function (fila) { return (__DRIVE || [])[Number(fila) - 1] || null; };
 /** Corre el emparejador del servidor en el navegador. corte = 'yyyy-mm-dd' (STOCK_CUTOFF del servidor). */
 window.cuadreLocalEmparejar = async function (corte) {
   var t0 = Date.now(), viajes = 0;
