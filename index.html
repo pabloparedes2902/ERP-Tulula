@@ -10169,7 +10169,7 @@ function _permNivPg(m){ if (!MY_PERMISOS) return 0; if (m === 'costos' || m === 
 function _esAdminCuadre(){ return (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador') || (typeof _permEsDueno === 'function' && typeof MY_EMAIL !== 'undefined' && _permEsDueno(MY_EMAIL)); }
 function _pgPermitida(pg){
   // 30-set-2026 · si hay matriz de permisos (o "Ver como"), manda la matriz.
-  if (MY_PERMISOS) return _permNivPg(PG_PADRE[pg] || pg) >= 1 && ((pg !== 'cuadre' && pg !== 'cuadredrive') || _esAdminCuadre());   // 19-oct · Cuadre ERP vs Drive: igual, solo Ana y Pablo   // 10-oct · Cuadre y proyeccion: solo Ana y Pablo
+  if (MY_PERMISOS) return _permNivPg(PG_PADRE[pg] || pg) >= 1 && (pg !== 'cuadre' || _esAdminCuadre()) && (pg !== 'cuadredrive' || _esAdminCuadre());   // 10-oct · Cuadre y proyeccion: solo Ana y Pablo · 19-oct · Cuadre ERP vs Drive: igual   // 10-oct · Cuadre y proyeccion: solo Ana y Pablo
   if (MY_ROLE === 'Marketing') return !!PG_SOLO_MARKETING[pg];
   return !(PG_SOLO_ADMIN[pg] && MY_ROLE !== 'Administrador');
 }
@@ -10208,11 +10208,8 @@ function _cdLocalCargar() {
   });
   return _cdLocalProm;
 }
-async function _cdEspejo(clave, sel) {
-  const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión con la base');
-  const r = await fetch(SB_URL + '/rest/v1/espejo_cache?clave=eq.' + encodeURIComponent(clave) + '&select=' + sel, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
-  if (!r.ok) throw new Error('espejo ' + r.status); const a = await r.json(); return a[0] || null;
-}
+// lee por el ÚNICO lector del espejo (_sbCacheLeer): la copia del servidor se acepta hasta 24 h (se rehace cada 2 h)
+async function _cdEspejo(clave) { const d = await _sbCacheLeer(clave, 24 * 3600 * 1000); return d || null; }
 async function loadCuadreDrive() {
   const el = document.getElementById('cd-w'); if (!el) return;
   if (!CD.datos) el.innerHTML = spin('Comparando el ERP con el Drive…');
@@ -10225,14 +10222,13 @@ async function _cdActualizar() {
   const t0 = Date.now();
   try {
     if (!(await _cdLocalCargar())) throw new Error('no cargó el motor del cuadre (cuadre_local.js)');
-    const m0 = await _cdEspejo('claude.cuadre.match', 'desde:datos->>desde');
+    const [m0, foto, censo] = await Promise.all([_cdEspejo('claude.cuadre.match'), _cdEspejo('claude.cuadre.cinco.foto'), _cdEspejo('claude.cambios.censo')]);
     const corte = (m0 && m0.desde) || '2026-07-10';
-    const [res, foto, censo] = await Promise.all([
-      window.cuadreLocalEmparejar(corte),
-      _cdEspejo('claude.cuadre.cinco.foto', 'generado,foto:datos->foto'),
-      _cdEspejo('claude.cambios.censo', 'generado,datos')]);
-    CD.datos = _cdArmar(res.match || {}, (foto && foto.foto) || {}, (censo && censo.datos) || {});
-    CD.datos.cuando = new Date(); CD.datos.seg = (Date.now() - t0) / 1000; CD.datos.fotoCuando = foto && foto.generado; CD.datos.censoCuando = censo && censo.generado;
+    const res = await window.cuadreLocalEmparejar(corte);
+    CD.datos = _cdArmar(res.match || {}, (foto && foto.foto) || {}, censo || {});
+    if (!(foto && foto.foto)) CD.err = 'no llegó la foto de stock talla por talla: las listas 1 y 2 pueden salir incompletas';
+    CD.datos.cuando = new Date(); CD.datos.seg = (Date.now() - t0) / 1000;
+    CD.datos.fotoCuando = (window._espejoGen || {})['claude.cuadre.cinco.foto'] || null; CD.datos.censoCuando = (censo && censo.generado) || (window._espejoGen || {})['claude.cambios.censo'] || null;
   } catch (e) { CD.err = String((e && e.message) || e); }
   CD.cargando = false; _cdPintar();
 }
@@ -42796,6 +42792,7 @@ function _applyPermisosUI(){
     var pg = b.getAttribute('data-pg');
     var ok = _permNivPg((typeof PG_PADRE !== 'undefined' && PG_PADRE[pg]) || pg) >= 1;   // 13-oct · Productos = costos + contenido
     if (pg === 'cuadre' && !_esAdminCuadre()) ok = false;   // 10-oct
+    if (pg === 'cuadredrive' && !_esAdminCuadre()) ok = false;   // 19-oct · Cuadre ERP vs Drive: solo Ana y Pablo
     b.style.display = ok ? '' : 'none';
   });
   document.querySelectorAll('.sb .ns').forEach(function(ns){
@@ -42936,6 +42933,7 @@ function _applyRoleUI(){
   });
   // 9-oct · Egresos: sin matriz de permisos, solo Administrador (Estefany/Roxana se habilitan por la matriz)
   ['egresos','cajachica','cuadre'].forEach(function(pg){ var b = document.querySelector('.nb[data-pg="'+pg+'"]'); if(b) b.style.display='none'; });   // 10-oct · grupo nuevo del menu
+  (function(){ var b = document.querySelector('.nb[data-pg="cuadredrive"]'); if(b) b.style.display='none'; })();   // 19-oct · Cuadre ERP vs Drive: sin matriz, solo Admin
   document.querySelectorAll('.sb .ns').forEach(function(ns){ if(ns.textContent.trim()==='Finanzas') ns.style.display='none'; });
   // Ocultar la etiqueta de sección "Sistema" (sus 2 items quedaron ocultos).
   document.querySelectorAll('.sb .ns').forEach(function(ns){
