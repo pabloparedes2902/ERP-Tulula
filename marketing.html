@@ -6978,8 +6978,9 @@ function _escCrea(filas, tipo, modelo){
   let rest = null, cansado = 0, porCansar = 0;   /* 19-oct · porCansar = cuántos hay que renovar dentro del aviso */
   /* 19-oct (Pablo) · fechas FIJAS para el plazo (no se corren cada día): vence = día en que se cansa el primero (inicio + vida);
      nuevo = inicio del creativo más nuevo; ultGasto = último día con gasto en este canal */
-  let vence = null, nuevo = null, ultGasto = null;
-  filas.forEach(r => { const h = MKH && MKH[String(r.ad_id)]; const u = h && _escDia(h.f2); if (u && (!ultGasto || u > ultGasto)) ultGasto = u; });
+  let vence = null, nuevo = null, ultGasto = null, ultApag = null;   /* ultApag = día en que se apagó el último creativo (desde ahí corre el plazo para reponerlo) */
+  filas.forEach(r => { const h = MKH && MKH[String(r.ad_id)]; const u = h && _escDia(h.f2); if (u && (!ultGasto || u > ultGasto)) ultGasto = u;
+    if (u && act.indexOf(r) < 0 && (!ultApag || u > ultApag)) ultApag = u; });
   act.forEach(r => { const h = MKH && MKH[String(r.ad_id)]; const i = h && _escDia(h.f1); if (!i) return;
     const v = new Date(i.getTime() + _ep('esc_vida_crea') * 864e5); if (!vence || v < vence) vence = v; if (!nuevo || i > nuevo) nuevo = i; });
   act.forEach(r => { const h = MKH && MKH[String(r.ad_id)]; if (!h) return; const e = _accDiasEntre(h.f1), fr = _accFrec(h, '7');
@@ -6989,7 +6990,7 @@ function _escCrea(filas, tipo, modelo){
   const tot = act.length + banco;
   const col = tot < _ep('esc_crea_rojo') ? 'rojo' : tot < _ep('esc_crea_verde') ? 'ama' : 'verde';
   const ant = (col !== 'rojo' && banco === 0 && rest != null) ? rest : null;
-  return { col, big: String(act.length), sub: banco ? '+' + banco + ' listo' + (banco > 1 ? 's' : '') : 'corriendo', act: act.length, banco, rest, cansado, porCansar, ant, vence, nuevo, ultGasto };
+  return { col, big: String(act.length), sub: banco ? '+' + banco + ' listo' + (banco > 1 ? 's' : '') : 'corriendo', act: act.length, banco, rest, cansado, porCansar, ant, vence, nuevo, ultGasto, ultApag };
 }
 /* ── 3 · GANADORES de un canal: el motor de 📏 Reglas dice ESCALAR ── */
 function _escGana(filas){
@@ -7076,7 +7077,9 @@ function _escAccion(f, ln, x){
     const base = _escPl(n.act, 'corriendo', 'corriendo') + (n.banco ? ' · ' + _escPl(n.banco, 'listo', 'listos') : '') + (n.cansado ? ' · ' + _escPl(n.cansado, 'cansado', 'cansados') : '');
     const crear = 'Crear ' + _escPl(falta, 'creativo nuevo', 'creativos nuevos');
     /* plazo para CREAR: si hay corriendo, cuando se acaba la prueba del más nuevo; si no queda ninguno, 2 días desde que se apagó el último */
-    const pCrear = _escPlazo(n.act ? _escMas(n.nuevo, _ep('esc_prueba')) : _escMas(n.ultGasto, _ep('esc_plazo_crea')));
+    /* 19-oct v8 · faltan creativos (rojo/amarillo): el plazo corre desde que se APAGÓ el último (+2 d); si nunca se apagó ninguno, desde hoy.
+       Sobran pero ninguno gana (verde): cuando termina la prueba de 7 d del más nuevo. */
+    const pCrear = _escPlazo(n.col === 'verde' ? _escMas(n.nuevo, _ep('esc_prueba')) : _escMas(n.ultApag || n.ultGasto || _escHoy(), _ep('esc_plazo_crea')));
     const ren = Math.max(1, n.porCansar || 0), renTxt = 'renovar ' + _escPl(ren, 'creativo', 'creativos') + ' ' + _escPlazo(n.vence);   /* plazo para RENOVAR = día en que se cansa el primero */
     if (n.col === 'rojo') return { sit:'Creativo crítico · ' + base, act: crear + ' ' + pCrear + (g ? '' : ', con ángulos distintos'), q:ESC_RESP.crea, col };
     if (n.col === 'ama') return { sit:'Creativo requerido · ' + base, act: crear + ' ' + pCrear + (g ? (n.vence ? '; ' + renTxt : '') : ': ninguno es ganador todavía'), q:ESC_RESP.crea, col };
@@ -7094,9 +7097,11 @@ function _escAccion(f, ln, x){
                q:ESC_RESP.gana + ' · Heily', col };
     }
     if (n.col === 'ama'){
-      const cand = (ln.filas || []).filter(r => r._on && (motorDecidir(r) || {}).a === 'MANTENER').sort((a, b) => _escMc(b) - _escMc(a))[0], ro = cand ? _escRoas(cand) : null;
+      /* v8 · el candidato se elige por margen de su VIDA (el período puede no tener ventas todavía) y se muestra su ROAS de vida */
+      const cand = (ln.filas || []).filter(r => r._on && (motorDecidir(r) || {}).a === 'MANTENER').sort((a, b) => (_escMcVida(b) || 0) - (_escMcVida(a) || 0))[0];
+      const hc = cand && MKH && MKH[String(cand.ad_id)], ro = hc && +hc.gasto_vida > 0 ? (+hc.ing_vida || 0) / (+hc.gasto_vida) : null;
       return { sit:'Sin ganador · ' + _escPl(n.m, 'anuncio vende', 'anuncios venden') + ' sin llegar a escalar',
-               act: cand ? 'Candidato: «' + _escAdLab(cand) + '»' + (ro != null ? ' (ROAS ' + ro.toFixed(2) + 'x)' : '') + '. Clonarlo con 2 hooks nuevos' : 'Clonar el que más vende con hooks nuevos',
+               act: cand ? 'Candidato: «' + _escAdLab(cand) + '»' + (ro ? ' (ROAS de vida ' + ro.toFixed(2) + 'x)' : '') + '. Clonarlo con 2 hooks nuevos' : 'Clonar el que más vende con hooks nuevos',
                q:ESC_RESP.gana + ' · Heily', col };
     }
     const w = n.gan.slice().sort((a, b) => _escMc(b) - _escMc(a))[0], ro = w ? _escRoas(w) : null;
