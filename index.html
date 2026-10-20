@@ -10235,12 +10235,14 @@ async function _cdActualizar() {
 /** 20-oct · pedidos con cambio vivo (no cancelado) → 'CAM-0198, …'. Paginado hasta página vacía. */
 async function _cdCambiosPorPedido() {
   const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión con la base');
-  const C = {};
+  const C = {}, ABIERTO = {};
   for (let off = 0, v = 0; v < 50; v++, off += 1000) {
-    const r = await fetch(SB_URL + '/rest/v1/cambios2?select=nro_pedido,nro_cambio,estado&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    const r = await fetch(SB_URL + '/rest/v1/cambios2?select=nro_pedido,nro_cambio,estado,rec:row_json-%3E%3EFechaRecepcionOriginal,env:row_json-%3E%3EFechaEnvioNueva&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
     if (!r.ok) throw new Error('cambios ' + r.status); const a = await r.json(); if (!a.length) break;
-    a.forEach(x => { const n = String(x.nro_pedido || '').trim(); if (!n || String(x.estado || '').toUpperCase() === 'CANCELADO') return; const c = C[n] = C[n] || []; if (c.indexOf(x.nro_cambio) < 0) c.push(x.nro_cambio); });
+    a.forEach(x => { const n = String(x.nro_pedido || '').trim(), est = String(x.estado || '').toUpperCase(); if (!n || est === 'CANCELADO') return; const c = C[n] = C[n] || []; if (c.indexOf(x.nro_cambio) < 0) c.push(x.nro_cambio);
+      if (est === 'CLIENTE SOLICITA CAMBIO' || !x.rec || !x.env) ABIERTO[n] = 1; });   // 20-oct · cambio sin terminar (falta recibir la original o enviar la nueva)
   }
+  Object.defineProperty(C, '__abiertos', { value: ABIERTO, enumerable: false });
   return C;
 }
 /** Mismas reglas que la planilla: solo se lista si la TALLA está descuadrada (ventas ERP ≠ Drive en la foto).
@@ -10259,11 +10261,12 @@ function _cdArmar(M, FO, CAMS) {
     .map(z => ({ nro: nro(z.erp[2]), cli: nom(z.erp[2]), f: z.erp[1], prenda: (z.erp[5] || prend(z.erp[0])) + '  →  Drive: ' + (z.drive[5] || prend(z.drive[0])), est: z.tipo, que: z.causa || '', fila: (String(z.drive[2]).match(/fila (\d+)/) || [])[1] || '' }));
   const l4 = Object.keys(FO).filter(k => { const x = FO[k]; if (!x || !x.e || !x.d) return false; const e = String(x.e).split(','), d = String(x.d).split(','); return e[0] !== d[0] || e[1] !== d[1]; })
     .map(k => { const e = String(FO[k].e).split(','), d = String(FO[k].d).split(','); return { prenda: prend(k), que: 'Confección ERP ' + e[0] + ' / Drive ' + d[0] + ' · No disponibles ERP ' + e[1] + ' / Drive ' + d[1] }; });
+  const AB = CAMS.__abiertos || {}, esp = n => String(n).split(/[ ,]+/).some(x => AB[x]);   // 20-oct · cambio en curso = en espera
   const mueve = k => { const d = dif(k); return d === null ? '¿?' : d === 0 ? 'no (la talla cuadra)' : (d > 0 ? 'sí: ERP +' + d : 'sí: ERP ' + d); };
   const l5 = [];
-  (M.soloErp || []).forEach(x => { const n = nro(x[2]); if (CAMS[n]) l5.push({ nro: n, cam: CAMS[n].join(', '), prenda: x[5] || prend(x[0]), que: 'El ERP tiene esta prenda y el Drive no' + (x[4] ? ' · ' + x[4] : ''), mueve: mueve(x[0]) }); });
-  [].concat(M.otraTalla || [], M.otraPrenda || []).forEach(z => { const n = nro(z.erp[2]); if (CAMS[n]) l5.push({ nro: n, cam: CAMS[n].join(', '), prenda: (z.erp[5] || prend(z.erp[0])) + '  →  Drive: ' + (z.drive[5] || prend(z.drive[0])), que: z.causa || '', mueve: mueve(z.erp[0]) }); });
-  (M.soloDrive || []).forEach(x => { const ns = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(n => CAMS[n]); if (ns.length) l5.push({ nro: ns.join(', '), cam: CAMS[ns[0]].join(', '), prenda: x[5] || prend(x[0]), que: 'El Drive tiene esta prenda y el ERP no · ' + (x[4] || ''), mueve: mueve(x[0]) }); });
+  (M.soloErp || []).forEach(x => { const n = nro(x[2]); if (CAMS[n]) l5.push({ nro: n, cam: CAMS[n].join(', '), prenda: x[5] || prend(x[0]), que: 'El ERP tiene esta prenda y el Drive no' + (x[4] ? ' · ' + x[4] : ''), mueve: mueve(x[0]), espera: esp(n) }); });
+  [].concat(M.otraTalla || [], M.otraPrenda || []).forEach(z => { const n = nro(z.erp[2]); if (CAMS[n]) l5.push({ nro: n, cam: CAMS[n].join(', '), prenda: (z.erp[5] || prend(z.erp[0])) + '  →  Drive: ' + (z.drive[5] || prend(z.drive[0])), que: z.causa || '', mueve: mueve(z.erp[0]), espera: esp(n) }); });
+  (M.soloDrive || []).forEach(x => { const ns = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(n => CAMS[n]); if (ns.length) l5.push({ nro: ns.join(', '), cam: CAMS[ns[0]].join(', '), prenda: x[5] || prend(x[0]), que: 'El Drive tiene esta prenda y el ERP no · ' + (x[4] || ''), mueve: mueve(x[0]), espera: esp(ns[0]) }); });
   const conCam = Object.keys(CAMS).length, conProb = new Set(l5.map(x => String(x.nro).split(/[ ,]/)[0])).size;
   return { l1, l2, l3, l4, l5, cambiosTotal: conCam, cambiosOk: conCam - conProb };
 }
@@ -10272,7 +10275,7 @@ function _cdPintar() {
   const D = CD.datos;
   const hhmm = d => d ? new Date(d).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' }) : '—';
   const n = L => (L || []).filter(x => !x.espera).length, ne = L => (L || []).filter(x => x.espera).length;
-  const tabs = D ? [[1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', D.l4.length, 0], [5, '5 · Cambios ERP vs Drive', D.l5.length, 0]] : [];
+  const tabs = D ? [[1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', D.l4.length, 0], [5, '5 · Cambios ERP vs Drive', n(D.l5), ne(D.l5)]] : [];
   const total = tabs.reduce((a, t) => a + t[2], 0), esp = tabs.reduce((a, t) => a + t[3], 0);
   let h = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px">'
     + '<button class="btn bp" ' + (CD.cargando ? 'disabled' : '') + ' onclick="_cdActualizar()">' + (CD.cargando ? '⏳ Comparando…' : '🔄 Actualizar') + '</button>'
@@ -10284,7 +10287,7 @@ function _cdPintar() {
   const L = D['l' + CD.tab] || [];
   const ir = nro => nro ? '<a href="#" onclick="event.preventDefault();_abrirPedidoDesdeBusqueda(' + esc(JSON.stringify(String(nro).split(/[ ,]/)[0])) + ')" style="color:var(--ac);font-weight:600">' + esc(nro) + ' ↗</a>' : '';
   const cols = CD.tab === 4 ? ['Prenda y talla', 'Qué difiere'] : CD.tab === 5 ? ['Pedido', 'Cambio', 'Prenda', 'Qué pasa', '¿Mueve el stock?'] : ['Pedido', 'Clienta', 'Fecha', 'Prenda', CD.tab === 3 ? 'Tipo' : 'Estado', 'Causa / qué hacer', CD.tab === 1 ? '' : 'Fila Drive'];
-  const fila = x => CD.tab === 4 ? [esc(x.prenda), esc(x.que)] : CD.tab === 5 ? [ir(x.nro), esc(x.cam || ''), esc(x.prenda), esc(x.que), esc(x.mueve || '')]
+  const fila = x => CD.tab === 4 ? [esc(x.prenda), esc(x.que)] : CD.tab === 5 ? [ir(x.nro), esc(x.cam || ''), esc(x.prenda), esc(x.que) + (x.espera ? ' <span style="color:var(--mu)">(en espera: el cambio todavía no termina)</span>' : ''), esc(x.mueve || '')]
     : [ir(x.nro), esc(x.cli || ''), esc(x.f || ''), esc(x.prenda || ''), esc(x.est || ''), esc(x.que || '') + (x.espera ? ' <span style="color:var(--mu)">(en espera: venta de los últimos 2 días)</span>' : ''), esc(x.fila || '')];
   h += L.length ? '<div style="overflow:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr>' + cols.map(c => '<th style="text-align:left;padding:6px 8px">' + esc(c) + '</th>').join('') + '</tr></thead><tbody>'
     + L.map(x => '<tr' + (x.espera ? ' style="opacity:.6"' : '') + '>' + fila(x).map(v => '<td style="padding:5px 8px;vertical-align:top">' + v + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>'
@@ -41739,6 +41742,7 @@ async function loadAlertas() {
     _ALERT_ESPERA = Array.isArray(espera) ? espera : [];
     _renderAlertas(w, r);
     _updateAlertBadge(_alRojosN(r, _ALERT_BUZON));   // 6-oct: solo urgentes
+    try { _ESC_AL = null; _alEscRefrescar(); } catch (_) {}   // 20-oct · 🚀 Escalamiento
   } catch(e) { w.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 
@@ -42250,8 +42254,93 @@ function _alPanelHtml(g) {
         + por[a.k].fondo.map(x => esc(x.t) + (x.cant > 1 ? ' · ' + x.cant : '')).join(' · ') + '</div>' : '')
       + '</div>';
   });
+  h += _alEscalaHtml();   // 20-oct · 🚀 Escalamiento (Marketing)
   return h + '</div>';
 }
+
+// ══ 20-oct-2026 (Pablo, Fase 2) · TARJETA 🚀 ESCALAMIENTO ═══════════════════════════════════════════
+// Productos en foco de Marketing › 🚀 Escalamiento con su flujo: en qué etapa, quién lo hace y la acción con su fecha.
+// La foto la calcula marketing.html (escAlertaItems) y la deja en localStorage 'esc_alerta_v1' + mensaje 'esc-alerta'.
+// Si la foto no existe o tiene más de ESC_AL_VIEJA_H horas, se carga Marketing por detrás (solo quien puede verlo) y se recalcula.
+// Niveles (los de Alertas): 🔴 etapa en rojo = el flujo está cortado · 🟠 error de datos (producto que no aparece en Stock)
+// 🟡 pendiente (etapa en amarillo o que cae a rojo pronto) · 🟢 todo en orden.
+// No suma a la barra roja ni al número del menú: esos son del ERP parado / con errores (decisión, ver traspaso).
+const ESC_AL_VIEJA_H = 2;
+let _ESC_AL = null;
+function _alEscSnap() {
+  if (_ESC_AL) return _ESC_AL;
+  try { _ESC_AL = JSON.parse(localStorage.getItem('esc_alerta_v1') || 'null'); } catch (_) { _ESC_AL = null; }
+  return _ESC_AL;
+}
+function _alEscPuede() { try { return typeof _pgPermitida === 'function' ? !!_pgPermitida('marketing') : true; } catch (_) { return false; } }
+function _alEscRefrescar() {
+  if (!_alEscPuede()) return;
+  const sn = _alEscSnap();
+  if (sn && sn.at && (Date.now() - sn.at) < ESC_AL_VIEJA_H * 3600000) return;
+  const f = document.getElementById('marketing-frame'); if (!f) return;
+  if (f.getAttribute('src') !== 'marketing.html') { _marketingLazy(); return; }   // al terminar de cargar, Marketing publica sola
+  try { f.contentWindow.postMessage({ tipo: 'esc-recalcular' }, '*'); } catch (_) {}
+}
+const ESC_AL_ETAPA = { stock: '📦 Stock', crea: '🎬 Creativos', gana: '🏅 Ganadores' };
+const ESC_AL_CANAL = { wa: 'WhatsApp', web: 'Web', ambos: 'WhatsApp y Web' };
+function _alEscalaHtml() {
+  if (!_alEscPuede()) return '';
+  const sn = _alEscSnap();
+  const L = (sn && Array.isArray(sn.items)) ? sn.items : [];
+  const nR = L.filter(x => x.nivel === 'rojo').length, nN = L.filter(x => x.nivel === 'naranja').length, nA = L.filter(x => x.nivel === 'amarillo').length;
+  const col = !sn ? 'var(--mu)' : nR ? 'var(--rd)' : nN ? AL_COL.naranja : nA ? '#d97706' : 'var(--gn)';
+  const chip = !sn ? 'Calculando…' : nR ? '🔴 ' + nR + ' con el flujo cortado' : nN ? '🟠 ' + nN + ' con errores' : nA ? '🟡 ' + nA + ' pendiente' + (nA > 1 ? 's' : '') : '🟢 Todo en orden';
+  let h = '<div class="card al-area" id="al-escala" data-area="escala" style="padding:12px;border-top:4px solid ' + col + '">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px">'
+    + '<div style="font-weight:700;font-size:15px">🚀 Escalamiento</div>'
+    + '<div style="font-size:12px;font-weight:600;color:' + col + '">' + chip + '</div></div>';
+  if (!sn) h += '<div style="font-size:12px;color:var(--mu);margin-top:6px">Marketing está calculando los productos en foco. Aparecen en unos segundos.</div>';
+  else if (!L.length) h += '<div style="font-size:12px;color:var(--mu);margin-top:6px">Los productos en foco tienen el flujo completo: nada que hacer aquí.</div>';
+  const item = (x, i) => {
+    const c = AL_COL[x.nivel] || '#d97706';
+    return '<div class="al-item al-esc-item" style="border-left:3px solid ' + c + ';padding:8px 10px;margin-top:8px;background:var(--bg2,rgba(0,0,0,.08));border-radius:8px">'
+      + '<div style="font-weight:600;font-size:13px">' + (AL_EMO[x.nivel] || '🟡 ') + esc(x.nombre) + ' · ' + esc(ESC_AL_CANAL[x.canal] || x.canal)
+      + ' <span style="font-weight:400;color:var(--mu);font-size:11.5px">· ' + esc(ESC_AL_ETAPA[x.etapa] || x.etapa) + (x.nivel === 'rojo' && x.corte ? ' (aquí se corta el flujo)' : '') + '</span></div>'
+      + '<div style="font-size:12px;margin-top:3px;color:var(--mu)">' + esc(x.sit || '') + '</div>'
+      + '<div style="font-size:12px;margin-top:3px"><b>Qué hacer:</b> ' + esc(x.act || '') + '</div>'
+      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">'
+      + '<span style="font-size:11.5px"><b>Quién:</b> ' + esc(x.q || '—') + '</span><span style="flex:1"></span>'
+      + '<button class="btn bg bs" onclick="_alEscIr(' + i + ')">Abrir en Escalamiento →</button></div></div>';
+  };
+  // lo que corta el flujo (🔴) y los errores (🟠) a la vista; los pendientes (🟡) plegados, con su fecha adentro
+  L.forEach((x, i) => { if (x.nivel !== 'amarillo') h += item(x, i); });
+  if (nA) h += '<details style="margin-top:8px"' + (nR || nN ? '' : ' open') + '><summary style="cursor:pointer;font-size:12px;color:#d97706">🟡 Ver ' + nA + ' pendiente' + (nA > 1 ? 's' : '') + ' (todavía no cortan el flujo)</summary>'
+    + L.map((x, i) => x.nivel === 'amarillo' ? item(x, i) : '').join('') + '</details>';
+  if (sn) h += '<div style="font-size:10.5px;color:var(--mu);margin-top:8px">Productos en foco' + (sn.auto ? ' (★ sugeridos)' : '') + ': ' + esc((sn.foco || []).join(' · '))
+    + ' · medido ' + _alertaCuando(new Date(sn.at).toISOString()) + (sn.dias ? ' · período ' + sn.dias + ' días' : '') + '</div>';
+  return h + '</div>';
+}
+function _alEscPintar() {
+  const c = document.getElementById('al-escala'); if (!c) return;
+  const t = document.createElement('div'); t.innerHTML = _alEscalaHtml();
+  if (t.firstChild) c.replaceWith(t.firstChild);
+}
+let _ESC_IR_T = null;
+function _alEscIr(i) {
+  const sn = _alEscSnap(), x = sn && sn.items && sn.items[i]; if (!x) return;
+  navegarA('marketing');
+  const msg = { tipo: 'esc-ir', k: x.k, etapa: x.etapa, lane: x.lane };
+  let k = 0; clearInterval(_ESC_IR_T);
+  _ESC_IR_T = setInterval(() => {   // el iframe puede estar recién cargando: se insiste hasta que conteste
+    const f = document.getElementById('marketing-frame');
+    if (++k > 40) { clearInterval(_ESC_IR_T); return; }
+    try { if (f && f.contentWindow) f.contentWindow.postMessage(msg, '*'); } catch (_) {}
+  }, 400);
+}
+if (typeof window !== 'undefined') window.addEventListener('message', function (e) {
+  if (!e || !e.data) return;
+  if (e.data.tipo === 'esc-ir-ok') { clearInterval(_ESC_IR_T); return; }
+  if (e.data.tipo === 'esc-alerta' && e.data.snap) {
+    _ESC_AL = e.data.snap;
+    try { localStorage.setItem('esc_alerta_v1', JSON.stringify(_ESC_AL)); } catch (_) {}
+    _alEscPintar();
+  }
+});
 
 function _alertasHtmlSimple(r) {
   const g = _alClasificarTodo(r, _ALERT_BUZON);
