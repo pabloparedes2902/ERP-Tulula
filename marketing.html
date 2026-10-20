@@ -759,6 +759,8 @@
   .mkl-bar .mkl-agregar{margin-left:auto;white-space:nowrap}
   .mkl-t tr.mkl-fnueva td{background:rgba(124,58,237,.10)}
   .mkl-t tr.mkl-fnueva input{width:100%;box-sizing:border-box}
+  .mkl-t tr.mkl-marca td{background:rgba(124,58,237,.28)!important}   /* 19-oct · valor repetido: se ilumina el que ya existe */
+  #mklDupAviso{font-size:12px;font-weight:700;color:var(--bad)}
   /* 16-oct · Reglas didáctico: Paso · Recorrido · Explicación en viñetas editable (números bloqueados) */
   .rg-t{width:100%;border-collapse:collapse;font-size:12px}
   .rg-t th{text-align:center;padding:6px;font-size:11px;color:var(--txt2);font-weight:800;border-bottom:1.5px solid var(--bd)}
@@ -5495,7 +5497,27 @@ async function mklAbrir(){
   if (MKL.filas === null){ document.getElementById('mklCuerpo').innerHTML = '<div class="mkl-vacio">Cargando listas…</div>'; await mklCargar(); }
   mklPintar();
 }
-function mklIr(l){ MKL.lista = l; MKL.edit = null; MKL.nuevo = false; MKL.msg = ''; MKL.q = ''; mklPintar(); }
+function mklIr(l){ MKL.lista = l; MKL.edit = null; MKL.nuevo = false; MKL.msg = ''; MKL.q = ''; MKL.marcar = null; mklPintar(); }
+/* 19-oct-2026 (caso Hayley «Social proof») · comparar como la base: sin tildes ni mayúsculas (la Ñ se respeta) y también
+   contra los nombres viejos fusionados (alias). Si ya existe, se avisa MIENTRAS se escribe y se muestra el valor existente. */
+function _mklNorm(s){ return String(s || '').normalize('NFD').replace(/n\u0303/g, 'ñ').replace(/N\u0303/g, 'Ñ').replace(/[\u0300-\u036f]/g, '').trim().replace(/\s+/g, ' ').toLowerCase(); }
+function _mklYaExiste(v, salvo){
+  const n = _mklNorm(v); if (!n) return null;
+  const L = (MKL.filas || []).filter(f => f.campo === MKL.lista && f.valor !== salvo);
+  const f1 = L.find(f => _mklNorm(f.valor) === n); if (f1) return { f: f1, alias: false };
+  const f2 = L.find(f => (f.alias || []).some(a => _mklNorm(a) === n)); return f2 ? { f: f2, alias: true } : null;
+}
+function _mklDupTxt(x){ return '«' + esc(x.f.valor) + '»' + (x.alias ? ' (lo que escribiste es su nombre viejo: se fusionaron)' : '') + (x.f.activo ? '' : ' — está DESACTIVADO: dale «Activar»'); }
+function mklNuevoTeclea(v){
+  const el = document.getElementById('mklDupAviso'); if (!el) return;
+  const x = _mklYaExiste(v);
+  el.innerHTML = x ? '⚠️ Ya existe: ' + _mklDupTxt(x) + ' <button class="btn" onclick="mklVerExistente(' + esc(JSON.stringify(x.f.valor)).replace(/"/g, '&quot;') + ')">Ver</button>' : '';
+}
+function mklVerExistente(v, msg){
+  const f = (MKL.filas || []).find(x => x.campo === MKL.lista && x.valor === v); if (!f) return;
+  MKL.nuevo = false; MKL.edit = null; MKL.q = f.valor; MKL.marcar = f.valor; if (!f.activo) MKL.verOff = true;
+  MKL.msg = msg || ''; mklPintar();
+}
 /* 15-oct-2026 15:00 (pedido de Pablo) · la tabla de 🏷️ Listas se comporta como la de Anuncios:
    fila iluminada al pasar el mouse, columnas que se ensanchan arrastrando el borde, clic en el título para ordenar
    (mayor→menor o A→Z, y al revés), todo centrado. Productos: ROAS + CAC. Talentos: ROAS + Hook rate. */
@@ -5562,11 +5584,11 @@ function mklPintar(){
   const el = document.getElementById('mklCuerpo'); if (!el) return;
   const filas = MKL.filas || [], L = MKL.lista, esForm = L === 'form';
   const deLista = filas.filter(f => f.campo === L);
-  const q = MKL.q.trim().toLowerCase();
+  const q = _mklNorm(MKL.q);   /* 19-oct · busca sin tildes y también por nombre viejo (alias) */
   const met = _mklMetricas(), cols = _mklCols(), tM = _mklMetTipo();
   const fmt = MKL.formato || 'todos';
   /* 15-oct 18:40 · el filtro de formato cambia los RESULTADOS; la lista se ve completa (casi todos los contextos están marcados solo para video) */
-  const datos = deLista.filter(f => (MKL.verOff || f.activo) && (!q || String(f.valor).toLowerCase().includes(q))).map(f => {
+  const datos = deLista.filter(f => (MKL.verOff || f.activo) && (!q || _mklNorm(f.valor).includes(q) || (f.alias || []).some(a => _mklNorm(a).includes(q)))).map(f => {
     const o = met[L + '\t' + _mklClave(L, f.valor)];
     return { f: f, o: o, met: _mklMetVal(o, tM), hook: _mklMetVal(o, 'hook_rate'),
              valor: String(f.valor), tipo: String(f.tipo || ''), usos: f.usos || 0, ult: f.ultimo_uso || '', creado: f.creado || '', cambio: f.editado || '' };
@@ -5611,7 +5633,7 @@ function mklPintar(){
       creado: '<td>' + (f.creado ? _mklDia(f.creado) : '—') + '</td>',
       cambio: '<td' + (f.editado_por ? ' title="' + esc(_mklQuien(f.editado_por)).replace(/"/g, '&quot;') + '"' : '') + '>' + (f.editado ? _mklDia(f.editado) : '—') + '</td>',
       acc: '<td class="a">' + acc + '</td>' };
-    return '<tr class="' + (f.activo ? '' : 'off') + '">' + cols.map(c => celda[c.k]).join('') + '</tr>';
+    return '<tr class="' + (f.activo ? '' : 'off') + (MKL.marcar === f.valor ? ' mkl-marca' : '') + '">' + cols.map(c => celda[c.k]).join('') + '</tr>';
   }).join('');
   el.innerHTML = '<div class="mkl">'
     + '<div class="mkl-cab"><b>Listas para nombrar anuncios</b><span>Lo que está activo acá es lo que ofrece ➕ Nuevo anuncio. '
@@ -5626,8 +5648,8 @@ function mklPintar(){
     + (MKL.puede ? '<button class="btn mk-btn-morado mkl-agregar" title="Agregar un valor nuevo a ' + esc(MKL_LISTAS.find(x => x[0] === L)[1]) + '" onclick="MKL.nuevo=true;MKL.edit=null;MKL.msg=\'\';mklPintar()">➕ Agregar</button>' : '') + '</div>'
     + (MKL.err ? '<div class="mkl-msg mal">' + esc(MKL.err) + '</div>' : '') + (MKL.msg ? '<div class="mkl-msg">' + MKL.msg + '</div>' : '')
     + '<div class="mkl-scroll"><table class="mkl-t"><thead><tr>' + thead + '</tr></thead><tbody>'
-    + (MKL.nuevo && MKL.puede ? '<tr class="mkl-fnueva"><td class="v"><input id="mklNuevo" maxlength="60" placeholder="Nuevo valor para ' + esc(MKL_LISTAS.find(x => x[0] === L)[1]) + '…" onkeydown="if(event.key===\'Enter\')mklGuardar(\'\');if(event.key===\'Escape\'){MKL.nuevo=false;mklPintar()}"></td>'
-      + '<td colspan="' + (cols.length - 2) + '"></td><td class="a"><button class="btn on" onclick="mklGuardar(\'\')">Guardar</button> <button class="btn" onclick="MKL.nuevo=false;mklPintar()">Cancelar</button></td></tr>' : '')
+    + (MKL.nuevo && MKL.puede ? '<tr class="mkl-fnueva"><td class="v"><input id="mklNuevo" maxlength="60" placeholder="Nuevo valor para ' + esc(MKL_LISTAS.find(x => x[0] === L)[1]) + '…" oninput="mklNuevoTeclea(this.value)" onkeydown="if(event.key===\'Enter\')mklGuardar(\'\');if(event.key===\'Escape\'){MKL.nuevo=false;mklPintar()}"></td>'
+      + '<td colspan="' + (cols.length - 2) + '"><span id="mklDupAviso"></span></td><td class="a"><button class="btn on" onclick="mklGuardar(\'\')">Guardar</button> <button class="btn" onclick="MKL.nuevo=false;mklPintar()">Cancelar</button></td></tr>' : '')
     + (filasHtml || '<tr><td colspan="' + cols.length + '" class="mkl-vacio">Nada para mostrar.</td></tr>') + '</tbody></table></div></div>';
   if (MKL.nuevo){ const x = document.getElementById('mklNuevo'); if (x) x.focus(); }
   if (MKL.edit !== null){ const x = document.getElementById('mklEdVal'); if (x) x.focus(); }
@@ -5726,10 +5748,14 @@ async function mklGuardar(antes){
   const tipoEl = document.getElementById(nuevo ? 'mklNuevoTipo' : 'mklEdTipo');
   const f = nuevo ? null : (MKL.filas || []).find(x => x.campo === MKL.lista && x.valor === antes);
   if (!val.trim()){ MKL.msg = '<span class="mal">Escribe el valor.</span>'; mklPintar(); return; }
+  const dup = _mklYaExiste(val, nuevo ? undefined : antes);   /* 19-oct · si ya existe, no se guarda: se muestra el que existe */
+  if (dup){ mklVerExistente(dup.f.valor, '<span class="mal">Ya existe en esta lista: ' + _mklDupTxt(dup) + '. Te lo muestro abajo (iluminado).</span>'); return; }
   let r;
   try { r = await _mklRpc(antes, val, nuevo ? true : f.activo, MKL.lista === 'form' ? 'video,estatico,carrusel' : (tipoEl ? [...tipoEl.querySelectorAll('input:checked')].map(x => x.value).join(',') : null)); }   /* 15-oct 19:10 · contexto = todos los formatos */ catch (e) { r = { ok: false, error: 'No se pudo guardar (' + e.message + ').' }; }
-  if (!r || !r.ok){ MKL.msg = '<span class="mal">' + esc((r && r.error) || 'No se pudo guardar.') + '</span>'; mklPintar(); return; }
-  MKL.edit = null; if (nuevo) MKL.nuevo = false; MKL.msg = '<span class="bien">✓ ' + (nuevo ? 'Agregado' : 'Guardado') + ': «' + esc(r.fila.valor) + '»</span>';
+  if (!r || !r.ok){
+    if (r && /ya existe/.test(r.error || '')){ await mklCargar(); const d2 = _mklYaExiste(val, nuevo ? undefined : antes); if (d2){ mklVerExistente(d2.f.valor, '<span class="mal">' + esc(r.error) + ' Te lo muestro abajo (iluminado).</span>'); return; } }
+    MKL.msg = '<span class="mal">' + esc((r && r.error) || 'No se pudo guardar.') + '</span>'; mklPintar(); return; }
+  MKL.edit = null; MKL.marcar = null; if (nuevo) MKL.nuevo = false; MKL.msg = '<span class="bien">✓ ' + (nuevo ? 'Agregado' : 'Guardado') + ': «' + esc(r.fila.valor) + '»</span>';
   await mklCargar(); mklPintar();
 }
 async function mklActivo(valor, activo){
