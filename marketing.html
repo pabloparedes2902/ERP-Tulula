@@ -6909,13 +6909,17 @@ let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC
 let ESC_FOCO = null, ESC_SEL = null, ESC_NODO = null, ESC_PICK = false, ESC_PICKSEL = null, ESC_REGLAS = false, ESC_DUENO = null;
 const _ep = k => { const v = Number(ESC_P[k]); return isNaN(v) ? ESC_DEF[k] : v; };
 const ESC_COL = { verde:'#00f5a0', ama:'#ffc53d', rojo:'#ff3d6e', gris:'#6b7a90' };
-const ESC_RESP = { port:'Pablo · Ana', stock:'Ana', crea:'Heily', gana:'Paola', esc:'Paola · Ana' };
+const ESC_RESP = { port:'Pablo · Ana', stock:'Ana', crea:'Heily', gana:'Paola', anun:'Heily · Paola', esc:'Paola · Ana' };
+/* 21-oct (Pablo aprobó) · el flujo tiene 3 pasos: PRENDA → ANUNCIOS → ESCALAR. «Anuncios» junta creativos + ganadores
+   (con Andromeda probar y ganar es el mismo proceso). Creativos y Ganadores se siguen calculando por dentro. */
+const ESC_ETAPAS = ['stock', 'anun'];
 const ESC_ICO = {
   stock:'<path d="M9 3c.6 1.6 1.7 2.4 3 2.4S14.4 4.6 15 3l5 2.6-2 4.2-2-.9V21H8V8.9l-2 .9-2-4.2z"/>',   /* 21-oct (Pablo) · una prenda (blusa), no una caja */
   fuego:'<path d="M12 2c.6 3.2 4.8 5.4 4.8 10.2A4.8 4.8 0 0 1 7.2 12c0-2.3 1.2-3.9 2.4-5 .1 2.2 1 3.4 2.2 3.8C11.3 8 11 5 12 2z"/>',   /* 21-oct (Pablo) · 🔥 racha: 2+ ganadores escalando */
   crea:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/>',
   gana:'<path d="M7 4h10v4a5 5 0 0 1-10 0z M7 6H4a3 3 0 0 0 3 4 M17 6h3a3 3 0 0 1-3 4 M12 13v4 M8 20h8"/>',
-  esc:'<path d="M12 2c3 3 4 7 3 11l-3 3-3-3c-1-4 0-8 3-11z M9 13l-3 2 1 4 3-2 M15 13l3 2-1 4-3-2"/>'
+  esc:'<path d="M12 2c3 3 4 7 3 11l-3 3-3-3c-1-4 0-8 3-11z M9 13l-3 2 1 4 3-2 M15 13l3 2-1 4-3-2"/>',
+  anun:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/>'
 };
 const ESC_CANAL = {
   wa:  { n:'WhatsApp', svg:'<svg viewBox="0 0 24 24" width="18" height="18"><path fill="#25D366" d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm5.3 14.1c-.2.6-1.3 1.2-1.8 1.2-.5.1-1 .2-3.3-.7-2.8-1.1-4.6-4-4.7-4.2-.1-.2-1.1-1.5-1.1-2.8s.7-2 1-2.3c.2-.3.5-.3.7-.3h.5c.2 0 .4 0 .6.5l.8 2c.1.2.1.4 0 .5l-.3.5-.4.4c-.1.1-.3.3-.1.6.2.3.8 1.3 1.7 2.1 1.1 1 2 1.3 2.3 1.4.3.2.5.1.6 0l.9-1c.2-.3.4-.2.6-.1l1.9.9c.3.1.5.2.5.3.1.2.1.7-.1 1.4z"/></svg>' },
@@ -7151,6 +7155,14 @@ function _escGana(filas){
   const col = g >= _ep('esc_gana_verde') ? 'verde' : m ? 'ama' : 'rojo';
   return { col, big: String(g), sub: m ? m + ' solo vende' + (m > 1 ? 'n' : '') : (g ? 'escala' + (g > 1 ? 'n' : '') : 'ninguno'), g, m, gan, ant:null };
 }
+/* ── 21-oct · 2 · ANUNCIOS = creativos + ganadores en un solo paso (textos mínimos aprobados por Pablo)
+   🔴 ninguno vende y faltan ideas (corren + listos < esc_crea_verde) · 🟡 hay suficientes pero ninguno vende · 🟢 al menos 1 vende ── */
+function _escAnun(crea, gana){
+  const ven = crea.venden != null ? crea.venden : (gana.g + gana.m), tot = crea.act + crea.banco;
+  const col = ven >= 1 ? 'verde' : tot < _ep('esc_crea_verde') ? 'rojo' : 'ama';
+  return { col, big: ven + ' vende' + (ven === 1 ? '' : 'n'), sub: col === 'rojo' ? 'faltan ideas' : 'de ' + crea.act + (crea.banco ? ' +' + crea.banco + ' listos' : ' corriendo'),
+           ven, crea, gana, ant: crea.ant };
+}
 /* conversión del canal: WhatsApp = ventas ÷ conversaciones · Web = ventas ÷ sesiones */
 function _escWeb(r, k){
   if (typeof MKEW === 'undefined' || !MKEW || typeof _mkEWFila !== 'function') return +((r.act || {})[k]) || 0;
@@ -7188,10 +7200,10 @@ function escFilas(){
     const lanes = ['wa', 'web'].map(c => { const fl = flDe(c);
       if (!fl.length) return { canal:c, vacio:true };
       const crea = _escCrea(fl, tipo, modelo, c, ext[c]), gana = _escGana(fl), conv = _escConv(fl, c);
-      const niv = { stock, crea, gana };
-      const corte = ['stock', 'crea', 'gana'].findIndex(x => niv[x].col === 'rojo');
-      const listo = corte < 0 && gana.col === 'verde';
-      return { canal:c, filas:fl, niv, conv, corte: corte < 0 ? 3 : corte, listo, on: fl.filter(r => r._on).length };
+      const niv = { stock, crea, gana, anun: _escAnun(crea, gana) };
+      const corte = ESC_ETAPAS.findIndex(x => niv[x].col === 'rojo');
+      const listo = corte < 0 && gana.g >= _ep('esc_gana_verde');   /* escalar = el motor dice ESCALAR en al menos uno */
+      return { canal:c, filas:fl, niv, conv, corte: corte < 0 ? ESC_ETAPAS.length : corte, listo, on: fl.filter(r => r._on).length };
     });
     return { k, tipo, modelo, nombre: _escNom(k), filas, mc, venv, img: top ? top.thumbnail_url : '', stock, lanes,
              gasto: filas.reduce((a, r) => a + (+((r.act || {}).gasto) || 0), 0), ven: filas.reduce((a, r) => a + (+((r.act || {}).pedidos) || 0), 0) };
@@ -7255,6 +7267,17 @@ function _escAccion(f, ln, x){
     if (!g) return { sit:'Creativos suficientes · ' + base + ' · ninguno ganador', act: crear + ' ' + pCrear + ', con hooks y ángulos distintos', q:ESC_RESP.crea, col };
     return { sit:'Creativos OK · ' + base, act: (avisa || (n.cansan || []).length) ? renTxt.charAt(0).toUpperCase() + renTxt.slice(1) + ', antes de que se cansen' : 'Ninguna por ahora', q:ESC_RESP.crea, col };
   }
+  if (x === 'anun'){
+    /* 21-oct (Pablo) · textos mínimos: qué pasa · hacer · no hacer */
+    const C = n.crea, G = n.gana, fCrear = _escPlazo(C.col === 'verde' ? _escMas(C.nuevo, _ep('esc_prueba')) : _escMas(C.ultApag || C.ultGasto || _escHoy(), _ep('esc_plazo_crea')));
+    const c0 = (C.cansan || [])[0], ren = c0 ? 'Renovar «' + _escAdLab(c0.r) + '» ' + _escPlazo(c0.fecha) + ' (' + c0.motivo + ')' : '';
+    if (n.col === 'rojo') return { sit: n.ven + ' de ' + C.act + ' venden · faltan ideas', act:'Heily: 3 ideas distintas ' + fCrear + '. No: copias del mismo video', q:'Heily', col:n.col };
+    if (n.col === 'ama'){
+      const cand = (ln.filas || []).filter(r => r._on && (motorDecidir(r) || {}).a === 'MANTENER')[0];
+      return { sit: C.act + ' corren · 0 venden', act:'Paola: apagar los que no venden. Heily: 2 ideas nuevas ' + fCrear + (cand ? '. Candidato: «' + _escAdLab(cand) + '»' : ''), q:'Paola · Heily', col:n.col };
+    }
+    return { sit: n.ven + ' de ' + C.act + ' venden' + (C.cansado ? ' · ' + _escPl(C.cansado, 'cansado', 'cansados') : ''), act: (ren ? ren + '. ' : '') + 'Heily: 1 idea nueva por semana para el próximo ganador', q:'Heily', col:n.col };
+  }
   if (x === 'gana'){
     /* 19-oct (Pablo) · el sistema SUGIERE el anuncio con nombre propio; Paola y Heily deciden */
     const canal = ln.canal;
@@ -7276,7 +7299,9 @@ function _escAccion(f, ln, x){
     const w = n.gan.slice().sort((a, b) => _escMc(b) - _escMc(a))[0], ro = w ? _escRoas(w) : null;
     return { sit:_escPl(n.g, 'ganador', 'ganadores') + (ro != null ? ' · ROAS ' + ro.toFixed(2) + 'x' : ''), act:'Escalarlo (siguiente paso 🚀)', q:ESC_RESP.gana, col };
   }
-  if (!ln.listo) return { sit:'Bloqueado', act:'Primero resolver ' + ['el stock', 'los creativos', 'los ganadores'][ln.corte < 3 ? ln.corte : 2] + ' (ahí está la acción)', q:'—', col:'gris' };
+  const ETP = typeof ESC_ETAPAS !== 'undefined' ? ESC_ETAPAS : ['stock', 'anun'];
+  if (!ln.listo && ln.corte < ETP.length) return { sit:'Bloqueado', act:'Primero: ' + ['la prenda (stock)', 'los anuncios'][ln.corte], q:'—', col:'gris' };
+  if (!ln.listo) return { sit:'Aún no escala · vende pero ninguno llega a ESCALAR', act:'Paola: darle 72 h al que vende. No: subir presupuesto antes de que las Reglas digan ESCALAR', q:ESC_RESP.gana, col:'gris' };
   const w = ln.niv.gana.gan.slice().sort((a, b) => _escMc(b) - _escMc(a))[0], ro = w ? _escRoas(w) : null, st = ln.niv.stock, ra = (typeof _escRacha === 'function' ? _escRacha(ln) : null) || { fuego:false, g:1, share:100 };
   return { sit:'Listo para escalar' + (ra.fuego ? ' · 🔥 en racha: ' + ra.g + ' anuncios venden' : ' · 🚀 racha frágil: ' + (ra.g > 1 ? 'uno trae el ' + ra.share + '% de las ventas' : '1 solo anuncio vende')) + (ro != null ? ' · ROAS ' + ro.toFixed(2) + 'x' : ''),
            act:'Subir +20% el presupuesto' + (w && w.conjunto ? ' de «' + w.conjunto + '»' : '') + ' con Escalar; repetir cada 72 h si el ROAS se mantiene. Stock: '
@@ -7297,8 +7322,8 @@ function _escRacha(ln){
 }
 function _escUrgente(f){
   const L = (f.lanes || []).filter(l => !l.vacio);
-  for (const c of ['rojo', 'ama']) for (const l of L) for (const x of ['stock', 'crea', 'gana']) if (l.niv[x].col === c) return l.canal + '|' + x;
-  for (const l of L) for (const x of ['stock', 'crea']) if (l.niv[x].ant != null && l.niv[x].ant <= _ep('esc_aviso')) return l.canal + '|' + x;
+  for (const c of ['rojo', 'ama']) for (const l of L) for (const x of ESC_ETAPAS) if (l.niv[x].col === c) return l.canal + '|' + x;
+  for (const l of L) for (const x of ESC_ETAPAS) if (l.niv[x].ant != null && l.niv[x].ant <= _ep('esc_aviso')) return l.canal + '|' + x;
   return L.length ? L[0].canal + '|esc' : null;
 }
 function escElegir(k){ ESC_SEL = k; ESC_NODO = null; escPintar(true); }
@@ -7308,7 +7333,7 @@ function escElegir(k){ ESC_SEL = k; ESC_NODO = null; escPintar(true); }
    🟡 etapa en amarillo o que cae a rojo dentro del aviso · 🟢 nada (no se lista). ── */
 function escAlertaItems(){
   if (!MK || !MK.filas || !ESC_STOCK || !MKH) return null;
-  const F = escFilas(), FL = _escFocoLista(F), its = [], X = ['stock', 'crea', 'gana'];
+  const F = escFilas(), FL = _escFocoLista(F), its = [], X = ESC_ETAPAS;
   FL.L.forEach(f => {
     if (f.vacio) return;
     let stockVisto = false;
@@ -7318,7 +7343,7 @@ function escAlertaItems(){
         const n = ln.niv[x]; if (!n) return;
         let nivel = n.col === 'rojo' ? 'rojo' : n.col === 'ama' ? 'amarillo' : (n.col === 'gris' && x === 'stock') ? 'naranja' : null;
         if (!nivel && n.ant != null && n.ant <= _ep('esc_aviso')) nivel = 'amarillo';
-        if (!nivel && x === 'crea' && (n.cansan || []).length) nivel = 'amarillo';   /* 20-oct (Fase 3·2) · un anuncio se cansa pronto */
+        if (!nivel && x === 'anun' && (n.crea.cansan || []).length) nivel = 'amarillo';   /* 20-oct (Fase 3·2) · un anuncio se cansa pronto */
         if (!nivel) return;
         if (x === 'stock'){ if (stockVisto) return; stockVisto = true; }   /* el stock es uno solo para los dos canales */
         const A = _escAccion(f, ln, x);
@@ -7355,7 +7380,7 @@ function escTareasLista(){
     const A = _escAccion(f, ln, 'esc'); L.push({ k:f.k, nombre:f.nombre, canal:ln.canal, lane:ln.canal, etapa:'esc', nivel:'verde', corte:false, sit:A.sit, act:A.act, q:A.q }); }); });
   return L.map(x => Object.assign(x, { clave: _escTareaClave(x), vencida: /vencido/.test(x.act) }));
 }
-const ESC_ETAPA_TXT = { stock:'📦 Stock', crea:'🎬 Creativos', gana:'🏅 Ganadores', esc:'🚀 Escalar' };
+const ESC_ETAPA_TXT = { stock:'👚 Prenda', crea:'🎬 Creativos', gana:'🏅 Ganadores', anun:'🎬 Anuncios', esc:'🚀 Escalar' };
 const ESC_NIV_EMO = { rojo:'🔴', naranja:'🟠', amarillo:'🟡', verde:'🟢' };
 function _escTareasHtml(){
   /* 21-oct (Pablo) · UNA sola vista para todo el equipo (cada una ve lo de las demás y sabe si le toca) y SIN «✓ Hecho»:
@@ -7398,9 +7423,10 @@ function _escVal(x, n){
   if (x === 'stock') return n.dias == null ? 0 : Math.min(1, n.dias / (_ep('esc_dias_verde') * 1.5)) * Math.min(1, n.cub / 100);
   if (x === 'crea') return Math.min(1, (n.act + n.banco) / Math.max(1, _ep('esc_crea_verde')));
   if (x === 'gana') return Math.min(1, (n.g + n.m * 0.4) / Math.max(1, _ep('esc_gana_verde') * 2));
+  if (x === 'anun') return n.col === 'verde' ? 1 : n.col === 'ama' ? 0.55 : Math.min(0.45, (n.crea.act + n.crea.banco) / Math.max(1, _ep('esc_crea_verde')) * 0.45);
   return 0;
 }
-const ESC_LAB = { stock:'STOCK', crea:'CREATIVOS', gana:'GANADORES', esc:'ESCALAR' };
+const ESC_LAB = { stock:'PRENDA', crea:'CREATIVOS', gana:'GANADORES', anun:'ANUNCIOS', esc:'ESCALAR' };
 function escPintar(cambio){
   const cont = document.getElementById('escCuerpo'); if (!cont) return;
   _escCss();
@@ -7408,7 +7434,7 @@ function escPintar(cambio){
   if (!MK || !MK.filas){ cont.innerHTML = '<div class="esx"><div class="esx-load">CARGANDO ANUNCIOS…</div></div>'; return; }
   const F = escFilas(), SUG = escSugeridos(F), FL = _escFocoLista(F), L = FL.L;
   if (!ESC_SEL || !L.some(f => f.k === ESC_SEL)) ESC_SEL = L.length ? L[0].k : null;
-  const rojos = L.filter(f => !f.vacio && f.lanes.some(l => !l.vacio && l.corte < 3)).length;
+  const rojos = L.filter(f => !f.vacio && f.lanes.some(l => !l.vacio && l.corte < ESC_ETAPAS.length)).length;
   try { parent.postMessage({ tipo:'mkt-aviso', cual:'escala', n: rojos, txt: rojos ? rojos + ' producto(s) en foco con el flujo cortado' : '' }, '*'); } catch (e) {}
   const nG = SUG.length, meta = _ep('esc_portafolio'), colP = nG >= meta ? 'verde' : nG >= meta - 1 ? 'ama' : 'rojo';
   const fuera = SUG.filter(x => !L.some(f => f.k === x.k)).length;
@@ -7441,15 +7467,15 @@ function escPintar(cambio){
       h += '<span class="esx-kpi2" style="color:' + (cv.mc >= 0 ? ESC_COL.verde : ESC_COL.rojo) + '" title="Margen de contribución del período en este canal = ingreso (solo prendas) × margen − gasto en anuncios. Es el indicador que manda.'
          + '\nROAS ' + (ro == null ? '—' : ro.toFixed(2) + 'x') + ' · gasto S/ ' + mkNum(cv.gasto) + ' · ' + (ln.canal === 'web' ? 'compran / visitan ' : 'compran / escriben ') + (cv.tasa == null ? '—' : cv.tasa.toFixed(ln.canal === 'web' ? 2 : 1) + '%') + '">'
          + 'S/ ' + mkNum(cv.mc) + '<small>margen</small></span></div><div class="esx-lr"><div class="esx-flow">';
-      ['stock', 'crea', 'gana', 'esc'].forEach((x, i) => {
+      ESC_ETAPAS.concat('esc').forEach((x, i) => {
         const id = ln.canal + '|' + x, n = x === 'esc' ? null : ln.niv[x];
         const col = n ? ESC_COL[n.col] : (ln.listo ? ESC_COL.verde : ESC_COL.gris);
-        if (i > 0){ const prev = ln.niv[['stock', 'crea', 'gana'][i - 1]]; const on = i <= ln.corte;
+        if (i > 0){ const prev = ln.niv[ESC_ETAPAS[i - 1]]; const on = i <= ln.corte;
           h += '<div class="esx-c ' + (on ? 'on' : 'off') + '" style="--c:' + (on ? ESC_COL[prev.col] : '#2a3550') + '"><span></span></div>'; }
-        const ant = n && n.ant != null && n.ant <= _ep('esc_aviso') ? '<span class="esx-ant">⏳ ' + (x === 'crea' ? 'renovar' : 'reponer') + ' ' + (n.ant === 0 ? 'hoy' : 'en ' + n.ant + ' d') + '</span>' : '';   /* 19-oct · indicación (Pablo), no «0d» */
+        const ant = n && n.ant != null && n.ant <= _ep('esc_aviso') ? '<span class="esx-ant">⏳ ' + (x === 'anun' ? 'renovar' : (x === 'crea' ? 'renovar' : 'reponer')) + ' ' + (n.ant === 0 ? 'hoy' : 'en ' + n.ant + ' d') + '</span>' : '';   /* 19-oct · indicación (Pablo), no «0d» */
         h += '<div class="esx-n' + (foco === id ? ' foco' : ' lejos') + (x === 'esc' && ln.listo ? ' listo' : '') + '" style="--g:' + col + '" onclick="escNodo(\'' + id + '\')">'
            + '<div class="esx-orb">' + (x === 'esc' ? (() => { const ra = ln.listo ? _escRacha(ln) : null;   /* 21-oct · 🚀 un ganador · 🔥 dos o más */
-             return _escAnillo(ra && ra.fuego ? '#ff8a3d' : col, ln.listo ? 1 : 0, ra && ra.fuego ? ESC_ICO.fuego : ESC_ICO.esc, ln.listo ? '+20%' : '', ln.listo ? (ra && ra.fuego ? 'en racha' : 'frágil') : 'bloqueado'); })() : _escAnillo(col, _escVal(x, n), ESC_ICO[x], n.big, n.sub)) + ant + '</div>'
+             return _escAnillo(ra && ra.fuego ? '#ff8a3d' : col, ln.listo ? 1 : 0, ra && ra.fuego ? ESC_ICO.fuego : ESC_ICO.esc, ln.listo ? '+20%' : '', ln.listo ? (ra && ra.fuego ? 'en racha' : 'frágil') : (ln.corte < ESC_ETAPAS.length ? 'bloqueado' : 'aún no')); })() : _escAnillo(col, _escVal(x, n), ESC_ICO[x], n.big, n.sub)) + ant + '</div>'
            + '<div class="esx-lab">' + ESC_LAB[x] + '</div></div>';
       });
       h += '</div>';
@@ -7474,8 +7500,8 @@ function escPintar(cambio){
   h += '<div class="esx-rail">';
   L.forEach(p => {
     const dots = p.vacio ? '' : p.lanes.filter(l => !l.vacio).map(l => '<span class="esx-dl">' + ESC_CANAL[l.canal].svg.replace('width="18" height="18"', 'width="11" height="11"')
-      + ['stock', 'crea', 'gana'].map(x => '<i style="background:' + ESC_COL[l.niv[x].col] + '"></i>').join('') + '</span>').join('');
-    const roto = !p.vacio && p.lanes.some(l => !l.vacio && l.corte < 3);
+      + ESC_ETAPAS.map(x => '<i style="background:' + ESC_COL[l.niv[x].col] + '"></i>').join('') + '</span>').join('');
+    const roto = !p.vacio && p.lanes.some(l => !l.vacio && l.corte < ESC_ETAPAS.length);
     h += '<div class="esx-cap' + (p.k === ESC_SEL ? ' sel' : '') + (roto ? ' roto' : '') + '" onclick="escElegir(\'' + p.k.replace(/'/g, "\\'") + '\')">'
        + (p.img ? '<img src="' + esc(p.img) + '" alt="">' : '<div class="esx-noimg">' + esc(p.nombre.charAt(0)) + '</div>')
        + '<div><b>' + (SUG.some(s => s.k === p.k) ? '<em class="esx-star">★</em> ' : '') + esc(p.nombre) + '</b>' + dots + '</div></div>';
