@@ -7665,7 +7665,8 @@ async function _cosFichaWebAbrir(v, shopifyId) {
 function _cfwRemap(a, lst) {   // misma regla que _fwRemap_ (FichaWeb.gs)
   const tallo = x => String(x || '').replace(/^\//, '').replace(/\.[a-z0-9]+$/i, '').toLowerCase(), sinU = x => x.replace(/_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, '');
   const t = tallo(a), ids = [...t.matchAll(/(?:^|sinfondo-)([a-z0-9]{8}-[a-z0-9]{4})-/g)].map(m => m[1]);
-  const cand = ids.length ? lst.filter(f => tallo(f).indexOf(ids[ids.length - 1]) >= 0) : lst.filter(f => sinU(tallo(f)) === sinU(t));
+  let cand = ids.length ? lst.filter(f => tallo(f).indexOf(ids[ids.length - 1]) >= 0) : lst.filter(f => sinU(tallo(f)) === sinU(t));
+  if (!cand.length) { const cmp = x => sinU(tallo(x)).replace(/[^a-z0-9]/g, ''), c = cmp(a); if (c.length >= 12) cand = lst.filter(f => { const k = cmp(f); return k.length >= 12 && (k.indexOf(c) >= 0 || c.indexOf(k) >= 0); }); }   // 21-oct
   const sf = cand.filter(f => /sinfondo-/.test(f)); return (sf.length ? sf : cand)[0] || '';
 }
 async function _cfwFotosFrescas(v) {
@@ -10179,18 +10180,31 @@ function _mulAplicar(r) {
 // Esto es el tercer cerrojo: aunque alguien llegue por un atajo, un enlace o el
 // modulo que abrio la ultima vez, no entra.
 const PG_SOLO_ADMIN = {dashboard:1, panel:1, egresos:1, cajachica:1, cuadre:1, cuadredrive:1, papelera:1, config:1, marketing:1, margen:1, homologaciones:1, multimedia:1, contenido:1};   // 7-oct · contenido: Admin + Marketing
+/** 21-oct-2026 (Pablo) · REGLA DE MÓDULO NUEVO: todo módulo nuevo se agrega a PERM_GRUPOS (columna en Configuración › Usuarios)
+ *  y a PERMISOS_MODULOS (Permisos.gs), y arranca APAGADO para todos menos Pablo; Pablo luego lo activa a quien quiera.
+ *  Esta es la lista CERRADA de módulos que el rol Administrador sin matriz ve por su rol. NO se le agregan módulos nuevos. */
+const PERM_ADMIN_LEGADO = ['dashboard','panel','clientes','marketing','flujo','comisiones','costos','contenido','homologaciones','multimedia','margen','pedidos','inventario','cambios2','devoluciones','envios','egresos','cajachica','cuadredrive','cuadre','papelera','alertas','config'];
+function _pgSoloDuenoNuevo(pg){
+  try {
+    const k = (PG_PADRE && PG_PADRE[pg]) || pg;
+    if (PERM_ADMIN_LEGADO.indexOf(k) >= 0) return false;
+    if (!PERM_GRUPOS.some(g => g.m.some(m => m[0] === k))) return false;   // no es columna de la matriz: no aplica
+    return !(typeof MY_EMAIL !== 'undefined' && _permEsDueno(MY_EMAIL));
+  } catch (e) { return false; }
+}
 // Rol Marketing (agregado 15-sep-2026, pedido de Pablo para Paola): solo ve
 // Embudo (flujo) y Marketing. Ni siquiera lo que ve Logistica.
 const PG_SOLO_MARKETING = {marketing:1, flujo:1, contenido:1, costos:1};   // 13-oct · Productos   // 7-oct · + Contenido de producto
 // 1-oct-2026 · las sub-pantallas (Nuevo pedido, Nueva devolucion...) no estan en la matriz:
 // heredan el permiso de su modulo. Sin esto 'nuevo' daba 0 = bloqueado para todos con matriz.
-const PG_PADRE = {nuevo:'pedidos', nuevadev:'devoluciones', cambios:'cambios2', histcambios:'cambios2', stock:'inventario', lotes:'inventario', fallashist:'inventario', reposicion:'inventario', confeccion:'inventario', productos:'inventario', cajachica:'egresos', cuadre:'egresos', cuadredrive:'egresos'};   // 10-oct · grupo nuevo: caja chica y cuadre heredan el permiso de Egresos
+const PG_PADRE = {nuevo:'pedidos', nuevadev:'devoluciones', cambios:'cambios2', histcambios:'cambios2', stock:'inventario', lotes:'inventario', fallashist:'inventario', reposicion:'inventario', confeccion:'inventario', productos:'inventario'};   // 21-oct (Pablo): cajachica, cuadre y cuadredrive ya NO heredan Egresos: tienen columna propia   // 10-oct · grupo nuevo: caja chica y cuadre heredan el permiso de Egresos
 /** 13-oct (Pablo) · nivel de un módulo en la matriz; «Productos» = el mayor entre costos y contenido. */
 function _permNivPg(m){ if (!MY_PERMISOS) return 0; if (m === 'costos' || m === 'contenido') return Math.max(Number(MY_PERMISOS.costos) || 0, Number(MY_PERMISOS.contenido) || 0); return Number(MY_PERMISOS[m]) || 0; }
 function _esAdminCuadre(){ return (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador') || (typeof _permEsDueno === 'function' && typeof MY_EMAIL !== 'undefined' && _permEsDueno(MY_EMAIL)); }
 function _pgPermitida(pg){
   // 30-set-2026 · si hay matriz de permisos (o "Ver como"), manda la matriz.
-  if (MY_PERMISOS) return _permNivPg(PG_PADRE[pg] || pg) >= 1 && (pg !== 'cuadre' || _esAdminCuadre()) && (pg !== 'cuadredrive' || _esAdminCuadre());   // 10-oct · Cuadre y proyeccion: solo Ana y Pablo · 19-oct · Cuadre ERP vs Drive: igual   // 10-oct · Cuadre y proyeccion: solo Ana y Pablo
+  if (MY_PERMISOS) return _permNivPg(PG_PADRE[pg] || pg) >= 1;   // 21-oct (Pablo): manda la matriz, también en Caja chica y los dos Cuadres (Pablo decide quién)
+  if (_pgSoloDuenoNuevo(pg)) return false;   // 21-oct · módulo nuevo: sin matriz solo lo ve Pablo
   if (MY_ROLE === 'Marketing') return !!PG_SOLO_MARKETING[pg];
   return !(PG_SOLO_ADMIN[pg] && MY_ROLE !== 'Administrador');
 }
@@ -28079,7 +28093,7 @@ try { window.addEventListener('load', () => { _cuadreActualizarDesdeEnlace(); })
 // arriba a la derecha; al cerrarlo queda oculto hasta recargar la página (regla CSS con !important, así el
 // código que lo vuelve a pintar no lo reabre). La barra de «clientas esperando» ya tenía su ✕ propia.
 var AVISOS_CON_X = ['fe-barra', 'al-barra-roja', 'logros-aviso', 'upd-banner', 'f1-aviso', 'masivo-franja', 'salud-sync-banner',
-  'ver-como-franja', 'espia-badge', 'paint-mode-badge', 'np-save-indicator', 'cam-save-indicator', 'c2-edit-indicator', 'dev-save-indicator'];
+  'ver-como-franja', 'espia-badge', 'paint-mode-badge', 'np-save-indicator', 'cam-save-indicator', 'c2-edit-indicator', 'dev-save-indicator', 'lg-barra'];
 function _avisosPonerX() {
   try {
     if (!document.getElementById('avx-css')) {
@@ -28192,6 +28206,63 @@ async function _feRegistrar(x) {
   }, 400);
 }
 try { window.addEventListener('load', () => { setTimeout(_feRevisar, 8000); setTimeout(_feRevisar, 45000); setInterval(_feRevisar, 15 * 60 * 1000); setInterval(() => { if (_FE.lista.length) _fePintar(); }, 30000); }); } catch (_) {}
+
+// ═══ 21-oct (Pablo) · AVISO A LOGÍSTICA: sus pendientes dentro del ERP (con ✕, vuelve al recargar) ═══
+// 1) Cambios con la prenda ORIGINAL por recibir (estado «CLIENTE SOLICITA CAMBIO») · 2) cambios con la original recibida y la
+// NUEVA por enviar («PRENDA ORIGINAL RECIBIDA») · 3) pedidos del cuadre donde no se sabe qué prenda salió (lista 3, cada 2 h).
+// Lo ven: administradores y quien no es asesora y tiene Cambios en Edición. Amarillo = al día · rojo = 7 días o más.
+var _LG = { lista: [], abierto: false };
+function _lgVe(){ try { if (_soyAdminERP()) return true; if (_miAsesoraERP()) return false; return !!(MY_PERMISOS && Number(MY_PERMISOS.cambios2) >= 2); } catch (_) { return false; } }
+function _lgDias(f){ const t = Date.parse(String(f || '').slice(0, 10) + 'T12:00:00-05:00'); return isNaN(t) ? null : Math.max(0, Math.round((Date.now() - t) / 864e5)); }
+async function _lgRevisar() {
+  try {
+    if (!_lgVe()) return;
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const r = await fetch(SB_URL + '/rest/v1/cambios2?select=nro_pedido,nro_cambio,estado,nom:row_json-%3E%3ENombre,prenda:row_json-%3E%3EPrenda,sol:row_json-%3E%3EFechaSolicitud,rec:row_json-%3E%3EFechaRecepcionOriginal&estado=in.(%22CLIENTE%20SOLICITA%20CAMBIO%22,%22PRENDA%20ORIGINAL%20RECIBIDA%22)&limit=500', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return;
+    const C = {}; (await r.json()).forEach(x => {
+      const k = x.nro_cambio; if (!k) return;
+      const c = C[k] = C[k] || { tipo: String(x.estado).toUpperCase() === 'CLIENTE SOLICITA CAMBIO' ? 'RECIBIR' : 'ENVIAR', cambio: k, pedido: String(x.nro_pedido || ''), nombre: x.nom || '', prendas: [], desde: '' };
+      if (x.prenda && c.prendas.indexOf(x.prenda) < 0) c.prendas.push(x.prenda);
+      const f = c.tipo === 'RECIBIR' ? x.sol : (x.rec || x.sol); if (f && (!c.desde || String(f) > c.desde)) c.desde = String(f).slice(0, 10);
+    });
+    let conf = []; try { const d = await _sbCacheLeer('cuadre.logistica', 24 * 3600 * 1000); conf = (d && d.lista) || []; } catch (_) {}
+    _LG.lista = Object.keys(C).map(k => C[k]).concat(conf.map(x => Object.assign({ desde: x.fecha }, x)))
+      .map(x => { x.dias = _lgDias(x.desde); x.nivel = x.dias != null && x.dias >= 7 ? 'rojo' : 'amarillo'; return x; })
+      .sort((a, b) => (b.dias || 0) - (a.dias || 0));
+    _lgPintar();
+  } catch (_) {}
+}
+function _lgPintar() {
+  let b = document.getElementById('lg-barra');
+  const L = _LG.lista;
+  if (!L.length) { if (b) b.style.display = 'none'; return; }
+  if (!b) { b = document.createElement('div'); b.id = 'lg-barra'; document.body.appendChild(b); }
+  if (b.getAttribute('data-avx-cerrado') === '1') return;
+  const rojo = L.some(x => x.nivel === 'rojo');
+  const camp = document.getElementById('campana-espera-barra'), fe = document.getElementById('fe-barra');
+  const alto = el => (el && el.style.display !== 'none' && el.getAttribute('data-avx-cerrado') !== '1') ? el.offsetHeight : 0;
+  b.style.cssText = 'position:fixed;left:0;right:0;top:' + (alto(camp) + alto(fe)) + 'px;z-index:99997;font-family:system-ui,sans-serif;font-size:14px;padding:8px 16px;line-height:1.5;box-shadow:0 2px 8px rgba(0,0,0,.25);' +
+    (rojo ? 'background:#9a3412;color:#fff' : 'background:#e0f2fe;color:#0c2a3b');
+  const n = t => L.filter(x => x.tipo === t).length, nr = n('RECIBIR'), ne = n('ENVIAR'), nc = n('CONFIRMAR');
+  const partes = [nr ? nr + ' cambio' + (nr > 1 ? 's' : '') + ' por RECIBIR la prenda original' : '', ne ? ne + ' cambio' + (ne > 1 ? 's' : '') + ' por ENVIAR la prenda nueva' : '', nc ? nc + ' pedido' + (nc > 1 ? 's' : '') + ' por CONFIRMAR qué prenda salió' : ''].filter(Boolean);
+  let h = '📦 <b>Logística: ' + partes.join(' · ') + '</b> &nbsp;<button id="lg-ver" style="margin-left:6px;border:0;border-radius:8px;padding:2px 10px;font-weight:600;cursor:pointer">' + (_LG.abierto ? 'Ocultar' : 'Ver') + '</button>';
+  if (_LG.abierto) {
+    const que = x => x.tipo === 'RECIBIR' ? 'Recibir la original y marcar <b>PRENDA ORIGINAL RECIBIDA</b> en Cambios'
+      : x.tipo === 'ENVIAR' ? 'Enviar la nueva y marcar <b>PRENDA NUEVA ENVIADA</b> en Cambios'
+      : 'Confirmar cuál salió: ERP <b>' + _feEsc(x.erp) + '</b> / Drive <b>' + _feEsc(x.drive) + '</b>' + (x.fila ? ' (fila ' + _feEsc(x.fila) + ' del Drive)' : '');
+    h += '<div style="margin-top:8px;max-height:45vh;overflow:auto;background:rgba(255,255,255,.96);color:#111;border-radius:8px;padding:6px 8px">'
+      + '<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="text-align:left;color:#555"><th>Días</th><th>Cambio / pedido</th><th>Clienta</th><th>Qué hacer</th><th></th></tr>'
+      + L.map(x => '<tr style="border-top:1px solid #eee' + (x.nivel === 'rojo' ? ';background:#fff1f2' : '') + '"><td>' + (x.dias == null ? '—' : x.dias) + (x.nivel === 'rojo' ? ' 🔴' : ' 🟡') + '</td>'
+        + '<td>' + _feEsc(x.cambio ? x.cambio + ' · ' : '') + _feEsc(x.pedido) + '</td><td>' + _feEsc(x.nombre) + (x.prendas && x.prendas.length ? '<br><span style="color:#666;font-size:12px">' + _feEsc(x.prendas.join(', ')) + '</span>' : '') + '</td>'
+        + '<td>' + que(x) + '</td><td>' + (x.pedido ? '<button data-lg="' + _feEsc(x.pedido) + '" style="border:0;border-radius:8px;padding:3px 10px;background:#0369a1;color:#fff;cursor:pointer">Ver pedido</button>' : '') + '</td></tr>').join('')
+      + '</table><div style="color:#666;font-size:12px;margin-top:6px">Cambios: se actualiza cada 15 min. Pedidos por confirmar: salen del cuadre (cada 2 horas).</div></div>';
+  }
+  b.innerHTML = h;
+  document.getElementById('lg-ver').onclick = () => { _LG.abierto = !_LG.abierto; _lgPintar(); };
+  b.querySelectorAll('button[data-lg]').forEach(bt => bt.onclick = () => { _LG.abierto = false; _lgPintar(); try { _abrirPedidoDesdeBusqueda(bt.getAttribute('data-lg')); } catch (e) { toast('No se pudo abrir el pedido', 'err'); } });
+}
+try { window.addEventListener('load', () => { setTimeout(_lgRevisar, 10000); setInterval(_lgRevisar, 15 * 60 * 1000); setInterval(() => { if (_LG.lista.length) _lgPintar(); }, 30000); }); } catch (_) {}
 
 // ═══ 19-oct (Pablo) · 🛒 CARRITOS POR RECUPERAR — alerta VERDE (las rojas son clientas esperando) ═══
 // El bot (n8n «🛒 Carritos abandonados — WhatsApp») ya les mandó sus 2 mensajes y no compraron, o respondieron y no
@@ -40846,15 +40917,16 @@ const PERM_GRUPOS = [
   {g:'Principal', m:[['dashboard','Dashboard',1],['panel','Panel',1]]},
   {g:'Marketing y ventas', m:[['clientes','Clientes'],['marketing','Marketing'],['flujo','Ventas'],['comisiones','Comisiones'],['costos','Productos'],['contenido','Contenido'],['homologaciones','Homolog.'],['multimedia','Multimedia'],['margen','Margen',1]]},
   {g:'Logística', m:[['pedidos','Pedidos'],['inventario','Stock'],['cambios2','Cambios'],['devoluciones','Devoluc.'],['envios','Envíos']]},
-  {g:'Finanzas', m:[['egresos','Egresos']]},   // 10-oct · Caja chica y Cuadre heredan Egresos (PG_PADRE); Cuadre solo Admin
+  {g:'Finanzas', m:[['egresos','Egresos'],['cajachica','Caja chica'],['cuadredrive','Cuadre Drive'],['cuadre','Cuadre y proy.']]},   // 21-oct (Pablo): Caja chica, Cuadre ERP vs Drive y Cuadre y proyección son columnas propias (antes heredaban Egresos)   // 10-oct · Caja chica y Cuadre heredan Egresos (PG_PADRE); Cuadre solo Admin
   {g:'Sistema', m:[['papelera','Papelera'],['alertas','Alertas'],['config','Config.']]}
 ];
 const PERM_MODULOS = PERM_GRUPOS.flatMap(g => g.m.map((m, i) => ({k:m[0], n:m[1], solo1:!!m[2], first:i===0})));
 function _permMatriz(v){ const o = {}; PERM_MODULOS.forEach(m => { o[m.k] = (m.solo1 && v > 1) ? 1 : v; }); return o; }
 function _permCon(o){ return Object.assign(_permMatriz(0), o); }
+function _permAdminLegado(){ const o = _permMatriz(0); PERM_MODULOS.forEach(m => { if (PERM_ADMIN_LEGADO.indexOf(m.k) >= 0) o[m.k] = m.solo1 ? 1 : 2; }); return o; }
 // Plantillas = lo que cada rol ve HOY (_applyRoleUI + _pgPermitida), traducido a la matriz.
 const PERM_PLANTILLAS = {
-  'Administrador': _permMatriz(2),
+  'Administrador': _permAdminLegado(),   // 21-oct (Pablo) · lista CERRADA: un módulo nuevo NO entra solo (arranca apagado para todos menos Pablo)
   'Logistica': _permCon({clientes:2, flujo:2, costos:1, pedidos:2, inventario:2, cambios2:2, devoluciones:2, envios:2, alertas:2}),   // 1-oct: Costos de producto = vista (precios)
   'Ventas': _permCon({clientes:1, flujo:1, costos:1, pedidos:2, inventario:1, cambios2:2, devoluciones:2, envios:1, alertas:1}),   // 1-oct: Costos de producto = vista (precios)
   'Marketing': _permCon({marketing:2, flujo:2, contenido:2})   // 7-oct · + Contenido de producto (13-oct: en pantalla sale como «Productos» en Edición)
@@ -42956,8 +43028,6 @@ function _applyPermisosUI(){
   document.querySelectorAll('.sb .nb[data-pg]').forEach(function(b){
     var pg = b.getAttribute('data-pg');
     var ok = _permNivPg((typeof PG_PADRE !== 'undefined' && PG_PADRE[pg]) || pg) >= 1;   // 13-oct · Productos = costos + contenido
-    if (pg === 'cuadre' && !_esAdminCuadre()) ok = false;   // 10-oct
-    if (pg === 'cuadredrive' && !_esAdminCuadre()) ok = false;   // 19-oct · Cuadre ERP vs Drive: solo Ana y Pablo
     b.style.display = ok ? '' : 'none';
   });
   document.querySelectorAll('.sb .ns').forEach(function(ns){
@@ -43074,10 +43144,11 @@ async function _permRefrescar(rDado){
 }
 
 // Oculta los módulos que el rol no puede ver (Logística/Ventas).
+function _ocultarNuevosSoloDueno(){ document.querySelectorAll('.sb .nb[data-pg]').forEach(function(b){ if (_pgSoloDuenoNuevo(b.getAttribute('data-pg'))) b.style.display='none'; }); }   // 21-oct
 function _applyRoleUI(){
   if(MY_ROLE === 'Ventas') document.body.classList.add('role-ventas');
   if(MY_PERMISOS){ _applyPermisosUI(); return; }   // 30-set · la matriz manda (Permisos.gs)
-  if(MY_ROLE === 'Administrador') return; // ve todo
+  if(MY_ROLE === 'Administrador'){ _ocultarNuevosSoloDueno(); return; } // ve todo (menos módulos nuevos: solo Pablo, 21-oct)
   if(MY_ROLE === 'Marketing'){
     // Rol Marketing (15-sep-2026, pedido de Pablo para Paola): solo Embudo
     // (flujo) y Marketing quedan visibles en el menu.
@@ -43592,6 +43663,7 @@ startAuth();
   function _egrHoy(){ const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); }
   function _egrMesActual(){ return _egrHoy().slice(0, 7); }
   function _egrSoyAdmin(){ return (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador') || (typeof _permEsDueno === 'function' && typeof MY_EMAIL !== 'undefined' && _permEsDueno(MY_EMAIL)); }
+  function _egrNiv(k){ if (typeof MY_PERMISOS !== 'undefined' && MY_PERMISOS) return Number(MY_PERMISOS[k]) || 0; return _egrSoyAdmin() ? 2 : 0; }   // 21-oct (Pablo): columnas propias
   function _egrPuedoEditar(){
     if (typeof MY_PERMISOS !== 'undefined' && MY_PERMISOS) return (Number(MY_PERMISOS.egresos) || 0) >= 2;
     return _egrSoyAdmin();
@@ -43653,7 +43725,7 @@ startAuth();
     const admin = _egrSoyAdmin();
     let t;
     if (EGR.modo === 'caja') t = [['caja', '🪙 Caja chica']];
-    else if (EGR.modo === 'cuadre') t = admin ? [['proy', '📈 Proyección del mes'], ['cuadre', '⚖️ Cuadre'], ['bonos', '🎯 Bonos socios']] : [];
+    else if (EGR.modo === 'cuadre') t = _egrNiv('cuadre') >= 1 ? [['proy', '📈 Proyección del mes'], ['cuadre', '⚖️ Cuadre'], ['bonos', '🎯 Bonos socios']] : [];
     else {
       t = [['nuevo', '➕ Registrar'], ['lista', '📋 Egresos del mes']];
       if (admin) t.push(['reemb', '💸 Reembolsos']);
@@ -43687,7 +43759,7 @@ startAuth();
     else if (EGR.tab === 'caja') _egrCaja();
     else if (EGR.tab === 'proy') _egrProy();
     else if (EGR.tab === 'cuadre') _egrCuadre();
-    else if (EGR.tab === 'sinacceso') document.getElementById('egr-cuerpo').innerHTML = '<div class="card">Solo Ana y Pablo ven el cuadre, la proyección y los bonos.</div>';
+    else if (EGR.tab === 'sinacceso') document.getElementById('egr-cuerpo').innerHTML = '<div class="card">No tienes permiso para Cuadre y proyección. Pídelo a Pablo (Configuración › Usuarios).</div>';
     else if (EGR.tab === 'bonos') _egrBonos();
   }
 
@@ -43957,7 +44029,7 @@ startAuth();
     let d = null;
     try { d = await _egrRpc('caja_chica_estado', {}); }
     catch (e) { c.innerHTML = '<div class="egr-err">' + _egrEsc(e.message) + '</div>'; return; }
-    const s = (d && d.saldo) || {}, admin = _egrSoyAdmin();
+    const s = (d && d.saldo) || {}, admin = _egrNiv('cajachica') >= 2;   // 21-oct · «Reponer» = Caja chica en Edición
     const col = { 'Cuadrado': 'var(--gn)', 'Falta reponer': 'var(--am)', 'Repuesto de mas': 'var(--rd)', 'Repuesto incompleto': 'var(--am)' };
     c.innerHTML = '<div class="egr-kpis"><div class="egr-kpi"><b>' + _egrSoles(s.fondo) + '</b><span>Fondo</span></div>' +
       '<div class="egr-kpi"><b>' + _egrSoles(s.gastado_sin_reponer) + '</b><span>Gastado sin reponer</span></div>' +
