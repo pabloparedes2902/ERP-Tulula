@@ -36507,6 +36507,16 @@ function timelineCambios2(nc){
     {label:'Prenda original recibida', desc:'Empresa recibe la prenda original', icon:'🏠', done:recibido, fecha:recibido?'Completado':'Pendiente'},
     {label:'Prenda nueva enviada', desc:'Empresa despacha la prenda nueva', icon:'📦', done:enviado, fecha:enviado?'Completado':'Pendiente'}
   ];
+  // 21-oct (Pablo) · SALDO A FAVOR: en vez de «Prenda nueva enviada», el tercer paso dice el saldo, lo que queda y hasta cuándo vale.
+  const _est=String(c.Estado||'').toUpperCase();
+  if(_est.indexOf('SALDO ')===0){
+    var _sr=(window._c2Saldos||{})[c.NroCambio], _m=Number(c.SaldoFavorMonto)||0, _q=_sr?_sr.restante:_m, _v=c.SaldoFavorVence?_c2fmtFecha(c.SaldoFavorVence):'';
+    stages[2]= _est==='SALDO A FAVOR'
+      ? {label:'Cliente tiene saldo a favor de S/'+fmt(_m), desc:'No se envía prenda nueva: la clienta lo usa en una o varias compras (Nuevo pedido)', icon:'💰', done:true, fecha:'Queda S/'+fmt(_q)+(_v?' · vence '+_v:'')}
+      : _est==='SALDO USADO'
+      ? {label:'Saldo a favor usado (S/'+fmt(_m)+')', desc:'La clienta ya usó todo su saldo en compras', icon:'💰', done:true, fecha:'Completado'}
+      : {label:'Saldo a favor vencido', desc:'Pasaron 6 meses: lo que no se usó volvió a ser venta', icon:'⌛', done:true, fecha:'Venció '+_v};
+  }
   let html='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
     +'<div style="font-size:16px;font-weight:600">📅 Timeline del cambio</div>'
     +'<button class="btn bg bs" data-close style="font-size:12px">Cerrar ✕</button></div>'
@@ -41997,6 +42007,7 @@ async function loadAlertas() {
     _renderAlertas(w, r);
     _updateAlertBadge(_alRojosN(r, _ALERT_BUZON));   // 6-oct: solo urgentes
     try { _ESC_AL = null; _alEscRefrescar(); } catch (_) {}   // 20-oct · 🚀 Escalamiento
+    try { _alProdRefrescar(); } catch (_) {}   // 21-oct · 🧵 Producción
   } catch(e) { w.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 
@@ -42510,6 +42521,7 @@ function _alPanelHtml(g) {
       + '</div>';
   });
   h += _alEscalaHtml();   // 20-oct · 🚀 Escalamiento (Marketing)
+  h += _alProdHtml();   // 21-oct · 🧵 Producción
   return h + '</div>';
 }
 
@@ -42590,12 +42602,57 @@ function _alEscIr(i) {
 if (typeof window !== 'undefined') window.addEventListener('message', function (e) {
   if (!e || !e.data) return;
   if (e.data.tipo === 'esc-ir-ok') { clearInterval(_ESC_IR_T); return; }
+  if (e.data.tipo === 'prod-alerta' && e.data.snap) {   // 21-oct · 🧵 Producción
+    try { localStorage.setItem('prod_alerta_v1', JSON.stringify(e.data.snap)); } catch (_) {}
+    _alProdPintar(); return;
+  }
   if (e.data.tipo === 'esc-alerta' && e.data.snap) {
     _ESC_AL = e.data.snap;
     try { localStorage.setItem('esc_alerta_v1', JSON.stringify(_ESC_AL)); } catch (_) {}
     _alEscPintar();
   }
 });
+
+// ═══ 21-oct · 🧵 PRODUCCIÓN EN ALERTAS ═══
+// La foto la calcula produccion.html (alertaItems) cada vez que carga sus datos y la deja en localStorage 'prod_alerta_v1'
+// + mensaje 'prod-alerta'. Al abrir Alertas se pide recalcular (o se carga Producción por detrás, solo a quien puede verla).
+// Se resuelve sola: cuando Ana registra la entrega, ingresa al stock o cierra las fallas, el ítem desaparece. Sin «✓ Hecho».
+function _alProdPuede() { try { return typeof _pgPermitida === 'function' ? !!_pgPermitida('produccion') : false; } catch (_) { return false; } }
+function _alProdSnap() { try { return JSON.parse(localStorage.getItem('prod_alerta_v1') || 'null'); } catch (_) { return null; } }
+function _alProdRefrescar() {
+  if (!_alProdPuede()) return;
+  const f = document.getElementById('produccion-frame'); if (!f) return;
+  if (f.getAttribute('src') !== 'produccion.html') { _produccionLazy(); return; }   // al terminar de cargar, Producción publica sola
+  try { f.contentWindow.postMessage({ tipo: 'prod-recalcular' }, '*'); } catch (_) {}
+}
+function _alProdHtml() {
+  if (!_alProdPuede()) return '';
+  const sn = _alProdSnap(), L = (sn && Array.isArray(sn.items)) ? sn.items : [];
+  const nR = L.filter(x => x.nivel === 'rojo').length, nA = L.filter(x => x.nivel === 'amarillo').length;
+  const col = !sn ? 'var(--mu)' : nR ? 'var(--rd)' : nA ? '#d97706' : 'var(--gn)';
+  const chip = !sn ? 'Calculando…' : nR ? '🔴 ' + nR + ' urgente' + (nR > 1 ? 's' : '') : nA ? '🟡 ' + nA + ' pendiente' + (nA > 1 ? 's' : '') : '🟢 Todo en orden';
+  let h = '<div class="card al-area" id="al-prod" data-area="prod" style="padding:12px;border-top:4px solid ' + col + '">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="font-weight:700;font-size:15px">🧵 Producción</div>'
+    + '<div style="font-size:12px;font-weight:600;color:' + col + '">' + chip + '</div></div>';
+  if (!sn) h += '<div style="font-size:12px;color:var(--mu);margin-top:6px">Producción está calculando. Aparece en unos segundos.</div>';
+  else if (!L.length) h += '<div style="font-size:12px;color:var(--mu);margin-top:6px">Ninguna orden atrasada, nada por ingresar ni fallas esperando.</div>';
+  const item = x => '<div class="al-item" style="border-left:3px solid ' + (x.nivel === 'rojo' ? 'var(--rd)' : '#d97706') + ';padding:8px 10px;margin-top:8px;background:var(--bg2,rgba(0,0,0,.08));border-radius:8px">'
+    + '<div style="font-weight:600;font-size:13px">' + (x.nivel === 'rojo' ? '🔴 ' : '🟡 ') + esc(x.titulo) + '</div>'
+    + '<div style="font-size:12px;margin-top:3px"><b>Qué hacer:</b> ' + esc(x.act) + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:6px"><span style="font-size:11.5px"><b>Quién:</b> ' + esc(x.q || '—') + '</span><span style="flex:1"></span>'
+    + '<button class="btn bg bs" onclick="_alProdIr(' + Number(x.id) + ')">Abrir la orden →</button></div></div>';
+  L.forEach(x => { if (x.nivel === 'rojo') h += item(x); });
+  if (nA) h += '<details style="margin-top:8px"' + (nR ? '' : ' open') + '><summary style="cursor:pointer;font-size:12px;color:#d97706">🟡 Ver ' + nA + ' pendiente' + (nA > 1 ? 's' : '') + '</summary>' + L.map(x => x.nivel === 'amarillo' ? item(x) : '').join('') + '</details>';
+  if (sn && sn.at) h += '<div style="font-size:10.5px;color:var(--mu);margin-top:8px">Medido ' + _alertaCuando(new Date(sn.at).toISOString()) + '</div>';
+  return h + '</div>';
+}
+function _alProdPintar() { const c = document.getElementById('al-prod'); if (!c) return; const t = document.createElement('div'); t.innerHTML = _alProdHtml(); if (t.firstChild) c.replaceWith(t.firstChild); }
+function _alProdIr(id) {
+  navegarA('produccion');
+  let n = 0; const T = setInterval(() => { n++; const f = document.getElementById('produccion-frame');
+    try { if (f && f.contentWindow && typeof f.contentWindow.abrirOrden === 'function' && f.contentWindow.eval('D.ordenes.length')) { f.contentWindow.abrirOrden(id); clearInterval(T); } } catch (_) {}
+    if (n > 40) clearInterval(T); }, 300);
+}
 
 function _alertasHtmlSimple(r) {
   const g = _alClasificarTodo(r, _ALERT_BUZON);
