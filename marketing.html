@@ -6905,7 +6905,7 @@ const ESC_CSS = ".esx{position:relative;border-radius:18px;padding:16px 18px 18p
 const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:70, esc_cub_verde:90, esc_dias_rojo:17, esc_dias_verde:31,
                   esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
-let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null;   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
+let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_FOCO = null, ESC_SEL = null, ESC_NODO = null, ESC_PICK = false, ESC_PICKSEL = null, ESC_REGLAS = false, ESC_DUENO = null;
 const _ep = k => { const v = Number(ESC_P[k]); return isNaN(v) ? ESC_DEF[k] : v; };
 const ESC_COL = { verde:'#00f5a0', ama:'#ffc53d', rojo:'#ff3d6e', gris:'#6b7a90' };
@@ -6927,13 +6927,14 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_escala_foco?select=clave,orden&order=orden', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/rpc/df_resumen', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: _ep('esc_fant_dias') }) }).catch(() => null),
-      _escWebCargar()
+      _escWebCargar(),
+      fetch(MK_SB_URL + '/rest/v1/mk_esc_tareas?select=clave,quien,hecho_at&hecho_at=gte.' + new Date(Date.now() - 30 * 864e5).toISOString(), { headers: hdr }).catch(() => null)
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -6942,6 +6943,7 @@ async function escCargar(forzar){
     ESC_FOCO = r4.ok ? (await r4.json()).map(x => x.clave) : [];
     ESC_FANT = (r5 && r5.ok) ? await r5.json() : []; ESC_FANT_IDX = null;   /* si la rpc falla, Escalamiento sigue igual que antes (sin fantasma) */
     if (!Array.isArray(ESC_FANT)) ESC_FANT = [];
+    ESC_TAREAS = null; if (r7 && r7.ok){ ESC_TAREAS = {}; (await r7.json()).forEach(t => { ESC_TAREAS[t.clave] = t; }); }   /* 21-oct · Mis tareas */
   } catch (e) { ESC_ERR = e.message || String(e); if (ESC_FOCO === null) ESC_FOCO = []; }
   ESC_CARGANDO = false;
   escPintar();
@@ -7328,6 +7330,65 @@ function escAlertaPublicar(){
     try { parent.postMessage({ tipo:'esc-alerta', snap }, '*'); } catch (e) {}
   } catch (e) { try { console.warn('[escAlerta]', e); } catch (_) {} }
 }
+/* ── 21-oct-2026 (Pablo: «que el equipo USE Escalamiento») · MIS TAREAS
+   Cada persona ve arriba SOLO lo suyo (Ana = stock · Heily = creativos · Paola = ganadores y escalar), con la fecha, y lo marca «✓ Hecho».
+   Pablo ve las de todos, por persona, con cuántas están vencidas. Lo hecho queda en mk_esc_tareas; si la acción cambia (otra fecha
+   u otra cantidad), la tarea vuelve sola. ── */
+function _escYo(){ try { const e = (typeof _mkQuien === 'function') ? _mkQuien() : ''; return MKL_NOMBRES[String(e).split('@')[0]] || ''; } catch (e) { return ''; } }
+function _escTareaClave(x){ return [x.k, x.lane, x.etapa, x.act].join('|').slice(0, 400); }
+function escTareasLista(){
+  const snap = escAlertaItems(); if (!snap) return [];
+  const L = snap.items.slice();
+  /* listo para escalar también es tarea (de Paola) */
+  _escFocoLista(escFilas()).L.forEach(f => { if (f.vacio) return; f.lanes.forEach(ln => { if (ln.vacio || !ln.listo) return;
+    const A = _escAccion(f, ln, 'esc'); L.push({ k:f.k, nombre:f.nombre, canal:ln.canal, lane:ln.canal, etapa:'esc', nivel:'verde', corte:false, sit:A.sit, act:A.act, q:A.q }); }); });
+  return L.map(x => Object.assign(x, { clave: _escTareaClave(x), vencida: /vencido/.test(x.act) }));
+}
+const ESC_ETAPA_TXT = { stock:'📦 Stock', crea:'🎬 Creativos', gana:'🏅 Ganadores', esc:'🚀 Escalar' };
+const ESC_NIV_EMO = { rojo:'🔴', naranja:'🟠', amarillo:'🟡', verde:'🟢' };
+function _escTareasHtml(){
+  const yo = _escYo(), todas = escTareasLista(), esPablo = yo === 'Pablo' || !yo;
+  const verTodas = esPablo || ESC_TAREAS_VER === 'todas';
+  const mias = todas.filter(x => verTodas || String(x.q || '').includes(yo));
+  const hecha = x => ESC_TAREAS && ESC_TAREAS[x.clave];
+  const pend = mias.filter(x => !hecha(x)), listas = mias.filter(hecha);
+  let h = '<div class="esx-tar"><div class="esx-tar-h"><b>' + (verTodas ? 'TAREAS DEL EQUIPO' : 'MIS TAREAS · ' + esc(yo).toUpperCase()) + '</b>'
+    + '<span>' + pend.length + ' pendiente' + (pend.length === 1 ? '' : 's') + (pend.filter(x => x.vencida).length ? ' · <em>' + pend.filter(x => x.vencida).length + ' vencida' + (pend.filter(x => x.vencida).length === 1 ? '' : 's') + '</em>' : '') + ' · ' + listas.length + ' hecha' + (listas.length === 1 ? '' : 's') + '</span>';
+  if (!esPablo) h += '<button class="esx-b" onclick="ESC_TAREAS_VER=ESC_TAREAS_VER===\'todas\'?\'mias\':\'todas\';escPintar()">' + (verTodas ? 'SOLO LAS MÍAS' : 'VER TODAS') + '</button>';
+  if (esPablo){ const por = {}; pend.forEach(x => String(x.q || '—').split('·').map(z => z.trim()).filter(Boolean).forEach(p => { por[p] = (por[p] || 0) + 1; }));
+    h += '<span class="esx-tar-por">' + Object.keys(por).map(p => esc(p) + ' ' + por[p]).join(' · ') + '</span>'; }
+  h += '</div>';
+  if (ESC_TAREAS === null) h += '<div class="esx-tar-v">Falta instalar el registro de tareas en la base (lo pega Pablo una vez).</div>';
+  if (!pend.length) h += '<div class="esx-tar-v">Nada pendiente. 👌</div>';
+  const fila = x => { const i = todas.indexOf(x);
+    return '<div class="esx-tar-i ' + x.nivel + (x.vencida ? ' venc' : '') + '"><span class="esx-tar-e">' + (ESC_NIV_EMO[x.nivel] || '') + '</span>'
+      + '<div class="esx-tar-t"><b>' + esc(x.nombre) + ' · ' + esc(({ wa:'WhatsApp', web:'Web', ambos:'WhatsApp y Web' })[x.canal] || x.canal) + ' · ' + (ESC_ETAPA_TXT[x.etapa] || x.etapa) + '</b>'
+      + '<span>' + esc(x.act) + '</span></div>' + (verTodas ? '<i class="esx-tar-q">' + esc(x.q || '') + '</i>' : '')
+      + '<button class="esx-b" title="Abrir este producto en esta etapa" onclick="escIrA(ESC_TAR_L[' + i + '])">VER</button>'
+      + (ESC_TAREAS !== null ? '<button class="esx-b on" onclick="escTareaHecha(' + i + ',true)">✓ HECHO</button>' : '') + '</div>'; };
+  /* a la vista las 5 más urgentes (ya vienen 🔴 → 🟠 → 🟡 → 🟢); el resto plegado para no tapar el flujo */
+  h += pend.slice(0, 5).map(fila).join('');
+  if (pend.length > 5) h += '<details class="esx-tar-d"><summary>Ver ' + (pend.length - 5) + ' más</summary>' + pend.slice(5).map(fila).join('') + '</details>';
+  if (listas.length) h += '<details class="esx-tar-d"><summary>✓ ' + listas.length + ' hecha' + (listas.length === 1 ? '' : 's') + '</summary>'
+    + listas.map(x => { const t = hecha(x), i = todas.indexOf(x);
+      return '<div class="esx-tar-i hecha"><span class="esx-tar-e">✓</span><div class="esx-tar-t"><b>' + esc(x.nombre) + ' · ' + (ESC_ETAPA_TXT[x.etapa] || x.etapa) + '</b><span>' + esc(x.act) + '</span></div>'
+        + '<i class="esx-tar-q">' + esc(_mklQuien(t.quien)) + ' · ' + new Date(t.hecho_at).toLocaleDateString('es-PE', { day:'numeric', month:'short' }) + '</i>'
+        + '<button class="esx-b" onclick="escTareaHecha(' + i + ',false)">DESHACER</button></div>'; }).join('') + '</details>';
+  ESC_TAR_L = todas;
+  return h + '</div>';
+}
+let ESC_TAR_L = [];
+async function escTareaHecha(i, si){
+  const x = ESC_TAR_L[i]; if (!x) return;
+  try {
+    const tok = _mkSbTok(); if (!tok) throw new Error('Inicia sesión');
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_esc_tarea_hecha', { method:'POST', headers:{ apikey: MK_SB_ANON, Authorization:'Bearer ' + tok, 'Content-Type':'application/json' },
+      body: JSON.stringify({ p_clave: x.clave, p_accion: x.act, p_hecha: !!si }) });
+    if (!r.ok) throw new Error('La base respondió ' + r.status);
+    if (si) ESC_TAREAS[x.clave] = { clave: x.clave, quien: _mkQuien(), hecho_at: new Date().toISOString() }; else delete ESC_TAREAS[x.clave];
+  } catch (e) { ESC_ERR = 'No se guardó la tarea: ' + (e.message || e); }
+  escPintar();
+}
 /* desde Alertas: «Abrir en Escalamiento» lleva a ese producto con la etapa abierta */
 function escIrA(m){
   mkIrSub('escala');
@@ -7359,7 +7420,8 @@ function escPintar(cambio){
   const F = escFilas(), SUG = escSugeridos(F), FL = _escFocoLista(F), L = FL.L;
   if (!ESC_SEL || !L.some(f => f.k === ESC_SEL)) ESC_SEL = L.length ? L[0].k : null;
   const rojos = L.filter(f => !f.vacio && f.lanes.some(l => !l.vacio && l.corte < 3)).length;
-  try { parent.postMessage({ tipo:'mkt-aviso', cual:'escala', n: rojos, txt: rojos ? rojos + ' producto(s) en foco con el flujo cortado' : '' }, '*'); } catch (e) {}
+  let _mias = null; try { const yo = _escYo(); if (yo && yo !== 'Pablo' && ESC_TAREAS) _mias = escTareasLista().filter(x => String(x.q || '').includes(yo) && !ESC_TAREAS[x.clave]).length; } catch (e) {}
+  try { parent.postMessage({ tipo:'mkt-aviso', cual:'escala', n: _mias != null ? _mias : rojos, txt: _mias != null ? (_mias ? _mias + ' tarea(s) tuya(s) en Escalamiento' : '') : (rojos ? rojos + ' producto(s) en foco con el flujo cortado' : '') }, '*'); } catch (e) {}
   const nG = SUG.length, meta = _ep('esc_portafolio'), colP = nG >= meta ? 'verde' : nG >= meta - 1 ? 'ama' : 'rojo';
   const fuera = SUG.filter(x => !L.some(f => f.k === x.k)).length;
   let h = '<div class="esx">';
@@ -7373,6 +7435,7 @@ function escPintar(cambio){
      + '<button class="esx-b" onclick="ESC_REGLAS=true;escPintar()">⚙ REGLAS</button>'
      + '</div>';   /* 19-oct · sin ⟳ propio: actualiza el 🔄 de arriba */
   if (ESC_ERR) h += '<div class="esx-err">' + esc(ESC_ERR) + '</div>';
+  try { h += _escTareasHtml(); } catch (e) { try { console.warn('[escTareas]', e); } catch (_) {} }   /* 21-oct · Mis tareas */
   const f = L.find(x => x.k === ESC_SEL);
   if (!f) h += '<div class="esx-load">ELIGE TUS PRODUCTOS EN FOCO (✦ ELEGIR)</div>';
   else if (f.vacio) h += '<div class="esx-load">' + esc(f.nombre) + ': SIN ANUNCIOS EN EL PERIODO</div>';
@@ -7562,10 +7625,23 @@ const ESC_CSS2 = `
 .esx-acc2 .esx-tags{justify-content:flex-start;margin-top:4px}
 @media (max-width:720px){.esx-lane{grid-template-columns:1fr}.esx-acc2{flex-direction:column}.esx-a-izq{border-right:0;padding-right:0;flex-basis:auto}.esx-orb{width:112px;height:76px}.esx-in b{font-size:15px}}
 `;
+const ESC_CSS3 = `
+.esx-tar{position:relative;margin:8px 0 6px;padding:10px 12px;border-radius:14px;background:rgba(10,18,44,.55);border:1px solid rgba(122,232,255,.18)}
+.esx-tar-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11px;letter-spacing:.15em;color:#a9bde6;margin-bottom:4px}
+.esx-tar-h b{color:#e6efff;letter-spacing:.25em}.esx-tar-h em{font-style:normal;color:#ff8aa5}
+.esx-tar-por{margin-left:auto;font-size:10.5px;letter-spacing:.08em;color:#8aa0c8}
+.esx-tar-v{font-size:12px;color:#8aa0c8;padding:4px 0}
+.esx-tar-i{display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid rgba(122,232,255,.08)}
+.esx-tar-i.venc .esx-tar-t span{color:#ff8aa5}.esx-tar-i.hecha{opacity:.6}
+.esx-tar-e{font-size:13px;width:18px;text-align:center}
+.esx-tar-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}.esx-tar-t b{font-size:12px;color:#e6efff;font-weight:600}.esx-tar-t span{font-size:11.5px;color:#c9d6f2}
+.esx-tar-q{font-style:normal;font-size:10.5px;color:#8aa0c8;white-space:nowrap}
+.esx-tar-d summary{cursor:pointer;font-size:11px;color:#8aa0c8;margin-top:4px}
+`;
 function _escCss(){
   if (document.getElementById('escCss')) return;
   const s = document.createElement('style'); s.id = 'escCss';
-  s.textContent = ESC_CSS + ESC_CSS2;
+  s.textContent = ESC_CSS + ESC_CSS2 + ESC_CSS3;
   document.head.appendChild(s);
 }
 
