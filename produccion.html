@@ -114,7 +114,7 @@ const CAMINO = { nuevo:['diseno','muestra','tela','corte','entrega','calidad','f
 const ETAPA_VIEJA = { molde:'muestra', escalado:'tela', inventario:'calidad' };   /* órdenes guardadas con las etapas de antes */
 const TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
 const TALLERES = ['José Luis','Dan','Pedro','Ángel','Bella','Jhon','Jefferson'];
-let D = { ordenes:[], lineas:[], movs:[], pagos:[], stock:null, prod:null, param:{ yayita_desc_pct:40 } }, NV = null, OA = null;
+let D = { ordenes:[], lineas:[], movs:[], pagos:[], arch:[], urls:{}, stock:null, prod:null, param:{ yayita_desc_pct:40 } }, NV = null, OA = null;
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const nrm = s => String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
 function tok(){ try { const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null'); return (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null; } catch (e) { return null; } }
@@ -132,6 +132,7 @@ async function cargar(){
     D.ordenes.forEach(x => { if (ETAPA_VIEJA[x.etapa]) x.etapa = ETAPA_VIEJA[x.etapa]; });
     D._etapaGuardada = {}; D.ordenes.forEach(x => { D._etapaGuardada[x.id] = x.etapa; });
     try { D.pagos = await sb('/rest/v1/prod_pagos?select=*&order=fecha'); } catch (_) { D.pagos = []; }
+    try { D.arch = await sb('/rest/v1/prod_archivos?select=*&order=id'); } catch (_) { D.arch = []; }   /* 21-oct · ficha técnica */
     /* 21-oct F3 · 📦 Productos (una sola fuente de productos) y ajustes editables */
     try { const P = await rpc('prod_productos'); D.prod = null; if (Array.isArray(P) && P.length){ D.prod = {}; P.forEach(x => { D.prod[nrm(x.diseno)] = x; }); } } catch (_) { D.prod = null; }   /* sin lista = no se sabe: no se avisa «no existe» */
     try { (await sb('/rest/v1/prod_param?select=clave,valor')).forEach(x => { D.param[x.clave] = +x.valor; }); } catch (_) {}
@@ -267,6 +268,7 @@ function abrirOrden(id){
     + (o.cerrada ? '<span class="chip">Cerrada</span> <button onclick="etapa(\'venta\')">↩ Reabrir</button>' : (C.every(e => estados(o)[e] === 'h') ? '<button class="p" onclick="etapa(\'cerrada\')">✓ Cerrar orden</button>' : ''))
     + (ef.txt ? '<span class="chip ' + ef.col + '">' + ef.txt + '</span>' : '')
     + prodChip(o) + '<span class="sp"></span><button onclick="abrirNueva(OA)">✏️ Editar</button></div>'
+    + fichaHtml(o)
     + '<div class="res"><div><b>' + T.pedido + '</b>pedidas</div><div><b class="okt">' + T.buenas + '</b>listas (al stock)</div><div><b style="color:var(--am)">' + T.correccion + '</b>en corrección</div><div><b class="err">' + T.perdidas + '</b>perdidas</div><div><b>' + T.yayitas + '</b>yayitas</div><div><b>' + T.falta + '</b>faltan entregar</div></div>'
     + '<table class="g"><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '</tr>'
     + colores.map(c => '<tr><td><b>' + esc(c) + '</b></td>' + tallas.map(t => celda(c, t, s => '<td class="' + (s.correccion ? 'ag' : '') + '" title="Pedidas ' + s.pedido + ' · listas ' + s.buenas + ' · corrección ' + s.correccion + ' · perdidas ' + s.perdidas + '">' + s.buenas + '/' + s.pedido + (s.correccion ? '<small>' + s.correccion + ' en corr.</small>' : '') + '</td>')).join('') + '</tr>').join('') + '</table>'
@@ -288,7 +290,7 @@ function abrirOrden(id){
   if (M.length) h += '<div class="sec"><h4>Historial</h4><table class="g"><tr><th>Fecha</th><th>Qué</th><th>Color · talla</th><th>Cant.</th><th>Motivo</th><th></th></tr>'
     + M.map(m => '<tr><td>' + esc(m.fecha) + '</td><td>' + ({ buena:'✓ Buena', falla:'⚠ Con falla', corregida:'🔧 Corregida', perdida:'✕ Perdida', yayita:'🏷 Yayita' })[m.tipo] + (m.ingresado ? ' <span class="chip">en stock' + (m.lote ? ' · ' + esc(m.lote) : '') + '</span>' : '') + '</td><td>' + esc(m.color + ' · ' + m.talla) + '</td><td>' + m.cantidad + '</td><td>' + esc(m.motivo || '') + '</td>'
       + '<td>' + (m.ingresado ? '' : '<button title="Deshacer (cargado por error)" onclick="borrarMov(' + m.id + ')">✕</button>') + '</td></tr>').join('') + '</table></div>';
-  document.getElementById('oCuerpo').innerHTML = h; document.getElementById('mOrden').style.display = 'flex';
+  document.getElementById('oCuerpo').innerHTML = h; firmarFicha(o); document.getElementById('mOrden').style.display = 'flex';
 }
 function gridMov(pre, colores, tallas, S, tipos, filtro){
   return tipos.map(([tp, nom]) => '<div style="margin-top:6px"><b style="font-size:12px">' + nom + '</b><table class="g"><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '</tr>'
@@ -483,6 +485,9 @@ function estadosMano(o){
 function estadosAuto(o){
   const { T } = saldos(o), M = D.movs.filter(x => x.orden_id === o.id), hay = M.some(x => x.tipo === 'buena' || x.tipo === 'falla');
   const todo = hay && T.pedido > 0 && T.falta === 0, p = D.prod && D.prod[nrm(o.diseno)], A = {};
+  const FA = D.arch.filter(x => x.diseno === nrm(o.diseno)), tiene = t => FA.some(x => x.tipo === t);   /* 21-oct · ficha técnica */
+  if (tiene('diseno')) A.diseno = 'h';
+  if (tiene('muestra') || tiene('molde')) A.muestra = (tiene('muestra') && tiene('molde')) ? 'h' : 'p';
   if (o.fecha_taller){ A.diseno = 'h'; A.muestra = 'h'; A.tela = 'h'; A.corte = 'p'; }
   if (hay){ A.diseno = 'h'; A.muestra = 'h'; A.tela = 'h'; A.corte = todo ? 'h' : 'p'; A.entrega = todo ? 'h' : 'p'; }
   if (T.buenas > 0) A.calidad = (todo && !T.porIngresar && !T.correccion) ? 'h' : 'p';
@@ -561,6 +566,56 @@ async function guardarOrden2(){
   try { const r = await rpc('prod_reordenar', { p_ids: ids }); if (!r.ok) throw new Error(r.error); b.style.display = 'none'; await cargar(); }
   catch (e) { aviso(e.message); }
   b.disabled = false; b.textContent = '💾 Guardar orden';
+}
+/* ══ 21-oct (Pablo) · 📐 FICHA TÉCNICA paso 1: archivos del producto (diseño · muestra · moldes). Es del PRODUCTO: la ven todas sus producciones.
+   Van a un espacio privado (bucket «produccion»); las miniaturas se piden firmadas por 10 minutos. ══ */
+const FICHA_T = [['diseno', '✏️ Diseño', 'Boceto, ficha o referencia'], ['muestra', '👗 Muestra', 'Fotos de la muestra aprobada'], ['molde', '📐 Moldes', 'Moldes y escalado (foto o PDF)'], ['otro', '📎 Otros', 'Lo que haga falta']];
+const esImg = a => /^image\//.test(a.mime || '') || /\.(jpe?g|png|webp|gif|heic)$/i.test(a.nombre || '');
+function fichaHtml(o){
+  const d = nrm(o.diseno), FA = D.arch.filter(x => x.diseno === d);
+  return '<div class="sec"><h4>📐 Ficha técnica de ' + esc(d) + ' <span class="mu" style="font-weight:400;font-size:11.5px">· vale para todas sus producciones</span></h4>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">'
+    + FICHA_T.map(([t, nom, ay]) => { const L = FA.filter(x => x.tipo === t);
+      return '<div style="border:1px solid var(--bd);border-radius:10px;padding:8px"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:12.5px">' + nom + (L.length ? ' <span class="chip okt">✓ ' + L.length + '</span>' : '') + '</b>'
+        + '<label style="cursor:pointer;font-size:11.5px;color:var(--ac);font-weight:600">＋ Subir<input type="file" multiple accept="image/*,application/pdf,.dxf,.plt,.ai,.zip" style="display:none" onchange="subirFicha(this, \'' + t + '\')"></label></div>'
+        + '<div class="mu" style="font-size:10.5px;margin:2px 0 6px">' + ay + '</div>'
+        + '<div style="display:flex;flex-wrap:wrap;gap:6px">' + (L.length ? L.map(a => '<div style="position:relative">'
+          + (esImg(a) ? '<img data-ruta="' + esc(a.ruta) + '" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px;background:var(--bd);cursor:pointer" onclick="verArchivo(this.dataset.ruta)">'
+                      : '<span class="chip" style="cursor:pointer" data-ruta="' + esc(a.ruta) + '" onclick="verArchivo(this.dataset.ruta)">📄 ' + esc((a.nombre || 'archivo').slice(0, 22)) + '</span>')
+          + '<button title="Quitar" onclick="borrarArchivo(' + a.id + ')" style="position:absolute;top:-6px;right:-6px;padding:0 5px;font-size:10px;border-radius:10px">✕</button></div>').join('') : '<span class="mu" style="font-size:11px">Sin archivos</span>') + '</div>'
+        + '<div class="mu" id="fMsg-' + t + '" style="font-size:11px"></div></div>'; }).join('')
+    + '</div></div>';
+}
+async function firmar(rutas){
+  const faltan = rutas.filter(r => !D.urls[r]); if (!faltan.length) return;
+  try { const r = await fetch(SB + '/storage/v1/object/sign/produccion', { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type':'application/json' }, body: JSON.stringify({ expiresIn: 600, paths: faltan }) });
+    const j = await r.json(); (Array.isArray(j) ? j : []).forEach(x => { const u = x.signedURL || x.signedUrl; if (u && x.path) D.urls[x.path] = SB + '/storage/v1' + u; }); } catch (_) {}
+}
+async function firmarFicha(o){
+  const imgs = [...document.querySelectorAll('#oCuerpo img[data-ruta]')]; if (!imgs.length) return;
+  await firmar(imgs.map(i => i.dataset.ruta)); imgs.forEach(i => { if (D.urls[i.dataset.ruta]) i.src = D.urls[i.dataset.ruta]; });
+}
+async function verArchivo(ruta){ await firmar([ruta]); if (D.urls[ruta]) window.open(D.urls[ruta], '_blank'); else aviso('No se pudo abrir el archivo'); }
+async function subirFicha(inp, tipo){
+  const files = [...inp.files], msg = document.getElementById('fMsg-' + tipo), d = nrm(OA.diseno), slug = d.replace(/[^A-Z0-9]+/g, '-');
+  if (!files.length) return; let ok = 0;
+  for (const f of files){
+    if (f.size > 25 * 1024 * 1024){ msg.textContent = '«' + f.name + '» pesa más de 25 MB'; continue; }
+    msg.textContent = 'Subiendo ' + (ok + 1) + ' de ' + files.length + '…';
+    const ruta = slug + '/' + tipo + '/' + Date.now() + '_' + f.name.replace(/[^\w.\-]+/g, '_');
+    try {
+      const r = await fetch(SB + '/storage/v1/object/produccion/' + ruta, { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type': f.type || 'application/octet-stream' }, body: f });
+      if (!r.ok) throw new Error('no se pudo subir (' + r.status + ')');
+      const g = await rpc('prod_archivo_guardar', { p_diseno:d, p_tipo:tipo, p_ruta:ruta, p_nombre:f.name, p_mime:f.type || '' }); if (!g.ok) throw new Error(g.error);
+      ok++;
+    } catch (e) { msg.textContent = '«' + f.name + '»: ' + e.message; }
+  }
+  await cargar(); abrirOrden(OA.id);
+}
+async function borrarArchivo(id){
+  try { const r = await rpc('prod_archivo_borrar', { p_arch:id }); if (!r.ok) throw new Error(r.error || 'No se pudo');
+    if (r.ruta) await fetch(SB + '/storage/v1/object/produccion/' + r.ruta, { method:'DELETE', headers:{ apikey:ANON, Authorization:'Bearer ' + tok() } }).catch(() => {});
+    await cargar(); abrirOrden(OA.id); } catch (e) { aviso(e.message); }
 }
 function aviso(t){ const m = document.getElementById('msg'); m.textContent = t; m.className = 'err'; setTimeout(() => { m.textContent = ''; m.className = 'mu'; }, 6000); }
 function cerrar(id){ document.getElementById(id).style.display = 'none'; }
