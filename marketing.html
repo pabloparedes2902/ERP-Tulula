@@ -6911,7 +6911,8 @@ const _ep = k => { const v = Number(ESC_P[k]); return isNaN(v) ? ESC_DEF[k] : v;
 const ESC_COL = { verde:'#00f5a0', ama:'#ffc53d', rojo:'#ff3d6e', gris:'#6b7a90' };
 const ESC_RESP = { port:'Pablo · Ana', stock:'Ana', crea:'Heily', gana:'Paola', esc:'Paola · Ana' };
 const ESC_ICO = {
-  stock:'<path d="M3 8l9-5 9 5v8l-9 5-9-5z M3 8l9 5 9-5 M12 13v8"/>',
+  stock:'<path d="M9 3c.6 1.6 1.7 2.4 3 2.4S14.4 4.6 15 3l5 2.6-2 4.2-2-.9V21H8V8.9l-2 .9-2-4.2z"/>',   /* 21-oct (Pablo) · una prenda (blusa), no una caja */
+  fuego:'<path d="M12 2c.6 3.2 4.8 5.4 4.8 10.2A4.8 4.8 0 0 1 7.2 12c0-2.3 1.2-3.9 2.4-5 .1 2.2 1 3.4 2.2 3.8C11.3 8 11 5 12 2z"/>',   /* 21-oct (Pablo) · 🔥 racha: 2+ ganadores escalando */
   crea:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l5 3-5 3z"/>',
   gana:'<path d="M7 4h10v4a5 5 0 0 1-10 0z M7 6H4a3 3 0 0 0 3 4 M17 6h3a3 3 0 0 1-3 4 M12 13v4 M8 20h8"/>',
   esc:'<path d="M12 2c3 3 4 7 3 11l-3 3-3-3c-1-4 0-8 3-11z M9 13l-3 2 1 4 3-2 M15 13l3 2-1 4-3-2"/>'
@@ -6927,14 +6928,13 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7] = await Promise.all([
+    const [r1, r2, r3, r4, r5] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_escala_foco?select=clave,orden&order=orden', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/rpc/df_resumen', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: _ep('esc_fant_dias') }) }).catch(() => null),
-      _escWebCargar(),
-      fetch(MK_SB_URL + '/rest/v1/mk_esc_tareas?select=clave,quien,hecho_at&hecho_at=gte.' + new Date(Date.now() - 30 * 864e5).toISOString(), { headers: hdr }).catch(() => null)
+      _escWebCargar()
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -6943,7 +6943,6 @@ async function escCargar(forzar){
     ESC_FOCO = r4.ok ? (await r4.json()).map(x => x.clave) : [];
     ESC_FANT = (r5 && r5.ok) ? await r5.json() : []; ESC_FANT_IDX = null;   /* si la rpc falla, Escalamiento sigue igual que antes (sin fantasma) */
     if (!Array.isArray(ESC_FANT)) ESC_FANT = [];
-    ESC_TAREAS = null; if (r7 && r7.ok){ ESC_TAREAS = {}; (await r7.json()).forEach(t => { ESC_TAREAS[t.clave] = t; }); }   /* 21-oct · Mis tareas */
   } catch (e) { ESC_ERR = e.message || String(e); if (ESC_FOCO === null) ESC_FOCO = []; }
   ESC_CARGANDO = false;
   escPintar();
@@ -7278,11 +7277,23 @@ function _escAccion(f, ln, x){
     return { sit:_escPl(n.g, 'ganador', 'ganadores') + (ro != null ? ' · ROAS ' + ro.toFixed(2) + 'x' : ''), act:'Escalarlo (siguiente paso 🚀)', q:ESC_RESP.gana, col };
   }
   if (!ln.listo) return { sit:'Bloqueado', act:'Primero resolver ' + ['el stock', 'los creativos', 'los ganadores'][ln.corte < 3 ? ln.corte : 2] + ' (ahí está la acción)', q:'—', col:'gris' };
-  const w = ln.niv.gana.gan.slice().sort((a, b) => _escMc(b) - _escMc(a))[0], ro = w ? _escRoas(w) : null, st = ln.niv.stock;
-  return { sit:'Listo para escalar' + (ro != null ? ' · ROAS ' + ro.toFixed(2) + 'x' : '') + (w ? ' · margen S/ ' + mkNum(_escMc(w)) : ''),
+  const w = ln.niv.gana.gan.slice().sort((a, b) => _escMc(b) - _escMc(a))[0], ro = w ? _escRoas(w) : null, st = ln.niv.stock, ra = (typeof _escRacha === 'function' ? _escRacha(ln) : null) || { fuego:false, g:1, share:100 };
+  return { sit:'Listo para escalar' + (ra.fuego ? ' · 🔥 en racha: ' + ra.g + ' anuncios venden' : ' · 🚀 racha frágil: ' + (ra.g > 1 ? 'uno trae el ' + ra.share + '% de las ventas' : '1 solo anuncio vende')) + (ro != null ? ' · ROAS ' + ro.toFixed(2) + 'x' : ''),
            act:'Subir +20% el presupuesto' + (w && w.conjunto ? ' de «' + w.conjunto + '»' : '') + ' con Escalar; repetir cada 72 h si el ROAS se mantiene. Stock: '
-             + (st.col === 'verde' ? (st.dias >= 999 ? 'cubierto' : st.dias + ' días cubiertos') : 'reponer ' + Math.max(st.tot || 0, _ep('esc_lote_min')) + ' prendas ya'),
-           q:ESC_RESP.esc, col:'verde' };
+             + (st.col === 'verde' ? (st.dias >= 999 ? 'cubierto' : st.dias + ' días cubiertos') : 'reponer ' + Math.max(st.tot || 0, _ep('esc_lote_min')) + ' prendas ya')
+             + (ra.fuego ? '. Con respaldo: se puede confeccionar para escalar' : '. Frágil: Heily busca el 2º ganador con una idea distinta; sin confección extra hasta tenerlo'),
+           q:ESC_RESP.esc + (ra.fuego ? '' : ' · Heily'), col:'verde', racha: ra };
+}
+/* ── 21-oct-2026 (Pablo) · RACHA dentro de ESCALAR (no es un paso aparte):
+   🚀 un solo anuncio escalando (o uno trae el 60%+ de las ventas del canal) = racha FRÁGIL: escalar, pero buscar el 2º ganador y sin lote extra.
+   🔥 dos o más escalando y ninguno trae el 60%+ = racha PROTEGIDA: escalar y la confección extra tiene respaldo. ── */
+function _escRacha(ln){
+  if (!ln || ln.vacio || !ln.niv || !ln.niv.gana) return null;
+  const g = ln.niv.gana.g || 0; if (!g) return null;
+  const ven = (ln.filas || []).map(r => +((r.act || {}).pedidos) || 0), tot = ven.reduce((a, v) => a + v, 0), top = ven.length ? Math.max.apply(null, ven) : 0;
+  const share = tot > 0 ? Math.round(top / tot * 100) : 100;
+  const fuego = g >= 2 && share < 60;
+  return { fuego, g, share };
 }
 function _escUrgente(f){
   const L = (f.lanes || []).filter(l => !l.vacio);
@@ -7347,48 +7358,26 @@ function escTareasLista(){
 const ESC_ETAPA_TXT = { stock:'📦 Stock', crea:'🎬 Creativos', gana:'🏅 Ganadores', esc:'🚀 Escalar' };
 const ESC_NIV_EMO = { rojo:'🔴', naranja:'🟠', amarillo:'🟡', verde:'🟢' };
 function _escTareasHtml(){
-  const yo = _escYo(), todas = escTareasLista(), esPablo = yo === 'Pablo' || !yo;
-  const verTodas = esPablo || ESC_TAREAS_VER === 'todas';
-  const mias = todas.filter(x => verTodas || String(x.q || '').includes(yo));
-  const hecha = x => ESC_TAREAS && ESC_TAREAS[x.clave];
-  const pend = mias.filter(x => !hecha(x)), listas = mias.filter(hecha);
-  let h = '<div class="esx-tar"><div class="esx-tar-h"><b>' + (verTodas ? 'TAREAS DEL EQUIPO' : 'MIS TAREAS · ' + esc(yo).toUpperCase()) + '</b>'
-    + '<span>' + pend.length + ' pendiente' + (pend.length === 1 ? '' : 's') + (pend.filter(x => x.vencida).length ? ' · <em>' + pend.filter(x => x.vencida).length + ' vencida' + (pend.filter(x => x.vencida).length === 1 ? '' : 's') + '</em>' : '') + ' · ' + listas.length + ' hecha' + (listas.length === 1 ? '' : 's') + '</span>';
-  if (!esPablo) h += '<button class="esx-b" onclick="ESC_TAREAS_VER=ESC_TAREAS_VER===\'todas\'?\'mias\':\'todas\';escPintar()">' + (verTodas ? 'SOLO LAS MÍAS' : 'VER TODAS') + '</button>';
-  if (esPablo){ const por = {}; pend.forEach(x => String(x.q || '—').split('·').map(z => z.trim()).filter(Boolean).forEach(p => { por[p] = (por[p] || 0) + 1; }));
-    h += '<span class="esx-tar-por">' + Object.keys(por).map(p => esc(p) + ' ' + por[p]).join(' · ') + '</span>'; }
-  h += '</div>';
-  if (ESC_TAREAS === null) h += '<div class="esx-tar-v">Falta instalar el registro de tareas en la base (lo pega Pablo una vez).</div>';
+  /* 21-oct (Pablo) · UNA sola vista para todo el equipo (cada una ve lo de las demás y sabe si le toca) y SIN «✓ Hecho»:
+     la tarea sale sola cuando los datos cambian (llega el stock, se sube el creativo, se crea el anuncio). Una sola fuente de verdad. */
+  const todas = escTareasLista(), pend = todas;
+  const venc = pend.filter(x => x.vencida).length, por = {};
+  pend.forEach(x => String(x.q || '—').split('·').map(z => z.trim()).filter(Boolean).forEach(p => { por[p] = (por[p] || 0) + 1; }));
+  let h = '<div class="esx-tar"><div class="esx-tar-h"><b>QUÉ TOCA HOY</b><span>' + pend.length + ' pendiente' + (pend.length === 1 ? '' : 's')
+    + (venc ? ' · <em>' + venc + ' vencida' + (venc === 1 ? '' : 's') + '</em>' : '') + '</span>'
+    + '<span class="esx-tar-por">' + Object.keys(por).map(p => esc(p) + ' ' + por[p]).join(' · ') + '</span></div>';
   if (!pend.length) h += '<div class="esx-tar-v">Nada pendiente. 👌</div>';
   const fila = x => { const i = todas.indexOf(x);
     return '<div class="esx-tar-i ' + x.nivel + (x.vencida ? ' venc' : '') + '"><span class="esx-tar-e">' + (ESC_NIV_EMO[x.nivel] || '') + '</span>'
       + '<div class="esx-tar-t"><b>' + esc(x.nombre) + ' · ' + esc(({ wa:'WhatsApp', web:'Web', ambos:'WhatsApp y Web' })[x.canal] || x.canal) + ' · ' + (ESC_ETAPA_TXT[x.etapa] || x.etapa) + '</b>'
-      + '<span>' + esc(x.act) + '</span></div>' + (verTodas ? '<i class="esx-tar-q">' + esc(x.q || '') + '</i>' : '')
-      + '<button class="esx-b" title="Abrir este producto en esta etapa" onclick="escIrA(ESC_TAR_L[' + i + '])">VER</button>'
-      + (ESC_TAREAS !== null ? '<button class="esx-b on" onclick="escTareaHecha(' + i + ',true)">✓ HECHO</button>' : '') + '</div>'; };
-  /* a la vista las 5 más urgentes (ya vienen 🔴 → 🟠 → 🟡 → 🟢); el resto plegado para no tapar el flujo */
+      + '<span>' + esc(x.act) + '</span></div><i class="esx-tar-q">' + esc(x.q || '') + '</i>'
+      + '<button class="esx-b" title="Abrir este producto en esta etapa" onclick="escIrA(ESC_TAR_L[' + i + '])">VER</button></div>'; };
   h += pend.slice(0, 5).map(fila).join('');
   if (pend.length > 5) h += '<details class="esx-tar-d"><summary>Ver ' + (pend.length - 5) + ' más</summary>' + pend.slice(5).map(fila).join('') + '</details>';
-  if (listas.length) h += '<details class="esx-tar-d"><summary>✓ ' + listas.length + ' hecha' + (listas.length === 1 ? '' : 's') + '</summary>'
-    + listas.map(x => { const t = hecha(x), i = todas.indexOf(x);
-      return '<div class="esx-tar-i hecha"><span class="esx-tar-e">✓</span><div class="esx-tar-t"><b>' + esc(x.nombre) + ' · ' + (ESC_ETAPA_TXT[x.etapa] || x.etapa) + '</b><span>' + esc(x.act) + '</span></div>'
-        + '<i class="esx-tar-q">' + esc(_mklQuien(t.quien)) + ' · ' + new Date(t.hecho_at).toLocaleDateString('es-PE', { day:'numeric', month:'short' }) + '</i>'
-        + '<button class="esx-b" onclick="escTareaHecha(' + i + ',false)">DESHACER</button></div>'; }).join('') + '</details>';
   ESC_TAR_L = todas;
   return h + '</div>';
 }
 let ESC_TAR_L = [];
-async function escTareaHecha(i, si){
-  const x = ESC_TAR_L[i]; if (!x) return;
-  try {
-    const tok = _mkSbTok(); if (!tok) throw new Error('Inicia sesión');
-    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_esc_tarea_hecha', { method:'POST', headers:{ apikey: MK_SB_ANON, Authorization:'Bearer ' + tok, 'Content-Type':'application/json' },
-      body: JSON.stringify({ p_clave: x.clave, p_accion: x.act, p_hecha: !!si }) });
-    if (!r.ok) throw new Error('La base respondió ' + r.status);
-    if (si) ESC_TAREAS[x.clave] = { clave: x.clave, quien: _mkQuien(), hecho_at: new Date().toISOString() }; else delete ESC_TAREAS[x.clave];
-  } catch (e) { ESC_ERR = 'No se guardó la tarea: ' + (e.message || e); }
-  escPintar();
-}
 /* desde Alertas: «Abrir en Escalamiento» lleva a ese producto con la etapa abierta */
 function escIrA(m){
   mkIrSub('escala');
@@ -7420,8 +7409,7 @@ function escPintar(cambio){
   const F = escFilas(), SUG = escSugeridos(F), FL = _escFocoLista(F), L = FL.L;
   if (!ESC_SEL || !L.some(f => f.k === ESC_SEL)) ESC_SEL = L.length ? L[0].k : null;
   const rojos = L.filter(f => !f.vacio && f.lanes.some(l => !l.vacio && l.corte < 3)).length;
-  let _mias = null; try { const yo = _escYo(); if (yo && yo !== 'Pablo' && ESC_TAREAS) _mias = escTareasLista().filter(x => String(x.q || '').includes(yo) && !ESC_TAREAS[x.clave]).length; } catch (e) {}
-  try { parent.postMessage({ tipo:'mkt-aviso', cual:'escala', n: _mias != null ? _mias : rojos, txt: _mias != null ? (_mias ? _mias + ' tarea(s) tuya(s) en Escalamiento' : '') : (rojos ? rojos + ' producto(s) en foco con el flujo cortado' : '') }, '*'); } catch (e) {}
+  try { parent.postMessage({ tipo:'mkt-aviso', cual:'escala', n: rojos, txt: rojos ? rojos + ' producto(s) en foco con el flujo cortado' : '' }, '*'); } catch (e) {}
   const nG = SUG.length, meta = _ep('esc_portafolio'), colP = nG >= meta ? 'verde' : nG >= meta - 1 ? 'ama' : 'rojo';
   const fuera = SUG.filter(x => !L.some(f => f.k === x.k)).length;
   let h = '<div class="esx">';
@@ -7460,7 +7448,8 @@ function escPintar(cambio){
           h += '<div class="esx-c ' + (on ? 'on' : 'off') + '" style="--c:' + (on ? ESC_COL[prev.col] : '#2a3550') + '"><span></span></div>'; }
         const ant = n && n.ant != null && n.ant <= _ep('esc_aviso') ? '<span class="esx-ant">⏳ ' + (x === 'crea' ? 'renovar' : 'reponer') + ' ' + (n.ant === 0 ? 'hoy' : 'en ' + n.ant + ' d') + '</span>' : '';   /* 19-oct · indicación (Pablo), no «0d» */
         h += '<div class="esx-n' + (foco === id ? ' foco' : ' lejos') + (x === 'esc' && ln.listo ? ' listo' : '') + '" style="--g:' + col + '" onclick="escNodo(\'' + id + '\')">'
-           + '<div class="esx-orb">' + (x === 'esc' ? _escAnillo(col, ln.listo ? 1 : 0, ESC_ICO.esc, ln.listo ? '+20%' : '', ln.listo ? 'listo' : 'bloqueado') : _escAnillo(col, _escVal(x, n), ESC_ICO[x], n.big, n.sub)) + ant + '</div>'
+           + '<div class="esx-orb">' + (x === 'esc' ? (() => { const ra = ln.listo ? _escRacha(ln) : null;   /* 21-oct · 🚀 un ganador · 🔥 dos o más */
+             return _escAnillo(ra && ra.fuego ? '#ff8a3d' : col, ln.listo ? 1 : 0, ra && ra.fuego ? ESC_ICO.fuego : ESC_ICO.esc, ln.listo ? '+20%' : '', ln.listo ? (ra && ra.fuego ? 'en racha' : 'frágil') : 'bloqueado'); })() : _escAnillo(col, _escVal(x, n), ESC_ICO[x], n.big, n.sub)) + ant + '</div>'
            + '<div class="esx-lab">' + ESC_LAB[x] + '</div></div>';
       });
       h += '</div>';
