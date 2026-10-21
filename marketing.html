@@ -6906,6 +6906,7 @@ const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo
                   esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
+let ESC_CAMINO = {};   /* 21-oct · 🧵 Producción F1b: { 'BLAZER MIRELLA': { n, fecha, ordenes } } desde prod_en_camino */
 let ESC_FOCO = null, ESC_SEL = null, ESC_NODO = null, ESC_PICK = false, ESC_PICKSEL = null, ESC_REGLAS = false, ESC_DUENO = null;
 const _ep = k => { const v = Number(ESC_P[k]); return isNaN(v) ? ESC_DEF[k] : v; };
 const ESC_COL = { verde:'#00f5a0', ama:'#ffc53d', rojo:'#ff3d6e', gris:'#6b7a90' };
@@ -6932,13 +6933,14 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_escala_foco?select=clave,orden&order=orden', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/rpc/df_resumen', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: _ep('esc_fant_dias') }) }).catch(() => null),
-      _escWebCargar()
+      _escWebCargar(),
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 21-oct · 🧵 Producción F1b */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -6947,6 +6949,7 @@ async function escCargar(forzar){
     ESC_FOCO = r4.ok ? (await r4.json()).map(x => x.clave) : [];
     ESC_FANT = (r5 && r5.ok) ? await r5.json() : []; ESC_FANT_IDX = null;   /* si la rpc falla, Escalamiento sigue igual que antes (sin fantasma) */
     if (!Array.isArray(ESC_FANT)) ESC_FANT = [];
+    ESC_CAMINO = {}; try { if (r7 && r7.ok) ((await r7.json()) || []).forEach(x => { ESC_CAMINO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}   /* 21-oct · 🧵 lo que ya está en confección */
   } catch (e) { ESC_ERR = e.message || String(e); if (ESC_FOCO === null) ESC_FOCO = []; }
   ESC_CARGANDO = false;
   escPintar();
@@ -7094,7 +7097,13 @@ function _escStock(piezas, web){
   const combos = res.reduce((a, r) => a + r.vs.length, 0);
   return { col, big, sub,
            dias: p.dias, cub: p.cub, agot: agotT, pocas: res.reduce((a, r) => a.concat(r.pocas), []), lote, tot, piezas: res, ant, multi, fant: Math.round(fantT), repo, web: web || null,
-           combos, perdida: Math.round(100 - p.cub) };
+           combos, perdida: Math.round(100 - p.cub), cam: typeof _escCamino === 'function' ? _escCamino(piezas) : null };
+}
+/* 21-oct · 🧵 cuántas prendas de este producto ya están en confección (órdenes abiertas de Producción) */
+function _escCamino(piezas){
+  try { const C = typeof ESC_CAMINO === 'object' && ESC_CAMINO ? ESC_CAMINO : {}; let n = 0, f = null;
+    [...new Set(piezas.map(pz => _mkNorm(pz.p + ' ' + pz.d).trim()))].forEach(k => { const x = C[k]; if (x && x.n > 0){ n += x.n; if (x.fecha && (!f || x.fecha < f)) f = x.fecha; } });
+    return n > 0 ? { n, fecha: f } : null; } catch (_) { return null; }
 }
 /* ── 2 · CREATIVOS de un canal: corriendo hoy + listos sin usar; cuándo se cansa el que más gasta ── */
 /* 20-oct · canal de un creativo de la biblioteca: 'wa' | 'web' | 'ambos' | '' (los viejos, sin canal) */
@@ -7244,6 +7253,10 @@ function _escAccion(f, ln, x){
     const dsC = ds + (nc ? ' · ' + _escPl(nc, 'color', 'colores') + (n.web ? ' en la web' : ' con stock') : '');   /* 20-oct 18h */
     const cuando = n.repo ? _escPlazo(n.repo) : '';
     const agT = ag ? ' · ' + ag + ' de ' + (n.combos || ag) + ' tallas agotadas = ' + n.perdida + '% de lo que se vende' : '';   /* 20-oct 19h · el porqué del color */
+    if (n.cam && (n.col === 'rojo' || n.col === 'ama')){   /* 21-oct · 🧵 ya está en confección: no pedir otra vez */
+      const lleg = n.cam.fecha ? ' · a la venta el ' + new Date(n.cam.fecha + 'T00:00:00').toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') : '';
+      return { sit:(n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', q:ESC_RESP.stock, col, lote:null };
+    }
     if (n.col === 'rojo') return { sit:'Stock crítico · ' + dsC + agT + fa, act:'Confeccionar ' + lote + ' prendas hoy (llegan en ' + _ep('esc_conf_dias') + ' días)', q:ESC_RESP.stock, col, lote:n };
     if (n.col === 'ama') return { sit:'Stock bajo · ' + dsC + agT + fa, act:'Mandar a confeccionar ' + lote + ' prendas ' + cuando + ', antes de caer a rojo', q:ESC_RESP.stock, col, lote:n };
     return { sit: dsC.charAt(0).toUpperCase() + dsC.slice(1) + fa, act: avisa ? 'Mandar a confeccionar ' + d(n.ant) + ' (' + lote + ' prendas)' : 'Ninguna por ahora: stock en verde', q:ESC_RESP.stock, col, lote: avisa ? n : null };
@@ -7374,7 +7387,7 @@ function _escYo(){ try { const e = (typeof _mkQuien === 'function') ? _mkQuien()
 function _escTareaClave(x){ return [x.k, x.lane, x.etapa, x.act].join('|').slice(0, 400); }
 function escTareasLista(){
   const snap = escAlertaItems(); if (!snap) return [];
-  const L = snap.items.slice();
+  const L = snap.items.filter(x => !/^Ya en confección/.test(x.act || ''));   /* 21-oct · 🧵 lo que ya está en confección no es tarea de nadie: se resuelve solo cuando llega */
   /* listo para escalar también es tarea (de Paola) */
   _escFocoLista(escFilas()).L.forEach(f => { if (f.vacio) return; f.lanes.forEach(ln => { if (ln.vacio || !ln.listo) return;
     const A = _escAccion(f, ln, 'esc'); L.push({ k:f.k, nombre:f.nombre, canal:ln.canal, lane:ln.canal, etapa:'esc', nivel:'verde', corte:false, sit:A.sit, act:A.act, q:A.q }); }); });
