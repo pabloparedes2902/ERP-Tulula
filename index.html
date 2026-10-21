@@ -2702,7 +2702,7 @@ function fmtDInput(v) {
 function badgeE(e) {
   const c = {ENTREGADO:'bgn',PENDIENTE:'bam','EN CAMINO':'bbl',ENVIAR:'bam',SEPARAR:'bpu',PREVENTA:'bpu',CAMBIO:'brd','CAMBIO PENDIENTE':'bam','CAMBIO EN PROGRESO':'bbl','CAMBIO COMPLETADO':'bgn',DEVOLUCION:'brd',CANCELADO:'bgy',
     // Estado Cambio (3 pasos): rojo (inicio) → amarillo (medio) → verde (final)
-    'CLIENTE SOLICITA CAMBIO':'brd','PRENDA ORIGINAL RECIBIDA':'bam','PRENDA NUEVA ENVIADA':'bgn',
+    'CLIENTE SOLICITA CAMBIO':'brd','PRENDA ORIGINAL RECIBIDA':'bam','PRENDA NUEVA ENVIADA':'bgn','SALDO A FAVOR':'bpu','SALDO USADO':'bgn','SALDO VENCIDO':'bgy',   // 21-oct · saldo a favor
     // Estado Devolución: rojo → amarillo → verde
     'CLIENTE SOLICITA DEVOLUCION':'brd','PRENDA ORIGINAL RECIBIDA':'bam','REEMBOLSO REALIZADO':'bgn',COMPLETADO:'bgn'};
   return '<span class="badge '+(c[String(e||'').toUpperCase()]||'bgy')+'">'+esc(e||'—')+'</span>';
@@ -10315,7 +10315,7 @@ async function _cdCambiosPorPedido() {
     const r = await fetch(SB_URL + '/rest/v1/cambios2?select=nro_pedido,nro_cambio,estado,rec:row_json-%3E%3EFechaRecepcionOriginal,env:row_json-%3E%3EFechaEnvioNueva&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
     if (!r.ok) throw new Error('cambios ' + r.status); const a = await r.json(); if (!a.length) break;
     a.forEach(x => { const n = String(x.nro_pedido || '').trim(), est = String(x.estado || '').toUpperCase(); if (!n || est === 'CANCELADO') return; const c = C[n] = C[n] || []; if (c.indexOf(x.nro_cambio) < 0) c.push(x.nro_cambio);
-      if (est === 'CLIENTE SOLICITA CAMBIO' || !x.rec || !x.env) ABIERTO[n] = 1; });   // 20-oct · cambio sin terminar (falta recibir la original o enviar la nueva)
+      if (est.indexOf('SALDO ') !== 0 && (est === 'CLIENTE SOLICITA CAMBIO' || !x.rec || !x.env)) ABIERTO[n] = 1; });   // 21-oct: un saldo a favor no es un cambio en curso   // 20-oct · cambio sin terminar (falta recibir la original o enviar la nueva)
   }
   Object.defineProperty(C, '__abiertos', { value: ABIERTO, enumerable: false });
   return C;
@@ -12718,6 +12718,7 @@ function _c2Agrupar(filas) {
         RecibidoOriginal: String(r.StockDevProcesado || '').toUpperCase() === 'TRUE',
         EnviadaNueva: !!r.FechaEnvioNueva,
         FechaEnvioNueva: r.FechaEnvioNueva || '',   // 26-jul: para el reloj de la grilla
+        SaldoFavorMonto: parseFloat(r.SaldoFavorMonto) || 0, SaldoFavorVence: String(r.SaldoFavorVence || ''), SaldoFavorDesde: String(r.SaldoFavorDesde || ''),   // 21-oct · saldo a favor
         Version: String(r.C2Version || '').trim(),
         devueltas: [], nuevas: [], pedidos: {}
       };
@@ -28157,7 +28158,7 @@ try { window.addEventListener('load', () => { _cuadreActualizarDesdeEnlace(); })
 // arriba a la derecha; al cerrarlo queda oculto hasta recargar la página (regla CSS con !important, así el
 // código que lo vuelve a pintar no lo reabre). La barra de «clientas esperando» ya tenía su ✕ propia.
 var AVISOS_CON_X = ['fe-barra', 'al-barra-roja', 'logros-aviso', 'upd-banner', 'f1-aviso', 'masivo-franja', 'salud-sync-banner',
-  'ver-como-franja', 'espia-badge', 'paint-mode-badge', 'np-save-indicator', 'cam-save-indicator', 'c2-edit-indicator', 'dev-save-indicator', 'lg-barra'];
+  'ver-como-franja', 'espia-badge', 'paint-mode-badge', 'np-save-indicator', 'cam-save-indicator', 'c2-edit-indicator', 'dev-save-indicator', 'lg-barra', 'sf-barra'];
 function _avisosPonerX() {
   try {
     if (!document.getElementById('avx-css')) {
@@ -28327,6 +28328,56 @@ function _lgPintar() {
   b.querySelectorAll('button[data-lg]').forEach(bt => bt.onclick = () => { _LG.abierto = false; _lgPintar(); try { _abrirPedidoDesdeBusqueda(bt.getAttribute('data-lg')); } catch (e) { toast('No se pudo abrir el pedido', 'err'); } });
 }
 try { window.addEventListener('load', () => { setTimeout(_lgRevisar, 10000); setInterval(_lgRevisar, 15 * 60 * 1000); setInterval(() => { if (_LG.lista.length) _lgPintar(); }, 30000); }); } catch (_) {}
+
+// ═══ 21-oct (Pablo) · SALDO A FAVOR EN CAMBIOS ═══
+// La clienta devolvió la prenda y todavía no elige otra. El cambio pasa a «SALDO A FAVOR» (base: cambio_pasar_a_saldo):
+// el pedido queda con saldo a favor (la línea «CAMBIO CAM-x (saldo a favor)» que ya existía) y Nuevo pedido lo ofrece solo,
+// para usarlo en una o varias compras. Vale 6 meses desde que se recibió la prenda. Cada hora la base lo pasa a SALDO USADO
+// (llegó a 0) o SALDO VENCIDO. Aviso a la asesora cuando faltan 30 días o menos.
+window._c2Saldos = window._c2Saldos || {};
+async function _sfCargar() {
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) return [];
+    const r = await fetch(SB_URL + '/rest/v1/rpc/saldos_favor_lista', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) return [];
+    const L = await r.json(); const M = {};
+    (Array.isArray(L) ? L : []).forEach(x => { x.restante = Number(x.restante) || 0; x.monto = Number(x.monto) || 0; M[x.cambio] = x; });
+    window._c2Saldos = M; return Array.isArray(L) ? L : [];
+  } catch (_) { return []; }
+}
+async function _c2PasarASaldo(nc) {
+  const c = (window._c2Data || []).find(x => x.NroCambio === nc); if (!c) return;
+  const monto = (c.devueltas || []).reduce((a, d) => a + (Number(d.Precio) || 0), 0) - (c.nuevas || []).filter(n => !/^PENDIENTE PRENDA/i.test(n.Prenda || '')).reduce((a, n) => a + (Number(n.Precio) || 0), 0);
+  if (!confirm('¿Dejar ' + nc + ' (' + (c.Nombre || '') + ') como SALDO A FAVOR de S/' + fmt(monto) + '?\n\nLa clienta podrá usarlo en una o varias compras durante 6 meses desde que se recibió la prenda. Ya no se enviará prenda nueva en este cambio.')) return;
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión');
+    const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_pasar_a_saldo', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_nc: nc }) });
+    const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch (_) {}
+    if (!r.ok) throw new Error((j && (j.message || j.hint)) || t.slice(0, 200));
+    const v = j && j.vence ? new Date(j.vence + 'T12:00:00-05:00').toLocaleDateString('es-PE', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+    const msg = 'Hola ' + String(c.Nombre || '').split(' ')[0] + ', ya recibimos tu prenda 💛 Te queda un saldo a favor de S/' + fmt((j && j.monto) || monto) + ' para usarlo en tu próxima compra en Tulula (en una o varias compras), válido hasta el ' + v + '. Cuando quieras te ayudamos a elegir.';
+    try { await navigator.clipboard.writeText(msg); } catch (_) {}
+    toast('💰 ' + nc + ' quedó como saldo a favor de S/' + fmt((j && j.monto) || monto) + ' (vence ' + v + '). Mensaje para la clienta copiado: pégalo en su WhatsApp.', 'ok');
+    if (typeof loadCambios2 === 'function') loadCambios2();
+  } catch (e) { toast('No se pudo pasar a saldo a favor: ' + (e && e.message || e), 'err'); }
+}
+// Aviso a la asesora (y al admin): saldos que vencen en 30 días o menos y todavía tienen plata
+async function _sfAviso() {
+  try {
+    if (!(_soyAdminERP() || _miAsesoraERP())) return;
+    const L = await _sfCargar(), yo = _miAsesoraERP(), hoy = Date.now();
+    const V = L.filter(x => String(x.estado).toUpperCase() === 'SALDO A FAVOR' && x.restante > 0.01 && x.vence && (_soyAdminERP() || x.asesora === yo))
+      .map(x => Object.assign(x, { dias: Math.round((Date.parse(x.vence + 'T12:00:00-05:00') - hoy) / 864e5) })).filter(x => x.dias <= 30);
+    let b = document.getElementById('sf-barra');
+    if (!V.length) { if (b) b.style.display = 'none'; return; }
+    if (!b) { b = document.createElement('div'); b.id = 'sf-barra'; document.body.appendChild(b); }
+    if (b.getAttribute('data-avx-cerrado') === '1') return;
+    b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99996;font-family:system-ui,sans-serif;font-size:14px;padding:8px 16px;line-height:1.5;box-shadow:0 -2px 8px rgba(0,0,0,.25);background:#ede9fe;color:#2e1065';
+    b.innerHTML = '💰 <b>' + V.length + ' saldo' + (V.length > 1 ? 's' : '') + ' a favor por vencer:</b> ' + V.map(x => _feEsc(x.nombre || '') + ' S/' + fmt(x.restante) + ' (' + (x.dias < 0 ? 'venció' : 'vence en ' + x.dias + ' d') + (_soyAdminERP() && x.asesora ? ' · ' + _feEsc(x.asesora) : '') + ')').join(' · ') + ' — ofrécele las novedades. <button id="sf-ver" style="margin-left:6px;border:0;border-radius:8px;padding:2px 10px;font-weight:600;cursor:pointer">Ver</button>';
+    document.getElementById('sf-ver').onclick = () => { try { localStorage.setItem('erp_c2_tab', 'SALDOS'); } catch (_) {} navegarA('cambios2'); };
+  } catch (_) {}
+}
+try { window.addEventListener('load', () => { setTimeout(_sfAviso, 12000); setInterval(_sfAviso, 60 * 60 * 1000); }); } catch (_) {}
 
 // ═══ 19-oct (Pablo) · 🛒 CARRITOS POR RECUPERAR — alerta VERDE (las rojas son clientas esperando) ═══
 // El bot (n8n «🛒 Carritos abandonados — WhatsApp») ya les mandó sus 2 mensajes y no compraron, o respondieron y no
@@ -35609,6 +35660,7 @@ async function loadCambios2(){
   catch(e){ el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; return; }
   window._c2Data=data||[];
   renderCambios2(el, window._c2Data);
+  _sfCargar().then(function(){ if (document.getElementById('cambios2-w') === el && window._c2Data === (data||window._c2Data)) renderCambios2(el, window._c2Data); });   // 21-oct · lo que queda de cada saldo
   // El botón morado "Actualizar" se quitó (26-jul): duplicaba el 🔄 del
   // encabezado. Esta línea se deja porque el elemento ya no existe y así el
   // código no se rompe si algún día vuelve.
@@ -35700,11 +35752,12 @@ function renderCambios2(el, cambios){
   ];
   function estadoDe(c){return String(c.Estado||'').toUpperCase();}
   var TABS=[
-    {k:'ACTIVO',t:'Activos',f:function(c){var e=estadoDe(c);return e!=='PRENDA NUEVA ENVIADA'&&e!=='CANCELADO';}},
+    {k:'ACTIVO',t:'Activos',f:function(c){var e=estadoDe(c);return e!=='PRENDA NUEVA ENVIADA'&&e!=='CANCELADO'&&e.indexOf('SALDO ')!==0;}},   // 21-oct: el saldo a favor tiene su pestaña
     {k:'TOTAL',t:'Total',f:function(c){return estadoDe(c)!=='CANCELADO';}},
     {k:'CLIENTE SOLICITA CAMBIO',t:'Cliente solicita',f:function(c){return estadoDe(c)==='CLIENTE SOLICITA CAMBIO';}},
     {k:'PRENDA ORIGINAL RECIBIDA',t:'Original recibida',f:function(c){return estadoDe(c)==='PRENDA ORIGINAL RECIBIDA';}},
     {k:'PRENDA NUEVA ENVIADA',t:'Nueva enviada',f:function(c){return estadoDe(c)==='PRENDA NUEVA ENVIADA';}},
+    {k:'SALDOS',t:'💰 Saldos a favor',f:function(c){return estadoDe(c).indexOf('SALDO ')===0;}},   // 21-oct (Pablo)
     {k:'CANCELADO',t:'Cancelados',f:function(c){return estadoDe(c)==='CANCELADO';}}
   ];
   var tab; try{tab=localStorage.getItem('erp_c2_tab')||'ACTIVO';}catch(e){tab='ACTIVO';}
@@ -35788,6 +35841,7 @@ function renderCambios2(el, cambios){
     el.querySelectorAll('[data-c2ver]').forEach(function(b){ b.addEventListener('click',function(){ verCambios2(this.dataset.c2ver); }); });
     el.querySelectorAll('[data-c2tl]').forEach(function(b){ b.addEventListener('click',function(){ timelineCambios2(this.dataset.c2tl); }); });
     el.querySelectorAll('[data-c2ed]').forEach(function(b){ b.addEventListener('click',function(){ editarCambios2(this.dataset.c2ed); }); });
+    el.querySelectorAll('[data-c2saldo]').forEach(function(b){ b.addEventListener('click',function(){ _c2PasarASaldo(this.dataset.c2saldo); }); });   // 21-oct
   }
   function paint(){
     var tb=el.querySelector('#c2-tbody'); if(!tb) return;
@@ -35813,7 +35867,10 @@ function renderCambios2(el, cambios){
       // el timeline. El botón que abre el editor pasó a llamarse "Ver" y la ficha de
       // solo lectura se eliminó: todo se mira desde el mismo sitio.
       // Un cambio ANULADO no se puede editar, así que ahí no hay botón que abrir.
-      var accion=(cancelado?'':'<button class="btn bg bs" title="Ver / editar" data-c2ed="'+esc(c.NroCambio)+'" style="font-size:11px;padding:4px 8px;margin-right:3px">Ver</button>')
+      var _esSaldo=estadoDe(c).indexOf('SALDO ')===0;   // 21-oct: un saldo a favor no se edita (se usa desde Nuevo pedido)
+      if(_esSaldo){ var _r=(window._c2Saldos||{})[c.NroCambio]; saldo='💰 S/'+fmt(_r?_r.restante:c.SaldoFavorMonto)+(_r&&Math.abs(_r.restante-c.SaldoFavorMonto)>0.005?' de S/'+fmt(c.SaldoFavorMonto):'')+(c.SaldoFavorVence?'<br><span style="font-size:10px;color:var(--mu)">vence '+esc(_c2fmtFecha(c.SaldoFavorVence))+'</span>':''); }
+      var accion=(cancelado||_esSaldo?'':'<button class="btn bg bs" title="Ver / editar" data-c2ed="'+esc(c.NroCambio)+'" style="font-size:11px;padding:4px 8px;margin-right:3px">Ver</button>')
+        +(estadoDe(c)==='PRENDA ORIGINAL RECIBIDA'?'<button class="btn bg bs" title="La clienta todavía no elige otra prenda: dejar como saldo a favor (6 meses)" data-c2saldo="'+esc(c.NroCambio)+'" style="font-size:11px;padding:4px 6px;margin-right:3px">💰</button>':'')
         +'<button class="btn bg bs" title="Timeline" data-c2tl="'+esc(c.NroCambio)+'" style="font-size:11px;padding:4px 6px">📅</button>';
       for(var i=0;i<L;i++){
         var first=(i===0); var d=D[i], n=N[i];
