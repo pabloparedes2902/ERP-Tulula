@@ -86,6 +86,8 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g small{display:block;color:v
     <div><label>Tela - proveedor</label><input id="nTela" placeholder="Mirella - Colortex"></div>
     <div><label>A la venta el</label><input id="nFecha" type="date"></div>
     <div><label>Costo por prenda (S/)</label><input id="nCosto" type="number" step="0.5" min="0"></div>
+    <div><label>Derivado al taller el (tela e insumos entregados)</label><input id="nFTal" type="date"></div>
+    <div><label>Días de confección del taller</label><input id="nDias" type="number" min="0" max="120" step="1" placeholder="10"></div>
   </div>
   <div class="mu" id="nAyuda" style="font-size:11.5px"></div>
   <div id="nGrid"></div>
@@ -128,10 +130,12 @@ async function cargar(){
     const [o, l, m] = await Promise.all([ sb('/rest/v1/prod_ordenes?select=*&order=id.desc'), sb('/rest/v1/prod_lineas?select=*'), sb('/rest/v1/prod_movs?select=*&order=id') ]);
     D.ordenes = o; D.lineas = l; D.movs = m;
     D.ordenes.forEach(x => { if (ETAPA_VIEJA[x.etapa]) x.etapa = ETAPA_VIEJA[x.etapa]; });
+    D._etapaGuardada = {}; D.ordenes.forEach(x => { D._etapaGuardada[x.id] = x.etapa; });
     try { D.pagos = await sb('/rest/v1/prod_pagos?select=*&order=fecha'); } catch (_) { D.pagos = []; }
     /* 21-oct F3 · 📦 Productos (una sola fuente de productos) y ajustes editables */
     try { const P = await rpc('prod_productos'); D.prod = null; if (Array.isArray(P) && P.length){ D.prod = {}; P.forEach(x => { D.prod[nrm(x.diseno)] = x; }); } } catch (_) { D.prod = null; }   /* sin lista = no se sabe: no se avisa «no existe» */
-    try { (await sb('/rest/v1/prod_param?select=clave,valor')).forEach(x => { D.param[x.clave] = +x.valor; }); } catch (_) {}   /* 21-oct F2 · si la tabla no está instalada, sigue sin pagos */
+    try { (await sb('/rest/v1/prod_param?select=clave,valor')).forEach(x => { D.param[x.clave] = +x.valor; }); } catch (_) {}
+    D.ordenes.forEach(x => { if (!x.cerrada) x.etapa = etapaActual(x); });   /* 21-oct · con lo que el ERP marcó solo */   /* 21-oct F2 · si la tabla no está instalada, sigue sin pagos */
   } catch (e) { document.getElementById('tablero').innerHTML = '<div class="vacio err">' + esc(e.message) + '</div>'; return; }
   pintar();
   publicarAlerta();
@@ -204,6 +208,7 @@ async function abrirNueva(o){
   document.getElementById('nDis').value = o ? o.diseno : ''; document.getElementById('nTipo').value = o ? o.tipo : 'reposicion';
   document.getElementById('nTaller').value = o ? (o.taller || '') : ''; document.getElementById('nTela').value = o ? (o.tela || '') : '';
   document.getElementById('nFecha').value = o ? (o.fecha_venta || '') : ''; document.getElementById('nCosto').value = o && o.costo_unit != null ? o.costo_unit : '';
+  document.getElementById('nFTal').value = o ? (o.fecha_taller || '') : ''; document.getElementById('nDias').value = o && o.dias_taller != null ? o.dias_taller : '';
   document.getElementById('nNotas').value = o ? (o.notas || '') : ''; document.getElementById('nMsg').textContent = '';
   if (o) D.lineas.filter(x => x.orden_id === o.id).forEach(x => { if (NV.colores.indexOf(x.color) < 0) NV.colores.push(x.color); NV.q[x.color + '|' + x.talla] = x.pedido; });
   nProducto(true); document.getElementById('mNueva').style.display = 'flex';
@@ -242,6 +247,8 @@ async function guardarOrden(){
       p_taller: document.getElementById('nTaller').value, p_tela: document.getElementById('nTela').value, p_fecha_venta: document.getElementById('nFecha').value || null,
       p_costo_unit: document.getElementById('nCosto').value === '' ? null : +document.getElementById('nCosto').value, p_notas: document.getElementById('nNotas').value, p_lineas: lineas });
     if (!r.ok) throw new Error(r.error);
+    const ft = document.getElementById('nFTal').value || null, di = document.getElementById('nDias').value === '' ? null : +document.getElementById('nDias').value;
+    if (ft || di != null || (NV.id && (D.ordenes.find(x => x.id === NV.id) || {}).fecha_taller)){ const r2 = await rpc('prod_taller_guardar', { p_id: r.id, p_fecha_taller: ft, p_dias_taller: di }); if (!r2.ok) throw new Error(r2.error); }
     cerrar('mNueva'); await cargar(); abrirOrden(r.id);
   } catch (e) { msg.textContent = e.message; }
   b.disabled = false;
@@ -452,6 +459,8 @@ function publicarAlerta(){
    gris = falta · punteado = no aplica (las reposiciones no pasan por diseño, muestra, molde ni escalado). ══ */
 function necesita(o, T){
   const n = [];
+  const lt = llegaTaller(o), ES0 = estados(o);
+  if (lt && ES0.corte !== 'h') n.push('<span class="chip ' + (lt < hoy0() ? 'rd' : '') + '">🧵 ' + (lt < hoy0() ? 'el taller debía entregar el ' : 'llega del taller el ') + fTxt(lt) + '</span>');
   if (T.porIngresar) n.push('<span class="chip am">📦 ' + T.porIngresar + ' por ingresar</span>');
   if (T.correccion) n.push('<span class="chip ' + (viejas(o) ? 'rd' : 'am') + '">🔧 ' + T.correccion + ' en corrección</span>');
   if (!o.costo_unit && T.buenas) n.push('<span class="chip">💵 sin costo</span>');
@@ -462,19 +471,44 @@ function necesita(o, T){
    Las etapas pueden avanzar sin esperar a las anteriores (fotos con la muestra mientras se confecciona).
    Si la orden nunca se tocó así, se deduce de la etapa actual: antes = hecha, la actual = en proceso, después = falta. ══ */
 const NR = o => '<span title="' + (o.tipo === 'nuevo' ? 'Nueva' : 'Reposición') + '" style="font-weight:800;color:' + (o.tipo === 'nuevo' ? 'var(--ac)' : 'var(--am)') + '">' + (o.tipo === 'nuevo' ? 'N' : 'R') + '-</span> ';
-function estados(o){
-  const C = CAMINO[o.tipo] || CAMINO.reposicion, i = C.indexOf(o.etapa), X = (o.estados && typeof o.estados === 'object') ? o.estados : {}, R = {};
+function estadosMano(o){
+  const C = CAMINO[o.tipo] || CAMINO.reposicion, et = (D._etapaGuardada && D._etapaGuardada[o.id]) || o.etapa, i = C.indexOf(et), X = (o.estados && typeof o.estados === 'object') ? o.estados : {}, R = {};
   C.forEach((e, j) => { const v = X[e] || X[ETAPA_INV[e]]; R[e] = v ? v : (o.cerrada || j < i ? 'h' : j === i ? 'p' : 'f'); });
   return R;
 }
+/* ══ 21-oct (Pablo) · LO QUE EL ERP YA SABE marca las etapas solo (gana siempre lo más avanzado: lo marcado a mano o lo del ERP) ══
+   Tela e insumos 🟢 = la orden tiene «Derivado al taller el» · Corte y confección 🟡 desde esa fecha, 🟢 cuando entregaron todo
+   Entrega 🟡 con la primera entrega, 🟢 cuando ya no falta nada · Calidad e inventario 🟡 con prendas buenas, 🟢 cuando no queda nada por ingresar ni en corrección
+   Fotos y videos 🟡 con algo subido, 🟢 con fotos de tienda + video + foto de catálogo en 📦 Productos · A la venta 🟢 activo en 📦 Productos y en la web */
+function estadosAuto(o){
+  const { T } = saldos(o), M = D.movs.filter(x => x.orden_id === o.id), hay = M.some(x => x.tipo === 'buena' || x.tipo === 'falla');
+  const todo = hay && T.pedido > 0 && T.falta === 0, p = D.prod && D.prod[nrm(o.diseno)], A = {};
+  if (o.fecha_taller){ A.diseno = 'h'; A.muestra = 'h'; A.tela = 'h'; A.corte = 'p'; }
+  if (hay){ A.diseno = 'h'; A.muestra = 'h'; A.tela = 'h'; A.corte = todo ? 'h' : 'p'; A.entrega = todo ? 'h' : 'p'; }
+  if (T.buenas > 0) A.calidad = (todo && !T.porIngresar && !T.correccion) ? 'h' : 'p';
+  if (p){ const f = +p.fotos_tienda > 0, v = +p.videos > 0, c = +p.catalogo > 0;
+    if (f || v || c) A.fotos = (f && v && c) ? 'h' : 'p';
+    if (p.activo !== false && String(p.shopify_estado || '').toLowerCase() === 'active' && T.buenas > 0) A.venta = 'h';
+    else if (p.activo !== false && String(p.shopify_estado || '').toLowerCase() === 'active') A.venta = 'p'; }
+  return A;
+}
+const RANGO = { f:0, p:1, h:2 };
+function estados(o){
+  const C = CAMINO[o.tipo] || CAMINO.reposicion, M = estadosMano(o), A = estadosAuto(o), R = {};
+  C.forEach(e => { R[e] = (RANGO[A[e]] || 0) > RANGO[M[e]] ? A[e] : M[e]; });
+  return R;
+}
+function etapaActual(o){ const C = CAMINO[o.tipo] || CAMINO.reposicion, E = estados(o); return C.find(x => E[x] !== 'h') || C[C.length - 1]; }
+function llegaTaller(o){ if (!o.fecha_taller || o.dias_taller == null) return null; return new Date(new Date(o.fecha_taller + 'T00:00:00').getTime() + o.dias_taller * 864e5); }
 const ETAPA_INV = { muestra:'molde', tela:'escalado', calidad:'inventario' };
 async function cicloEtapa(id, e){
   const o = D.ordenes.find(x => x.id === id); if (!o || o.cerrada) return;
-  const C = CAMINO[o.tipo] || CAMINO.reposicion, ES = estados(o);
+  const C = CAMINO[o.tipo] || CAMINO.reposicion, ES = estadosMano(o), A = estadosAuto(o);
   ES[e] = ES[e] === 'f' ? 'p' : ES[e] === 'p' ? 'h' : 'f';
+  if (A[e] === 'h' && ES[e] !== 'h') aviso('«' + ETAPAS[e][0] + '» la marcó el ERP con sus datos: queda 🟢.');
   /* la «etapa actual» (para el tablero y Alertas) = la primera que no está hecha; si están todas hechas, A la venta */
   const actual = C.find(x => ES[x] !== 'h') || C[C.length - 1];
-  const antes = { estados: o.estados, etapa: o.etapa }; o.estados = ES; o.etapa = actual; pintar(); if (OA && OA.id === id) abrirOrden(id);
+  const antes = { estados: o.estados, etapa: o.etapa }; o.estados = ES; o.etapa = etapaActual(o); if (D._etapaGuardada) D._etapaGuardada[id] = actual; pintar(); if (OA && OA.id === id) abrirOrden(id);
   try { const r = await rpc('prod_estados_guardar', { p_id: id, p_estados: ES, p_etapa: actual }); if (!r.ok) throw new Error(r.error); publicarAlerta(); }
   catch (er) { o.estados = antes.estados; o.etapa = antes.etapa; pintar(); if (OA && OA.id === id) abrirOrden(id); aviso(er.message); }
 }
@@ -495,14 +529,14 @@ function lineasHtml(L){
   h += ordenVista(L).map(o => {
     const C = CAMINO[o.tipo] || CAMINO.reposicion, ef = estadoFecha(o), { T } = saldos(o), pct = T.pedido ? Math.round(T.buenas / T.pedido * 100) : 0, ES = estados(o);
     /* 21-oct (Pablo) · el tramo de línea que LLEGA a una etapa toma su color: verde si está hecha, amarillo (o rojo) si está en proceso */
-    const col = e => { const v = ES[e]; return v === 'h' ? 'var(--ok)' : v === 'p' ? (ef.col === 'rd' ? 'var(--rd)' : '#facc15') : 'var(--bd)'; };
+    const AU = estadosAuto(o), col = e => { const v = ES[e]; return v === 'h' ? 'var(--ok)' : v === 'p' ? (ef.col === 'rd' ? 'var(--rd)' : '#facc15') : 'var(--bd)'; };
     return '<div class="g2 fila" draggable="true" data-id="' + o.id + '" onclick="abrirOrden(' + o.id + ')"><div class="nom"><b><span class="asa" title="Arrastra para mover">⠿</span>' + NR(o) + esc(o.diseno) + '</b><span>' + esc(o.codigo) + ' · ' + esc(o.taller || 'sin taller') + ' · ' + T.buenas + '/' + T.pedido + ' listas (' + pct + '%)</span>'
       + (ef.txt ? '<span class="chip ' + ef.col + '" style="margin-top:3px;align-self:flex-start">' + ef.txt + '</span>' : '') + '</div>'
       + E.map((e, k) => { const j = C.indexOf(e);
         if (j < 0) return '<div class="pt na" title="' + ETAPAS[e][0] + ' · no aplica"><i></i></div>';
         const v = ES[e], prev = C[j - 1], next = C[j + 1];
         const L2 = j === 0 ? 'transparent' : col(e), R2 = next ? col(next) : 'transparent';
-        return '<div class="pt ' + (v === 'h' ? 'h' : v === 'p' ? 'p ' + ef.col : '') + '" style="--l:' + L2 + ';--r:' + R2 + '" title="' + ETAPAS[e][0] + (v === 'h' ? ' · hecha' : v === 'p' ? (ef.col === 'rd' ? ' · en proceso · ATRASADA' : ' · en proceso') : ' · falta') + ' — toca el punto para cambiar">'
+        return '<div class="pt ' + (v === 'h' ? 'h' : v === 'p' ? 'p ' + ef.col : '') + '" style="--l:' + L2 + ';--r:' + R2 + '" title="' + ETAPAS[e][0] + (v === 'h' ? ' · hecha' : v === 'p' ? (ef.col === 'rd' ? ' · en proceso · ATRASADA' : ' · en proceso') : ' · falta') + (AU[e] && AU[e] === v ? ' (lo marcó el ERP)' : '') + ' — toca el punto para cambiar">'
           + '<i onclick="event.stopPropagation();cicloEtapa(' + o.id + ', \'' + e + '\')"></i></div>'; }).join('')
       + '<div class="nec" style="padding-left:8px">' + (necesita(o, T) || '<span class="mu">—</span>') + '</div></div>';
   }).join('');
