@@ -7010,14 +7010,17 @@ function _escFantIdx(){
 /* reparte las clientas de una talla entre sus colores: las que dijeron color van a ese color; el resto, en partes iguales
    entre los colores AGOTADOS de esa talla (si todos tienen stock, no se suma: la clienta no se quedó sin prenda) */
 function _escFantPieza(pz, vs){
+  /* 20-oct 19h (Pablo: «22 blazers negros 2XL está desbalanceado») · la clienta que pidió una talla agotada no dice el color (historial sin color):
+     sus pedidos se reparten entre TODOS los colores publicados de esa talla según cuánto vende cada color. Si dijo el color, va a ese color. */
   const I = _escFantIdx(), base = _mkNorm(pz.p).trim() + '|' + _mkNorm(pz.d).trim() + '|';
+  const vc = {}; vs.forEach(v => { vc[v.c] = (vc[v.c] || 0) + (v.v90 || 0); });
   [...new Set(vs.map(v => String(v.t).toUpperCase().trim()))].forEach(t => {
     const o = I[base + t]; if (!o) return;
     const dt = vs.filter(v => String(v.t).toUpperCase().trim() === t);
     let resto = o.n;
-    dt.forEach(v => { const k = _mkNorm(v.c).trim(); if (o.col[k] && v.s <= 0){ v.f += o.col[k]; resto -= o.col[k]; } });
-    const ag = dt.filter(v => v.s <= 0);
-    if (resto > 0 && ag.length) ag.forEach(v => { v.f += resto / ag.length; });
+    dt.forEach(v => { const k = _mkNorm(v.c).trim(); if (o.col[k]){ v.f += o.col[k]; resto -= o.col[k]; } });
+    const W = dt.reduce((a, v) => a + (vc[v.c] || 0) + 1, 0);
+    if (resto > 0 && W > 0) dt.forEach(v => { v.f += resto * ((vc[v.c] || 0) + 1) / W; });
   });
 }
 /* ── producto del anuncio y sus prendas en Stock (un conjunto = sus 2 prendas) ── */
@@ -7036,47 +7039,57 @@ function _escPiezas(tipo, modelo){
 function _escTxtCT(c, t){ return String(t) + ' ' + String(c).toLowerCase().replace(/(^|\s)\S/g, s => s.toUpperCase()); }
 /* ── 1 · STOCK: días de stock, tallas agotadas, cuándo cae y qué confeccionar ── */
 function _escStock(piezas, web){
+  /* 20-oct 19h (Pablo) · «el requerimiento debe salir de lo que hay en stock y del ritmo de venta: M y L salen más y se reponen más, 2XL sale poco y se repone poco».
+     Ritmo de cada talla = ritmo del COLOR (sus ventas de 28 o 90 días) × CURVA DE TALLAS de la prenda (cuánto pesa cada talla en 90 días, todos los colores).
+     Así una talla suelta con pocas ventas no dispara un pedido grande. Lote = lo que falta para cubrir (confección + N semanas);
+     si no llega al mínimo, se suben las semanas de cobertura para TODAS las tallas por igual (la curva se respeta). */
   piezas = piezas.filter(pz => (pz.x || []).length);
   if (!piezas.length) return { col:'gris', big:'—', sub:'no está en Stock', dias:null, piezas:[], agot:[], pocas:[], lote:[], tot:0, cub:0, ant:null, web:null };
-  const lead = _ep('esc_conf_dias'), obj = _ep('esc_obj_sem');
+  const lead = _ep('esc_conf_dias'), obj = _ep('esc_obj_sem'), fk = _ep('esc_fant_pct') / 100, fsem = Math.max(1, _ep('esc_fant_dias')) / 7;
   let peor = null, fantT = 0; const res = [];
   piezas.forEach(pz => {
-    /* 20-oct 18h · solo colores publicados en la web; producto fuera de la web: colores con stock hoy o vendidos en 28 días */
     const okC = web ? _escColPermitidos(pz, web) : new Set(pz.x.filter(a => (+a[2] || 0) > 0 || (+a[3] || 0) > 0).map(a => String(a[0])));
+    const curva = {}; let C90 = 0;
+    pz.x.forEach(a => { const t = String(a[1]).toUpperCase().trim(), v = +a[4] || 0; curva[t] = (curva[t] || 0) + v; C90 += v; });
     const vs0 = pz.x.filter(a => okC.has(String(a[0]))).map(a => ({ pz:String(pz.p), c:a[0], t:a[1], s:Math.max(0, +a[2] || 0), v28:+a[3] || 0, v90:+a[4] || 0, f:0 }));
     _escFantPieza(pz, vs0);   /* 20-oct · demanda fantasma */
-    const vs = vs0.filter(v => v.s > 0 || v.v90 > 0 || v.f > 0);
-    const fk = _ep('esc_fant_pct') / 100, fsem = Math.max(1, _ep('esc_fant_dias')) / 7;
-    vs.forEach(v => { v.fv = v.f * fk; v.rate = (v.v28 >= 3 ? v.v28 / 4 : v.v90 / 12.86) + v.fv / fsem; v.w = (v.v90 || v.v28) + v.fv; v.dias = v.rate > 0 ? Math.floor(v.s / v.rate * 7) : 999; });
+    const Rc = {}, Sh = {};
+    [...new Set(vs0.map(v => v.c))].forEach(c => { const L = vs0.filter(v => v.c === c), s28 = L.reduce((a, v) => a + v.v28, 0), s90 = L.reduce((a, v) => a + v.v90, 0);
+      Rc[c] = s28 >= 3 ? s28 / 4 : s90 / 12.86;
+      Sh[c] = L.reduce((a, v) => a + (C90 > 0 ? (curva[String(v.t).toUpperCase().trim()] || 0) / C90 : 1 / L.length), 0); });
+    vs0.forEach(v => { const sh = C90 > 0 ? (curva[String(v.t).toUpperCase().trim()] || 0) / C90 : 1;
+      v.fv = v.f * fk; v.rate = (Sh[v.c] > 0 ? Rc[v.c] * sh / Sh[v.c] : 0) + v.fv / fsem; v.w = v.rate; v.dias = v.rate > 0 ? Math.floor(v.s / v.rate * 7) : 999; });
+    const vs = vs0.filter(v => v.s > 0 || v.rate > 0);
     fantT += vs.reduce((a, v) => a + v.f, 0);
     const W = vs.reduce((a, v) => a + v.w, 0), Wok = vs.filter(v => v.s > 0).reduce((a, v) => a + v.w, 0);
     const R = vs.reduce((a, v) => a + v.rate, 0), S = vs.reduce((a, v) => a + v.s, 0);
     const cub = W > 0 ? Wok / W * 100 : (S > 0 ? 100 : 0), dias = R > 0 ? Math.floor(S / R * 7) : (S > 0 ? 999 : 0);
     const agot = vs.filter(v => v.s <= 0 && v.w > 0).sort((a, b) => b.w - a.w);
     const pocas = vs.filter(v => v.s > 0 && v.rate > 0 && v.dias < lead + 7).sort((a, b) => a.dias - b.dias);
-    let lote = vs.map(v => ({ pz:v.pz, c:v.c, t:v.t, n: Math.max(0, Math.ceil(v.rate * (lead / 7 + obj)) - v.s) })).filter(v => v.n > 0);
-    let tot = lote.reduce((a, v) => a + v.n, 0);
-    if (tot > 0 && tot < _ep('esc_lote_min')){ const k = _ep('esc_lote_min') / tot; lote.forEach(v => v.n = Math.max(1, Math.round(v.n * k))); tot = lote.reduce((a, v) => a + v.n, 0); }
+    const pedir = sem => vs.map(v => ({ pz:v.pz, c:v.c, t:v.t, n: Math.max(0, Math.ceil(v.rate * sem - v.s)) })).filter(v => v.n > 0);
+    let sem = lead / 7 + obj, lote = pedir(sem), tot = lote.reduce((a, v) => a + v.n, 0);
+    if (tot > 0 && tot < _ep('esc_lote_min')){
+      while (tot < _ep('esc_lote_min') && sem < 52){ sem += 0.25; lote = pedir(sem); tot = lote.reduce((a, v) => a + v.n, 0); }
+    }
     lote.sort((a, b) => b.n - a.n);
-    if (tot > 0 && tot < _ep('esc_lote_min')){ lote[0].n += _ep('esc_lote_min') - tot; tot = _ep('esc_lote_min'); }   /* el redondeo nunca deja el lote bajo el mínimo */
-    const r = { n:String(pz.p), cub, dias, S, agot, pocas, lote, tot, vs };
+    const r = { n:String(pz.p), cub, dias, S, agot, pocas, lote, tot, vs, sem };
     res.push(r);
     if (!peor || r.cub < peor.cub || (r.cub === peor.cub && r.dias < peor.dias)) peor = r;
   });
   const p = peor, col = (p.cub < _ep('esc_cub_rojo') || p.dias < _ep('esc_dias_rojo')) ? 'rojo'
                       : (p.cub < _ep('esc_cub_verde') || p.dias < _ep('esc_dias_verde')) ? 'ama' : 'verde';
-  /* anticipar: días hasta que pase a rojo por falta de días de stock */
   const ant = (col !== 'rojo' && p.dias < 999) ? Math.max(0, p.dias - _ep('esc_dias_rojo')) : null;
   const multi = res.length > 1;
   const lote = res.reduce((a, r) => a.concat(r.lote.map(v => Object.assign({ multi }, v))), []), tot = res.reduce((a, r) => a + r.tot, 0);
   const agotT = res.reduce((a, r) => a.concat(r.agot), []);
-  /* el número grande es lo que limita: si faltan tallas que se venden, cuántas; si no, cuántos días de stock quedan */
   /* 20-oct 18h (Pablo: «33 agotadas · 46 d no se entiende») · número grande = DÍAS DE STOCK; abajo = CUÁNDO REPONER */
   const repo = col === 'rojo' ? _escHoy() : (p.dias >= 999 ? null : _escMas(_escHoy(), Math.max(0, p.dias - _ep('esc_dias_rojo'))));
   const big = p.dias >= 999 ? 'sin ventas' : p.dias + ' días';
   const sub = !repo || (p.dias - _ep('esc_dias_rojo')) > 60 ? 'cubierto' : col === 'rojo' ? 'reponer ya' : 'reponer ' + repo.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
+  const combos = res.reduce((a, r) => a + r.vs.length, 0);
   return { col, big, sub,
-           dias: p.dias, cub: p.cub, agot: agotT, pocas: res.reduce((a, r) => a.concat(r.pocas), []), lote, tot, piezas: res, ant, multi, fant: Math.round(fantT), repo, web: web || null };
+           dias: p.dias, cub: p.cub, agot: agotT, pocas: res.reduce((a, r) => a.concat(r.pocas), []), lote, tot, piezas: res, ant, multi, fant: Math.round(fantT), repo, web: web || null,
+           combos, perdida: Math.round(100 - p.cub) };
 }
 /* ── 2 · CREATIVOS de un canal: corriendo hoy + listos sin usar; cuándo se cansa el que más gasta ── */
 /* 20-oct · canal de un creativo de la biblioteca: 'wa' | 'web' | 'ambos' | '' (los viejos, sin canal) */
@@ -7101,10 +7114,12 @@ function _escCrea(filas, tipo, modelo, canal, extra){
     let d = e == null ? null : _ep('esc_vida_crea') - e; if (fr != null && fr >= 3){ d = 0; cansado++; }
     if (d != null && d <= _ep('esc_aviso')) porCansar++;
     if (d != null && (rest == null || d < rest)) rest = Math.max(0, d); });
+  /* 20-oct 19h (Pablo) · lo que importa: cuántos VENDEN (el motor de 📏 Reglas dice ESCALAR o MANTENER) */
+  const venden = typeof motorDecidir === 'function' ? act.filter(r => { const a = (motorDecidir(r) || {}).a; return a === 'ESCALAR' || a === 'MANTENER'; }).length : 0;
   const tot = act.length + banco;
   const col = tot < _ep('esc_crea_rojo') ? 'rojo' : tot < _ep('esc_crea_verde') ? 'ama' : 'verde';
   const ant = (col !== 'rojo' && banco === 0 && rest != null) ? rest : null;
-  return { col, big: String(act.length), sub: banco ? '+' + banco + ' listo' + (banco > 1 ? 's' : '') : 'corriendo', act: act.length, banco, sinCanal, propios, compartidos, rest, cansado, porCansar, ant, vence, nuevo, ultGasto, ultApag };
+  return { col, big: venden + ' de ' + act.length, sub: 'venden' + (banco ? ' · +' + banco + ' listo' + (banco > 1 ? 's' : '') : ''), venden, act: act.length, banco, sinCanal, propios, compartidos, rest, cansado, porCansar, ant, vence, nuevo, ultGasto, ultApag };
 }
 /* ── 3 · GANADORES de un canal: el motor de 📏 Reglas dice ESCALAR ── */
 function _escGana(filas){
@@ -7127,7 +7142,10 @@ function _escConv(filas, canal){
   return { base, ven, tasa: base > 0 ? ven / base * 100 : null, gasto: s('gasto'), ing, mc };
 }
 /* ★ productos ganadores (paso 0): margen de contribución de vida > 0 con mínimo de ventas — los mejores = sugeridos */
-function escSugeridos(F){ return F.filter(f => f.venv >= _ep('esc_sug_ventas') && f.mc > 0).sort((a, b) => b.mc - a.mc).slice(0, _ep('esc_portafolio')); }
+/* 20-oct 19h (Pablo) · prioridad = mayor margen de contribución entre los que TIENEN STOCK para escalar (stock verde o amarillo);
+   los de stock rojo o sin stock van después aunque tengan más margen */
+function escSugeridos(F){ const conSt = f => (f.stock && (f.stock.col === 'verde' || f.stock.col === 'ama')) ? 1 : 0;
+  return F.filter(f => f.venv >= _ep('esc_sug_ventas') && f.mc > 0).sort((a, b) => (conSt(b) - conSt(a)) || (b.mc - a.mc)).slice(0, _ep('esc_portafolio')); }
 function escFilas(){
   if (!MK || !MK.filas) return [];
   ESC_DUENO = null;
@@ -7190,15 +7208,16 @@ function _escAccion(f, ln, x){
     const nc = n.piezas && n.piezas.length ? new Set(n.piezas.reduce((a, r) => a.concat((r.vs || []).map(v => v.c)), [])).size : 0;
     const dsC = ds + (nc ? ' · ' + _escPl(nc, 'color', 'colores') + (n.web ? ' en la web' : ' con stock') : '');   /* 20-oct 18h */
     const cuando = n.repo ? _escPlazo(n.repo) : '';
-    if (n.col === 'rojo') return { sit:'Stock crítico · ' + dsC + (ag ? ' · ' + _escPl(ag, 'talla agotada', 'tallas agotadas') + ' que se piden' : '') + fa, act:'Confeccionar ' + lote + ' prendas hoy (llegan en ' + _ep('esc_conf_dias') + ' días)', q:ESC_RESP.stock, col, lote:n };
-    if (n.col === 'ama') return { sit:'Stock bajo · ' + dsC + (ag ? ' · ' + _escPl(ag, 'talla agotada', 'tallas agotadas') : '') + fa, act:'Mandar a confeccionar ' + lote + ' prendas ' + cuando + ', antes de caer a rojo', q:ESC_RESP.stock, col, lote:n };
+    const agT = ag ? ' · ' + ag + ' de ' + (n.combos || ag) + ' tallas agotadas = ' + n.perdida + '% de lo que se vende' : '';   /* 20-oct 19h · el porqué del color */
+    if (n.col === 'rojo') return { sit:'Stock crítico · ' + dsC + agT + fa, act:'Confeccionar ' + lote + ' prendas hoy (llegan en ' + _ep('esc_conf_dias') + ' días)', q:ESC_RESP.stock, col, lote:n };
+    if (n.col === 'ama') return { sit:'Stock bajo · ' + dsC + agT + fa, act:'Mandar a confeccionar ' + lote + ' prendas ' + cuando + ', antes de caer a rojo', q:ESC_RESP.stock, col, lote:n };
     return { sit: dsC.charAt(0).toUpperCase() + dsC.slice(1) + fa, act: avisa ? 'Mandar a confeccionar ' + d(n.ant) + ' (' + lote + ' prendas)' : 'Ninguna por ahora: stock en verde', q:ESC_RESP.stock, col, lote: avisa ? n : null };
   }
   if (x === 'crea'){
     const g = ln.niv.gana.g, tot = n.act + n.banco;
     let falta = Math.max(0, _ep('esc_crea_verde') - tot);
     if (!g) falta = Math.max(falta, 3);   /* sin ganador: probar mínimo 3 nuevos (pedido de Pablo: «si tienes 2 y ninguno gana, crea 2 o 3 más») */
-    const base = _escPl(n.act, 'corriendo', 'corriendo') + (n.banco ? ' · ' + _escPl(n.banco, 'listo', 'listos') : '') + (n.compartidos && !n.propios && n.banco ? ' (sin canal asignado)' : '') + (n.cansado ? ' · ' + _escPl(n.cansado, 'cansado', 'cansados') : '');
+    const base = _escPl(n.act, 'corriendo', 'corriendo') + ' · ' + (n.venden || 0) + ' ' + ((n.venden || 0) === 1 ? 'vende' : 'venden') + (n.banco ? ' · ' + _escPl(n.banco, 'listo', 'listos') : '') + (n.compartidos && !n.propios && n.banco ? ' (sin canal asignado)' : '') + (n.cansado ? ' · ' + _escPl(n.cansado, 'cansado', 'cansados') : '');
     const crear = 'Crear ' + _escPl(falta, 'creativo nuevo', 'creativos nuevos');
     /* plazo para CREAR: si hay corriendo, cuando se acaba la prueba del más nuevo; si no queda ninguno, 2 días desde que se apagó el último */
     /* 19-oct v8 · faltan creativos (rojo/amarillo): el plazo corre desde que se APAGÓ el último (+2 d); si nunca se apagó ninguno, desde hoy.
@@ -7423,12 +7442,12 @@ function _escAlinear(){
 }
 function _escPicker(F, SUG, L){
   if (!ESC_PICKSEL) ESC_PICKSEL = L.filter(p => !p.vacio).map(p => p.k);
-  const sk = SUG.map(x => x.k), cand = F.slice().sort((a, b) => (b.mc - a.mc) || (b.ven - a.ven));
+  const sk = SUG.map(x => x.k), cs = f => (f.stock && (f.stock.col === 'verde' || f.stock.col === 'ama')) ? 1 : 0, cand = F.slice().sort((a, b) => (cs(b) - cs(a)) || (b.mc - a.mc) || (b.ven - a.ven));
   return '<div class="esx-modal"><div class="esx-mbox"><div class="esx-top"><span class="esx-tit">ELIGE HASTA 5</span><span style="flex:1"></span>'
     + '<button class="esx-b" title="Cerrar" onclick="ESC_PICK=false;escPintar()">✕</button></div><div class="esx-mlist">'
     + cand.map(p => '<div class="esx-mi' + (ESC_PICKSEL.includes(p.k) ? ' on' : '') + '" onclick="escPick(\'' + p.k.replace(/'/g, "\\'") + '\')">'
         + (p.img ? '<img src="' + esc(p.img) + '" alt="">' : '<div class="esx-noimg">' + esc(p.nombre.charAt(0)) + '</div>')
-        + '<b>' + (sk.includes(p.k) ? '<em class="esx-star">★</em> ' : '') + esc(p.nombre) + '</b><span>Margen S/ ' + mkNum(p.mc) + ' · ' + p.venv + ' ventas</span></div>').join('')
+        + '<b>' + (sk.includes(p.k) ? '<em class="esx-star">★</em> ' : '') + esc(p.nombre) + '</b><span>Margen S/ ' + mkNum(p.mc) + ' · ' + p.venv + ' ventas · stock ' + ({ verde:'🟢', ama:'🟡', rojo:'🔴', gris:'—' })[(p.stock || {}).col || 'gris'] + '</span></div>').join('')
     + '</div><div class="esx-mfoot"><button class="esx-b" onclick="ESC_PICKSEL=escSugeridos(escFilas()).map(x=>x.k);escPintar()">★ USAR SUGERIDOS</button><span>' + ESC_PICKSEL.length + '/5</span>'
     + '<span id="escPickMsg" class="esx-err"></span><span style="flex:1"></span><button class="esx-b on" onclick="escPickGuardar()">GUARDAR FOCO</button></div></div></div>';
 }
