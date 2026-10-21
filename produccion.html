@@ -114,7 +114,7 @@ const CAMINO = { nuevo:['diseno','muestra','tela','corte','entrega','calidad','f
 const ETAPA_VIEJA = { molde:'muestra', escalado:'tela', inventario:'calidad' };   /* órdenes guardadas con las etapas de antes */
 const TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
 const TALLERES = ['José Luis','Dan','Pedro','Ángel','Bella','Jhon','Jefferson'];
-let D = { ordenes:[], lineas:[], movs:[], pagos:[], arch:[], urls:{}, stock:null, prod:null, param:{ yayita_desc_pct:40 } }, NV = null, OA = null;
+let D = { ordenes:[], lineas:[], movs:[], pagos:[], arch:[], ins:[], urls:{}, stock:null, prod:null, param:{ yayita_desc_pct:40 } }, NV = null, OA = null;
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const nrm = s => String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
 function tok(){ try { const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null'); return (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null; } catch (e) { return null; } }
@@ -132,7 +132,8 @@ async function cargar(){
     D.ordenes.forEach(x => { if (ETAPA_VIEJA[x.etapa]) x.etapa = ETAPA_VIEJA[x.etapa]; });
     D._etapaGuardada = {}; D.ordenes.forEach(x => { D._etapaGuardada[x.id] = x.etapa; });
     try { D.pagos = await sb('/rest/v1/prod_pagos?select=*&order=fecha'); } catch (_) { D.pagos = []; }
-    try { D.arch = await sb('/rest/v1/prod_archivos?select=*&order=id'); } catch (_) { D.arch = []; }   /* 21-oct · ficha técnica */
+    try { D.arch = await sb('/rest/v1/prod_archivos?select=*&order=id'); } catch (_) { D.arch = []; }
+    try { D.ins = await sb('/rest/v1/prod_insumos?select=*&order=orden'); } catch (_) { D.ins = []; }   /* 21-oct · ficha técnica paso 2 */   /* 21-oct · ficha técnica */
     /* 21-oct F3 · 📦 Productos (una sola fuente de productos) y ajustes editables */
     try { const P = await rpc('prod_productos'); D.prod = null; if (Array.isArray(P) && P.length){ D.prod = {}; P.forEach(x => { D.prod[nrm(x.diseno)] = x; }); } } catch (_) { D.prod = null; }   /* sin lista = no se sabe: no se avisa «no existe» */
     try { (await sb('/rest/v1/prod_param?select=clave,valor')).forEach(x => { D.param[x.clave] = +x.valor; }); } catch (_) {}
@@ -290,7 +291,7 @@ function abrirOrden(id){
   if (M.length) h += '<div class="sec"><h4>Historial</h4><table class="g"><tr><th>Fecha</th><th>Qué</th><th>Color · talla</th><th>Cant.</th><th>Motivo</th><th></th></tr>'
     + M.map(m => '<tr><td>' + esc(m.fecha) + '</td><td>' + ({ buena:'✓ Buena', falla:'⚠ Con falla', corregida:'🔧 Corregida', perdida:'✕ Perdida', yayita:'🏷 Yayita' })[m.tipo] + (m.ingresado ? ' <span class="chip">en stock' + (m.lote ? ' · ' + esc(m.lote) : '') + '</span>' : '') + '</td><td>' + esc(m.color + ' · ' + m.talla) + '</td><td>' + m.cantidad + '</td><td>' + esc(m.motivo || '') + '</td>'
       + '<td>' + (m.ingresado ? '' : '<button title="Deshacer (cargado por error)" onclick="borrarMov(' + m.id + ')">✕</button>') + '</td></tr>').join('') + '</table></div>';
-  document.getElementById('oCuerpo').innerHTML = h; firmarFicha(o); document.getElementById('mOrden').style.display = 'flex';
+  document.getElementById('oCuerpo').innerHTML = h; firmarFicha(o); insTotal(); document.getElementById('mOrden').style.display = 'flex';
 }
 function gridMov(pre, colores, tallas, S, tipos, filtro){
   return tipos.map(([tp, nom]) => '<div style="margin-top:6px"><b style="font-size:12px">' + nom + '</b><table class="g"><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '</tr>'
@@ -584,7 +585,52 @@ function fichaHtml(o){
                       : '<span class="chip" style="cursor:pointer" data-ruta="' + esc(a.ruta) + '" onclick="verArchivo(this.dataset.ruta)">📄 ' + esc((a.nombre || 'archivo').slice(0, 22)) + '</span>')
           + '<button title="Quitar" onclick="borrarArchivo(' + a.id + ')" style="position:absolute;top:-6px;right:-6px;padding:0 5px;font-size:10px;border-radius:10px">✕</button></div>').join('') : '<span class="mu" style="font-size:11px">Sin archivos</span>') + '</div>'
         + '<div class="mu" id="fMsg-' + t + '" style="font-size:11px"></div></div>'; }).join('')
-    + '</div></div>';
+    + '</div>' + insumosHtml(o) + '</div>';
+}
+/* ══ 21-oct (Pablo) · FICHA TÉCNICA paso 2: INSUMOS del producto → costo por prenda → se llevan a 📦 Productos (la que manda en costos) ══ */
+const COMPS = [['confeccion','Confección'],['tela1','Tela'],['entretela','Entretela'],['forro','Forro'],['elastico','Elástico'],['etiqueta','Etiqueta'],['botones','Botones'],['cierre','Cierre/broches'],['packaging','Packaging'],['otros','Otros']];
+function insumosDe(o){
+  const d = nrm(o.diseno), L = D.ins.filter(x => x.diseno === d);
+  if (L.length) return L;
+  const s = [];   /* sugerencia para empezar: lo que la orden ya sabe */
+  if (o.costo_unit) s.push({ comp:'confeccion', descripcion:'Taller ' + (o.taller || ''), cantidad:1, unidad:'prenda', precio:+o.costo_unit });
+  if (o.tela) s.push({ comp:'tela1', descripcion:o.tela, cantidad:'', unidad:'m', precio:'' });
+  return s;
+}
+function insumosHtml(o){
+  const L = insumosDe(o), guardado = D.ins.some(x => x.diseno === nrm(o.diseno));
+  const fila = (x, i) => '<tr data-i="' + i + '"><td><select class="iC">' + COMPS.map(([k, t]) => '<option value="' + k + '"' + (x.comp === k ? ' selected' : '') + '>' + t + '</option>').join('') + '</select></td>'
+    + '<td><input class="iD" value="' + esc(x.descripcion || '') + '" placeholder="Material, proveedor" style="width:150px;text-align:left"></td>'
+    + '<td><input class="iQ" type="number" step="0.01" min="0" value="' + (x.cantidad === '' || x.cantidad == null ? '' : x.cantidad) + '" oninput="insTotal()"></td>'
+    + '<td><input class="iU" value="' + esc(x.unidad || '') + '" placeholder="m, und" style="width:54px"></td>'
+    + '<td><input class="iP" type="number" step="0.01" min="0" value="' + (x.precio === '' || x.precio == null ? '' : x.precio) + '" oninput="insTotal()" style="width:64px"></td>'
+    + '<td class="iS"></td><td><button title="Quitar" onclick="this.closest(\'tr\').remove();insTotal()">✕</button></td></tr>';
+  const pr = D.prod && D.prod[nrm(o.diseno)];
+  return '<div style="margin-top:12px"><b style="font-size:12.5px">🧾 Insumos y costo por prenda</b>' + (guardado ? '' : ' <span class="chip am">sin guardar · sugerido con lo que sabe la orden</span>')
+    + '<table class="g" id="insT" style="width:100%"><tr><th>Componente</th><th>Material / proveedor</th><th>Cant. por prenda</th><th>Unidad</th><th>Precio unit. S/</th><th>Subtotal</th><th></th></tr>' + L.map(fila).join('') + '</table>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"><button onclick="insAgregar()">＋ Insumo</button><button onclick="insGuardar()">💾 Guardar insumos</button>'
+    + '<span class="sp"></span><b id="insTot"></b>' + (pr && pr.costo_unitario != null ? '<span class="mu" style="font-size:11.5px">📦 Productos tiene S/ ' + (+pr.costo_unitario).toFixed(2) + '</span>' : '')
+    + '<button class="p" onclick="insLlevar()" title="Abre la ficha en 📦 Productos con estos costos puestos; ahí revisas y guardas">Llevar a 📦 Productos →</button> <span id="insMsg" class="err"></span></div></div>';
+}
+function insFilas(){ return [...document.querySelectorAll('#insT tr[data-i]')].map(tr => ({ comp: tr.querySelector('.iC').value, descripcion: tr.querySelector('.iD').value, cantidad: tr.querySelector('.iQ').value, unidad: tr.querySelector('.iU').value, precio: tr.querySelector('.iP').value })); }
+function insTotal(){
+  let t = 0; document.querySelectorAll('#insT tr[data-i]').forEach(tr => { const q = +tr.querySelector('.iQ').value || 0, p = +tr.querySelector('.iP').value || 0; tr.querySelector('.iS').textContent = (q * p).toFixed(2); t += q * p; });
+  const e = document.getElementById('insTot'); if (e) e.textContent = 'Costo por prenda: S/ ' + t.toFixed(2);
+}
+function insAgregar(){ const tb = document.getElementById('insT');
+  const i = document.querySelectorAll('#insT tr[data-i]').length, x = { comp:'otros' }; const row = document.createElement('tr'); row.dataset.i = i;
+  row.innerHTML = '<td><select class="iC">' + COMPS.map(([k, t]) => '<option value="' + k + '"' + (x.comp === k ? ' selected' : '') + '>' + t + '</option>').join('') + '</select></td><td><input class="iD" placeholder="Material, proveedor" style="width:150px;text-align:left"></td><td><input class="iQ" type="number" step="0.01" min="0" value="1" oninput="insTotal()"></td><td><input class="iU" value="und" style="width:54px"></td><td><input class="iP" type="number" step="0.01" min="0" oninput="insTotal()" style="width:64px"></td><td class="iS"></td><td><button title="Quitar" onclick="this.closest(\'tr\').remove();insTotal()">✕</button></td>';
+  tb.appendChild(row); insTotal(); }
+async function insGuardar(){
+  const m = document.getElementById('insMsg'); m.textContent = '';
+  try { const r = await rpc('prod_insumos_guardar', { p_diseno: nrm(OA.diseno), p_items: insFilas() }); if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); }
+  catch (e) { m.textContent = e.message; }
+}
+function insLlevar(){
+  const comp = {}; insFilas().forEach(x => { comp[x.comp] = (comp[x.comp] || 0) + (+x.cantidad || 0) * (+x.precio || 0); });
+  if (!(parent && parent !== window && parent.prodLlevarCostos)){ aviso('Abre Producción desde el ERP.'); return; }
+  const tot = Object.values(comp).reduce((a, v) => a + v, 0);
+  cerrar('mOrden'); parent.prodLlevarCostos(nrm(OA.diseno), comp, 'Costos de la ficha técnica (S/ ' + tot.toFixed(2) + ' por prenda) puestos en amarillo: revisa y toca Guardar.');
 }
 async function firmar(rutas){
   const faltan = rutas.filter(r => !D.urls[r]); if (!faltan.length) return;
