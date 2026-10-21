@@ -76,7 +76,7 @@ const CAMINO = { nuevo:['diseno','muestra','molde','tela','escalado','corte','en
                  reposicion:['tela','corte','entrega','calidad','inventario','venta'] };
 const TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
 const TALLERES = ['José Luis','Dan','Pedro','Ángel','Bella','Jhon','Jefferson'];
-let D = { ordenes:[], lineas:[], movs:[], pagos:[], stock:null }, NV = null, OA = null;
+let D = { ordenes:[], lineas:[], movs:[], pagos:[], stock:null, prod:null, param:{ yayita_desc_pct:40 } }, NV = null, OA = null;
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const nrm = s => String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
 function tok(){ try { const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null'); return (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null; } catch (e) { return null; } }
@@ -91,7 +91,10 @@ async function cargar(){
   try {
     const [o, l, m] = await Promise.all([ sb('/rest/v1/prod_ordenes?select=*&order=id.desc'), sb('/rest/v1/prod_lineas?select=*'), sb('/rest/v1/prod_movs?select=*&order=id') ]);
     D.ordenes = o; D.lineas = l; D.movs = m;
-    try { D.pagos = await sb('/rest/v1/prod_pagos?select=*&order=fecha'); } catch (_) { D.pagos = []; }   /* 21-oct F2 · si la tabla no está instalada, sigue sin pagos */
+    try { D.pagos = await sb('/rest/v1/prod_pagos?select=*&order=fecha'); } catch (_) { D.pagos = []; }
+    /* 21-oct F3 · 📦 Productos (una sola fuente de productos) y ajustes editables */
+    try { const P = await sb('/rest/v1/costos_erp?select=diseno,precio_lista,costo_unitario,activo'); D.prod = {}; P.forEach(x => { D.prod[nrm(x.diseno)] = x; }); } catch (_) { D.prod = null; }
+    try { (await sb('/rest/v1/prod_param?select=clave,valor')).forEach(x => { D.param[x.clave] = +x.valor; }); } catch (_) {}   /* 21-oct F2 · si la tabla no está instalada, sigue sin pagos */
   } catch (e) { document.getElementById('tablero').innerHTML = '<div class="vacio err">' + esc(e.message) + '</div>'; return; }
   pintar();
 }
@@ -148,7 +151,7 @@ function pintar(){
 async function cargarStock(){
   if (D.stock) return D.stock;
   try { const j = await rpc('mk_escalamiento_stock'); D.stock = (j && j.filas) || []; } catch (e) { D.stock = []; }
-  document.getElementById('lDis').innerHTML = [...new Set(D.stock.map(x => nrm(x.p + ' ' + x.d)))].sort().map(x => '<option value="' + esc(x) + '">').join('');
+  document.getElementById('lDis').innerHTML = [...new Set(D.stock.map(x => nrm(x.p + ' ' + x.d)).concat(Object.keys(D.prod || {})))].sort().map(x => '<option value="' + esc(x) + '">').join('');
   return D.stock;
 }
 async function abrirNueva(o){
@@ -166,7 +169,9 @@ function piezasDe(dis){ const k = nrm(dis); return (D.stock || []).filter(x => n
 function nProducto(mantener){
   const P = piezasDe(document.getElementById('nDis').value);
   if (!mantener || !NV.colores.length){ if (P.length) NV.colores = [...new Set(P[0].x.filter(a => (+a[2] || 0) > 0 || (+a[4] || 0) > 0).map(a => String(a[0])))].sort(); }
-  document.getElementById('nAyuda').textContent = P.length ? 'Debajo de cada casilla: hay hoy · vendidas en 90 días.' : 'Producto nuevo (todavía sin stock): agrega sus colores.';
+  const nom = nrm(document.getElementById('nDis').value), ay = document.getElementById('nAyuda');
+  ay.innerHTML = esc(P.length ? 'Debajo de cada casilla: hay hoy · vendidas en 90 días.' : 'Producto nuevo (todavía sin stock): agrega sus colores.')
+    + (nom && D.prod && !D.prod[nom] ? ' <span class="chip am">No existe en 📦 Productos</span> <button type="button" onclick="crearProducto(nrm(document.getElementById(\'nDis\').value))">Crear en 📦 Productos</button>' : '');
   nGrid();
 }
 const qs = c => c.replace(/'/g, "\\'");
@@ -210,7 +215,7 @@ function abrirOrden(id){
     + (o.cerrada ? '<span class="chip">Cerrada</span>' : (i > 0 ? '<button onclick="etapa(\'' + C[i - 1] + '\')">↩ Volver a ' + ETAPAS[C[i - 1]][0] + '</button>' : '')
       + (i < C.length - 1 ? '<button class="p" onclick="etapa(\'' + C[i + 1] + '\')">Pasar a ' + ETAPAS[C[i + 1]][0] + ' →</button>' : '<button class="p" onclick="etapa(\'cerrada\')">✓ Cerrar orden</button>'))
     + (ef.txt ? '<span class="chip ' + ef.col + '">' + ETAPAS[o.etapa][0] + ': ' + ef.txt + ' · ' + ETAPAS[o.etapa][1] + '</span>' : '')
-    + '<span class="sp"></span><button onclick="abrirNueva(OA)">✏️ Editar</button></div>'
+    + prodChip(o) + '<span class="sp"></span><button onclick="abrirNueva(OA)">✏️ Editar</button></div>'
     + '<div class="res"><div><b>' + T.pedido + '</b>pedidas</div><div><b class="okt">' + T.buenas + '</b>listas (al stock)</div><div><b style="color:var(--am)">' + T.correccion + '</b>en corrección</div><div><b class="err">' + T.perdidas + '</b>perdidas</div><div><b>' + T.yayitas + '</b>yayitas</div><div><b>' + T.falta + '</b>faltan entregar</div></div>'
     + '<table class="g"><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '</tr>'
     + colores.map(c => '<tr><td><b>' + esc(c) + '</b></td>' + tallas.map(t => celda(c, t, s => '<td class="' + (s.correccion ? 'ag' : '') + '" title="Pedidas ' + s.pedido + ' · listas ' + s.buenas + ' · corrección ' + s.correccion + ' · perdidas ' + s.perdidas + '">' + s.buenas + '/' + s.pedido + (s.correccion ? '<small>' + s.correccion + ' en corr.</small>' : '') + '</td>')).join('') + '</tr>').join('') + '</table>'
@@ -223,6 +228,7 @@ function abrirOrden(id){
     h += '<div class="sec"><h4>📦 Registrar entrega del taller</h4><div class="mu" style="font-size:11.5px">Buenas = van al stock · Con falla = vuelven al taller a corregir.</div>'
       + gridMov('e', colores, tallas, S, [['buena','Buenas'], ['falla','Con falla']]) + '<button class="p" onclick="guardarMov(\'e\')">Guardar entrega</button> <span id="eMsg" class="err"></span></div>';
     if (T.correccion) h += '<div class="sec"><h4>🔧 Prendas en corrección (' + T.correccion + ')</h4><div class="mu" style="font-size:11.5px">Corregidas = volvieron bien (van al stock) · Yayitas = sin arreglo pero se venden baratas (van al montón de Fallas) · Perdidas = no se pueden vender. Yayita y pérdida piden el motivo.</div>'
+      + yayitaHtml(o)
       + gridMov('c', colores, tallas, S, [['corregida','Corregidas'], ['yayita','Yayitas'], ['perdida','Perdidas']], s => s.correccion > 0)
       + '<input id="cMotivo" list="lMot" placeholder="Motivo (yayita o pérdida)" style="width:260px"><datalist id="lMot">' + motivos().map(m => '<option value="' + esc(m) + '">').join('') + '</datalist> <button class="p" onclick="guardarMov(\'c\')">Guardar</button> <span id="cMsg" class="err"></span></div>';
   }
@@ -286,16 +292,19 @@ function cuentas(o, T){
   return { P, pagado, cu, aPagar, saldo: aPagar - pagado, tela, real, ideal, imp: o.creado_por === 'importado-drive' };
 }
 function costosHtml(o, T){
-  const c = cuentas(o, T), sug = c.pagado <= 0 ? Math.round(c.aPagar * 0.8 * 100) / 100 : Math.max(0, Math.round(c.saldo * 100) / 100);
+  const c = cuentas(o, T), sinHist = c.imp && !c.P.length, sug = sinHist ? 0 : c.pagado <= 0 ? Math.round(c.aPagar * 0.8 * 100) / 100 : Math.max(0, Math.round(c.saldo * 100) / 100);
   let h = '<div class="sec"><h4>💵 Costos y pagos al taller</h4>'
     + '<div class="f"><div><label>Costo por prenda (taller)</label><input id="kCu" type="number" step="0.5" min="0" value="' + (o.costo_unit != null ? o.costo_unit : '') + '"></div>'
     + '<div><label>Tela: metros</label><input id="kTm" type="number" step="0.5" min="0" value="' + (o.tela_metros != null ? o.tela_metros : '') + '"></div>'
     + '<div><label>Tela: S/ por metro</label><input id="kTp" type="number" step="0.1" min="0" value="' + (o.tela_precio_m != null ? o.tela_precio_m : '') + '"></div>'
     + '<div style="align-self:end"><button onclick="guardarCostos()">Guardar costos</button> <span id="kMsg" class="err"></span></div></div>'
     + '<div class="res"><div><b>' + S2(c.aPagar) + '</b>a pagar al taller (' + T.buenas + ' buenas)</div><div><b class="okt">' + S2(c.pagado) + '</b>pagado</div>'
-    + '<div><b style="color:' + (c.saldo > 0.01 ? 'var(--am)' : 'var(--ok)') + '">' + S2(c.saldo) + '</b>saldo</div>'
+    + (sinHist ? '<div><b class="mu">en el Drive</b>pagos hasta hoy</div>' : '<div><b style="color:' + (c.saldo > 0.01 ? 'var(--am)' : 'var(--ok)') + '">' + S2(c.saldo) + '</b>saldo</div>')
     + (c.tela ? '<div><b>' + S2(c.tela) + '</b>tela</div>' : '')
     + (c.real != null ? '<div><b>' + S2(c.real) + '</b>costo real por prenda' + (c.ideal != null && c.real - c.ideal > 0.01 ? ' <span class="chip rd">+' + S2(c.real - c.ideal) + ' por fallas</span>' : '') + '</div>' : '') + '</div>';
+  const pr = D.prod && D.prod[nrm(o.diseno)];
+  if (pr && c.real != null && +pr.costo_unitario > 0 && Math.abs(c.real - pr.costo_unitario) / pr.costo_unitario > 0.05)
+    h += '<div class="mu" style="font-size:11.5px">📦 Productos tiene costo <b>' + S2(pr.costo_unitario) + '</b>; taller + tela de esta orden dan <b>' + S2(c.real) + '</b> por prenda (sin avíos ni paquetería). <button type="button" data-n="' + esc(nrm(o.diseno)) + '" data-m="' + esc('Costo real de ' + o.codigo + ': ' + S2(c.real) + ' por prenda (taller + tela)') + '" onclick="crearProducto(this.dataset.n, this.dataset.m)">Revisar en 📦 Productos</button></div>';
   if (c.imp) h += '<div class="mu" style="font-size:11.5px">Orden importada del Drive: los pagos hechos antes del 21-oct siguen en el Drive. Registra aquí solo lo que pagues desde hoy.</div>';
   if (c.P.length) h += '<table class="g"><tr><th>Fecha</th><th>Concepto</th><th>Monto</th><th>Boleta</th><th></th></tr>'
     + c.P.map(x => '<tr><td>' + esc(x.fecha) + '</td><td>' + esc(x.concepto) + '</td><td>' + S2(x.monto) + '</td><td>' + esc(x.boleta || '') + '</td><td><button title="Borrar (cargado por error)" onclick="borrarPago(' + x.id + ')">✕</button></td></tr>').join('') + '</table>';
@@ -339,12 +348,41 @@ function talleresHtml(ta){
   });
   const L = Object.values(G).sort((a, b) => b.rec - a.rec);
   if (!L.length) return '<div class="vacio">Sin órdenes.</div>';
-  return '<div style="padding:0 2px;width:100%"><table class="g" style="width:100%;font-size:12.5px"><tr><th>Taller</th><th>Órdenes</th><th>Recibidas</th><th>Con falla</th><th>% falla</th><th>Perdidas</th><th>Yayitas</th><th>+30 días en corrección</th><th>Por pagar (desde hoy)</th><th>Sin costo cargado</th></tr>'
+  return '<div style="padding:0 2px;width:100%"><div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12.5px">🏷 Descuento sugerido para Yayitas: <input id="yDesc" type="number" min="0" max="90" step="5" style="width:70px" value="' + (D.param.yayita_desc_pct != null ? D.param.yayita_desc_pct : 40) + '">% <button onclick="guardarDesc()">Guardar</button> <span id="yMsg" class="mu">sobre el precio de lista de 📦 Productos · se puede cambiar en cada venta</span></div>'
+    + '<table class="g" style="width:100%;font-size:12.5px"><tr><th>Taller</th><th>Órdenes</th><th>Recibidas</th><th>Con falla</th><th>% falla</th><th>Perdidas</th><th>Yayitas</th><th>+30 días en corrección</th><th>Por pagar (desde hoy)</th><th>Sin costo cargado</th></tr>'
     + L.map(g => { const pf = g.rec ? Math.round(g.fal / g.rec * 1000) / 10 : 0;
-      return '<tr><td><b>' + esc(g.t) + '</b></td><td>' + g.ord + (g.abiertas ? ' <small>' + g.abiertas + ' abiertas</small>' : '') + '</td><td>' + g.rec + '</td><td>' + g.fal + '</td>'
+      return '<tr><td><b>' + esc(g.t) + '</b></td><td>' + g.ord + (g.abiertas ? ' <small>' + g.abiertas + (g.abiertas === 1 ? ' abierta' : ' abiertas') + '</small>' : '') + '</td><td>' + g.rec + '</td><td>' + g.fal + '</td>'
         + '<td><span class="chip ' + (pf >= 10 ? 'rd' : pf >= 4 ? 'am' : '') + '">' + pf + '%</span></td><td>' + g.per + '</td><td>' + g.yay + '</td>'
         + '<td>' + (g.viejas ? '<span class="chip rd">' + g.viejas + '</span>' : '0') + '</td><td>' + S2(Math.max(0, g.aPagar - g.pagado)) + '</td><td>' + (g.sinCosto ? '<span class="chip am">' + g.sinCosto + '</span>' : '—') + '</td></tr>'; }).join('')
     + '</table><div class="mu" style="font-size:11.5px;margin-top:6px">% falla = con falla ÷ recibidas. Verde menos de 4%, ámbar 4–10%, rojo 10% o más. «Por pagar» cuenta solo órdenes nuevas o pagos registrados desde hoy (lo anterior sigue en el Drive).</div></div>';
+}
+/* ══ 21-oct F3 · el producto nace aquí pero vive en 📦 Productos (una sola fuente) ══ */
+function crearProducto(nombre, nota){
+  if (!nombre) return;
+  if (!(parent && parent !== window && parent.prodAbrirProducto)){ aviso('Abre Producción desde el ERP.'); return; }
+  cerrar('mNueva'); cerrar('mOrden');
+  parent.prodAbrirProducto(nombre, nota || ('Producto «' + nombre + '» para la orden de Producción: completa SKU, categoría, costos y precios y guarda.'));
+}
+function prodChip(o){
+  if (!D.prod) return '';
+  const p = D.prod[nrm(o.diseno)];
+  if (!p) return '<span class="chip am">No existe en 📦 Productos</span><button type="button" data-n="' + esc(nrm(o.diseno)) + '" onclick="crearProducto(this.dataset.n)">Crear en 📦 Productos</button>';
+  if (p.activo === false) return '<span class="chip">En desarrollo · inactivo en 📦 Productos</span>';
+  return '';
+}
+function precioYayita(o){
+  const p = D.prod && D.prod[nrm(o.diseno)], pct = D.param.yayita_desc_pct != null ? D.param.yayita_desc_pct : 40;
+  if (!p || !(+p.precio_lista > 0)) return null;
+  return { lista: +p.precio_lista, pct, precio: Math.round(+p.precio_lista * (1 - pct / 100)) };
+}
+function yayitaHtml(o){
+  const y = precioYayita(o);
+  return y ? '<div class="mu" style="font-size:11.5px;margin-top:4px">🏷 Precio sugerido de Yayita: <b>S/ ' + y.precio + '</b> (lista S/ ' + y.lista + ' − ' + y.pct + '%). Se puede cambiar al venderla.</div>' : '';
+}
+async function guardarDesc(){
+  const m = document.getElementById('yMsg'), v = +document.getElementById('yDesc').value;
+  try { const r = await rpc('prod_param_guardar', { p_clave:'yayita_desc_pct', p_valor:v }); if (!r.ok) throw new Error(r.error); D.param.yayita_desc_pct = v; m.textContent = '✓ Guardado: ' + v + '%'; m.className = 'okt'; }
+  catch (e) { m.textContent = e.message; m.className = 'err'; }
 }
 function aviso(t){ const m = document.getElementById('msg'); m.textContent = t; m.className = 'err'; setTimeout(() => { m.textContent = ''; m.className = 'mu'; }, 6000); }
 function cerrar(id){ document.getElementById(id).style.display = 'none'; }
