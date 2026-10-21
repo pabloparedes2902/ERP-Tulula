@@ -37,7 +37,7 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g small{display:block;color:v
 .vacio{padding:40px;text-align:center;color:var(--mu)}
 </style></head><body>
 <div class="top"><h1>🧵 Producción</h1>
-  <select id="fVer" onchange="pintar()"><option value="curso">En curso</option><option value="cerradas">Cerradas</option></select>
+  <select id="fVer" onchange="pintar()"><option value="curso">En curso</option><option value="cerradas">Cerradas</option><option value="talleres">📊 Talleres</option></select>
   <select id="fTaller" onchange="pintar()"><option value="">Todos los talleres</option></select>
   <span class="sp"></span><span id="msg" class="mu"></span>
   <button class="p" id="btnNueva" onclick="abrirNueva()">＋ Nueva orden</button>
@@ -76,7 +76,7 @@ const CAMINO = { nuevo:['diseno','muestra','molde','tela','escalado','corte','en
                  reposicion:['tela','corte','entrega','calidad','inventario','venta'] };
 const TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
 const TALLERES = ['José Luis','Dan','Pedro','Ángel','Bella','Jhon','Jefferson'];
-let D = { ordenes:[], lineas:[], movs:[], stock:null }, NV = null, OA = null;
+let D = { ordenes:[], lineas:[], movs:[], pagos:[], stock:null }, NV = null, OA = null;
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const nrm = s => String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
 function tok(){ try { const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null'); return (t && t.access_token && Date.now() < (t.expires_at || 0)) ? t.access_token : null; } catch (e) { return null; } }
@@ -91,6 +91,7 @@ async function cargar(){
   try {
     const [o, l, m] = await Promise.all([ sb('/rest/v1/prod_ordenes?select=*&order=id.desc'), sb('/rest/v1/prod_lineas?select=*'), sb('/rest/v1/prod_movs?select=*&order=id') ]);
     D.ordenes = o; D.lineas = l; D.movs = m;
+    try { D.pagos = await sb('/rest/v1/prod_pagos?select=*&order=fecha'); } catch (_) { D.pagos = []; }   /* 21-oct F2 · si la tabla no está instalada, sigue sin pagos */
   } catch (e) { document.getElementById('tablero').innerHTML = '<div class="vacio err">' + esc(e.message) + '</div>'; return; }
   pintar();
 }
@@ -126,8 +127,9 @@ function pintar(){
   const talleres = [...new Set(TALLERES.concat(D.ordenes.map(o => o.taller).filter(Boolean)))];
   const sel = document.getElementById('fTaller'); if (sel.options.length <= 1) talleres.forEach(t => sel.add(new Option(t, t)));
   document.getElementById('lTaller').innerHTML = talleres.map(t => '<option value="' + esc(t) + '">').join('');
-  const L = D.ordenes.filter(o => (ver === 'cerradas' ? o.cerrada : !o.cerrada) && (!ta || o.taller === ta));
   const el = document.getElementById('tablero');
+  if (ver === 'talleres'){ el.innerHTML = talleresHtml(ta); return; }
+  const L = D.ordenes.filter(o => (ver === 'cerradas' ? o.cerrada : !o.cerrada) && (!ta || o.taller === ta));
   if (!L.length){ el.innerHTML = '<div class="vacio">' + (ver === 'cerradas' ? 'Todavía no hay órdenes cerradas.' : 'No hay órdenes en curso. Crea la primera con ＋ Nueva orden.') + '</div>'; return; }
   el.innerHTML = CAMINO.nuevo.filter(e => L.some(o => o.etapa === e)).map(e => {
     const C = L.filter(o => o.etapa === e);
@@ -136,6 +138,7 @@ function pintar(){
       return '<div class="card ' + ef.col + '" onclick="abrirOrden(' + o.id + ')"><b>' + esc(o.diseno) + '</b>'
         + '<div class="l">' + esc(o.codigo || '') + ' · ' + (o.tipo === 'nuevo' ? 'Nuevo' : 'Reposición') + ' · ' + esc(o.taller || 'sin taller') + '</div>'
         + '<div class="l">' + T.buenas + ' de ' + T.pedido + ' listas (' + pct + '%)' + (T.correccion ? ' · <span class="chip am">' + T.correccion + ' en corrección</span>' : '') + (T.perdidas ? ' <span class="chip rd">' + T.perdidas + ' perdidas</span>' : '') + (T.yayitas ? ' <span class="chip">' + T.yayitas + ' yayitas</span>' : '') + '</div>'
+        + (viejas(o) ? '<div class="l"><span class="chip rd">🕒 ' + viejas(o) + ' en corrección hace +30 días · ¿Yayita?</span></div>' : '')
         + (T.porIngresar ? '<div class="l"><span class="chip am">📦 ' + T.porIngresar + ' por ingresar al stock</span></div>' : '')
         + (ef.txt ? '<div class="l"><span class="chip ' + ef.col + '">' + ef.txt + '</span></div>' : '')
         + '<div class="bar"><i style="width:' + pct + '%"></i></div></div>'; }).join('') + '</div>';
@@ -223,6 +226,7 @@ function abrirOrden(id){
       + gridMov('c', colores, tallas, S, [['corregida','Corregidas'], ['yayita','Yayitas'], ['perdida','Perdidas']], s => s.correccion > 0)
       + '<input id="cMotivo" list="lMot" placeholder="Motivo (yayita o pérdida)" style="width:260px"><datalist id="lMot">' + motivos().map(m => '<option value="' + esc(m) + '">').join('') + '</datalist> <button class="p" onclick="guardarMov(\'c\')">Guardar</button> <span id="cMsg" class="err"></span></div>';
   }
+  h += costosHtml(o, T);
   const M = D.movs.filter(x => x.orden_id === o.id).slice().reverse();
   if (M.length) h += '<div class="sec"><h4>Historial</h4><table class="g"><tr><th>Fecha</th><th>Qué</th><th>Color · talla</th><th>Cant.</th><th>Motivo</th><th></th></tr>'
     + M.map(m => '<tr><td>' + esc(m.fecha) + '</td><td>' + ({ buena:'✓ Buena', falla:'⚠ Con falla', corregida:'🔧 Corregida', perdida:'✕ Perdida', yayita:'🏷 Yayita' })[m.tipo] + (m.ingresado ? ' <span class="chip">en stock' + (m.lote ? ' · ' + esc(m.lote) : '') + '</span>' : '') + '</td><td>' + esc(m.color + ' · ' + m.talla) + '</td><td>' + m.cantidad + '</td><td>' + esc(m.motivo || '') + '</td>'
@@ -268,6 +272,79 @@ function ingresarStock(){
     await cargar(); abrirOrden(o.id);
   });
   if (r && r.faltan) msg.textContent = 'Estas prendas no existen en la lista de Prendas: ' + r.faltan.join(', ') + '. Revisa el nombre del producto o el color.';
+}
+/* ══ 21-oct F2 · COSTOS Y PAGOS AL TALLER ══
+   Al taller se le paga SOLO lo bueno (buenas + corregidas) × costo por prenda. Costumbre: 80% al recibir, 20% al cerrar.
+   Costo real por prenda = (pago al taller + tela) ÷ prendas buenas: las perdidas y las yayitas lo suben. */
+const S2 = v => 'S/ ' + (Math.round((+v || 0) * 100) / 100).toLocaleString('es-PE', { minimumFractionDigits:2, maximumFractionDigits:2 });
+function cuentas(o, T){
+  T = T || saldos(o).T;
+  const P = D.pagos.filter(x => x.orden_id === o.id), pagado = P.reduce((a, x) => a + (+x.monto || 0), 0);
+  const cu = +o.costo_unit || 0, aPagar = cu * T.buenas, tela = (+o.tela_metros || 0) * (+o.tela_precio_m || 0);
+  const base = T.buenas + T.perdidas + T.yayitas;
+  const real = T.buenas ? (aPagar + tela) / T.buenas : null, ideal = base ? (aPagar + tela) / base : null;
+  return { P, pagado, cu, aPagar, saldo: aPagar - pagado, tela, real, ideal, imp: o.creado_por === 'importado-drive' };
+}
+function costosHtml(o, T){
+  const c = cuentas(o, T), sug = c.pagado <= 0 ? Math.round(c.aPagar * 0.8 * 100) / 100 : Math.max(0, Math.round(c.saldo * 100) / 100);
+  let h = '<div class="sec"><h4>💵 Costos y pagos al taller</h4>'
+    + '<div class="f"><div><label>Costo por prenda (taller)</label><input id="kCu" type="number" step="0.5" min="0" value="' + (o.costo_unit != null ? o.costo_unit : '') + '"></div>'
+    + '<div><label>Tela: metros</label><input id="kTm" type="number" step="0.5" min="0" value="' + (o.tela_metros != null ? o.tela_metros : '') + '"></div>'
+    + '<div><label>Tela: S/ por metro</label><input id="kTp" type="number" step="0.1" min="0" value="' + (o.tela_precio_m != null ? o.tela_precio_m : '') + '"></div>'
+    + '<div style="align-self:end"><button onclick="guardarCostos()">Guardar costos</button> <span id="kMsg" class="err"></span></div></div>'
+    + '<div class="res"><div><b>' + S2(c.aPagar) + '</b>a pagar al taller (' + T.buenas + ' buenas)</div><div><b class="okt">' + S2(c.pagado) + '</b>pagado</div>'
+    + '<div><b style="color:' + (c.saldo > 0.01 ? 'var(--am)' : 'var(--ok)') + '">' + S2(c.saldo) + '</b>saldo</div>'
+    + (c.tela ? '<div><b>' + S2(c.tela) + '</b>tela</div>' : '')
+    + (c.real != null ? '<div><b>' + S2(c.real) + '</b>costo real por prenda' + (c.ideal != null && c.real - c.ideal > 0.01 ? ' <span class="chip rd">+' + S2(c.real - c.ideal) + ' por fallas</span>' : '') + '</div>' : '') + '</div>';
+  if (c.imp) h += '<div class="mu" style="font-size:11.5px">Orden importada del Drive: los pagos hechos antes del 21-oct siguen en el Drive. Registra aquí solo lo que pagues desde hoy.</div>';
+  if (c.P.length) h += '<table class="g"><tr><th>Fecha</th><th>Concepto</th><th>Monto</th><th>Boleta</th><th></th></tr>'
+    + c.P.map(x => '<tr><td>' + esc(x.fecha) + '</td><td>' + esc(x.concepto) + '</td><td>' + S2(x.monto) + '</td><td>' + esc(x.boleta || '') + '</td><td><button title="Borrar (cargado por error)" onclick="borrarPago(' + x.id + ')">✕</button></td></tr>').join('') + '</table>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px"><select id="pCon"><option>' + (c.pagado <= 0 ? 'Adelanto 80%' : 'Saldo 20%') + '</option><option>' + (c.pagado <= 0 ? 'Saldo 20%' : 'Adelanto 80%') + '</option><option>Otro</option></select>'
+    + '<input id="pMon" type="number" step="0.5" min="0" style="width:110px" value="' + (sug || '') + '" placeholder="Monto"><input id="pFec" type="date" value="' + new Date().toLocaleDateString('en-CA', { timeZone:'America/Lima' }) + '">'
+    + '<input id="pBol" placeholder="Boleta / medio" style="width:140px"><button class="p" onclick="guardarPago()">Registrar pago</button> <span id="pMsg" class="err"></span></div></div>';
+  return h;
+}
+async function guardarCostos(){
+  const v = id => { const x = document.getElementById(id).value; return x === '' ? null : +x; }, msg = document.getElementById('kMsg'); msg.textContent = '';
+  try { const r = await rpc('prod_costos_guardar', { p_id: OA.id, p_costo_unit: v('kCu'), p_tela_metros: v('kTm'), p_tela_precio_m: v('kTp') }); if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); }
+  catch (e) { msg.textContent = e.message; }
+}
+async function guardarPago(){
+  const msg = document.getElementById('pMsg'); msg.textContent = '';
+  const m = +document.getElementById('pMon').value; if (!(m > 0)){ msg.textContent = 'Pon el monto.'; return; }
+  try { const r = await rpc('prod_pago_guardar', { p_id: OA.id, p_concepto: document.getElementById('pCon').value, p_monto: m, p_fecha: document.getElementById('pFec').value || null, p_boleta: document.getElementById('pBol').value });
+    if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); } catch (e) { msg.textContent = e.message; }
+}
+async function borrarPago(id){ try { const r = await rpc('prod_pago_borrar', { p_pago: id }); if (!r.ok) throw new Error(r.error || 'No se pudo'); await cargar(); abrirOrden(OA.id); } catch (e) { aviso(e.message); } }
+/* prendas en corrección que llevan +30 días: las fallas más viejas se dan por pendientes primero */
+function viejas(o){
+  const { S } = saldos(o), lim = Date.now() - 30 * 864e5; let n = 0;
+  Object.values(S).forEach(s => { if (!s.correccion) return;
+    const F = D.movs.filter(x => x.orden_id === o.id && x.color === s.color && x.talla === s.talla && x.tipo === 'falla').sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+    let pend = s.correccion; F.forEach(x => { const k = Math.min(pend, x.cantidad); pend -= k; if (k > 0 && new Date(x.fecha + 'T00:00:00').getTime() < lim) n += k; }); });
+  return n;
+}
+/* 📊 TALLERES: calidad, cumplimiento y plata, por taller */
+function talleresHtml(ta){
+  const G = {};
+  D.ordenes.filter(o => !ta || o.taller === ta).forEach(o => {
+    const t = o.taller || 'Sin taller', g = G[t] || (G[t] = { t, ord:0, abiertas:0, rec:0, fal:0, per:0, yay:0, aPagar:0, pagado:0, sinCosto:0, viejas:0 });
+    const { T } = saldos(o), c = cuentas(o, T), M = D.movs.filter(x => x.orden_id === o.id);
+    g.ord++; if (!o.cerrada) g.abiertas++;
+    g.rec += M.filter(x => x.tipo === 'buena' || x.tipo === 'falla').reduce((a, x) => a + x.cantidad, 0);
+    g.fal += M.filter(x => x.tipo === 'falla').reduce((a, x) => a + x.cantidad, 0);
+    g.per += T.perdidas; g.yay += T.yayitas; g.viejas += viejas(o);
+    if (!c.imp){ g.aPagar += c.aPagar; g.pagado += c.pagado; } else g.pagado += c.pagado;
+    if (!o.costo_unit && T.buenas) g.sinCosto++;
+  });
+  const L = Object.values(G).sort((a, b) => b.rec - a.rec);
+  if (!L.length) return '<div class="vacio">Sin órdenes.</div>';
+  return '<div style="padding:0 2px;width:100%"><table class="g" style="width:100%;font-size:12.5px"><tr><th>Taller</th><th>Órdenes</th><th>Recibidas</th><th>Con falla</th><th>% falla</th><th>Perdidas</th><th>Yayitas</th><th>+30 días en corrección</th><th>Por pagar (desde hoy)</th><th>Sin costo cargado</th></tr>'
+    + L.map(g => { const pf = g.rec ? Math.round(g.fal / g.rec * 1000) / 10 : 0;
+      return '<tr><td><b>' + esc(g.t) + '</b></td><td>' + g.ord + (g.abiertas ? ' <small>' + g.abiertas + ' abiertas</small>' : '') + '</td><td>' + g.rec + '</td><td>' + g.fal + '</td>'
+        + '<td><span class="chip ' + (pf >= 10 ? 'rd' : pf >= 4 ? 'am' : '') + '">' + pf + '%</span></td><td>' + g.per + '</td><td>' + g.yay + '</td>'
+        + '<td>' + (g.viejas ? '<span class="chip rd">' + g.viejas + '</span>' : '0') + '</td><td>' + S2(Math.max(0, g.aPagar - g.pagado)) + '</td><td>' + (g.sinCosto ? '<span class="chip am">' + g.sinCosto + '</span>' : '—') + '</td></tr>'; }).join('')
+    + '</table><div class="mu" style="font-size:11.5px;margin-top:6px">% falla = con falla ÷ recibidas. Verde menos de 4%, ámbar 4–10%, rojo 10% o más. «Por pagar» cuenta solo órdenes nuevas o pagos registrados desde hoy (lo anterior sigue en el Drive).</div></div>';
 }
 function aviso(t){ const m = document.getElementById('msg'); m.textContent = t; m.className = 'err'; setTimeout(() => { m.textContent = ''; m.className = 'mu'; }, 6000); }
 function cerrar(id){ document.getElementById(id).style.display = 'none'; }
