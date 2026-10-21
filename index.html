@@ -10255,7 +10255,7 @@ function navegarA(pg) {
 // base (public.drive_ing, se actualiza sola al editar el Drive). Lee por public.cuadre_fuente (solo Admin). No escribe nada.
 // La foto de stock talla por talla y la revisión de cambios (pestaña 5) vienen de la última corrida del servidor (cada 2 h).
 // ══════════════════════════════════════════════════════════════════════════
-const CD = { tab: 1, datos: null, cargando: false, timer: null, err: '' };
+const CD = { tab: 0, datos: null, cargando: false, timer: null, err: '' };
 let _cdLocalProm = null;
 function _cdLocalCargar() {
   if (window.cuadreLocalEmparejar) return Promise.resolve(true);
@@ -10314,15 +10314,17 @@ function _cdArmar(M, FO, CAMS) {
   const nro = ref => ((String(ref).match(/pedido (\d+)/) || [])[1] || '');
   const nom = ref => String(ref).split(' · ').slice(1).join(' · ');
   const prend = k => String(k || '').split('|').join(' ').replace(/_/g, ' ');
-  const l1 = (M.soloErp || []).filter(x => dif(x[0]) > 0).map(x => ({ nro: nro(x[2]), cli: nom(x[2]), f: x[1], prenda: x[5] || prend(x[0]), est: x[3], que: 'El ERP tiene esta prenda y el Drive no (talla con ' + dif(x[0]) + ' de más en el ERP)', espera: x[1] >= hace2 }));
+  // 21-oct (Pablo): «100% cuadrado» = TODAS las pestañas en 0 → ya no se esconden las líneas cuya talla cuadra (errores que se compensan: otra clienta / otro pedido)
+  const _dtx = k => { const d = dif(k); return d === null ? '' : d === 0 ? ' · la talla cuadra: la venta está en otro pedido o clienta (no mueve stock, pero hay que corregirla)' : ' (talla con ' + d + ' de diferencia ERP − Drive)'; };
+  const l1 = (M.soloErp || []).map(x => ({ nro: nro(x[2]), cli: nom(x[2]), f: x[1], prenda: x[5] || prend(x[0]), est: x[3], que: 'El ERP tiene esta prenda y el Drive no' + _dtx(x[0]), espera: x[1] >= hace2 }));
   // 20-oct · lista 2: si la fila del Drive es un CAMBIO (columna Cambio con la original entre paréntesis): con cambio del ERP sin terminar →
   // en espera; sin cambio en el ERP → «falta registrar el cambio» (lo hace la asesora en Cambios). Así no se confunde con una venta perdida.
   const _AB = (CAMS && CAMS.__abiertos) || {}, _fd = f => (typeof window !== 'undefined' && typeof window.cuadreLocalFilaDrive === 'function' ? window.cuadreLocalFilaDrive(f) : null);
-  const l2 = (M.soloDrive || []).filter(x => !(dif(x[0]) === 0 && !/^SIN PRECIO/.test(x[4] || ''))).map(x => {
+  const l2 = (M.soloDrive || []).map(x => {   // 21-oct: todas (antes se escondían las de talla cuadrada)
     const fila = (String(x[2]).match(/fila (\d+)/) || [])[1] || '', nros = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(Boolean);
     const fd = fila ? _fd(fila) : null, camD = fd ? String(fd[14] || '').trim() : '', ase = fd ? String(fd[12] || '').trim() : '';
     const conCamErp = nros.filter(n => CAMS[n]), abierto = conCamErp.some(n => _AB[n]);
-    let que = x[4] || '', espera = x[1] >= hace2;
+    let que = (x[4] || 'El Drive tiene esta prenda y el ERP no') + (dif(x[0]) === 0 ? ' · la talla cuadra: está en otro pedido o clienta' : ''), espera = x[1] >= hace2;
     if (camD && !/^YAYA/i.test(camD)) {   // 21-oct: con o sin paréntesis (sin = la original todavía no vuelve)
       if (abierto) { que = 'CAMBIO en curso en el ERP (' + conCamErp.map(n => CAMS[n].join(', ')).join(' · ') + '): se cuadra solo al terminar el cambio'; espera = true; }
       else if (!conCamErp.length) que = 'CAMBIO anotado en el Drive (la clienta devuelve ' + camD + ') que FALTA REGISTRAR en Cambios del ERP' + (ase ? ' → pedir a ' + ase : '');
@@ -10340,26 +10342,48 @@ function _cdArmar(M, FO, CAMS) {
   [].concat(M.otraTalla || [], M.otraPrenda || []).forEach(z => { const n = nro(z.erp[2]); if (CAMS[n]) l5.push({ nro: n, cam: CAMS[n].join(', '), prenda: (z.erp[5] || prend(z.erp[0])) + '  →  Drive: ' + (z.drive[5] || prend(z.drive[0])), que: z.causa || '', mueve: mueve(z.erp[0]), espera: esp(n) }); });
   (M.soloDrive || []).forEach(x => { const ns = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(n => CAMS[n]); if (ns.length) l5.push({ nro: ns.join(', '), cam: CAMS[ns[0]].join(', '), prenda: x[5] || prend(x[0]), que: 'El Drive tiene esta prenda y el ERP no · ' + (x[4] || ''), mueve: mueve(x[0]), espera: esp(ns[0]) }); });
   const conCam = Object.keys(CAMS).length, conProb = new Set(l5.map(x => String(x.nro).split(/[ ,]/)[0])).size;
-  return { l1, l2, l3, l4, l5, cambiosTotal: conCam, cambiosOk: conCam - conProb };
+  // 21-oct (Pablo) · 0 · STOCK POR TALLA (control maestro): toda talla con confección, no disponibles, ventas o stock distintos.
+  // Si esta pestaña está en 0, el stock está 100% igual. «Lo explica» = cuánto de la diferencia de ventas cubren las listas 1, 2 y 3.
+  const _nk = k => String(k || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim(), EXP = {};
+  const _sum = (k, n) => { k = _nk(k); EXP[k] = (EXP[k] || 0) + n; };
+  (M.soloErp || []).forEach(x => _sum(x[0], 1)); (M.soloDrive || []).forEach(x => _sum(x[0], -1));
+  [].concat(M.otraTalla || [], M.otraPrenda || []).forEach(z => { if (z && z.erp && z.drive) { _sum(z.erp[0], 1); _sum(z.drive[0], -1); } });
+  const l0 = Object.keys(FO).filter(k => { const x = FO[k]; return x && x.e && x.d && String(x.e) !== String(x.d); }).map(k => {
+    const e = String(FO[k].e).split(',').map(Number), d = String(FO[k].d).split(',').map(Number), dv = e[3] - d[3], ex = EXP[_nk(k)] || 0;
+    const partes = [];
+    if (e[0] !== d[0]) partes.push('confección ERP ' + e[0] + ' / Drive ' + d[0] + ' (lista 4)');
+    if (e[1] !== d[1]) partes.push('no disponibles ERP ' + e[1] + ' / Drive ' + d[1] + ' (lista 4)');
+    if (dv !== 0) partes.push('ventas ERP ' + e[3] + ' / Drive ' + d[3] + (ex === dv ? ' → lo explican las listas 1-3' : ' → ⚠ las listas 1-3 explican ' + ex + ' de ' + dv + ': revisar (venta sin talla, texto sin reconocer o anterior al corte)'));
+    return { prenda: prend(k), stock: 'ERP ' + e[4] + ' / Drive ' + d[4], que: partes.join(' · '), sinExplicar: dv !== 0 && ex !== dv };
+  }).sort((a, b) => (b.sinExplicar - a.sinExplicar) || (a.prenda < b.prenda ? -1 : 1));
+  // 6 · PRENDAS QUE NO SE RECONOCEN: líneas que el emparejador no pudo leer (ej. sin talla): no se comparan, así que pueden esconder diferencias.
+  const _noPrenda = /^(CAMBIO CAM-|RESERVA|PENDIENTE PRENDA|MUESTRA|FALLA|ENVIO|ENVÍO|DELIVERY|_?PAGO_?)/i, sr = M.sinResolverTop || {}, l6 = [];
+  ['erp', 'drive'].forEach(lado => (sr[lado] || []).forEach(t => { if (!_noPrenda.test(String(t[0]).trim())) l6.push({ lado: lado === 'erp' ? 'ERP' : 'Drive', prenda: String(t[0]), n: Number(t[1]) || 1,
+    que: /<talla>/.test(String(t[0])) ? 'El ERP no tiene este diseño en su stock (falta cargar su confección) o la línea no trae talla: mientras tanto estas ventas NO se comparan' : 'El nombre no coincide con ninguna prenda del catálogo: corregirlo o agregar la homologación' }); }));
+  return { l0, l1, l2, l3, l4, l5, l6, cambiosTotal: conCam, cambiosOk: conCam - conProb };
 }
 function _cdPintar() {
   const el = document.getElementById('cd-w'); if (!el) return;
   const D = CD.datos;
   const hhmm = d => d ? new Date(d).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' }) : '—';
   const n = L => (L || []).filter(x => !x.espera).length, ne = L => (L || []).filter(x => x.espera).length;
-  const tabs = D ? [[1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', D.l4.length, 0], [5, '5 · Cambios ERP vs Drive', n(D.l5), ne(D.l5)]] : [];
+  const n6 = L => (L || []).reduce((a, x) => a + (x.n || 1), 0);
+  const tabs = D ? [[0, '0 · Stock por talla (control)', (D.l0 || []).length, 0], [1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', D.l4.length, 0], [5, '5 · Cambios ERP vs Drive', n(D.l5), ne(D.l5)], [6, '6 · Prendas que no se reconocen', n6(D.l6), 0]] : [];   // 21-oct (Pablo): todas en 0 (y nada en espera) = 100% cuadrado
   const total = tabs.reduce((a, t) => a + t[2], 0), esp = tabs.reduce((a, t) => a + t[3], 0);
+  const veredicto = !D ? '' : (total + esp === 0 ? '<div style="padding:10px 14px;border-radius:10px;background:#dcfce7;color:#14532d;font-weight:800;margin-bottom:10px">✅ ERP y Drive 100% cuadrados (prendas, tallas, confección, no disponibles y cambios)</div>'
+    : '<div style="padding:10px 14px;border-radius:10px;background:#fef3c7;color:#713f12;font-weight:700;margin-bottom:10px">Para el 100%: ' + total + ' por resolver' + (esp ? ' + ' + esp + ' en espera' : '') + '. Cuando TODAS las pestañas (0 a 6) estén en 0 y no quede nada en espera, el ERP y el Drive están 100% cuadrados.</div>');
   let h = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px">'
     + '<button class="btn bp" ' + (CD.cargando ? 'disabled' : '') + ' onclick="_cdActualizar()">' + (CD.cargando ? '⏳ Comparando…' : '🔄 Actualizar') + '</button>'
     + (D ? '<span style="font-size:12px;color:var(--mu)">Actualizado ' + hhmm(D.cuando) + ' · tardó ' + D.seg.toFixed(1) + ' s · se actualiza solo cada 2 min · stock talla por talla de las ' + hhmm(D.fotoCuando) + '</span>' : '')
     + (CD.err ? '<span style="color:var(--rd);font-size:12px">No se pudo comparar: ' + esc(CD.err) + '</span>' : '') + '</div>';
   if (!D) { el.innerHTML = h + (CD.cargando ? spin('Comparando el ERP con el Drive…') : ''); return; }
+  h += veredicto;
   h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + tabs.map(t => '<button class="btn ' + (CD.tab === t[0] ? 'bp' : 'bg') + ' bs" onclick="CD.tab=' + t[0] + ';_cdPintar()">' + esc(t[1]) + ' <b>' + t[2] + '</b>' + (t[3] ? ' <span style="opacity:.7">(+' + t[3] + ' en espera)</span>' : '') + '</button>').join('')
     + '<span style="align-self:center;font-weight:700">TOTAL por resolver: ' + total + (esp ? ' · en espera: ' + esp : '') + '</span></div>';
   const L = D['l' + CD.tab] || [];
   const ir = nro => nro ? '<a href="#" onclick="event.preventDefault();_abrirPedidoDesdeBusqueda(' + esc(JSON.stringify(String(nro).split(/[ ,]/)[0])) + ')" style="color:var(--ac);font-weight:600">' + esc(nro) + ' ↗</a>' : '';
-  const cols = CD.tab === 4 ? ['Prenda y talla', 'Qué difiere'] : CD.tab === 5 ? ['Pedido', 'Cambio', 'Prenda', 'Qué pasa', '¿Mueve el stock?'] : ['Pedido', 'Clienta', 'Fecha', 'Prenda', CD.tab === 3 ? 'Tipo' : 'Estado', 'Causa / qué hacer', CD.tab === 1 ? '' : 'Fila Drive'];
-  const fila = x => CD.tab === 4 ? [esc(x.prenda), esc(x.que)] : CD.tab === 5 ? [ir(x.nro), esc(x.cam || ''), esc(x.prenda), esc(x.que) + (x.espera ? ' <span style="color:var(--mu)">(en espera: el cambio todavía no termina)</span>' : ''), esc(x.mueve || '')]
+  const cols = CD.tab === 0 ? ['Prenda y talla', 'Stock', 'Qué difiere y si lo explican las listas'] : CD.tab === 6 ? ['Dónde', 'Prenda tal como está escrita', 'Líneas', 'Qué hacer'] : CD.tab === 4 ? ['Prenda y talla', 'Qué difiere'] : CD.tab === 5 ? ['Pedido', 'Cambio', 'Prenda', 'Qué pasa', '¿Mueve el stock?'] : ['Pedido', 'Clienta', 'Fecha', 'Prenda', CD.tab === 3 ? 'Tipo' : 'Estado', 'Causa / qué hacer', CD.tab === 1 ? '' : 'Fila Drive'];
+  const fila = x => CD.tab === 0 ? [esc(x.prenda), esc(x.stock), (x.sinExplicar ? '<b style="color:var(--rd)">' : '') + esc(x.que) + (x.sinExplicar ? '</b>' : '')] : CD.tab === 6 ? [esc(x.lado), esc(x.prenda), esc(String(x.n)), esc(x.que)] : CD.tab === 4 ? [esc(x.prenda), esc(x.que)] : CD.tab === 5 ? [ir(x.nro), esc(x.cam || ''), esc(x.prenda), esc(x.que) + (x.espera ? ' <span style="color:var(--mu)">(en espera: el cambio todavía no termina)</span>' : ''), esc(x.mueve || '')]
     : [ir(x.nro), esc(x.cli || ''), esc(x.f || ''), esc(x.prenda || ''), esc(x.est || ''), esc(x.que || '') + (x.espera ? ' <span style="color:var(--mu)">(en espera: venta de los últimos 2 días)</span>' : ''), esc(x.fila || '')];
   h += L.length ? '<div style="overflow:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr>' + cols.map(c => '<th style="text-align:left;padding:6px 8px">' + esc(c) + '</th>').join('') + '</tr></thead><tbody>'
     + L.map(x => '<tr' + (x.espera ? ' style="opacity:.6"' : '') + '>' + fila(x).map(v => '<td style="padding:5px 8px;vertical-align:top">' + v + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>'
