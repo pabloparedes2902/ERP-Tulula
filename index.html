@@ -8311,21 +8311,26 @@ function _cosEstadosPintar(v) {
     try {
       if (quiere) {
         msg('Revisando que la ficha esté completa…');
-        if (!v._mm) { try { await _cosMmLeer(v); } catch (_) {} }
+        const shY = _cosShopDe(v);
+        if (!v._mm && !(shY && shY.fotos && shY.fotos.length)) { try { await _cosMmLeer(v); } catch (_) {} }   // 22-oct · VÍA RÁPIDA: si la copia de la tienda ya trae fotos, no se va al servidor
         const falta = [];
-        if (!(Number(v.precios && v.precios.lista) > 0)) falta.push('el precio de lista');
-        const shY = _cosShopDe(v);   // 9-oct · lo que ya está cargado directo en Shopify también cuenta (el servidor lo vuelve a revisar)
+        if (!(Number(v.precios && v.precios.lista) > 0)) falta.push('el precio de lista');   // 9-oct · lo que ya está cargado directo en Shopify también cuenta (el servidor lo vuelve a revisar)
         if (!String(v.Descripcion || '').trim() && !(shY && shY.desc > 0)) falta.push('la descripción');
         if (!String(v.Cuidados || '').trim() && !(shY && shY.desc > 0)) falta.push('los cuidados');
         if (!v._mm && !(shY && shY.fotos && shY.fotos.length)) falta.push('(no pude revisar las fotos: reintenta)'); else if (!(shY && shY.fotos && shY.fotos.length) && !v._mm.some(r => r.Canal === 'SHOPIFY' && r.Tipo !== 'VIDEO')) falta.push('las fotos de la tienda');
         // 8-oct (Pablo) · la ficha nueva tiene que salir completa: La prenda y los beneficios con su foto · 9-oct: las ocasiones ya no se exigen (sección apagada en la tienda)
-        try { const fw = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: v.ShopifyId || '' }), fi = (fw && fw.ficha) || {};
+        await _cosGuardarPendientes(v);   // 22-oct · primero se guarda lo pendiente; después se revisa
+        // 22-oct (Pablo: «50 s es demasiado») · VÍA RÁPIDA: la ficha se revisa con la copia que la pantalla ya tiene (0 s). Solo si esa copia dice que falta algo se pregunta al servidor (por si quedó vieja).
+        const _fwOk = f => !!(f && f.prenda && !f.prenda.borrador && (f.beneficios || []).filter(b => b && b.titulo && b.foto).length >= 2);
+        try { const fi = _fwOk(shY && shY.ficha) ? shY.ficha : (((await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: v.ShopifyId || '' })) || {}).ficha || {});
           if (!fi.prenda || fi.prenda.borrador) falta.push('«La prenda» (pestaña Tienda)');
           if ((fi.beneficios || []).filter(b => b && b.titulo && b.foto).length < 2) falta.push('al menos 2 beneficios con su foto (pestaña Tienda)');
           if (false && (fi.ocasiones || []).filter(o => o && o.foto).length < 2) falta.push('las fotos «En la oficina» y «Fuera de la oficina» (si no las tienes, pídeselas a Claude: las arma con tus fotos de la tienda)');
         } catch (_) { falta.push('(no pude revisar la ficha de la tienda: reintenta)'); }
         // 15-oct (Pablo) · «activo» = se ve en la tienda: sin una categoría del menú no se activa
-        try { await _cosGuardarPendientes(v); const rc = await apiSend('costos.fichaWeb', { accion: 'colProducto', Diseno: v.Diseno, ShopifyId: v.ShopifyId, ver: true });
+        // 22-oct · VÍA RÁPIDA: las categorías ya se leyeron al abrir el producto (sección «Categorías en la tienda»): si ahí ya hay una del menú, 0 s. Si no, se pregunta al servidor.
+        const _ccoOk = CCO.v && CCO.v.Diseno === v.Diseno && !CCO.dirty && (CCO.l || []).some(c => c.menu && c.esta);
+        if (!_ccoOk) try { const rc = await apiSend('costos.fichaWeb', { accion: 'colProducto', Diseno: v.Diseno, ShopifyId: v.ShopifyId, ver: true });
           if (!((rc && rc.colecciones) || []).some(c => c.menu && c.esta)) falta.push('una categoría del menú de la tienda (sección «Categorías en la tienda»)'); } catch (_) { /* 22-oct (Pablo · Angie, Pantalón Paula) · si la revisión se cae (tiempo, red) NO se bloquea: el servidor vuelve a exigir la categoría del menú al publicar (_cosShopRequisitos_ · CostosBase.gs) */ }
         if (falta.length) { msg('No se puede publicar: falta ' + falta.join(', ') + '. Complétalo, guarda y vuelve a intentar.', 'var(--rd)'); volver(); return; }
         if (!(await npConfirm('Esto PUBLICA «' + v.Diseno + '» en tulula.com.pe y en Facebook e Instagram: lo verán tus clientes.\n\nSe envían fotos, descripción, cuidados, precios y las variantes de color y talla, y luego se publica.\n\n¿Publicar?'))) { volver(); return; }
