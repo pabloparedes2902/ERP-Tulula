@@ -8352,6 +8352,7 @@ function _cosEstadosPintar(v) {
           if (!((rc && rc.colecciones) || []).some(c => c.menu && c.esta)) falta.push('una categoría del menú de la tienda (sección «Categorías en la tienda»)'); } catch (_) { /* 22-oct (Pablo · Angie, Pantalón Paula) · si la revisión se cae (tiempo, red) NO se bloquea: el servidor vuelve a exigir la categoría del menú al publicar (_cosShopRequisitos_ · CostosBase.gs) */ }
         if (falta.length) { msg('No se puede publicar: falta ' + falta.join(', ') + '. Complétalo, guarda y vuelve a intentar.', 'var(--rd)'); volver(); return; }
         if (!(await npConfirm('Esto PUBLICA «' + v.Diseno + '» en tulula.com.pe y en Facebook e Instagram: lo verán tus clientes.\n\nSe envían fotos, descripción, cuidados, precios y las variantes de color y talla, y luego se publica.\n\n¿Publicar?'))) { volver(); return; }
+        if (!(await _bgEstudioRevisar(v, msg))) { msg('No se publicó: primero aprueba las fotos de cada color.', 'var(--rd)'); volver(); return; }   // 22-oct (Pablo) · producto nuevo: fondo de estudio en la portada de cada color, aprobado por quien publica
         _cosPublicarFondo(v, msg, sh, volver, sincronizar); return;   // 22-oct (Pablo) · los pasos 1 y 2 van en SEGUNDO PLANO: la pantalla queda libre y avisa al terminar
       } else {
         if (!(await npConfirm('Esto OCULTA «' + v.Diseno + '» de la tienda (pasa a borrador). No cambia el ERP.\n\n¿Seguimos?'))) { volver(); return; }
@@ -10091,6 +10092,74 @@ async function _bgAplanarFoto(v, clave) {
   if (Array.isArray(v._ord)) { v._ord = v._ord.map(u => u === r.Url ? nueva : u); try { await apiSend('costos.ordenFotos', { Diseno: v.Diseno, Urls: v._ord }); } catch (_) {} }
   return nueva;
 }
+// >>> 22-oct-2026 (Pablo, aprobado) · FONDO DE ESTUDIO AL PUBLICAR: la portada de cada color pasa a fondo de estudio gris azulado
+// (como Catalina, Grecia, Blazer Paula). NUNCA sale sola (regla 14-oct: el quitado automático cortaba prendas): quien publica ve
+// ANTES / DESPUÉS de cada foto y elige «Usar fondo de estudio» o «Dejar la original». Las ya hechas (estudio-) no se repiten.
+async function _bgEstudio(blob) {
+  const img = await createImageBitmap(blob), c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+  const x = c.getContext('2d'), g = x.createLinearGradient(0, 0, 0, c.height);
+  g.addColorStop(0, '#DFE3EC'); g.addColorStop(1, '#EEF1F7'); x.fillStyle = g; x.fillRect(0, 0, c.width, c.height);   // colores medidos en la portada del Pantalón Catalina
+  x.drawImage(img, 0, 0); return await new Promise(res => c.toBlob(res, 'image/png'));
+}
+function _bgPortadas(v) {
+  const mm = (v._mm || []).filter(r => r.Canal === 'SHOPIFY' && r.Tipo !== 'VIDEO'), ord = Array.isArray(v._ord) ? v._ord : [];
+  const lista = ord.map(u => mm.find(r => r.Url === u)).filter(Boolean).concat(mm.filter(r => ord.indexOf(r.Url) < 0));
+  const vistos = {}, out = [];
+  lista.forEach(r => { const col = String(r.Color || '').toUpperCase() || '—'; if (vistos[col]) return; vistos[col] = 1; out.push(r); });
+  return out;
+}
+async function _bgEstudioRevisar(v, msg) {
+  try { if (!v._mm) await _cosMmLeer(v); } catch (_) {}
+  const port = _bgPortadas(v).filter(r => !/estudio-/.test(r.Url));
+  if (!port.length) return true;   // todas las portadas ya tienen fondo de estudio
+  const m = (t) => { try { msg(t, 'var(--mu)'); } catch (_) {} };
+  m('Preparando el fondo de estudio de ' + port.length + ' foto(s)… (la 1ª vez baja el programa, ~1 min)');
+  const prev = [];
+  for (const r of port) { try { const ob = await (await fetch(r.Url)).blob(); prev.push({ r, antes: URL.createObjectURL(ob), png: await _bgEstudio(await _bgQuitar(ob)) }); } catch (e) { prev.push({ r, error: String(e.message || e) }); } }
+  prev.forEach(p => { if (p.png) p.despues = URL.createObjectURL(p.png); });
+  m('');
+  const elegir = await new Promise(res => {
+    const o = document.createElement('div'); o.id = 'bg-estudio';
+    o.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+    o.innerHTML = '<div style="position:relative;background:var(--sf,#fff);color:var(--tx,#222);border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow:auto;padding:16px 18px">'
+      + '<button id="bge-x" title="Cerrar" style="position:absolute;top:8px;right:10px;border:none;background:none;font-size:18px;cursor:pointer;color:inherit">✕</button>'
+      + '<div style="font-weight:700;font-size:15px;margin-bottom:4px">Fondo de estudio para la portada de cada color</div>'
+      + '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Revisa que la prenda esté COMPLETA (sin partes cortadas). Si alguna sale mal, elige «Dejar la original».</div>'
+      + prev.map((p, i) => '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--bd,#ddd);padding:8px 0">'
+        + '<b style="min-width:110px">' + esc(p.r.Color || '—') + '</b>'
+        + (p.error ? '<span style="color:var(--rd)">No se pudo preparar (' + esc(p.error) + '): queda la original.</span>'
+          : '<div style="text-align:center;font-size:11px">Antes<br><img src="' + p.antes + '" style="width:150px;height:150px;object-fit:contain;background:#fff;border-radius:6px"></div>'
+          + '<div style="text-align:center;font-size:11px">Después<br><img src="' + p.despues + '" style="width:150px;height:150px;object-fit:contain;border-radius:6px"></div>'
+          + '<label style="font-size:13px"><input type="radio" name="bge' + i + '" value="si" checked> Usar fondo de estudio</label>'
+          + '<label style="font-size:13px"><input type="radio" name="bge' + i + '" value="no"> Dejar la original</label>')
+        + '</div>').join('')
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn" id="bge-no">Cancelar</button><button class="btn btn-primary" id="bge-ok">Aprobar fotos y seguir</button></div></div>';
+    document.body.appendChild(o);
+    const cerrar = (val) => { o.remove(); res(val); };
+    o.querySelector('#bge-x').onclick = () => cerrar(null); o.querySelector('#bge-no').onclick = () => cerrar(null);
+    o.querySelector('#bge-ok').onclick = () => cerrar(prev.map((p, i) => !p.error && (o.querySelector('input[name="bge' + i + '"]:checked') || {}).value === 'si'));
+  });
+  if (!elegir) return false;
+  const usar = prev.filter((p, i) => elegir[i]);
+  let n = 0;
+  for (const p of usar) {
+    m('Subiendo fondo de estudio ' + (++n) + ' de ' + usar.length + '…');
+    const r = p.r, nom = 'estudio-' + (r.Url.split('/').pop() || 'foto').split('?')[0].replace(/\.[a-z0-9]+$/i, '').replace(/^(?:[a-z0-9]{8}-[a-z0-9]{4}-)?(?:blanco-|sinfondo-)+/i, '').slice(0, 60) + '.png';
+    let fm = null;
+    if (_mulDirOn()) { try { if (await _sbSesionAsegurar()) fm = _mulDirFirma(nom, 'image/png', p.png.size, v.Diseno); } catch (_) { fm = null; } }
+    if (!fm) { const fir = await apiSend('multimedia.firmarVarios', { archivos: [{ Nombre: nom, Tipo: 'image/png', Bytes: p.png.size, Diseno: v.Diseno }] }); fm = (fir && fir.firmas || [])[0]; }
+    if (!fm || fm.ok === false) throw new Error((fm && fm.error) || 'no se pudo preparar la subida');
+    const nueva = await _mulSubirUna(Object.assign({ contentType: 'image/png' }, fm), p.png);
+    const notas = /^original:/.test(String(r.Notas || '')) ? r.Notas : 'original:' + r.Url;   // ↺ sigue volviendo a la foto original
+    const gr = await _mulGuardarLote([{ original: r.Clave, Diseno: r.Diseno || v.Diseno, Canal: r.Canal, Tipo: r.Tipo, Url: nueva, Color: r.Color || '', Notas: notas, Origen: 'subido desde el ERP', Rapido: true }]);
+    const g0 = (gr && gr.res || [])[0]; if (g0 && g0.ok === false) throw new Error(g0.error || 'no se guardó');
+    if (Array.isArray(v._ord)) v._ord = v._ord.map(u => u === r.Url ? nueva : u);
+  }
+  if (usar.length) { try { await apiSend('costos.ordenFotos', { Diseno: v.Diseno, Urls: v._ord }); } catch (_) {} v._recargar = true; v._pL = null; try { await _cosMmLeer(v, true); } catch (_) {} }
+  m(usar.length ? '✓ ' + usar.length + ' foto(s) con fondo de estudio' : '');
+  return true;
+}
+// <<< FONDO DE ESTUDIO AL PUBLICAR
 // ✂ / ↺ sobre UNA foto ya cargada: sube la versión sin fondo (o vuelve a la original) y deja todo igual (mismo color, mismo lugar).
 async function _bgFoto(v, clave, volver) {
   const r = (v._mm || []).find(x => x.Clave === clave); if (!r) return;
@@ -10100,7 +10169,7 @@ async function _bgFoto(v, clave, volver) {
     if (volver) { nueva = String(r.Notas || '').replace(/^original:/, '').trim(); notas = ''; if (!/^https?:/.test(nueva)) return; msg('Volviendo a la foto original…'); }
     else {
       msg('Quitando el fondo… (la 1ª vez baja el programa, ~1 min)');
-      const ob = await (await fetch(r.Url)).blob(), png0 = await _bgQuitar(ob), png = r.Canal === 'SHOPIFY' ? await _bgAplanar(png0) : png0;   // 22-oct · foto de tienda: fondo BLANCO, no transparente (la tienda mostraba la 2ª foto detrás → «dos fotos superpuestas»)
+      const ob = await (await fetch(r.Url)).blob(), png0 = await _bgQuitar(ob), png = r.Canal === 'SHOPIFY' ? await _bgEstudio(png0) : png0;   // 22-oct · foto de tienda: fondo de ESTUDIO como los demás productos (antes: blanco), no transparente (la tienda mostraba la 2ª foto detrás → «dos fotos superpuestas»)
       const nomSF = 'sinfondo-' + (r.Url.split('/').pop() || 'foto').replace(/\.[a-z0-9]+$/i, '') + '.png';
       let fm = null;
       if (_mulDirOn()) { try { if (await _sbSesionAsegurar()) fm = _mulDirFirma(nomSF, 'image/png', png.size, v.Diseno); } catch (_) { fm = null; } }   // 14-oct · directo a la base
