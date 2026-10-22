@@ -10545,16 +10545,18 @@ async function _cdKardex() {
 /** 20-oct · pedidos con cambio vivo (no cancelado) → 'CAM-0198, …'. Paginado hasta página vacía. */
 async function _cdCambiosPorPedido() {
   const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión con la base');
-  const C = {}, ABIERTO = {}, NUEVAS = {};
+  const C = {}, ABIERTO = {}, NUEVAS = {}, CANC = {};
   for (let off = 0, v = 0; v < 50; v++, off += 1000) {
     const r = await fetch(SB_URL + '/rest/v1/cambios2?select=nro_pedido,nro_cambio,estado,prenda,rol:row_json-%3E%3ERol,rec:row_json-%3E%3EFechaRecepcionOriginal,env:row_json-%3E%3EFechaEnvioNueva&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
     if (!r.ok) throw new Error('cambios ' + r.status); const a = await r.json(); if (!a.length) break;
-    a.forEach(x => { const n = String(x.nro_pedido || '').trim(), est = String(x.estado || '').toUpperCase(); if (!n || est === 'CANCELADO') return;
+    a.forEach(x => { const n = String(x.nro_pedido || '').trim(), est = String(x.estado || '').toUpperCase(); if (n && est === 'CANCELADO') { const k = CANC[n] = CANC[n] || []; if (k.indexOf(x.nro_cambio) < 0) k.push(x.nro_cambio); }   // 22-oct · para avisar «el cambio del ERP está CANCELADO»
+      if (!n || est === 'CANCELADO') return;
       if (x.rol === 'NUEVA') NUEVAS[n + '|' + String(x.prenda || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim()] = 1;   // 21-oct · igual que el servidor (_cthNuevasCambio_) const c = C[n] = C[n] || []; if (c.indexOf(x.nro_cambio) < 0) c.push(x.nro_cambio);
       if (est.indexOf('SALDO ') !== 0 && (est === 'CLIENTE SOLICITA CAMBIO' || !x.rec || !x.env)) ABIERTO[n] = 1; });   // 21-oct: un saldo a favor no es un cambio en curso   // 20-oct · cambio sin terminar (falta recibir la original o enviar la nueva)
   }
   Object.defineProperty(C, '__abiertos', { value: ABIERTO, enumerable: false });
   Object.defineProperty(C, '__nuevas', { value: NUEVAS, enumerable: false });
+  Object.defineProperty(C, '__cancelados', { value: CANC, enumerable: false });
   return C;
 }
 /** Mismas reglas que la planilla: solo se lista si la TALLA está descuadrada (ventas ERP ≠ Drive en la foto).
@@ -10589,12 +10591,12 @@ function _cdArmar(M, FO, CAMS) {
     let que = (x[4] || 'El Drive tiene esta prenda y el ERP no') + (dif(x[0]) === 0 ? ' · la talla cuadra: está en otro pedido o clienta' : ''), espera = x[1] >= hace2;
     if (camD && !/^YAYA/i.test(camD)) {   // 21-oct: con o sin paréntesis (sin = la original todavía no vuelve)
       if (abierto) { que = 'CAMBIO en curso en el ERP (' + conCamErp.map(n => CAMS[n].join(', ')).join(' · ') + '): se cuadra solo al terminar el cambio'; espera = true; }
-      else if (!conCamErp.length) que = 'CAMBIO anotado en el Drive (la clienta devuelve ' + camD + ') que FALTA REGISTRAR en Cambios del ERP' + (ase ? ' → pedir a ' + ase : '');
+      else if (!conCamErp.length) que = 'CAMBIO anotado en el Drive (la clienta devuelve ' + camD + ') que FALTA REGISTRAR en Cambios del ERP' + (ase ? ' → pedir a ' + ase : '') + _cdCanc(nros, CAMS);
     } else if (abierto) { que += ' · el pedido tiene un cambio en curso'; espera = true; }
     return { nro: nros.join(', '), cli: nom(x[2]), f: x[1], prenda: x[5] || prend(x[0]), est: x[3], que, fila, espera };
   });
   const l3 = [].concat((M.otraTalla || []).map(z => Object.assign({ tipo: 'Otra talla' }, z)), (M.otraPrenda || []).map(z => Object.assign({ tipo: 'Otra prenda' }, z)))
-    .map(z => ({ nro: nro(z.erp[2]), cli: nom(z.erp[2]), f: z.erp[1], prenda: (z.erp[5] || prend(z.erp[0])) + '  →  Drive: ' + (z.drive[5] || prend(z.drive[0])), est: z.tipo, que: z.causa || '', fila: (String(z.drive[2]).match(/fila (\d+)/) || [])[1] || '' }));
+    .map(z => ({ nro: nro(z.erp[2]), cli: nom(z.erp[2]), f: z.erp[1], prenda: (z.erp[5] || prend(z.erp[0])) + '  →  Drive: ' + (z.drive[5] || prend(z.drive[0])), est: z.tipo, que: (z.causa || '') + (/^CAMBIO: el Drive/.test(z.causa || '') ? _cdCanc([nro(z.erp[2])], CAMS) : ''), fila: (String(z.drive[2]).match(/fila (\d+)/) || [])[1] || '' }));
   const l4 = Object.keys(FO).filter(k => { const x = FO[k]; if (!x || !x.e || !x.d) return false; const e = String(x.e).split(','), d = String(x.d).split(','); return e[0] !== d[0] || e[1] !== d[1]; })
     .map(k => { const e = String(FO[k].e).split(','), d = String(FO[k].d).split(','); return { prenda: prend(k), que: 'Confección ERP ' + e[0] + ' / Drive ' + d[0] + ' · No disponibles ERP ' + e[1] + ' / Drive ' + d[1] }; });
   const AB = CAMS.__abiertos || {}, esp = n => String(n).split(/[ ,]+/).some(x => AB[x]);   // 20-oct · cambio en curso = en espera
@@ -10624,6 +10626,10 @@ function _cdArmar(M, FO, CAMS) {
     que: /<talla>/.test(String(t[0])) ? 'El ERP no tiene este diseño en su stock (falta cargar su confección) o la línea no trae talla: mientras tanto estas ventas NO se comparan' : 'El nombre no coincide con ninguna prenda del catálogo: corregirlo o agregar la homologación' }); }));
   return { l0, l1, l2, l3, l4, l5, l6, cambiosTotal: conCam, cambiosOk: conCam - conProb };
 }
+/** 22-oct (logística: «los cambios cancelados siguen apareciendo») · si el pedido tiene cambios CANCELADOS en el ERP, decirlo:
+ *  el Drive tiene el cambio hecho y el ERP no lo tiene vigente → registrarlo de nuevo bien (o corregir el Drive si no se hizo). */
+function _cdCanc(nros, CAMS) { const K = (CAMS && CAMS.__cancelados) || {}; const L = []; (nros || []).forEach(n => (K[n] || []).forEach(c => { if (L.indexOf(c) < 0) L.push(c); }));
+  return L.length ? ' · en el ERP ' + (L.length > 1 ? 'los cambios ' + L.join(', ') + ' están CANCELADOS' : 'el cambio ' + L[0] + ' está CANCELADO') + ' (no cuenta): si el cambio sí se hizo, registrarlo de nuevo bien en Cambios; si no se hizo, corregir el Drive' : ''; }
 /** 21-oct · índice del Drive por clienta (nombre: 2 primeras palabras) → filas [fila, fecha, prenda col N, cambio col O, asesora]. Se arma 1 vez por comparación. */
 function _cdDriveIdx() {
   const f = (typeof window !== 'undefined' && window.cuadreLocalFilaDrive) || null; if (!f) return null;
