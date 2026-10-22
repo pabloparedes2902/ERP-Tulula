@@ -10453,12 +10453,25 @@ async function _cdActualizar() {
     const [m0, foto, cams] = await Promise.all([_cdEspejo('claude.cuadre.match'), _cdEspejo('claude.cuadre.cinco.foto'), _cdCambiosPorPedido()]);
     const corte = (m0 && m0.desde) || '2026-07-10';
     const res = await window.cuadreLocalEmparejar(corte);
-    CD.datos = _cdArmar(res.match || {}, (foto && foto.foto) || {}, cams);
+    // 22-oct (Pablo: «no es ajustar por ajustar, es cuadrar») · el ERP se mide con sus MOVIMIENTOS (lo mismo que muestra Inventario:
+    // rpc stock_libro_movimientos), no con el libro viejo stock_saldos, que se desfasa cuando la base se corrige directo (112 tallas el 22-oct).
+    const FO = Object.assign({}, (foto && foto.foto) || {}); let nK = 0;
+    try { const LM = await _cdKardex(); if (LM) Object.keys(FO).forEach(k => { const x = FO[k]; if (!x || !x.e) return; const m = LM[k.replace(/_/g, ' ')] || LM[k]; if (!m) return;
+      const e = String(x.e).split(',').map(Number); const v = Number(m.ventas) || 0; if (v === e[3]) return; e[3] = v; e[4] = e[2] - v; FO[k] = Object.assign({}, x, { e: e.join(',') }); nK++; }); } catch (_) {}
+    CD.datos = _cdArmar(res.match || {}, FO, cams); CD.datos.kardexCorrigio = nK;
     if (!(foto && foto.foto)) CD.err = 'no llegó la foto de stock talla por talla: las listas 1 y 2 pueden salir incompletas';
     CD.datos.cuando = new Date(); CD.datos.seg = (Date.now() - t0) / 1000;
     CD.datos.fotoCuando = (window._espejoGen || {})['claude.cuadre.cinco.foto'] || null;
   } catch (e) { CD.err = String((e && e.message) || e); }
   CD.cargando = false; _cdPintar();
+}
+/** 22-oct · ventas por talla según los MOVIMIENTOS del ERP (prenda|diseño|color|talla → {ventas}). Una llamada (~0,5 s). */
+async function _cdKardex() {
+  const tok = await _sbSesionAsegurar(); if (!tok) return null;
+  const r = await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+  if (!r.ok) return null; const a = await r.json(), M = {};
+  (a || []).forEach(x => { M[[x.prenda, x.diseno, x.color, x.talla].map(v => String(v || '').toUpperCase().trim()).join('|')] = x; });
+  return M;
 }
 /** 20-oct · pedidos con cambio vivo (no cancelado) → 'CAM-0198, …'. Paginado hasta página vacía. */
 async function _cdCambiosPorPedido() {
@@ -10583,7 +10596,7 @@ function _cdPintar() {
     : '<div style="padding:10px 14px;border-radius:10px;background:#fef3c7;color:#713f12;font-weight:700;margin-bottom:10px">Para el 100%: ' + total + ' por resolver' + (esp ? ' + ' + esp + ' en espera' : '') + '. Cuando TODAS las pestañas (0 a 6) estén en 0 y no quede nada en espera, el ERP y el Drive están 100% cuadrados.</div>');
   let h = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px">'
     + '<button class="btn bp" ' + (CD.cargando ? 'disabled' : '') + ' onclick="_cdActualizar()">' + (CD.cargando ? '⏳ Comparando…' : '🔄 Actualizar') + '</button>'
-    + (D ? '<span style="font-size:12px;color:var(--mu)">Actualizado ' + hhmm(D.cuando) + ' · tardó ' + D.seg.toFixed(1) + ' s · se actualiza solo cada 2 min · stock talla por talla de las ' + hhmm(D.fotoCuando) + '</span>' : '')
+    + (D ? '<span style="font-size:12px;color:var(--mu)">Actualizado ' + hhmm(D.cuando) + ' · tardó ' + D.seg.toFixed(1) + ' s · se actualiza solo cada 2 min · stock talla por talla de las ' + hhmm(D.fotoCuando) + (D.kardexCorrigio ? ' · ventas del ERP según sus movimientos (' + D.kardexCorrigio + ' tallas corregidas del libro viejo)' : '') + '</span>' : '')
     + (CD.err ? '<span style="color:var(--rd);font-size:12px">No se pudo comparar: ' + esc(CD.err) + '</span>' : '') + '</div>';
   if (!D) { el.innerHTML = h + (CD.cargando ? spin('Comparando el ERP con el Drive…') : ''); return; }
   h += veredicto;
