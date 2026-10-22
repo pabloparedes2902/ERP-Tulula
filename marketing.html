@@ -7380,6 +7380,28 @@ function escElegir(k){ ESC_SEL = k; ESC_NODO = null; escPintar(true); }
    Marketing calcula y deja la foto en localStorage 'esc_alerta_v1' (mismo origen que el ERP) y se la manda al ERP.
    Niveles: 🔴 etapa en rojo = el flujo de escalamiento está cortado · 🟠 dato con error (el producto no aparece en Stock)
    🟡 etapa en amarillo o que cae a rojo dentro del aviso · 🟢 nada (no se lista). ── */
+/* 22-oct (Pablo: «no cuando se agote la talla, sino cuando se vaya a agotar; la producción reacciona con un margen de días según la prenda») ·
+   🚨 URGENTE = producto con anuncio PRENDIDO cuya talla clave (12%+ de sus ventas) se acaba ANTES de que llegue una reposición mandada hoy
+   (días de confección de esa prenda). Si ya está en confección, no se avisa. Máximo 5, los más cercanos primero. Va a Alertas del ERP (no al celular). */
+function _escUrgentes(F){
+  const out = [];
+  (F || []).forEach(f => {
+    if (!f.lanes || !f.lanes.some(l => !l.vacio && l.on > 0)) return;
+    const ln = f.lanes.find(l => !l.vacio && l.niv && l.niv.stock), n = ln && ln.niv.stock;
+    if (!n || n.col === 'gris' || n.cam) return;
+    const lead = n.lead || _ep('esc_conf_dias'), crit = [];
+    (n.piezas || []).forEach(r => { const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0); if (!(W > 0)) return;
+      r.vs.forEach(v => { if (v.w / W >= 0.12 && v.rate > 0 && v.dias < lead) crit.push(v); }); });
+    if (!crit.length) return;
+    crit.sort((a, b) => a.dias - b.dias);
+    const tx = crit.slice(0, 4).map(v => _escTxtCT(v.c, v.t) + (v.s <= 0 ? ' (ya agotada)' : ' (' + _escPl(v.dias, 'día', 'días') + ')')).join(', ') + (crit.length > 4 ? ' y ' + (crit.length - 4) + ' más' : '');
+    out.push({ k: f.k, nombre: f.nombre, canal:'ambos', lane:'wa', etapa:'stock', nivel:'rojo', corte:true, urg:true, min: crit[0].dias,
+      sit: '🚨 Anuncio prendido y se acaban tallas que más se venden',
+      act: 'Se acaba ' + tx + ' y reponer tarda ' + lead + ' días. Ana: mandar al taller hoy. Paola: no subir presupuesto hasta que llegue',
+      q: 'Ana · Paola' });
+  });
+  return out.sort((a, b) => a.min - b.min).slice(0, 5);
+}
 function escAlertaItems(){
   if (!MK || !MK.filas || !ESC_STOCK || !MKH) return null;
   const F = escFilas(), FL = _escFocoLista(F), its = [], X = ESC_ETAPAS;
@@ -7401,6 +7423,9 @@ function escAlertaItems(){
       });
     });
   });
+  (typeof _escUrgentes === 'function' ? _escUrgentes(F) : []).forEach(x => {   /* 22-oct · 🚨 tallas clave que se acaban antes de reponer */
+    for (let i = its.length - 1; i >= 0; i--) if (its[i].k === x.k && its[i].etapa === 'stock') its.splice(i, 1);
+    its.push(x); });
   const ord = { rojo:0, naranja:1, amarillo:2 };
   its.sort((a, b) => ord[a.nivel] - ord[b.nivel] || (b.corte - a.corte));
   return { at: Date.now(), dias: (typeof mkPeriodoDias !== 'undefined' ? mkPeriodoDias : null), auto: FL.auto,

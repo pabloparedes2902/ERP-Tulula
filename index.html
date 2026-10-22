@@ -7494,16 +7494,17 @@ function _cosSugerir(v) {
 
 // 3-oct · panel «Fotos y video» de la ficha del producto: por color, catálogo del agente y video; sube directo y manda a Shopify
 function _cosNormD(x) { return String(x || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim().replace(/\s+/g, ' '); }
-async function _cosFichaEnviar(v, auto) {
+async function _cosFichaEnviar(v, auto, accShop) {   // 22-oct · accShop: la ruta ya decidida al empezar (en segundo plano la pantalla puede cambiar)
   if (!v.ShopifyId) { if (!auto) toast('Este producto todavía no está enlazado a Shopify.', 'warn'); return { ok: false, texto: 'Sin enlace a Shopify' }; }
   const out = document.getElementById('cfm-st') || document.getElementById('cfs-st');
   if (out) out.textContent = 'Enviando a Shopify…';
   try {
-    let r = await apiSend('costos.shopify', { fichaProducto: v.Diseno });
+    const _acc = accShop || 'costos.shopify';
+    let r = await apiSend(_acc, { fichaProducto: v.Diseno });
     // 4-oct · con subida en bloque quedan fotos por mandar (tope de 12 por vuelta): se repite sola hasta terminar (máx. 6 vueltas)
     for (let k = 2; k <= 6 && /faltan \d+ fotos/.test(String((r && r.texto) || '')); k++) {
       if (out) out.textContent = 'Enviando a Shopify… (vuelta ' + k + ')';
-      r = await apiSend('costos.shopify', { fichaProducto: v.Diseno });
+      r = await apiSend(_acc, { fichaProducto: v.Diseno });
     }
     const t = String((r && r.texto) || '');
     const mal = /FALLARON|FALLO|no pude/i.test(t);
@@ -8334,10 +8335,7 @@ function _cosEstadosPintar(v) {
           if (!((rc && rc.colecciones) || []).some(c => c.menu && c.esta)) falta.push('una categoría del menú de la tienda (sección «Categorías en la tienda»)'); } catch (_) { /* 22-oct (Pablo · Angie, Pantalón Paula) · si la revisión se cae (tiempo, red) NO se bloquea: el servidor vuelve a exigir la categoría del menú al publicar (_cosShopRequisitos_ · CostosBase.gs) */ }
         if (falta.length) { msg('No se puede publicar: falta ' + falta.join(', ') + '. Complétalo, guarda y vuelve a intentar.', 'var(--rd)'); volver(); return; }
         if (!(await npConfirm('Esto PUBLICA «' + v.Diseno + '» en tulula.com.pe y en Facebook e Instagram: lo verán tus clientes.\n\nSe envían fotos, descripción, cuidados, precios y las variantes de color y talla, y luego se publica.\n\n¿Publicar?'))) { volver(); return; }
-        msg('1 de 2 · Enviando la ficha completa a Shopify… (puede tardar un minuto)');
-        const env = await _cosFichaEnviar(v, true);
-        if (!env.ok) { msg('No se publicó: ' + env.texto + ' — revisa y vuelve a intentar.', 'var(--rd)'); volver(); return; }
-        msg('2 de 2 · Publicando…');
+        _cosPublicarFondo(v, msg, sh, volver); return;   // 22-oct (Pablo) · los pasos 1 y 2 van en SEGUNDO PLANO: la pantalla queda libre y avisa al terminar
       } else {
         if (!(await npConfirm('Esto OCULTA «' + v.Diseno + '» de la tienda (pasa a borrador). No cambia el ERP.\n\n¿Seguimos?'))) { volver(); return; }
         msg('Ocultando…');
@@ -8436,6 +8434,43 @@ function _cosPendCopiar(nombre) {
   toast('Copiados costos y precios de ' + esc(nombre) + ' — ajusta lo que cambie', 'ok');
 }
 // 15-oct (Pablo) · «Guardar cambios» guarda TODO lo editado en la ficha: tabla de medidas, categorías y la historia de la tienda
+// >>> 22-oct-2026 (Pablo: «debe ser automático») · PUBLICAR EN SEGUNDO PLANO
+// Tras «¿Publicar?» la pantalla queda libre: envía la ficha (paso 1) y publica (paso 2) por detrás y deja un aviso fijo con ✕ al terminar.
+function _pubAviso(id, texto, tipo) {
+  let caja = document.getElementById('pub-fondo');
+  if (!caja) { caja = document.createElement('div'); caja.id = 'pub-fondo'; caja.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:9999;display:flex;flex-direction:column;gap:8px;max-width:min(380px,calc(100vw - 32px))'; document.body.appendChild(caja); }
+  let el = document.getElementById(id);
+  if (!el) { el = document.createElement('div'); el.id = id; caja.appendChild(el); }
+  const col = tipo === 'ok' ? 'var(--gn)' : tipo === 'err' ? 'var(--rd)' : 'var(--ac2)';
+  el.style.cssText = 'background:var(--sf,#fff);color:var(--tx,#222);border:1px solid ' + col + ';border-left:5px solid ' + col + ';border-radius:10px;padding:10px 34px 10px 12px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.15);position:relative';
+  el.textContent = texto;
+  const x = document.createElement('button'); x.textContent = '✕'; x.title = 'Cerrar';
+  x.style.cssText = 'position:absolute;top:6px;right:8px;border:none;background:none;font-size:15px;cursor:pointer;color:inherit';
+  x.onclick = () => el.remove(); el.appendChild(x);
+}
+async function _cosPublicarFondo(v, msg, sh, volver) {
+  const id = 'pf-' + Date.now(), nom = v.Diseno;
+  const accShop = (_conAlias('costos.shopify', {}) || 'costos.shopify');   // la ruta se decide AHORA (si después cambia de pantalla, no se pierde)
+  const m = (t, c) => { try { msg(t, c); } catch (_) {} };
+  _pubAviso(id, '⏳ Publicando «' + nom + '» en la tienda… Puedes seguir trabajando; te aviso aquí al terminar.', '');
+  m('⏳ Publicando en segundo plano… puedes seguir trabajando (aviso abajo a la derecha).', 'var(--mu)');
+  try {
+    _pubAviso(id, '⏳ «' + nom + '» · 1 de 2 · Enviando la ficha completa a Shopify… Puedes seguir trabajando.', '');
+    const env = await _cosFichaEnviar(v, true, accShop);
+    if (!env.ok) throw new Error(env.texto || 'no se pudo enviar la ficha');
+    _pubAviso(id, '⏳ «' + nom + '» · 2 de 2 · Publicando…', '');
+    const r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: true, Canal: 'SHOPIFY' });
+    _cosAplicar(r); sincronizar();
+    const f = COS.data.find(x => x.Diseno === v.Diseno);
+    if (!(f && f.ShopifyEstado === 'active')) throw new Error((r && r.aviso) || 'no pude confirmarlo en Shopify');
+    _pubAviso(id, '✓ «' + nom + '» quedó PUBLICADO en tulula.com.pe, Facebook e Instagram.', 'ok');
+    m('✓ Confirmado en Shopify: PUBLICADO', 'var(--gn)'); try { sh.disabled = false; } catch (_) {}
+  } catch (er) {
+    _pubAviso(id, '✗ «' + nom + '» NO se publicó: ' + (er.message || er) + '. Ábrelo y vuelve a intentar.', 'err');
+    m('No se publicó: ' + (er.message || er), 'var(--rd)'); try { volver(); } catch (_) {}
+  }
+}
+// <<< PUBLICAR EN SEGUNDO PLANO
 async function _cosGuardarPendientes(v) {
   const hechos = [], fallos = [];
   try { if (CTB.dirty && CTB.v && v && CTB.v.Diseno === v.Diseno && CTB.gid) { _cfwTablaSync();
@@ -30397,6 +30432,7 @@ function renderStock(el) {
         + '</optgroup>') : '')
     +'</select>';
   ctrl+='<button id="st-ordenar" class="btn bg bs" style="font-size:12px;flex-shrink:0" title="Crear/editar un orden manual arrastrando diseños">↕ Ordenar vista</button>';
+  ctrl+='<button class="btn bg bs" style="font-size:12px;flex-shrink:0" onclick="leAbrir()" title="Anotar a una clienta que pidió una talla agotada; el ERP avisa cuando vuelve">📝 Lista de espera' + (LE.L && LE.L.length ? ' (' + LE.L.filter(x => x.estado === 'espera').length + ')' : '') + '</button>';   // 22-oct (Pablo) · «Volvió tu talla»
   // 29-ago-2026 — SIN cartel de vista guardada: el propio desplegable de orden
   // ya muestra cuál está activa (★ nombre). Repetirlo al lado era ruido.
   ctrl+='<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mu);cursor:pointer;white-space:nowrap"><input id="st-hide" type="checkbox"'+(stHideNoStock?' checked':'')+' style="accent-color:var(--ac);width:14px;height:14px;cursor:pointer"> Ocultar sin stock</label>';
@@ -42628,6 +42664,7 @@ function _alPanelHtml(g) {
   });
   h += _alEscalaHtml();   // 20-oct · 🚀 Escalamiento (Marketing)
   h += _alProdHtml();   // 21-oct · 🧵 Producción
+  h += _alEsperaHtml();   // 22-oct · 📝 Volvió tu talla (lista de espera)
   return h + '</div>';
 }
 
@@ -42757,6 +42794,75 @@ function _alProdHtml() {
   return h + '</div>';
 }
 function _alProdPintar() { const c = document.getElementById('al-prod'); if (!c) return; const t = document.createElement('div'); t.innerHTML = _alProdHtml(); if (t.firstChild) c.replaceWith(t.firstChild); }
+/* ══ 22-oct (Pablo) · 📝 LISTA DE ESPERA «Volvió tu talla» — empieza con las asesoras ══
+   La asesora anota a la clienta que pidió una talla agotada (Stock → 📝 Lista de espera). Cuando esa talla vuelve a tener stock,
+   aparece en Alertas y en la lista con el botón para escribirle por WhatsApp (mensaje listo) y «Ya le avisé». Tabla: public.lista_espera. */
+const LE = { L: null, cargando: false };
+async function _leRpc(fn, body) {
+  const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('Inicia sesión en el ERP');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const t = await r.text(); if (!r.ok) throw new Error(t.slice(0, 200)); return t ? JSON.parse(t) : null;
+}
+async function leCargar() {
+  if (LE.cargando) return; LE.cargando = true;
+  try { const L = await _leRpc('lista_espera_ver'); LE.L = Array.isArray(L) ? L : []; } catch (_) { if (!LE.L) LE.L = []; }
+  LE.cargando = false;
+  try { _alEsperaPintar(); } catch (_) {}
+  try { const m = document.getElementById('le-lista'); if (m) m.innerHTML = _leListaHtml(); } catch (_) {}
+}
+function _leTel(t) { const d = String(t || '').replace(/\D/g, ''); return d.length === 9 ? '51' + d : d; }
+function _leWa(x) {
+  const txt = 'Hola' + (x.nombre ? ' ' + x.nombre : '') + ', te escribimos de Tulula 💛 ¡Ya volvió el ' + x.producto + (x.color ? ' en ' + x.color : '') + ' talla ' + x.talla + '! ¿Te lo separamos?';
+  return 'https://wa.me/' + _leTel(x.telefono) + '?text=' + encodeURIComponent(txt);
+}
+function _leFila(x) {
+  const ok = x.estado === 'espera' && +x.stock > 0, dias = Math.max(0, Math.round((Date.now() - new Date(x.creado).getTime()) / 864e5));
+  return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;margin-top:6px;border-radius:8px;background:var(--bg2,rgba(0,0,0,.06));border-left:3px solid ' + (ok ? 'var(--gn)' : x.estado === 'avisada' ? 'var(--mu)' : '#d97706') + '">'
+    + '<div style="flex:1;min-width:200px;font-size:12.5px"><b>' + esc(x.nombre || x.telefono) + '</b> · ' + esc(x.producto) + (x.color ? ' ' + esc(x.color) : '') + ' <b>' + esc(x.talla) + '</b>'
+    + '<div style="font-size:11.5px;color:var(--mu)">' + (ok ? '✅ Volvió: hay ' + x.stock + ' en stock' : x.estado === 'avisada' ? '✓ Avisada' : '⏳ Esperando hace ' + dias + (dias === 1 ? ' día' : ' días')) + (x.nota ? ' · ' + esc(x.nota) : '') + '</div></div>'
+    + (ok ? '<a class="btn bp bs" style="font-size:12px" target="_blank" rel="noopener" href="' + esc(_leWa(x)) + '">💬 Escribirle</a><button class="btn bg bs" style="font-size:12px" onclick="leMarcar(' + Number(x.id) + ',\'avisada\')">Ya le avisé</button>' : '')
+    + (x.estado === 'espera' ? '<button class="btn bg bs" style="font-size:12px" title="Ya no la quiere" onclick="leMarcar(' + Number(x.id) + ',\'cancelada\')">✕</button>' : '') + '</div>';
+}
+function _leListaHtml() {
+  if (!LE.L) return '<div style="font-size:12px;color:var(--mu)">Cargando…</div>';
+  if (!LE.L.length) return '<div style="font-size:12px;color:var(--mu)">Nadie en espera todavía.</div>';
+  const L = LE.L.slice().sort((a, b) => ((+b.stock > 0 && b.estado === 'espera') - (+a.stock > 0 && a.estado === 'espera')) || (a.estado === 'avisada') - (b.estado === 'avisada'));
+  return L.map(_leFila).join('');
+}
+function leAbrir() {
+  let m = document.getElementById('le-modal');
+  if (!m) { m = document.createElement('div'); m.id = 'le-modal'; document.body.appendChild(m); }
+  const st = 'padding:7px 9px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px;width:100%';
+  const c = (id, l, ph) => '<div><label style="font-size:11px;color:var(--mu)">' + l + '</label><input id="' + id + '" placeholder="' + (ph || '') + '" style="' + st + '"></div>';
+  m.innerHTML = '<div style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:40px 12px;overflow:auto" onclick="if(event.target===this)leCerrar()">'
+    + '<div style="background:var(--bg1,var(--bg));border:1px solid var(--bd);border-radius:12px;max-width:640px;width:100%;padding:16px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:15px">📝 Lista de espera · Volvió tu talla</b><button class="btn bg bs" onclick="leCerrar()">✕</button></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin:4px 0 10px">Anota a la clienta que pidió una talla agotada. Cuando vuelva el stock, el ERP te avisa con el mensaje listo para WhatsApp.</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">' + c('le-tel', 'Teléfono *', '987654321') + c('le-nom', 'Nombre', '') + c('le-prod', 'Producto *', 'Blazer Mirella') + c('le-col', 'Color', 'Negro') + c('le-tal', 'Talla *', 'M') + c('le-nota', 'Nota', '') + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:10px"><button class="btn bp bs" onclick="leGuardar()">Anotar</button><span id="le-msg" style="font-size:12px"></span></div>'
+    + '<div style="margin-top:14px;font-weight:600;font-size:13px">En espera</div><div id="le-lista">' + _leListaHtml() + '</div></div></div>';
+  leCargar();
+}
+function leCerrar() { const m = document.getElementById('le-modal'); if (m) m.innerHTML = ''; }
+async function leGuardar() {
+  const g = id => (document.getElementById(id) || {}).value || '', msg = document.getElementById('le-msg');
+  try { const r = await _leRpc('lista_espera_guardar', { p_telefono: g('le-tel'), p_nombre: g('le-nom'), p_producto: g('le-prod'), p_color: g('le-col'), p_talla: g('le-tal'), p_nota: g('le-nota') });
+    if (!r || !r.ok) throw new Error((r && r.error) || 'No se guardó');
+    ['le-tel', 'le-nom', 'le-col', 'le-tal', 'le-nota'].forEach(id => { const i = document.getElementById(id); if (i) i.value = ''; });
+    msg.style.color = 'var(--gn)'; msg.textContent = '✓ Anotada'; await leCargar();
+  } catch (e) { msg.style.color = 'var(--rd)'; msg.textContent = e.message; }
+}
+async function leMarcar(id, estado) { try { await _leRpc('lista_espera_marcar', { p_id: id, p_estado: estado }); } catch (e) { toast('No se pudo: ' + esc(e.message), 'err'); } await leCargar(); }
+function _alEsperaHtml() {
+  if (LE.L === null) { try { if (typeof setTimeout === 'function') setTimeout(leCargar, 50); } catch (_) {} return '<div id="al-espera"></div>'; }
+  const V = LE.L.filter(x => x.estado === 'espera' && +x.stock > 0);
+  if (!V.length) return '<div id="al-espera"></div>';
+  return '<div class="card al-area" id="al-espera" data-area="espera" style="padding:12px;border-top:4px solid var(--gn)">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="font-weight:700;font-size:15px">📝 Volvió tu talla</div><div style="font-size:12px;font-weight:600;color:var(--gn)">' + V.length + (V.length === 1 ? ' clienta por avisar' : ' clientas por avisar') + '</div></div>'
+    + '<div style="font-size:11.5px;margin-top:4px"><b>Quién:</b> asesoras · ya hay stock de la talla que pidieron</div>'
+    + V.slice(0, 5).map(_leFila).join('') + (V.length > 5 ? '<button class="btn bg bs" style="margin-top:8px" onclick="leAbrir()">Ver las ' + V.length + ' →</button>' : '') + '</div>';
+}
+function _alEsperaPintar() { const c = document.getElementById('al-espera'); if (!c) return; const t = document.createElement('div'); t.innerHTML = _alEsperaHtml(); if (t.firstChild) c.replaceWith(t.firstChild); }
 function _alProdSemLinea(g) {
   const S = v => 'S/ ' + (Math.round((+v || 0) * 100) / 100).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return [g.rec7 ? g.rec7 + ' recibidas · ' + g.pf7 + '% fallas' : 'nada recibido', (g.atras || []).length ? g.atras.length + ' atrasada' + (g.atras.length > 1 ? 's' : '') + ' (' + g.atras.join(', ') + ')' : '',
