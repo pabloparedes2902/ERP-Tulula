@@ -897,6 +897,11 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <div class="fg"><label>Referencia</label><input id="np-ref" type="text" placeholder="Punto de referencia..."></div>
           <div class="fg"><label>Correo electrónico</label><input id="np-email" type="text" placeholder="ejemplo@correo.com" autocomplete="off"></div>
         </div>
+        <!-- 10b. Cumpleaños (22-oct · beneficio sorpresa; se guarda en la ficha de la clienta) -->
+        <div class="fr">
+          <div class="fg"><label>Cumpleaños 🎂 (beneficio sorpresa)</label><input id="np-cumple" type="date" autocomplete="off"></div>
+          <div class="fg"></div>
+        </div>
         <!-- 11. Canal + 12. Origen -->
         <div class="fr">
           <div class="fg"><label>Canal *</label><select id="np-canal"><option value="">— Elegir canal —</option></select></div>
@@ -23030,6 +23035,62 @@ function _waLsSet(o){
   } catch (_) {}
 }
 function _waDigitos(s){ return String(s || '').replace(/\D/g, ''); }
+// ── Fase 2 (22-oct): lo copiado queda en la base para TODO el equipo + cumpleaños ──
+// PEGAR_EN_SUPABASE_whatsapp_fase2_22oct.sql: erp.wa_mensajes + wa_registrar / wa_ultimos /
+// wa_historial / wa_cumple. Si la base no contesta, sigue funcionando con lo del navegador.
+const _WA_BASE = {}, _WA_CUMPLE = {};
+function _waRpc(fn, params, ms){
+  if (typeof window === 'undefined' || typeof window._egrRpc !== 'function') return Promise.resolve(null);
+  return Promise.race([ window._egrRpc(fn, params).catch(() => null), new Promise(r => setTimeout(() => r(null), ms || 2500)) ]);
+}
+function _waUltimo(nro){
+  const a = _waLsGet()[nro] || null, b = _WA_BASE[nro] || null;
+  if (!a) return b; if (!b) return a;
+  return String(b.t || '') > String(a.t || '') ? b : a;
+}
+async function _waTraerBase(nros){
+  nros = (nros || []).map(_waT).filter(Boolean); if (!nros.length) return;
+  const r = await _waRpc('wa_ultimos', { p_nros: nros });
+  if (r && typeof r === 'object') Object.keys(r).forEach(k => {
+    const x = r[k] || {};
+    _WA_BASE[k] = { t: x.en ? new Date(x.en).toISOString() : '', tipo: x.tipo, contra: x.contra, foto: x.foto, por: x.por };
+  });
+}
+function _waClave(p){ try { return _cliClaveDeFila(p); } catch (_) { return ''; } }
+async function _waTraerCumple(claves){
+  claves = (claves || []).filter(k => k && !(k in _WA_CUMPLE)); if (!claves.length) return;
+  const r = await _waRpc('wa_cumple', { p_claves: claves });
+  if (r && typeof r === 'object') claves.forEach(k => { _WA_CUMPLE[k] = _waT(r[k] || ''); });
+}
+function _waFmtCumple(v){ const s = _waT(v); const m = s.match(/(\d{4})-(\d{2})-(\d{2})/); return m ? (m[3] + '/' + m[2]) : s; }
+function _waRegistrarBase(o){ try { _waRpc('wa_registrar', { p: o }, 8000); } catch (_) {} }
+async function _waRefrescarBoton(p){
+  const nro = _waT(p && p['NroPedido']); if (!nro) return;
+  await _waTraerBase([nro]);
+  const b = document.getElementById('medit-wa'); if (!b) return;
+  const u = _waUltimo(nro);
+  const cuando = u && u.t ? (_waF(u.t) + ' ' + String(u.t).slice(11, 16)) : '';
+  if (_waPendiente(p)) { b.style.borderColor = '#f59e0b'; b.style.color = '#f59e0b'; b.title = 'Cambió algo después del último aviso al grupo' + (cuando ? ' (' + cuando + ')' : ''); }
+  else if (u) { b.style.borderColor = ''; b.style.color = ''; b.title = 'Ya se avisó al grupo' + (u.por ? ' · ' + u.por : '') + (cuando ? ' · ' + cuando : ''); }
+}
+// Cumpleaños en Nuevo pedido: se guarda en la ficha de la clienta (la misma de Clientes)
+function _waGuardarCumpleNp(snap){
+  const el = document.getElementById('np-cumple'); if (!el) return;
+  const v = _waT(el.value); if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+  const k = _cliClaveDe(snap.NombreApellido, snap.Celular, snap.DNI, ''); if (!k) return;
+  if (_WA_CUMPLE[k] === v) return;
+  _WA_CUMPLE[k] = v;
+  try { apiSend('clientes.ficha.guardar', { clave: k, Cumpleanos: v }).catch(e => { try { _errLog('wa.cumple.guardar', e); } catch (_) {} }); } catch (_) {}
+}
+async function _waPrefillCumpleNp(){
+  const el = document.getElementById('np-cumple'); if (!el || el.value) return;
+  const val = id => ((document.getElementById(id) || {}).value || '').trim();
+  const cel = [...document.querySelectorAll('#np-tels input')].map(i => i.value.trim()).filter(Boolean).join(' / ');
+  const k = _cliClaveDe(val('np-nom'), cel, val('np-dnum'), ''); if (!k) return;
+  await _waTraerCumple([k]);
+  const c = _WA_CUMPLE[k];
+  if (c && /^\d{4}-\d{2}-\d{2}$/.test(c) && !el.value) el.value = c;
+}
 
 // ── Datos del pedido (sale del pedido agrupado: el mismo que ve el detalle) ──
 function _waDatosPedido(p){
@@ -23077,6 +23138,7 @@ function _waDatosPedido(p){
     desc: _waR(p._descuento), subtotal: subtotal, pagado: pagado,
     saldo: _waR(subtotal - pagado), pagos: p._pagosDetalle || [],
     estadoPagoMan: man, antigua: antigua,
+    cumple: _waFmtCumple(_WA_CUMPLE[_waClave(p)] || ''),
   };
 }
 function _waFoto(d){   // lo que se compara para la "Actualización"
@@ -23085,11 +23147,11 @@ function _waFoto(d){   // lo que se compara para la "Actualización"
     'Provincia': d.prov, 'Región': d.reg, 'Referencia': d.ref, 'Correo': d.email,
     'Prendas': d.prendas.map(x => _waT(x.prenda)).join(' + '),
     'Total': _waS(d.subtotal), 'Pagado': _waS(d.pagado),
-    'Estado': d.estado, 'Courier': d.courier, 'Comentario': d.coment,
+    'Estado': d.estado, 'Courier': d.courier, 'Comentario': d.coment, 'Cumpleaños': d.cumple,
   };
 }
 function _waDiferencias(d){
-  const prev = _waLsGet()[d.nro];
+  const prev = _waUltimo(d.nro);
   if (!prev || !prev.foto) return null;
   const now = _waFoto(d), out = [];
   Object.keys(now).forEach(k => { const a = _waT(prev.foto[k]), b = _waT(now[k]); if (a !== b) out.push({ campo: k, antes: a, ahora: b }); });
@@ -23144,6 +23206,7 @@ function waTextoPedido(p, tipo, opt){
     lugar ? 'Distrito / Provincia / Región: ' + lugar : '',
     d.ref ? 'Referencia: ' + d.ref : '',
     d.email ? 'Correo: ' + d.email : '',
+    d.cumple ? 'Cumpleaños: ' + d.cumple + ' 🎂' : '',
   ];
   const lineaPrenda = x => '• ' + _waT(x.prenda) + ((parseFloat(x.precio) || 0) > 0 ? ' — ' + _waS(x.precio) : ' — 🎁 regalo');
   const bloquePago = () => {
@@ -23385,6 +23448,7 @@ function _waVentana(cfg){
     + (cfg.tipos ? '<div style="display:flex;gap:6px;flex-wrap:wrap">' + cfg.tipos.map(t => '<button class="btn bs ' + (t[0] === st.tipo ? 'bp' : 'bg') + '" data-watipo="' + esc(t[0]) + '" style="font-size:11px">' + esc(t[1]) + '</button>').join('') + '</div>' : '')
     + (cfg.conContra ? '<label style="font-size:12px;display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="wa-contra"' + (st.contra ? ' checked' : '') + '> El saldo se cobra contraentrega</label>' : '')
     + '<div id="wa-av"></div>'
+    + (cfg.historial ? '<div id="wa-hist" style="font-size:11px;color:var(--mu);order:9">🕘 Buscando avisos anteriores…</div>' : '')
     + '<textarea id="wa-txt" readonly style="box-sizing:border-box;width:100%;min-height:300px;flex:1;padding:10px;background:var(--bg3);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-family:inherit;font-size:12.5px;line-height:1.45;resize:vertical"></textarea>'
     + '</div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end;padding:10px 14px;border-top:1px solid var(--bd)">'
@@ -23423,19 +23487,35 @@ function _waVentana(cfg){
     cerrar();
   });
   pintar();
+  if (cfg.historial) (async () => {
+    const box = ov.querySelector('#wa-hist'); if (!box) return;
+    const h = await _waRpc('wa_historial', { p_nro: cfg.historial.nro || '', p_ref: cfg.historial.ref || '' }, 6000);
+    if (!Array.isArray(h)) { box.remove(); return; }
+    const TIPO = { REGULAR: 'Pedido regular', AGREGA: 'Agrega a su pedido', RESERVA: 'Reserva', ACTUALIZACION: 'Actualización', CAMBIO: 'Cambio', DEVOLUCION: 'Devolución' };
+    box.innerHTML = !h.length ? '🕘 Aún no se avisó al grupo.'
+      : '<b style="color:var(--tx)">🕘 Avisos anteriores al grupo (' + h.length + ')</b>' + h.map(x => {
+          const t = x.en ? new Date(x.en) : null;
+          const cuando = t ? (('0' + t.getDate()).slice(-2) + '/' + ('0' + (t.getMonth() + 1)).slice(-2) + ' ' + ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2)) : '';
+          return '<details style="margin-top:4px"><summary style="cursor:pointer">' + esc(cuando) + ' · ' + esc(String(x.por || '').split('@')[0]) + ' · ' + esc(TIPO[x.tipo] || x.tipo || '') + '</summary>'
+            + '<div style="white-space:pre-wrap;background:var(--bg3);border:1px solid var(--bd);border-radius:6px;padding:6px 8px;margin-top:4px;color:var(--tx)">' + esc(x.texto || '') + '</div></details>';
+        }).join('');
+  })();
 }
 const WA_TIPOS_PEDIDO = [['REGULAR', '🛍️ Pedido regular'], ['AGREGA', '➕ Agrega a su pedido'], ['RESERVA', '📅 Reserva'], ['ACTUALIZACION', '✏️ Actualización']];
 function waVentanaPedido(p, tipoForzado){
   const d = _waDatosPedido(p);
-  const prev = _waLsGet()[d.nro] || {};
+  const prev = _waUltimo(d.nro) || {};
   const contraIni = (prev.contra != null) ? !!prev.contra : (d.saldo > 0.009 && /contra/i.test(d.coment));
   _waVentana({
     titulo: 'Pedido #' + d.nro + ' · ' + (d.nombre || ''),
     tipos: WA_TIPOS_PEDIDO, tipo: tipoForzado || _waTipoSugerido(d),
-    conContra: d.saldo > 0.009, contra: contraIni,
+    conContra: d.saldo > 0.009, contra: contraIni, historial: { nro: d.nro },
     armar: st => ({ texto: waTextoPedido(p, st.tipo, { contraentrega: st.contra }), avisos: _waAvisosPedido(d, st.tipo, st.contra) }),
     alCopiar: st => {
-      const o = _waLsGet(); o[d.nro] = { t: new Date().toISOString(), tipo: st.tipo, contra: st.contra, foto: _waFoto(d) }; _waLsSet(o);
+      const _t = new Date().toISOString(), _f = _waFoto(d);
+      const o = _waLsGet(); o[d.nro] = { t: _t, tipo: st.tipo, contra: st.contra, foto: _f }; _waLsSet(o);
+      _WA_BASE[d.nro] = { t: _t, tipo: st.tipo, contra: st.contra, foto: _f };
+      _waRegistrarBase({ clase: 'pedido', nro: d.nro, tipo: st.tipo, texto: st._texto, foto: _f, contra: st.contra, avisos: st._avisos || [] });
       try { const b = document.getElementById('medit-wa'); if (b) { b.style.borderColor = ''; b.style.color = ''; b.title = 'Copiar el mensaje para el grupo de WhatsApp'; } } catch (_) {}
     },
   });
@@ -23451,15 +23531,27 @@ async function waAbrirPedido(nro, tipoForzado){
     } catch (_) {}
   }
   if (!p) { toast('Todavía no encuentro el pedido #' + esc(nro) + '. Espera unos segundos y vuelve a intentar.', 'err'); return; }
+  await Promise.all([_waTraerBase([nro]), _waTraerCumple([_waClave(p)])]);
   waVentanaPedido(p, tipoForzado);
+}
+function _waVentanaCambio(c){
+  _waVentana({ titulo: 'Cambio ' + (c.nc || '') + ' · ' + (c.nombre || ''), historial: { ref: c.nc },
+    armar: () => ({ texto: waTextoCambio(c), avisos: _waAvisosCambio(c) }),
+    alCopiar: st => _waRegistrarBase({ clase: 'cambio', nro: c.nros[0] || '', ref: c.nc, tipo: 'CAMBIO', texto: st._texto, avisos: st._avisos || [] }) });
+}
+function _waVentanaDev(v){
+  const ref = (v.nd && !/^DEV-NEW/.test(v.nd)) ? v.nd : '';
+  _waVentana({ titulo: 'Devolución · ' + (v.nombre || ''), historial: ref ? { ref: ref } : null,
+    armar: () => ({ texto: waTextoDevolucion(v), avisos: [] }),
+    alCopiar: st => _waRegistrarBase({ clase: 'devolucion', nro: v.nro, ref: ref, tipo: 'DEVOLUCION', texto: st._texto }) });
 }
 function waAbrirCambio(rows){
   const c = _waCambioDeFilas(rows);
-  _waVentana({ titulo: 'Cambio ' + (c.nc || '') + ' · ' + (c.nombre || ''), armar: () => ({ texto: waTextoCambio(c), avisos: _waAvisosCambio(c) }) });
+  _waVentanaCambio(c);
 }
 function waAbrirCambioPayload(payload, nc){
   const c = _waCambioDePayload(payload, nc);
-  _waVentana({ titulo: 'Cambio ' + (c.nc || '') + ' · ' + (c.nombre || ''), armar: () => ({ texto: waTextoCambio(c), avisos: _waAvisosCambio(c) }) });
+  _waVentanaCambio(c);
 }
 function waAbrirDevolucion(id){
   const arr = (typeof histDevData !== 'undefined' && Array.isArray(histDevData)) ? histDevData : [];
@@ -23469,11 +23561,11 @@ function waAbrirDevolucion(id){
   const nd = _waT(r0['NroDevolucion']);
   const rows = nd ? arr.filter(x => _waT(x['NroDevolucion']) === nd) : [r0];
   const v = _waDevDeFilas(rows);
-  _waVentana({ titulo: 'Devolución · ' + (v.nombre || ''), armar: () => ({ texto: waTextoDevolucion(v), avisos: [] }) });
+  _waVentanaDev(v);
 }
 function waAbrirDevolucionBody(body){
   const v = _waDevDeBody(body);
-  _waVentana({ titulo: 'Devolución · ' + (v.nombre || ''), armar: () => ({ texto: waTextoDevolucion(v), avisos: [] }) });
+  _waVentanaDev(v);
 }
 // Aviso al terminar de guardar (con ✕, regla 17-oct): "📲 WhatsApp"
 function _waAvisoGuardado(clase, id, tipo, datos){
@@ -23502,7 +23594,7 @@ function _waAvisoGuardado(clase, id, tipo, datos){
 
 function verPed(p) {
   const nro = String(p['NroPedido']||'').trim();
-  try { window._waPedAbierto = p; } catch(_){}   // 22-oct · 📲 WhatsApp usa el pedido abierto
+  try { window._waPedAbierto = p; setTimeout(() => { try { _waRefrescarBoton(p); } catch(_){} }, 0); } catch(_){}   // 22-oct · 📲 WhatsApp usa el pedido abierto (+ fase 2: color según la base)
   const mEl = document.getElementById('modal-ped-c');
 
   // Helper para campo editable
@@ -26205,6 +26297,7 @@ function npRellenar(c, resEl) {
   document.getElementById('np-reg').value  = c.reg || '';
   document.getElementById('np-ref').value  = c.ref || '';
   document.getElementById('np-email').value = c.email || c.em || '';
+  try { const _cu = document.getElementById('np-cumple'); if (_cu) _cu.value = ''; setTimeout(() => { try { _waPrefillCumpleNp(); } catch(_){} }, 60); } catch(_){}   // 22-oct · cumpleaños de la ficha
   // Canal
   if (c.can) {
     const sel = document.getElementById('np-canal');
@@ -27530,6 +27623,7 @@ async function npGuardar() {
     Asesora:          (document.getElementById('np-asesora').value || '').trim(),
     FechaEnvio:       document.getElementById('np-fenv').value,
   };
+  try { _waGuardarCumpleNp(_cliSnap); } catch(_){}   // 22-oct · cumpleaños → ficha de la clienta
 
   // ── Verificar cliente con pedidos vigentes ──
   if (pAll && pAll.length) {
@@ -29234,7 +29328,7 @@ function npLimpiar() {
     _npSaldos.items = []; _npSaldos.devs = []; _npSaldos.applyFavor = []; _npSaldos.applyDevs = [];
     _npSaldos.applyPendiente = []; _npSaldos.acked = false; _npSaldos.lastKey = '';
   }
-  ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-obs','np-fenv'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-cumple','np-obs','np-fenv'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
   // el selector de documento vuelve a DNI y el campo se destraba (si quedo en N/A
   // estaba en readOnly, y sin esto el formulario nuevo nacia bloqueado)
   try { _npAplicarTipoDoc('DNI'); } catch (_) {}
