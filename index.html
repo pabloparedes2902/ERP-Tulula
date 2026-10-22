@@ -6772,12 +6772,16 @@ function _cosFichaItems(r) {
 }
 function _cosFichaN(r) { const it = _cosFichaItems(r); return it.indexOf(null) >= 0 ? null : it.filter(Boolean).length; }
 // 4-oct · estado del producto en las DOS plataformas: ERP (fila activa) y Shopify (publicado). Verde = en las dos · amarillo = solo en una · rojo = en ninguna.
+// 22-oct (Pablo · Pantalón Paula: el ERP decía «activo» y la web no lo mostraba) · el estado de la tienda sale de la COPIA DE SHOPIFY
+// (shopify_ficha, al día por el aviso de Shopify): si alguien lo cambia directo en Shopify, el ERP lo ve. Sin copia, lo que guardó el ERP.
+function _cosPubReal(r) { const e = String((_cosShopDe(r) || {}).estado || '').toUpperCase(); return e ? e === 'ACTIVE' : r.ShopifyEstado === 'active'; }
+function _cosPubDesfase(r) { const e = String((_cosShopDe(r) || {}).estado || '').toUpperCase(); return !!e && (e === 'ACTIVE') !== (r.ShopifyEstado === 'active'); }
 function _cosEstadoColor(r) {
-  const n = (r.Activo === false ? 0 : 1) + (r.ShopifyEstado === 'active' ? 1 : 0);
+  const n = (r.Activo === false ? 0 : 1) + (((typeof _cosPubReal === 'function' && typeof _cosShopDe === 'function') ? _cosPubReal(r) : r.ShopifyEstado === 'active') ? 1 : 0);
   return n === 2 ? 'var(--gn)' : (n === 1 ? '#eab308' : 'var(--rd)');
 }
 function _cosEstadoTxt(r) {
-  return 'ERP: ' + (r.Activo === false ? 'inactivo' : 'activo') + ' · Shopify: ' + (r.ShopifyId ? (r.ShopifyEstado === 'active' ? 'activo' : 'inactivo') : 'no enlazado');
+  return 'ERP: ' + (r.Activo === false ? 'inactivo' : 'activo') + ' · Shopify: ' + (r.ShopifyId ? (_cosPubReal(r) ? 'activo' : 'inactivo') : 'no enlazado');
 }
 function _cosVerCelda(r) {
   const col = _cosEstadoColor(r);
@@ -8278,13 +8282,14 @@ function _cfwPacksPintar(v, handle) {
 function _cosEstadosPintar(v) {
   const box = document.getElementById('cf-estados'); if (!box || !v.Diseno) return;
   if (!document.getElementById('cos-sw-big-css')) { const c = document.createElement('style'); c.id = 'cos-sw-big-css'; c.textContent = '.cos-sw.big{width:64px;height:32px}.cos-sw.big span{border-radius:32px}.cos-sw.big span:before{height:26px;width:26px;left:3px;top:3px}.cos-sw.big input:checked+span:before{transform:translateX(32px)}'; document.head.appendChild(c); }
-  const erp = v.Activo !== false, enl = !!v.ShopifyId, pub = v.ShopifyEstado === 'active';
+  const erp = v.Activo !== false, enl = !!v.ShopifyId, pub = _cosPubReal(v), desf = enl && _cosPubDesfase(v);
   const fila = (id, nombre, on, txt, col, off) => '<div style="display:flex;align-items:center;gap:10px"><span style="min-width:122px;font-size:12px;font-weight:700;color:var(--mu)">' + nombre + '</span>'
     + '<label class="cos-sw" title="' + esc(nombre) + '"><input type="checkbox" id="' + id + '"' + (on ? ' checked' : '') + (off ? ' disabled' : '') + '><span></span></label>'
     + '<span id="' + id + '-t" style="font-size:13px;font-weight:700;color:' + col + '">' + txt + '</span></div>';
   box.innerHTML = fila('cf-sw-erp', 'ERP', erp, erp ? 'Activo' : 'Inactivo', erp ? 'var(--gn)' : 'var(--rd)', false)
     + fila('cf-sw-shop', 'Shopify y canales', pub, !enl ? 'No está en Shopify' : (pub ? 'Activo' : 'Inactivo'), !enl ? 'var(--mu)' : (pub ? 'var(--gn)' : 'var(--rd)'), !enl)
-    + '<div id="cf-est-msg" style="font-size:12px;color:var(--mu)"></div>';
+    + '<div id="cf-est-msg" style="font-size:12px;color:var(--mu)"></div>'
+    + (desf ? '<div id="cf-est-desf" style="position:relative;font-size:12px;font-weight:600;color:#b45309;background:#fef3c7;border-radius:8px;padding:6px 28px 6px 10px">⚠ Alguien lo cambió directo en Shopify: allí está ' + (pub ? 'PUBLICADO' : 'en BORRADOR (no se ve en la web)') + ', aunque el ERP decía lo contrario. Si debe verse, vuelve a activarlo aquí.<button onclick="this.parentNode.remove()" title="Cerrar" style="position:absolute;top:3px;right:6px;border:none;background:none;cursor:pointer;font-size:14px;color:inherit">✕</button></div>' : '');
   const msg = (t, c) => { const m = document.getElementById('cf-est-msg'); if (m) { m.style.color = c || 'var(--mu)'; m.textContent = t; } };
   const sincronizar = () => {
     const f = COS.data.find(x => x.Diseno === v.Diseno);
@@ -8904,7 +8909,7 @@ function _conTabla() {
   const rows = CTN.rows.filter(r => !q || _cosNormD(r.Diseno).indexOf(q) >= 0).sort((a, b) => String(a.Diseno).localeCompare(String(b.Diseno)));
   const th = t => '<th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--mu);background:var(--bg3);position:sticky;top:0">' + t + '</th>';
   box.innerHTML = '<table id="con-tabla" style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr>' + th('') + th('Producto') + th('Tienda') + th('Textos') + th('Fotos de tienda') + th('Video') + th('Foto de catálogo') + '</tr></thead><tbody>'
-    + rows.map(r => { const it = _conItems(r), tienda = !r.ShopifyId ? '<span style="color:var(--mu)">No enlazado</span>' : (r.ShopifyEstado === 'active' ? '<span style="color:var(--gn)">Publicado</span>' : '<span style="color:#d97706">Borrador</span>');
+    + rows.map(r => { const it = _conItems(r), tienda = !r.ShopifyId ? '<span style="color:var(--mu)">No enlazado</span>' : (_cosPubReal(r) ? '<span style="color:var(--gn)">Publicado</span>' : '<span style="color:#d97706">Borrador</span>');
       return '<tr style="border-top:1px solid var(--bd2)"><td style="padding:6px 10px"><button class="btn bg bs con-ver" data-d="' + esc(r.Diseno) + '" style="font-size:11px;font-weight:700;padding:3px 12px">Abrir</button></td>'
         + '<td style="padding:6px 10px"><b>' + esc(((r.TipoPrenda || '') + ' ' + (r.Modelo || '')).trim()) + '</b></td><td style="padding:6px 10px">' + tienda + '</td>'
         + '<td style="padding:6px 10px;text-align:center">' + _conDot(it.textos) + '</td><td style="padding:6px 10px;text-align:center">' + _conDot(it.fotos) + '</td><td style="padding:6px 10px;text-align:center">' + _conDot(it.video) + '</td><td style="padding:6px 10px;text-align:center">' + _conDot(it.catalogo) + '</td></tr>'; }).join('')
