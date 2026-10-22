@@ -6935,7 +6935,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -6943,7 +6943,8 @@ async function escCargar(forzar){
       fetch(MK_SB_URL + '/rest/v1/rpc/df_resumen', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: _ep('esc_fant_dias') }) }).catch(() => null),
       _escWebCargar(),
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 21-oct · 🧵 Producción F1b */
-      fetch(MK_SB_URL + '/rest/v1/rpc/prod_llego_stock', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 21-oct · 📦 llegó stock nuevo de Producción */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_llego_stock', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 21-oct · 📦 llegó stock nuevo de Producción */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_dias', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 22-oct · días de confección por prenda */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -6952,6 +6953,7 @@ async function escCargar(forzar){
     ESC_FOCO = r4.ok ? (await r4.json()).map(x => x.clave) : [];
     ESC_FANT = (r5 && r5.ok) ? await r5.json() : []; ESC_FANT_IDX = null;   /* si la rpc falla, Escalamiento sigue igual que antes (sin fantasma) */
     if (!Array.isArray(ESC_FANT)) ESC_FANT = [];
+    ESC_LEAD = {}; try { if (r9 && r9.ok) ((await r9.json()) || []).forEach(x => { ESC_LEAD[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_LLEGO = {}; try { if (r8 && r8.ok) ((await r8.json()) || []).forEach(x => { ESC_LLEGO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_CAMINO = {}; try { if (r7 && r7.ok) ((await r7.json()) || []).forEach(x => { ESC_CAMINO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}   /* 21-oct · 🧵 lo que ya está en confección */
   } catch (e) { ESC_ERR = e.message || String(e); if (ESC_FOCO === null) ESC_FOCO = []; }
@@ -7057,7 +7059,7 @@ function _escStock(piezas, web){
      si no llega al mínimo, se suben las semanas de cobertura para TODAS las tallas por igual (la curva se respeta). */
   piezas = piezas.filter(pz => (pz.x || []).length);
   if (!piezas.length) return { col:'gris', big:'—', sub:'no está en Stock', dias:null, piezas:[], agot:[], pocas:[], lote:[], tot:0, cub:0, ant:null, web:null };
-  const lead = _ep('esc_conf_dias'), obj = _ep('esc_obj_sem'), fk = _ep('esc_fant_pct') / 100, fsem = Math.max(1, _ep('esc_fant_dias')) / 7;
+  const lead = _escLeadDe(piezas), obj = _ep('esc_obj_sem'), fk = _ep('esc_fant_pct') / 100, fsem = Math.max(1, _ep('esc_fant_dias')) / 7;
   let peor = null, fantT = 0; const res = [];
   piezas.forEach(pz => {
     const okC = web ? _escColPermitidos(pz, web) : new Set(pz.x.filter(a => (+a[2] || 0) > 0 || (+a[3] || 0) > 0).map(a => String(a[0])));
@@ -7101,9 +7103,21 @@ function _escStock(piezas, web){
   const combos = res.reduce((a, r) => a + r.vs.length, 0);
   return { col, big, sub,
            dias: p.dias, cub: p.cub, agot: agotT, pocas: res.reduce((a, r) => a.concat(r.pocas), []), lote, tot, piezas: res, ant, multi, fant: Math.round(fantT), repo, web: web || null,
-           combos, perdida: Math.round(100 - p.cub), cam: typeof _escCamino === 'function' ? _escCamino(piezas) : null };
+           combos, perdida: Math.round(100 - p.cub), lead, cam: typeof _escCamino === 'function' ? _escCamino(piezas) : null };
 }
 /* 21-oct · 🧵 cuántas prendas de este producto ya están en confección (órdenes abiertas de Producción) */
+/* 22-oct (Pablo: «la producción reacciona con un margen de días según la prenda») · días de confección de ESTA prenda
+   = promedio de lo que tardó el taller en sus órdenes de 🧵 Producción (rpc prod_lead_dias); sin historia, el general (esc_conf_dias). */
+let ESC_LEAD = {};
+function _escLeadDe(piezas){
+  try { const L = [...new Set(piezas.map(pz => _mkNorm(pz.p + ' ' + pz.d).trim()))].map(k => (ESC_LEAD || {})[k]).filter(x => x && x.dias > 0).map(x => +x.dias);
+    return L.length ? Math.max(...L) : _ep('esc_conf_dias'); } catch (_) { return _ep('esc_conf_dias'); }
+}
+function _escLoteTxt(L){
+  if (!L || !L.length) return '';
+  const C = {}; L.forEach(v => { const c = String(v.c).toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase()); (C[c] = C[c] || []).push(String(v.t).toUpperCase() + ' ' + v.n); });
+  return ': ' + Object.keys(C).map(c => c + ' ' + C[c].join(', ')).join(' · ');
+}
 function _escCamino(piezas){
   try { const C = typeof ESC_CAMINO === 'object' && ESC_CAMINO ? ESC_CAMINO : {}; let n = 0, f = null;
     [...new Set(piezas.map(pz => _mkNorm(pz.p + ' ' + pz.d).trim()))].forEach(k => { const x = C[k]; if (x && x.n > 0){ n += x.n; if (x.fecha && (!f || x.fecha < f)) f = x.fecha; } });
@@ -7234,6 +7248,20 @@ const _escPl = (n, s1, s2) => n + ' ' + (n === 1 ? s1 : s2);
 function _escDia(t){ if (!t) return null; const d = new Date(String(t).slice(0, 10) + 'T00:00:00'); return isNaN(d) ? null : d; }
 function _escHoy(){ const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
 /* 19-oct (Pablo) · «para el 21 oct (2 días)»: la FECHA queda fija y los días bajan solos */
+/* 22-oct (Pablo: «necesito X videos de estos productos con estos ángulos, con estos contextos creativos, para tal fecha») ·
+   los ángulos y contextos que más VENDEN en este producto (partes del nombre del anuncio, como en 🏆 Qué funciona);
+   si el producto todavía no tiene ventas por anuncio, los que más venden en toda la tienda. Además: cuántas ideas distintas corren hoy. */
+function _escReceta(f){
+  try {
+    const top = (filas, idx, n) => _qfAgrupar(filas, idx).filter(x => x.k !== '(vacío)' && (+x.pedidos || 0) > 0)
+      .sort((a, b) => (b.pedidos - a.pedidos) || (b.ingreso - a.ingreso)).slice(0, n).map(x => '«' + x.label + '»');
+    let A = top(f.filas || [], 3, 2), C = top(f.filas || [], 4, 1), de = '';
+    if (!A.length && MK && MK.filas){ A = top(MK.filas, 3, 2); C = top(MK.filas, 4, 1); de = ' (lo que más vende en la tienda)'; }
+    const on = (f.filas || []).filter(r => r._on), ideas = new Set(on.map(r => { const p = _qfPartes(r); return p ? [3, 4, 7].map(i => _qfClave(p[i])).join('|') : null; }).filter(Boolean)).size;
+    return (A.length ? ': ángulo' + (A.length > 1 ? 's ' : ' ') + A.join(' y ') : '') + (C.length ? ', contexto ' + C[0] : '') + (A.length || C.length ? de : '')
+      + (on.length ? ' · hoy corren ' + _escPl(ideas, 'idea distinta', 'ideas distintas') + ' (ángulo + contexto + talento)' : '');
+  } catch (_) { return ''; }
+}
 function _escPlazo(f){
   if (!f) f = _escHoy();
   const n = Math.round((f - _escHoy()) / 864e5), fe = f.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
@@ -7264,8 +7292,9 @@ function _escAccion(f, ln, x){
       const lleg = !fv ? '' : fv < hoy0 ? ' · ya debía estar a la venta (' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + '): preguntar a Ana' : ' · a la venta el ' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');   /* 21-oct · fecha pasada = atraso, no promesa */
       return { sit:llT + (n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', q:ESC_RESP.stock, col, lote:null };
     }
-    if (n.col === 'rojo') return { sit:llT + 'Stock crítico · ' + dsC + agT + fa, act:'Confeccionar ' + lote + ' prendas hoy (llegan en ' + _ep('esc_conf_dias') + ' días)', q:ESC_RESP.stock, col, lote:n };
-    if (n.col === 'ama') return { sit:llT + 'Stock bajo · ' + dsC + agT + fa, act:'Mandar a confeccionar ' + lote + ' prendas ' + cuando + ', antes de caer a rojo', q:ESC_RESP.stock, col, lote:n };
+    const ld = n.lead || _ep('esc_conf_dias'), ped = (fe, cu) => 'Necesito ' + lote + ' prendas de ' + f.nombre + ' para el ' + fe.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + ' (mandar al taller ' + cu + ', tarda ' + ld + ' días)' + _escLoteTxt(n.lote);   /* 22-oct (Pablo) · pedido simple: cuántas, de qué colores y tallas, para cuándo */
+    if (n.col === 'rojo') return { sit:llT + 'Stock crítico · ' + dsC + agT + fa, act: ped(_escMas(_escHoy(), ld), 'hoy'), q:ESC_RESP.stock, col, lote:n };
+    if (n.col === 'ama') return { sit:llT + 'Stock bajo · ' + dsC + agT + fa, act: ped(_escMas(n.repo || _escHoy(), ld), cuando ? cuando.replace(/^para /, '') : 'hoy'), q:ESC_RESP.stock, col, lote:n };
     return { sit: llT + dsC.charAt(0).toUpperCase() + dsC.slice(1) + fa, act: avisa ? 'Mandar a confeccionar ' + d(n.ant) + ' (' + lote + ' prendas)' : 'Ninguna por ahora: stock en verde', q:ESC_RESP.stock, col, lote: avisa ? n : null };
   }
   if (x === 'crea'){
@@ -7273,7 +7302,7 @@ function _escAccion(f, ln, x){
     let falta = Math.max(0, _ep('esc_crea_verde') - tot);
     if (!g) falta = Math.max(falta, 3);   /* sin ganador: probar mínimo 3 nuevos (pedido de Pablo: «si tienes 2 y ninguno gana, crea 2 o 3 más») */
     const base = _escPl(n.act, 'corriendo', 'corriendo') + ' · ' + (n.venden || 0) + ' ' + ((n.venden || 0) === 1 ? 'vende' : 'venden') + (n.banco ? ' · ' + _escPl(n.banco, 'listo', 'listos') : '') + (n.compartidos && !n.propios && n.banco ? ' (sin canal asignado)' : '') + (n.cansado ? ' · ' + _escPl(n.cansado, 'cansado', 'cansados') : '');
-    const crear = 'Crear ' + _escPl(falta, 'creativo nuevo', 'creativos nuevos');
+    const crear = 'Necesito ' + _escPl(falta, 'creativo nuevo', 'creativos nuevos') + ' de ' + f.nombre, rec = _escReceta(f);   /* 22-oct (Pablo) · pedido simple: cuántos, de qué, con qué ángulos y contextos, para cuándo */
     /* plazo para CREAR: si hay corriendo, cuando se acaba la prueba del más nuevo; si no queda ninguno, 2 días desde que se apagó el último */
     /* 19-oct v8 · faltan creativos (rojo/amarillo): el plazo corre desde que se APAGÓ el último (+2 d); si nunca se apagó ninguno, desde hoy.
        Sobran pero ninguno gana (verde): cuando termina la prueba de 7 d del más nuevo. */
@@ -7282,9 +7311,9 @@ function _escAccion(f, ln, x){
     /* 20-oct (Fase 3·2) · dice CUÁL anuncio se cansa, para cuándo y por qué */
     const renTxt = c0 ? 'renovar «' + (typeof _escAdLab === 'function' ? _escAdLab(c0.r) : '') + '» ' + _escPlazo(c0.fecha) + ' (' + c0.motivo + ')' + (n.cansan.length > 1 ? ' y ' + (n.cansan.length - 1) + ' más' : '')
                       : 'renovar ' + _escPl(ren, 'creativo', 'creativos') + ' ' + _escPlazo(n.vence);   /* plazo para RENOVAR = día en que se cansa el primero */
-    if (n.col === 'rojo') return { sit:'Creativo crítico · ' + base, act: crear + ' ' + pCrear + (g ? '' : ', con ángulos distintos'), q:ESC_RESP.crea, col };
-    if (n.col === 'ama') return { sit:'Creativo requerido · ' + base, act: crear + ' ' + pCrear + (g ? (n.vence ? '; ' + renTxt : '') : ': ninguno es ganador todavía'), q:ESC_RESP.crea, col };
-    if (!g) return { sit:'Creativos suficientes · ' + base + ' · ninguno ganador', act: crear + ' ' + pCrear + ', con hooks y ángulos distintos', q:ESC_RESP.crea, col };
+    if (n.col === 'rojo') return { sit:'Creativo crítico · ' + base, act: crear + ' ' + pCrear + rec + (g ? '' : ', con ángulos distintos'), q:ESC_RESP.crea, col };
+    if (n.col === 'ama') return { sit:'Creativo requerido · ' + base, act: crear + ' ' + pCrear + rec + (g ? (n.vence ? '; ' + renTxt : '') : ': ninguno es ganador todavía'), q:ESC_RESP.crea, col };
+    if (!g) return { sit:'Creativos suficientes · ' + base + ' · ninguno ganador', act: crear + ' ' + pCrear + rec + ', con hooks y ángulos distintos', q:ESC_RESP.crea, col };
     return { sit:'Creativos OK · ' + base, act: (avisa || (n.cansan || []).length) ? renTxt.charAt(0).toUpperCase() + renTxt.slice(1) + ', antes de que se cansen' : 'Ninguna por ahora', q:ESC_RESP.crea, col };
   }
   if (x === 'anun'){
