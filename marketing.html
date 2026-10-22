@@ -6904,9 +6904,10 @@ const ESC_CSS = ".esx{position:relative;border-radius:18px;padding:16px 18px 18p
    - Reglas (rojo / amarillo / verde) editables en ⚙ REGLAS (public.mk_motor_param, claves esc_*).
    Fuentes: stock = rpc mk_escalamiento_stock · ganador = motor de 📏 Reglas (ESCALAR) · foco = public.mk_escala_foco. */
 const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:70, esc_cub_verde:90, esc_dias_rojo:17, esc_dias_verde:31,
-                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
+                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
+let ESC_LLEGO = {};   /* 21-oct (Pablo) · { 'blazer mirella': { n, fecha, colores } } — lo que Producción ingresó al stock en los últimos días (prod_llego_stock) */
 let ESC_CAMINO = {};   /* 21-oct · 🧵 Producción F1b: { 'BLAZER MIRELLA': { n, fecha, ordenes } } desde prod_en_camino */
 let ESC_FOCO = null, ESC_SEL = null, ESC_NODO = null, ESC_PICK = false, ESC_PICKSEL = null, ESC_REGLAS = false, ESC_DUENO = null;
 const _ep = k => { const v = Number(ESC_P[k]); return isNaN(v) ? ESC_DEF[k] : v; };
@@ -6934,14 +6935,15 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_escala_foco?select=clave,orden&order=orden', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/rpc/df_resumen', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: _ep('esc_fant_dias') }) }).catch(() => null),
       _escWebCargar(),
-      fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 21-oct · 🧵 Producción F1b */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 21-oct · 🧵 Producción F1b */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_llego_stock', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 21-oct · 📦 llegó stock nuevo de Producción */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -6950,6 +6952,7 @@ async function escCargar(forzar){
     ESC_FOCO = r4.ok ? (await r4.json()).map(x => x.clave) : [];
     ESC_FANT = (r5 && r5.ok) ? await r5.json() : []; ESC_FANT_IDX = null;   /* si la rpc falla, Escalamiento sigue igual que antes (sin fantasma) */
     if (!Array.isArray(ESC_FANT)) ESC_FANT = [];
+    ESC_LLEGO = {}; try { if (r8 && r8.ok) ((await r8.json()) || []).forEach(x => { ESC_LLEGO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_CAMINO = {}; try { if (r7 && r7.ok) ((await r7.json()) || []).forEach(x => { ESC_CAMINO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}   /* 21-oct · 🧵 lo que ya está en confección */
   } catch (e) { ESC_ERR = e.message || String(e); if (ESC_FOCO === null) ESC_FOCO = []; }
   ESC_CARGANDO = false;
@@ -7248,6 +7251,8 @@ function _escAccion(f, ln, x){
   if (x === 'stock'){
     const ds = n.dias == null ? '' : n.dias >= 999 ? 'sin ventas recientes' : _escPl(n.dias, 'día', 'días') + ' de stock';
     const lote = Math.max(n.tot || 0, _ep('esc_lote_min')), ag = n.agot.length;
+    const lk = typeof ESC_LLEGO === 'object' && ESC_LLEGO && f ? ESC_LLEGO[_mkNorm(f.nombre).trim()] : null;   /* 21-oct · 📦 llegó stock nuevo */
+    const llT = lk && lk.n > 0 && lk.fecha ? '📦 Llegaron ' + _escPl(lk.n, 'prenda', 'prendas') + ' el ' + new Date(lk.fecha + 'T00:00:00').toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + ' · ' : '';
     if (n.col === 'gris') return { sit:'Sin stock en el ERP', act:'Revisar que el producto se llame igual en Stock', q:ESC_RESP.stock, col };
     const fa = n.fant ? ' · 👻 ' + _escPl(n.fant, 'clienta pidió', 'clientas pidieron') + ' tallas agotadas (' + _ep('esc_fant_dias') + ' d)' : '';   /* 20-oct · demanda fantasma */
     const nc = n.piezas && n.piezas.length ? new Set(n.piezas.reduce((a, r) => a.concat((r.vs || []).map(v => v.c)), [])).size : 0;
@@ -7257,11 +7262,11 @@ function _escAccion(f, ln, x){
     if (n.cam && (n.col === 'rojo' || n.col === 'ama')){   /* 21-oct · 🧵 ya está en confección: no pedir otra vez */
       const fv = n.cam.fecha ? new Date(n.cam.fecha + 'T00:00:00') : null, hoy0 = new Date(); hoy0.setHours(0, 0, 0, 0);
       const lleg = !fv ? '' : fv < hoy0 ? ' · ya debía estar a la venta (' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + '): preguntar a Ana' : ' · a la venta el ' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');   /* 21-oct · fecha pasada = atraso, no promesa */
-      return { sit:(n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', q:ESC_RESP.stock, col, lote:null };
+      return { sit:llT + (n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', q:ESC_RESP.stock, col, lote:null };
     }
-    if (n.col === 'rojo') return { sit:'Stock crítico · ' + dsC + agT + fa, act:'Confeccionar ' + lote + ' prendas hoy (llegan en ' + _ep('esc_conf_dias') + ' días)', q:ESC_RESP.stock, col, lote:n };
-    if (n.col === 'ama') return { sit:'Stock bajo · ' + dsC + agT + fa, act:'Mandar a confeccionar ' + lote + ' prendas ' + cuando + ', antes de caer a rojo', q:ESC_RESP.stock, col, lote:n };
-    return { sit: dsC.charAt(0).toUpperCase() + dsC.slice(1) + fa, act: avisa ? 'Mandar a confeccionar ' + d(n.ant) + ' (' + lote + ' prendas)' : 'Ninguna por ahora: stock en verde', q:ESC_RESP.stock, col, lote: avisa ? n : null };
+    if (n.col === 'rojo') return { sit:llT + 'Stock crítico · ' + dsC + agT + fa, act:'Confeccionar ' + lote + ' prendas hoy (llegan en ' + _ep('esc_conf_dias') + ' días)', q:ESC_RESP.stock, col, lote:n };
+    if (n.col === 'ama') return { sit:llT + 'Stock bajo · ' + dsC + agT + fa, act:'Mandar a confeccionar ' + lote + ' prendas ' + cuando + ', antes de caer a rojo', q:ESC_RESP.stock, col, lote:n };
+    return { sit: llT + dsC.charAt(0).toUpperCase() + dsC.slice(1) + fa, act: avisa ? 'Mandar a confeccionar ' + d(n.ant) + ' (' + lote + ' prendas)' : 'Ninguna por ahora: stock en verde', q:ESC_RESP.stock, col, lote: avisa ? n : null };
   }
   if (x === 'crea'){
     const g = ln.niv.gana.g, tot = n.act + n.banco;
@@ -7387,9 +7392,28 @@ function escAlertaPublicar(){
    u otra cantidad), la tarea vuelve sola. ── */
 function _escYo(){ try { const e = (typeof _mkQuien === 'function') ? _mkQuien() : ''; return MKL_NOMBRES[String(e).split('@')[0]] || ''; } catch (e) { return ''; } }
 function _escTareaClave(x){ return [x.k, x.lane, x.etapa, x.act].join('|').slice(0, 400); }
+/* 21-oct (Pablo) · 📦 LLEGÓ STOCK NUEVO: cuando Producción ingresa prendas al stock, Escalamiento lo avisa solo durante unos días
+   (esc_llego_dias) para que Heily y Paola lo anuncien. Sale solo, no hay que marcarlo. */
+function escLlegoItems(){
+  const out = [], hoy0 = new Date(); hoy0.setHours(0, 0, 0, 0);
+  const F = (typeof escFilas === 'function' && MK && MK.filas) ? escFilas() : [];
+  Object.keys(ESC_LLEGO || {}).forEach(key => { const x = ESC_LLEGO[key]; if (!x || !(x.n > 0) || !x.fecha) return;
+    const fd = new Date(x.fecha + 'T00:00:00'), dias = Math.round((hoy0 - fd) / 864e5);
+    if (dias < 0 || dias > _ep('esc_llego_dias')) return;
+    const f = F.find(z => _mkNorm(z.nombre).trim() === key), fTxt = fd.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
+    const nom = f ? f.nombre : String(x.diseno || key).toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+    const anun = f && f.lanes.some(l => !l.vacio && l.on > 0);
+    out.push({ k: f ? f.k : null, nombre: nom, canal:'ambos', lane:'wa', etapa:'stock', nivel:'verde', corte:false,
+      sit: 'Llegaron ' + _escPl(x.n, 'prenda', 'prendas') + ' el ' + fTxt + (x.colores ? ' · ' + _escPl(x.colores, 'color', 'colores') : ''),
+      act: '📦 Llegó stock nuevo (' + _escPl(x.n, 'prenda', 'prendas') + ', ' + fTxt + '): ' + (anun ? 'Paola: subir presupuesto a los que venden. Heily: mostrar que volvieron las tallas' : 'no tiene anuncios corriendo. Heily: creativos; Paola: lanzarlo'),
+      q: 'Paola · Heily', llego: true });
+  });
+  return out;
+}
 function escTareasLista(){
   const snap = escAlertaItems(); if (!snap) return [];
   const L = snap.items.filter(x => !/^Ya en confección/.test(x.act || ''));   /* 21-oct · 🧵 lo que ya está en confección no es tarea de nadie: se resuelve solo cuando llega */
+  (typeof escLlegoItems === 'function' ? escLlegoItems() : []).forEach(x => L.push(x));   /* 21-oct (Pablo) · 📦 llegó stock nuevo de Producción: listo para anunciar */
   /* listo para escalar también es tarea (de Paola) */
   _escFocoLista(escFilas()).L.forEach(f => { if (f.vacio) return; f.lanes.forEach(ln => { if (ln.vacio || !ln.listo) return;
     const A = _escAccion(f, ln, 'esc'); L.push({ k:f.k, nombre:f.nombre, canal:ln.canal, lane:ln.canal, etapa:'esc', nivel:'verde', corte:false, sit:A.sit, act:A.act, q:A.q }); }); });
