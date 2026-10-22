@@ -404,7 +404,7 @@ function talleresHtml(ta){
   });
   const L = Object.values(G).sort((a, b) => b.rec - a.rec);
   if (!L.length) return '<div class="vacio">Sin órdenes.</div>';
-  return '<div style="padding:0 2px;width:100%"><div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12.5px">🏷 Descuento sugerido para Yayitas: <input id="yDesc" type="number" min="0" max="90" step="5" style="width:70px" value="' + (D.param.yayita_desc_pct != null ? D.param.yayita_desc_pct : 40) + '">% <button onclick="guardarDesc()">Guardar</button> <span id="yMsg" class="mu">sobre el precio de lista de 📦 Productos · se puede cambiar en cada venta</span></div>'
+  return '<div style="padding:0 2px;width:100%">' + (ta ? '' : resumenSemanaHtml()) + '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:12.5px">🏷 Descuento sugerido para Yayitas: <input id="yDesc" type="number" min="0" max="90" step="5" style="width:70px" value="' + (D.param.yayita_desc_pct != null ? D.param.yayita_desc_pct : 40) + '">% <button onclick="guardarDesc()">Guardar</button> <span id="yMsg" class="mu">sobre el precio de lista de 📦 Productos · se puede cambiar en cada venta</span></div>'
     + '<table class="g" style="width:100%;font-size:12.5px"><tr><th>Taller</th><th>Órdenes</th><th>Recibidas</th><th>Con falla</th><th>% falla</th><th>Perdidas</th><th>Yayitas</th><th>+30 días en corrección</th><th>Por pagar (desde hoy)</th><th>Sin costo cargado</th></tr>'
     + L.map(g => { const pf = g.rec ? Math.round(g.fal / g.rec * 1000) / 10 : 0;
       return '<tr><td><b>' + esc(g.t) + '</b></td><td>' + g.ord + (g.abiertas ? ' <small>' + g.abiertas + (g.abiertas === 1 ? ' abierta' : ' abiertas') + '</small>' : '') + '</td><td>' + g.rec + '</td><td>' + g.fal + '</td>'
@@ -462,8 +462,36 @@ function alertaItems(){
   });
   return it;
 }
+/* ══ 21-oct (Pablo) · 📊 RESUMEN SEMANAL DEL TALLER: últimos 7 días (recibidas y % de fallas) + cómo está hoy
+   (órdenes atrasadas, fallas +30 días en corrección, por pagar). Las Alertas del ERP lo muestran los lunes; en «🏭 Talleres» está siempre. ══ */
+function resumenSemana(){
+  const G = {}, desde = new Date(hoy0().getTime() - 7 * 864e5), hoy = hoy0();
+  D.ordenes.forEach(o => {
+    const t = o.taller || 'Sin taller', g = G[t] || (G[t] = { t, rec7:0, fal7:0, atras:[], viejas:0, saldo:0, abiertas:0 });
+    const M = D.movs.filter(x => x.orden_id === o.id && x.fecha && new Date(x.fecha + 'T00:00:00') >= desde);
+    g.rec7 += M.filter(x => x.tipo === 'buena' || x.tipo === 'falla').reduce((a, x) => a + (+x.cantidad || 0), 0);
+    g.fal7 += M.filter(x => x.tipo === 'falla').reduce((a, x) => a + (+x.cantidad || 0), 0);
+    if (o.cerrada) return;
+    g.abiertas++;
+    const lt = llegaTaller(o); if (lt && lt < hoy && estados(o).corte !== 'h') g.atras.push(o.codigo);
+    g.viejas += viejas(o);
+    const c = cuentas(o); if (!c.imp) g.saldo += Math.max(0, c.saldo);
+  });
+  return Object.values(G).filter(g => g.rec7 || g.atras.length || g.viejas || g.saldo > 0.01)
+    .map(g => Object.assign(g, { pf7: g.rec7 ? Math.round(g.fal7 / g.rec7 * 1000) / 10 : null, saldo: Math.round(g.saldo * 100) / 100 }))
+    .sort((a, b) => b.atras.length - a.atras.length || b.rec7 - a.rec7);
+}
+function resumenLinea(g){
+  return [g.rec7 ? g.rec7 + ' recibidas · ' + g.pf7 + '% fallas' : 'nada recibido', g.atras.length ? g.atras.length + ' atrasada' + (g.atras.length > 1 ? 's' : '') + ' (' + g.atras.join(', ') + ')' : '',
+          g.viejas ? g.viejas + ' fallas +30 días en corrección' : '', g.saldo > 0.01 ? S2(g.saldo) + ' por pagar' : ''].filter(Boolean).join(' · ');
+}
+function resumenSemanaHtml(){
+  const L = resumenSemana(); if (!L.length) return '';
+  return '<div class="sec" style="margin-bottom:10px"><h4>📊 Resumen de la semana (últimos 7 días)</h4>'
+    + L.map(g => '<div style="font-size:12.5px;margin:3px 0"><b>' + esc(g.t) + ':</b> ' + esc(resumenLinea(g)) + (g.pf7 != null && g.pf7 >= 10 ? ' <span class="chip rd">fallas altas</span>' : '') + '</div>').join('') + '</div>';
+}
 function publicarAlerta(){
-  try { const snap = { at: Date.now(), items: alertaItems() };
+  try { const snap = { at: Date.now(), items: alertaItems(), semana: resumenSemana() };   /* 21-oct · 📊 resumen semanal por taller (el ERP lo muestra los lunes) */
     try { localStorage.setItem('prod_alerta_v1', JSON.stringify(snap)); } catch (_) {}
     if (parent && parent !== window) parent.postMessage({ tipo:'prod-alerta', snap }, '*'); } catch (_) {}
 }
