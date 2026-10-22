@@ -6904,7 +6904,7 @@ const ESC_CSS = ".esx{position:relative;border-radius:18px;padding:16px 18px 18p
    - Reglas (rojo / amarillo / verde) editables en ⚙ REGLAS (public.mk_motor_param, claves esc_*).
    Fuentes: stock = rpc mk_escalamiento_stock · ganador = motor de 📏 Reglas (ESCALAR) · foco = public.mk_escala_foco. */
 const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:70, esc_cub_verde:90, esc_dias_rojo:17, esc_dias_verde:31,
-                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
+                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_LLEGO = {};   /* 21-oct (Pablo) · { 'blazer mirella': { n, fecha, colores } } — lo que Producción ingresó al stock en los últimos días (prod_llego_stock) */
@@ -7355,6 +7355,7 @@ function _escAccion(f, ln, x){
   return { sit:'Listo para escalar' + (ra.fuego ? ' · 🔥 en racha: ' + ra.g + ' anuncios venden' : ' · 🚀 racha frágil: ' + (ra.g > 1 ? 'uno trae el ' + ra.share + '% de las ventas' : '1 solo anuncio vende')) + (ro != null ? ' · ROAS ' + ro.toFixed(2) + 'x' : ''),
            act:'Subir +20% el presupuesto' + (w && w.conjunto ? ' de «' + w.conjunto + '»' : '') + ' con Escalar; repetir cada 72 h si el ROAS se mantiene. Stock: '
              + (st.col === 'verde' ? (st.dias >= 999 ? 'cubierto' : st.dias + ' días cubiertos') : 'reponer ' + Math.max(st.tot || 0, _ep('esc_lote_min')) + ' prendas ya')
+             + (typeof _escSimular === 'function' ? _escSimular(st) : '')   /* 22-oct (Pablo) · simulador antes de escalar */
              + (ra.fuego ? '. Con respaldo: se puede confeccionar para escalar' : '. Frágil: Heily busca el 2º ganador con una idea distinta; sin confección extra hasta tenerlo'),
            q:ESC_RESP.esc + (ra.fuego ? '' : ' · Heily'), col:'verde', racha: ra };
 }
@@ -7383,6 +7384,23 @@ function escElegir(k){ ESC_SEL = k; ESC_NODO = null; escPintar(true); }
 /* 22-oct (Pablo: «no cuando se agote la talla, sino cuando se vaya a agotar; la producción reacciona con un margen de días según la prenda») ·
    🚨 URGENTE = producto con anuncio PRENDIDO cuya talla clave (12%+ de sus ventas) se acaba ANTES de que llegue una reposición mandada hoy
    (días de confección de esa prenda). Si ya está en confección, no se avisa. Máximo 5, los más cercanos primero. Va a Alertas del ERP (no al celular). */
+/* 22-oct (Pablo) · SIMULADOR ANTES DE ESCALAR, en simple: «si vende 20% más, la M negra dura 18 días en vez de 22 (se acaba el 9 nov);
+   manda al taller a más tardar el 30 oct». Mira solo las tallas que más se venden (12%+) y usa los días de confección de esa prenda. */
+function _escSimular(st){
+  try {
+    if (!st || !st.piezas) return '';
+    const pct = _ep('esc_sim_pct'), k = 1 + pct / 100, lead = st.lead || _ep('esc_conf_dias'), C = [];
+    st.piezas.forEach(r => { const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0); if (!(W > 0)) return;
+      r.vs.forEach(v => { if (v.w / W >= 0.12 && v.rate > 0 && v.s > 0) C.push({ v, dn: Math.floor(v.s / (v.rate * k) * 7) }); }); });
+    if (!C.length) return '';
+    C.sort((a, b) => a.dn - b.dn); const c = C[0], v = c.v;
+    if (c.dn > 60) return '. Si vende ' + pct + '% más, el stock de las tallas que más se venden alcanza para más de 2 meses';
+    const fe = d => d.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
+    const fin = _escMas(_escHoy(), c.dn), tope = _escMas(_escHoy(), c.dn - lead);
+    return '. Si vende ' + pct + '% más: la ' + _escTxtCT(v.c, v.t) + ' dura ' + _escPl(c.dn, 'día', 'días') + ' en vez de ' + v.dias + ' (se acaba el ' + fe(fin) + '); '
+      + (c.dn - lead <= 0 ? 'mandar al taller HOY' : 'mandar al taller a más tardar el ' + fe(tope));
+  } catch (_) { return ''; }
+}
 function _escUrgentes(F){
   const out = [];
   (F || []).forEach(f => {
