@@ -7096,6 +7096,7 @@ const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
+let ESC_NOREP = {};   /* 23-oct · {'pantalon mirella|rojo': {color_txt, quien}} colores que NO se reponen (botón ✕ del cuadro) */
 let ESC_MED = null;   /* 22-oct · fase 7: {total, seguidas, por_accion} de mk_propuestas_medir */
 let ESC_LLEGO = {};   /* 21-oct (Pablo) · { 'blazer mirella': { n, fecha, colores } } — lo que Producción ingresó al stock en los últimos días (prod_llego_stock) */
 let ESC_CAMINO = {};   /* 21-oct · 🧵 Producción F1b: { 'BLAZER MIRELLA': { n, fecha, ordenes } } desde prod_en_camino */
@@ -7125,7 +7126,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -7136,7 +7137,8 @@ async function escCargar(forzar){
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_llego_stock', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 21-oct · 📦 llegó stock nuevo de Producción */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_dias', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 22-oct · días de confección por prenda */
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_propuestas_medir', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: 28 }) }).catch(() => null),   /* 22-oct · fase 7 */
-      fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino_detalle', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 23-oct · en confección por color y talla */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino_detalle', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 23-oct · en confección por color y talla */
+      fetch(MK_SB_URL + '/rest/v1/rpc/mk_no_reponer_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 23-oct · colores que no se reponen */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -7147,6 +7149,7 @@ async function escCargar(forzar){
     if (!Array.isArray(ESC_FANT)) ESC_FANT = [];
     ESC_CAMDET = {}; try { if (r11 && r11.ok) ((await r11.json()) || []).forEach(x => { ESC_CAMDET[_mkNorm(x.diseno).trim() + '|' + _mkNorm(x.color).trim() + '|' + String(x.talla).toUpperCase().trim()] = +x.n || 0; }); } catch (_) {}
     ESC_MED = null; try { if (r10 && r10.ok) ESC_MED = await r10.json(); } catch (_) {}
+    ESC_NOREP = {}; try { if (r12 && r12.ok){ const L = await r12.json(); if (Array.isArray(L)) L.forEach(x => { ESC_NOREP[x.prenda + '|' + x.color] = x; }); } } catch (_) {}
     ESC_LEAD = {}; try { if (r9 && r9.ok) ((await r9.json()) || []).forEach(x => { ESC_LEAD[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_LLEGO = {}; try { if (r8 && r8.ok) ((await r8.json()) || []).forEach(x => { ESC_LLEGO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_CAMINO = {}; try { if (r7 && r7.ok) ((await r7.json()) || []).forEach(x => { ESC_CAMINO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}   /* 21-oct · 🧵 lo que ya está en confección */
@@ -7265,6 +7268,8 @@ function _escStock(piezas, web, opt){
   let peor = null, fantT = 0; const res = [];
   piezas.forEach(pz => {
     const okC = web ? _escColPermitidos(pz, web) : new Set(pz.x.filter(a => (+a[2] || 0) > 0 || (+a[3] || 0) > 0).map(a => String(a[0])));
+    { const NR = typeof ESC_NOREP === 'object' && ESC_NOREP ? ESC_NOREP : {}, pk0 = _mkNorm(pz.p + ' ' + pz.d).trim();   /* 23-oct · ✕ no reponer este color */
+      [...okC].forEach(c => { if (NR[pk0 + '|' + _mkNorm(c).trim()]) okC.delete(c); }); }
     const curva = {}; let C90 = 0;
     pz.x.forEach(a => { const t = String(a[1]).toUpperCase().trim(), v = +a[4] || 0; curva[t] = (curva[t] || 0) + v; C90 += v; });
     const pk = _mkNorm(pz.p + ' ' + pz.d).trim();
@@ -7518,7 +7523,7 @@ function _escAccion(f, ln, x){
     if (n.cam && (n.col === 'rojo' || n.col === 'ama') && !(n.tot > 0)){   /* 21-oct · 🧵 ya está en confección y cubre todo (23-oct: si falta algo, se pide solo lo que falta) */
       const fv = n.cam.fecha ? new Date(n.cam.fecha + 'T00:00:00') : null, hoy0 = new Date(); hoy0.setHours(0, 0, 0, 0);
       const lleg = !fv ? '' : fv < hoy0 ? ' · ya debía estar a la venta (' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + '): preguntar a Ana' : ' · a la venta el ' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');   /* 21-oct · fecha pasada = atraso, no promesa */
-      return { sit:llT + (n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', q:ESC_RESP.stock, col, lote:null, cap:{ big: bigS, sub:'ya en confección' } };
+      return { sit:llT + (n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', chip:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg, q:ESC_RESP.stock, col, lote:null, cap:{ big: bigS, sub:'ya en confección' } };
     }
     /* 22-oct (Pablo: «43 días… ¿nos quedamos sin ninguna prenda o empezamos a quedarnos sin tallas?») · EN SIMPLE:
        «días de stock» = lo que dura TODO el stock al ritmo de venta de los últimos 28 días (todos los canales: WhatsApp, web, Live…; si vende más, se recalcula solo).
@@ -7539,8 +7544,8 @@ function _escAccion(f, ln, x){
     const camT = (n.piezas || []).reduce((a, r) => a + (r.cam || 0), 0);
     const pedS = 'Reponer ' + lote + ' prendas para el ' + F0(lleg) + ': mandar al taller ' + (envD === 0 ? 'HOY' : 'el ' + F0(env)) + ' (tarda ' + ld + ' días' + (camT ? '; ya descontadas ' + camT + ' que están en confección' : '') + '). Colores y tallas en el cuadro';   /* 23-oct · el detalle va en el cuadro */
     if (n.col === 'rojo' || n.col === 'ama' || envD <= _ep('esc_aviso'))
-      return { sit: llT + sitS, act: pedS, q:ESC_RESP.stock, col, lote:n, cap:{ big: bigS, sub:'reponer ' + lote + ' para el ' + F0(lleg) } };
-    return { sit: llT + sitS, act: 'No reponer todavía. El ' + F0(env) + ' hay que mandar al taller', q:ESC_RESP.stock, col, lote:null, cap:{ big: bigS, sub:'no reponer aún' } };
+      return { sit: llT + sitS, act: pedS, chip:'Mandar al taller ' + (envD === 0 ? 'HOY' : 'el ' + F0(env)) + ' · llega el ' + F0(lleg), q:ESC_RESP.stock, col, lote:n, cap:{ big: bigS, sub:'reponer ' + lote + ' para el ' + F0(lleg) } };
+    return { sit: llT + sitS, act: 'No reponer todavía. El ' + F0(env) + ' hay que mandar al taller', chip:'No reponer todavía · mandar al taller el ' + F0(env), q:ESC_RESP.stock, col, lote:null, cap:{ big: bigS, sub:'no reponer aún' } };
   }
   if (x === 'crea'){
     const g = ln.niv.gana.g, tot = n.act + n.banco;
@@ -7778,41 +7783,46 @@ function _escPiezaPedido(r, lead){
   const kd = kv ? Math.max(0, kv.s > 0 ? kv.dias : 0) : 999, envD = Math.max(0, kd - lead - (r.colchon || 7)), env = _escMas(_escHoy(), envD);
   return { kv, kd, envD, env, lleg: _escMas(env, lead) };
 }
+/* 23-oct (Pablo: «el resumen debería ser una tabla: producto | confección | creativos») · sin pedidos sueltos ni WhatsApp/Web:
+   CONFECCIÓN = prendas a mandar al taller (stock es UNO solo para todos los canales; una pieza que comparten dos productos —Conjunto y Pantalón Mirella— se cuenta una sola vez).
+   CREATIVOS = suma de lo que falta en WhatsApp + Web (fecha = la más próxima). ESCALAR = sí / todavía no. */
 function _escResumenHtml(){
   const F = escFilas(), L = _escFocoLista(F).L.filter(f => !f.vacio && f.lanes.some(l => !l.vacio));
   const F0 = d => d.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
-  const emo = c => ({ rojo:'🔴', ama:'🟡', verde:'🟢' })[c] || '⚪', cnN = c => c === 'wa' ? 'WhatsApp' : 'Web';
-  const row = (t, a) => '<div class="esx-tar-i ' + ({ rojo:'rojo', ama:'amarillo', verde:'verde' }[a.col] || '') + '"><div class="esx-tar-t"><b>' + t + '</b><span>' + esc(a.sit || '') + '</span><span><b>' + esc(a.act || '') + '</b></span></div></div>';
-  const conf = {}, crea = [];
-  let h = '<div class="esx-tar"><div class="esx-tar-h"><b>📋 RESUMEN</b><span>' + _escPl(L.length, 'producto seleccionado', 'productos seleccionados') + ' · toca uno para ver el detalle</span></div>';
+  const corta = t => String(t || '').replace(/^para /, '').replace(/ \((\d+ días?|hoy)\)$/, '').replace(/ \(atrasado .*\)$/, ' ⚠️');
+  let h = '<div class="esx-tar"><div class="esx-tar-h"><b>📋 RESUMEN</b><span>' + _escPl(L.length, 'producto seleccionado', 'productos seleccionados') + ' · toca uno para verlo</span></div>';
   h += typeof _escMedHtml === 'function' ? _escMedHtml() : '';
-  if (!L.length) h += '<div class="esx-tar-v">Elige productos en foco para ver su resumen.</div>';
-  L.forEach(f => {
-    const lanes = f.lanes.filter(l => !l.vacio), st = lanes[0].niv.stock, aS = _escAccion(f, lanes[0], 'stock');
-    const chips = ['👚 Prenda ' + emo(st.col)].concat(lanes.map(l => cnN(l.canal) + ' ' + emo(l.niv.crea.col) + (l.listo ? ' 🚀' : '')));
-    let body = row('👚 Prenda · Ana', aS);
-    lanes.forEach(l => { const c = _escAccion(f, l, 'crea'), an = _escAccion(f, l, 'anun');
-      body += row('🎬 Creativos ' + cnN(l.canal) + ' · Heily', c) + row('📣 Anuncios ' + cnN(l.canal) + ' · Paola', an);
-      if (l.listo) body += row('🚀 Escalar ' + cnN(l.canal) + ' · Paola', _escAccion(f, l, 'esc'));
-      if (/^(Crear|Necesito)/.test(c.act)) crea.push({ n: f.nombre + ' · ' + cnN(l.canal), a: c.act }); });
-    h += '<details class="esx-tar-d" style="margin-top:6px"><summary><b>' + esc(f.nombre) + '</b> · ' + chips.join(' · ') + '</summary>' + body
-      + '<button class="esx-b" data-k="' + esc(f.k) + '" onclick="escIrA({ k: this.dataset.k })" style="margin:6px 0">VER EN EL FLUJO</button></details>';
-    if (st.col === 'gris') return;   /* 23-oct · lo que está en confección ya se descontó por talla */
-    const ld = st.lead || _ep('esc_conf_dias');
-    (st.piezas || []).forEach(r => { const key = (r.n + ' ' + r.d).trim(); if (conf[key] || !(r.tot > 0)) return;
-      const P = _escPiezaPedido(r, ld); if (P.envD > _ep('esc_aviso')) return; conf[key] = { r, P, ld }; });
-  });
-  const C = Object.keys(conf).sort((a, b) => conf[a].P.envD - conf[b].P.envD);
-  h += '<div style="margin-top:10px"><b>🧵 Pedido de confección · Ana</b></div>'
-    + (C.length ? C.map(k => { const o = conf[k];
-        return '<div class="esx-tar-i ' + (o.P.envD === 0 ? 'rojo' : 'amarillo') + '"><div class="esx-tar-t"><b>' + esc(k.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase())) + ': ' + o.r.tot + ' prendas para el ' + F0(o.P.lleg) + '</b>'
-          + '<span>Mandar al taller ' + (o.P.envD === 0 ? 'HOY' : 'el ' + F0(o.P.env)) + ' (tarda ' + o.ld + ' días)' + esc(typeof _escLoteTxt === 'function' ? _escLoteTxt(o.r.lote) : '') + '</span></div></div>'; }).join('')
-      : '<div class="esx-tar-v">Nada que mandar al taller esta semana.</div>');
-  h += '<div style="margin-top:10px"><b>🎬 Pedido de creativos · Heily</b></div>'
-    + (crea.length ? crea.map(x => '<div class="esx-tar-i amarillo"><div class="esx-tar-t"><b>' + esc(x.n) + '</b><span>' + esc(x.a) + '</span></div></div>').join('')
-      : '<div class="esx-tar-v">No faltan creativos hoy.</div>');
+  if (!L.length) return h + '<div class="esx-tar-v">Elige productos en foco para ver su resumen.</div></div>';
+  const usadas = {}; let tC = 0, tK = 0;
+  const filas = L.map(f => {
+    const lanes = f.lanes.filter(l => !l.vacio), st = lanes[0].niv.stock, ld = st.lead || _ep('esc_conf_dias');
+    let n = 0, lleg = null, env = null; const comp = [];
+    if (st.col !== 'gris') (st.piezas || []).forEach(r => { if (!(r.tot > 0)) return; const P = _escPiezaPedido(r, ld); if (P.envD > _ep('esc_aviso')) return;
+      const key = _mkNorm((r.n || '') + ' ' + (r.d || '')).trim(); if (usadas[key]){ comp.push(usadas[key]); return; } usadas[key] = f.nombre;
+      n += r.tot; if (!lleg || P.lleg < lleg) lleg = P.lleg; if (!env || P.env < env) env = P.env; });
+    tC += n;
+    const camT = (st.piezas || []).reduce((a, r) => a + (r.cam || 0), 0);
+    const conf = n ? '<b>' + n + '</b> prendas · para el ' + F0(lleg) + '<small>al taller ' + (env <= _escHoy() ? 'HOY' : 'el ' + F0(env)) + '</small>'
+      : (st.cam && !(st.tot > 0) ? '<span class="m">ya en confección (' + (st.cam.n || camT) + ')</span>' : '<span class="m">—</span>');
+    let k = 0, fk = null, fkT = '';
+    lanes.forEach(l => { const c = _escAccion(f, l, 'crea'); if (c.cap && c.cap.n){ k += c.cap.n; const d = _escFechaDe(c.cap.f); if (!fk || (d && d < fk)){ fk = d; fkT = corta(c.cap.f); } } });
+    tK += k;
+    const cre = k ? '<b>' + k + '</b> creativos · para ' + esc(fkT) : '<span class="m">—</span>';
+    const es = lanes.some(l => l.listo) ? '<span class="si">🚀 Sí</span>' : '<span class="m">Todavía no</span>';
+    return '<tr data-k="' + esc(f.k) + '" onclick="escIrA({ k: this.dataset.k })"><th>' + esc(f.nombre) + (comp.length ? '<small>' + esc('piezas compartidas ya contadas en ' + [...new Set(comp)].join(', ')) + '</small>' : '') + '</th><td>' + conf + '</td><td>' + cre + '</td><td>' + es + '</td></tr>';
+  }).join('');
+  h += '<table class="esx-res"><thead><tr><th>Producto</th><th>🧵 Confección · Ana</th><th>🎬 Creativos · Heily</th><th>🚀 Escalar · Paola</th></tr></thead><tbody>' + filas
+    + (L.length > 1 ? '<tr class="tot"><th>Total</th><td>' + (tC ? '<b>' + tC + '</b> prendas' : '—') + '</td><td>' + (tK ? '<b>' + tK + '</b> creativos' : '—') + '</td><td></td></tr>' : '')
+    + '</tbody></table>';
   return h + '</div>';
 }
+/* «para el 25 oct (2 días)» → fecha, para elegir la más próxima */
+function _escFechaDe(t){
+  const m = /(\d{1,2}) (\w{3})/.exec(String(t || '')); if (!m) return /hoy/.test(String(t || '')) ? _escHoy() : null;
+  const M = ['ene','feb','mar','abr','may','jun','jul','ago','set','oct','nov','dic'], i = M.indexOf(m[2].toLowerCase().replace('sep', 'set')); if (i < 0) return null;
+  const h = _escHoy(), d = new Date(h.getFullYear(), i, +m[1]); if (d - h > 200 * 864e5) d.setFullYear(d.getFullYear() - 1); if (h - d > 200 * 864e5) d.setFullYear(d.getFullYear() + 1); return d;
+}
+
 function _escTareasHtml(){
   /* 21-oct (Pablo) · UNA sola vista para todo el equipo (cada una ve lo de las demás y sabe si le toca) y SIN «✓ Hecho»:
      la tarea sale sola cuando los datos cambian (llega el stock, se sube el creativo, se crea el anuncio). Una sola fuente de verdad. */
@@ -7943,17 +7953,9 @@ function escPintar(cambio){
       });
       h += '</div>';
       if (fc === ln.canal){   /* la cápsula sale justo debajo del nodo elegido, en su propio canal */
-        const A = _escAccion(f, ln, fx), g = ESC_COL[A.col];
-        let tags = '';
-        if (A.lote) tags = _escTablaLote(A.lote);
-        if (false){ const n = A.lote, pre = v => n.multi ? v.pz.charAt(0) + v.pz.slice(1).toLowerCase() + ' ' : '';
-          if (n.agot.length) tags += '<div class="esx-tags"><label>AGOTADO</label>' + n.agot.map(v => '<em class="r"' + (v.f ? ' title="Clientas que la pidieron en ' + _ep('esc_fant_dias') + ' días (web + WhatsApp)"' : '') + '>' + esc(pre(v) + _escTxtCT(v.c, v.t)) + (v.f ? ' · 👻 ' + Math.round(v.f) : '') + '</em>').join('') + '</div>';
-          if (n.pocas.length) tags += '<div class="esx-tags"><label>SE ACABA</label>' + n.pocas.map(v => '<em class="a">' + esc(pre(v) + _escTxtCT(v.c, v.t)) + ' · quedan ' + v.s + ' · ' + v.dias + 'd</em>').join('') + '</div>';
-          if (n.tot) tags += '<div class="esx-tags"><label>CONFECCIONAR ' + n.tot + '</label>' + n.lote.map(v => '<em>' + esc(pre(v) + _escTxtCT(v.c, v.t)) + ' <b>' + v.n + '</b></em>').join('') + '</div>';
-        }
-        h += '<div class="esx-acc2" style="--g:' + g + '"><div class="esx-a-izq"><div class="esx-a-sit">' + esc(A.sit) + '</div>'
-           + (A.q && A.q !== '—' ? '<div class="esx-who"><span>' + esc(A.q.charAt(0)) + '</span>' + esc(A.q) + '</div>' : '') + '</div>'
-           + '<div class="esx-a-der"><label>ACCIÓN</label><div class="esx-a-act">' + esc(A.act) + '</div>' + tags + '</div></div>';
+        /* 23-oct (Pablo: «cuando abro el detalle… simplemente la tabla… y en la esquina superior izquierda quién es la responsable») */
+        const A = _escAccion(f, ln, fx);
+        h += '<div class="esx-acc2 esx-pan" style="--g:' + ESC_COL[A.col] + '">' + _escPanelHtml(f, ln, fx, A) + '</div>';
       }
       h += '</div></div>';
     });
@@ -7981,24 +7983,154 @@ function escPintar(cambio){
 /* 20-oct 18h (Pablo) · detalle del stock en UNA tabla: una fila por color (4 colores = 4 filas), columnas = tallas,
    cada celda = cuánto confeccionar. Rojo = agotada hoy. Pasando el mouse: cuántas hay y cuántas se venden por semana. */
 const ESC_TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
+/* 23-oct (Pablo) · el cuadro: una fila por color (nombre EXACTO de Stock), columnas = tallas, +N = confeccionar.
+   ✕ al final de cada fila = «no reponer este color» (se guarda en la base y el pedido se recalcula sin ese color). ↺ lo vuelve a activar. */
 function _escTablaLote(n){
   const filas = [];
-  (n.piezas || []).forEach(r => { const porC = {};
+  (n.piezas || []).forEach(r => { const porC = {}, pk = _mkNorm((r.n || '') + ' ' + (r.d || '')).trim();
     (r.vs || []).forEach(v => { (porC[v.c] = porC[v.c] || {})[String(v.t).toUpperCase()] = v; });
-    Object.keys(porC).sort().forEach(c => filas.push({ pz: r.n, c, t: porC[c], lote: r.lote })); });
-  if (!filas.length) return '';
-  const tallas = ESC_TALLAS.filter(t => filas.some(f => f.t[t])), multi = (n.piezas || []).length > 1;
-  const cant = (f, t) => { const x = (f.lote || []).find(v => v.c === f.c && String(v.t).toUpperCase() === t); return x ? x.n : 0; };
-  let tot = 0;
-  const cuerpo = filas.map(f => { let tf = 0;
-    const tds = tallas.map(t => { const v = f.t[t]; if (!v) return '<td class="na">·</td>'; const k = cant(f, t); tf += k;
-      const tip = 'Hay ' + v.s + ' · se venden ' + (Math.round(v.rate * 10) / 10) + ' por semana' + (v.f ? ' · 👻 ' + Math.round(v.f) + ' clientas la pidieron agotada' : '');
-      return '<td class="' + (v.s <= 0 ? 'ag' : '') + '" title="' + esc(tip) + '">' + (k ? '<b>+' + k + '</b>' : '') + '<i>' + v.s + '</i></td>'; }).join('');
-    tot += tf;
-    return '<tr><th>' + esc((multi ? f.pz.charAt(0) + f.pz.slice(1).toLowerCase() + ' · ' : '') + f.c) + '</th>' + tds + '<td class="tt">' + (tf ? '+' + tf : '—') + '</td></tr>'; }).join('');
-  return '<table class="esx-lt"><thead><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '<th>Total</th></tr></thead><tbody>' + cuerpo
-    + '</tbody></table><div class="esx-lt-n"><b>+N</b> = confeccionar · <i>n</i> = hay hoy · <span class="ag">rojo</span> = agotada' + (n.web ? ' · colores de la web + los que vendieron en el último mes aunque estén agotados' : '') + '</div>';
+    Object.keys(porC).sort().forEach(c => filas.push({ pz: r.n, pk, c, t: porC[c], lote: r.lote })); });
+  const multi = (n.piezas || []).length > 1, NR = typeof ESC_NOREP === 'object' && ESC_NOREP ? ESC_NOREP : {};
+  const pks = new Set((n.piezas || []).map(r => _mkNorm((r.n || '') + ' ' + (r.d || '')).trim()));
+  const fuera = Object.keys(NR).filter(k => pks.has(k.split('|')[0])).map(k => ({ k, pk: k.split('|')[0], x: NR[k] }));
+  const btn = (pk, c, no, txt, tit) => '<button class="esx-nr" data-p="' + esc(pk) + '" data-c="' + esc(c) + '" title="' + esc(tit) + '" onclick="escNoReponer(this.dataset.p, this.dataset.c, ' + (no ? 'true' : 'false') + ')">' + txt + '</button>';
+  let h = '';
+  if (filas.length){
+    const tallas = ESC_TALLAS.filter(t => filas.some(f => f.t[t]));
+    const cant = (f, t) => { const x = (f.lote || []).find(v => v.c === f.c && String(v.t).toUpperCase() === t); return x ? x.n : 0; };
+    const cuerpo = filas.map(f => { let tf = 0;
+      const tds = tallas.map(t => { const v = f.t[t]; if (!v) return '<td class="na">·</td>'; const k = cant(f, t); tf += k;
+        const tip = 'Hay ' + v.s + ' · se venden ' + (Math.round(v.rate * 10) / 10) + ' por semana' + (v.cam ? ' · ' + v.cam + ' ya en confección' : '') + (v.f ? ' · 👻 ' + Math.round(v.f) + ' clientas la pidieron agotada' : '');
+        return '<td class="' + (v.s <= 0 ? 'ag' : '') + '" title="' + esc(tip) + '">' + (k ? '<b>+' + k + '</b>' : '') + '<i>' + v.s + '</i></td>'; }).join('');
+      return '<tr><th>' + esc((multi ? f.pz.charAt(0) + f.pz.slice(1).toLowerCase() + ' · ' : '') + f.c) + '</th>' + tds + '<td class="tt">' + (tf ? '+' + tf : '—') + '</td>'
+        + '<td class="nr">' + btn(f.pk, _mkNorm(f.c).trim() + '|' + f.c, true, '✕', 'No reponer este color') + '</td></tr>'; }).join('');
+    h += '<table class="esx-lt"><thead><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '<th>Total</th><th></th></tr></thead><tbody>' + cuerpo + '</tbody></table>'
+      + '<div class="esx-lt-n"><b>+N</b> = confeccionar · <i>n</i> = hay hoy · <span class="ag">rojo</span> = agotada · ✕ = no reponer este color' + (n.web ? ' · colores de la web + los que vendieron en el último mes aunque estén agotados' : '') + '</div>';
+  } else h += '<div class="esx-lt-n">Ningún color para reponer.</div>';
+  if (fuera.length) h += '<div class="esx-lt-n esx-nr-l">No se reponen: ' + fuera.map(o => esc(o.x.color_txt || o.k.split('|')[1]) + (multi ? ' (' + esc(o.pk) + ')' : '') + ' ' + btn(o.pk, o.k.split('|')[1] + '|' + (o.x.color_txt || ''), false, '↺', 'Volver a reponer este color')).join(' · ') + '</div>';
+  return h;
 }
+async function escNoReponer(pk, cc, no){
+  const i = String(cc).indexOf('|'), color = i < 0 ? cc : cc.slice(0, i), txt = i < 0 ? cc : cc.slice(i + 1);
+  const key = pk + '|' + color, prev = ESC_NOREP[key];
+  if (no) ESC_NOREP[key] = { prenda: pk, color, color_txt: txt }; else delete ESC_NOREP[key];
+  escPintar();
+  try {
+    const tok = _mkSbTok(); if (!tok) throw new Error('Inicia sesión en el ERP');
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_no_reponer_guardar', { method:'POST', headers:{ apikey: MK_SB_ANON, Authorization:'Bearer ' + tok, 'Content-Type':'application/json' },
+      body: JSON.stringify({ p_prenda: pk, p_color: color, p_color_txt: txt, p_no: !!no }) });
+    const j = r.ok ? await r.json() : null;
+    if (!j || !j.ok) throw new Error((j && j.error) || ('La base respondió ' + r.status + (r.status === 404 ? ': falta pegar el SQL de «no reponer color»' : '')));
+  } catch (e) {
+    if (prev) ESC_NOREP[key] = prev; else delete ESC_NOREP[key];
+    escPintar(); try { escAvisoPanel('No se guardó: ' + e.message); } catch (_) {}
+  }
+}
+function escAvisoPanel(t){
+  const a = document.querySelector('#escCuerpo .esx-pan'); if (!a) return;
+  let d = a.querySelector('.esx-pan-err'); if (!d){ d = document.createElement('div'); d.className = 'esx-pan-err'; a.appendChild(d); }
+  d.innerHTML = esc(t) + ' <button class="esx-nr" onclick="this.parentElement.remove()" title="Cerrar">✕</button>';
+}
+/* 23-oct (Pablo) · CREATIVOS en detalle: una línea por creativo a hacer = formato · etapa (fría/tibia/caliente) · ángulo · contexto · hook · CTA.
+   Sale de las partes del nombre de los anuncios que más VENDEN (este producto en este canal → este producto → toda la tienda),
+   combinando ángulo + contexto que HOY NO corren (Meta junta los parecidos). Más: qué anuncio ya ganó y conviene replicar. */
+function _escFmt(r){ const t = _mkNorm((r && r.anuncio) || ''); return /carrusel|carousel/.test(t) ? 'Carrusel' : (typeof mkEsEstatico === 'function' && mkEsEstatico(r)) ? 'Estático' : 'Video'; }
+/* «Hotro» → «Otro», «sinCTA» → «Sin CTA», «CTAenvio» → «Envio» (etiquetas del nombre del anuncio, en simple) */
+function _escEtq(x){ const t = String(x || '').trim(); if (/^sin ?cta$/i.test(t)) return 'Sin CTA'; const u = t.replace(/^(H|CTA)(?=[a-z])/, ''); return u.charAt(0).toUpperCase() + u.slice(1); }
+function _escTC(x){ const t = _mkNorm(x || '').trim(); return /^c/.test(t) ? 'Caliente' : /^t/.test(t) ? 'Tibia' : /^f/.test(t) ? 'Fría' : (x || '—'); }
+function _escCreaPlan(f, ln, N){
+  const out = { lineas: [], replicas: [], de: '' };
+  try {
+    const vacio = (x, idx) => !x || x.k === '(vacío)' || ([3, 4, 7].includes(idx) && /^(sin|ning|n\/a|-)/.test(x.k)) || (idx === 2 && /^na$/.test(x.k));
+    const rank = (F, idx) => _qfAgrupar(F, idx).filter(x => !vacio(x, idx) && (+x.pedidos || 0) > 0).sort((a, b) => (b.pedidos - a.pedidos) || (b.ingreso - a.ingreso)).map(x => x.label);
+    const FU = [[ln.filas || [], 'este producto en ' + (ln.canal === 'web' ? 'la web' : 'WhatsApp')], [f.filas || [], 'este producto'], [(MK && MK.filas) || [], 'toda la tienda']];
+    /* primero lo que vende ESTE producto; si da pocas opciones, se completa con lo que vende en toda la tienda (para que cada línea sea distinta) */
+    let nivel = 2, mezcla = false;
+    const top = (idx, n, marca) => { let r = []; for (let i = 0; i < 2; i++){ r = rank(FU[i][0], idx); if (r.length){ if (marca) nivel = i; break; } }
+      const ks = new Set(r.map(_qfClave)); if (r.length < n) rank(FU[2][0], idx).forEach(x => { if (r.length < n && !ks.has(_qfClave(x))){ ks.add(_qfClave(x)); r.push(x); if (marca && nivel < 2) mezcla = true; } }); return r.slice(0, n); };
+    const esFmt = x => /^(estatic|carrusel|carousel|imagen|video)/.test(_mkNorm(x));   /* «Estático» en contexto es formato, va en su columna */
+    const A = top(3, 4, true), C = top(4, 8).filter(x => !esFmt(x)).slice(0, 4), H = top(2, 6).filter(x => !/^hsin$/i.test(x)), T = top(5, 3), K = top(6, 4);
+    out.de = FU[nivel][1] + (mezcla ? ' (y en la tienda, para variar)' : '');
+    const fmR = F => { const m = {}; F.forEach(r => { const p = +((r.act || {}).pedidos) || 0; if (p > 0){ const k = _escFmt(r); m[k] = (m[k] || 0) + p; } }); return Object.keys(m).sort((a, b) => m[b] - m[a]); };
+    let Fm = []; for (const x of FU){ Fm = fmR(x[0]); if (Fm.length) break; } if (!Fm.length) Fm = ['Video'];
+    const corre = new Set((ln.filas || []).filter(r => r._on).map(r => _qfPartes(r)).filter(Boolean).map(p => _qfClave(p[3]) + '|' + _qfClave(p[4])));
+    const pares = [];
+    for (let s = 0; s < A.length + C.length; s++) for (let i = 0; i < A.length; i++){ const j = s - i; if (j < 0 || j >= C.length) continue;
+      pares.push({ a: A[i], c: C[j], nuevo: !corre.has(_qfClave(A[i]) + '|' + _qfClave(C[j])) }); }
+    const orden = pares.filter(p => p.nuevo).concat(pares.filter(p => !p.nuevo));
+    for (let k = 0; k < (N || 0); k++){ const p = orden.length ? orden[k % orden.length] : { a: '—', c: '—', nuevo: true };
+      out.lineas.push({ formato: Fm[k % Math.min(2, Fm.length)], etapa: T.length ? _escTC(T[k % T.length]) : '—', ang: p.a, ctx: p.c, hook: H.length ? _escEtq(H[k % H.length]) : '—', cta: K.length ? _escEtq(K[k % K.length]) : '—', repite: !p.nuevo }); }
+    /* réplicas: los anuncios de ESTE producto que más margen dejaron (su vida; si no hay, el período), cualquier canal */
+    const vistos = new Set();
+    ((MK && MK.filas) || []).filter(r => _escClave(r) === f.k).map(r => { const v = typeof _escMcVida === 'function' ? _escMcVida(r) : null; return { r, mc: v != null ? v : _escMc(r) }; })
+      .filter(x => x.mc > 0).sort((a, b) => b.mc - a.mc).forEach(x => { const lab = _escAdLab(x.r); if (vistos.has(lab) || out.replicas.length >= 2) return; vistos.add(lab);
+        const cn = mkCanalDe(x.r) === 'web' ? 'web' : 'wa'; out.replicas.push({ lab, fmt: _escFmt(x.r), canal: cn, otro: cn !== ln.canal, mc: x.mc, on: !!x.r._on }); });
+  } catch (e) { try { console.warn('[escCreaPlan]', e); } catch (_) {} }
+  return out;
+}
+function _escPanelHtml(f, ln, x, A){
+  const who = q => '<div class="esx-pan-h"><span class="esx-who"><span>' + esc(String(q).charAt(0)) + '</span>' + esc(q) + '</span>';
+  const fin = '</div>', cn = c => c === 'web' ? 'Web' : 'WhatsApp';
+  if (x === 'stock'){
+    const st = ln.niv.stock;
+    if (A.col === 'gris') return who('Ana') + '<em>' + esc(A.act) + '</em>' + fin;
+    return who('Ana') + (A.chip ? '<em>' + esc(A.chip) + '</em>' : '') + fin + _escTablaLote(st);
+  }
+  if (x === 'anun' || x === 'crea'){
+    const C = _escAccion(f, ln, 'crea'), N = C.cap && C.cap.n ? C.cap.n : 0, P = _escCreaPlan(f, ln, N), an = ln.niv.anun;
+    let h = who('Heily') + '<em>' + (N ? 'Crear ' + _escPl(N, 'creativo', 'creativos') + ' ' + esc(C.cap.f) : 'No faltan creativos hoy') + '</em>' + fin;
+    if (P.lineas.length){
+      h += '<table class="esx-lt esx-ct"><thead><tr><th>#</th><th>Formato</th><th>Etapa</th><th>Ángulo</th><th>Contexto</th><th>Hook</th><th>CTA</th></tr></thead><tbody>'
+        + P.lineas.map((l, i) => '<tr' + (l.repite ? ' title="Esta combinación ya corre hoy: cambiar el talento o la escena para que Meta no lo junte con el otro"' : '') + '><td>' + (i + 1) + '</td><td>' + esc(l.formato) + '</td><td class="et-' + esc(_mkNorm(l.etapa)) + '">' + esc(l.etapa) + '</td><td>' + esc(l.ang) + '</td><td>' + esc(l.ctx) + (l.repite ? ' ⚠️' : '') + '</td><td>' + esc(l.hook) + '</td><td>' + esc(l.cta) + '</td></tr>').join('')
+        + '</tbody></table><div class="esx-lt-n">Sale de lo que más vende en ' + esc(P.de) + '. Cada línea = una idea distinta (ángulo + contexto que hoy no corren).</div>';
+    }
+    if (P.replicas.length) h += '<div class="esx-rep">' + P.replicas.map(r => '🔁 Replicar <b>«' + esc(r.lab) + '»</b> · ' + esc(r.fmt) + ' · dejó S/ ' + mkNum(r.mc) + ' de margen'
+        + (r.otro ? ' en ' + cn(r.canal) + ' → <b>probarlo en ' + cn(ln.canal) + '</b>' : r.on ? ' · sigue prendido: hacer 2 versiones con otro hook' : ' · mismo ángulo y contexto, hook nuevo')).join('<br>') + '</div>';
+    else if (N) h += '<div class="esx-lt-n">Ningún anuncio de este producto ganó antes: usar las líneas de arriba.</div>';
+    if (an && an.col === 'ama') h += '<div class="esx-lt-n">📣 Paola: apagar los anuncios que no venden.</div>';
+    return h;
+  }
+  /* 🚀 ESCALAR · propuesta: lo que hace Paola + lo que tiene que estar listo para sostenerlo (sale de las otras dos cápsulas) */
+  if (!ln.listo) return who('Paola') + '<em>Todavía no se escala</em>' + fin + '<div class="esx-rep">' + esc(A.act) + '</div>';
+  const aS = _escAccion(f, ln, 'stock'), aC = _escAccion(f, ln, 'crea'), w = (ln.niv.gana.gan || []).slice().sort((a, b) => _escMc(b) - _escMc(a))[0];
+  const ra = (typeof _escRacha === 'function' ? _escRacha(ln) : null) || { fuego: false, g: 1, share: 100 };
+  const sim = typeof _escSimular === 'function' ? _escSimular(ln.niv.stock).replace(/^\. /, '') : '';
+  const fila = (q, t, p) => '<tr><th>' + q + '</th><td>' + esc(t) + '</td><td class="q">' + esc(p) + '</td></tr>';
+  return who('Paola') + '<em>Sí, escalar</em>' + fin
+    + '<table class="esx-lt esx-ct esx-est"><tbody>'
+    + fila('🚀 Presupuesto', 'Subir +' + _ep('esc_sim_pct') + '%' + (w && w.conjunto ? ' a «' + w.conjunto + '»' : '') + ' con el botón Escalar de Anuncios · repetir cada 72 h si sigue vendiendo', 'Paola')
+    + fila('🧵 Prendas', aS.lote ? (aS.cap && aS.cap.sub ? aS.cap.sub.charAt(0).toUpperCase() + aS.cap.sub.slice(1) : 'Reponer') + (aS.chip ? ' · ' + aS.chip.toLowerCase() : '') : 'No hace falta reponer hoy', 'Ana')
+    + fila('🎬 Creativos', aC.cap && aC.cap.n ? 'Crear ' + aC.cap.n + ' ' + aC.cap.f : 'No faltan hoy', 'Heily')
+    + '</tbody></table>'
+    + (sim ? '<div class="esx-lt-n">📈 ' + esc(sim) + '</div>' : '')
+    + '<div class="esx-lt-n">' + (ra.fuego ? '🔥 ' + ra.g + ' anuncios venden: se puede confeccionar para escalar.' : '⚠️ 1 solo anuncio sostiene las ventas: sin confección extra hasta tener un 2.º ganador.') + '</div>';
+}
+const ESC_CSS4 = `
+.esx-pan{gap:6px}
+.esx-pan-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.esx-pan-h em{font-style:normal;font-size:12.5px;font-weight:700;color:var(--g)}
+.esx-pan .esx-lt{margin-top:2px}
+.esx-ct td{font-size:11.5px;color:#dfe9ff;text-align:left}
+.esx-ct th{text-align:left}
+.esx-ct td.et-fria{color:#7ac8ff}.esx-ct td.et-tibia{color:#ffd166}.esx-ct td.et-caliente{color:#ff8a3d}
+.esx-est th{white-space:nowrap;font-size:11.5px}.esx-est td.q{color:#a9bde6;font-size:11px}
+.esx-rep{font-size:12px;color:#dfe9ff;line-height:1.5;margin-top:4px}
+.esx-rep b{color:#00f5a0;font-weight:700}
+.esx-lt td.nr{padding:0 2px}
+.esx-nr{background:transparent;border:1px solid rgba(122,232,255,.25);color:#8aa0c8;border-radius:6px;font-size:10px;line-height:1;padding:2px 5px;cursor:pointer}
+.esx-nr:hover{color:#ff8aa5;border-color:#ff8aa5}
+.esx-pan-err{font-size:11.5px;color:#ff8aa5;margin-top:4px}
+.esx-res{width:100%;border-collapse:collapse;margin-top:6px;font-size:12.5px}
+.esx-res th,.esx-res td{padding:7px 8px;text-align:left;border-top:1px solid rgba(122,232,255,.1);vertical-align:top}
+.esx-res thead th{font-size:10px;letter-spacing:.12em;color:#8aa0c8;font-weight:600;border-top:0}
+.esx-res tbody tr{cursor:pointer}.esx-res tbody tr:hover{background:rgba(122,232,255,.06)}
+.esx-res tbody th{color:#dfe9ff;font-weight:700}
+.esx-res small{display:block;font-size:10.5px;color:#8aa0c8;font-weight:400}
+.esx-res b{color:#00f5a0;font-size:14px}
+.esx-res .m{color:#6b7a90}.esx-res .si{color:#00f5a0;font-weight:700}
+.esx-res tr.tot th,.esx-res tr.tot td{border-top:1px solid rgba(122,232,255,.3)}
+`;
+
 /* 19-oct · la cápsula de acción queda debajo del nodo elegido, con su piquito apuntándolo */
 function _escAlinear(){
   const a = document.querySelector('#escCuerpo .esx-acc2'); if (!a) return;
@@ -8120,7 +8252,7 @@ const ESC_CSS3 = `
 function _escCss(){
   if (document.getElementById('escCss')) return;
   const s = document.createElement('style'); s.id = 'escCss';
-  s.textContent = ESC_CSS + ESC_CSS2 + ESC_CSS3;
+  s.textContent = ESC_CSS + ESC_CSS2 + ESC_CSS3 + (typeof ESC_CSS4 === 'string' ? ESC_CSS4 : '');
   document.head.appendChild(s);
 }
 
