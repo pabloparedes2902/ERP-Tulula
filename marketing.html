@@ -7092,7 +7092,7 @@ const ESC_CSS = ".esx{position:relative;border-radius:18px;padding:16px 18px 18p
    - Reglas (rojo / amarillo / verde) editables en ⚙ REGLAS (public.mk_motor_param, claves esc_*).
    Fuentes: stock = rpc mk_escalamiento_stock · ganador = motor de 📏 Reglas (ESCALAR) · foco = public.mk_escala_foco. */
 const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:70, esc_cub_verde:90, esc_dias_rojo:17, esc_dias_verde:31,
-                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
+                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3, esc_cubre_pct:80 };   /* 23-oct (Pablo: 70% es poco) · se escala solo si el stock cubre el 80% de lo que se vende de tallas clave hasta reponer */   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
@@ -8102,16 +8102,19 @@ function _escEscPlan(f, ln){
   const st = ln.niv.stock || {}, lead = st.lead || _ep('esc_conf_dias'), pct = _ep('esc_sim_pct');
   const out = { gan: [], proteger: [], empujar: [], techo: null, critica: null, pct, listo: !!ln.listo };
   const porC = {}, KS = []; let kmax = null;
+  /* lo que ya está en confección cuenta solo si llega antes de que haga falta (como los referentes: «inbound solo si es confiable») */
+  const fCam = st.cam && st.cam.fecha ? new Date(st.cam.fecha + 'T00:00:00') : null, camLlega = nec => !!fCam && fCam >= _escHoy() && fCam <= _escMas(_escHoy(), nec);
   (st.piezas || []).forEach(r => { const nec = lead + (r.colchon || 7), multi = (st.piezas || []).length > 1, pz = multi ? String(r.n || '').charAt(0) + String(r.n || '').slice(1).toLowerCase() + ' ' : '';
     (r.vs || []).forEach(v => {
       const clave = typeof _escEsClave === 'function' ? _escEsClave(r.vs, v) : false;
       if (v.rate > 0 && v.dias < nec && (clave || v.s > 0)) out.proteger.push({ t: pz + _escTxtCT(v.c, v.t), s: v.s, dias: v.dias, cam: v.cam || 0, clave });
-      if (clave && v.rate > 0) KS.push({ k: v.s / (v.rate / 7) / nec * (st.esc ? 1 + pct / 100 : 1), w: v.rate, t: pz + _escTxtCT(v.c, v.t), dias: v.dias, nec });   /* si el ritmo ya trae el +20% de «listo para escalar», se mide contra el ritmo de hoy */
+      if (clave && v.rate > 0) KS.push({ k: (v.s + (camLlega(nec) ? (v.cam || 0) : 0)) / (v.rate / 7) / nec * (st.esc ? 1 + pct / 100 : 1), w: v.rate, t: pz + _escTxtCT(v.c, v.t), dias: v.dias, nec });   /* si el ritmo ya trae el +20% de «listo para escalar», se mide contra el ritmo de hoy */
       const c = pz + String(v.c); (porC[c] = porC[c] || { s: 0, rate: 0, nec }); porC[c].s += v.s; porC[c].rate += v.rate; }); });
   out.proteger.sort((a, b) => (b.clave - a.clave) || (a.dias - b.dias));
-  /* techo: una talla agotada no frena todo el producto (esa se protege). Manda la talla en la que el 70% de lo que se vende de tallas clave queda cubierto */
+  /* techo: una talla agotada no frena todo el producto (esa se protege). Manda la talla en la que el esc_cubre_pct (80%) de lo que se vende de tallas clave queda cubierto */
   if (KS.length){ const W = KS.reduce((a, x) => a + x.w, 0); let cum = 0; KS.sort((a, b) => b.k - a.k);
-    for (const x of KS){ cum += x.w; if (cum >= W * 0.7){ kmax = x.k; out.critica = x; break; } } }
+    const cub = Math.min(100, Math.max(50, _ep('esc_cubre_pct'))) / 100; out.cubre = Math.round(cub * 100);
+    for (const x of KS){ cum += x.w; if (cum >= W * cub - 1e-9){ kmax = x.k; out.critica = x; break; } } }
   Object.keys(porC).forEach(c => { const o = porC[c], d = o.rate > 0 ? Math.floor(o.s / o.rate * 7) : (o.s > 0 ? 999 : 0);
     if (o.s >= 8 && d >= o.nec * 3) out.empujar.push({ c: c.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase()), s: o.s, dias: d }); });
   out.empujar.sort((a, b) => b.s - a.s);
@@ -8134,7 +8137,7 @@ function _escEscHtml(f, ln, A){
     const hc = cand && typeof MKH === 'object' && MKH && MKH[String(cand.ad_id)], ro = hc && +hc.gasto_vida > 0 ? (+hc.ing_vida || 0) / (+hc.gasto_vida) : null;
     rows += fila('🚀 Qué escalar', cand ? 'Ninguno llega todavía a ESCALAR. El que más promete: <b>«' + esc(_escAdLab(cand)) + '»</b>' + (cand.conjunto ? ' (conjunto ' + esc(cand.conjunto) + ')' : '') + (ro ? ' · ROAS de vida ' + ro.toFixed(2) + 'x' : '')
       + '<br>Darle 72 h sin tocarlo; cuando 📏 Reglas diga ESCALAR, subir +' + P.pct + '%' : esc(A.act)); }
-  if (P.techo != null && P.critica) rows += fila('📏 Hasta cuánto', P.techo >= P.pct ? 'El stock aguanta hasta <b>+' + Math.min(P.techo, 100) + '%</b> más de ventas sin que se agote una talla clave antes de reponer'
+  if (P.techo != null && P.critica) rows += fila('📏 Hasta cuánto', P.techo >= P.pct ? 'El stock aguanta hasta <b>+' + Math.min(P.techo, 100) + '%</b> más de ventas: cubre el ' + P.cubre + '% de lo que se vende de las tallas clave hasta que llegue la reposición'
     : P.techo > 0 ? 'Solo <b>+' + P.techo + '%</b>: la ' + esc(P.critica.t) + ' dura ' + _escPl(P.critica.dias, 'día', 'días') + ' y reponer tarda ' + P.critica.nec
     : 'Nada: la ' + esc(P.critica.t) + ' dura ' + _escPl(P.critica.dias, 'día', 'días') + ' y reponer tarda ' + P.critica.nec + '. Primero que llegue la reposición');
   if (P.proteger.length) rows += fila('🛡️ Proteger', P.proteger.slice(0, 6).map(x => esc(x.t) + ' <i>(' + (x.s > 0 ? 'quedan ' + x.s + ', ' + x.dias + ' d' : 'agotada') + (x.cam ? ', ' + x.cam + ' en confección' : '') + ')</i>').join(' · ')
@@ -8216,6 +8219,9 @@ function _escReglasHtml(){
         'un anuncio vive ' + _escIn('esc_vida_crea') + ' días (o antes, si su frecuencia pasa de 3)'])
     + R('🏅', '3 · GANADORES', ESC_RESP.gana, ['🟢 desde ' + _escIn('esc_gana_verde') + ' anuncio en ESCALAR (motor de 📏 Reglas)',
         '🟡 si alguno vende pero no escala (MANTENER) · 🔴 si ninguno vende'])
+    + R('🚀', '4 · ESCALAR', ESC_RESP.esc, ['se sube +' + _escIn('esc_sim_pct') + '% cada 72 h si sigue vendiendo',
+        'solo si el stock cubre el ' + _escIn('esc_cubre_pct') + '% de lo que se vende de las tallas clave hasta que llegue la reposición (referentes: 90-95%)',
+        '🛡️ la talla que no llega se protege (no va en anuncios nuevos) · 📣 el color que sobra se empuja'])
     + R('⏳', 'ANTICIPAR', 'todos', ['avisar ' + _escIn('esc_aviso') + ' días antes de que una etapa pase a rojo'])
     + '</div><div class="esx-mfoot"><span id="escRegMsg" class="esx-err"></span><span style="flex:1"></span>'
     + '<button class="esx-b" onclick="ESC_P=Object.assign({},ESC_DEF);escPintar()">VALORES DE FÁBRICA</button>'
