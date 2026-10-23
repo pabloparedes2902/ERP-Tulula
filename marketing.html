@@ -6414,6 +6414,11 @@ function mkNuevoRevision(v){
   if (largo(v.texto) > 125) av.push('El texto principal tiene ' + largo(v.texto) + ' caracteres: Meta muestra 125 y el resto queda en «… más» (se envía completo, no se recorta).');
   if (largo(v.titulo) > 40) av.push('El título tiene ' + largo(v.titulo) + ' caracteres: Meta lo corta pasando 40.');
   [['desc1', 'La descripción 1'], ['desc2', 'La descripción 2']].forEach(d => { if (largo(v[d[0]]) > 30) av.push(d[1] + ' tiene ' + largo(v[d[0]]) + ' caracteres: Meta la corta pasando 30.'); });
+  /* 22-oct · catálogo con menos de 4 productos con stock: Meta no puede mostrarlo (aprobado por Pablo) */
+  if (v.catalogo === 'si' && v.product_set_id && typeof _mknCatConStock === 'function'){
+    const cs = _mknCatConStock(v.product_set_id);
+    if (cs && cs.n < 4) av.push('El conjunto de productos «' + cs.nombre + '» tiene solo ' + cs.n + ' producto' + (cs.n === 1 ? '' : 's') + ' con stock: Meta necesita al menos 4 para mostrar el catálogo. Elige otro conjunto o «Sin catálogo».');
+  }
   const xs = typeof _mknDestinos === 'function' ? _mknDestinos() : ((MKN && MKN.sel) ? [MKN.sel] : []);   /* 16-oct · todos los conjuntos elegidos */
   const cod = String((v.campos || {}).cod || '').trim(), filas = (MK && MK.filas) || [];
   xs.forEach((x, i) => {
@@ -6496,8 +6501,54 @@ function _mknCatPintar(cambioCatalogo){
   if (cambioCatalogo) MKN.catSetManual = false;
   csel.disabled = ssel.disabled = !on; document.getElementById('mknCatFmt').style.opacity = on ? 1 : .4; document.getElementById('mknCatCar').disabled = !on;
   const est = document.getElementById('mknCatEst');
+  if (on && typeof _mknCatStockCargar === 'function' && !MKN.shopProds && !MKN.shopProdsCargando)
+    _mknCatStockCargar().then(() => { _mknCatPintar(); if (typeof mkNuevoRevPintar === 'function') mkNuevoRevPintar(); });
+  const cs = on && typeof _mknCatConStock === 'function' ? _mknCatConStock(ssel.value) : null;
   est.innerHTML = !on ? 'El anuncio sale sin productos del catálogo.'
-    : (sug && ssel.value === sug.s.id ? '⭐ Sugerido por ' + esc(sug.por) + '.' : 'Elegido a mano.') + ((MKN.catalogos && MKN.catalogos.length) ? '' : ' <span class="esp">(lista de Meta guardada el 22-oct; si creas un conjunto nuevo en Meta, avísale a Claude para sumarlo)</span>');
+    : (cs ? (cs.n < 4 ? '<b style="color:#d97706">⚠️ Solo ' + cs.n + ' producto' + (cs.n === 1 ? '' : 's') + ' con stock en este conjunto (Meta necesita 4).</b> ' : '✅ ' + cs.n + ' productos con stock. ') : '')
+    + ((sug && ssel.value === sug.s.id ? '⭐ Sugerido por ' + esc(sug.por) + '.' : 'Elegido a mano.') + ((MKN.catalogos && MKN.catalogos.length) ? '' : ' <span class="esp">(lista de Meta guardada el 22-oct; si creas un conjunto nuevo en Meta, avísale a Claude para sumarlo)</span>'));
+}
+/* 22-oct · productos de cada conjunto (lo que Meta usa: id de producto de Shopify) y stock EN VIVO desde la tienda
+   (tulula.com.pe/products.json: un producto cuenta si al menos una talla/color está disponible). */
+const MKN_CAT_REGLAS = {
+  '445078152010949': { todos: true }, '25865553646460916': { todos: true },
+  '1254219716031276': { nombre: 'pantalon' }, '1125095759480598': { nombre: 'blusa' },
+  '9113580262104938': { ids: '15402748608725,15402748870869,9217206223061,9377197686997,9571171107029,9240611258581,8835497984213,9160610316501,9240605196501' },
+  '9527364890619826': { ids: '15402748543189,9571173925077,9178025590997,9377186316501,9311427100885,9377214922965,9342833688789' },
+  '29642715848661105': { ids: '15402748805333,15402749001941,9438681235669,9571175366869,9571185492181,9438654791893,9311419629781,9438670454997,9043406487765,9573442355413,9160583217365' },
+  '9069965559798036': { ids: '9178025590997,9377197686997,9311419629781,9043406487765,9240611258581,9377186316501,9311427100885,9377214922965' },
+  '23910928481827304': { ids: '8835498442965,9217218085077,9257831104725,9217217724629,9308095021269,9266901188821,9213246472405,9377221705941' },
+  '9574425125929005': { ids: '15402748936405,9311418351829,9571174252757,9377207058645,9273788825813,9136043000021' },
+  '24379122068344716': { ids: '15402748936405,15402748805333,15402748543189,9573442355413,9571185492181,9571175366869,9571174252757,9571173925077,9571171107029,9377214922965,9311427100885,9217206223061,9178025590997' },
+  '9056021201190816': { ids: '9240611258581,9310103273685,9240606343381,9178006126805,9128458092757,8835498049749,9185113899221,8872242446549,8835498082517,8835498016981,9299811533013,8835498148053,8837988974805,8835498541269,9167039660245,8835497885909,8835497853141,9022868783317,9191044743381,8835498344661,8919760011477,9243264090325,9213496033493,8835497951445,8835498410197,8974579499221,8919770792149,8965562564821,9188393418965' },
+  '25634935379503092': { ids: '9248952090837,9248951042261,9318492012757,9248952189141,9248951271637,9248950812885,9248950485205,9248950288597' },
+  '26568317619437286': { ids: '9248948846805,9248949960917,9248948453589,9248948682965,9248950157525,9248950059221,9248949993685,9248949829845,9248949338325,9248948584661,9248949698773,9248949567701,9248948945109' },
+  '28956405710670965': { ids: '9160663466197,9079028449493,9190447317205,8978085544149,9024945651925,9024915308757,9024927989973,9079066263765,9129781035221,8899141828821,9270058483925,9259842339029,9076834926805,9216475037909' },
+  '26843971625270847': { ids: '9217206223061,9377197686997,9178025590997,9240611258581,9311427100885,9377207058645,9342833688789,9377186316501,9377221705941' },
+  '27042110135479214': { variantes: '53752618778837,53755113570517,53776173269205,53721586303189,53755117666517,52993963131093,53489543774421,53545248391381,52295638974677,53538740666581,53544614428885,53489552916693,53489581097173,53776178184405,53534538596565,53545279750357,50850014626005,53545163292885,53545142976725,53545268773077,52365664583893,50850012233941,52811370758357,53543295647957,51712043712725' }
+};
+async function _mknCatStockCargar(){
+  if (MKN.shopProds && Date.now() - MKN.shopProdsT < 10 * 60000) return MKN.shopProds;
+  if (MKN.shopProdsCargando) return MKN.shopProdsCargando;
+  MKN.shopProdsCargando = (async () => {
+    let todos = [];
+    try { for (let pg = 1; pg <= 4; pg++){ const j = await fetch('https://tulula.com.pe/products.json?limit=250&page=' + pg).then(r => r.json()); const L = (j && j.products) || []; todos = todos.concat(L); if (L.length < 250) break; } }
+    catch (e) { todos = null; }
+    MKN.shopProds = todos; MKN.shopProdsT = Date.now(); MKN.shopProdsCargando = null; return todos;
+  })();
+  return MKN.shopProdsCargando;
+}
+function _mknCatConStock(setId){
+  const R = MKN_CAT_REGLAS[setId], P = MKN.shopProds; if (!R || !Array.isArray(P)) return null;
+  const cats = (MKN.catalogos && MKN.catalogos.length) ? MKN.catalogos : MKN_CAT_RESPALDO;
+  const set = cats.flatMap(c => c.sets || []).find(x => x.id === setId) || { nombre: setId };
+  const disp = p => (p.variants || []).some(x => x.available);
+  let n;
+  if (R.todos) n = P.filter(disp).length;
+  else if (R.nombre) n = P.filter(p => _mknNorm(p.title).includes(R.nombre) && disp(p)).length;
+  else if (R.ids){ const ids = new Set(R.ids.split(',')); n = P.filter(p => ids.has(String(p.id)) && disp(p)).length; }
+  else { const vs = new Set(R.variantes.split(',')); n = P.filter(p => (p.variants || []).some(x => vs.has(String(x.id)) && x.available)).length; }
+  return { n, nombre: set.nombre };
 }
 function _mknExtrasDatos(wa){
   const g = id => String((document.getElementById(id) || {}).value || '').trim();
