@@ -7095,6 +7095,7 @@ const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo
                   esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
+let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
 let ESC_MED = null;   /* 22-oct · fase 7: {total, seguidas, por_accion} de mk_propuestas_medir */
 let ESC_LLEGO = {};   /* 21-oct (Pablo) · { 'blazer mirella': { n, fecha, colores } } — lo que Producción ingresó al stock en los últimos días (prod_llego_stock) */
 let ESC_CAMINO = {};   /* 21-oct · 🧵 Producción F1b: { 'BLAZER MIRELLA': { n, fecha, ordenes } } desde prod_en_camino */
@@ -7124,7 +7125,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -7134,7 +7135,8 @@ async function escCargar(forzar){
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 21-oct · 🧵 Producción F1b */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_llego_stock', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 21-oct · 📦 llegó stock nuevo de Producción */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_dias', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 22-oct · días de confección por prenda */
-      fetch(MK_SB_URL + '/rest/v1/rpc/mk_propuestas_medir', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: 28 }) }).catch(() => null)   /* 22-oct · fase 7 */
+      fetch(MK_SB_URL + '/rest/v1/rpc/mk_propuestas_medir', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: 28 }) }).catch(() => null),   /* 22-oct · fase 7 */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino_detalle', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 23-oct · en confección por color y talla */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -7143,6 +7145,7 @@ async function escCargar(forzar){
     ESC_FOCO = r4.ok ? (await r4.json()).map(x => x.clave) : [];
     ESC_FANT = (r5 && r5.ok) ? await r5.json() : []; ESC_FANT_IDX = null;   /* si la rpc falla, Escalamiento sigue igual que antes (sin fantasma) */
     if (!Array.isArray(ESC_FANT)) ESC_FANT = [];
+    ESC_CAMDET = {}; try { if (r11 && r11.ok) ((await r11.json()) || []).forEach(x => { ESC_CAMDET[_mkNorm(x.diseno).trim() + '|' + _mkNorm(x.color).trim() + '|' + String(x.talla).toUpperCase().trim()] = +x.n || 0; }); } catch (_) {}
     ESC_MED = null; try { if (r10 && r10.ok) ESC_MED = await r10.json(); } catch (_) {}
     ESC_LEAD = {}; try { if (r9 && r9.ok) ((await r9.json()) || []).forEach(x => { ESC_LEAD[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_LLEGO = {}; try { if (r8 && r8.ok) ((await r8.json()) || []).forEach(x => { ESC_LLEGO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
@@ -7243,24 +7246,35 @@ function _escPiezas(tipo, modelo){
 }
 function _escTxtCT(c, t){ return String(t) + ' ' + String(c).toLowerCase().replace(/(^|\s)\S/g, s => s.toUpperCase()); }
 /* ── 1 · STOCK: días de stock, tallas agotadas, cuándo cae y qué confeccionar ── */
-function _escStock(piezas, web){
+function _escStock(piezas, web, opt){
   /* 20-oct 19h (Pablo) · «el requerimiento debe salir de lo que hay en stock y del ritmo de venta: M y L salen más y se reponen más, 2XL sale poco y se repone poco».
      Ritmo de cada talla = ritmo del COLOR (sus ventas de 28 o 90 días) × CURVA DE TALLAS de la prenda (cuánto pesa cada talla en 90 días, todos los colores).
      Así una talla suelta con pocas ventas no dispara un pedido grande. Lote = lo que falta para cubrir (confección + N semanas);
      si no llega al mínimo, se suben las semanas de cobertura para TODAS las tallas por igual (la curva se respeta). */
   piezas = piezas.filter(pz => (pz.x || []).length);
   if (!piezas.length) return { col:'gris', big:'—', sub:'no está en Stock', dias:null, piezas:[], agot:[], pocas:[], lote:[], tot:0, cub:0, ant:null, web:null };
-  const lead = typeof _escLeadDe === 'function' ? _escLeadDe(piezas) : _ep('esc_conf_dias'), obj = _ep('esc_obj_sem'), fk = _ep('esc_fant_pct') / 100, fsem = Math.max(1, _ep('esc_fant_dias')) / 7;
+  const lead = typeof _escLeadDe === 'function' ? _escLeadDe(piezas) : _ep('esc_conf_dias'), obj0 = _ep('esc_obj_sem'), fk = _ep('esc_fant_pct') / 100, fsem = Math.max(1, _ep('esc_fant_dias')) / 7;
+  /* 23-oct (Pablo: «que no falte ni sobre», como las marcas top) · 6 mejoras de reposición:
+     1) se RESTA lo que ya está en confección por color y talla (ESC_CAMDET) · 2) ritmo con más peso a las últimas 2 semanas (60% 14 d + 40% 28 d)
+     3) si el producto está listo para escalar, ritmo × 1.2 (opt.esc) · 4) colchón según qué tan pareja es la venta semanal (3 a 14 días, antes 7 fijos)
+     5) semanas de cobertura por tipo: las que más venden 8, nuevas 4, el resto esc_obj_sem · 6) aviso si el ritmo cambió más de 25% en una semana */
+  const kEsc = opt && opt.esc ? 1 + _ep('esc_sim_pct') / 100 : 1, CAM = (typeof ESC_CAMDET === 'object' && ESC_CAMDET) ? ESC_CAMDET : {};
   let peor = null, fantT = 0; const res = [];
   piezas.forEach(pz => {
     const okC = web ? _escColPermitidos(pz, web) : new Set(pz.x.filter(a => (+a[2] || 0) > 0 || (+a[3] || 0) > 0).map(a => String(a[0])));
     const curva = {}; let C90 = 0;
     pz.x.forEach(a => { const t = String(a[1]).toUpperCase().trim(), v = +a[4] || 0; curva[t] = (curva[t] || 0) + v; C90 += v; });
-    const vs0 = pz.x.filter(a => okC.has(String(a[0]))).map(a => ({ pz:String(pz.p), c:a[0], t:a[1], s:Math.max(0, +a[2] || 0), v28:+a[3] || 0, v90:+a[4] || 0, f:0 }));
+    const pk = _mkNorm(pz.p + ' ' + pz.d).trim();
+    const vs0 = pz.x.filter(a => okC.has(String(a[0]))).map(a => ({ pz:String(pz.p), c:a[0], t:a[1], s:Math.max(0, +a[2] || 0), v28:+a[3] || 0, v90:+a[4] || 0, v14: a.length > 5 ? +a[5] || 0 : null, f:0,
+      cam: +CAM[pk + '|' + _mkNorm(a[0]).trim() + '|' + String(a[1]).toUpperCase().trim()] || 0 }));
+    const sem4 = [0, 0, 0, 0]; let hayW = false; pz.x.filter(a => okC.has(String(a[0]))).forEach(a => { if (a.length > 9){ hayW = true; for (let i = 0; i < 4; i++) sem4[i] += +a[6 + i] || 0; } });
+    const v90p = vs0.reduce((a, v) => a + v.v90, 0), v28p = vs0.reduce((a, v) => a + v.v28, 0);
+    const obj = v28p > 0 && v90p <= v28p * 1.2 ? 4 : (typeof _escTop === 'function' && _escTop(pk)) ? 8 : obj0;   /* 5) nueva: casi todo lo vendido es del último mes */
     _escFantPieza(pz, vs0);   /* 20-oct · demanda fantasma */
     const Rc = {}, Sh = {};
     [...new Set(vs0.map(v => v.c))].forEach(c => { const L = vs0.filter(v => v.c === c), s28 = L.reduce((a, v) => a + v.v28, 0), s90 = L.reduce((a, v) => a + v.v90, 0);
-      Rc[c] = s28 >= 3 ? s28 / 4 : s90 / 12.86;
+      const s14 = L.some(v => v.v14 != null) ? L.reduce((a, v) => a + (v.v14 || 0), 0) : null;
+      Rc[c] = (s28 >= 3 ? (s14 != null ? 0.6 * (s14 / 2) + 0.4 * (s28 / 4) : s28 / 4) : s90 / 12.86) * kEsc;   /* 2) y 3) */
       Sh[c] = L.reduce((a, v) => a + (C90 > 0 ? (curva[String(v.t).toUpperCase().trim()] || 0) / C90 : 1 / L.length), 0); });
     vs0.forEach(v => { const sh = C90 > 0 ? (curva[String(v.t).toUpperCase().trim()] || 0) / C90 : 1;
       v.fv = v.f * fk; v.rate = (Sh[v.c] > 0 ? Rc[v.c] * sh / Sh[v.c] : 0) + v.fv / fsem; v.w = v.rate; v.dias = v.rate > 0 ? Math.floor(v.s / v.rate * 7) : 999; });
@@ -7271,13 +7285,16 @@ function _escStock(piezas, web){
     const cub = W > 0 ? Wok / W * 100 : (S > 0 ? 100 : 0), dias = R > 0 ? Math.floor(S / R * 7) : (S > 0 ? 999 : 0);
     const agot = vs.filter(v => v.s <= 0 && v.w > 0).sort((a, b) => b.w - a.w);
     const pocas = vs.filter(v => v.s > 0 && v.rate > 0 && v.dias < lead + 7).sort((a, b) => a.dias - b.dias);
-    const pedir = sem => vs.map(v => ({ pz:v.pz, c:v.c, t:v.t, n: Math.max(0, Math.ceil(v.rate * sem - v.s)) })).filter(v => v.n > 0);
+    const pedir = sem => vs.map(v => ({ pz:v.pz, c:v.c, t:v.t, n: Math.max(0, Math.ceil(v.rate * sem - v.s - v.cam)) })).filter(v => v.n > 0);   /* 1) menos lo que ya está en confección */
+    const mW = hayW ? sem4.reduce((a, x) => a + x, 0) / 4 : 0, sdW = hayW ? Math.sqrt(sem4.reduce((a, x) => a + (x - mW) * (x - mW), 0) / 3) : 0;
+    const colchon = hayW && R > 0 ? Math.min(14, Math.max(3, Math.round(1.65 * sdW * Math.sqrt(lead / 7) / (R / 7)))) : 7;   /* 4) */
+    const cambio = hayW && sem4[0] >= 3 && sem4[1] >= 3 && Math.abs(sem4[0] - sem4[1]) / sem4[1] > 0.25 ? Math.round((sem4[0] - sem4[1]) / sem4[1] * 100) : null;   /* 6) */
     let sem = lead / 7 + obj, lote = pedir(sem), tot = lote.reduce((a, v) => a + v.n, 0);
     if (tot > 0 && tot < _ep('esc_lote_min')){
       while (tot < _ep('esc_lote_min') && sem < 52){ sem += 0.25; lote = pedir(sem); tot = lote.reduce((a, v) => a + v.n, 0); }
     }
     lote.sort((a, b) => b.n - a.n);
-    const r = { n:String(pz.p), d:String(pz.d || ''), cub, dias, S, agot, pocas, lote, tot, vs, sem };
+    const r = { n:String(pz.p), d:String(pz.d || ''), cub, dias, S, agot, pocas, lote, tot, vs, sem, colchon, cambio, obj, cam: vs.reduce((a, v) => a + v.cam, 0) };
     res.push(r);
     if (!peor || r.cub < peor.cub || (r.cub === peor.cub && r.dias < peor.dias)) peor = r;
   });
@@ -7423,6 +7440,7 @@ function escFilas(){
       const listo = corte < 0 && gana.g >= _ep('esc_gana_verde');   /* escalar = el motor dice ESCALAR en al menos uno */
       return { canal:c, filas:fl, niv, conv, corte: corte < 0 ? ESC_ETAPAS.length : corte, listo, on: fl.filter(r => r._on).length };
     });
+    if (lanes.some(l => l.listo)){ const st2 = _escStock(_escPiezas(tipo, modelo), _escWebColores(tipo, modelo), { esc:true }); st2.esc = true; lanes.forEach(l => { if (l.niv) l.niv.stock = st2; }); }   /* 23-oct · 3) */
     return { k, tipo, modelo, nombre: _escNom(k), filas, mc, venv, img: top ? top.thumbnail_url : '', stock, lanes,
              gasto: filas.reduce((a, r) => a + (+((r.act || {}).gasto) || 0), 0), ven: filas.reduce((a, r) => a + (+((r.act || {}).pedidos) || 0), 0) };
   });
@@ -7493,7 +7511,7 @@ function _escAccion(f, ln, x){
     const dsC = ds + (nc ? ' · ' + _escPl(nc, 'color', 'colores') + (n.web ? ' en la web' : ' con stock') : '');   /* 20-oct 18h */
     const cuando = n.repo ? _escPlazo(n.repo) : '';
     const agT = ag ? ' · ' + ag + ' de ' + (n.combos || ag) + ' tallas agotadas = ' + n.perdida + '% de lo que se vende' : '';   /* 20-oct 19h · el porqué del color */
-    if (n.cam && (n.col === 'rojo' || n.col === 'ama')){   /* 21-oct · 🧵 ya está en confección: no pedir otra vez */
+    if (n.cam && (n.col === 'rojo' || n.col === 'ama') && !(n.tot > 0)){   /* 21-oct · 🧵 ya está en confección y cubre todo (23-oct: si falta algo, se pide solo lo que falta) */
       const fv = n.cam.fecha ? new Date(n.cam.fecha + 'T00:00:00') : null, hoy0 = new Date(); hoy0.setHours(0, 0, 0, 0);
       const lleg = !fv ? '' : fv < hoy0 ? ' · ya debía estar a la venta (' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + '): preguntar a Ana' : ' · a la venta el ' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');   /* 21-oct · fecha pasada = atraso, no promesa */
       return { sit:llT + (n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', q:ESC_RESP.stock, col, lote:null };
@@ -7503,15 +7521,19 @@ function _escAccion(f, ln, x){
        Pero lo que manda es la PRIMERA talla que más se vende en acabarse. Como hacen los referentes: se manda al taller cuando a esa talla
        le quedan (días de confección de esta prenda + 7 de colchón). Llegada = envío + días de confección. */
     const ld = n.lead || _ep('esc_conf_dias'), F0 = x => x.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
-    let kv = null; (n.piezas || []).forEach(r => { const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0); if (!(W > 0)) return;
-      r.vs.forEach(v => { if ((typeof _escEsClave === 'function' ? _escEsClave(r.vs, v) : v.w / W >= 0.12) && v.rate > 0 && (!kv || v.dias < kv.dias)) kv = v; }); });
+    let kv = null, kr = null; (n.piezas || []).forEach(r => { const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0); if (!(W > 0)) return;
+      r.vs.forEach(v => { if ((typeof _escEsClave === 'function' ? _escEsClave(r.vs, v) : v.w / W >= 0.12) && v.rate > 0 && (!kv || v.dias < kv.dias)){ kv = v; kr = r; } }); });
+    const colch = kr && kr.colchon ? kr.colchon : 7, camb = (n.piezas || []).map(r => r.cambio).filter(x => x != null)[0];
     const kd = kv ? Math.max(0, kv.s > 0 ? kv.dias : 0) : (n.dias >= 999 ? 999 : n.dias);
-    const envD = Math.max(0, kd - ld - 7), env = _escMas(_escHoy(), envD), lleg = _escMas(env, ld);
+    const envD = Math.max(0, kd - ld - colch), env = _escMas(_escHoy(), envD), lleg = _escMas(env, ld);
     const primera = kv ? ' · se acaba primero: ' + _escTxtCT(kv.c, kv.t) + (kv.s > 0 ? ' en ' + _escPl(kv.dias, 'día', 'días') : ' (ya agotada)') : '';
     const sitS = (n.dias >= 999 ? 'Sin ventas recientes' : _escPl(n.dias, 'día', 'días') + ' de stock en total') + primera
       + (ag ? ' · ' + _escPl(ag, 'talla agotada', 'tallas agotadas') : '')
-      + (n.fant ? ' · ' + n.fant + ' toques en tallas agotadas en la web (últimos ' + _ep('esc_fant_dias') + ' días)' : '');
-    const pedS = 'Reponer ' + lote + ' prendas para el ' + F0(lleg) + ': mandar al taller ' + (envD === 0 ? 'HOY' : 'el ' + F0(env)) + ' (tarda ' + ld + ' días)' + (typeof _escLoteTxt === 'function' ? _escLoteTxt(n.lote) : '');
+      + (n.fant ? ' · ' + n.fant + ' toques en tallas agotadas en la web (últimos ' + _ep('esc_fant_dias') + ' días)' : '')
+      + (camb != null ? ' · ⚠️ esta semana se vendió ' + Math.abs(camb) + '% ' + (camb > 0 ? 'más' : 'menos') + ' que la anterior: revisar el pedido' : '')
+      + (n.esc ? ' · calculado con +' + _ep('esc_sim_pct') + '% de ventas porque está listo para escalar' : '');
+    const camT = (n.piezas || []).reduce((a, r) => a + (r.cam || 0), 0);
+    const pedS = 'Reponer ' + lote + ' prendas para el ' + F0(lleg) + ': mandar al taller ' + (envD === 0 ? 'HOY' : 'el ' + F0(env)) + ' (tarda ' + ld + ' días' + (camT ? '; ya descontadas ' + camT + ' que están en confección' : '') + ')' + (typeof _escLoteTxt === 'function' ? _escLoteTxt(n.lote) : '');
     if (n.col === 'rojo' || n.col === 'ama' || envD <= _ep('esc_aviso'))
       return { sit: llT + sitS, act: pedS, q:ESC_RESP.stock, col, lote:n };
     return { sit: llT + sitS, act: 'No reponer todavía. El ' + F0(env) + ' hay que mandar al taller', q:ESC_RESP.stock, col, lote:null };
@@ -7740,10 +7762,15 @@ function _escMedHtml(){
    Una fila por producto en foco (se abre con un clic): Prenda, Creativos, Anuncios y Escalar en simple.
    Al final, DOS pedidos juntos: confección para Ana (una línea por PRENDA FÍSICA: el conjunto se pide como sus piezas y no se cuenta doble,
    porque las ventas del conjunto ya descuentan cada pieza) y creativos para Heily. */
+function _escTop(pk){
+  try { if (!_escTop._m || _escTop._s !== ESC_STOCK){ const L = (ESC_STOCK || []).map(x => ({ k: _mkNorm(x.p + ' ' + x.d).trim(), v: (x.x || []).reduce((a, b) => a + (+b[4] || 0), 0) })).filter(x => x.v > 0).sort((a, b) => b.v - a.v);
+      _escTop._m = new Set(L.slice(0, Math.max(1, Math.ceil(L.length * 0.2))).map(x => x.k)); _escTop._s = ESC_STOCK; }
+    return _escTop._m.has(pk); } catch (_) { return false; }
+}
 function _escPiezaPedido(r, lead){
   let kv = null; const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0);
   if (W > 0) r.vs.forEach(v => { if ((typeof _escEsClave === 'function' ? _escEsClave(r.vs, v) : v.w / W >= 0.12) && v.rate > 0 && (!kv || v.dias < kv.dias)) kv = v; });
-  const kd = kv ? Math.max(0, kv.s > 0 ? kv.dias : 0) : 999, envD = Math.max(0, kd - lead - 7), env = _escMas(_escHoy(), envD);
+  const kd = kv ? Math.max(0, kv.s > 0 ? kv.dias : 0) : 999, envD = Math.max(0, kd - lead - (r.colchon || 7)), env = _escMas(_escHoy(), envD);
   return { kv, kd, envD, env, lleg: _escMas(env, lead) };
 }
 function _escResumenHtml(){
@@ -7765,7 +7792,7 @@ function _escResumenHtml(){
       if (/^(Crear|Necesito)/.test(c.act)) crea.push({ n: f.nombre + ' · ' + cnN(l.canal), a: c.act }); });
     h += '<details class="esx-tar-d" style="margin-top:6px"><summary><b>' + esc(f.nombre) + '</b> · ' + chips.join(' · ') + '</summary>' + body
       + '<button class="esx-b" data-k="' + esc(f.k) + '" onclick="escIrA({ k: this.dataset.k })" style="margin:6px 0">VER EN EL FLUJO</button></details>';
-    if (st.cam || st.col === 'gris') return;
+    if (st.col === 'gris') return;   /* 23-oct · lo que está en confección ya se descontó por talla */
     const ld = st.lead || _ep('esc_conf_dias');
     (st.piezas || []).forEach(r => { const key = (r.n + ' ' + r.d).trim(); if (conf[key] || !(r.tot > 0)) return;
       const P = _escPiezaPedido(r, ld); if (P.envD > _ep('esc_aviso')) return; conf[key] = { r, P, ld }; });
