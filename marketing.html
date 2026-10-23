@@ -7277,7 +7277,7 @@ function _escStock(piezas, web){
       while (tot < _ep('esc_lote_min') && sem < 52){ sem += 0.25; lote = pedir(sem); tot = lote.reduce((a, v) => a + v.n, 0); }
     }
     lote.sort((a, b) => b.n - a.n);
-    const r = { n:String(pz.p), cub, dias, S, agot, pocas, lote, tot, vs, sem };
+    const r = { n:String(pz.p), d:String(pz.d || ''), cub, dias, S, agot, pocas, lote, tot, vs, sem };
     res.push(r);
     if (!peor || r.cub < peor.cub || (r.cub === peor.cub && r.dias < peor.dias)) peor = r;
   });
@@ -7504,7 +7504,7 @@ function _escAccion(f, ln, x){
        le quedan (días de confección de esta prenda + 7 de colchón). Llegada = envío + días de confección. */
     const ld = n.lead || _ep('esc_conf_dias'), F0 = x => x.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
     let kv = null; (n.piezas || []).forEach(r => { const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0); if (!(W > 0)) return;
-      r.vs.forEach(v => { if (v.w / W >= 0.12 && v.rate > 0 && (!kv || v.dias < kv.dias)) kv = v; }); });
+      r.vs.forEach(v => { if ((typeof _escEsClave === 'function' ? _escEsClave(r.vs, v) : v.w / W >= 0.12) && v.rate > 0 && (!kv || v.dias < kv.dias)) kv = v; }); });
     const kd = kv ? Math.max(0, kv.s > 0 ? kv.dias : 0) : (n.dias >= 999 ? 999 : n.dias);
     const envD = Math.max(0, kd - ld - 7), env = _escMas(_escHoy(), envD), lleg = _escMas(env, ld);
     const primera = kv ? ' · se acaba primero: ' + _escTxtCT(kv.c, kv.t) + (kv.s > 0 ? ' en ' + _escPl(kv.dias, 'día', 'días') : ' (ya agotada)') : '';
@@ -7574,10 +7574,15 @@ function _escAccion(f, ln, x){
   if (!ln.listo) return { sit:'Aún no escala · vende pero ninguno llega a ESCALAR', act:'Paola: darle 72 h al que vende. No: subir presupuesto antes de que las Reglas digan ESCALAR', q:ESC_RESP.gana, col:'gris' };
   const w = ln.niv.gana.gan.slice().sort((a, b) => _escMc(b) - _escMc(a))[0], ro = w ? _escRoas(w) : null, st = ln.niv.stock, ra = (typeof _escRacha === 'function' ? _escRacha(ln) : null) || { fuego:false, g:1, share:100 };
   return { sit:'Listo para escalar' + (ra.fuego ? ' · 🔥 en racha: ' + ra.g + ' anuncios venden' : ' · 🚀 racha frágil: ' + (ra.g > 1 ? 'uno trae el ' + ra.share + '% de las ventas' : '1 solo anuncio vende')) + (ro != null ? ' · ROAS ' + ro.toFixed(2) + 'x' : ''),
-           act:'Subir +20% el presupuesto' + (w && w.conjunto ? ' de «' + w.conjunto + '»' : '') + ' con Escalar; repetir cada 72 h si el ROAS se mantiene. Stock: '
-             + (st.col === 'verde' ? (st.dias >= 999 ? 'cubierto' : st.dias + ' días cubiertos') : 'reponer ' + Math.max(st.tot || 0, _ep('esc_lote_min')) + ' prendas ya')
-             + (typeof _escSimular === 'function' ? _escSimular(st) : '')   /* 22-oct (Pablo) · simulador antes de escalar */
-             + (ra.fuego ? '. Con respaldo: se puede confeccionar para escalar' : '. Frágil: Heily busca el 2º ganador con una idea distinta; sin confección extra hasta tenerlo'),
+           act: (() => {   /* 22-oct (Pablo) · ESCALAR en el mismo tono: qué subir y qué hace falta para sostenerlo (creativos + prendas, con fechas) */
+             const aS = _escAccion(f, ln, 'stock'), aC = _escAccion(f, ln, 'crea'), sost = [];
+             if (/^Crear /.test(aC.act)) sost.push(aC.act.charAt(0).toLowerCase() + aC.act.slice(1));
+             if (/^Reponer /.test(aS.act)) sost.push(aS.act.charAt(0).toLowerCase() + aS.act.slice(1));
+             return 'Subir +20% el presupuesto' + (w && w.conjunto ? ' de «' + w.conjunto + '»' : '') + ' con el botón Escalar de Anuncios (repetir cada 72 h si sigue vendiendo). '
+               + (sost.length ? 'Para sostenerlo: ' + sost.join('; y ') : 'Para sostenerlo no falta nada hoy: hay creativos y stock')
+               + (typeof _escSimular === 'function' ? _escSimular(st) : '')
+               + (ra.fuego ? '. Con 2 o más anuncios vendiendo: se puede confeccionar para escalar' : '. Ojo: 1 solo anuncio sostiene las ventas: sin confección extra hasta tenerlo (un 2.º ganador; Heily: idea distinta)');
+           })(),
            q:ESC_RESP.esc + (ra.fuego ? '' : ' · Heily'), col:'verde', racha: ra };
 }
 /* ── 21-oct-2026 (Pablo) · RACHA dentro de ESCALAR (no es un paso aparte):
@@ -7607,12 +7612,19 @@ function escElegir(k){ ESC_SEL = k; ESC_NODO = null; escPintar(true); }
    (días de confección de esa prenda). Si ya está en confección, no se avisa. Máximo 5, los más cercanos primero. Va a Alertas del ERP (no al celular). */
 /* 22-oct (Pablo) · SIMULADOR ANTES DE ESCALAR, en simple: «si vende 20% más, la M negra dura 18 días en vez de 22 (se acaba el 9 nov);
    manda al taller a más tardar el 30 oct». Mira solo las tallas que más se venden (12%+) y usa los días de confección de esa prenda. */
+/* 22-oct · TALLAS CLAVE = las que, de la que más vende a la que menos, juntas hacen el 60% de las ventas de la prenda
+   (antes: cada combinación con 12%+; con 6 colores × 6 tallas ninguna llegaba y no se veía «se acaba primero»). */
+function _escEsClave(vs, v){
+  if (!vs._cl){ const S = vs.filter(x => (x.w || 0) > 0).sort((a, b) => b.w - a.w), W = S.reduce((a, x) => a + x.w, 0); let c = 0; vs._cl = new Set();
+    for (const x of S){ if (vs._cl.size && c >= 0.6 * W) break; vs._cl.add(x); c += x.w; } }
+  return vs._cl.has(v);
+}
 function _escSimular(st){
   try {
     if (!st || !st.piezas) return '';
     const pct = _ep('esc_sim_pct'), k = 1 + pct / 100, lead = st.lead || _ep('esc_conf_dias'), C = [];
     st.piezas.forEach(r => { const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0); if (!(W > 0)) return;
-      r.vs.forEach(v => { if (v.w / W >= 0.12 && v.rate > 0 && v.s > 0) C.push({ v, dn: Math.floor(v.s / (v.rate * k) * 7) }); }); });
+      r.vs.forEach(v => { if ((typeof _escEsClave === 'function' ? _escEsClave(r.vs, v) : v.w / W >= 0.12) && v.rate > 0 && v.s > 0) C.push({ v, dn: Math.floor(v.s / (v.rate * k) * 7) }); }); });
     if (!C.length) return '';
     C.sort((a, b) => a.dn - b.dn); const c = C[0], v = c.v;
     if (c.dn > 60) return '. Si vende ' + pct + '% más, el stock de las tallas que más se venden alcanza para más de 2 meses';
@@ -7630,7 +7642,7 @@ function _escUrgentes(F){
     if (!n || n.col === 'gris' || n.cam) return;
     const lead = n.lead || _ep('esc_conf_dias'), crit = [];
     (n.piezas || []).forEach(r => { const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0); if (!(W > 0)) return;
-      r.vs.forEach(v => { if (v.w / W >= 0.12 && v.rate > 0 && v.dias < lead) crit.push(v); }); });
+      r.vs.forEach(v => { if ((typeof _escEsClave === 'function' ? _escEsClave(r.vs, v) : v.w / W >= 0.12) && v.rate > 0 && v.dias < lead) crit.push(v); }); });
     if (!crit.length) return;
     crit.sort((a, b) => a.dias - b.dias);
     const tx = crit.slice(0, 4).map(v => _escTxtCT(v.c, v.t) + (v.s <= 0 ? ' (ya agotada)' : ' (' + _escPl(v.dias, 'día', 'días') + ')')).join(', ') + (crit.length > 4 ? ' y ' + (crit.length - 4) + ' más' : '');
@@ -7724,6 +7736,51 @@ function _escMedHtml(){
   return '<div class="esx-tar-m" style="font-size:11.5px;opacity:.85;margin:2px 0 6px">🤖 Motor: ' + (t ? 'se siguieron ' + s + ' de ' + t + ' propuestas (' + pc + '%) en 28 días' : 'midiendo desde hoy cuántas propuestas se siguen')
     + ' · para que el ERP lo haga solo: 90% durante 4 semanas' + (t ? ' (van ' + sem + ')' : '') + '</div>';
 }
+/* ══ 22-oct (Pablo: «en vez de Qué toca hoy, un resumen desplegable de los productos que he seleccionado») ══
+   Una fila por producto en foco (se abre con un clic): Prenda, Creativos, Anuncios y Escalar en simple.
+   Al final, DOS pedidos juntos: confección para Ana (una línea por PRENDA FÍSICA: el conjunto se pide como sus piezas y no se cuenta doble,
+   porque las ventas del conjunto ya descuentan cada pieza) y creativos para Heily. */
+function _escPiezaPedido(r, lead){
+  let kv = null; const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0);
+  if (W > 0) r.vs.forEach(v => { if ((typeof _escEsClave === 'function' ? _escEsClave(r.vs, v) : v.w / W >= 0.12) && v.rate > 0 && (!kv || v.dias < kv.dias)) kv = v; });
+  const kd = kv ? Math.max(0, kv.s > 0 ? kv.dias : 0) : 999, envD = Math.max(0, kd - lead - 7), env = _escMas(_escHoy(), envD);
+  return { kv, kd, envD, env, lleg: _escMas(env, lead) };
+}
+function _escResumenHtml(){
+  const F = escFilas(), L = _escFocoLista(F).L.filter(f => !f.vacio && f.lanes.some(l => !l.vacio));
+  const F0 = d => d.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
+  const emo = c => ({ rojo:'🔴', ama:'🟡', verde:'🟢' })[c] || '⚪', cnN = c => c === 'wa' ? 'WhatsApp' : 'Web';
+  const row = (t, a) => '<div class="esx-tar-i ' + ({ rojo:'rojo', ama:'amarillo', verde:'verde' }[a.col] || '') + '"><div class="esx-tar-t"><b>' + t + '</b><span>' + esc(a.sit || '') + '</span><span><b>' + esc(a.act || '') + '</b></span></div></div>';
+  const conf = {}, crea = [];
+  let h = '<div class="esx-tar"><div class="esx-tar-h"><b>📋 RESUMEN</b><span>' + _escPl(L.length, 'producto seleccionado', 'productos seleccionados') + ' · toca uno para ver el detalle</span></div>';
+  h += typeof _escMedHtml === 'function' ? _escMedHtml() : '';
+  if (!L.length) h += '<div class="esx-tar-v">Elige productos en foco para ver su resumen.</div>';
+  L.forEach(f => {
+    const lanes = f.lanes.filter(l => !l.vacio), st = lanes[0].niv.stock, aS = _escAccion(f, lanes[0], 'stock');
+    const chips = ['👚 Prenda ' + emo(st.col)].concat(lanes.map(l => cnN(l.canal) + ' ' + emo(l.niv.crea.col) + (l.listo ? ' 🚀' : '')));
+    let body = row('👚 Prenda · Ana', aS);
+    lanes.forEach(l => { const c = _escAccion(f, l, 'crea'), an = _escAccion(f, l, 'anun');
+      body += row('🎬 Creativos ' + cnN(l.canal) + ' · Heily', c) + row('📣 Anuncios ' + cnN(l.canal) + ' · Paola', an);
+      if (l.listo) body += row('🚀 Escalar ' + cnN(l.canal) + ' · Paola', _escAccion(f, l, 'esc'));
+      if (/^(Crear|Necesito)/.test(c.act)) crea.push({ n: f.nombre + ' · ' + cnN(l.canal), a: c.act }); });
+    h += '<details class="esx-tar-d" style="margin-top:6px"><summary><b>' + esc(f.nombre) + '</b> · ' + chips.join(' · ') + '</summary>' + body
+      + '<button class="esx-b" data-k="' + esc(f.k) + '" onclick="escIrA({ k: this.dataset.k })" style="margin:6px 0">VER EN EL FLUJO</button></details>';
+    if (st.cam || st.col === 'gris') return;
+    const ld = st.lead || _ep('esc_conf_dias');
+    (st.piezas || []).forEach(r => { const key = (r.n + ' ' + r.d).trim(); if (conf[key] || !(r.tot > 0)) return;
+      const P = _escPiezaPedido(r, ld); if (P.envD > _ep('esc_aviso')) return; conf[key] = { r, P, ld }; });
+  });
+  const C = Object.keys(conf).sort((a, b) => conf[a].P.envD - conf[b].P.envD);
+  h += '<div style="margin-top:10px"><b>🧵 Pedido de confección · Ana</b></div>'
+    + (C.length ? C.map(k => { const o = conf[k];
+        return '<div class="esx-tar-i ' + (o.P.envD === 0 ? 'rojo' : 'amarillo') + '"><div class="esx-tar-t"><b>' + esc(k.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase())) + ': ' + o.r.tot + ' prendas para el ' + F0(o.P.lleg) + '</b>'
+          + '<span>Mandar al taller ' + (o.P.envD === 0 ? 'HOY' : 'el ' + F0(o.P.env)) + ' (tarda ' + o.ld + ' días)' + esc(typeof _escLoteTxt === 'function' ? _escLoteTxt(o.r.lote) : '') + '</span></div></div>'; }).join('')
+      : '<div class="esx-tar-v">Nada que mandar al taller esta semana.</div>');
+  h += '<div style="margin-top:10px"><b>🎬 Pedido de creativos · Heily</b></div>'
+    + (crea.length ? crea.map(x => '<div class="esx-tar-i amarillo"><div class="esx-tar-t"><b>' + esc(x.n) + '</b><span>' + esc(x.a) + '</span></div></div>').join('')
+      : '<div class="esx-tar-v">No faltan creativos hoy.</div>');
+  return h + '</div>';
+}
 function _escTareasHtml(){
   /* 21-oct (Pablo) · UNA sola vista para todo el equipo (cada una ve lo de las demás y sabe si le toca) y SIN «✓ Hecho»:
      la tarea sale sola cuando los datos cambian (llega el stock, se sube el creativo, se crea el anuncio). Una sola fuente de verdad. */
@@ -7804,7 +7861,7 @@ function escPintar(cambio){
      + '<button class="esx-b" onclick="ESC_REGLAS=true;escPintar()">⚙ REGLAS</button>'
      + '</div>';   /* 19-oct · sin ⟳ propio: actualiza el 🔄 de arriba */
   if (ESC_ERR) h += '<div class="esx-err">' + esc(ESC_ERR) + '</div>';
-  try { h += _escTareasHtml(); } catch (e) { try { console.warn('[escTareas]', e); } catch (_) {} }   /* 21-oct · Mis tareas */
+  try { h += (typeof _escResumenHtml === 'function' ? _escResumenHtml() : _escTareasHtml()); } catch (e) { try { console.warn('[escTareas]', e); } catch (_) {} }   /* 21-oct · Mis tareas */
   const f = L.find(x => x.k === ESC_SEL);
   if (!f) h += '<div class="esx-load">ELIGE TUS PRODUCTOS EN FOCO (✦ ELEGIR)</div>';
   else if (f.vacio) h += '<div class="esx-load">' + esc(f.nombre) + ': SIN ANUNCIOS EN EL PERIODO</div>';
