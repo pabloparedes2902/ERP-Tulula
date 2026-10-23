@@ -7471,7 +7471,7 @@ function _escReceta(f){
 function _escPlazo(f){
   if (!f) f = _escHoy();
   const n = Math.round((f - _escHoy()) / 864e5), fe = f.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
-  return n < 0 ? 'para el ' + fe + ' (vencido hace ' + _escPl(-n, 'día', 'días') + ')' : n === 0 ? 'para hoy ' + fe : 'para el ' + fe + ' (' + _escPl(n, 'día', 'días') + ')';
+  return n < 0 ? 'para el ' + fe + ' (atrasado ' + _escPl(-n, 'día', 'días') + ')' : n === 0 ? 'para hoy ' + fe : 'para el ' + fe + ' (' + _escPl(n, 'día', 'días') + ')';
 }
 const _escMas = (d, n) => d ? new Date(d.getTime() + n * 864e5) : null;
 /* nombre corto de un anuncio: código · hook / ángulo */
@@ -7498,17 +7498,30 @@ function _escAccion(f, ln, x){
       const lleg = !fv ? '' : fv < hoy0 ? ' · ya debía estar a la venta (' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + '): preguntar a Ana' : ' · a la venta el ' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');   /* 21-oct · fecha pasada = atraso, no promesa */
       return { sit:llT + (n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', q:ESC_RESP.stock, col, lote:null };
     }
-    const ld = n.lead || _ep('esc_conf_dias'), ped = (fe, cu) => 'Necesito ' + lote + ' prendas de ' + f.nombre + ' para el ' + fe.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + ' (mandar al taller ' + cu + ', tarda ' + ld + ' días)' + (typeof _escLoteTxt === 'function' ? _escLoteTxt(n.lote) : '');   /* 22-oct (Pablo) · pedido simple: cuántas, de qué colores y tallas, para cuándo */
-    if (n.col === 'rojo') return { sit:llT + 'Stock crítico · ' + dsC + agT + fa, act: ped(_escMas(_escHoy(), ld), 'hoy'), q:ESC_RESP.stock, col, lote:n };
-    if (n.col === 'ama') return { sit:llT + 'Stock bajo · ' + dsC + agT + fa, act: ped(_escMas(n.repo || _escHoy(), ld), cuando ? cuando.replace(/^para /, '') : 'hoy'), q:ESC_RESP.stock, col, lote:n };
-    return { sit: llT + dsC.charAt(0).toUpperCase() + dsC.slice(1) + fa, act: avisa ? 'Mandar a confeccionar ' + d(n.ant) + ' (' + lote + ' prendas)' : 'Ninguna por ahora: stock en verde', q:ESC_RESP.stock, col, lote: avisa ? n : null };
+    /* 22-oct (Pablo: «43 días… ¿nos quedamos sin ninguna prenda o empezamos a quedarnos sin tallas?») · EN SIMPLE:
+       «días de stock» = lo que dura TODO el stock al ritmo de venta de los últimos 28 días (todos los canales: WhatsApp, web, Live…; si vende más, se recalcula solo).
+       Pero lo que manda es la PRIMERA talla que más se vende en acabarse. Como hacen los referentes: se manda al taller cuando a esa talla
+       le quedan (días de confección de esta prenda + 7 de colchón). Llegada = envío + días de confección. */
+    const ld = n.lead || _ep('esc_conf_dias'), F0 = x => x.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
+    let kv = null; (n.piezas || []).forEach(r => { const W = (r.vs || []).reduce((a, v) => a + (v.w || 0), 0); if (!(W > 0)) return;
+      r.vs.forEach(v => { if (v.w / W >= 0.12 && v.rate > 0 && (!kv || v.dias < kv.dias)) kv = v; }); });
+    const kd = kv ? Math.max(0, kv.s > 0 ? kv.dias : 0) : (n.dias >= 999 ? 999 : n.dias);
+    const envD = Math.max(0, kd - ld - 7), env = _escMas(_escHoy(), envD), lleg = _escMas(env, ld);
+    const primera = kv ? ' · se acaba primero: ' + _escTxtCT(kv.c, kv.t) + (kv.s > 0 ? ' en ' + _escPl(kv.dias, 'día', 'días') : ' (ya agotada)') : '';
+    const sitS = (n.dias >= 999 ? 'Sin ventas recientes' : _escPl(n.dias, 'día', 'días') + ' de stock en total') + primera
+      + (ag ? ' · ' + _escPl(ag, 'talla agotada', 'tallas agotadas') : '')
+      + (n.fant ? ' · ' + n.fant + ' toques en tallas agotadas en la web (últimos ' + _ep('esc_fant_dias') + ' días)' : '');
+    const pedS = 'Reponer ' + lote + ' prendas para el ' + F0(lleg) + ': mandar al taller ' + (envD === 0 ? 'HOY' : 'el ' + F0(env)) + ' (tarda ' + ld + ' días)' + (typeof _escLoteTxt === 'function' ? _escLoteTxt(n.lote) : '');
+    if (n.col === 'rojo' || n.col === 'ama' || envD <= _ep('esc_aviso'))
+      return { sit: llT + sitS, act: pedS, q:ESC_RESP.stock, col, lote:n };
+    return { sit: llT + sitS, act: 'No reponer todavía. El ' + F0(env) + ' hay que mandar al taller', q:ESC_RESP.stock, col, lote:null };
   }
   if (x === 'crea'){
     const g = ln.niv.gana.g, tot = n.act + n.banco;
     let falta = Math.max(0, _ep('esc_crea_verde') - tot);
     if (!g) falta = Math.max(falta, 3);   /* sin ganador: probar mínimo 3 nuevos (pedido de Pablo: «si tienes 2 y ninguno gana, crea 2 o 3 más») */
     const base = _escPl(n.act, 'corriendo', 'corriendo') + ' · ' + (n.venden || 0) + ' ' + ((n.venden || 0) === 1 ? 'vende' : 'venden') + (n.banco ? ' · ' + _escPl(n.banco, 'listo', 'listos') : '') + (n.compartidos && !n.propios && n.banco ? ' (sin canal asignado)' : '') + (n.cansado ? ' · ' + _escPl(n.cansado, 'cansado', 'cansados') : '');
-    const crear = 'Necesito ' + _escPl(falta, 'creativo nuevo', 'creativos nuevos') + (f.nombre ? ' de ' + f.nombre : ''), rec = typeof _escReceta === 'function' ? _escReceta(f) : '';   /* 22-oct (Pablo) · pedido simple: cuántos, de qué, con qué ángulos y contextos, para cuándo */
+    const crear = 'Crear ' + _escPl(falta, 'creativo nuevo', 'creativos nuevos') + (f.nombre ? ' de ' + f.nombre : ''), rec = typeof _escReceta === 'function' ? _escReceta(f) : '';   /* 22-oct (Pablo) · pedido simple: cuántos, de qué, con qué ángulos y contextos, para cuándo */
     /* plazo para CREAR: si hay corriendo, cuando se acaba la prueba del más nuevo; si no queda ninguno, 2 días desde que se apagó el último */
     /* 19-oct v8 · faltan creativos (rojo/amarillo): el plazo corre desde que se APAGÓ el último (+2 d); si nunca se apagó ninguno, desde hoy.
        Sobran pero ninguno gana (verde): cuando termina la prueba de 7 d del más nuevo. */
@@ -7517,8 +7530,8 @@ function _escAccion(f, ln, x){
     /* 20-oct (Fase 3·2) · dice CUÁL anuncio se cansa, para cuándo y por qué */
     const renTxt = c0 ? 'renovar «' + (typeof _escAdLab === 'function' ? _escAdLab(c0.r) : '') + '» ' + _escPlazo(c0.fecha) + ' (' + c0.motivo + ')' + (n.cansan.length > 1 ? ' y ' + (n.cansan.length - 1) + ' más' : '')
                       : 'renovar ' + _escPl(ren, 'creativo', 'creativos') + ' ' + _escPlazo(n.vence);   /* plazo para RENOVAR = día en que se cansa el primero */
-    if (n.col === 'rojo') return { sit:'Creativo crítico · ' + base, act: crear + ' ' + pCrear + rec + (g ? '' : ', con ángulos distintos'), q:ESC_RESP.crea, col };
-    if (n.col === 'ama') return { sit:'Creativo requerido · ' + base, act: crear + ' ' + pCrear + rec + (g ? (n.vence ? '; ' + renTxt : '') : ': ninguno es ganador todavía'), q:ESC_RESP.crea, col };
+    if (n.col === 'rojo') return { sit:(n.venden || 0) + ' de ' + n.act + ' creativos venden · ' + base, act: crear + ' ' + pCrear + rec + (g ? '' : ', con ángulos distintos'), q:ESC_RESP.crea, col };
+    if (n.col === 'ama') return { sit:(n.venden || 0) + ' de ' + n.act + ' creativos venden · ' + base, act: crear + ' ' + pCrear + rec + (g ? (n.vence ? '; ' + renTxt : '') : ': ninguno es ganador todavía'), q:ESC_RESP.crea, col };
     if (!g) return { sit:'Creativos suficientes · ' + base + ' · ninguno ganador', act: crear + ' ' + pCrear + rec + ', con hooks y ángulos distintos', q:ESC_RESP.crea, col };
     const dv = typeof _escDiv === 'function' ? _escDiv(f) : { falta:0 };   /* 22-oct · fase 6: faltan ideas distintas */
     if (dv.falta && !(avisa || (n.cansan || []).length)) return { sit:'Creativos OK · ' + base + ' · ' + dv.ideas + ' de ' + dv.meta + ' ideas distintas', act:'Necesito ' + _escPl(dv.falta, 'idea distinta', 'ideas distintas') + (f.nombre ? ' de ' + f.nombre : '') + ' ' + pCrear + (dv.sug ? ': ' + dv.sug : '') + '. No: el mismo video con otro texto', q:ESC_RESP.crea, col, div:true };
@@ -7528,10 +7541,10 @@ function _escAccion(f, ln, x){
     /* 21-oct (Pablo) · textos mínimos: qué pasa · hacer · no hacer */
     const C = n.crea, G = n.gana, fCrear = _escPlazo(C.col === 'verde' ? _escMas(C.nuevo, _ep('esc_prueba')) : _escMas(C.ultApag || C.ultGasto || _escHoy(), _ep('esc_plazo_crea')));
     const c0 = (C.cansan || [])[0], ren = c0 ? 'Renovar «' + _escAdLab(c0.r) + '» ' + _escPlazo(c0.fecha) + ' (' + c0.motivo + ')' : '';
-    if (n.col === 'rojo') return { sit: n.ven + ' de ' + C.act + ' venden · faltan ideas', act:'Heily: 3 ideas distintas ' + fCrear + '. No: copias del mismo video', q:'Heily', col:n.col };
+    if (n.col === 'rojo') return { sit: n.ven + ' de ' + C.act + ' anuncios venden', act:'Crear 3 creativos nuevos y distintos entre sí ' + fCrear + ' (no vale el mismo video con otro texto)', q:'Heily', col:n.col };
     if (n.col === 'ama'){
       const cand = (ln.filas || []).filter(r => r._on && (motorDecidir(r) || {}).a === 'MANTENER')[0];
-      return { sit: C.act + ' corren · 0 venden', act:'Paola: apagar los que no venden. Heily: 2 ideas nuevas ' + fCrear + (cand ? '. Candidato: «' + _escAdLab(cand) + '»' : ''), q:'Paola · Heily', col:n.col };
+      return { sit: C.act + ' anuncios prendidos y ninguno vende', act:'Paola: apagar los que no venden. Heily: crear 2 creativos nuevos ' + fCrear + (cand ? '. El que más promete: «' + _escAdLab(cand) + '»' : ''), q:'Paola · Heily', col:n.col };
     }
     return { sit: n.ven + ' de ' + C.act + ' venden' + (C.cansado ? ' · ' + _escPl(C.cansado, 'cansado', 'cansados') : ''), act: (ren ? ren + '. ' : '') + 'Heily: 1 idea nueva por semana para el próximo ganador', q:'Heily', col:n.col };
   }
@@ -7698,7 +7711,7 @@ function escTareasLista(){
   /* listo para escalar también es tarea (de Paola) */
   _escFocoLista(escFilas()).L.forEach(f => { if (f.vacio) return; f.lanes.forEach(ln => { if (ln.vacio || !ln.listo) return;
     const A = _escAccion(f, ln, 'esc'); L.push({ k:f.k, nombre:f.nombre, canal:ln.canal, lane:ln.canal, etapa:'esc', nivel:'verde', corte:false, sit:A.sit, act:A.act, q:A.q }); }); });
-  return L.map(x => Object.assign(x, { clave: _escTareaClave(x), vencida: /vencido/.test(x.act) }));
+  return L.map(x => Object.assign(x, { clave: _escTareaClave(x), vencida: /atrasado|vencido/.test(x.act) }));
 }
 const ESC_ETAPA_TXT = { stock:'👚 Prenda', crea:'🎬 Creativos', gana:'🏅 Ganadores', anun:'🎬 Anuncios', esc:'🚀 Escalar' };
 const ESC_NIV_EMO = { rojo:'🔴', naranja:'🟠', amarillo:'🟡', verde:'🟢' };
