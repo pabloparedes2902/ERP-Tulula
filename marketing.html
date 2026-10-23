@@ -2782,6 +2782,27 @@ function _mkSnapUsar(k){
 const MK_SB_URL  = 'https://vlilvrxfppppzwyaeviu.supabase.co';
 const MK_SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsaWx2cnhmcHBwcHp3eWFldml1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2NDIwMTMsImV4cCI6MjEwMDIxODAxM30.Bmo4CNDDbSF7Vp9JpDm7ceKUlsKKdufKcKFDIGHS4Hs';
 const MK_CACHE_MAX_MS = 20 * 60 * 1000;
+/* 22-oct (fase 7) · quién apretó el botón (antes decía siempre «Pablo»): el correo del que entró al ERP */
+function _mkYo(){ try { const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null'); const p = JSON.parse(atob(String(t.access_token).split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); return p.email || 'ERP'; } catch (_) { return 'ERP'; } }
+/* 22-oct (Pablo, fase 7 paso A→B) · MEDIR cuántas propuestas del motor se siguen.
+   1) Guarda lo que el motor propone (ESCALAR / APAGAR / ENCENDER) como mucho cada 3 h. 2) Cada clic de Meta hecho desde el ERP queda anotado.
+   La base cuenta «seguidas» (rpc mk_propuestas_medir). Meta para que el ERP lo haga solo: 90% durante 4 semanas. */
+async function _mkRpc(fn, body){
+  const tok = _mkSbTok(); if (!tok) return null;
+  const r = await fetch(MK_SB_URL + '/rest/v1/rpc/' + fn, { method:'POST', headers:{ apikey: MK_SB_ANON, Authorization:'Bearer ' + tok, 'Content-Type':'application/json' }, body: JSON.stringify(body || {}) });
+  return r.ok ? r.json() : null;
+}
+function mkPropGuardar(){
+  try {
+    if (!MK || !MK.filas || typeof mkAccionFinal !== 'function') return;
+    let u = 0; try { u = +localStorage.getItem('mk_prop_ts') || 0; } catch (_) {}
+    if (Date.now() - u < 3 * 3600e3) return;
+    const L = MK.filas.map(r => { const d = mkAccionFinal(r) || {}; return { ad_id: String(r.ad_id || ''), accion: d.a, nombre: r.anuncio || '', motivo: d.por || '', prendido: !!r._on }; })
+      .filter(x => x.ad_id && ['ESCALAR', 'APAGAR', 'ENCENDER'].includes(x.accion));
+    _mkRpc('mk_propuestas_guardar', { p_items: L }).then(r => { if (r && r.ok) try { localStorage.setItem('mk_prop_ts', String(Date.now())); } catch (_) {} }).catch(() => {});
+  } catch (_) {}
+}
+function mkAccionAnotar(adId, accion, soles, ok){ try { _mkRpc('mk_accion_registrar', { p_ad_id: String(adId), p_accion: accion, p_soles: soles || null, p_ok: !!ok }).catch(() => {}); } catch (_) {} }
 function _mkSbTok(){
   try {
     const t = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
@@ -2887,6 +2908,7 @@ async function mkCargar(refrescarMeta){
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar(); if (MKSUB === 'reglas') rgPintar(); if (MKSUB === 'escala' && typeof escPintar === 'function') escPintar();
     if (typeof escAlertaPublicar === 'function') escAlertaPublicar();   /* 20-oct · tarjeta de Alertas */
+    setTimeout(mkPropGuardar, 4000);   /* 22-oct · fase 7: medir propuestas del motor */
     _mkSnapGuardar(_snapK);
     if (_snapTs && refrescarMeta !== true) sub.style.display = 'none';
     /* 30-set-2026 · PINTAR PRIMERO, REFRESCAR DESPUES. Antes la tabla esperaba
@@ -4464,7 +4486,7 @@ async function mkAccConsultarPresupuesto(nivelPedido){
         accion: 'PRESUPUESTO',
         presupuesto: 1,
         nombre: MKACC.fila.anuncio || '',
-        quien: 'Pablo'
+        quien: _mkYo()
       })
     }).then(x => x.json());
     if (miReq !== mkAccPresReqId || !MKACC) return;   /* llegó tarde o ya se cerró el modal */
@@ -5848,7 +5870,7 @@ async function mkDupCrear(){
   let d;
   try {
     const r = await fetch(URL_ANUNCIO_CREAR, { method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ modo: 'duplicar', ad_origen: String(o.ad_id), ad_ref: c.ad, conjunto: conjunto, nombre: nombre, quien: 'Pablo' }) });
+      body: JSON.stringify({ modo: 'duplicar', ad_origen: String(o.ad_id), ad_ref: c.ad, conjunto: conjunto, nombre: nombre, quien: _mkYo() }) });
     d = await r.json(); if (Array.isArray(d)) d = d[0] || {};
   } catch (e) { d = { ok: false, motivo: 'No hubo respuesta del servidor. No se creó nada.' }; }
   if (!(d.ok === true || d.ok === 'true')){ res.innerHTML = '<span class="mal">✕ ' + esc(d.motivo || 'No se pudo.') + '</span>'; ok.disabled = false; return; }
@@ -5892,7 +5914,7 @@ function _mkEscLeerDeshacer(){ try { return JSON.parse(localStorage.getItem('mkE
 function _mkEscGuardarDeshacer(o){ try { localStorage.setItem('mkEscDeshacer', JSON.stringify(o)); } catch (e) {} }
 async function _mkEscLeerMeta(adId, nivel){
   const r = await fetch(URL_META_PRESUPUESTO, { method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ nivel: nivel, id: String(adId), accion: 'PRESUPUESTO', presupuesto: 1, nombre: '', quien: 'Pablo' }) }).then(x => x.json());
+    body: JSON.stringify({ nivel: nivel, id: String(adId), accion: 'PRESUPUESTO', presupuesto: 1, nombre: '', quien: _mkYo() }) }).then(x => x.json());
   return Array.isArray(r) ? (r[0] || {}) : (r || {});
 }
 async function mkEscAbrir(adId, nivel, desdeGrupo){
@@ -5966,13 +5988,14 @@ async function mkEscHacer(montoDeshacer){
     const r = await fetch(URL_META_ACCION, { method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ nivel: MKESC.nivel, id: MKESC.adId, accion: 'PRESUPUESTO', presupuesto: monto,
                              tipo: deshacer ? 'DESHACER' : (MKESC_SENTIDO === 1 ? 'ESCALAR' : 'BAJAR'), pct: deshacer ? 0 : MKESC_SENTIDO * pct,
-                             nombre: MKESC.nombre, quien: 'Pablo' }) }).then(x => x.json());
+                             nombre: MKESC.nombre, quien: _mkYo() }) }).then(x => x.json());
     d = Array.isArray(r) ? (r[0] || {}) : (r || {});
   } catch (e) { d = { ok: false, mensaje: 'No hubo respuesta del servidor. No se cambió nada en Meta.' }; }
   if (!(d.ok === true || d.ok === 'true')){
     res.innerHTML = '<span class="mal">✕ ' + esc(d.mensaje || d.motivo || 'No se pudo.') + '</span>';
     ok.disabled = false; return;
   }
+  if (!deshacer && MKESC_SENTIDO === 1) mkAccionAnotar(MKESC.adId, 'PRESUPUESTO', monto, true);   /* 22-oct · fase 7 */
   /* verificacion: se vuelve a leer Meta y recien ahi se dice "listo" */
   res.innerHTML = '<span class="esp">Meta aceptó. Verificando el monto nuevo…</span>';
   let v = null;
@@ -6014,10 +6037,11 @@ async function mkAccHacer(accion){
         accion: accion,
         presupuesto: soles,
         nombre: MKACC.fila.anuncio || '',
-        quien: 'Pablo'
+        quien: _mkYo()
       })
     }).then(x => x.json());
     const d = Array.isArray(r) ? (r[0] || {}) : r;
+    mkAccionAnotar(MKACC.adId, accion, soles, d.ok === true || d.ok === 'true');   /* 22-oct · fase 7 */
     if (d.ok === true || d.ok === 'true'){
       res.innerHTML = '<span class="bien">✓ ' + esc(d.mensaje || 'Listo.') + '</span>';
       /* solo el estado del anuncio se refleja al toque; conjunto y campana
@@ -7071,6 +7095,7 @@ const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo
                   esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
+let ESC_MED = null;   /* 22-oct · fase 7: {total, seguidas, por_accion} de mk_propuestas_medir */
 let ESC_LLEGO = {};   /* 21-oct (Pablo) · { 'blazer mirella': { n, fecha, colores } } — lo que Producción ingresó al stock en los últimos días (prod_llego_stock) */
 let ESC_CAMINO = {};   /* 21-oct · 🧵 Producción F1b: { 'BLAZER MIRELLA': { n, fecha, ordenes } } desde prod_en_camino */
 let ESC_FOCO = null, ESC_SEL = null, ESC_NODO = null, ESC_PICK = false, ESC_PICKSEL = null, ESC_REGLAS = false, ESC_DUENO = null;
@@ -7099,7 +7124,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8, r9] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -7108,7 +7133,8 @@ async function escCargar(forzar){
       _escWebCargar(),
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 21-oct · 🧵 Producción F1b */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_llego_stock', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 21-oct · 📦 llegó stock nuevo de Producción */
-      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_dias', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 22-oct · días de confección por prenda */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_dias', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 22-oct · días de confección por prenda */
+      fetch(MK_SB_URL + '/rest/v1/rpc/mk_propuestas_medir', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: 28 }) }).catch(() => null)   /* 22-oct · fase 7 */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -7117,6 +7143,7 @@ async function escCargar(forzar){
     ESC_FOCO = r4.ok ? (await r4.json()).map(x => x.clave) : [];
     ESC_FANT = (r5 && r5.ok) ? await r5.json() : []; ESC_FANT_IDX = null;   /* si la rpc falla, Escalamiento sigue igual que antes (sin fantasma) */
     if (!Array.isArray(ESC_FANT)) ESC_FANT = [];
+    ESC_MED = null; try { if (r10 && r10.ok) ESC_MED = await r10.json(); } catch (_) {}
     ESC_LEAD = {}; try { if (r9 && r9.ok) ((await r9.json()) || []).forEach(x => { ESC_LEAD[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_LLEGO = {}; try { if (r8 && r8.ok) ((await r8.json()) || []).forEach(x => { ESC_LLEGO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_CAMINO = {}; try { if (r7 && r7.ok) ((await r7.json()) || []).forEach(x => { ESC_CAMINO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}   /* 21-oct · 🧵 lo que ya está en confección */
@@ -7675,6 +7702,15 @@ function escTareasLista(){
 }
 const ESC_ETAPA_TXT = { stock:'👚 Prenda', crea:'🎬 Creativos', gana:'🏅 Ganadores', anun:'🎬 Anuncios', esc:'🚀 Escalar' };
 const ESC_NIV_EMO = { rojo:'🔴', naranja:'🟠', amarillo:'🟡', verde:'🟢' };
+/* 22-oct (fase 7) · una línea simple: cuánto se sigue al motor. Con 90% durante 4 semanas, el ERP puede empezar a hacerlo solo (fase C). */
+function _escMedHtml(){
+  const m = typeof ESC_MED === 'object' && ESC_MED ? ESC_MED : null;
+  if (!m) return '';
+  const t = +m.total || 0, s = +m.seguidas || 0, pc = t ? Math.round(s / t * 100) : null;
+  const sem = m.desde ? Math.floor((Date.now() - new Date(m.desde + 'T00:00:00').getTime()) / (7 * 864e5)) : 0;
+  return '<div class="esx-tar-m" style="font-size:11.5px;opacity:.85;margin:2px 0 6px">🤖 Motor: ' + (t ? 'se siguieron ' + s + ' de ' + t + ' propuestas (' + pc + '%) en 28 días' : 'midiendo desde hoy cuántas propuestas se siguen')
+    + ' · para que el ERP lo haga solo: 90% durante 4 semanas' + (t ? ' (van ' + sem + ')' : '') + '</div>';
+}
 function _escTareasHtml(){
   /* 21-oct (Pablo) · UNA sola vista para todo el equipo (cada una ve lo de las demás y sabe si le toca) y SIN «✓ Hecho»:
      la tarea sale sola cuando los datos cambian (llega el stock, se sube el creativo, se crea el anuncio). Una sola fuente de verdad. */
@@ -7684,6 +7720,7 @@ function _escTareasHtml(){
   let h = '<div class="esx-tar"><div class="esx-tar-h"><b>QUÉ TOCA HOY</b><span>' + pend.length + ' pendiente' + (pend.length === 1 ? '' : 's')
     + (venc ? ' · <em>' + venc + ' vencida' + (venc === 1 ? '' : 's') + '</em>' : '') + '</span>'
     + '<span class="esx-tar-por">' + Object.keys(por).map(p => esc(p) + ' ' + por[p]).join(' · ') + '</span></div>';
+  h += typeof _escMedHtml === 'function' ? _escMedHtml() : '';   /* 22-oct · fase 7 */
   if (!pend.length) h += '<div class="esx-tar-v">Nada pendiente. 👌</div>';
   const fila = x => { const i = todas.indexOf(x);
     return '<div class="esx-tar-i ' + x.nivel + (x.vencida ? ' venc' : '') + '"><span class="esx-tar-e">' + (ESC_NIV_EMO[x.nivel] || '') + '</span>'
