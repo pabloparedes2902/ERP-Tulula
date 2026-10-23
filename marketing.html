@@ -7068,7 +7068,7 @@ const ESC_CSS = ".esx{position:relative;border-radius:18px;padding:16px 18px 18p
    - Reglas (rojo / amarillo / verde) editables en ⚙ REGLAS (public.mk_motor_param, claves esc_*).
    Fuentes: stock = rpc mk_escalamiento_stock · ganador = motor de 📏 Reglas (ESCALAR) · foco = public.mk_escala_foco. */
 const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:70, esc_cub_verde:90, esc_dias_rojo:17, esc_dias_verde:31,
-                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
+                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3 };   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_LLEGO = {};   /* 21-oct (Pablo) · { 'blazer mirella': { n, fecha, colores } } — lo que Producción ingresó al stock en los últimos días (prod_llego_stock) */
@@ -7415,15 +7415,30 @@ function _escHoy(){ const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
 /* 22-oct (Pablo: «necesito X videos de estos productos con estos ángulos, con estos contextos creativos, para tal fecha») ·
    los ángulos y contextos que más VENDEN en este producto (partes del nombre del anuncio, como en 🏆 Qué funciona);
    si el producto todavía no tiene ventas por anuncio, los que más venden en toda la tienda. Además: cuántas ideas distintas corren hoy. */
+/* 22-oct (Pablo, fase 6) · DIVERSIDAD: Meta (Andromeda) junta los anuncios que se ven parecidos y los reparte como uno solo.
+   Idea distinta = otra combinación de ángulo + contexto creativo + talento (cambiar solo el hook o el texto NO cuenta).
+   Meta por producto: esc_div_meta (3). Si faltan, sugiere un ángulo y un contexto que venden en la tienda y que este producto NO usa hoy. */
+function _escDiv(f){
+  const meta = _ep('esc_div_meta'), on = (f.filas || []).filter(r => r._on), P = on.map(r => _qfPartes(r)).filter(Boolean);
+  const ideas = new Set(P.map(p => [3, 4, 7].map(i => _qfClave(p[i])).join('|'))).size, falta = on.length ? Math.max(0, meta - ideas) : 0;
+  let sug = '';
+  if (falta && MK && MK.filas){
+    const usa = i => new Set(P.map(p => _qfClave(p[i])));
+    const mejor = (i, no) => _qfAgrupar(MK.filas, i).filter(x => x.k !== '(vacío)' && (+x.pedidos || 0) > 0 && !no.has(x.k) && !/^(sin|ning|n\/a|-)/.test(x.k)).sort((a, b) => (b.pedidos - a.pedidos) || (b.ingreso - a.ingreso))[0];
+    const a = mejor(3, usa(3)), c = mejor(4, usa(4)), t = mejor(7, usa(7));
+    sug = [a ? 'ángulo «' + a.label + '»' : '', c ? 'contexto «' + c.label + '»' : '', t ? 'talento «' + t.label + '»' : ''].filter(Boolean).join(' + ') + (a || c || t ? ' (no corren hoy en este producto)' : '');
+  }
+  return { meta, on: on.length, ideas, falta, sug };
+}
 function _escReceta(f){
   try {
     const top = (filas, idx, n) => _qfAgrupar(filas, idx).filter(x => x.k !== '(vacío)' && (+x.pedidos || 0) > 0)
       .sort((a, b) => (b.pedidos - a.pedidos) || (b.ingreso - a.ingreso)).slice(0, n).map(x => '«' + x.label + '»');
     let A = top(f.filas || [], 3, 2), C = top(f.filas || [], 4, 1), de = '';
     if (!A.length && MK && MK.filas){ A = top(MK.filas, 3, 2); C = top(MK.filas, 4, 1); de = ' (lo que más vende en la tienda)'; }
-    const on = (f.filas || []).filter(r => r._on), ideas = new Set(on.map(r => { const p = _qfPartes(r); return p ? [3, 4, 7].map(i => _qfClave(p[i])).join('|') : null; }).filter(Boolean)).size;
+    const dv = _escDiv(f);
     return (A.length ? ': ángulo' + (A.length > 1 ? 's ' : ' ') + A.join(' y ') : '') + (C.length ? ', contexto ' + C[0] : '') + (A.length || C.length ? de : '')
-      + (on.length ? ' · hoy corren ' + _escPl(ideas, 'idea distinta', 'ideas distintas') + ' (ángulo + contexto + talento)' : '');
+      + (dv.on ? ' · hoy corren ' + dv.ideas + ' de ' + dv.meta + ' ideas distintas' + (dv.falta && dv.sug ? '; para variar: ' + dv.sug : '') : '');
   } catch (_) { return ''; }
 }
 function _escPlazo(f){
@@ -7478,6 +7493,8 @@ function _escAccion(f, ln, x){
     if (n.col === 'rojo') return { sit:'Creativo crítico · ' + base, act: crear + ' ' + pCrear + rec + (g ? '' : ', con ángulos distintos'), q:ESC_RESP.crea, col };
     if (n.col === 'ama') return { sit:'Creativo requerido · ' + base, act: crear + ' ' + pCrear + rec + (g ? (n.vence ? '; ' + renTxt : '') : ': ninguno es ganador todavía'), q:ESC_RESP.crea, col };
     if (!g) return { sit:'Creativos suficientes · ' + base + ' · ninguno ganador', act: crear + ' ' + pCrear + rec + ', con hooks y ángulos distintos', q:ESC_RESP.crea, col };
+    const dv = typeof _escDiv === 'function' ? _escDiv(f) : { falta:0 };   /* 22-oct · fase 6: faltan ideas distintas */
+    if (dv.falta && !(avisa || (n.cansan || []).length)) return { sit:'Creativos OK · ' + base + ' · ' + dv.ideas + ' de ' + dv.meta + ' ideas distintas', act:'Necesito ' + _escPl(dv.falta, 'idea distinta', 'ideas distintas') + (f.nombre ? ' de ' + f.nombre : '') + ' ' + pCrear + (dv.sug ? ': ' + dv.sug : '') + '. No: el mismo video con otro texto', q:ESC_RESP.crea, col, div:true };
     return { sit:'Creativos OK · ' + base, act: (avisa || (n.cansan || []).length) ? renTxt.charAt(0).toUpperCase() + renTxt.slice(1) + ', antes de que se cansen' : 'Ninguna por ahora', q:ESC_RESP.crea, col };
   }
   if (x === 'anun'){
@@ -7596,7 +7613,8 @@ function escAlertaItems(){
         const n = ln.niv[x]; if (!n) return;
         let nivel = n.col === 'rojo' ? 'rojo' : n.col === 'ama' ? 'amarillo' : (n.col === 'gris' && x === 'stock') ? 'naranja' : null;
         if (!nivel && n.ant != null && n.ant <= _ep('esc_aviso')) nivel = 'amarillo';
-        if (!nivel && x === 'anun' && (n.crea.cansan || []).length) nivel = 'amarillo';   /* 20-oct (Fase 3·2) · un anuncio se cansa pronto */
+        if (!nivel && x === 'anun' && (n.crea.cansan || []).length) nivel = 'amarillo';
+        if (!nivel && x === 'crea' && typeof _escDiv === 'function' && _escDiv(f).falta) nivel = 'amarillo';   /* 22-oct · fase 6: faltan ideas distintas */   /* 20-oct (Fase 3·2) · un anuncio se cansa pronto */
         if (!nivel) return;
         if (x === 'stock'){ if (stockVisto) return; stockVisto = true; }   /* el stock es uno solo para los dos canales */
         const A = _escAccion(f, ln, x);
