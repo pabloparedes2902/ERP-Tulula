@@ -7094,10 +7094,11 @@ const ESC_CSS = ".esx{position:relative;border-radius:18px;padding:16px 18px 18p
    - Reglas (rojo / amarillo / verde) editables en ⚙ REGLAS (public.mk_motor_param, claves esc_*).
    Fuentes: stock = rpc mk_escalamiento_stock · ganador = motor de 📏 Reglas (ESCALAR) · foco = public.mk_escala_foco. */
 const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:90, esc_cub_verde:95, esc_dias_rojo:17, esc_dias_verde:31,
-                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3, esc_cubre_pct:80, esc_pasos_dias:6, esc_col_min_pct:5, esc_col_dias_max:90 };   /* 24-oct · semáforo por DISPONIBILIDAD 95/90 (referentes) y sugerir ✕ a colores con <5% de las ventas que no rotan */   /* 24-oct · días fuera del taller hasta estar a la venta: tela 3 + entrega 1 + calidad 2 (igual que 🧵 Producción) */   /* 23-oct (Pablo: 70% es poco) · se escala solo si el stock cubre el 80% de lo que se vende de tallas clave hasta reponer */   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
+                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3, esc_cubre_pct:80, esc_pasos_dias:6, esc_col_min_pct:5, esc_col_dias_max:90, esc_st_rapido:50, esc_st_lento:20, esc_liq_vig:90, esc_liq_dias:180 };   /* 24-oct · lectura de pedidos nuevos y 📉 liquidar */   /* 24-oct · semáforo por DISPONIBILIDAD 95/90 (referentes) y sugerir ✕ a colores con <5% de las ventas que no rotan */   /* 24-oct · días fuera del taller hasta estar a la venta: tela 3 + entrega 1 + calidad 2 (igual que 🧵 Producción) */   /* 23-oct (Pablo: 70% es poco) · se escala solo si el stock cubre el 80% de lo que se vende de tallas clave hasta reponer */   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
+let ESC_LECT = {};   /* 24-oct · {'blazer mirella': {codigo, llego, recibidas, dias, vendidas, stock, st}} lectura del último pedido que llegó */
 let ESC_LREAL = null;   /* 24-oct · {por_prenda:{'BLAZER MIRELLA':{dias,n}}, tienda:{dias,n}} duración real pedido → a la venta */
 let ESC_NOREP = {};   /* 23-oct · {'pantalon mirella|rojo': {color_txt, quien}} colores que NO se reponen (botón ✕ del cuadro) */
 let ESC_MED = null;   /* 22-oct · fase 7: {total, seguidas, por_accion} de mk_propuestas_medir */
@@ -7129,7 +7130,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13, r14] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -7142,7 +7143,8 @@ async function escCargar(forzar){
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_propuestas_medir', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: 28 }) }).catch(() => null),   /* 22-oct · fase 7 */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino_detalle', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 23-oct · en confección por color y talla */
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_no_reponer_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 23-oct · colores que no se reponen */
-      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_real', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 24-oct · duración real de los pedidos */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_real', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · duración real de los pedidos */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lectura', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 24-oct · lectura de cada pedido nuevo */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -7154,6 +7156,7 @@ async function escCargar(forzar){
     ESC_CAMDET = {}; try { if (r11 && r11.ok) ((await r11.json()) || []).forEach(x => { ESC_CAMDET[_mkNorm(x.diseno).trim() + '|' + _mkNorm(x.color).trim() + '|' + String(x.talla).toUpperCase().trim()] = +x.n || 0; }); } catch (_) {}
     ESC_MED = null; try { if (r10 && r10.ok) ESC_MED = await r10.json(); } catch (_) {}
     ESC_NOREP = {}; try { if (r12 && r12.ok){ const L = await r12.json(); if (Array.isArray(L)) L.forEach(x => { ESC_NOREP[x.prenda + '|' + x.color] = x; }); } } catch (_) {}
+    ESC_LECT = {}; try { if (r14 && r14.ok){ const L = await r14.json(); if (Array.isArray(L)) L.forEach(x => { ESC_LECT[_mkNorm(x.diseno).trim()] = x; }); } } catch (_) {}
     ESC_LREAL = null; try { if (r13 && r13.ok) ESC_LREAL = await r13.json(); } catch (_) {}
     ESC_LEAD = {}; try { if (r9 && r9.ok) ((await r9.json()) || []).forEach(x => { ESC_LEAD[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_LLEGO = {}; try { if (r8 && r8.ok) ((await r8.json()) || []).forEach(x => { ESC_LLEGO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
@@ -7961,7 +7964,7 @@ function escPintar(cambio){
      + '<button class="esx-b" onclick="ESC_REGLAS=true;escPintar()">⚙ REGLAS</button>'
      + '</div>';   /* 19-oct · sin ⟳ propio: actualiza el 🔄 de arriba */
   if (ESC_ERR) h += '<div class="esx-err">' + esc(ESC_ERR) + '</div>';
-  try { h += (typeof _escResumenHtml === 'function' ? _escResumenHtml() : _escTareasHtml()); } catch (e) { try { console.warn('[escTareas]', e); } catch (_) {} }   /* 21-oct · Mis tareas */
+  try { h += (typeof _escResumenHtml === 'function' ? _escResumenHtml() : _escTareasHtml()) + (typeof _escLiqHtml === 'function' ? _escLiqHtml() : ''); } catch (e) { try { console.warn('[escTareas]', e); } catch (_) {} }   /* 21-oct · Mis tareas */
   const f = L.find(x => x.k === ESC_SEL);
   if (!f) h += '<div class="esx-load">ELIGE TUS PRODUCTOS EN FOCO (✦ ELEGIR)</div>';
   else if (f.vacio) h += '<div class="esx-load">' + esc(f.nombre) + ': SIN ANUNCIOS EN EL PERIODO</div>';
@@ -8082,6 +8085,38 @@ function escPedidoTaller(k, canal, i){
     else { try { localStorage.setItem('prod_prefill_v1', JSON.stringify(P)); } catch (_) {} escAvisoPanel('Abre 🧵 Producción: el pedido ya está lleno.'); }
   } catch (e) { try { escAvisoPanel('No pude armar el pedido: ' + e.message); } catch (_) {} }
 }
+/* 24-oct (Pablo: OK propuesta 2) · LECTURA DEL PEDIDO NUEVO, como Zara: desde que llegó al stock, qué % de lo que había ya se vendió (sell-through).
+   Umbrales (criterio propio, editables en ⚙ Reglas): 🔥 rápido = 50%+ dentro de 4 semanas → reponer antes · 🐢 lento = menos de 20% a las 3 semanas → no reponer igual, revisar. */
+function _escLectHtml(st){
+  try { const ks = [...new Set((st.piezas || []).map(r => _mkNorm((r.n || '') + ' ' + (r.d || '')).trim()))], E = typeof ESC_LECT === 'object' && ESC_LECT ? ESC_LECT : {};
+    return ks.map(k => E[k]).filter(Boolean).map(x => { const st0 = x.st == null ? null : +x.st, d = +x.dias || 0;
+      const tag = st0 == null ? '' : (st0 >= _ep('esc_st_rapido') && d <= 28) ? ' · 🔥 se vende rápido: reponer antes' : (d >= 21 && st0 < _ep('esc_st_lento')) ? ' · 🐢 lento: no repetir igual' : '';
+      return '<span class="esx-lt-n esx-lect" title="Sell-through = vendidas desde que llegó ÷ (vendidas + lo que queda hoy), todos los canales">📈 ' + esc(x.codigo || 'Pedido') + ' llegó el '
+        + new Date(x.llego + 'T00:00:00').toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + ' (hace ' + _escPl(d, 'día', 'días') + '): vendió ' + (x.vendidas || 0) + ' = <b>' + (st0 == null ? '—' : st0 + '%') + '</b>' + tag + '</span>'; }).join('');
+  } catch (_) { return ''; }
+}
+/* 24-oct (Pablo: OK propuesta 3) · 📉 PARA LIQUIDAR, como Amazon (stock envejecido) y Zara (fin de temporada): se decide por COLOR de cada prenda.
+   🟡 vigilar = su stock dura más de 90 días al ritmo del último mes · 🔴 liquidar = más de 180 días, o tiene stock y no vendió nada en 90 días.
+   No entra lo recién llegado (menos de 28 días). Tallas sueltas de un color sano NO se liquidan: solo no se reponen. */
+function _escLiqLista(){
+  const out = [], E = typeof ESC_LECT === 'object' && ESC_LECT ? ESC_LECT : {};
+  (ESC_STOCK || []).forEach(pz => { const pk = _mkNorm(pz.p + ' ' + pz.d).trim(), lec = E[pk];
+    if (lec && +lec.dias < 28) return;
+    const C = {}; (pz.x || []).forEach(a => { const c = String(a[0]); const o = C[c] = C[c] || { s: 0, v28: 0, v90: 0, tallas: 0 }; o.s += Math.max(0, +a[2] || 0); o.v28 += +a[3] || 0; o.v90 += +a[4] || 0; if ((+a[2] || 0) > 0) o.tallas++; });
+    Object.keys(C).forEach(c => { const o = C[c]; if (o.s < 3) return;
+      const d = o.v28 > 0 ? Math.round(o.s / (o.v28 / 28)) : (o.v90 > 0 ? Math.round(o.s / (o.v90 / 90)) : 9999);
+      const niv = (o.v90 === 0 || d > _ep('esc_liq_dias')) ? 'liq' : d > _ep('esc_liq_vig') ? 'vig' : null;
+      if (niv) out.push({ prenda: (pz.p + ' ' + pz.d).trim(), c, s: o.s, tallas: o.tallas, v90: o.v90, d, niv }); }); });
+  return out.sort((a, b) => (a.niv === b.niv ? 0 : a.niv === 'liq' ? -1 : 1) || b.s - a.s);
+}
+function _escLiqHtml(){
+  const L = _escLiqLista(); if (!L.length) return '';
+  const nL = L.filter(x => x.niv === 'liq'), uL = nL.reduce((a, x) => a + x.s, 0), cap = s => s.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase());
+  const fila = x => '<tr class="' + x.niv + '"><th>' + esc(cap(x.prenda)) + '</th><td>' + esc(cap(x.c)) + '</td><td>' + x.s + ' <small>(' + x.tallas + ' tallas)</small></td><td>' + x.v90 + '</td><td>' + (x.d >= 9999 ? 'sin ventas' : x.d + ' días') + '</td><td>' + (x.niv === 'liq' ? '🔴 Liquidar' : '🟡 Vigilar') + '</td></tr>';
+  return '<details class="esx-tar esx-liq"><summary><b>📉 PARA LIQUIDAR</b><span>' + nL.length + ' colores · ' + uL + ' prendas paradas (TikTok Live, Yayitas o descuento) · ' + (L.length - nL.length) + ' en vigilancia</span></summary>'
+    + '<table class="esx-res"><thead><tr><th>Prenda</th><th>Color</th><th>Stock</th><th>Vendidas 90 d</th><th>Le alcanza para</th><th>Qué hacer</th></tr></thead><tbody>' + L.slice(0, 40).map(fila).join('') + '</tbody></table>'
+    + '<div class="esx-lt-n">🔴 Liquidar = su stock dura más de ' + _ep('esc_liq_dias') + ' días o no vendió nada en 90 días · 🟡 Vigilar = más de ' + _ep('esc_liq_vig') + ' días · se mide por color (las tallas sueltas de un color que vende no se liquidan, solo no se reponen)</div></details>';
+}
 function escAvisoPanel(t){
   const a = document.querySelector('#escCuerpo .esx-pan'); if (!a) return;
   let d = a.querySelector('.esx-pan-err'); if (!d){ d = document.createElement('div'); d.className = 'esx-pan-err'; a.appendChild(d); }
@@ -8131,7 +8166,7 @@ function _escPanelHtml(f, ln, x, A){
     const st = ln.niv.stock;
     if (A.col === 'gris') return who('Ana') + '<em>' + esc(A.act) + '</em>' + fin;
     const bP = (st.piezas || []).filter(r => r.tot > 0).map((r, i) => '<button class="esx-b esx-ped" data-i="' + (st.piezas || []).indexOf(r) + '" title="Abre 🧵 Producción con un pedido nuevo ya lleno con estas cantidades (se revisa antes de guardar)" onclick="escPedidoTaller(\'' + esc(f.k).replace(/'/g, "\\'") + '\', \'' + ln.canal + '\', +this.dataset.i)">🧵 Crear pedido al taller' + ((st.piezas || []).filter(x => x.tot > 0).length > 1 ? ' · ' + esc(r.n.charAt(0) + r.n.slice(1).toLowerCase()) : '') + ' (' + r.tot + ')</button>').join('');
-    return who('Ana') + (A.chip ? '<em>' + esc(A.chip) + '</em>' : '') + bP + (st.dias != null && st.dias < 999 ? '<span class="esx-lt-n" title="Todas las prendas que quedan ÷ lo que se vende por día. No es cuándo se acaba una talla: eso es «Cae bajo 95%»">· todo el stock alcanzaría ' + st.dias + ' días</span>' : '') + fin + _escTablaLote(st);
+    return who('Ana') + (A.chip ? '<em>' + esc(A.chip) + '</em>' : '') + bP + _escLectHtml(st) + (st.dias != null && st.dias < 999 ? '<span class="esx-lt-n" title="Todas las prendas que quedan ÷ lo que se vende por día. No es cuándo se acaba una talla: eso es «Cae bajo 95%»">· todo el stock alcanzaría ' + st.dias + ' días</span>' : '') + fin + _escTablaLote(st);
   }
   if (x === 'anun' || x === 'crea'){
     const C = _escAccion(f, ln, 'crea'), N = C.cap && C.cap.n ? C.cap.n : 0, P = _escCreaPlan(f, ln, N), an = ln.niv.anun;
@@ -8231,6 +8266,9 @@ const ESC_CSS4 = `
 .esx-pan-err{font-size:11.5px;color:#ff8aa5;margin-top:4px}
 .esx-pan-h .esx-ped{margin-left:auto;font-size:11px;padding:4px 10px}
 .esx-pan-h .esx-ped + .esx-ped{margin-left:6px}
+.esx-lect{display:block;width:100%;font-size:11.5px;color:#dfe9ff}.esx-lect b{color:#ffd166}
+.esx-liq{margin-top:8px}.esx-liq summary{cursor:pointer;display:flex;gap:10px;align-items:baseline}.esx-liq summary span{font-size:11.5px;color:#8aa0c8}
+.esx-liq tr.liq td:last-child{color:#ff5c7a;font-weight:700}.esx-liq tr.vig td:last-child{color:#ffd166}
 .esx-sug{font-size:9.5px;font-weight:700;color:#ffd166;border:1px solid #ffd166;border-radius:6px;padding:0 4px;margin-left:4px}
 .esx-lt tr.sug .esx-nr{border-color:#ffd166;color:#ffd166}
 .esx-res{width:100%;border-collapse:collapse;margin-top:6px;font-size:12.5px}
@@ -8291,6 +8329,8 @@ function _escReglasHtml(){
         'un anuncio vive ' + _escIn('esc_vida_crea') + ' días (o antes, si su frecuencia pasa de 3)'])
     + R('🏅', '3 · GANADORES', ESC_RESP.gana, ['🟢 desde ' + _escIn('esc_gana_verde') + ' anuncio en ESCALAR (motor de 📏 Reglas)',
         '🟡 si alguno vende pero no escala (MANTENER) · 🔴 si ninguno vende'])
+    + R('📈', 'LECTURA DE PEDIDOS NUEVOS', ESC_RESP.stock, ['🔥 rápido: vendió ' + _escIn('esc_st_rapido') + '% o más de lo que había dentro de las 4 semanas de llegar', '🐢 lento: menos de ' + _escIn('esc_st_lento') + '% a las 3 semanas'])
+    + R('📉', 'LIQUIDAR', ESC_RESP.stock, ['🟡 vigilar: el stock de un color dura más de ' + _escIn('esc_liq_vig') + ' días', '🔴 liquidar: más de ' + _escIn('esc_liq_dias') + ' días, o no vendió nada en 90 días'])
     + R('🚀', '4 · ESCALAR', ESC_RESP.esc, ['se sube +' + _escIn('esc_sim_pct') + '% cada 72 h si sigue vendiendo',
         'solo si el stock cubre el ' + _escIn('esc_cubre_pct') + '% de lo que se vende de las tallas clave hasta que llegue la reposición (referentes: 90-95%)',
         '🛡️ la talla que no llega se protege (no va en anuncios nuevos) · 📣 el color que sobra se empuja'])
