@@ -7093,8 +7093,8 @@ const ESC_CSS = ".esx{position:relative;border-radius:18px;padding:16px 18px 18p
    - Cada nodo dice un número claro y, si está por caer, cuántos días faltan (⏳) para anticipar.
    - Reglas (rojo / amarillo / verde) editables en ⚙ REGLAS (public.mk_motor_param, claves esc_*).
    Fuentes: stock = rpc mk_escalamiento_stock · ganador = motor de 📏 Reglas (ESCALAR) · foco = public.mk_escala_foco. */
-const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:70, esc_cub_verde:90, esc_dias_rojo:17, esc_dias_verde:31,
-                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3, esc_cubre_pct:80, esc_pasos_dias:6 };   /* 24-oct · días fuera del taller hasta estar a la venta: tela 3 + entrega 1 + calidad 2 (igual que 🧵 Producción) */   /* 23-oct (Pablo: 70% es poco) · se escala solo si el stock cubre el 80% de lo que se vende de tallas clave hasta reponer */   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
+const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:90, esc_cub_verde:95, esc_dias_rojo:17, esc_dias_verde:31,
+                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3, esc_cubre_pct:80, esc_pasos_dias:6, esc_col_min_pct:5, esc_col_dias_max:90 };   /* 24-oct · semáforo por DISPONIBILIDAD 95/90 (referentes) y sugerir ✕ a colores con <5% de las ventas que no rotan */   /* 24-oct · días fuera del taller hasta estar a la venta: tela 3 + entrega 1 + calidad 2 (igual que 🧵 Producción) */   /* 23-oct (Pablo: 70% es poco) · se escala solo si el stock cubre el 80% de lo que se vende de tallas clave hasta reponer */   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
@@ -7296,6 +7296,10 @@ function _escStock(piezas, web, opt){
     const W = vs.reduce((a, v) => a + v.w, 0), Wok = vs.filter(v => v.s > 0).reduce((a, v) => a + v.w, 0);
     const R = vs.reduce((a, v) => a + v.rate, 0), S = vs.reduce((a, v) => a + v.s, 0);
     const cub = W > 0 ? Wok / W * 100 : (S > 0 ? 100 : 0), dias = R > 0 ? Math.floor(S / R * 7) : (S > 0 ? 999 : 0);
+    /* 24-oct (Pablo: «¿43 días de stock qué significa?») · como los referentes: DISPONIBILIDAD = de lo que se vende, cuánto hay hoy en su color y talla.
+       QUIEBRE = en cuántos días baja de la meta (95%) a medida que se van acabando tallas. 0 = ya está debajo. null = no baja en lo que se ve. */
+    let qd = null; { const meta = _ep('esc_cub_verde') / 100;
+      if (W > 0){ if (Wok / W < meta) qd = 0; else { let ok = Wok; for (const v of vs.filter(v => v.s > 0 && v.rate > 0).sort((a, b) => a.dias - b.dias)){ ok -= v.w; if (ok / W < meta){ qd = v.dias; break; } } } } }
     const agot = vs.filter(v => v.s <= 0 && v.w > 0).sort((a, b) => b.w - a.w);
     const pocas = vs.filter(v => v.s > 0 && v.rate > 0 && v.dias < lead + 7).sort((a, b) => a.dias - b.dias);
     const pedir = sem => vs.map(v => ({ pz:v.pz, c:v.c, t:v.t, n: Math.max(0, Math.ceil(v.rate * sem - v.s - v.cam)) })).filter(v => v.n > 0);   /* 1) menos lo que ya está en confección */
@@ -7307,23 +7311,24 @@ function _escStock(piezas, web, opt){
       while (tot < _ep('esc_lote_min') && sem < 52){ sem += 0.25; lote = pedir(sem); tot = lote.reduce((a, v) => a + v.n, 0); }
     }
     lote.sort((a, b) => b.n - a.n);
-    const r = { n:String(pz.p), d:String(pz.d || ''), cub, dias, S, agot, pocas, lote, tot, vs, sem, colchon, cambio, obj, cam: vs.reduce((a, v) => a + v.cam, 0) };
+    const r = { n:String(pz.p), d:String(pz.d || ''), cub, dias, qd, S, agot, pocas, lote, tot, vs, sem, colchon, cambio, obj, cam: vs.reduce((a, v) => a + v.cam, 0) };
     res.push(r);
     if (!peor || r.cub < peor.cub || (r.cub === peor.cub && r.dias < peor.dias)) peor = r;
   });
-  const p = peor, col = (p.cub < _ep('esc_cub_rojo') || p.dias < _ep('esc_dias_rojo')) ? 'rojo'
-                      : (p.cub < _ep('esc_cub_verde') || p.dias < _ep('esc_dias_verde')) ? 'ama' : 'verde';
-  const ant = (col !== 'rojo' && p.dias < 999) ? Math.max(0, p.dias - _ep('esc_dias_rojo')) : null;
+  /* 24-oct (Pablo: OK 95/90) · 🔴 disponibilidad < 90% · 🟡 < 95%, o cae bajo 95% antes de que llegue una reposición mandada hoy · 🟢 el resto */
+  const qds = res.map(r => r.qd).filter(x => x != null), qd = qds.length ? Math.min(...qds) : null, aviso0 = lead + 7;
+  const p = peor, col = p.cub < _ep('esc_cub_rojo') ? 'rojo' : (p.cub < _ep('esc_cub_verde') || (qd != null && qd <= aviso0)) ? 'ama' : 'verde';
+  const ant = (col !== 'rojo' && qd != null) ? Math.max(0, qd - aviso0) : null;
   const multi = res.length > 1;
   const lote = res.reduce((a, r) => a.concat(r.lote.map(v => Object.assign({ multi }, v))), []), tot = res.reduce((a, r) => a + r.tot, 0);
   const agotT = res.reduce((a, r) => a.concat(r.agot), []);
   /* 20-oct 18h (Pablo: «33 agotadas · 46 d no se entiende») · número grande = DÍAS DE STOCK; abajo = CUÁNDO REPONER */
-  const repo = col === 'rojo' ? _escHoy() : (p.dias >= 999 ? null : _escMas(_escHoy(), Math.max(0, p.dias - _ep('esc_dias_rojo'))));
+  const repo = col === 'rojo' ? _escHoy() : (qd == null ? null : _escMas(_escHoy(), Math.max(0, qd - aviso0)));
   const big = p.dias >= 999 ? 'sin ventas' : p.dias + ' días';
-  const sub = !repo || (p.dias - _ep('esc_dias_rojo')) > 60 ? 'cubierto' : col === 'rojo' ? 'reponer ya' : 'reponer ' + repo.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
+  const sub = !repo || (qd != null && qd - aviso0 > 60) ? 'cubierto' : col === 'rojo' ? 'reponer ya' : 'reponer ' + repo.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
   const combos = res.reduce((a, r) => a + r.vs.length, 0);
   return { col, big, sub,
-           dias: p.dias, cub: p.cub, agot: agotT, pocas: res.reduce((a, r) => a.concat(r.pocas), []), lote, tot, piezas: res, ant, multi, fant: Math.round(fantT), repo, web: web || null,
+           dias: p.dias, cub: p.cub, qd, agot: agotT, pocas: res.reduce((a, r) => a.concat(r.pocas), []), lote, tot, piezas: res, ant, multi, fant: Math.round(fantT), repo, web: web || null,
            combos, perdida: Math.round(100 - p.cub), lead, cam: typeof _escCamino === 'function' ? _escCamino(piezas) : null };
 }
 /* 21-oct · 🧵 cuántas prendas de este producto ya están en confección (órdenes abiertas de Producción) */
@@ -7537,7 +7542,7 @@ function _escAccion(f, ln, x){
     if (n.cam && (n.col === 'rojo' || n.col === 'ama') && !(n.tot > 0)){   /* 21-oct · 🧵 ya está en confección y cubre todo (23-oct: si falta algo, se pide solo lo que falta) */
       const fv = n.cam.fecha ? new Date(n.cam.fecha + 'T00:00:00') : null, hoy0 = new Date(); hoy0.setHours(0, 0, 0, 0);
       const lleg = !fv ? '' : fv < hoy0 ? ' · ya debía estar a la venta (' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '') + '): preguntar a Ana' : ' · a la venta el ' + fv.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');   /* 21-oct · fecha pasada = atraso, no promesa */
-      return { sit:llT + (n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', chip:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg, q:ESC_RESP.stock, col, lote:null, cap:{ big: bigS, sub:'ya en confección', rows:[['Días de stock', (n.dias == null ? '—' : n.dias >= 999 ? 'sin ventas' : n.dias)], ['En confección', n.cam.n], ['Llega', fv ? (d => d.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', ''))(fv) + (fv < hoy0 ? ' (atrasado)' : '') : 'sin fecha', !!(fv && fv < hoy0)]] } };
+      return { sit:llT + (n.col === 'rojo' ? 'Stock crítico · ' : 'Stock bajo · ') + dsC + agT + fa, act:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg + '. No pedir otra vez', chip:'Ya en confección: ' + _escPl(n.cam.n, 'prenda', 'prendas') + lleg, q:ESC_RESP.stock, col, lote:null, cap:{ big: bigS, sub:'ya en confección', rows:[...(typeof _escDispFilas === 'function' ? _escDispFilas(n) : []), ['En confección', n.cam.n], ['Llega', fv ? (d => d.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', ''))(fv) + (fv < hoy0 ? ' (atrasado)' : '') : 'sin fecha', !!(fv && fv < hoy0)]] } };
     }
     /* 22-oct (Pablo: «43 días… ¿nos quedamos sin ninguna prenda o empezamos a quedarnos sin tallas?») · EN SIMPLE:
        «días de stock» = lo que dura TODO el stock al ritmo de venta de los últimos 28 días (todos los canales: WhatsApp, web, Live…; si vende más, se recalcula solo).
@@ -7558,8 +7563,8 @@ function _escAccion(f, ln, x){
     const camT = (n.piezas || []).reduce((a, r) => a + (r.cam || 0), 0);
     const pedS = 'Reponer ' + lote + ' prendas para el ' + F0(lleg) + ': mandar al taller ' + (envD === 0 ? 'HOY' : 'el ' + F0(env)) + ' (tarda ' + ld + ' días' + (camT ? '; ya descontadas ' + camT + ' que están en confección' : '') + '). Colores y tallas en el cuadro';   /* 23-oct · el detalle va en el cuadro */
     if (n.col === 'rojo' || n.col === 'ama' || envD <= _ep('esc_aviso'))
-      return { sit: llT + sitS, act: pedS, chip:'Mandar al taller ' + (envD === 0 ? 'HOY' : 'el ' + F0(env)) + ' · llega el ' + F0(lleg), q:ESC_RESP.stock, col, lote:n, cap:{ big: bigS, sub:'reponer ' + lote + ' para el ' + F0(lleg), rows:[['Días de stock', (n.dias == null ? '—' : n.dias >= 999 ? 'sin ventas' : n.dias)], ['Unidades a reponer', lote], ['Fecha de reposición', F0(lleg)]] } };
-    return { sit: llT + sitS, act: 'No reponer todavía. El ' + F0(env) + ' hay que mandar al taller', chip:'No reponer todavía · mandar al taller el ' + F0(env), q:ESC_RESP.stock, col, lote:null, cap:{ big: bigS, sub:'no reponer aún', rows:[['Días de stock', (n.dias == null ? '—' : n.dias >= 999 ? 'sin ventas' : n.dias)], ['Unidades a reponer', 'aún no'], ['Mandar al taller', F0(env)]] } };
+      return { sit: llT + sitS, act: pedS, chip:'Mandar al taller ' + (envD === 0 ? 'HOY' : 'el ' + F0(env)) + ' · llega el ' + F0(lleg), q:ESC_RESP.stock, col, lote:n, cap:{ big: bigS, sub:'reponer ' + lote + ' para el ' + F0(lleg), rows:[...(typeof _escDispFilas === 'function' ? _escDispFilas(n) : []), ['Unidades a reponer', lote], ['Fecha de reposición', F0(lleg)]] } };
+    return { sit: llT + sitS, act: 'No reponer todavía. El ' + F0(env) + ' hay que mandar al taller', chip:'No reponer todavía · mandar al taller el ' + F0(env), q:ESC_RESP.stock, col, lote:null, cap:{ big: bigS, sub:'no reponer aún', rows:[...(typeof _escDispFilas === 'function' ? _escDispFilas(n) : []), ['Unidades a reponer', 'aún no'], ['Mandar al taller', F0(env)]] } };
   }
   if (x === 'crea'){
     const g = ln.niv.gana.g, tot = n.act + n.banco;
@@ -7904,11 +7909,17 @@ function _escCap(f, ln, x, n){
   return { big: n ? n.big : '', sub: n ? n.sub : '' };
 }
 /* 23-oct 18h (Pablo: «más ordenado: Días de stock = 43 · Unidades a reponer = 129 · Fecha = 2 nov», valores en amarillo y negrita; atrasado = línea roja) */
+/* 24-oct · «Disponible 77%» (rojo bajo 90) y «Cae bajo 95%: ya cayó / 30 oct / no cae» */
+function _escDispFilas(n){
+  const m = _ep('esc_cub_verde'), F0 = d => d.toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
+  const q = n.qd == null ? 'no cae' : n.qd === 0 ? 'ya cayó' : F0(_escMas(_escHoy(), n.qd));
+  return [['Disponible', Math.round(n.cub || 0) + '%', (n.cub || 0) < _ep('esc_cub_rojo')], ['Cae bajo ' + m + '%', q, n.qd === 0]];
+}
 function _escAnilloFilas(col, v, ico, rows){
   const off = 100 * (1 - Math.max(0.02, Math.min(1, v || 0)));
-  return '<svg viewBox="0 0 248 120" class="esx-ring2"><rect x="4" y="4" width="240" height="112" rx="56" pathLength="100" class="esx-track"/>'
-    + '<rect x="4" y="4" width="240" height="112" rx="56" pathLength="100" class="esx-arc2" style="stroke:' + col + ';--off:' + off.toFixed(1) + '"/>'
-    + '<rect x="15" y="15" width="218" height="90" rx="45" class="esx-core"/></svg>'
+  return '<svg viewBox="0 0 248 132" class="esx-ring2"><rect x="4" y="4" width="240" height="124" rx="62" pathLength="100" class="esx-track"/>'
+    + '<rect x="4" y="4" width="240" height="124" rx="62" pathLength="100" class="esx-arc2" style="stroke:' + col + ';--off:' + off.toFixed(1) + '"/>'
+    + '<rect x="15" y="15" width="218" height="102" rx="51" class="esx-core"/></svg>'
     + '<div class="esx-in esx-in-f"><svg viewBox="0 0 24 24" class="esx-ico" style="stroke:' + col + '">' + ico + '</svg>'
     + rows.map(r => '<div class="esx-fl' + (r[2] ? ' rj' : '') + '"><span>' + esc(r[0]) + '</span><b>' + esc(String(r[1])) + '</b></div>').join('') + '</div>';
 }
@@ -8019,7 +8030,11 @@ function _escTablaLote(n){
   const filas = [];
   (n.piezas || []).forEach(r => { const porC = {}, pk = _mkNorm((r.n || '') + ' ' + (r.d || '')).trim();
     (r.vs || []).forEach(v => { (porC[v.c] = porC[v.c] || {})[String(v.t).toUpperCase()] = v; });
-    Object.keys(porC).sort().forEach(c => filas.push({ pz: r.n, pk, c, t: porC[c], lote: r.lote })); });
+    const Wp = (r.vs || []).reduce((a, v) => a + (v.rate || 0), 0);
+    Object.keys(porC).sort().forEach(c => { const V = Object.values(porC[c]), rc = V.reduce((a, v) => a + (v.rate || 0), 0), sc = V.reduce((a, v) => a + (v.s || 0), 0);
+      /* 24-oct (Pablo: OK) · sugerir ✕ = el color trae menos del 5% de las ventas de la prenda Y no rota (su stock dura más de 90 días, o no vende) */
+      const sug = Wp > 0 && rc / Wp * 100 < _ep('esc_col_min_pct') && (rc <= 0 || sc / rc * 7 > _ep('esc_col_dias_max'));
+      filas.push({ pz: r.n, pk, c, t: porC[c], lote: r.lote, sug, pct: Wp > 0 ? Math.round(rc / Wp * 100) : 0 }); }); });
   const multi = (n.piezas || []).length > 1, NR = typeof ESC_NOREP === 'object' && ESC_NOREP ? ESC_NOREP : {};
   const pks = new Set((n.piezas || []).map(r => _mkNorm((r.n || '') + ' ' + (r.d || '')).trim()));
   const fuera = Object.keys(NR).filter(k => pks.has(k.split('|')[0])).map(k => ({ k, pk: k.split('|')[0], x: NR[k] }));
@@ -8032,7 +8047,7 @@ function _escTablaLote(n){
       const tds = tallas.map(t => { const v = f.t[t]; if (!v) return '<td class="na">·</td>'; const k = cant(f, t); tf += k;
         const tip = 'Hay ' + v.s + ' · se venden ' + (Math.round(v.rate * 10) / 10) + ' por semana' + (v.cam ? ' · ' + v.cam + ' ya en confección' : '') + (v.f ? ' · 👻 ' + Math.round(v.f) + ' clientas la pidieron agotada' : '');
         return '<td class="' + (v.s <= 0 ? 'ag' : '') + '" title="' + esc(tip) + '">' + (k ? '<b>+' + k + '</b>' : '') + '<i>' + v.s + '</i></td>'; }).join('');
-      return '<tr><th>' + esc((multi ? f.pz.charAt(0) + f.pz.slice(1).toLowerCase() + ' · ' : '') + f.c) + '</th>' + tds + '<td class="tt">' + (tf ? '+' + tf : '—') + '</td>'
+      return '<tr' + (f.sug ? ' class="sug"' : '') + '><th>' + esc((multi ? f.pz.charAt(0) + f.pz.slice(1).toLowerCase() + ' · ' : '') + f.c) + (f.sug ? ' <span class="esx-sug" title="Trae el ' + f.pct + '% de las ventas y su stock no rota: sugerido no reponer (vender lo que queda)">sugerido ✕</span>' : '') + '</th>' + tds + '<td class="tt">' + (tf ? '+' + tf : '—') + '</td>'
         + '<td class="nr">' + btn(f.pk, _mkNorm(f.c).trim() + '|' + f.c, true, '✕', 'No reponer este color') + '</td></tr>'; }).join('');
     h += '<table class="esx-lt"><thead><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '<th>Total</th><th></th></tr></thead><tbody>' + cuerpo + '</tbody></table>'
       + '<div class="esx-lt-n"><b>+N</b> = confeccionar · <i>n</i> = hay hoy · <span class="ag">rojo</span> = agotada · ✕ = no reponer este color' + (n.web ? ' · colores de la web + los que vendieron en el último mes aunque estén agotados' : '') + '</div>';
@@ -8104,7 +8119,7 @@ function _escPanelHtml(f, ln, x, A){
   if (x === 'stock'){
     const st = ln.niv.stock;
     if (A.col === 'gris') return who('Ana') + '<em>' + esc(A.act) + '</em>' + fin;
-    return who('Ana') + (A.chip ? '<em>' + esc(A.chip) + '</em>' : '') + fin + _escTablaLote(st);
+    return who('Ana') + (A.chip ? '<em>' + esc(A.chip) + '</em>' : '') + (st.dias != null && st.dias < 999 ? '<span class="esx-lt-n" title="Todas las prendas que quedan ÷ lo que se vende por día. No es cuándo se acaba una talla: eso es «Cae bajo 95%»">· todo el stock alcanzaría ' + st.dias + ' días</span>' : '') + fin + _escTablaLote(st);
   }
   if (x === 'anun' || x === 'crea'){
     const C = _escAccion(f, ln, 'crea'), N = C.cap && C.cap.n ? C.cap.n : 0, P = _escCreaPlan(f, ln, N), an = ln.niv.anun;
@@ -8180,7 +8195,7 @@ const ESC_CSS4 = `
 .esx-acc2.esx-pan{width:min(1200px,100%);flex-direction:column;align-items:stretch;gap:8px}
 .esx-pan .esx-pan-h{flex-direction:row}
 .esx-pan .esx-lt{width:100%}
-.esx-orb{width:248px;height:120px;border-radius:60px}
+.esx-orb{width:248px;height:132px;border-radius:66px}
 .esx-in-f{gap:2px;padding:0 26px}
 .esx-in-f .esx-ico{width:18px;height:18px;margin-bottom:1px}
 .esx-fl{display:flex;justify-content:space-between;gap:6px;width:200px;font-size:11px;line-height:1.25}
@@ -8202,6 +8217,8 @@ const ESC_CSS4 = `
 .esx-nr{background:transparent;border:1px solid rgba(122,232,255,.25);color:#8aa0c8;border-radius:6px;font-size:10px;line-height:1;padding:2px 5px;cursor:pointer}
 .esx-nr:hover{color:#ff8aa5;border-color:#ff8aa5}
 .esx-pan-err{font-size:11.5px;color:#ff8aa5;margin-top:4px}
+.esx-sug{font-size:9.5px;font-weight:700;color:#ffd166;border:1px solid #ffd166;border-radius:6px;padding:0 4px;margin-left:4px}
+.esx-lt tr.sug .esx-nr{border-color:#ffd166;color:#ffd166}
 .esx-res{width:100%;border-collapse:collapse;margin-top:6px;font-size:12.5px}
 .esx-res th,.esx-res td{padding:7px 8px;text-align:left;border-top:1px solid rgba(122,232,255,.1);vertical-align:top}
 .esx-res thead th{font-size:10px;letter-spacing:.12em;color:#8aa0c8;font-weight:600;border-top:0}
@@ -8250,8 +8267,9 @@ function _escReglasHtml(){
     + R('🏆', '0 · PRODUCTOS GANADORES', ESC_RESP.port, ['🟢 necesitas ' + _escIn('esc_portafolio') + ' productos ganadores',
         '★ producto ganador = margen de contribución mayor a 0 con ' + _escIn('esc_sug_ventas') + ' ventas o más',
         '🔴 si faltan → benchmarking de modelos ganadores + muestras y confección'])
-    + R('📦', '1 · STOCK', ESC_RESP.stock, ['🔴 si quedan menos de ' + _escIn('esc_dias_rojo') + ' días de stock, o se atiende menos del ' + _escIn('esc_cub_rojo') + '% de lo que se vende',
-        '🟡 menos de ' + _escIn('esc_dias_verde') + ' días, o menos del ' + _escIn('esc_cub_verde') + '%',
+    + R('📦', '1 · STOCK', ESC_RESP.stock, ['disponibilidad = de lo que se vende, cuánto hay hoy en su color y talla (referentes: 95% o más)',
+        '🔴 disponibilidad menor a ' + _escIn('esc_cub_rojo') + '% · 🟡 menor a ' + _escIn('esc_cub_verde') + '%, o cae debajo antes de que llegue una reposición mandada hoy',
+        '✕ sugerido: color con menos del ' + _escIn('esc_col_min_pct') + '% de las ventas de su prenda y stock para más de ' + _escIn('esc_col_dias_max') + ' días',
         '🟢 desde ahí · confección tarda ' + _escIn('esc_conf_dias') + ' días (+ ' + _escIn('esc_pasos_dias') + ' de tela, entrega y calidad hasta estar a la venta) · lote mínimo ' + _escIn('esc_lote_min') + ' · cada lote cubre ' + _escIn('esc_obj_sem') + ' semanas',
         '👻 demanda fantasma: el ' + _escIn('esc_fant_pct') + '% de las clientas que pidieron una talla agotada en los últimos ' + _escIn('esc_fant_dias') + ' días se suma a las ventas'])
     + R('🎬', '2 · CREATIVOS', ESC_RESP.crea, ['cuenta = anuncios corriendo hoy + creativos listos sin usar (🎬 Creativos)',
