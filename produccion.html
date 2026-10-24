@@ -81,13 +81,13 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g small{display:block;color:v
   <button class="x" title="Cerrar" onclick="cerrar('mNueva')">✕</button><h2 id="nTit">＋ Nueva producción</h2>
   <div class="f">
     <div><label>Producto (de 📦 Productos)</label><input id="nDis" list="lDis" placeholder="BLAZER MIRELLA" oninput="nProducto()"><datalist id="lDis"></datalist></div>
-    <div><label>Tipo</label><select id="nTipo"><option value="reposicion">Reposición</option><option value="nuevo">Nuevo</option></select></div>
+    <div><label>Tipo</label><select id="nTipo" onchange="nFechaSug()"><option value="reposicion">Reposición</option><option value="nuevo">Nuevo</option></select></div>
     <div><label>Taller</label><input id="nTaller" list="lTaller"><datalist id="lTaller"></datalist></div>
     <div><label>Tela - proveedor</label><input id="nTela" placeholder="Mirella - Colortex"></div>
-    <div><label>A la venta el</label><input id="nFecha" type="date"></div>
+    <div><label>Fecha para venta</label><input id="nFecha" type="date" oninput="NV.fechaMano=true;nFechaSug()"><small id="nFechaSug" class="mu" style="font-size:11px"></small></div>
     <div><label>Costo por prenda (S/)</label><input id="nCosto" type="number" step="0.5" min="0"></div>
     <div><label>Derivado al taller el (tela e insumos entregados)</label><input id="nFTal" type="date"></div>
-    <div><label>Días de confección del taller</label><input id="nDias" type="number" min="0" max="120" step="1" placeholder="10"></div>
+    <div><label>Días de confección del taller</label><input id="nDias" type="number" min="0" max="120" step="1" placeholder="10" oninput="nFechaSug()"></div>
   </div>
   <div class="mu" id="nAyuda" style="font-size:11.5px"></div>
   <div id="nGrid"></div>
@@ -213,7 +213,18 @@ async function abrirNueva(o){
   document.getElementById('nFTal').value = o ? (o.fecha_taller || '') : ''; document.getElementById('nDias').value = o && o.dias_taller != null ? o.dias_taller : '';
   document.getElementById('nNotas').value = o ? (o.notas || '') : ''; document.getElementById('nMsg').textContent = '';
   if (o) D.lineas.filter(x => x.orden_id === o.id).forEach(x => { if (NV.colores.indexOf(x.color) < 0) NV.colores.push(x.color); NV.q[x.color + '|' + x.talla] = x.pedido; });
+  NV.fechaMano = !!(o && o.fecha_venta); nFechaSug();
   nProducto(true); document.getElementById('mNueva').style.display = 'flex';
+}
+/* 24-oct (Pablo: OK «fecha para venta» automática) · al crear: hoy + días del camino (Reposición: tela 3 + confección 10 + entrega 1 + calidad 2 = 16;
+   si se ponen los días de confección del taller, se usan esos). Si Ana la cambia a mano, se respeta. Sin fecha no se guarda. */
+function nFechaDias(){ const tipo = document.getElementById('nTipo').value, di = document.getElementById('nDias').value;
+  return (CAMINO[tipo] || CAMINO.reposicion).reduce((a, e) => a + (e === 'corte' && di !== '' && !isNaN(+di) ? +di : (ETAPAS[e][2] || 0)), 0); }
+function nFechaSug(){
+  const el = document.getElementById('nFecha'), ay = document.getElementById('nFechaSug'); if (!el) return;
+  const n = nFechaDias(), d = new Date(hoy0().getTime() + n * 864e5), iso = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  if (!NV.fechaMano || !el.value){ el.value = iso; NV.fechaMano = false; }
+  if (ay) ay.textContent = NV.fechaMano && el.value !== iso ? 'Sugerida: ' + fTxt(d) + ' (hoy + ' + n + ' días)' : 'Hoy + ' + n + ' días del camino (se puede cambiar)';
 }
 function piezasDe(dis){ const k = nrm(dis); return (D.stock || []).filter(x => nrm(x.p + ' ' + x.d) === k); }
 function nProducto(mantener){
@@ -245,6 +256,7 @@ async function guardarOrden(){
   const lineas = []; NV.colores.forEach(c => TALLAS.forEach(t => { const n = NV.q[c + '|' + t] || 0; if (n > 0) lineas.push({ color:c, talla:t, pedido:n }); }));
   if (!document.getElementById('nDis').value.trim()) { msg.textContent = 'Falta el producto.'; return; }
   if (!lineas.length) { msg.textContent = 'Pon al menos una cantidad.'; return; }
+  if (!document.getElementById('nFecha').value) { msg.textContent = 'Falta la fecha para venta.'; return; }   /* 24-oct · sin fecha no se sabe si se atrasa */
   b.disabled = true;
   try {
     const r = await rpc('prod_orden_guardar', { p_id: NV.id, p_diseno: document.getElementById('nDis').value, p_tipo: document.getElementById('nTipo').value,
@@ -459,9 +471,9 @@ function alertaItems(){
   const it = [], hoy = hoy0();
   D.ordenes.filter(o => !o.cerrada).forEach(o => {
     const { T } = saldos(o), ef = estadoFecha(o), nom = o.codigo + ' · ' + o.diseno + ' · ' + (o.taller || 'sin taller'), v = viejas(o);
-    if (ef.col === 'rd') it.push({ id:o.id, nivel:'rojo', titulo: nom + ' — ' + ef.txt + ' (está en ' + ETAPAS[o.etapa][0] + ')', act:'Avanzarla o poner una fecha de venta nueva', q: ETAPAS[o.etapa][1] });
+    if (ef.col === 'rd') it.push({ id:o.id, nivel:'rojo', titulo: nom + ' — ' + ef.txt + ' (está en ' + ETAPAS[o.etapa][0] + ')', act:'Avanzarla o poner una fecha para venta nueva', q: ETAPAS[o.etapa][1] });
     /* 23-oct (Pablo: OK alerta de pedidos atrasados) · sin fecha de venta no se puede saber si está atrasada ni cuándo llega para escalar */
-    if (!o.fecha_venta && o.etapa !== 'venta' && T.falta > 0) it.push({ id:o.id, nivel:'amarillo', titulo: nom + ' — ' + T.falta + ' prendas en confección sin fecha de venta', act:'Poner la fecha en que va a estar a la venta (así se avisa si se atrasa y Escalamiento sabe cuándo llega)', q:'Ana' });
+    if (!o.fecha_venta && o.etapa !== 'venta' && T.falta > 0) it.push({ id:o.id, nivel:'amarillo', titulo: nom + ' — ' + T.falta + ' prendas en confección sin fecha para venta', act:'Poner la fecha para venta (así se avisa si se atrasa y Escalamiento sabe cuándo llega)', q:'Ana' });
     if (v) it.push({ id:o.id, nivel:'rojo', titulo: nom + ' — ' + v + ' en corrección hace +30 días', act:'Cerrarlas: corregida, Yayita o perdida', q:'Ana' });
     if (T.porIngresar) it.push({ id:o.id, nivel:'amarillo', titulo: nom + ' — ' + T.porIngresar + ' por ingresar al stock', act:'📦 Ingresar al stock desde la orden', q:'Stephanie' });
     if (T.correccion && T.correccion > v) it.push({ id:o.id, nivel:'amarillo', titulo: nom + ' — ' + (T.correccion - v) + ' en corrección', act:'Cuando vuelvan del taller: corregida, Yayita o perdida', q:'Ana · taller' });
@@ -596,7 +608,7 @@ function lineasHtml(L){
           + '<i onclick="event.stopPropagation();cicloEtapa(' + o.id + ', \'' + e + '\')"></i></div>'; }).join('')
       + '<div class="nec" style="padding-left:8px">' + (necesita(o, T) || '<span class="mu">—</span>') + '</div></div>';
   }).join('');
-  return h + '<div class="ley"><span>🟢 hecha</span><span>🟡 en proceso</span><span>🔴 atrasada (pasó la fecha de venta)</span><span>⚪ falta</span><span>👆 toca un punto para cambiarlo</span><span>┄ no aplica (reposición)</span></div>';
+  return h + '<div class="ley"><span>🟢 hecha</span><span>🟡 en proceso</span><span>🔴 atrasada (pasó la fecha para venta)</span><span>⚪ falta</span><span>👆 toca un punto para cambiarlo</span><span>┄ no aplica (reposición)</span></div>';
 }
 /* ── arrastrar y soltar filas + 💾 Guardar orden ── */
 let ARR = null;
