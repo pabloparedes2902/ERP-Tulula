@@ -7098,6 +7098,7 @@ const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
+let ESC_LREAL = null;   /* 24-oct · {por_prenda:{'BLAZER MIRELLA':{dias,n}}, tienda:{dias,n}} duración real pedido → a la venta */
 let ESC_NOREP = {};   /* 23-oct · {'pantalon mirella|rojo': {color_txt, quien}} colores que NO se reponen (botón ✕ del cuadro) */
 let ESC_MED = null;   /* 22-oct · fase 7: {total, seguidas, por_accion} de mk_propuestas_medir */
 let ESC_LLEGO = {};   /* 21-oct (Pablo) · { 'blazer mirella': { n, fecha, colores } } — lo que Producción ingresó al stock en los últimos días (prod_llego_stock) */
@@ -7128,7 +7129,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -7140,7 +7141,8 @@ async function escCargar(forzar){
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_dias', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 22-oct · días de confección por prenda */
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_propuestas_medir', { method:'POST', headers: hdr, body: JSON.stringify({ p_dias: 28 }) }).catch(() => null),   /* 22-oct · fase 7 */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino_detalle', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 23-oct · en confección por color y talla */
-      fetch(MK_SB_URL + '/rest/v1/rpc/mk_no_reponer_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 23-oct · colores que no se reponen */
+      fetch(MK_SB_URL + '/rest/v1/rpc/mk_no_reponer_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 23-oct · colores que no se reponen */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_real', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 24-oct · duración real de los pedidos */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -7152,6 +7154,7 @@ async function escCargar(forzar){
     ESC_CAMDET = {}; try { if (r11 && r11.ok) ((await r11.json()) || []).forEach(x => { ESC_CAMDET[_mkNorm(x.diseno).trim() + '|' + _mkNorm(x.color).trim() + '|' + String(x.talla).toUpperCase().trim()] = +x.n || 0; }); } catch (_) {}
     ESC_MED = null; try { if (r10 && r10.ok) ESC_MED = await r10.json(); } catch (_) {}
     ESC_NOREP = {}; try { if (r12 && r12.ok){ const L = await r12.json(); if (Array.isArray(L)) L.forEach(x => { ESC_NOREP[x.prenda + '|' + x.color] = x; }); } } catch (_) {}
+    ESC_LREAL = null; try { if (r13 && r13.ok) ESC_LREAL = await r13.json(); } catch (_) {}
     ESC_LEAD = {}; try { if (r9 && r9.ok) ((await r9.json()) || []).forEach(x => { ESC_LEAD[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_LLEGO = {}; try { if (r8 && r8.ok) ((await r8.json()) || []).forEach(x => { ESC_LLEGO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
     ESC_CAMINO = {}; try { if (r7 && r7.ok) ((await r7.json()) || []).forEach(x => { ESC_CAMINO[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}   /* 21-oct · 🧵 lo que ya está en confección */
@@ -7330,6 +7333,12 @@ let ESC_LEAD = {};
 /* 24-oct · días hasta que la reposición está A LA VENTA = días del taller (medidos por prenda, o esc_conf_dias) + tela, entrega y calidad (esc_pasos_dias).
    Así Escalamiento y la «fecha para venta» de 🧵 Producción dan la misma fecha (antes Escalamiento contaba solo el taller: 10 en vez de 16). */
 function _escLeadDe(piezas){
+  /* 24-oct (Pablo: OK medir la duración real) · si la prenda ya tiene pedidos medidos (creado → a la venta), manda eso; si no, la mediana de la tienda con 2+ pedidos; si no, taller + 6 */
+  try { const R = typeof ESC_LREAL === 'object' && ESC_LREAL ? ESC_LREAL : null;
+    if (R){ const pp = R.por_prenda || {}, ks = [...new Set(piezas.map(pz => _mkNorm(pz.p + ' ' + pz.d).trim()))];
+      const L = Object.keys(pp).filter(k => ks.includes(_mkNorm(k).trim())).map(k => +pp[k].dias).filter(x => x > 0);
+      if (L.length) return Math.max(...L);
+      if (R.tienda && +R.tienda.n >= 2 && +R.tienda.dias > 0) return +R.tienda.dias; } } catch (_) {}
   const ot = typeof ESC_DEF === 'object' && 'esc_pasos_dias' in ESC_DEF ? _ep('esc_pasos_dias') : 0;
   try { const L = [...new Set(piezas.map(pz => _mkNorm(pz.p + ' ' + pz.d).trim()))].map(k => (ESC_LEAD || {})[k]).filter(x => x && x.dias > 0).map(x => +x.dias);
     return (L.length ? Math.max(...L) : _ep('esc_conf_dias')) + ot; } catch (_) { return _ep('esc_conf_dias') + ot; }
