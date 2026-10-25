@@ -7101,6 +7101,7 @@ const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
+let ESC_EV = null;   /* 25-oct · [{id, nombre, tipo, desde, hasta, vendidas}] (null = falta el SQL) */
 let ESC_COSTO = {};   /* 25-oct · costo unitario por prenda (solo administración) */
 let ESC_CLIMA = {}, ESC_SEMS = null;   /* 24-oct · clima por prenda y ventas por semana del último año */
 let ESC_LECT = {};   /* 24-oct · {'blazer mirella': {codigo, llego, recibidas, dias, vendidas, stock, st}} lectura del último pedido que llegó */
@@ -7135,7 +7136,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -7152,7 +7153,8 @@ async function escCargar(forzar){
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_lectura', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · lectura de cada pedido nuevo */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_clima_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · clima de cada prenda */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_ventas_semanas', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · ventas por semana (temporada) */
-      fetch(MK_SB_URL + '/rest/v1/rpc/prod_productos', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 25-oct · costo por prenda (tope de compra) */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_productos', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 25-oct · costo por prenda (tope de compra) */
+      fetch(MK_SB_URL + '/rest/v1/rpc/mk_eventos_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 25-oct · calendario de eventos */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -7164,6 +7166,7 @@ async function escCargar(forzar){
     ESC_CAMDET = {}; try { if (r11 && r11.ok) ((await r11.json()) || []).forEach(x => { ESC_CAMDET[_mkNorm(x.diseno).trim() + '|' + _mkNorm(x.color).trim() + '|' + String(x.talla).toUpperCase().trim()] = +x.n || 0; }); } catch (_) {}
     ESC_MED = null; try { if (r10 && r10.ok) ESC_MED = await r10.json(); } catch (_) {}
     ESC_NOREP = {}; try { if (r12 && r12.ok){ const L = await r12.json(); if (Array.isArray(L)) L.forEach(x => { ESC_NOREP[x.prenda + '|' + x.color] = x; }); } } catch (_) {}
+    ESC_EV = null; try { if (r18 && r18.ok){ const L = await r18.json(); if (Array.isArray(L)) ESC_EV = L; } } catch (_) {}
     ESC_COSTO = {}; try { if (r17 && r17.ok){ const L = await r17.json(); if (Array.isArray(L)) L.forEach(x => { if (x.costo_unitario != null) ESC_COSTO[_mkNorm(x.diseno).trim()] = +x.costo_unitario; }); } } catch (_) {}
     ESC_CLIMA = {}; try { if (r15 && r15.ok){ const L = await r15.json(); if (Array.isArray(L)) L.forEach(x => { ESC_CLIMA[String(x.diseno).toUpperCase().trim()] = x.clima; }); } } catch (_) {}
     ESC_SEMS = null; try { if (r16 && r16.ok){ const L = await r16.json(); if (Array.isArray(L)) ESC_SEMS = L; } } catch (_) {}
@@ -7993,7 +7996,7 @@ function escPintar(cambio){
      + '<button class="esx-b" onclick="ESC_REGLAS=true;escPintar()">⚙ REGLAS</button>'
      + '</div>';   /* 19-oct · sin ⟳ propio: actualiza el 🔄 de arriba */
   if (ESC_ERR) h += '<div class="esx-err">' + esc(ESC_ERR) + '</div>';
-  try { h += (typeof _escResumenHtml === 'function' ? _escResumenHtml() : _escTareasHtml()) + (typeof _escLiqHtml === 'function' ? _escLiqHtml() : '') + (typeof _escAprendHtml === 'function' ? _escAprendHtml() : ''); } catch (e) { try { console.warn('[escTareas]', e); } catch (_) {} }   /* 21-oct · Mis tareas */
+  try { h += (typeof _escResumenHtml === 'function' ? _escResumenHtml() : _escTareasHtml()) + (typeof _escLiqHtml === 'function' ? _escLiqHtml() : '') + (typeof _escAprendHtml === 'function' ? _escAprendHtml() : '') + (typeof _escEvHtml === 'function' ? _escEvHtml() : ''); } catch (e) { try { console.warn('[escTareas]', e); } catch (_) {} }   /* 21-oct · Mis tareas */
   const f = L.find(x => x.k === ESC_SEL);
   if (!f) h += '<div class="esx-load">ELIGE TUS PRODUCTOS EN FOCO (✦ ELEGIR)</div>';
   else if (f.vacio) h += '<div class="esx-load">' + esc(f.nombre) + ': SIN ANUNCIOS EN EL PERIODO</div>';
@@ -8161,16 +8164,49 @@ function _escAprendLista(){
   const dias = typeof mkPeriodoDias !== 'undefined' && mkPeriodoDias > 0 ? mkPeriodoDias : 7, C = {};
   ((MK && MK.filas) || []).filter(r => r._on).forEach(r => { const cn = mkCanalDe(r) === 'web' ? 'web' : 'wa', k = (r.conjunto || '(sin conjunto)') + '|' + cn, a = r.act || {};
     const o = C[k] = C[k] || { conj: r.conjunto || '(sin conjunto)', cn, ads: 0, gasto: 0, res: 0 }; o.ads++; o.gasto += +a.gasto || 0; o.res += cn === 'web' ? (+a.pedidos || 0) : (+a.conversaciones || 0); });
-  return Object.values(C).map(o => Object.assign(o, { sem: Math.round(o.res / dias * 7), gSem: Math.round(o.gasto / dias * 7) })).sort((a, b) => a.sem - b.sem);
+  /* 25-oct (Pablo: OK presupuesto mínimo) · mínimo por semana = costo por resultado × 50 (lo que Meta necesita para aprender) */
+  return Object.values(C).map(o => { const cpr = o.res > 0 ? o.gasto / o.res : null;
+    return Object.assign(o, { sem: Math.round(o.res / dias * 7), gSem: Math.round(o.gasto / dias * 7), cpr, minSem: cpr != null ? Math.round(cpr * 50) : null }); }).sort((a, b) => a.sem - b.sem);
 }
 function _escAprendHtml(){
   const L = _escAprendLista(); if (!L.length) return '';
   const meta = 50, lim = L.filter(x => x.sem < meta), corto = s => String(s).split('/').map(x => x.trim()).filter(Boolean).slice(-2).join(' / ');
-  const fila = x => '<tr class="' + (x.sem < meta ? 'liq' : 'ok') + '"><th title="' + esc(x.conj) + '">' + esc(corto(x.conj)) + '</th><td>' + (x.cn === 'web' ? 'Web (compras)' : 'WhatsApp (conversaciones)') + '</td><td><b>' + x.sem + '</b> / ' + meta + '</td><td>' + x.ads + '</td><td>S/ ' + x.gSem + '</td><td>'
+  const f$ = n => n == null ? '—' : 'S/ ' + Math.round(n).toLocaleString('es-PE');
+  const fila = x => '<tr class="' + (x.sem < meta ? 'liq' : 'ok') + '"><th title="' + esc(x.conj) + '">' + esc(corto(x.conj)) + '</th><td>' + (x.cn === 'web' ? 'Web (compras)' : 'WhatsApp (conversaciones)') + '</td><td><b>' + x.sem + '</b> / ' + meta + '</td><td>' + x.ads + '</td><td>' + (x.cpr == null ? 'sin resultados' : 'S/ ' + (x.cpr < 10 ? x.cpr.toFixed(2) : Math.round(x.cpr))) + '</td><td>' + f$(x.minSem) + '</td><td>' + f$(x.gSem) + '</td><td>'
     + (x.sem >= meta ? '✅ Aprende' : x.cn === 'web' && x.sem < 10 ? '⚠️ Limitado: optimizar «agregar al carrito» o juntar' : '⚠️ Limitado: juntar con otro conjunto') + '</td></tr>';
   return '<details class="esx-tar esx-liq"><summary><b>🎓 APRENDIZAJE DE META</b><span>' + (lim.length ? lim.length + ' de ' + L.length + ' conjuntos con aprendizaje limitado (menos de ' + meta + ' resultados por semana)' : 'todos los conjuntos aprenden') + '</span></summary>'
-    + '<table class="esx-res"><thead><tr><th>Conjunto</th><th>Optimiza</th><th>Resultados por semana</th><th>Anuncios</th><th>Gasto por semana</th><th>Estado</th></tr></thead><tbody>' + L.map(fila).join('') + '</tbody></table>'
-    + '<div class="esx-lt-n">Meta necesita unos ' + meta + ' resultados por semana en cada conjunto para aprender. Menos conjuntos con más presupuesto cada uno aprenden más rápido. Subir presupuesto: máximo +20% cada 2-3 días. Anuncios nuevos: subirlos juntos una vez por semana (cada anuncio nuevo reinicia el aprendizaje del conjunto).</div></details>';
+    + '<table class="esx-res"><thead><tr><th>Conjunto</th><th>Optimiza</th><th>Resultados por semana</th><th>Anuncios</th><th>Costo por resultado</th><th>Mínimo por semana</th><th>Gasta por semana</th><th>Estado</th></tr></thead><tbody>' + L.map(fila).join('') + '</tbody></table>'
+    + (() => { const W = L.filter(x => x.cn === 'wa' && x.minSem != null), mn = W.reduce((a, x) => a + x.minSem, 0), gs = W.reduce((a, x) => a + x.gSem, 0);
+        return W.length > 1 ? '<div class="esx-lt-n" style="margin-top:4px">💡 Para que los ' + W.length + ' conjuntos de WhatsApp aprendan haría falta <b>S/ ' + mn.toLocaleString('es-PE') + ' por semana</b>; hoy se gasta <b>S/ ' + gs.toLocaleString('es-PE') + '</b>. ' + (gs < mn ? 'No alcanza para todos: con menos conjuntos (o más presupuesto) aprenden.' : 'Alcanza.') + '</div>' : ''; })()
+    + '<div class="esx-lt-n">Mínimo por semana = costo por resultado × ' + meta + ' (lo que Meta necesita para aprender). Meta necesita unos ' + meta + ' resultados por semana en cada conjunto para aprender. Menos conjuntos con más presupuesto cada uno aprenden más rápido. Subir presupuesto: máximo +20% cada 2-3 días. Anuncios nuevos: subirlos juntos una vez por semana (cada anuncio nuevo reinicia el aprendizaje del conjunto).</div></details>';
+}
+/* 25-oct (Pablo: OK calendario de eventos) · como los referentes: los días de TikTok Live, Showroom, Cyber, Black Friday… se marcan y NO cuentan
+   para el ritmo de reposición (inflan la venta). Cada evento muestra cuánto vendió: el próximo del mismo tipo se planifica con su propio pedido. */
+const ESC_EV_TIPO = { live:'🎥 TikTok Live', showroom:'🏬 Showroom', cyber:'💻 Cyber', black:'🖤 Black Friday', promo:'🏷️ Promoción', otro:'📌 Otro' };
+function _escEvHtml(){
+  if (!Array.isArray(ESC_EV)) return '';
+  const hoy = new Date().toISOString().slice(0, 10), F = d => new Date(d + 'T00:00:00').toLocaleDateString('es-PE', { day:'numeric', month:'short' }).replace('.', '');
+  const prox = ESC_EV.filter(e => e.hasta >= hoy).sort((a, b) => a.desde < b.desde ? -1 : 1), pas = ESC_EV.filter(e => e.hasta < hoy);
+  const ultimo = t => pas.filter(e => e.tipo === t).sort((a, b) => a.desde < b.desde ? 1 : -1)[0];
+  const fila = e => { const u = e.hasta >= hoy ? ultimo(e.tipo) : null;
+    return '<tr><th>' + esc(e.nombre) + '</th><td>' + (ESC_EV_TIPO[e.tipo] || e.tipo) + '</td><td>' + F(e.desde) + (e.hasta !== e.desde ? ' al ' + F(e.hasta) : '') + '</td><td>'
+      + (e.hasta < hoy ? '<b>' + (e.vendidas || 0) + '</b> prendas' : u ? 'el último vendió <b>' + (u.vendidas || 0) + '</b>: preparar stock para eso' : 'próximo') + '</td><td><button class="esx-nr" title="Borrar" data-id="' + e.id + '" onclick="escEvGuardar(+this.dataset.id, true)">✕</button></td></tr>'; };
+  return '<details class="esx-tar esx-liq"' + (prox.length ? ' open' : '') + '><summary><b>📅 EVENTOS</b><span>' + (prox.length ? prox.length + ' próximo' + (prox.length > 1 ? 's' : '') + ' · ' : '') + 'sus ventas no cuentan para el ritmo de reposición</span></summary>'
+    + (ESC_EV.length ? '<table class="esx-res"><thead><tr><th>Evento</th><th>Tipo</th><th>Fechas</th><th>Ventas</th><th></th></tr></thead><tbody>' + prox.concat(pas).slice(0, 20).map(fila).join('') + '</tbody></table>' : '')
+    + '<div class="esx-ev-f"><input id="evNom" placeholder="Nombre (ej. Live Yayitas)"><select id="evTipo">' + Object.keys(ESC_EV_TIPO).map(k => '<option value="' + k + '">' + ESC_EV_TIPO[k] + '</option>').join('') + '</select>'
+    + '<input id="evDesde" type="date"><input id="evHasta" type="date"><button class="esx-b" onclick="escEvGuardar(null, false)">＋ Agregar</button><span id="evMsg" class="esx-lt-n"></span></div>'
+    + '<div class="esx-lt-n">Como los referentes: los días de evento se sacan del ritmo normal (si no, se pediría de más), y cada evento se prepara aparte con lo que vendió el anterior del mismo tipo.</div></details>';
+}
+async function escEvGuardar(id, borrar){
+  const m = document.getElementById('evMsg');
+  try {
+    const v = k => (document.getElementById(k) || {}).value || '';
+    const body = { p_id: id, p_nombre: borrar ? 'x' : v('evNom'), p_tipo: borrar ? 'otro' : v('evTipo'), p_desde: borrar ? '2000-01-01' : v('evDesde'), p_hasta: borrar ? '2000-01-01' : (v('evHasta') || v('evDesde')), p_borrar: !!borrar };
+    const tok = _mkSbTok(); if (!tok) throw new Error('Inicia sesión en el ERP');
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_evento_guardar', { method:'POST', headers:{ apikey: MK_SB_ANON, Authorization:'Bearer ' + tok, 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+    const j = r.ok ? await r.json() : null; if (!j || !j.ok) throw new Error((j && j.error) || ('La base respondió ' + r.status));
+    ESC_STOCK = null; escCargar(true).then(() => escPintar());
+  } catch (e) { if (m) m.textContent = 'No se guardó: ' + e.message; }
 }
 function _escLiqLista(){
   const out = [], E = typeof ESC_LECT === 'object' && ESC_LECT ? ESC_LECT : {}, TP = _escTemporadas();
@@ -8307,7 +8343,13 @@ function _escEscHtml(f, ln, A){
   else if (!P.listo){
     const cand = A.sit === 'Bloqueado' ? null : (ln.filas || []).filter(r => r._on && (typeof motorDecidir === 'function' ? (motorDecidir(r) || {}).a : '') === 'MANTENER').sort((a, b) => (_escMcVida(b) || 0) - (_escMcVida(a) || 0))[0];
     rows += fila('🚀 Escalar', cand ? 'Todavía no. Promete: <b>«' + esc(_escAdLab(cand)) + '»</b>' : (A.sit === 'Bloqueado' ? 'Primero la prenda y los anuncios' : 'Todavía no')); }
-  if (P.techo != null && P.critica) rows += fila('📏 Aguanta', P.techo > 0 ? '<b>+' + Math.min(P.techo, 100) + '%</b> más de ventas' : '<b>Nada</b>: ' + esc(P.critica.t) + ' dura ' + P.critica.dias + ' d y reponer tarda ' + P.critica.nec);
+  /* 25-oct (Pablo: OK escalar a lo ancho) · como los referentes: si el anuncio que vende ya lo ve mucho la misma gente (frecuencia 3+), subir presupuesto
+     no rinde: se DUPLICA para gente nueva (otro conjunto/público), en otro formato o en el otro canal */
+  try { const anchos = (ln.filas || []).filter(r => r._on && MKH && MKH[String(r.ad_id)]).map(r => ({ r, x: motorDatos(r, MKH[String(r.ad_id)]) }))
+      .filter(o => o.x.roas7 != null && o.x.roas7 >= _mp('esc_roas7') && o.x.vt7 >= _mp('esc_comp7') && o.x.frec7 != null && o.x.frec7 >= _mp('esc_frec'));
+    if (anchos.length){ const o = anchos[0], est = _escFmt(o.r) !== 'Video';
+      rows += fila('↔️ A lo ancho', '<b>«' + esc(_escAdLab(o.r)) + '»</b> vende pero ya lo vieron ' + o.x.frec7.toFixed(1) + ' veces: no subirle más; duplicarlo para gente nueva (otro conjunto)' + (est ? ' y hacerlo en video' : ' y hacerlo estático o carrusel') + ' · probarlo en ' + (ln.canal === 'web' ? 'WhatsApp' : 'la web')); } } catch (_) {}
+  if (P.techo != null && P.critica) rows += fila('📏 Aguanta', P.techo > 0 ? '<b>+' + Math.min(P.techo, 100) + '%</b> más de ventas' : '<b>Nada</b>: ' + esc(P.critica.t) + ' dura ' + P.critica.dias + ' d y la reposición llega en ' + ((ln.niv.stock || {}).lead || P.critica.nec) + ' d');
   if (P.proteger.length) rows += fila('🛡️ No anunciar', P.proteger.slice(0, 4).map(x => esc(x.t)).join(' · ') + (P.proteger.length > 4 ? ' y ' + (P.proteger.length - 4) + ' más' : ''));
   if (P.empujar.length) rows += fila('📣 Mostrar', P.empujar.slice(0, 4).map(x => esc(cap(x.c))).join(' · '));
   return who + '<em>' + esc(V) + '</em></div>' + (rows ? '<table class="esx-lt esx-ct esx-est"><tbody>' + rows + '</tbody></table>' : '');
@@ -8345,6 +8387,7 @@ const ESC_CSS4 = `
 .esx-pan-h .esx-ped + .esx-ped{margin-left:6px}
 .esx-lect{display:block;width:100%;font-size:11.5px;color:#dfe9ff}.esx-lect b{color:#ffd166}
 .esx-liq{margin-top:8px}.esx-liq summary{cursor:pointer;display:flex;gap:10px;align-items:baseline}.esx-liq summary span{font-size:11.5px;color:#8aa0c8}
+.esx-ev-f{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 4px}.esx-ev-f input,.esx-ev-f select{background:#060a18;border:1px solid rgba(122,232,255,.3);color:#dfe9ff;border-radius:8px;padding:4px 8px;font-size:12px}
 .esx-liq tr.liq td:last-child{color:#ff5c7a;font-weight:700}.esx-liq tr.ok td:last-child{color:#00f5a0;font-weight:700}.esx-liq tr.vig td:last-child{color:#ffd166}
 .esx-sug{font-size:9.5px;font-weight:700;color:#ffd166;border:1px solid #ffd166;border-radius:6px;padding:0 4px;margin-left:4px}
 .esx-lt tr.sug .esx-nr{border-color:#ffd166;color:#ffd166}
