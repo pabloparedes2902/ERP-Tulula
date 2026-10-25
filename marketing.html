@@ -7094,10 +7094,11 @@ const ESC_CSS = ".esx{position:relative;border-radius:18px;padding:16px 18px 18p
    - Reglas (rojo / amarillo / verde) editables en ⚙ REGLAS (public.mk_motor_param, claves esc_*).
    Fuentes: stock = rpc mk_escalamiento_stock · ganador = motor de 📏 Reglas (ESCALAR) · foco = public.mk_escala_foco. */
 const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo:90, esc_cub_verde:95, esc_dias_rojo:17, esc_dias_verde:31,
-                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3, esc_cubre_pct:80, esc_pasos_dias:6, esc_col_min_pct:5, esc_col_dias_max:90, esc_st_rapido:50, esc_st_lento:20, esc_liq_vig:90, esc_liq_dias:180 };   /* 24-oct · lectura de pedidos nuevos y 📉 liquidar */   /* 24-oct · semáforo por DISPONIBILIDAD 95/90 (referentes) y sugerir ✕ a colores con <5% de las ventas que no rotan */   /* 24-oct · días fuera del taller hasta estar a la venta: tela 3 + entrega 1 + calidad 2 (igual que 🧵 Producción) */   /* 23-oct (Pablo: 70% es poco) · se escala solo si el stock cubre el 80% de lo que se vende de tallas clave hasta reponer */   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
+                  esc_crea_rojo:2, esc_crea_verde:3, esc_vida_crea:21, esc_aviso:7, esc_gana_verde:1, esc_portafolio:3, esc_sug_ventas:5, esc_prueba:7, esc_plazo_crea:2, esc_fant_pct:50, esc_fant_dias:14, esc_llego_dias:7, esc_sim_pct:20, esc_div_meta:3, esc_cubre_pct:80, esc_pasos_dias:6, esc_col_min_pct:5, esc_col_dias_max:90, esc_st_rapido:50, esc_st_lento:20, esc_liq_vig:90, esc_liq_dias:180, esc_temp_pct:40 };   /* 24-oct · la temporada de un clima se cierra cuando sus ventas de 4 semanas caen bajo el 40% de su pico */   /* 24-oct · lectura de pedidos nuevos y 📉 liquidar */   /* 24-oct · semáforo por DISPONIBILIDAD 95/90 (referentes) y sugerir ✕ a colores con <5% de las ventas que no rotan */   /* 24-oct · días fuera del taller hasta estar a la venta: tela 3 + entrega 1 + calidad 2 (igual que 🧵 Producción) */   /* 23-oct (Pablo: 70% es poco) · se escala solo si el stock cubre el 80% de lo que se vende de tallas clave hasta reponer */   /* 20-oct · demanda fantasma: % de clientas que cuenta como venta y días que mira */   /* 19-oct · prueba = días que tiene un creativo para ganar · plazo = días para crear si no queda ninguno */
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
+let ESC_CLIMA = {}, ESC_SEMS = null;   /* 24-oct · clima por prenda y ventas por semana del último año */
 let ESC_LECT = {};   /* 24-oct · {'blazer mirella': {codigo, llego, recibidas, dias, vendidas, stock, st}} lectura del último pedido que llegó */
 let ESC_LREAL = null;   /* 24-oct · {por_prenda:{'BLAZER MIRELLA':{dias,n}}, tienda:{dias,n}} duración real pedido → a la venta */
 let ESC_NOREP = {};   /* 23-oct · {'pantalon mirella|rojo': {color_txt, quien}} colores que NO se reponen (botón ✕ del cuadro) */
@@ -7130,7 +7131,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13, r14] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13, r14, r15, r16] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -7144,7 +7145,9 @@ async function escCargar(forzar){
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_en_camino_detalle', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 23-oct · en confección por color y talla */
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_no_reponer_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 23-oct · colores que no se reponen */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_real', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · duración real de los pedidos */
-      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lectura', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 24-oct · lectura de cada pedido nuevo */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_lectura', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · lectura de cada pedido nuevo */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_clima_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · clima de cada prenda */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_ventas_semanas', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 24-oct · ventas por semana (temporada) */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -7156,6 +7159,8 @@ async function escCargar(forzar){
     ESC_CAMDET = {}; try { if (r11 && r11.ok) ((await r11.json()) || []).forEach(x => { ESC_CAMDET[_mkNorm(x.diseno).trim() + '|' + _mkNorm(x.color).trim() + '|' + String(x.talla).toUpperCase().trim()] = +x.n || 0; }); } catch (_) {}
     ESC_MED = null; try { if (r10 && r10.ok) ESC_MED = await r10.json(); } catch (_) {}
     ESC_NOREP = {}; try { if (r12 && r12.ok){ const L = await r12.json(); if (Array.isArray(L)) L.forEach(x => { ESC_NOREP[x.prenda + '|' + x.color] = x; }); } } catch (_) {}
+    ESC_CLIMA = {}; try { if (r15 && r15.ok){ const L = await r15.json(); if (Array.isArray(L)) L.forEach(x => { ESC_CLIMA[String(x.diseno).toUpperCase().trim()] = x.clima; }); } } catch (_) {}
+    ESC_SEMS = null; try { if (r16 && r16.ok){ const L = await r16.json(); if (Array.isArray(L)) ESC_SEMS = L; } } catch (_) {}
     ESC_LECT = {}; try { if (r14 && r14.ok){ const L = await r14.json(); if (Array.isArray(L)) L.forEach(x => { ESC_LECT[_mkNorm(x.diseno).trim()] = x; }); } } catch (_) {}
     ESC_LREAL = null; try { if (r13 && r13.ok) ESC_LREAL = await r13.json(); } catch (_) {}
     ESC_LEAD = {}; try { if (r9 && r9.ok) ((await r9.json()) || []).forEach(x => { ESC_LEAD[_mkNorm(x.diseno).trim()] = x; }); } catch (_) {}
@@ -7921,9 +7926,9 @@ function _escDispFilas(n){
 }
 function _escAnilloFilas(col, v, ico, rows){
   const off = 100 * (1 - Math.max(0.02, Math.min(1, v || 0)));
-  return '<svg viewBox="0 0 248 132" class="esx-ring2"><rect x="4" y="4" width="240" height="124" rx="62" pathLength="100" class="esx-track"/>'
-    + '<rect x="4" y="4" width="240" height="124" rx="62" pathLength="100" class="esx-arc2" style="stroke:' + col + ';--off:' + off.toFixed(1) + '"/>'
-    + '<rect x="15" y="15" width="218" height="102" rx="51" class="esx-core"/></svg>'
+  return '<svg viewBox="0 0 320 170" class="esx-ring2"><rect x="4" y="4" width="312" height="162" rx="81" pathLength="100" class="esx-track"/>'
+    + '<rect x="4" y="4" width="312" height="162" rx="81" pathLength="100" class="esx-arc2" style="stroke:' + col + ';--off:' + off.toFixed(1) + '"/>'
+    + '<rect x="15" y="15" width="290" height="140" rx="70" class="esx-core"/></svg>'
     + '<div class="esx-in esx-in-f"><svg viewBox="0 0 24 24" class="esx-ico" style="stroke:' + col + '">' + ico + '</svg>'
     + rows.map(r => '<div class="esx-fl' + (r[2] ? ' rj' : '') + '"><span>' + esc(r[0]) + '</span><b>' + esc(String(r[1])) + '</b></div>').join('') + '</div>';
 }
@@ -8103,23 +8108,44 @@ function _escLectHtml(st){
    los COMPLEMENTOS van aparte: no se liquidan, se empujan como upsell o regalo. Lista editable aquí. */
 const ESC_COMPLEMENTOS = ['ARETE', 'ANILLO', 'COLLAR', 'PULSERA', 'INTERIOR', 'CORREA', 'COLETS', 'PAÑUELO'];
 const _escEsComp = p => ESC_COMPLEMENTOS.includes(String(p || '').toUpperCase().trim());
+/* 24-oct (Pablo: OK temporada por clima, cierre automático al 40% del pico) · como los referentes: la temporada no se cierra por calendario
+   sino cuando sus ventas pasaron el pico (si el clima la alarga, sigue abierta). Clima por prenda en 📦 Productos; si no está puesto, se sugiere por tipo. */
+const ESC_CLIMA_SUG = { ABRIGO:'frio', GABARDINA:'frio', CHOMPA:'frio', CASACA:'frio', BIKINI:'calor', TRIKINI:'calor', 'TRAJE DE BAÑO':'calor', SHORT:'calor' };
+function _escClimaDe(p, d){ const k = (String(p || '') + ' ' + String(d || '')).toUpperCase().replace(/\s+/g, ' ').trim(), C = typeof ESC_CLIMA === 'object' && ESC_CLIMA ? ESC_CLIMA : {};
+  return C[k] || ESC_CLIMA_SUG[String(p || '').toUpperCase().trim()] || 'todo'; }
+function _escTemporadas(){
+  const out = {}; if (!Array.isArray(ESC_SEMS)) return out;
+  ['calor', 'frio'].forEach(cl => { const W = Array(52).fill(0); let hay = false;
+    ESC_SEMS.forEach(x => { const sp = String(x.d || '').split(' '); if (_escClimaDe(x.p, String(x.d || '').slice(String(x.p || '').length).trim()) !== cl) return; hay = true;
+      Object.keys(x.w || {}).forEach(i => { if (+i >= 0 && +i < 52) W[+i] += +x.w[i] || 0; }); });
+    if (!hay) return;
+    const ult = W[0] + W[1] + W[2] + W[3]; let pico = 0; for (let i = 0; i <= 48; i++) pico = Math.max(pico, W[i] + W[i + 1] + W[i + 2] + W[i + 3]);
+    const pct = pico > 0 ? Math.round(ult / pico * 100) : 0;
+    out[cl] = { ult, pico, pct, estado: pico < 8 ? 'sin datos' : pct >= _ep('esc_temp_pct') ? 'activa' : 'cerrándose' }; });
+  return out;
+}
 function _escLiqLista(){
-  const out = [], E = typeof ESC_LECT === 'object' && ESC_LECT ? ESC_LECT : {};
-  (ESC_STOCK || []).forEach(pz => { const pk = _mkNorm(pz.p + ' ' + pz.d).trim(), lec = E[pk];
+  const out = [], E = typeof ESC_LECT === 'object' && ESC_LECT ? ESC_LECT : {}, TP = _escTemporadas();
+  (ESC_STOCK || []).forEach(pz => { const pk = _mkNorm(pz.p + ' ' + pz.d).trim(), lec = E[pk], cl = _escClimaDe(pz.p, pz.d), tp = cl !== 'todo' ? TP[cl] : null;
     if (lec && +lec.dias < 28) return;
     const C = {}; (pz.x || []).forEach(a => { const c = String(a[0]); const o = C[c] = C[c] || { s: 0, v28: 0, v90: 0, tallas: 0 }; o.s += Math.max(0, +a[2] || 0); o.v28 += +a[3] || 0; o.v90 += +a[4] || 0; if ((+a[2] || 0) > 0) o.tallas++; });
     Object.keys(C).forEach(c => { const o = C[c]; if (o.s < 3) return;
       const d = o.v28 > 0 ? Math.round(o.s / (o.v28 / 28)) : (o.v90 > 0 ? Math.round(o.s / (o.v90 / 90)) : 9999);
-      const niv = (o.v90 === 0 || d > _ep('esc_liq_dias')) ? 'liq' : d > _ep('esc_liq_vig') ? 'vig' : null;
-      if (niv) out.push({ prenda: (pz.p + ' ' + pz.d).trim(), c, s: o.s, tallas: o.tallas, v90: o.v90, d, niv, comp: _escEsComp(pz.p) }); }); });
+      let niv = (o.v90 === 0 || d > _ep('esc_liq_dias')) ? 'liq' : d > _ep('esc_liq_vig') ? 'vig' : null, fin = false;
+      if (tp && tp.estado === 'activa' && niv && o.v90 > 0) niv = null;   /* en plena temporada lo que vende no se liquida */
+      if (tp && tp.estado === 'cerrándose'){ niv = 'liq'; fin = true; }   /* fin de temporada: se liquida lo que quede */
+      if (niv) out.push({ prenda: (pz.p + ' ' + pz.d).trim(), c, s: o.s, tallas: o.tallas, v90: o.v90, d, niv, fin, cl, comp: _escEsComp(pz.p) }); }); });
   return out.sort((a, b) => (a.niv === b.niv ? 0 : a.niv === 'liq' ? -1 : 1) || b.s - a.s);
 }
 function _escLiqHtml(){
   const T = _escLiqLista(), L = T.filter(x => !x.comp), K = T.filter(x => x.comp && x.niv === 'liq'); if (!T.length) return '';
   const nL = L.filter(x => x.niv === 'liq'), uL = nL.reduce((a, x) => a + x.s, 0), cap = s => s.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase());
-  const fila = x => '<tr class="' + x.niv + '"><th>' + esc(cap(x.prenda)) + '</th><td>' + esc(cap(x.c)) + '</td><td>' + x.s + ' <small>(' + x.tallas + ' tallas)</small></td><td>' + x.v90 + '</td><td>' + (x.d >= 9999 ? 'sin ventas' : x.d + ' días') + '</td><td>' + (x.niv === 'liq' ? '🔴 Liquidar' : '🟡 Vigilar') + '</td></tr>';
+  const CI = { calor:'☀️ Calor', frio:'❄️ Frío', todo:'Todo el año' }, TP = _escTemporadas();
+  const fila = x => '<tr class="' + x.niv + '"><th>' + esc(cap(x.prenda)) + '</th><td>' + esc(cap(x.c)) + '</td><td>' + x.s + ' <small>(' + x.tallas + ' tallas)</small></td><td>' + x.v90 + '</td><td>' + (x.d >= 9999 ? 'sin ventas' : x.d + ' días') + '</td><td>' + (CI[x.cl] || '—') + '</td><td>' + (x.niv === 'liq' ? '🔴 Liquidar' + (x.fin ? ' (fin de temporada)' : '') : '🟡 Vigilar') + '</td></tr>';
+  const tpTxt = ['calor', 'frio'].filter(c => TP[c]).map(c => CI[c] + ': ' + (TP[c].estado === 'sin datos' ? 'sin datos' : TP[c].estado + ' (' + TP[c].pct + '% de su mejor mes)')).join(' · ');
   return '<details class="esx-tar esx-liq"><summary><b>📉 PARA LIQUIDAR</b><span>' + nL.length + ' colores · ' + uL + ' prendas paradas (TikTok Live, Yayitas o descuento) · ' + (L.length - nL.length) + ' en vigilancia</span></summary>'
-    + '<table class="esx-res"><thead><tr><th>Prenda</th><th>Color</th><th>Stock</th><th>Vendidas 90 d</th><th>Le alcanza para</th><th>Qué hacer</th></tr></thead><tbody>' + L.slice(0, 40).map(fila).join('') + '</tbody></table>'
+    + (tpTxt ? '<div class="esx-lt-n" style="margin:4px 0">🌡️ Temporada: ' + tpTxt + '</div>' : '')
+    + '<table class="esx-res"><thead><tr><th>Prenda</th><th>Color</th><th>Stock</th><th>Vendidas 90 d</th><th>Le alcanza para</th><th>Clima</th><th>Qué hacer</th></tr></thead><tbody>' + L.slice(0, 40).map(fila).join('') + '</tbody></table>'
     + (K.length ? '<div class="esx-lt-n" style="margin-top:6px">🎁 <b>Complementos sin pauta</b> (aretes, anillos, collares, pulseras, interiores, correas, colets, pañuelos): '
         + K.reduce((a, x) => a + x.s, 0) + ' unidades paradas en ' + K.length + ' colores. No se liquidan: <b>empujarlos como upsell</b> (sugerirlos al cerrar una venta) y <b>de regalo</b> en compras grandes. Los más parados: '
         + K.slice().sort((a, b) => b.s - a.s).slice(0, 5).map(x => esc(cap(x.prenda)) + ' ' + esc(cap(x.c)) + ' (' + x.s + ')').join(' · ') + '</div>' : '')
@@ -8250,10 +8276,10 @@ const ESC_CSS4 = `
 .esx-acc2.esx-pan{width:min(1200px,100%);flex-direction:column;align-items:stretch;gap:8px}
 .esx-pan .esx-pan-h{flex-direction:row}
 .esx-pan .esx-lt{width:100%}
-.esx-orb{width:248px;height:132px;border-radius:66px}
-.esx-in-f{gap:2px;padding:0 26px}
+.esx-orb{width:320px;height:170px;border-radius:85px}
+.esx-in-f{gap:2px;padding:0 40px}
 .esx-in-f .esx-ico{width:18px;height:18px;margin-bottom:1px}
-.esx-fl{display:flex;justify-content:space-between;gap:6px;width:204px;font-size:11px;line-height:1.22}
+.esx-fl{display:flex;justify-content:space-between;gap:10px;width:236px;font-size:12px;line-height:1.3}
 .esx-fl span{color:#9fb2d8;white-space:nowrap}
 .esx-fl b{color:#ffd166;font-weight:800;white-space:nowrap;text-shadow:none;font-size:12.5px}
 .esx-fl.rj span,.esx-fl.rj b{color:#ff5c7a}
@@ -8338,7 +8364,8 @@ function _escReglasHtml(){
     + R('🏅', '3 · GANADORES', ESC_RESP.gana, ['🟢 desde ' + _escIn('esc_gana_verde') + ' anuncio en ESCALAR (motor de 📏 Reglas)',
         '🟡 si alguno vende pero no escala (MANTENER) · 🔴 si ninguno vende'])
     + R('📈', 'LECTURA DE PEDIDOS NUEVOS', ESC_RESP.stock, ['🔥 rápido: vendió ' + _escIn('esc_st_rapido') + '% o más de lo que había dentro de las 4 semanas de llegar', '🐢 lento: menos de ' + _escIn('esc_st_lento') + '% a las 3 semanas'])
-    + R('📉', 'LIQUIDAR', ESC_RESP.stock, ['🟡 vigilar: el stock de un color dura más de ' + _escIn('esc_liq_vig') + ' días', '🔴 liquidar: más de ' + _escIn('esc_liq_dias') + ' días, o no vendió nada en 90 días'])
+    + R('📉', 'LIQUIDAR', ESC_RESP.stock, ['🟡 vigilar: el stock de un color dura más de ' + _escIn('esc_liq_vig') + ' días', '🔴 liquidar: más de ' + _escIn('esc_liq_dias') + ' días, o no vendió nada en 90 días',
+        '🌡️ temporada (calor / frío): se cierra cuando sus ventas de 4 semanas bajan del ' + _escIn('esc_temp_pct') + '% de su mejor mes; ahí se liquida lo que quede. Abierta: lo que vende no se liquida'])
     + R('🚀', '4 · ESCALAR', ESC_RESP.esc, ['se sube +' + _escIn('esc_sim_pct') + '% cada 72 h si sigue vendiendo',
         'solo si el stock cubre el ' + _escIn('esc_cubre_pct') + '% de lo que se vende de las tallas clave hasta que llegue la reposición (referentes: 90-95%)',
         '🛡️ la talla que no llega se protege (no va en anuncios nuevos) · 📣 el color que sobra se empuja'])
