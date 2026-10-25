@@ -7098,6 +7098,7 @@ const ESC_DEF = { esc_conf_dias:10, esc_lote_min:50, esc_obj_sem:6, esc_cub_rojo
 let ESC_P = Object.assign({}, ESC_DEF), ESC_STOCK = null, ESC_GEN = null, ESC_BANCO = null, ESC_CARGANDO = false, ESC_ERR = '';
 let ESC_FANT = null, ESC_FANT_IDX = null, ESC_WEB = null, ESC_TAREAS = null, ESC_TAREAS_VER = 'mias';   /* 21-oct · ESC_TAREAS = {clave: {quien, hecho_at}} (null = tabla sin instalar) */   /* 20-oct 18h · ESC_WEB = productos publicados en la web con sus colores */   /* 20-oct · demanda fantasma (rpc df_resumen, la arma el chat de Conversión web) */
 let ESC_CAMDET = {};   /* 23-oct · {'blazer mirella|negro|M': 12} lo que ya está en confección */
+let ESC_COSTO = {};   /* 25-oct · costo unitario por prenda (solo administración) */
 let ESC_CLIMA = {}, ESC_SEMS = null;   /* 24-oct · clima por prenda y ventas por semana del último año */
 let ESC_LECT = {};   /* 24-oct · {'blazer mirella': {codigo, llego, recibidas, dias, vendidas, stock, st}} lectura del último pedido que llegó */
 let ESC_LREAL = null;   /* 24-oct · {por_prenda:{'BLAZER MIRELLA':{dias,n}}, tienda:{dias,n}} duración real pedido → a la venta */
@@ -7131,7 +7132,7 @@ async function escCargar(forzar){
   const hdr = { apikey: MK_SB_ANON, Authorization: 'Bearer ' + (tok || MK_SB_ANON), 'Content-Type':'application/json' };
   try {
     if (!tok) throw new Error('Inicia sesión en el ERP para ver el stock');
-    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13, r14, r15, r16] = await Promise.all([
+    const [r1, r2, r3, r4, r5, , r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17] = await Promise.all([
       fetch(MK_SB_URL + '/rest/v1/rpc/mk_escalamiento_stock', { method:'POST', headers: hdr, body:'{}' }),
       fetch(MK_SB_URL + '/rest/v1/mk_motor_param?select=clave,valor&clave=like.esc_*', { headers: hdr }),
       fetch(MK_SB_URL + '/rest/v1/mk_creativos?select=campos,nombre&estado=eq.nuevo', { headers: hdr }),
@@ -7147,7 +7148,8 @@ async function escCargar(forzar){
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_lead_real', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · duración real de los pedidos */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_lectura', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · lectura de cada pedido nuevo */
       fetch(MK_SB_URL + '/rest/v1/rpc/prod_clima_ver', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · clima de cada prenda */
-      fetch(MK_SB_URL + '/rest/v1/rpc/prod_ventas_semanas', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 24-oct · ventas por semana (temporada) */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_ventas_semanas', { method:'POST', headers: hdr, body:'{}' }).catch(() => null),   /* 24-oct · ventas por semana (temporada) */
+      fetch(MK_SB_URL + '/rest/v1/rpc/prod_productos', { method:'POST', headers: hdr, body:'{}' }).catch(() => null)   /* 25-oct · costo por prenda (tope de compra) */
     ]);
     if (!r1.ok) throw new Error('La base respondió ' + r1.status);
     const j = await r1.json(); ESC_STOCK = (j && j.filas) || []; ESC_GEN = j && j.generado;
@@ -7159,6 +7161,7 @@ async function escCargar(forzar){
     ESC_CAMDET = {}; try { if (r11 && r11.ok) ((await r11.json()) || []).forEach(x => { ESC_CAMDET[_mkNorm(x.diseno).trim() + '|' + _mkNorm(x.color).trim() + '|' + String(x.talla).toUpperCase().trim()] = +x.n || 0; }); } catch (_) {}
     ESC_MED = null; try { if (r10 && r10.ok) ESC_MED = await r10.json(); } catch (_) {}
     ESC_NOREP = {}; try { if (r12 && r12.ok){ const L = await r12.json(); if (Array.isArray(L)) L.forEach(x => { ESC_NOREP[x.prenda + '|' + x.color] = x; }); } } catch (_) {}
+    ESC_COSTO = {}; try { if (r17 && r17.ok){ const L = await r17.json(); if (Array.isArray(L)) L.forEach(x => { if (x.costo_unitario != null) ESC_COSTO[_mkNorm(x.diseno).trim()] = +x.costo_unitario; }); } } catch (_) {}
     ESC_CLIMA = {}; try { if (r15 && r15.ok){ const L = await r15.json(); if (Array.isArray(L)) L.forEach(x => { ESC_CLIMA[String(x.diseno).toUpperCase().trim()] = x.clima; }); } } catch (_) {}
     ESC_SEMS = null; try { if (r16 && r16.ok){ const L = await r16.json(); if (Array.isArray(L)) ESC_SEMS = L; } } catch (_) {}
     ESC_LECT = {}; try { if (r14 && r14.ok){ const L = await r14.json(); if (Array.isArray(L)) L.forEach(x => { ESC_LECT[_mkNorm(x.diseno).trim()] = x; }); } } catch (_) {}
@@ -7737,6 +7740,16 @@ function escAlertaItems(){
   (typeof _escUrgentes === 'function' ? _escUrgentes(F) : []).forEach(x => {   /* 22-oct · 🚨 tallas clave que se acaban antes de reponer */
     for (let i = its.length - 1; i >= 0; i--) if (its[i].k === x.k && its[i].etapa === 'stock') its.splice(i, 1);
     its.push(x); });
+  /* 25-oct (Pablo: OK revisión semanal) · cada LUNES sale en Alertas lo que hay para liquidar y lo nuevo que entró desde el lunes pasado */
+  try { if (new Date().getDay() === 1 && typeof _escLiqLista === 'function'){
+    const LQ = _escLiqLista().filter(x => x.niv === 'liq' && !x.comp), keys = LQ.map(x => x.prenda + '|' + x.c);
+    const d0 = new Date(); d0.setHours(0, 0, 0, 0); const wk = d0.toISOString().slice(0, 10);
+    let S = null; try { S = JSON.parse(localStorage.getItem('esc_liq_sem') || 'null'); } catch (_) {}
+    if (!S || S.wk !== wk){ S = { wk, prev: S ? S.keys : null, keys }; try { localStorage.setItem('esc_liq_sem', JSON.stringify(S)); } catch (_) {} }
+    const nuevos = S.prev ? LQ.filter(x => !S.prev.includes(x.prenda + '|' + x.c)) : [];
+    if (LQ.length) its.push({ k: '', nombre: '📉 Para liquidar', canal: 'ambos', lane: 'wa', etapa: 'liquidar', nivel: 'amarillo', corte: false,
+      sit: LQ.length + ' colores · ' + LQ.reduce((a, x) => a + x.s, 0) + ' prendas paradas' + (nuevos.length ? ' · nuevos esta semana: ' + nuevos.slice(0, 5).map(x => x.prenda.toLowerCase() + ' ' + x.c.toLowerCase()).join(', ') + (nuevos.length > 5 ? ' y ' + (nuevos.length - 5) + ' más' : '') : ''),
+      act: 'Revisar la lista en 🚀 Escalamiento → 📉 Para liquidar y decidir: TikTok Live, Yayitas o descuento', q: 'Pablo · Ana' }); } } catch (_) {}
   const ord = { rojo:0, naranja:1, amarillo:2 };
   its.sort((a, b) => ord[a.nivel] - ord[b.nivel] || (b.corte - a.corte));
   return { at: Date.now(), dias: (typeof mkPeriodoDias !== 'undefined' ? mkPeriodoDias : null), auto: FL.auto,
@@ -7820,13 +7833,13 @@ function _escResumenHtml(){
   let h = '<div class="esx-tar"><div class="esx-tar-h"><b>📋 RESUMEN</b><span>' + _escPl(L.length, 'producto seleccionado', 'productos seleccionados') + ' · toca uno para verlo</span></div>';
   /* 23-oct 18h (Pablo) · la medición del motor sale del resumen; queda en ⚙ Reglas */
   if (!L.length) return h + '<div class="esx-tar-v">Elige productos en foco para ver su resumen.</div></div>';
-  const usadas = {}; let tC = 0, tK = 0;
+  const usadas = {}; let tC = 0, tK = 0, sC = 0, sinC = false;
   const filas = L.map(f => {
     const lanes = f.lanes.filter(l => !l.vacio), st = lanes[0].niv.stock, ld = st.lead || _ep('esc_conf_dias');
     let n = 0, lleg = null, env = null; const comp = [];
     if (st.col !== 'gris') (st.piezas || []).forEach(r => { if (!(r.tot > 0)) return; const P = _escPiezaPedido(r, ld); if (P.envD > _ep('esc_aviso')) return;
       const key = _mkNorm((r.n || '') + ' ' + (r.d || '')).trim(); if (usadas[key]){ comp.push(usadas[key]); return; } usadas[key] = f.nombre;
-      n += r.tot; if (!lleg || P.lleg < lleg) lleg = P.lleg; if (!env || P.env < env) env = P.env; });
+      n += r.tot; sC += r.tot * (ESC_COSTO[key] || 0); if (!(key in ESC_COSTO)) sinC = true; if (!lleg || P.lleg < lleg) lleg = P.lleg; if (!env || P.env < env) env = P.env; });
     tC += n;
     const camT = (st.piezas || []).reduce((a, r) => a + (r.cam || 0), 0);
     const conf = n ? '<b>' + n + '</b> prendas · para el ' + F0(lleg) + '<small>al taller ' + (env <= _escHoy() ? 'HOY' : 'el ' + F0(env)) + '</small>'
@@ -7839,8 +7852,14 @@ function _escResumenHtml(){
     return '<tr data-k="' + esc(f.k) + '" onclick="escIrA({ k: this.dataset.k })"><th>' + esc(f.nombre) + (comp.length ? ' <b>(' + esc([...new Set(comp)].join(' + ')) + ')</b>' : '') + '</th><td>' + conf + '</td><td>' + cre + '</td><td>' + es + '</td></tr>';
   }).join('');
   h += '<table class="esx-res"><thead><tr><th>Producto</th><th>🧵 Confección · Ana</th><th>🎬 Creativos · Heily</th><th>🚀 Escalar · Paola</th></tr></thead><tbody>' + filas
-    + (L.length > 1 ? '<tr class="tot"><th>Total</th><td>' + (tC ? '<b>' + tC + '</b> prendas' : '—') + '</td><td>' + (tK ? '<b>' + tK + '</b> creativos' : '—') + '</td><td></td></tr>' : '')
+    + (L.length > 1 ? '<tr class="tot"><th>Total</th><td>' + (tC ? '<b>' + tC + '</b> prendas' + (sC > 0 ? '<small>≈ S/ ' + Math.round(sC).toLocaleString('es-PE') + ' a costo' + (sinC ? ' (sin el costo de alguna prenda)' : '') + '</small>' : '') : '—') + '</td><td>' + (tK ? '<b>' + tK + '</b> creativos' : '—') + '</td><td></td></tr>' : '')
     + '</tbody></table>';
+  /* 25-oct · 💰 tope de compra del mes (lo calcula 🧵 Producción, donde Ana lo edita) */
+  try { const T = JSON.parse(localStorage.getItem('prod_tope_v1') || 'null'), mes = new Date().toISOString().slice(0, 7);
+    if (T && T.mes === mes && sC > 0){ const q = T.queda - sC, f = n => 'S/ ' + Math.round(n).toLocaleString('es-PE');
+      h += '<div class="esx-lt-n" style="margin-top:6px;font-size:12px">💰 Tope de compra del mes ' + f(T.tope) + ' · ya usado ' + f(T.usado) + ' · los pedidos sugeridos (' + f(sC) + ') '
+        + (q >= 0 ? '<b style="color:#00f5a0">entran: quedaría ' + f(q) + '</b>' : '<b style="color:#ff5c7a">se pasan por ' + f(-q) + ': priorizar los productos en rojo o subir el tope en 🧵 Producción</b>') + '</div>'; }
+    else if (sC > 0) h += '<div class="esx-lt-n" style="margin-top:6px">💰 Abre 🧵 Producción para comparar con el tope de compra del mes.</div>'; } catch (_) {}
   return h + '</div>';
 }
 /* «para el 25 oct (2 días)» → fecha, para elegir la más próxima */

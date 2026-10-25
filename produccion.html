@@ -75,6 +75,7 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g small{display:block;color:v
   <button id="btnOrden" onclick="guardarOrden2()" style="display:none;border-color:var(--ac)">💾 Guardar orden</button>
   <button class="p" id="btnNueva" onclick="abrirNueva()">＋ Nueva producción</button>
 </div>
+<div id="topeBar" style="margin:4px 2px 8px;font-size:12.5px"></div>
 <div id="tablero" class="lin"><div class="vacio">Cargando…</div></div>
 
 <div id="mNueva" class="modal" onclick="if(event.target===this)cerrar('mNueva')"><div class="box">
@@ -175,6 +176,7 @@ function pintar(){
   const talleres = [...new Set(TALLERES.concat(D.ordenes.map(o => o.taller).filter(Boolean)))];
   const sel = document.getElementById('fTaller'); if (sel.options.length <= 1) talleres.forEach(t => sel.add(new Option(t, t)));
   document.getElementById('lTaller').innerHTML = talleres.map(t => '<option value="' + esc(t) + '">').join('');
+  try { topePintar(); } catch (_) {}   /* 25-oct · tope de compra del mes */
   const el = document.getElementById('tablero');
   if (ver === 'talleres'){ el.innerHTML = talleresHtml(ta); return; }
   const L = D.ordenes.filter(o => (ver === 'cerradas' ? o.cerrada : !o.cerrada) && (!ta || o.taller === ta));
@@ -245,6 +247,42 @@ async function nuevaDesdeEscala(Px){
   const n = document.getElementById('nNotas'); if (n && !n.value) n.value = 'Cantidades sugeridas por ' + (P.origen || 'Escalamiento') + ' (revisar antes de guardar).';
   return true;
 }
+/* 25-oct (Pablo: OK tope de compra del mes, sugerido y editable por Ana) · OPEN-TO-BUY como los referentes:
+   compra del mes = ventas planeadas a costo + stock que se quiere tener al cierre − stock de hoy − lo ya pedido.
+   Para mantener el inventario parejo (cierre = inicio) queda: COMPRAR LO QUE SE VENDE. Sugerido = lo vendido en las últimas 4 semanas
+   (prendas, sin complementos), llevado a 30 días y a costo de 📦 Productos. Usado = pedidos creados este mes × su costo. */
+const PROD_TOPE_DESDE = '2026-10-23';
+const COMPLEMENTOS = ['ARETE', 'ANILLO', 'COLLAR', 'PULSERA', 'INTERIOR', 'CORREA', 'COLETS', 'PAÑUELO'];
+const costoDe = d => { const p = D.prod && D.prod[nrm(d)]; return p && p.costo_unitario != null ? +p.costo_unitario : null; };
+const soles = n => 'S/ ' + Math.round(n || 0).toLocaleString('es-PE');
+function topeCalc(){
+  if (!D.prod) return null;
+  const hoy = new Date(), mes = hoy.getFullYear() + '-' + String(hoy.getMonth() + 1).padStart(2, '0');
+  let sug = 0, sinCosto = 0;
+  (D.stock || []).forEach(x => { if (COMPLEMENTOS.includes(String(x.p).toUpperCase())) return; const c = costoDe(x.p + ' ' + x.d), v = (x.x || []).reduce((a, r) => a + (+r[3] || 0), 0);
+    if (!v) return; if (c == null){ sinCosto++; return; } sug += v * 30 / 28 * c; });
+  let usado = 0, n = 0;
+  /* los pedidos que se pasaron del Drive el 21 y 22 de octubre no cuentan como compras del mes: el tope corre desde el 23-oct */
+  D.ordenes.filter(o => String(o.creado || '').slice(0, 7) === mes && String(o.creado || '').slice(0, 10) >= PROD_TOPE_DESDE).forEach(o => { const c = costoDe(o.diseno); n++;
+    D.lineas.filter(l => l.orden_id === o.id).forEach(l => { usado += (+l.pedido || 0) * (c || 0); }); });
+  const tope = D.param.tope_compra_mes > 0 ? +D.param.tope_compra_mes : null, sugR = Math.round(sug / 500) * 500;
+  return { mes, tope, sug: sugR, usado: Math.round(usado), n, queda: (tope || sugR) - Math.round(usado), sinCosto };
+}
+async function topePintar(){
+  const el = document.getElementById('topeBar'); if (!el) return;
+  try { await cargarStock(); } catch (_) {}
+  const T = topeCalc(); if (!T){ el.innerHTML = ''; return; }
+  const mesTxt = new Date().toLocaleDateString('es-PE', { month:'long' }), base = T.tope || T.sug;
+  el.innerHTML = '💰 <b>Tope de compra de ' + mesTxt + ':</b> S/ <input id="topeIn" type="number" min="0" step="500" style="width:100px" value="' + (T.tope || T.sug) + '"> <button onclick="topeGuardar()">Guardar</button> <span id="topeMsg" class="mu"></span>'
+    + ' · <span class="mu" title="Lo vendido en las últimas 4 semanas (prendas, sin complementos), llevado a 30 días y a costo de 📦 Productos: comprar lo que se vende mantiene el inventario parejo">sugerido ' + soles(T.sug) + (T.tope ? '' : ' (en uso)') + '</span>'
+    + ' · usado ' + soles(T.usado) + ' en ' + T.n + ' pedido' + (T.n === 1 ? '' : 's') + ' de este mes · <b style="color:' + (T.queda < 0 ? 'var(--rd)' : 'var(--ok)') + '">' + (T.queda < 0 ? 'se pasó por ' + soles(-T.queda) : 'queda ' + soles(T.queda)) + '</b>';
+  try { localStorage.setItem('prod_tope_v1', JSON.stringify({ mes: T.mes, tope: base, sug: T.sug, usado: T.usado, queda: T.queda, at: Date.now() })); } catch (_) {}
+}
+async function topeGuardar(){
+  const m = document.getElementById('topeMsg'), v = +document.getElementById('topeIn').value;
+  try { const r = await rpc('prod_param_guardar', { p_clave:'tope_compra_mes', p_valor:v }); if (!r.ok) throw new Error(r.error); D.param.tope_compra_mes = v; m.textContent = '✓ Guardado'; m.className = 'okt'; topePintar(); }
+  catch (e) { m.textContent = e.message; m.className = 'err'; }
+}
 function piezasDe(dis){ const k = nrm(dis); return (D.stock || []).filter(x => nrm(x.p + ' ' + x.d) === k); }
 function nProducto(mantener){
   const P = piezasDe(document.getElementById('nDis').value);
@@ -267,7 +305,8 @@ function nGrid(){
 }
 function nTotal(){
   let tot = 0; NV.colores.forEach(c => { const s = TALLAS.reduce((a, t) => a + (NV.q[c + '|' + t] || 0), 0); tot += s; const td = [...document.querySelectorAll('td.tt')].find(x => x.dataset.c === c); if (td) td.textContent = s || ''; });
-  document.getElementById('nTot').textContent = 'Total: ' + tot + ' prendas';
+  const cU = costoDe(document.getElementById('nDis').value), T = typeof topeCalc === 'function' ? topeCalc() : null, nuevo = !NV.id;
+  document.getElementById('nTot').innerHTML = 'Total: ' + tot + ' prendas' + (cU != null && tot ? ' · ≈ ' + soles(tot * cU) + ' a costo' + (T && nuevo ? ' · <b style="color:' + (T.queda - tot * cU < 0 ? 'var(--rd)' : 'var(--ok)') + '">' + (T.queda - tot * cU < 0 ? 'se pasa del tope del mes por ' + soles(tot * cU - T.queda) : 'queda ' + soles(T.queda - tot * cU) + ' del tope del mes') + '</b>' : '') : '');
 }
 function nAgregarColor(){ const c = nrm(document.getElementById('nColor').value); if (!c) return; if (NV.colores.indexOf(c) < 0) NV.colores.push(c); document.getElementById('nColor').value = ''; nGrid(); }
 async function guardarOrden(){
