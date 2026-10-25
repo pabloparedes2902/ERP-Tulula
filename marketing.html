@@ -7295,7 +7295,8 @@ function _escStock(piezas, web, opt){
   piezas.forEach(pz => {
     const okC = web ? _escColPermitidos(pz, web) : new Set(pz.x.filter(a => (+a[2] || 0) > 0 || (+a[3] || 0) > 0).map(a => String(a[0])));
     { const NR = typeof ESC_NOREP === 'object' && ESC_NOREP ? ESC_NOREP : {}, pk0 = _mkNorm(pz.p + ' ' + pz.d).trim();   /* 23-oct · ✕ no reponer este color */
-      [...okC].forEach(c => { if (NR[pk0 + '|' + _mkNorm(c).trim()]) okC.delete(c); }); }
+      [...okC].forEach(c => { if (NR[pk0 + '|' + _mkNorm(c).trim()]) okC.delete(c); });
+      pz = Object.assign({}, pz, { x: pz.x.filter(a => !NR[pk0 + '|' + _mkNorm(a[0]).trim() + '#' + String(a[1]).toUpperCase().trim()]) }); }   /* 25-oct · ✕ por talla (SKU) */
     const curva = {}; let C90 = 0;
     pz.x.forEach(a => { const t = String(a[1]).toUpperCase().trim(), v = +a[4] || 0; curva[t] = (curva[t] || 0) + v; C90 += v; });
     const pk = _mkNorm(pz.p + ' ' + pz.d).trim();
@@ -7308,7 +7309,7 @@ function _escStock(piezas, web, opt){
     const Rc = {}, Sh = {};
     [...new Set(vs0.map(v => v.c))].forEach(c => { const L = vs0.filter(v => v.c === c), s28 = L.reduce((a, v) => a + v.v28, 0), s90 = L.reduce((a, v) => a + v.v90, 0);
       const s14 = L.some(v => v.v14 != null) ? L.reduce((a, v) => a + (v.v14 || 0), 0) : null;
-      Rc[c] = (s28 >= 3 ? (s14 != null ? 0.6 * (s14 / 2) + 0.4 * (s28 / 4) : s28 / 4) : s90 / 12.86) * kEsc;   /* 2) y 3) */
+      Rc[c] = (s28 >= 3 ? (s14 != null ? 0.6 * (s14 / 2) + 0.4 * (s28 / 4) : s28 / 4) : s90 / 12.86) * (kEsc > 1 || (opt && opt.escP && opt.escP.has(_mkNorm(pz.p + ' ' + pz.d).trim())) ? 1 + _ep('esc_sim_pct') / 100 : 1);   /* 2) y 3) · 25-oct: también si escala otro producto que usa esta pieza */
       Sh[c] = L.reduce((a, v) => a + (C90 > 0 ? (curva[String(v.t).toUpperCase().trim()] || 0) / C90 : 1 / L.length), 0); });
     vs0.forEach(v => { const sh = C90 > 0 ? (curva[String(v.t).toUpperCase().trim()] || 0) / C90 : 1;
       v.fv = v.f * fk; v.rate = (Sh[v.c] > 0 ? Rc[v.c] * sh / Sh[v.c] : 0) + v.fv / fsem; v.w = v.rate; v.dias = v.rate > 0 ? Math.floor(v.s / v.rate * 7) : 999; });
@@ -7469,8 +7470,9 @@ function escFilas(){
   if (!MK || !MK.filas) return [];
   ESC_DUENO = null;
   const G = {};
+  /* 25-oct (Pablo) · una pieza compartida (Blazer Mirella ↔ Conjunto Mirella) escala si escala CUALQUIERA de los dos */
   MK.filas.forEach(r => { const k = _escClave(r); if (!k) return; if (!r._on && !((+((r.act || {}).gasto) || 0) > 0)) return; (G[k] = G[k] || []).push(r); });
-  return Object.keys(G).map(k => {
+  const OUT = Object.keys(G).map(k => {
     const [tipo, modelo] = k.split('|'), filas = G[k];
     let mc = 0, venv = 0; filas.forEach(r => { const h = MKH && MKH[String(r.ad_id)]; if (!h) return; mc += (+h.ing_vida || 0) * mkMargenDe(r) - (+h.gasto_vida || 0); venv += (+h.ventas_vida || 0); });
     const top = filas.slice().sort((x, y) => (+((y.act || {}).gasto) || 0) - (+((x.act || {}).gasto) || 0)).find(r => r.thumbnail_url);
@@ -7493,6 +7495,11 @@ function escFilas(){
     return { k, tipo, modelo, nombre: _escNom(k), filas, mc, venv, img: top ? top.thumbnail_url : '', stock, lanes,
              gasto: filas.reduce((a, r) => a + (+((r.act || {}).gasto) || 0), 0), ven: filas.reduce((a, r) => a + (+((r.act || {}).pedidos) || 0), 0) };
   });
+  try { const pkDe = f => _escPiezas(f.tipo, f.modelo).map(pz => _mkNorm(pz.p + ' ' + pz.d).trim());
+    const escP = new Set(); OUT.forEach(f => { if (f.lanes.some(l => l.listo)) pkDe(f).forEach(k => escP.add(k)); });
+    if (escP.size) OUT.forEach(f => { if (f.lanes.some(l => l.listo) || !pkDe(f).some(k => escP.has(k))) return;
+      const st2 = _escStock(_escPiezas(f.tipo, f.modelo), _escWebColores(f.tipo, f.modelo), { escP }); st2.esc = true; f.stock = st2; f.lanes.forEach(l => { if (l.niv) l.niv.stock = st2; }); }); } catch (_) {}
+  return OUT;
 }
 function _escFocoLista(F){
   const porK = {}; F.forEach(f => porK[f.k] = f);
@@ -8094,13 +8101,13 @@ function _escTablaLote(n){
     const cuerpo = filas.map(f => { let tf = 0;
       const tds = tallas.map(t => { const v = f.t[t]; if (!v) return '<td class="na">·</td>'; const k = cant(f, t); tf += k;
         const tip = 'Hay ' + v.s + ' · se venden ' + (Math.round(v.rate * 10) / 10) + ' por semana' + (v.cam ? ' · ' + v.cam + ' ya en confección' : '') + (v.f ? ' · 👻 ' + Math.round(v.f) + ' clientas la pidieron agotada' : '');
-        return '<td class="' + (v.s <= 0 ? 'ag' : '') + '" title="' + esc(tip) + '">' + (k ? '<b>+' + k + '</b>' : '') + '<i>' + v.s + '</i></td>'; }).join('');
+        return '<td class="' + (v.s <= 0 ? 'ag' : '') + '" title="' + esc(tip) + '">' + (k ? '<b>+' + k + '</b>' : '') + '<i>' + v.s + '</i>' + btn(f.pk, _mkNorm(f.c).trim() + '#' + t + '|' + f.c + ' ' + t, true, '✕', 'No reponer esta talla de este color').replace('class="esx-nr"', 'class="esx-nr esx-nr-t"') + '</td>'; }).join('');
       return '<tr' + (f.sug ? ' class="sug"' : '') + '><th>' + esc((multi ? f.pz.charAt(0) + f.pz.slice(1).toLowerCase() + ' · ' : '') + f.c) + (f.sug ? ' <span class="esx-sug" title="Trae el ' + f.pct + '% de las ventas y su stock no rota: sugerido no reponer (vender lo que queda)">sugerido ✕</span>' : '') + '</th>' + tds + '<td class="tt">' + (tf ? '+' + tf : '—') + '</td>'
         + '<td class="nr">' + btn(f.pk, _mkNorm(f.c).trim() + '|' + f.c, true, '✕', 'No reponer este color') + '</td></tr>'; }).join('');
     h += '<table class="esx-lt"><thead><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '<th>Total</th><th></th></tr></thead><tbody>' + cuerpo + '</tbody></table>'
-      + '<div class="esx-lt-n"><b>+N</b> = confeccionar · <i>n</i> = hay hoy · <span class="ag">rojo</span> = agotada · ✕ = no reponer este color' + (n.web ? ' · colores de la web + los que vendieron en el último mes aunque estén agotados' : '') + '</div>';
+      + '<div class="esx-lt-n"><b>+N</b> = confeccionar · <i>n</i> = hay hoy · <span class="ag">rojo</span> = agotada · ✕ = no reponer este color (pasa el mouse por una celda para quitar solo esa talla)' + (n.web ? ' · colores de la web + los que vendieron en el último mes aunque estén agotados' : '') + '</div>';
   } else h += '<div class="esx-lt-n">Ningún color para reponer.</div>';
-  if (fuera.length) h += '<div class="esx-lt-n esx-nr-l">No se reponen: ' + fuera.map(o => esc(o.x.color_txt || o.k.split('|')[1]) + (multi ? ' (' + esc(o.pk) + ')' : '') + ' ' + btn(o.pk, o.k.split('|')[1] + '|' + (o.x.color_txt || ''), false, '↺', 'Volver a reponer este color')).join(' · ') + '</div>';
+  if (fuera.length) h += '<div class="esx-lt-n esx-nr-l">No se reponen: ' + fuera.map(o => esc(o.x.color_txt || o.k.split('|')[1]) + (multi ? ' (' + esc(o.pk) + ')' : '') + ' ' + btn(o.pk, o.k.split('|')[1] + '|' + (o.x.color_txt || ''), false, '↺', 'Volver a reponer')).join(' · ') + '</div>';
   return h;
 }
 async function escNoReponer(pk, cc, no){
@@ -8440,6 +8447,7 @@ const ESC_CSS4 = `
 .esx-nr{background:transparent;border:1px solid rgba(122,232,255,.25);color:#8aa0c8;border-radius:6px;font-size:10px;line-height:1;padding:2px 5px;cursor:pointer}
 .esx-nr:hover{color:#ff8aa5;border-color:#ff8aa5}
 .esx-pan-err{font-size:11.5px;color:#ff8aa5;margin-top:4px}
+.esx-lt td{position:relative}.esx-nr-t{position:absolute;top:1px;right:1px;font-size:8px;padding:0 3px;opacity:0;line-height:1.2}.esx-lt td:hover .esx-nr-t{opacity:1}
 .esx-pan-h .esx-ped{margin-left:auto;font-size:11px;padding:4px 10px}
 .esx-pan-h .esx-ped + .esx-ped{margin-left:6px}
 .esx-lect{display:block;width:100%;font-size:11.5px;color:#dfe9ff}.esx-lect b{color:#ffd166}
