@@ -11394,13 +11394,17 @@ async function _dashUNCargar(mk){
   window._dashUN = window._dashUN || {};
   if (window._dashUN[mk] !== undefined) return;
   window._dashUN[mk] = null;
-  let r = null;
-  try { if (typeof window._egrRpc === 'function') r = await window._egrRpc('proyeccion_mes', { p_mes: mk }); } catch (_) { r = null; }
-  let v = null, sub = 'pendiente';
-  if (r && r.mes) {
-    if (r.cerrado) { v = r.utilidad_proyectada; sub = 'ingresos − egresos'; }
-    else { v = (r.utilidad_esperada != null ? r.utilidad_esperada : r.utilidad_proyectada); sub = 'proyección al cierre'; }
-  }
+  /* 26-oct (Pablo) · igual que la Matriz: mes cerrado = utilidad − bono de socios devengado (se haya pagado o no);
+     mes en curso = proyección al cierre con las reservas del mes (bono socios, bono asesoras, Meta, IGV) */
+  let r = null, v = null, sub = 'pendiente';
+  try {
+    const hoy = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+    const enCurso = mk >= (hoy.getFullYear() + '-' + String(hoy.getMonth() + 1).padStart(2, '0'));
+    if (typeof window._egrRpc === 'function') {
+      if (!enCurso) { r = await window._egrRpc('utilidad_neta_mes', { p_mes: mk }); if (r && r.utilidad_neta != null) { v = r.utilidad_neta; sub = 'después del bono de socios (S/ ' + Math.round(+r.bono_devengado || 0).toLocaleString('es-PE') + ')'; } }
+      else { r = await window._egrRpc('proyeccion_mes', { p_mes: mk }); if (r && r.mes) { v = (r.utilidad_esperada != null ? r.utilidad_esperada : r.utilidad_proyectada); sub = 'proyección al cierre, con reservas'; } }
+    }
+  } catch (_) { r = null; }
   window._dashUN[mk] = { v: (v == null || !isFinite(+v)) ? null : +v, sub: sub };
   try { const sel = document.getElementById('dash-periodo-global'); const el = document.getElementById('dash-macro');
         if (el && (!sel || sel.value === mk || String(sel.value).indexOf(mk) >= 0)) el.innerHTML = renderMacroBand(mk); } catch (_) {}
@@ -45390,7 +45394,7 @@ startAuth();
     if (!p || !p.rubros) return '';
     const col = Number(p.utilidad_proyectada) < 0 ? 'var(--rd)' : (Number(p.margen_para_gastar) < 0 ? 'var(--am)' : 'var(--gn)');
     const k = (v, t, c) => '<div class="egr-kpi"><b' + (c ? ' style="color:' + c + '"' : '') + '>' + _egrSoles(v) + '</b><span>' + t + '</span></div>';
-    const filas = p.rubros.map(r => '<tr><td>' + _egrEsc(r.rubro) + '</td>' +
+    const filas = p.rubros.map(r => '<tr><td>' + _egrEsc(r.rubro) + (r.regla ? '<div style="font-size:11px;color:var(--mu)">' + _egrEsc(r.regla) + '</div>' : '') + '</td>' +
       '<td class="n">' + (p.cerrado ? _egrSoles(r.previsto == null ? r.sugerido : r.previsto) :
         '<input type="number" step="1" style="width:100px;text-align:right" value="' + (r.previsto == null ? '' : Number(r.previsto)) + '" placeholder="' + Math.round(Number(r.sugerido) || 0) + '" onchange="_egrPresGuardar(\'' + _egrEsc(r.rubro) + '\', this.value)">') + '</td>' +
       '<td class="n">' + _egrSoles(r.real) + '</td><td class="n"><b>' + _egrSoles(r.cierre) + '</b></td><td class="n" style="color:var(--mu)">' + _egrSoles(r.falta) + '</td></tr>').join('');
@@ -45398,6 +45402,10 @@ startAuth();
       '<div class="egr-kpis">' + k(p.ingresos_real, 'Cobrado a la fecha') + (p.cerrado ? '' : k(p.ingresos_proyectados, 'Cobro al cierre (pesimista)')) +
       k(p.egresos_cierre, p.cerrado ? 'Gastos del mes' : 'Gastos para el cierre (pesimista)') + k(p.utilidad_proyectada, p.cerrado ? 'Utilidad del mes' : 'Utilidad proyectada', col) +
       (p.cerrado ? '' : k(p.margen_para_gastar, 'Puedes gastar de más sin bajar del mínimo', col)) + '</div>' +
+      /* 26-oct (Pablo) · la meta que empuja el cierre de mes: vender lo que cubre gastos + reservas + utilidad mínima */
+      (p.cerrado || p.venta_minima == null ? '' : '<div class="egr-kpis" style="margin-top:-4px">' + k(p.venta_minima, 'Venta mínima del mes (gastos + reservas + utilidad mínima)') +
+        k(p.falta_vender, 'Falta vender', Number(p.falta_vender) > 0 ? 'var(--am)' : 'var(--gn)') +
+        (p.por_dia != null ? k(p.por_dia, 'Por día, en los ' + Number(p.dias_restantes) + ' días que quedan', 'var(--ac)') : '') + '</div>') +
       (p.cerrado || p.utilidad_esperada == null ? '' : '<div style="font-size:12px;color:var(--mu);margin:-4px 0 8px">Pesimista = el cobro crece hasta fin de mes como en el peor de los últimos 3 meses (x' + Number(p.factor_pesimista || 0).toFixed(2) + '). Si crece como el promedio (x' + Number(p.factor_promedio || 0).toFixed(2) + '): cobro ' + _egrSoles(p.ingresos_esperados) + ' y utilidad ' + _egrSoles(p.utilidad_esperada) + '.</div>') +
       '<div style="font-size:12px;margin-bottom:8px">Utilidad mínima del mes: <input type="number" step="500" style="width:110px;text-align:right" value="' + Number(p.utilidad_minima || 0) + '" onchange="_egrMinGuardar(this.value)"></div>' +
       '<div class="tw" style="overflow-x:auto"><table class="egr-t"><thead><tr><th>Rubro</th><th class="n">Previsto</th><th class="n">Real a la fecha</th><th class="n">Para el cierre</th><th class="n">Falta gastar</th></tr></thead><tbody>' + filas + '</tbody></table></div>' +
