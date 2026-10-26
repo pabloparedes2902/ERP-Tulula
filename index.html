@@ -23780,6 +23780,51 @@ function _waAvisoGuardado(clase, id, tipo, datos){
 // <<< FIN WHATSAPP
 
 
+// ═══ 26-oct (Pablo) · 📋 COPIAR PARA LOGÍSTICA ═══
+// Una fila por prenda, con las columnas del Drive de logística en su orden (B → AF): Nombre · DNI · Celular · Dirección · Distrito ·
+// Provincia · Región · Referencia · Email · CANAL · ORIGEN · Asesora · Prenda · Cambio · Precio · Envío · Subtotal · Pago · Forma pago ·
+// Fecha Pedido · Fecha Pago · Periodo · Fecha Envío · Estado · Courier · Comentarios Envío · Estado Pago · Transferido · Pablo · Ana · Comentario Pago.
+// Sin el Nro (columna A, va a mano). El Pago total va en la primera fila (como en el Drive). Transferido / Pablo / Ana quedan vacíos (los marca administración).
+const LOG_COLS = ['Nombres y Apellidos','DNI','Celular','Direccion','Distrito','Provincia','Region','Referencia','Email','CANAL','ORIGEN','Asesora','Prenda','Cambio',
+  'Precio','Envio','Subtotal','Pago','Forma pago','Fecha Pedido','Fecha Pago','Periodo','Fecha Envio','Estado','Courier','Comentarios Envio','Estado Pago','Transferido','Pablo','Ana','Comentario Pago'];
+const LOG_FECHAS = ['Fecha Pedido','Fecha Pago','Fecha Envio'], LOG_VACIAS = ['Transferido','Pablo','Ana'];
+function _logFecha(v){
+  if (!v) return '';
+  const s = v instanceof Date ? v.toISOString() : String(v).trim(), m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? (+m[2]) + '/' + (+m[3]) + '/' + m[1] : s;   // como lo muestra el Drive: mes/día/año
+}
+function _logCelda(v){ return String(v == null ? '' : v).replace(/[\t\r\n]+/g, ' ').trim(); }
+function logFilasPedido(p, raw){
+  const nro = String((p && p['NroPedido']) || '').trim();
+  const R0 = (raw || []).filter(r => String(r['NroPedido'] || '').trim() === nro);
+  let filas = R0.filter(r => String(r['Prenda'] || '').trim() && !(typeof _esPago === 'function' && _esPago(r['Prenda'])));
+  if (!filas.length && p) filas = ((p._prendas && p._prendas.length) ? p._prendas : [{ prenda: p['Prenda'], precio: p['Precio'] }])
+    .filter(x => x && String(x.prenda || '').trim()).map(x => Object.assign({}, p, { 'Prenda': x.prenda, 'Precio': x.precio, 'Subtotal': x.precio }));
+  const pagado = (p && p._totalPagado != null && !isNaN(+p._totalPagado)) ? +p._totalPagado
+    : R0.reduce((a, r) => a + (parseFloat(r['Pago']) || 0), 0);
+  return filas.map((r, i) => LOG_COLS.map(k => {
+    if (LOG_VACIAS.indexOf(k) >= 0) return '';
+    if (k === 'Pago') return i === 0 && pagado ? String(Math.round(pagado * 100) / 100) : '';
+    if (LOG_FECHAS.indexOf(k) >= 0) return _logFecha(r[k] != null && r[k] !== '' ? r[k] : (p && p[k]));
+    if (k === 'Periodo'){ const v = r[k] || (p && p[k]); if (v) return _logCelda(v); const f = String(r['Fecha Pago'] || r['Fecha Pedido'] || '').match(/^(\d{4})-(\d{2})/); return f ? f[1] + f[2] : ''; }
+    const v = (r[k] != null && r[k] !== '') ? r[k] : (p && p[k]);
+    return _logCelda(v);
+  }).join('\t'));
+}
+async function logCopiarPedido(nro){
+  nro = String(nro || '').trim();
+  let p = (window._waPedAbierto && String(window._waPedAbierto['NroPedido'] || '').trim() === nro) ? window._waPedAbierto : null;
+  try { if (!p && typeof _waPedidoCargado === 'function') p = _waPedidoCargado(nro); } catch (_) {}
+  const L = logFilasPedido(p || { NroPedido: nro }, (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) ? pRaw : []);
+  if (!L.length){ toast('No encuentro las prendas del pedido #' + esc(nro) + '. Ábrelo de nuevo y vuelve a intentar.', 'err'); return; }
+  const txt = L.join('\n');
+  let ok = false;
+  try { if (navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(txt); ok = true; } } catch (_) {}
+  if (!ok) try { ok = await _waCopiarViejo(txt); } catch (_) {}
+  toast(ok ? '📋 Copiado: ' + L.length + ' fila' + (L.length > 1 ? 's' : '') + '. En el Drive de logística, haz clic en la columna B (Nombre) de la fila nueva y pega (⌘V). El Nro de pedido va a mano.'
+           : 'No se pudo copiar. Vuelve a intentar.', ok ? 'ok' : 'err');
+}
+
 function verPed(p) {
   const nro = String(p['NroPedido']||'').trim();
   try { window._waPedAbierto = p; setTimeout(() => { try { _waRefrescarBoton(p); } catch(_){} }, 0); } catch(_){}   // 22-oct · 📲 WhatsApp usa el pedido abierto (+ fase 2: color según la base)
@@ -23839,6 +23884,7 @@ function verPed(p) {
     +'<button class="btn bg bs" id="medit-cli-hist" style="font-size:11px" title="Ver historial completo del cliente">📋 Historial cliente</button>'
     +'<button class="btn bg bs" id="medit-ped-hist" style="font-size:11px" title="Ver historial de fusión del pedido">📦 Historial pedido</button>'
     +'<button class="btn bg bs" onclick="imprimirRotulo(\''+esc(nro)+'\')" style="font-size:11px">🖨️ Rótulo</button>'
+    +'<button class="btn bg bs" onclick="logCopiarPedido(\''+esc(nro)+'\')" style="font-size:11px" title="Copia las filas del pedido para pegarlas en el Drive de logística (desde la columna Nombre). El Nro va a mano.">📋 Logística</button>'
     +'<button class="btn bg bs" id="medit-wa" onclick="waAbrirPedido(\''+esc(nro)+'\')" style="font-size:11px'+(_waPendiente(p)?';border-color:#f59e0b;color:#f59e0b" title="Hay cambios que aún no se avisaron al grupo"':'" title="Copiar el mensaje para el grupo de WhatsApp"')+'>📲 WhatsApp</button>'
     +'<button class="btn bg bs" id="medit-del" style="color:var(--rd)">Eliminar pedido</button>'
     +'</div></div>';
@@ -29118,6 +29164,24 @@ function _avisosPonerX() {
   } catch (_) {}
 }
 try { setInterval(_avisosPonerX, 1200); } catch (_) {}
+/* 26-oct (Pablo) · TODOS los avisos abajo a la derecha, apilados en una sola bandeja (cada uno con su ✕). Ya no tapan el logo ni la pantalla. */
+var AVISOS_DOCK = ['campana-espera-barra', 'campana-espera-badge', 'fe-barra', 'lg-barra', 'sf-barra', 'al-barra-roja', 'salud-sync-banner', 'upd-banner',
+  'f1-aviso', 'masivo-franja', 'logros-aviso', 'cr-globo', 'cr-panel'];
+function _avisosDock() {
+  try {
+    let d = document.getElementById('avisos-dock');
+    if (!d) {
+      const st = document.createElement('style'); st.id = 'avisos-dock-css';
+      st.textContent = '#avisos-dock{position:fixed;right:16px;bottom:16px;z-index:99990;display:flex;flex-direction:column-reverse;align-items:stretch;gap:8px;width:min(460px,calc(100vw - 32px));max-height:72vh;overflow:auto;pointer-events:none}'
+        + '#avisos-dock > *{pointer-events:auto;position:relative!important;inset:auto!important;top:auto!important;left:auto!important;right:auto!important;bottom:auto!important;transform:none!important;'
+        + 'margin:0!important;width:auto!important;max-width:none!important;border-radius:12px!important;box-shadow:0 6px 20px rgba(0,0,0,.35)!important;font-family:var(--ui-f)!important;font-size:13px!important;line-height:1.45!important;text-align:left!important}';
+      document.head.appendChild(st);
+      d = document.createElement('div'); d.id = 'avisos-dock'; document.body.appendChild(d);
+    }
+    AVISOS_DOCK.forEach(id => { const el = document.getElementById(id); if (el && el.parentNode !== d) d.appendChild(el); });
+  } catch (_) {}
+}
+try { setInterval(_avisosDock, 800); } catch (_) {}
 
 // ═══ 17-oct (Pablo) · AVISO A LAS ASESORAS: ventas anotadas en el Drive que faltan en el ERP ═══
 // Va debajo de la barra «Clientas esperando respuesta». Cada asesora ve SOLO lo suyo; el admin ve todo.
@@ -29127,11 +29191,13 @@ var _FE = { lista: [], abierto: false, hechas: {} };
 function _feEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 async function _feRevisar() {
   try {
-    if (!(_soyAdminERP() || _miAsesoraERP())) return;
+    if (!_avisoPara('pedidos')) return;   /* 26-oct · ventas y logística (y admin); marketing no */
     const r = await apiPost('cuadre.faltanErp', {});
     try { _FE.hechas = JSON.parse(localStorage.getItem('fe_hechas') || '{}') || {}; } catch (_) { _FE.hechas = {}; }
     _FE.lista = ((r && r.lista) || []).filter(x => !(_FE.hechas[_feClave(x)] && Date.now() - _FE.hechas[_feClave(x)] < 3 * 3600 * 1000));   // la que abrió para registrar se esconde 3 h (hasta la próxima revisión)
-    _FE.admin = !!(r && r.admin);
+    _FE.admin = !!(r && (r.admin || r.logistica));
+    /* 26-oct (Pablo) · cambios del Drive → logística (y admin) · ventas/pedidos del Drive → ventas y logística */
+    _FE.lista = _FE.lista.filter(x => _soyAdminERP() || (x.tipo === 'CAMBIO' ? _avisoPara('logistica') : _avisoPara('pedidos')));
     _fePintar();
   } catch (_) {}
 }
@@ -29224,7 +29290,7 @@ try { window.addEventListener('load', () => { setTimeout(_feRevisar, 8000); setT
 // NUEVA por enviar («PRENDA ORIGINAL RECIBIDA») · 3) pedidos del cuadre donde no se sabe qué prenda salió (lista 3, cada 2 h).
 // Lo ven: administradores y quien no es asesora y tiene Cambios en Edición. Amarillo = al día · rojo = 7 días o más.
 var _LG = { lista: [], abierto: false };
-function _lgVe(){ try { if (_soyAdminERP()) return true; if (_miAsesoraERP()) return false; return !!(MY_PERMISOS && Number(MY_PERMISOS.cambios2) >= 2); } catch (_) { return false; } }
+function _lgVe(){ return _avisoPara('logistica'); }   /* 26-oct (Pablo) · la barra de logística solo a logística (y admin): ni ventas ni marketing */
 function _lgDias(f){ const t = Date.parse(String(f || '').slice(0, 10) + 'T12:00:00-05:00'); return isNaN(t) ? null : Math.max(0, Math.round((Date.now() - t) / 864e5)); }
 async function _lgRevisar() {
   try {
@@ -29383,6 +29449,15 @@ function _crPintar(){
 }
 try { window.addEventListener('load', () => { setTimeout(_crRevisar, 9000); setInterval(_crRevisar, 15 * 60 * 1000); setInterval(() => { if (_CR.lista.length) _crPintar(); }, 5000); }); } catch (_) {}
 
+/* 26-oct (Pablo) · cada aviso solo a quien le toca. Admin ve todo; ventas = rol Ventas o asesora que comisiona; logística = rol Logística; marketing nada */
+function _avisoPara(area) {
+  try {
+    const r = String((typeof MY_ROLE !== 'undefined' && MY_ROLE) || '').trim().toLowerCase();
+    if (r === 'admin' || r === 'administrador') return true;
+    const ventas = r === 'ventas' || !!_miAsesoraERP(), logi = /^log/.test(r.normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+    return area === 'ventas' ? ventas : area === 'logistica' ? logi : area === 'pedidos' ? (ventas || logi) : false;
+  } catch (_) { return false; }
+}
 function _soyAdminERP() {
   try { return MY_ROLE === 'Administrador' || MY_ROLE === 'Admin'; } catch (_) { return false; }
 }
@@ -44800,6 +44875,11 @@ startAuth();
 
   function pintar() {
     var n = estado.esperando.length;
+    if (typeof _avisoPara === 'function' && !_avisoPara('ventas')) {   /* 26-oct (Pablo) · clientas esperando: solo ventas (las que comisionan) y admin */
+      barra.style.display = 'none'; badge.style.display = 'none';
+      clearInterval(estado.beepTimer); estado.beepTimer = null; clearInterval(estado.parpadeo); estado.parpadeo = null;
+      return;
+    }
     if (n > 0 && campanaGloboCerrado() && !estado.detalle) {
       barra.style.display = 'none'; badge.style.display = 'none';
       clearInterval(estado.beepTimer); estado.beepTimer = null;
