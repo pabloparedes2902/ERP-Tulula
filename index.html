@@ -460,8 +460,10 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover{
 .stbl td.left{text-align:left;font-size:12px}
 .stbl tr:hover td{filter:brightness(1.15)}
 /* 26-oct (Pablo) · Pedidos y Stock como Excel: letra 12 en filas de 22 px (antes 14 en 28 y 13 en 24). Menos alto, más filas a la vista. */
-#ped-w table.pt td{height:20px!important;padding:1px 6px!important;font-size:11px!important;line-height:1.2!important}
-#ped-w table.pt tbody tr{height:20px!important}
+/* 26-oct (Pablo: «en Todos solo veo unos cuantos») · el alto fijo NO aplica a las filas espaciadoras del virtualizador (aria-hidden): con !important las aplastaba a 20 px y la lista se cortaba en ~50 */
+#ped-w table.pt tbody tr:not([aria-hidden]) td{height:20px!important;padding:1px 6px!important;font-size:11px!important;line-height:1.2!important}
+#ped-w table.pt tbody tr:not([aria-hidden]){height:20px!important}
+#ped-w table.pt tbody tr[aria-hidden] td{padding:0!important;border:0!important}
 #ped-w table.pt th{padding:5px 6px!important;font-size:11px!important}
 #ped-w table.pt td .badge,#ped-w table.pt td .btn{font-size:11px!important;padding:0 6px!important;line-height:1.35!important}
 #inv-w table.stbl td{height:20px!important;padding:1px 8px!important;font-size:11px!important;line-height:1.2!important}
@@ -586,6 +588,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
   <div class="topbar">
     <div id="ptit">Dashboard</div>
     <div style="display:flex;gap:8px;align-items:center">
+      <span id="top-ped-count" style="font-size:12px;color:var(--mu);white-space:nowrap;display:none"></span>
       <button id="btn-limpiar-filtros" title="Quitar todos los filtros de columna de esta pantalla" style="background:var(--bg3);border:1px solid var(--bd);color:var(--mu);border-radius:20px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:inherit;display:none;align-items:center;gap:6px;white-space:nowrap">✕ Limpiar</button>
       <!-- 7-sep-2026 — Las tres secciones de Marketing viven acá arriba, a la
            altura del título, para no gastar una franja entera de la pantalla.
@@ -610,7 +613,6 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
            desliza de costado: con once pestañas abiertas desaparecía de la vista. -->
       <button class="btn bp bs" id="btn-nuevo-pedido" onclick="navegarA('nuevo')" title="Registrar un pedido nuevo" style="font-size:12px;white-space:nowrap">＋ Nuevo pedido</button>
       <button class="btn bg bs" id="btn-exp-xl" title="Descargar la vista actual a Excel" style="font-size:12px;display:none;white-space:nowrap;padding:4px 8px;align-items:center;gap:3px"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="18" rx="3" fill="#1D6F42"/><path d="M7.5 8l3.2 4-3.2 4h2.3l2.1-2.7L14 16h2.3l-3.2-4 3.2-4H14l-2.1 2.7L9.8 8z" fill="#fff"/></svg><span style="font-size:13px;line-height:1">↓</span></button>
-      <span id="top-ped-count" style="font-size:12px;color:var(--mu);white-space:nowrap;display:none"></span>
       <button class="btn bg bs" id="btn-ref" title="Recargar datos del servidor" style="font-size:12px">🔄</button>
     </div>
   </div>
@@ -10757,6 +10759,64 @@ function _cdQue1(x, n) {
         : (fl = cerca[0][0], new String('El Drive tiene para esta clienta: ' + cerca.map(r => r[2] || ('cambio ' + r[3])).filter(Boolean).slice(0, 3).join(' / ') + ' → logística confirma si ESTA prenda salió; si no salió, la asesora la quita del pedido')); } }
   q.fila = fl; return q;
 }
+/* 26-oct (Pablo) · PAGOS ERP vs DRIVE, pago por pago (fecha de pago y monto; se aceptan ±3 días). Mes elegido; por defecto el mes pasado. */
+function _cdPagosMes(){ if (!CD.pmes) { const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' })); d.setDate(1); d.setMonth(d.getMonth() - 1); CD.pmes = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); } return CD.pmes; }
+function _cdPagosSetMes(m) { CD.pmes = m || ''; CD.pagosN = null; _cdPintar(); }
+async function _cdPagosAsegurar(){
+  const mes = _cdPagosMes(); CD.pagos = CD.pagos || {};
+  if (CD.pagos[mes] || CD.pagos['_c' + mes]) return;
+  CD.pagos['_c' + mes] = 1;
+  try {
+    const fp = v => { if (!v) return ''; const s = String(v); let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return m[0];
+      m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (m) return m[3] + '-' + m[1].padStart(2, '0') + '-' + m[2].padStart(2, '0');
+      const d = new Date(s); return isNaN(d) ? '' : new Date(d.getTime() - 5 * 36e5).toISOString().slice(0, 10); };
+    const num = v => parseFloat(String(v == null ? '' : v).replace(/,/g, '')) || 0;
+    const [y, mm] = mes.split('-').map(Number), desde = new Date(y, mm - 6, 1), ini = new Date(y, mm - 1, 1), fin = new Date(y, mm, 0);
+    const f0 = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    const a = f0(new Date(ini.getTime() - 4 * 864e5)), b = f0(new Date(fin.getTime() + 4 * 864e5));
+    const tok = await _sbSesionAsegurar();
+    const r = await fetch(SB_URL + '/rest/v1/rpc/cuadre_fuente', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_tabla: 'drive_ing', p_desde: f0(desde) }) });
+    if (!r.ok) throw new Error('Drive ' + r.status);
+    const DI = await r.json(), Dp = [], Ep = [];
+    (DI || []).forEach(x => { const v = x.valores || []; const f = fp(v[21]); const p = num(v[18]); if (p && f >= a && f <= b) Dp.push({ f, p, fo: String(v[19] || ''), c: String(v[1] || ''), fila: x.fila }); });
+    (pRaw || []).forEach(q => { if (String(q['Eliminado'] || '').toUpperCase() === 'SI') return; const f = fp(q['Fecha Pago']); const p = num(q['Pago']);
+      if (p && f >= a && f <= b) Ep.push({ f, p, fo: String(q['Forma pago'] || ''), c: String(q['Nombres y Apellidos'] || ''), n: q['NroPedido'] }); });
+    const dd = (x, z) => Math.abs((new Date(x) - new Date(z)) / 864e5), used = new Set();
+    for (const pass of [0, 1, 3]) for (const e of Ep) { if (e.m) continue; const k = Dp.findIndex((d, j) => !used.has(j) && Math.abs(d.p - e.p) < 0.05 && dd(d.f, e.f) <= pass); if (k >= 0) { used.add(k); e.m = Dp[k]; } }
+    const enMes = f => f.slice(0, 7) === mes;
+    const soloE = Ep.filter(e => !e.m && enMes(e.f)), soloD = Dp.filter((d, j) => !used.has(j) && enMes(d.f));
+    const otroMes = Ep.filter(e => e.m && (enMes(e.f) !== enMes(e.m.f)) && (enMes(e.f) || enMes(e.m.f)));
+    const nm = t => String(t || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z ]/g, ' ').trim().split(/\s+/)[0];
+    const grupos = {}; soloE.forEach(e => { const k = nm(e.c); (grupos[k] = grupos[k] || { e: [], d: [] }).e.push(e); }); soloD.forEach(d => { const k = nm(d.c); (grupos[k] = grupos[k] || { e: [], d: [] }).d.push(d); });
+    const filas = Object.values(grupos).map(g => { const te = g.e.reduce((s, x) => s + x.p, 0), td = g.d.reduce((s, x) => s + x.p, 0);
+      return { dif: Math.round((te - td) * 100) / 100, cli: (g.e[0] || g.d[0]).c, e: g.e, d: g.d, tipo: !g.d.length ? 'Falta en el Drive' : !g.e.length ? 'Falta en el ERP' : 'Montos distintos' }; })
+      .filter(x => Math.abs(x.dif) >= 0.5).sort((x, z) => Math.abs(z.dif) - Math.abs(x.dif));
+    const totE = Ep.filter(e => enMes(e.f)).reduce((s, x) => s + x.p, 0), totD = Dp.filter(d => enMes(d.f)).reduce((s, x) => s + x.p, 0);
+    CD.pagos[mes] = { filas, otroMes, totE, totD };
+    if (mes === _cdPagosMes()) CD.pagosN = filas.length + otroMes.length;
+  } catch (e) { CD.pagos[mes] = { err: e.message || String(e) }; }
+  delete CD.pagos['_c' + mes];
+  if (CD.tab === 7) _cdPintar();
+}
+function _cdPagosHtml(){
+  const mes = _cdPagosMes(), P = (CD.pagos || {})[mes];
+  const S = v => 'S/ ' + (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString('es-PE') : Number(v).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  let h = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><span class="ui-nota">Mes</span><input type="month" value="' + mes + '" onchange="_cdPagosSetMes(this.value)" style="background:var(--bg3);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;color-scheme:dark">';
+  if (!P) return h + '</div>' + spin('Comparando los pagos del mes…');
+  if (P.err) return h + '</div><div style="color:var(--rd)">No se pudo comparar: ' + esc(P.err) + '</div>';
+  h += '<span class="ui-nota">ERP <b>' + S(P.totE) + '</b> · Drive <b>' + S(P.totD) + '</b> · diferencia <b style="color:' + (Math.abs(P.totE - P.totD) < 1 ? 'var(--gn)' : 'var(--am)') + '">' + S(P.totE - P.totD) + '</b></span></div>';
+  const ir = n => '<a href="#" onclick="event.preventDefault();_abrirPedidoDesdeBusqueda(' + esc(JSON.stringify(String(n))) + ')" style="color:var(--ac);font-weight:600">#' + esc(n) + ' ↗</a>';
+  const ce = L => L.length ? L.map(x => ir(x.n) + ' ' + esc(x.f.slice(5)) + ' · ' + S(x.p) + ' · ' + esc(x.fo)).join('<br>') : '—';
+  const cd = L => L.length ? L.map(x => 'fila ' + esc(x.fila) + ' · ' + esc(x.f.slice(5)) + ' · ' + S(x.p) + ' · ' + esc(x.fo)).join('<br>') : '—';
+  const quien = t => t === 'Falta en el Drive' ? 'logística lo anota en el Drive (si el voucher existe)' : t === 'Falta en el ERP' ? 'la asesora lo registra en el pedido (si el pago es real)' : 'se corrige el lado que no coincide con el voucher';
+  if (!P.filas.length && !P.otroMes.length) return h + '<div style="padding:24px;text-align:center;color:var(--gn);font-weight:600">✅ Los pagos del mes cuadran pago por pago</div>';
+  h += '<div style="overflow:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left;padding:6px 8px">Clienta</th><th style="text-align:left;padding:6px 8px">Caso</th><th style="text-align:right;padding:6px 8px">Diferencia</th><th style="text-align:left;padding:6px 8px">En el ERP</th><th style="text-align:left;padding:6px 8px">En el Drive</th><th style="text-align:left;padding:6px 8px">Qué hacer</th></tr></thead><tbody>'
+    + P.filas.map(x => '<tr><td style="padding:5px 8px;vertical-align:top">' + esc(x.cli) + '</td><td style="padding:5px 8px;vertical-align:top">' + x.tipo + '</td><td style="padding:5px 8px;vertical-align:top;text-align:right;font-weight:600;color:' + (x.dif > 0 ? 'var(--am)' : 'var(--rd)') + '">' + (x.dif > 0 ? '+' : '') + S(x.dif) + '</td><td style="padding:5px 8px;vertical-align:top">' + ce(x.e) + '</td><td style="padding:5px 8px;vertical-align:top">' + cd(x.d) + '</td><td style="padding:5px 8px;vertical-align:top;color:var(--mu)">' + quien(x.tipo) + '</td></tr>').join('')
+    + P.otroMes.map(e => '<tr><td style="padding:5px 8px">' + esc(e.c) + '</td><td style="padding:5px 8px">Otro mes</td><td style="padding:5px 8px;text-align:right">' + S(e.p) + '</td><td style="padding:5px 8px">' + ir(e.n) + ' ' + esc(e.f) + '</td><td style="padding:5px 8px">fila ' + esc(e.m.fila) + ' ' + esc(e.m.f) + '</td><td style="padding:5px 8px;color:var(--mu)">poner la misma fecha de pago en los dos</td></tr>').join('')
+    + '</tbody></table></div><div class="ui-nota" style="margin-top:6px">Pago por pago, por fecha de pago y monto (se aceptan ±3 días). Revisar el voucher antes de corregir: no es ajustar por ajustar.</div>';
+  return h;
+}
 function _cdPintar() {
   const el = document.getElementById('cd-w'); if (!el) return;
   const D = CD.datos;
@@ -10765,6 +10825,7 @@ function _cdPintar() {
   const n6 = L => (L || []).reduce((a, x) => a + (x.n || 1), 0);
   const tabs = D ? [[0, '0 · Stock por talla (control)', (D.l0 || []).length, 0], [1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', D.l4.length, 0], [5, '5 · Cambios ERP vs Drive', n(D.l5), ne(D.l5)], [6, '6 · Prendas que no se reconocen', n6(D.l6), 0]] : [];   // 21-oct (Pablo): todas en 0 (y nada en espera) = 100% cuadrado
   const total = tabs.reduce((a, t) => a + t[2], 0), esp = tabs.reduce((a, t) => a + t[3], 0);
+  if (D) tabs.push([7, '7 · Pagos ERP vs Drive', CD.pagosN == null ? '·' : CD.pagosN, 0]);   /* 26-oct (Pablo) · no suma al total de prendas */
   const veredicto = !D ? '' : (total + esp === 0 ? '<div style="padding:10px 14px;border-radius:10px;background:#dcfce7;color:#14532d;font-weight:600;margin-bottom:10px">✅ ERP y Drive 100% cuadrados (prendas, tallas, confección, no disponibles y cambios)</div>'
     : '<div style="padding:10px 14px;border-radius:10px;background:#fef3c7;color:#713f12;font-weight:600;margin-bottom:10px">Para el 100%: ' + total + ' por resolver' + (esp ? ' + ' + esp + ' en espera' : '') + '. Cuando TODAS las pestañas (0 a 6) estén en 0 y no quede nada en espera, el ERP y el Drive están 100% cuadrados.</div>');
   let h = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px">'
@@ -10775,6 +10836,7 @@ function _cdPintar() {
   h += veredicto;
   h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + tabs.map(t => '<button class="btn ' + (CD.tab === t[0] ? 'bp' : 'bg') + ' bs" onclick="CD.tab=' + t[0] + ';_cdPintar()">' + esc(t[1]) + ' <b>' + t[2] + '</b>' + (t[3] ? ' <span style="opacity:.7">(+' + t[3] + ' en espera)</span>' : '') + '</button>').join('')
     + '<span style="align-self:center;font-weight:600">TOTAL por resolver: ' + total + (esp ? ' · en espera: ' + esp : '') + '</span></div>';
+  if (CD.tab === 7) { el.innerHTML = h + _cdPagosHtml(); _cdPagosAsegurar(); return; }   /* 26-oct · pagos */
   const L = D['l' + CD.tab] || [];
   const ir = nro => nro ? '<a href="#" onclick="event.preventDefault();_abrirPedidoDesdeBusqueda(' + esc(JSON.stringify(String(nro).split(/[ ,]/)[0])) + ')" style="color:var(--ac);font-weight:600">' + esc(nro) + ' ↗</a>' : '';
   const cols = CD.tab === 0 ? ['Prenda y talla', 'Stock', 'Qué difiere y si lo explican las listas'] : CD.tab === 6 ? ['Dónde', 'Prenda tal como está escrita', 'Líneas', 'Qué hacer'] : CD.tab === 4 ? ['Prenda y talla', 'Qué difiere'] : CD.tab === 5 ? ['Pedido', 'Cambio', 'Prenda', 'Qué pasa', '¿Mueve el stock?'] : ['Pedido', 'Clienta', 'Fecha', 'Prenda', CD.tab === 3 ? 'Tipo' : 'Estado', 'Causa / qué hacer', 'Fila Drive'];
@@ -18765,7 +18827,8 @@ function _pedPintarCabecera(total, hayMas) {
             _pf.push(col ? col.l : k);
           });
         } catch (_e) {}
-        cnt.innerHTML = 'Mostrando <strong style="color:var(--tx)">' + total + '</strong> pedidos'
+        cnt.innerHTML = 'Mostrando <strong style="color:var(--tx)">' + Number(total).toLocaleString('es-PE') + '</strong> pedidos'
+          + (typeof window._pPrendasVista === 'number' ? ' / <strong style="color:var(--tx)">' + window._pPrendasVista.toLocaleString('es-PE') + '</strong> prendas' : '')   /* 26-oct (Pablo) */
           + ((_pf.length && typeof window._pUnidadesFiltro === 'number')
               ? ' · <strong style="color:var(--tx)">' + window._pUnidadesFiltro + '</strong> unidad' + (window._pUnidadesFiltro === 1 ? '' : 'es') + ' vendida' + (window._pUnidadesFiltro === 1 ? '' : 's') + ' del filtro'
                 + (window._pUnidadesDevueltas ? ' <span style="color:var(--mu)">(+' + window._pUnidadesDevueltas + ' devuelta' + (window._pUnidadesDevueltas === 1 ? '' : 's') + ', ya en stock)</span>' : '')
@@ -19405,16 +19468,13 @@ function renderPT(el, rows, total, hayMas) {
     /* 19-ago-2026 — SELECTOR DE FECHA. El Embudo cuenta por dia de PAGO y Pedidos
        filtraba por fecha de PEDIDO: el mismo rango daba numeros distintos y parecia
        que uno de los dos mentia. Ahora eliges cual. Por defecto, fecha de pedido. */
-     '<label style="font-size:11px;color:var(--mu)">Filtrar por</label>'
-    +'<select id="exp-campo" style="'+inpDateSt+';min-width:132px">'
-    +  '<option value="pedido"' + (window._pedFechaCampo==='pago'?'':' selected') + '>Fecha de pedido</option>'
-    +  '<option value="pago"'   + (window._pedFechaCampo==='pago'?' selected':'') + '>Fecha de pago</option>'
+     /* 26-oct (Pablo) · PERIODO como en Ventas: se aplica solo; las fechas aparecen solo en «Personalizado» */
+     '<select id="ped-per" title="Periodo" style="'+inpDateSt+'">' + PED_PER.map(o => '<option value="' + o[0] + '"' + (_pedPerEfectivo() === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
+    +'<select id="exp-campo" title="Por fecha de pedido o de pago" style="'+inpDateSt+'">'
+    +  '<option value="pedido"' + (window._pedFechaCampo==='pago'?'':' selected') + '>por fecha de pedido</option>'
+    +  '<option value="pago"'   + (window._pedFechaCampo==='pago'?' selected':'') + '>por fecha de pago</option>'
     +'</select>'
-    +'<label style="font-size:11px;color:var(--mu)">Desde</label>'
-    +'<input type="date" id="exp-desde" value="'+(window._pedFechaDesde||'')+'" style="'+inpDateSt+'">'
-    +'<label style="font-size:11px;color:var(--mu)">Hasta</label>'
-    +'<input type="date" id="exp-hasta" value="'+(window._pedFechaHasta||'')+'" style="'+inpDateSt+'">'
-    +'<button class="btn bg bs" id="btn-filtrar-fecha" style="font-size:11px">📅 Filtrar</button>'
+    +(_pedPerEfectivo() === 'custom' ? '<input type="date" id="exp-desde" value="'+(window._pedFechaDesde||'')+'" style="'+inpDateSt+'"><input type="date" id="exp-hasta" value="'+(window._pedFechaHasta||'')+'" style="'+inpDateSt+'">' : '')
     +'<span id="ped-filtro-activo" style="font-size:11px;color:var(--mu);font-style:italic"></span>'
     /* 21-ago-2026 — "Nuevo pedido" YA NO VIVE ACÁ. Esta barra se desliza de
        costado cuando no entra, y el botón, al estar último, quedaba fuera de la
@@ -21839,6 +21899,30 @@ function pClrFlt() {
   });
   pAply();
 }
+/* 26-oct (Pablo) · periodo de Pedidos */
+const PED_PER = [['hoy','Hoy'],['ayer','Ayer'],['7','Últimos 7 días'],['14','Últimos 14 días'],['30','Últimos 30 días'],['mes','Mes hasta hoy'],['mesant','Mes pasado'],['todo','Todo'],['custom','Personalizado']];
+function _pedTabActiva(){ const b = document.querySelector('#pg-pedidos .tab.on[data-e]'); return b ? b.getAttribute('data-e') : '_ACTIVOS'; }
+function _pedPerEfectivo(){ if (window._pedPer) return window._pedPer; const t = _pedTabActiva(); return (t === '' || t === 'ENTREGADO') ? '30' : 'todo'; }
+function _pedRango(){
+  const per = _pedPerEfectivo();
+  const hoy = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' }));
+  const f = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const menos = n => { const d = new Date(hoy); d.setDate(d.getDate() - n); return f(d); };
+  if (per === 'hoy') return [f(hoy), f(hoy)];
+  if (per === 'ayer') return [menos(1), menos(1)];
+  if (per === '7' || per === '14' || per === '30') return [menos(+per - 1), f(hoy)];
+  if (per === 'mes') return [f(new Date(hoy.getFullYear(), hoy.getMonth(), 1)), f(hoy)];
+  if (per === 'mesant') return [f(new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1)), f(new Date(hoy.getFullYear(), hoy.getMonth(), 0))];
+  if (per === 'custom') return [window._pedFechaDesde || '', window._pedFechaHasta || ''];
+  return ['', ''];
+}
+document.addEventListener('change', function (e) {
+  const t = e.target; if (!t || !t.id) return;
+  if (t.id === 'ped-per') { window._pedPer = t.value; try { pAply(); } catch (_) {} return; }
+  if (t.id === 'exp-campo') { window._pedFechaCampo = t.value; try { pAply(); } catch (_) {} return; }
+  if (t.id === 'exp-desde' || t.id === 'exp-hasta') { window._pedFechaDesde = (document.getElementById('exp-desde') || {}).value || ''; window._pedFechaHasta = (document.getElementById('exp-hasta') || {}).value || ''; try { pAply(); } catch (_) {} }
+});
+document.addEventListener('click', function (e) { if (e.target.closest && e.target.closest('#pg-pedidos .tab[data-e]') && !window._pedPer) setTimeout(function () { try { pAply(); } catch (_) {} }, 0); }, true);
 function pAply() {
   // RESCATE — al limpiar los filtros, soltar los pedidos rescatados y el memo de búsqueda
   try {
@@ -21860,6 +21944,18 @@ function pAply() {
   let filtered = (window._pTabNros)
     ? pRaw.filter(r => window._pTabNros.has(String(r['NroPedido']||'').trim()))
     : pRaw.slice();
+  /* 26-oct (Pablo) · PERIODO (Hoy, Ayer, 7, 14, 30 días, Mes hasta hoy, Mes pasado, Todo, Personalizado) por fecha de pedido o de pago.
+     Se aplica solo al elegir. Por defecto: «Todos» y «Entregados» = últimos 30 días; las pestañas de trabajo (Activos, Enviar…) = todo. */
+  try {
+    const _rg = _pedRango();
+    if (_rg[0] || _rg[1]) {
+      const porPago = window._pedFechaCampo === 'pago', ok = new Set();
+      (pAll || []).forEach(p => { const d = porPago ? (p._fechaPago || '') : p['Fecha Pedido'];
+        const ds = d instanceof Date ? d.toISOString().split('T')[0] : String(d || '').split('T')[0];
+        if (ds && (!_rg[0] || ds >= _rg[0]) && (!_rg[1] || ds <= _rg[1])) ok.add(String(p['NroPedido'] || '').trim()); });
+      filtered = filtered.filter(r => ok.has(String(r['NroPedido'] || '').trim()));
+    }
+  } catch (_) {}
   const _filasPestana = filtered;   // todas las filas de la pestaña, antes de filtrar
   Object.entries(pFlt).forEach(([col, f]) => {
     if (AGG_COLS.has(col)) return; // manejar después de agrupar
@@ -21909,6 +22005,7 @@ function pAply() {
     window._pUnidadesFiltro = _hayFiltro ? (_uFil.length - window._pUnidadesDevueltas) : null;
   } catch (_) { window._pUnidadesFiltro = null; window._pUnidadesDevueltas = 0; }
   if (!_filtraPorPedido) filtered = _pedsCompletarPedidos(filtered, _filasPestana);
+  try { window._pPrendasVista = filtered.filter(r => !_filaEsMarcadorPago(r) && String(r['Prenda']||'').trim() && !/^(CAMBIO\s|RESERVA|PENDIENTE PRENDA)/i.test(String(r['Prenda']||'').trim())).length; } catch (_) { window._pPrendasVista = null; }   /* 26-oct · prendas de lo que se ve */
 
   // Paso 2: agrupar por pedido
   pAll = pGroupByPedido(filtered);
@@ -23145,8 +23242,9 @@ function _excelPrendasASeparar(grupos) {
 
 function exportarExcel() {
   if (typeof XLSX === 'undefined') { toast('Librería XLSX no cargada. Recarga la página.','err'); return; }
-  const desde = document.getElementById('exp-desde')?.value || '';
-  const hasta = document.getElementById('exp-hasta')?.value || '';
+  const _rgX = (typeof _pedRango === 'function') ? _pedRango() : ['', ''];   /* 26-oct · el mismo periodo de la pantalla */
+  const desde = _rgX[0] || '';
+  const hasta = _rgX[1] || '';
   // Filtrar por rango de fechas (Fecha Pedido)
   let datos = pAll;
   if (desde || hasta) {
@@ -45412,6 +45510,9 @@ startAuth();
       '<div class="tw" style="overflow-x:auto"><table class="egr-t"><thead><tr><th>Rubro</th><th class="n">Previsto</th><th class="n">Real a la fecha</th><th class="n">Para el cierre</th><th class="n">Falta gastar</th></tr></thead><tbody>' + filas + '</tbody></table></div>' +
       '<div style="font-size:11px;color:var(--mu);margin-top:6px">Previsto vacío = promedio de los últimos 3 meses (en gris). Pon un monto pesimista en pauta, comisiones o bonos; "para el cierre" usa siempre el mayor entre lo previsto y lo real. Al terminar el mes queda solo lo real.</div></div>';
   }
+  (function(){ try { if (document.getElementById('egr-inp-css')) return; const st = document.createElement('style'); st.id = 'egr-inp-css';
+    st.textContent = '#egr-w input[type=number],#egr-w input[type=month],#egr-w input[type=date],#egr-w input[type=text],#egr-w select{background:var(--bg3);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-family:inherit;color-scheme:dark}#egr-w .egr-kpi{text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center}';   /* + cifras centradas */   /* 26-oct (Pablo) · previsto y utilidad mínima sin fondo blanco */
+    document.head.appendChild(st); } catch (_) {} })();
   async function _egrProy(){
     const c = document.getElementById('egr-cuerpo');
     if (!EGR.pmes) EGR.pmes = _egrMesActual();

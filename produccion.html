@@ -126,7 +126,7 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g small{display:block;color:v
     <div><label>Producto (de 📦 Productos)</label><input id="nDis" list="lDis" placeholder="BLAZER MIRELLA" oninput="nProducto();nFechaSug()"><datalist id="lDis"></datalist></div>
     <div><label>Tipo</label><select id="nTipo" onchange="nFechaSug()"><option value="reposicion">Reposición</option><option value="nuevo">Nuevo</option></select></div>
     <div><label>Taller</label><input id="nTaller" list="lTaller"><datalist id="lTaller"></datalist></div>
-    <div><label>Tela - proveedor</label><input id="nTela" placeholder="Mirella - Colortex"></div>
+    <input id="nTela" type="hidden">   <!-- 26-oct (lista 255) · la tela va en «Insumos»; se conserva oculto lo que tenían las órdenes viejas -->
     <div><label>Fecha para venta</label><input id="nFecha" type="date" oninput="NV.fechaMano=true;nFechaSug()"><small id="nFechaSug" class="mu" style="font-size:12px"></small></div>
     <div><label>Costo por prenda (S/)</label><input id="nCosto" type="number" step="0.5" min="0"></div>
     <div><label>Derivado al taller el (tela e insumos entregados)</label><input id="nFTal" type="date"></div>
@@ -136,8 +136,11 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g small{display:block;color:v
   <div id="nGrid"></div>
   <div style="display:flex;gap:6px;align-items:center;margin-top:6px"><input id="nColor" placeholder="Agregar color" style="width:150px"><button onclick="nAgregarColor()">＋ Color</button><span class="sp"></span>
     <span class="mu" id="nTot"></span></div>
-  <h4 style="margin:12px 0 4px;font-size:14px;font-weight:600">Tela por color: metros asignados y consumo</h4>
+  <h4 style="margin:12px 0 4px;font-size:14px;font-weight:600">Insumos: tela y avíos por color</h4>
   <div id="nMat"></div>
+  <!-- 26-oct (lista 251) · entrega por lotes -->
+  <label style="display:flex;gap:6px;align-items:center;margin-top:10px;font-size:13px"><input type="checkbox" id="nLotesOn" onchange="nLotesOn(this.checked)" style="width:auto"> Entrega por lotes <span class="mu" style="font-size:12px">· el taller entrega en partes, con fecha y cantidad</span></label>
+  <div id="nLotes"></div>
   <div class="f" style="margin-top:8px"><div style="grid-column:1/-1"><label>Notas</label><input id="nNotas"></div></div>
   <div style="display:flex;gap:8px;justify-content:flex-end"><span id="nMsg" class="err"></span><button onclick="cerrar('mNueva')">Cancelar</button><button class="p" id="nOk" onclick="guardarOrden()">Guardar orden</button></div>
 </div></div>
@@ -255,7 +258,7 @@ async function cargarStock(){
 }
 async function abrirNueva(o, aqui){
   await cargarStock();
-  NV = { id: o ? o.id : null, colores: [], q: {}, M: (o && Array.isArray(o.materiales) && o.materiales.length) ? o.materiales.map(m => Object.assign({}, m, { colores: (m.colores || []).slice() })) : null, Msug: false, adPct: o ? o.adelanto_pct : null };
+  NV = { id: o ? o.id : null, colores: [], q: {}, M: (o && Array.isArray(o.materiales) && o.materiales.length) ? o.materiales.map(m => Object.assign({}, m, { colores: (m.colores || []).slice() })) : null, Msug: false, adPct: o ? o.adelanto_pct : null, lotes: (o && Array.isArray(o.lotes)) ? o.lotes.map(x => Object.assign({}, x)) : [], porLotes: !!(o && Array.isArray(o.lotes) && o.lotes.length) };
   document.getElementById('nTit').textContent = o ? '✏️ Editar ' + o.codigo : '＋ Nueva producción';
   document.getElementById('nDis').value = o ? o.diseno : ''; document.getElementById('nTipo').value = o ? o.tipo : 'reposicion';
   document.getElementById('nTaller').value = o ? (o.taller || '') : ''; document.getElementById('nTela').value = o ? (o.tela || '') : '';
@@ -360,41 +363,52 @@ function nTotal(){
 /* 26-oct (lista 242) · TELA POR COLOR en Nueva producción: cada tela (si según el color cambia la tela, una fila por grupo de colores),
    su consumo por prenda (sugerido de 📦 Productos), los METROS ASIGNADOS (lo que se compró/entregó al taller) y lo estimado = prendas × consumo. */
 function nMatSug(){
-  const d = nrm(document.getElementById('nDis').value), I = (D.ins || []).filter(x => x.diseno === d && x.comp === 'tela1');
-  if (I.length) return I.map(x => ({ nombre: x.descripcion || 'Tela', colores: String(x.colores || '').split(',').map(nrm).filter(Boolean), consumo: +x.cantidad || 0, precio: +x.precio || 0, asignados: 0 }));
-  return [{ nombre: document.getElementById('nTela').value || '', colores: [], consumo: 0, precio: 0, asignados: 0 }];
+  const I = insDeFicha(nrm(document.getElementById('nDis').value));
+  if (I.length) return I;
+  return [{ tipo: 'Tela', nombre: document.getElementById('nTela').value || '', tam: '', codigo: '', colores: [], consumo: 0, precio: 0, asignados: 0 }];   /* orden vieja: su «Tela - proveedor» pasa aquí */
 }
-function nMatPrendas(M){
-  const asig = {}, tot = M.map(() => 0); M.forEach((m, i) => (m.colores || []).forEach(c => { asig[nrm(c)] = i; }));
-  const libre = M.findIndex(m => !(m.colores || []).length);
-  NV.colores.forEach(c => { const k = nrm(c), i = k in asig ? asig[k] : libre; if (i >= 0) tot[i] += TALLAS.reduce((a, t) => a + (NV.q[c + '|' + t] || 0), 0); });
-  return tot;
-}
+function nMatPrendas(M){ const Q = {}; NV.colores.forEach(c => { Q[nrm(c)] = (Q[nrm(c)] || 0) + TALLAS.reduce((a, t) => a + (NV.q[c + '|' + t] || 0), 0); }); return insPrendas(M, Q); }
 function nMatPintar(){
   const box = document.getElementById('nMat'); if (!box) return;
   if (!NV.M || (NV.Msug && !NV.Mmano)) { NV.M = nMatSug(); NV.Msug = true; }
-  const r2 = v => Math.round((+v || 0) * 100) / 100;
-  box.innerHTML = '<table class="g" style="width:100%"><tr><th>Tela - proveedor</th><th>Colores</th><th>Consumo<small>m por prenda</small></th><th>Metros asignados<small>comprados / entregados</small></th><th>Prendas</th><th>Estimado<small>prendas × consumo</small></th><th>Diferencia</th><th></th></tr>'
-    + NV.M.map((m, i) => '<tr><td><input value="' + esc(m.nombre || '') + '" placeholder="Crepé - Colortex" style="width:150px" oninput="NV.Mmano=1;NV.M[' + i + '].nombre=this.value"></td>'
-      + '<td><input value="' + esc((m.colores || []).join(', ')) + '" placeholder="todos" title="Colores que usan esta tela, separados por coma. Vacío = todos los demás" style="width:140px" onchange="NV.Mmano=1;NV.M[' + i + '].colores=this.value.split(\',\').map(nrm).filter(Boolean);nMatPintar()"></td>'
-      + '<td><input type="number" step="0.01" min="0" value="' + (m.consumo || '') + '" style="width:70px" oninput="NV.Mmano=1;NV.M[' + i + '].consumo=+this.value||0;nMatTot()"></td>'
-      + '<td><input type="number" step="0.1" min="0" value="' + (m.asignados || '') + '" style="width:80px" oninput="NV.Mmano=1;NV.M[' + i + '].asignados=+this.value||0;nMatTot()"></td>'
-      + '<td class="nmP"></td><td class="nmE"></td><td class="nmD"></td>'
-      + '<td>' + (NV.M.length > 1 ? '<button title="Quitar tela" onclick="NV.Mmano=1;NV.M.splice(' + i + ',1);nMatPintar()">✕</button>' : '') + '</td></tr>').join('')
-    + '<tr><th>Total</th><td></td><td></td><td id="nmTA"></td><td id="nmTP"></td><td id="nmTE"></td><td id="nmTD"></td><td></td></tr></table>'
-    + (NV.Msug && !NV.Mmano && (D.ins || []).some(x => x.diseno === nrm(document.getElementById('nDis').value) && x.comp === 'tela1') ? '<div class="mu" style="font-size:12px">Consumo sugerido de 📦 Productos: revísalo.</div>' : '')
-    + '<button onclick="NV.Mmano=1;NV.M.push({nombre:\'\',colores:[],consumo:0,precio:0,asignados:0});nMatPintar()">＋ Otra tela</button> <span class="mu" style="font-size:12px">Si según el color cambia la tela, agrega otra fila con esos colores.</span>';
-  nMatTot();
+  box.innerHTML = insFilas(NV.M, 'NV.M', 'NV.Mmano=1;', null, 'nMatPintar', 'nMatTot')
+    + (NV.Msug && !NV.Mmano && insDeFicha(nrm(document.getElementById('nDis').value)).length ? '<div class="mu" style="font-size:12px">Consumo sugerido de 📦 Productos: revísalo.</div>' : '')
+    + '<button onclick="NV.Mmano=1;NV.M.push({tipo:\'Tela\',nombre:\'\',colores:[],consumo:0,precio:0,asignados:0});nMatPintar()">＋ Otro insumo</button> <span class="mu" style="font-size:12px">Si según el color cambia la tela (o el botón), agrega otra fila con esos colores y su código.</span>';
+  nMatTot(); try { nLotesPintar(); } catch (_) {}
 }
-function nMatTot(){
-  const box = document.getElementById('nMat'); if (!box || !NV.M) return;
-  const n = nMatPrendas(NV.M), r2 = v => Math.round((+v || 0) * 100) / 100; let tA = 0, tP = 0, tE = 0;
-  const dif = (a, e) => !a ? '<span class="mu">—</span>' : '<b style="color:' + (a - e < 0 ? 'var(--rd)' : 'var(--ok)') + '">' + (a - e >= 0 ? '+' : '') + r2(a - e) + ' m</b>' + (a - e < 0 ? ' <small>falta tela</small>' : '');
-  [...box.querySelectorAll('tr')].slice(1, 1 + NV.M.length).forEach((tr, i) => { const m = NV.M[i], e = n[i] * (+m.consumo || 0), a = +m.asignados || 0; tA += a; tP += n[i]; tE += e;
-    tr.querySelector('.nmP').textContent = n[i]; tr.querySelector('.nmE').textContent = r2(e) + ' m'; tr.querySelector('.nmD').innerHTML = dif(a, e); });
-  const g = id => document.getElementById(id);
-  if (g('nmTA')) g('nmTA').innerHTML = '<b>' + r2(tA) + ' m</b>'; if (g('nmTP')) g('nmTP').innerHTML = '<b>' + tP + '</b>';
-  if (g('nmTE')) g('nmTE').innerHTML = '<b>' + r2(tE) + ' m</b>'; if (g('nmTD')) g('nmTD').innerHTML = dif(tA, tE);
+function nMatTot(){ if (!NV.M) return; insTotales(document.getElementById('nMat'), NV.M, nMatPrendas(NV.M)); }
+/* 26-oct (lista 251) · ENTREGA POR LOTES: el taller entrega en partes. Cada lote: fecha y prendas (y qué colores/tallas, opcional).
+   En la ficha de la orden se ve cada lote 🟢 entregado / ⚪ pendiente / 🔴 atrasado contra lo que ya entregó el taller. */
+function nTotPrendas(){ return NV.colores.reduce((a, c) => a + TALLAS.reduce((b, t) => b + (NV.q[c + '|' + t] || 0), 0), 0); }
+function nLotesOn(on){
+  NV.porLotes = !!on;
+  if (on && !(NV.lotes || []).length){ const t = nTotPrendas(), a = Math.ceil(t / 4) * 2; NV.lotes = [{ fecha: '', prendas: a, detalle: '' }, { fecha: '', prendas: Math.max(0, t - a), detalle: '' }]; }
+  nLotesPintar();
+}
+function nLotesPintar(){
+  const box = document.getElementById('nLotes'); if (!box) return; const ch = document.getElementById('nLotesOn'); if (ch) ch.checked = !!NV.porLotes;
+  if (!NV.porLotes){ box.innerHTML = ''; return; }
+  const L = NV.lotes || (NV.lotes = []), t = nTotPrendas(), s = L.reduce((a, x) => a + (+x.prendas || 0), 0);
+  box.innerHTML = '<table class="g"><tr><th>Lote</th><th>Fecha de entrega</th><th>Prendas</th><th>Colores / tallas <small>opcional</small></th><th></th></tr>'
+    + L.map((x, i) => '<tr><td>' + (i + 1) + '</td><td><input type="date" value="' + esc(x.fecha || '') + '" onchange="NV.lotes[' + i + '].fecha=this.value"></td>'
+      + '<td><input type="number" min="0" step="1" value="' + (x.prendas || '') + '" style="width:70px" oninput="NV.lotes[' + i + '].prendas=+this.value||0;nLotesTot()"></td>'
+      + '<td><input value="' + esc(x.detalle || '') + '" placeholder="ej. Negro y Beige completos" style="width:200px" oninput="NV.lotes[' + i + '].detalle=this.value"></td>'
+      + '<td>' + (L.length > 1 ? '<button title="Quitar lote" onclick="NV.lotes.splice(' + i + ',1);nLotesPintar()">✕</button>' : '') + '</td></tr>').join('')
+    + '<tr><th>Total</th><td></td><td id="nLT"></td><td colspan="2" id="nLD"></td></tr></table>'
+    + '<button onclick="NV.lotes.push({fecha:\'\',prendas:0,detalle:\'\'});nLotesPintar()">＋ Lote</button>';
+  nLotesTot();
+}
+function nLotesTot(){
+  const t = nTotPrendas(), s = (NV.lotes || []).reduce((a, x) => a + (+x.prendas || 0), 0), a = document.getElementById('nLT'), b = document.getElementById('nLD');
+  if (a) a.innerHTML = '<b>' + s + '</b>'; if (b) b.innerHTML = s === t ? '<span class="okt">cuadra con las ' + t + ' prendas</span>' : '<span style="color:var(--am)">' + (s < t ? 'faltan ' + (t - s) : 'sobran ' + (s - t)) + ' de las ' + t + ' prendas</span>';
+}
+function lotesHtml(o, T){
+  const L = Array.isArray(o.lotes) ? o.lotes : []; if (!L.length) return '';
+  const ent = T.buenas + T.correccion + T.perdidas + T.yayitas, hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' }); let ac = 0;
+  return '<div class="sec"><h4>Entrega por lotes</h4><table class="g"><tr><th>Lote</th><th>Fecha</th><th>Prendas</th><th>Colores / tallas</th><th>Estado</th></tr>'
+    + L.map((x, i) => { ac += +x.prendas || 0; const ok = ent >= ac, tarde = !ok && x.fecha && x.fecha < hoy;
+      return '<tr><td>' + (i + 1) + '</td><td>' + esc(x.fecha || '—') + '</td><td>' + (+x.prendas || 0) + '</td><td>' + esc(x.detalle || '') + '</td><td>' + (ok ? '🟢 entregado' : tarde ? '🔴 atrasado' : '⚪ pendiente') + '</td></tr>'; }).join('')
+    + '</table><div class="mu" style="font-size:12px">Entregado por el taller hasta hoy: ' + ent + ' prendas (buenas + con falla).</div></div>';
 }
 function nAgregarColor(){ const c = nrm(document.getElementById('nColor').value); if (!c) return; if (NV.colores.indexOf(c) < 0) NV.colores.push(c); document.getElementById('nColor').value = ''; nGrid(); }
 async function guardarOrden(){
@@ -412,12 +426,18 @@ async function guardarOrden(){
     const ft = document.getElementById('nFTal').value || null, di = document.getElementById('nDias').value === '' ? null : +document.getElementById('nDias').value;
     if (ft || di != null || (NV.id && (D.ordenes.find(x => x.id === NV.id) || {}).fecha_taller)){ const r2 = await rpc('prod_taller_guardar', { p_id: r.id, p_fecha_taller: ft, p_dias_taller: di }); if (!r2.ok) throw new Error(r2.error); }
     /* 26-oct (lista 242) · tela por color: consumo, metros asignados (y precio por metro de 📦 Productos) */
-    const MM = (NV.M || []).filter(m => (m.nombre || '').trim() || +m.consumo || +m.asignados).map(m => ({ nombre: String(m.nombre || '').trim(), colores: m.colores || [], consumo: +m.consumo || 0, precio: +m.precio || 0, asignados: +m.asignados || 0 }));
-    if (MM.length){ const n = nMatPrendas(MM), met = MM.reduce((a, m, i) => a + n[i] * m.consumo, 0), cos = MM.reduce((a, m, i) => a + n[i] * m.consumo * m.precio, 0);
+    const MM = insLimpio(NV.M);   /* 26-oct · tela y avíos (tipo, tamaño, código de color) */
+    if (MM.length){ const n = nMatPrendas(MM), tl = insTela(MM, n), met = tl.met, cos = tl.cos;
       const cu = document.getElementById('nCosto').value === '' ? null : +document.getElementById('nCosto').value;
       const r3 = await rpc('prod_costos2_guardar', { p_id: r.id, p_costo_unit: cu, p_adelanto_pct: NV.adPct != null ? +NV.adPct : null, p_materiales: MM,
         p_tela_metros: met ? Math.round(met * 100) / 100 : null, p_tela_precio_m: met && cos ? Math.round(cos / met * 100) / 100 : null });
       if (!r3.ok) throw new Error(r3.error); }
+    /* 26-oct (lista 251) · entrega por lotes */
+    const LL = NV.porLotes ? (NV.lotes || []).filter(x => +x.prendas > 0).map(x => ({ fecha: x.fecha || null, prendas: +x.prendas, detalle: String(x.detalle || '').trim() })) : [];
+    const tenia = NV.id && (D.ordenes.find(x => x.id === NV.id) || {}).lotes;
+    if (LL.length || (Array.isArray(tenia) && tenia.length)){
+      try { const r4 = await rpc('prod_lotes_guardar', { p_id: r.id, p_lotes: LL }); if (!r4.ok) throw new Error(r4.error); }
+      catch (e4) { aviso(/prod_lotes_guardar|404|lotes/.test(String(e4.message)) ? 'La orden se guardó, pero los lotes no: falta pegar el SQL de lotes (26-oct) en Supabase.' : e4.message); } }
     cerrar('mNueva'); await cargar(); abrirOrden(r.id);
   } catch (e) { msg.textContent = e.message; }
   b.disabled = false;
@@ -440,7 +460,7 @@ function abrirOrden(id){
     + '<div class="res"><div><b>' + T.pedido + '</b>pedidas</div><div><b class="okt">' + T.buenas + '</b>listas (al stock)</div><div><b style="color:var(--am)">' + T.correccion + '</b>en corrección</div><div><b class="err">' + T.perdidas + '</b>perdidas</div><div><b>' + T.yayitas + '</b>yayitas</div><div><b>' + T.falta + '</b>faltan entregar</div></div>'
     + '<table class="g"><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '</tr>'
     + colores.map(c => '<tr><td><b>' + esc(c) + '</b></td>' + tallas.map(t => celda(c, t, s => '<td class="' + (s.correccion ? 'ag' : '') + '" title="Pedidas ' + s.pedido + ' · listas ' + s.buenas + ' · corrección ' + s.correccion + ' · perdidas ' + s.perdidas + '">' + s.buenas + '/' + s.pedido + (s.correccion ? '<small>' + s.correccion + ' en corr.</small>' : '') + '</td>')).join('') + '</tr>').join('') + '</table>'
-    + '<div class="mu" style="font-size:12px">listas / pedidas · rojo = tiene prendas en corrección</div>';
+    + '<div class="mu" style="font-size:12px">listas / pedidas · rojo = tiene prendas en corrección</div>' + lotesHtml(o, T);   /* 26-oct · entrega por lotes */
   const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && ['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0);
   if (PI.length) h += '<div class="sec" style="border-color:var(--am)"><h4>Por ingresar al stock: ' + T.porIngresar + ' prendas</h4>'
     + '<div class="mu" style="font-size:12px" title="Se abre el «＋ Ingresar stock» de siempre con todo ya cargado. Las yayitas entran directo al montón de Fallas con destino Yayitas.">Abre «＋ Ingresar stock» ya cargado · yayitas → Fallas ⓘ</div>'
@@ -509,22 +529,73 @@ const S2 = v => Math.abs(+v || 0) >= 1000 ? 'S/ ' + Math.round(+v || 0).toLocale
        su CONSUMO por prenda (metraje por unidad) y su precio por metro → metros = prendas pedidas de esos colores × consumo; costo = metros × S/ m.
    2 · PAGO AL TALLER = costo por prenda × prendas producidas. Adelanto en % (por defecto 80) que calcula el monto solo, lo pagado,
        los DESCUENTOS (adelantos ya entregados, préstamos, fallas…) y lo PENDIENTE. Cada uno con su total. ══ */
-function matPrendas(o, M){
-  const L = D.lineas.filter(x => x.orden_id === o.id), asig = {}, tot = M.map(() => 0);
-  M.forEach((m, i) => (m.colores || []).forEach(c => { asig[nrm(c)] = i; }));
-  const libre = M.findIndex(m => !(m.colores || []).length);
-  L.forEach(l => { const k = nrm(l.color), i = k in asig ? asig[k] : libre; if (i >= 0) tot[i] += +l.pedido || 0; });
+/* 26-oct (lista 252-254) · INSUMOS: tela y avíos en una sola tabla. Cada fila: tipo (tela, forro, entretela, botón, hombrera, elástico, cierre, otro),
+   descripción / proveedor, tamaño, código de color del proveedor, colores que la usan, consumo por prenda, precio por unidad.
+   Los colores se reparten DENTRO de cada tipo (una tela por color, un botón por color…). «TODOS» o vacío = todos los demás colores. */
+const INS_TIPOS = [['Tela', 'm'], ['Forro', 'm'], ['Entretela', 'm'], ['Botón', 'unid.'], ['Hombrera', 'par'], ['Elástico', 'm'], ['Cierre', 'unid.'], ['Otro', 'unid.']];
+const INS_TODOS = /^(TODOS?|TODAS?|\*)$/;
+function insTipo(m){ return (m && m.tipo) || 'Tela'; }
+function insUni(t){ const x = INS_TIPOS.find(y => y[0] === t); return x ? x[1] : 'unid.'; }
+function insCols(m){ return ((m && m.colores) || []).map(nrm).filter(c => c && !INS_TODOS.test(c)); }
+function insColsTxt(v){ return String(v || '').split(',').map(nrm).filter(c => c && !INS_TODOS.test(c)); }
+function insPrendas(M, Q){   /* Q = { COLOR: prendas } → prendas de cada fila */
+  const tot = M.map(() => 0), G = {};
+  M.forEach((m, i) => { (G[insTipo(m)] = G[insTipo(m)] || []).push(i); });
+  Object.values(G).forEach(idx => { const asig = {}; idx.forEach(i => insCols(M[i]).forEach(c => { asig[c] = i; }));
+    const libre = idx.find(i => !insCols(M[i]).length);
+    Object.keys(Q).forEach(c => { const i = c in asig ? asig[c] : libre; if (i !== undefined) tot[i] += Q[c]; }); });
   return tot;
 }
+function insDeFicha(d){   /* sugerido de 📦 Productos: tela y avíos de la ficha (sin confección ni packaging) */
+  const tipoDe = comp => /^tela/.test(comp) ? 'Tela' : comp === 'forro' ? 'Forro' : /entretela|tricotex/.test(comp) ? 'Entretela' : /bot/.test(comp) ? 'Botón'
+    : /hombr/.test(comp) ? 'Hombrera' : /elast/.test(comp) ? 'Elástico' : /cierre|broche/.test(comp) ? 'Cierre' : null;
+  return (D.ins || []).filter(x => x.diseno === d && tipoDe(x.comp)).map(x => { const t = tipoDe(x.comp);
+    return { tipo: t, nombre: x.descripcion || t, tam: '', codigo: '', colores: String(x.colores || '').split(',').map(nrm).filter(Boolean), consumo: +x.cantidad || 0, precio: +x.precio || 0, asignados: 0 }; });
+}
+function insFilas(M, v, pre, n, rep, tot){   /* tabla editable común (Nueva producción y ficha de la orden) */
+  const r2 = x => Math.round((+x || 0) * 100) / 100;
+  return '<table class="g" style="width:100%"><tr><th>Tipo</th><th>Descripción / proveedor</th><th>Tamaño</th><th>Código color</th><th>Colores</th><th>Consumo<small>por prenda</small></th><th>S/ por unidad</th><th>Asignados<small>comprados / entregados</small></th><th>Prendas</th><th>Cantidad<small>estimada</small></th><th>Diferencia</th><th>Costo</th><th></th></tr>'
+    + M.map((m, i) => { const t = insTipo(m), u = insUni(t);
+      return '<tr><td><select onchange="' + v + '[' + i + '].tipo=this.value;' + pre + rep + '()">' + INS_TIPOS.map(x => '<option' + (x[0] === t ? ' selected' : '') + '>' + x[0] + '</option>').join('') + '</select></td>'
+        + '<td><input value="' + esc(m.nombre || '') + '" placeholder="' + (t === 'Tela' ? 'Crepé - Colortex' : t === 'Botón' ? 'Botón perla' : t) + '" style="width:140px" oninput="' + pre + v + '[' + i + '].nombre=this.value"></td>'
+        + '<td><input value="' + esc(m.tam || '') + '" placeholder="' + (t === 'Botón' ? '18 mm' : t === 'Cierre' ? '20 cm' : '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].tam=this.value"></td>'
+        + '<td><input value="' + esc(m.codigo || '') + '" placeholder="Cód." title="Código del color en el proveedor" style="width:70px" oninput="' + pre + v + '[' + i + '].codigo=this.value"></td>'
+        + '<td><input value="' + esc((m.colores || []).join(', ')) + '" placeholder="todos" title="Colores que usan este insumo, separados por coma. Vacío o TODOS = todos los demás" style="width:130px" onchange="' + pre + v + '[' + i + '].colores=insColsTxt(this.value);' + rep + '()"></td>'
+        + '<td><input type="number" step="0.01" min="0" value="' + (m.consumo || '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].consumo=+this.value||0;' + tot + '()"> <small>' + u + '</small></td>'
+        + '<td><input type="number" step="0.01" min="0" value="' + (m.precio || '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].precio=+this.value||0;' + tot + '()"></td>'
+        + '<td><input type="number" step="0.1" min="0" value="' + (m.asignados || '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].asignados=+this.value||0;' + tot + '()"> <small>' + u + '</small></td>'
+        + '<td class="iP"></td><td class="iC"></td><td class="iD"></td><td class="iS"></td>'
+        + '<td>' + (M.length > 1 ? '<button title="Quitar insumo" onclick="' + pre + v + '.splice(' + i + ',1);' + rep + '()">✕</button>' : '') + '</td></tr>'; }).join('')
+    + '<tr><th colspan="8">Total insumos</th><td></td><td class="iTM"></td><td></td><td class="iTS"></td><td></td></tr></table>';
+}
+function insTotales(box, M, n){   /* pinta prendas, cantidad estimada, diferencia vs asignados y costo de cada fila */
+  if (!box) return { met: 0, cos: 0 };
+  const r2 = x => Math.round((+x || 0) * 100) / 100; let met = 0, cos = 0;
+  const dif = (a, e, u) => !a ? '<span class="mu">—</span>' : '<b style="color:' + (a - e < 0 ? 'var(--rd)' : 'var(--ok)') + '">' + (a - e >= 0 ? '+' : '') + r2(a - e) + ' ' + u + '</b>' + (a - e < 0 ? ' <small>falta</small>' : '');
+  [...box.querySelectorAll('tr')].slice(1, 1 + M.length).forEach((tr, i) => { const m = M[i], u = insUni(insTipo(m)), e = n[i] * (+m.consumo || 0), c = e * (+m.precio || 0);
+    if (insTipo(m) === 'Tela') met += e; cos += c;
+    const q = k => tr.querySelector(k); if (q('.iP')) q('.iP').textContent = n[i]; if (q('.iC')) q('.iC').textContent = r2(e) + ' ' + u;
+    if (q('.iD')) q('.iD').innerHTML = dif(+m.asignados || 0, e, u); if (q('.iS')) q('.iS').textContent = S2(c); });
+  const tm = box.querySelector('.iTM'), ts = box.querySelector('.iTS');
+  if (tm) tm.innerHTML = '<b>' + r2(met) + ' m</b> <small>de tela</small>'; if (ts) ts.innerHTML = '<b>' + S2(cos) + '</b>';
+  return { met, cos };
+}
+function insLimpio(M){ return (M || []).filter(m => (m.nombre || '').trim() || +m.consumo || +m.precio || +m.asignados).map(m => ({ tipo: insTipo(m), nombre: String(m.nombre || '').trim(),
+  tam: String(m.tam || '').trim(), codigo: String(m.codigo || '').trim(), colores: insCols(m), consumo: +m.consumo || 0, precio: +m.precio || 0, asignados: +m.asignados || 0 })); }
+function insTela(M, n){ let met = 0, cos = 0; M.forEach((m, i) => { if (insTipo(m) === 'Tela'){ met += n[i] * m.consumo; cos += n[i] * m.consumo * m.precio; } }); return { met, cos }; }
+function matPrendas(o, M){
+  const Q = {}; D.lineas.filter(x => x.orden_id === o.id).forEach(l => { const k = nrm(l.color); Q[k] = (Q[k] || 0) + (+l.pedido || 0); });
+  return insPrendas(M, Q);   /* 26-oct · por tipo de insumo; «TODOS» = todos los demás (lista 253) */
+}
 function matSinAsignar(o, M){
-  if (M.some(m => !(m.colores || []).length)) return [];
-  const A = new Set(); M.forEach(m => (m.colores || []).forEach(c => A.add(nrm(c))));
+  const T = M.filter(m => insTipo(m) === 'Tela'); if (!T.length || T.some(m => !insCols(m).length)) return [];
+  const A = new Set(); T.forEach(m => insCols(m).forEach(c => A.add(c)));
   return [...new Set(D.lineas.filter(x => x.orden_id === o.id && !A.has(nrm(x.color))).map(x => x.color))];
 }
 function matDe(o){
   if (Array.isArray(o.materiales) && o.materiales.length) return { M: o.materiales.map(m => Object.assign({}, m, { colores: (m.colores || []).slice() })), sug: false };
-  const d = nrm(o.diseno), I = (D.ins || []).filter(x => x.diseno === d && x.comp === 'tela1');
-  if (I.length) return { M: I.map(x => ({ nombre: x.descripcion || 'Tela', colores: String(x.colores || '').split(',').map(nrm).filter(Boolean), consumo: +x.cantidad || 0, precio: +x.precio || 0 })), sug: true, de: '📦 Productos' };
+  const d = nrm(o.diseno), I = insDeFicha(d);
+  if (I.length) return { M: I, sug: true, de: '📦 Productos' };
   const ped = D.lineas.filter(x => x.orden_id === o.id).reduce((a, x) => a + (+x.pedido || 0), 0);
   if (o.tela || o.tela_metros) return { M: [{ nombre: o.tela || 'Tela', colores: [], consumo: o.tela_metros && ped ? Math.round(o.tela_metros / ped * 100) / 100 : 0, precio: +o.tela_precio_m || 0 }], sug: true, de: 'la orden' };
   return { M: [{ nombre: '', colores: [], consumo: 0, precio: 0 }], sug: true };
@@ -547,40 +618,26 @@ function cuentas(o, T){
 function sugTaller(d){ const p = D.prod && D.prod[d]; return p && +p.c_confeccion > 0 ? +p.c_confeccion : null; }
 let MT = null;   /* materiales en edición de la orden abierta */
 function matPintar(){
-  const box = document.getElementById('matBox'); if (!box || !MT) return; const o = OA, n = matPrendas(o, MT.M), falt = matSinAsignar(o, MT.M);
+  const box = document.getElementById('matBox'); if (!box || !MT) return; const o = OA, falt = matSinAsignar(o, MT.M);
   const colsOrden = [...new Set(D.lineas.filter(x => x.orden_id === o.id).map(x => x.color))];
-  let tM = 0, tC = 0;
-  const filas = MT.M.map((m, i) => { const met = n[i] * (+m.consumo || 0), cos = met * (+m.precio || 0); tM += met; tC += cos;
-    return '<tr><td><input value="' + esc(m.nombre || '') + '" placeholder="Crepé - Colortex" style="width:160px" oninput="MT.M[' + i + '].nombre=this.value"></td>'
-      + '<td><input value="' + esc((m.colores || []).join(', ')) + '" list="lColO" placeholder="todos" title="Colores que usan esta tela, separados por coma. Vacío = todos los demás" style="width:150px" onchange="MT.M[' + i + '].colores=this.value.split(\',\').map(nrm).filter(Boolean);matPintar()"></td>'
-      + '<td><input type="number" step="0.01" min="0" value="' + (m.consumo || '') + '" style="width:70px" oninput="MT.M[' + i + '].consumo=+this.value||0;matTot()"></td>'
-      + '<td><input type="number" step="0.1" min="0" value="' + (m.precio || '') + '" style="width:70px" oninput="MT.M[' + i + '].precio=+this.value||0;matTot()"></td>'
-      + '<td><input type="number" step="0.1" min="0" value="' + (m.asignados || '') + '" style="width:70px" title="Metros asignados (comprados / entregados al taller)" oninput="MT.M[' + i + '].asignados=+this.value||0"></td>'
-      + '<td>' + n[i] + '</td><td class="mtM">' + (Math.round(met * 100) / 100) + ' m</td><td class="mtC">' + S2(cos) + '</td>'
-      + '<td>' + (MT.M.length > 1 ? '<button title="Quitar material" onclick="MT.M.splice(' + i + ',1);matPintar()">✕</button>' : '') + '</td></tr>'; }).join('');
-  box.innerHTML = '<table class="g" style="width:100%"><tr><th>Tela - proveedor</th><th>Colores</th><th>Consumo<small>m por prenda</small></th><th>S/ por metro</th><th>Asignados<small>m</small></th><th>Prendas<small>pedidas</small></th><th>Metros<small>estimados</small></th><th>Costo</th><th></th></tr>' + filas
-    + '<tr><th>Total insumos (tela)</th><td></td><td></td><td></td><td></td><td></td><td><b id="mtTM">' + (Math.round(tM * 100) / 100) + ' m</b></td><td><b id="mtTC">' + S2(tC) + '</b></td><td></td></tr></table>'
+  box.innerHTML = insFilas(MT.M, 'MT.M', '', null, 'matPintar', 'matTot')
     + '<datalist id="lColO">' + colsOrden.map(c => '<option value="' + esc(c) + '">').join('') + '</datalist>'
-    + (falt.length ? '<div class="err" style="font-size:12px">Colores sin tela asignada: ' + esc(falt.join(', ')) + ' (deja una fila con «Colores» vacío para «todos los demás»).</div>' : '')
+    + (falt.length ? '<div class="err" style="font-size:12px">Colores sin tela asignada: ' + esc(falt.join(', ')) + ' (deja una fila de tela con «Colores» vacío o TODOS para «todos los demás»).</div>' : '')
     + (MT.sug && MT.de ? '<div class="mu" style="font-size:12px">Sugerido de ' + esc(MT.de) + ': revísalo y guarda.</div>' : '')
-    + '<button onclick="MT.M.push({nombre:\'\',colores:[],consumo:0,precio:0});matPintar()">＋ Otro material</button> <span class="mu" style="font-size:12px">Si según el color cambia la tela (y su precio), agrega otra fila con esos colores.</span>';
+    + '<button onclick="MT.M.push({tipo:\'Tela\',nombre:\'\',colores:[],consumo:0,precio:0});matPintar()">＋ Otro insumo</button> <span class="mu" style="font-size:12px">Una fila por tela o avío; si según el color cambia (y su precio o código), otra fila con esos colores.</span>';
+  matTot();
 }
-function matTot(){
-  const n = matPrendas(OA, MT.M); let tM = 0, tC = 0;
-  [...document.querySelectorAll('#matBox tr')].slice(1, 1 + MT.M.length).forEach((tr, i) => { const m = MT.M[i], met = n[i] * (+m.consumo || 0), cos = met * (+m.precio || 0); tM += met; tC += cos;
-    const a = tr.querySelector('.mtM'), b = tr.querySelector('.mtC'); if (a) a.textContent = (Math.round(met * 100) / 100) + ' m'; if (b) b.textContent = S2(cos); });
-  const a = document.getElementById('mtTM'), b = document.getElementById('mtTC'); if (a) a.textContent = (Math.round(tM * 100) / 100) + ' m'; if (b) b.textContent = S2(tC);
-}
+function matTot(){ if (!MT) return; insTotales(document.getElementById('matBox'), MT.M, matPrendas(OA, MT.M)); }
 function costosHtml(o, T){
   const c = cuentas(o, T), sinHist = c.imp && !c.P.length, md = matDe(o); MT = { M: md.M, sug: md.sug, de: md.de };
   const pedM = c.pagado <= 0 ? c.adelanto : Math.max(0, c.pend), sug = sinHist ? 0 : Math.round(pedM * 100) / 100;
-  const pr = D.prod && D.prod[nrm(o.diseno)], otros = (D.ins || []).filter(x => x.diseno === nrm(o.diseno) && !['tela1', 'confeccion'].includes(x.comp)), otrosU = otros.reduce((a, x) => a + (+x.cantidad || 0) * (+x.precio || 0), 0);
+  const pr = D.prod && D.prod[nrm(o.diseno)], otros = (Array.isArray(o.materiales) && o.materiales.some(m => insTipo(m) !== 'Tela')) ? [] : (D.ins || []).filter(x => x.diseno === nrm(o.diseno) && !['tela1', 'confeccion'].includes(x.comp)), otrosU = otros.reduce((a, x) => a + (+x.cantidad || 0) * (+x.precio || 0), 0);
   const hoy = new Date().toLocaleDateString('en-CA', { timeZone:'America/Lima' });
   let h = '<div class="sec"><h4>Costos de la orden</h4>'
     + '<div class="res"><div><b>' + S2(c.tela + otrosU * (T.pedido || 0)) + '</b>1 · insumos</div><div><b>' + S2(c.totTaller) + '</b>2 · taller' + (T.falta > 0 ? ' (estimado)' : '') + '</div>'
     + '<div><b>' + S2(c.tela + otrosU * (T.pedido || 0) + c.totTaller) + '</b>total de la orden</div>'
     + (c.real != null ? '<div><b>' + S2(c.real) + '</b>costo real por prenda' + (c.ideal != null && c.real - c.ideal > 0.01 ? ' <span class="chip rd">+' + S2(c.real - c.ideal) + ' por fallas</span>' : '') + '</div>' : '') + '</div>'
-    + '<h4 style="margin-top:12px">1 · Insumos: tela por metros</h4><div id="matBox"></div>'
+    + '<h4 style="margin-top:12px">1 · Insumos</h4><div id="matBox"></div>'
     + (otros.length && pr && pr.costo_unitario != null ? '<div class="mu" style="font-size:12px;margin-top:4px">+ Otros insumos de la ficha (forro, botones, etiquetas…): ' + S2(otrosU) + ' por prenda × ' + (T.pedido || 0) + ' = <b>' + S2(otrosU * (T.pedido || 0)) + '</b></div>' : '')
     + '<h4 style="margin-top:14px">2 · Pago al taller</h4>'
     + '<div class="f"><div><label>Costo por prenda (taller)' + (o.costo_unit == null && sugTaller(nrm(o.diseno)) != null ? ' <span class="chip am">sugerido de 📦 Productos</span>' : '') + '</label><input id="kCu" type="number" step="0.5" min="0" value="' + (o.costo_unit != null ? o.costo_unit : (sugTaller(nrm(o.diseno)) != null ? sugTaller(nrm(o.diseno)) : '')) + '"></div>'
@@ -610,8 +667,8 @@ function pagoSug(){ const c = cuentas(OA), v = document.getElementById('pCon').v
   i.value = /^Adelanto/.test(v) ? Math.round(c.adelanto * 100) / 100 : v === 'Saldo' ? Math.max(0, Math.round(c.pend * 100) / 100) : ''; }
 async function guardarCostos(){
   const v = id => { const x = document.getElementById(id).value; return x === '' ? null : +x; }, msg = document.getElementById('kMsg'); msg.textContent = '';
-  const M = (MT ? MT.M : []).filter(m => (m.nombre || '').trim() || +m.consumo || +m.precio || +m.asignados).map(m => ({ nombre: String(m.nombre || '').trim(), colores: m.colores || [], consumo: +m.consumo || 0, precio: +m.precio || 0, asignados: +m.asignados || 0 }));   /* 26-oct · + metros asignados */
-  const n = matPrendas(OA, M), met = M.reduce((a, m, i) => a + n[i] * m.consumo, 0), cos = M.reduce((a, m, i) => a + n[i] * m.consumo * m.precio, 0);
+  const M = insLimpio(MT ? MT.M : []);   /* 26-oct · tela y avíos: tipo, tamaño, código de color, asignados */
+  const n = matPrendas(OA, M), tl = insTela(M, n), met = tl.met, cos = tl.cos;
   try { const r = await rpc('prod_costos2_guardar', { p_id: OA.id, p_costo_unit: v('kCu'), p_adelanto_pct: v('kAd'), p_materiales: M,
       p_tela_metros: met ? Math.round(met * 100) / 100 : null, p_tela_precio_m: met ? Math.round(cos / met * 100) / 100 : null });
     if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); }
