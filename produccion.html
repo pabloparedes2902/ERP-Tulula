@@ -108,6 +108,7 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g small{display:block;color:v
 </style><link id="ui-font" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link id="ui-font" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link id="ui-font" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link id="ui-font" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head><body>
 <div class="top"><h1>🧵 Producción</h1>
   <select id="fVer" onchange="pintar()"><option value="lineas">📍 Dónde está cada orden</option><option value="curso">🗂 Tablero por etapa</option><option value="cerradas">✓ Cerradas</option><option value="talleres">📊 Talleres</option></select>
@@ -135,6 +136,8 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g small{display:block;color:v
   <div id="nGrid"></div>
   <div style="display:flex;gap:6px;align-items:center;margin-top:6px"><input id="nColor" placeholder="Agregar color" style="width:150px"><button onclick="nAgregarColor()">＋ Color</button><span class="sp"></span>
     <span class="mu" id="nTot"></span></div>
+  <h4 style="margin:12px 0 4px;font-size:14px;font-weight:600">Tela por color: metros asignados y consumo</h4>
+  <div id="nMat"></div>
   <div class="f" style="margin-top:8px"><div style="grid-column:1/-1"><label>Notas</label><input id="nNotas"></div></div>
   <div style="display:flex;gap:8px;justify-content:flex-end"><span id="nMsg" class="err"></span><button onclick="cerrar('mNueva')">Cancelar</button><button class="p" id="nOk" onclick="guardarOrden()">Guardar orden</button></div>
 </div></div>
@@ -157,7 +160,8 @@ const CAMINO = { nuevo:['diseno','muestra','tela','corte','entrega','calidad','f
                  reposicion:['tela','corte','entrega','calidad','venta'] };
 const ETAPA_VIEJA = { molde:'muestra', escalado:'tela', inventario:'calidad' };   /* órdenes guardadas con las etapas de antes */
 const TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
-const TALLERES = ['José Luis','Dan','Pedro','Ángel','Bella','Jhon','Jefferson'];
+const TALLERES = ['José Luis','Dan','Pedro','Ángel','Bella'];   /* 26-oct (lista 243) · Jhon y Jefferson ya no trabajan con Tulula: fuera de Nueva producción (sus órdenes viejas quedan) */
+const TALLERES_BAJA = ['JHON','JEFFERSON'];
 let D = { ordenes:[], lineas:[], movs:[], pagos:[], arch:[], ins:[], urls:{}, stock:null, prod:null, param:{ yayita_desc_pct:40 } }, NV = null, OA = null;
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const nrm = s => String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
@@ -219,7 +223,7 @@ function pintar(){
   const ver = document.getElementById('fVer').value, ta = document.getElementById('fTaller').value;
   const talleres = [...new Set(TALLERES.concat(D.ordenes.map(o => o.taller).filter(Boolean)))];
   const sel = document.getElementById('fTaller'); if (sel.options.length <= 1) talleres.forEach(t => sel.add(new Option(t, t)));
-  document.getElementById('lTaller').innerHTML = talleres.map(t => '<option value="' + esc(t) + '">').join('');
+  document.getElementById('lTaller').innerHTML = talleres.filter(t => TALLERES_BAJA.indexOf(nrm(t)) < 0).map(t => '<option value="' + esc(t) + '">').join('');   /* 26-oct · sin talleres de baja */
   try { topePintar(); } catch (_) {}   /* 25-oct · tope de compra del mes */
   const el = document.getElementById('tablero');
   if (ver === 'talleres'){ el.innerHTML = talleresHtml(ta); return; }
@@ -251,7 +255,7 @@ async function cargarStock(){
 }
 async function abrirNueva(o, aqui){
   await cargarStock();
-  NV = { id: o ? o.id : null, colores: [], q: {} };
+  NV = { id: o ? o.id : null, colores: [], q: {}, M: (o && Array.isArray(o.materiales) && o.materiales.length) ? o.materiales.map(m => Object.assign({}, m, { colores: (m.colores || []).slice() })) : null, Msug: false, adPct: o ? o.adelanto_pct : null };
   document.getElementById('nTit').textContent = o ? '✏️ Editar ' + o.codigo : '＋ Nueva producción';
   document.getElementById('nDis').value = o ? o.diseno : ''; document.getElementById('nTipo').value = o ? o.tipo : 'reposicion';
   document.getElementById('nTaller').value = o ? (o.taller || '') : ''; document.getElementById('nTela').value = o ? (o.tela || '') : '';
@@ -345,12 +349,52 @@ function nGrid(){
   document.getElementById('nGrid').innerHTML = '<table class="g"><tr><th>Color</th>' + TALLAS.map(t => '<th>' + t + '</th>').join('') + '<th>Total</th><th></th></tr>'
     + NV.colores.map(c => '<tr><td><b>' + esc(c) + '</b></td>' + TALLAS.map(t => '<td><input type="number" min="0" value="' + (NV.q[c + '|' + t] || '') + '" oninput="NV.q[\'' + qs(c) + '|' + t + '\']=+this.value||0;nTotal()">' + info(c, t) + '</td>').join('')
       + '<td class="tt" data-c="' + esc(c) + '"></td><td><button title="Quitar color" onclick="NV.colores=NV.colores.filter(x=>x!==\'' + qs(c) + '\');nGrid()">✕</button></td></tr>').join('') + '</table>';
-  nTotal();
+  nTotal(); nMatPintar();
 }
 function nTotal(){
+  try { nMatTot(); } catch (_) {}
   let tot = 0; NV.colores.forEach(c => { const s = TALLAS.reduce((a, t) => a + (NV.q[c + '|' + t] || 0), 0); tot += s; const td = [...document.querySelectorAll('td.tt')].find(x => x.dataset.c === c); if (td) td.textContent = s || ''; });
   const cU = costoDe(document.getElementById('nDis').value), T = typeof topeCalc === 'function' ? topeCalc() : null, nuevo = !NV.id;
   document.getElementById('nTot').innerHTML = 'Total: ' + tot + ' prendas' + (cU != null && tot ? ' · ≈ ' + soles(tot * cU) + ' a costo' + (T && nuevo ? ' · <b style="color:' + (T.queda - tot * cU < 0 ? 'var(--rd)' : 'var(--ok)') + '">' + (T.queda - tot * cU < 0 ? 'se pasa del tope del mes por ' + soles(tot * cU - T.queda) : 'queda ' + soles(T.queda - tot * cU) + ' del tope del mes') + '</b>' : '') : '');
+}
+/* 26-oct (lista 242) · TELA POR COLOR en Nueva producción: cada tela (si según el color cambia la tela, una fila por grupo de colores),
+   su consumo por prenda (sugerido de 📦 Productos), los METROS ASIGNADOS (lo que se compró/entregó al taller) y lo estimado = prendas × consumo. */
+function nMatSug(){
+  const d = nrm(document.getElementById('nDis').value), I = (D.ins || []).filter(x => x.diseno === d && x.comp === 'tela1');
+  if (I.length) return I.map(x => ({ nombre: x.descripcion || 'Tela', colores: String(x.colores || '').split(',').map(nrm).filter(Boolean), consumo: +x.cantidad || 0, precio: +x.precio || 0, asignados: 0 }));
+  return [{ nombre: document.getElementById('nTela').value || '', colores: [], consumo: 0, precio: 0, asignados: 0 }];
+}
+function nMatPrendas(M){
+  const asig = {}, tot = M.map(() => 0); M.forEach((m, i) => (m.colores || []).forEach(c => { asig[nrm(c)] = i; }));
+  const libre = M.findIndex(m => !(m.colores || []).length);
+  NV.colores.forEach(c => { const k = nrm(c), i = k in asig ? asig[k] : libre; if (i >= 0) tot[i] += TALLAS.reduce((a, t) => a + (NV.q[c + '|' + t] || 0), 0); });
+  return tot;
+}
+function nMatPintar(){
+  const box = document.getElementById('nMat'); if (!box) return;
+  if (!NV.M || (NV.Msug && !NV.Mmano)) { NV.M = nMatSug(); NV.Msug = true; }
+  const r2 = v => Math.round((+v || 0) * 100) / 100;
+  box.innerHTML = '<table class="g" style="width:100%"><tr><th>Tela - proveedor</th><th>Colores</th><th>Consumo<small>m por prenda</small></th><th>Metros asignados<small>comprados / entregados</small></th><th>Prendas</th><th>Estimado<small>prendas × consumo</small></th><th>Diferencia</th><th></th></tr>'
+    + NV.M.map((m, i) => '<tr><td><input value="' + esc(m.nombre || '') + '" placeholder="Crepé - Colortex" style="width:150px" oninput="NV.Mmano=1;NV.M[' + i + '].nombre=this.value"></td>'
+      + '<td><input value="' + esc((m.colores || []).join(', ')) + '" placeholder="todos" title="Colores que usan esta tela, separados por coma. Vacío = todos los demás" style="width:140px" onchange="NV.Mmano=1;NV.M[' + i + '].colores=this.value.split(\',\').map(nrm).filter(Boolean);nMatPintar()"></td>'
+      + '<td><input type="number" step="0.01" min="0" value="' + (m.consumo || '') + '" style="width:70px" oninput="NV.Mmano=1;NV.M[' + i + '].consumo=+this.value||0;nMatTot()"></td>'
+      + '<td><input type="number" step="0.1" min="0" value="' + (m.asignados || '') + '" style="width:80px" oninput="NV.Mmano=1;NV.M[' + i + '].asignados=+this.value||0;nMatTot()"></td>'
+      + '<td class="nmP"></td><td class="nmE"></td><td class="nmD"></td>'
+      + '<td>' + (NV.M.length > 1 ? '<button title="Quitar tela" onclick="NV.Mmano=1;NV.M.splice(' + i + ',1);nMatPintar()">✕</button>' : '') + '</td></tr>').join('')
+    + '<tr><th>Total</th><td></td><td></td><td id="nmTA"></td><td id="nmTP"></td><td id="nmTE"></td><td id="nmTD"></td><td></td></tr></table>'
+    + (NV.Msug && !NV.Mmano && (D.ins || []).some(x => x.diseno === nrm(document.getElementById('nDis').value) && x.comp === 'tela1') ? '<div class="mu" style="font-size:12px">Consumo sugerido de 📦 Productos: revísalo.</div>' : '')
+    + '<button onclick="NV.Mmano=1;NV.M.push({nombre:\'\',colores:[],consumo:0,precio:0,asignados:0});nMatPintar()">＋ Otra tela</button> <span class="mu" style="font-size:12px">Si según el color cambia la tela, agrega otra fila con esos colores.</span>';
+  nMatTot();
+}
+function nMatTot(){
+  const box = document.getElementById('nMat'); if (!box || !NV.M) return;
+  const n = nMatPrendas(NV.M), r2 = v => Math.round((+v || 0) * 100) / 100; let tA = 0, tP = 0, tE = 0;
+  const dif = (a, e) => !a ? '<span class="mu">—</span>' : '<b style="color:' + (a - e < 0 ? 'var(--rd)' : 'var(--ok)') + '">' + (a - e >= 0 ? '+' : '') + r2(a - e) + ' m</b>' + (a - e < 0 ? ' <small>falta tela</small>' : '');
+  [...box.querySelectorAll('tr')].slice(1, 1 + NV.M.length).forEach((tr, i) => { const m = NV.M[i], e = n[i] * (+m.consumo || 0), a = +m.asignados || 0; tA += a; tP += n[i]; tE += e;
+    tr.querySelector('.nmP').textContent = n[i]; tr.querySelector('.nmE').textContent = r2(e) + ' m'; tr.querySelector('.nmD').innerHTML = dif(a, e); });
+  const g = id => document.getElementById(id);
+  if (g('nmTA')) g('nmTA').innerHTML = '<b>' + r2(tA) + ' m</b>'; if (g('nmTP')) g('nmTP').innerHTML = '<b>' + tP + '</b>';
+  if (g('nmTE')) g('nmTE').innerHTML = '<b>' + r2(tE) + ' m</b>'; if (g('nmTD')) g('nmTD').innerHTML = dif(tA, tE);
 }
 function nAgregarColor(){ const c = nrm(document.getElementById('nColor').value); if (!c) return; if (NV.colores.indexOf(c) < 0) NV.colores.push(c); document.getElementById('nColor').value = ''; nGrid(); }
 async function guardarOrden(){
@@ -367,6 +411,13 @@ async function guardarOrden(){
     if (!r.ok) throw new Error(r.error);
     const ft = document.getElementById('nFTal').value || null, di = document.getElementById('nDias').value === '' ? null : +document.getElementById('nDias').value;
     if (ft || di != null || (NV.id && (D.ordenes.find(x => x.id === NV.id) || {}).fecha_taller)){ const r2 = await rpc('prod_taller_guardar', { p_id: r.id, p_fecha_taller: ft, p_dias_taller: di }); if (!r2.ok) throw new Error(r2.error); }
+    /* 26-oct (lista 242) · tela por color: consumo, metros asignados (y precio por metro de 📦 Productos) */
+    const MM = (NV.M || []).filter(m => (m.nombre || '').trim() || +m.consumo || +m.asignados).map(m => ({ nombre: String(m.nombre || '').trim(), colores: m.colores || [], consumo: +m.consumo || 0, precio: +m.precio || 0, asignados: +m.asignados || 0 }));
+    if (MM.length){ const n = nMatPrendas(MM), met = MM.reduce((a, m, i) => a + n[i] * m.consumo, 0), cos = MM.reduce((a, m, i) => a + n[i] * m.consumo * m.precio, 0);
+      const cu = document.getElementById('nCosto').value === '' ? null : +document.getElementById('nCosto').value;
+      const r3 = await rpc('prod_costos2_guardar', { p_id: r.id, p_costo_unit: cu, p_adelanto_pct: NV.adPct != null ? +NV.adPct : null, p_materiales: MM,
+        p_tela_metros: met ? Math.round(met * 100) / 100 : null, p_tela_precio_m: met && cos ? Math.round(cos / met * 100) / 100 : null });
+      if (!r3.ok) throw new Error(r3.error); }
     cerrar('mNueva'); await cargar(); abrirOrden(r.id);
   } catch (e) { msg.textContent = e.message; }
   b.disabled = false;
@@ -504,10 +555,11 @@ function matPintar(){
       + '<td><input value="' + esc((m.colores || []).join(', ')) + '" list="lColO" placeholder="todos" title="Colores que usan esta tela, separados por coma. Vacío = todos los demás" style="width:150px" onchange="MT.M[' + i + '].colores=this.value.split(\',\').map(nrm).filter(Boolean);matPintar()"></td>'
       + '<td><input type="number" step="0.01" min="0" value="' + (m.consumo || '') + '" style="width:70px" oninput="MT.M[' + i + '].consumo=+this.value||0;matTot()"></td>'
       + '<td><input type="number" step="0.1" min="0" value="' + (m.precio || '') + '" style="width:70px" oninput="MT.M[' + i + '].precio=+this.value||0;matTot()"></td>'
+      + '<td><input type="number" step="0.1" min="0" value="' + (m.asignados || '') + '" style="width:70px" title="Metros asignados (comprados / entregados al taller)" oninput="MT.M[' + i + '].asignados=+this.value||0"></td>'
       + '<td>' + n[i] + '</td><td class="mtM">' + (Math.round(met * 100) / 100) + ' m</td><td class="mtC">' + S2(cos) + '</td>'
       + '<td>' + (MT.M.length > 1 ? '<button title="Quitar material" onclick="MT.M.splice(' + i + ',1);matPintar()">✕</button>' : '') + '</td></tr>'; }).join('');
-  box.innerHTML = '<table class="g" style="width:100%"><tr><th>Tela - proveedor</th><th>Colores</th><th>Consumo<small>m por prenda</small></th><th>S/ por metro</th><th>Prendas<small>pedidas</small></th><th>Metros</th><th>Costo</th><th></th></tr>' + filas
-    + '<tr><th>Total insumos (tela)</th><td></td><td></td><td></td><td></td><td><b id="mtTM">' + (Math.round(tM * 100) / 100) + ' m</b></td><td><b id="mtTC">' + S2(tC) + '</b></td><td></td></tr></table>'
+  box.innerHTML = '<table class="g" style="width:100%"><tr><th>Tela - proveedor</th><th>Colores</th><th>Consumo<small>m por prenda</small></th><th>S/ por metro</th><th>Asignados<small>m</small></th><th>Prendas<small>pedidas</small></th><th>Metros<small>estimados</small></th><th>Costo</th><th></th></tr>' + filas
+    + '<tr><th>Total insumos (tela)</th><td></td><td></td><td></td><td></td><td></td><td><b id="mtTM">' + (Math.round(tM * 100) / 100) + ' m</b></td><td><b id="mtTC">' + S2(tC) + '</b></td><td></td></tr></table>'
     + '<datalist id="lColO">' + colsOrden.map(c => '<option value="' + esc(c) + '">').join('') + '</datalist>'
     + (falt.length ? '<div class="err" style="font-size:12px">Colores sin tela asignada: ' + esc(falt.join(', ')) + ' (deja una fila con «Colores» vacío para «todos los demás»).</div>' : '')
     + (MT.sug && MT.de ? '<div class="mu" style="font-size:12px">Sugerido de ' + esc(MT.de) + ': revísalo y guarda.</div>' : '')
@@ -558,7 +610,7 @@ function pagoSug(){ const c = cuentas(OA), v = document.getElementById('pCon').v
   i.value = /^Adelanto/.test(v) ? Math.round(c.adelanto * 100) / 100 : v === 'Saldo' ? Math.max(0, Math.round(c.pend * 100) / 100) : ''; }
 async function guardarCostos(){
   const v = id => { const x = document.getElementById(id).value; return x === '' ? null : +x; }, msg = document.getElementById('kMsg'); msg.textContent = '';
-  const M = (MT ? MT.M : []).filter(m => (m.nombre || '').trim() || +m.consumo || +m.precio).map(m => ({ nombre: String(m.nombre || '').trim(), colores: m.colores || [], consumo: +m.consumo || 0, precio: +m.precio || 0 }));
+  const M = (MT ? MT.M : []).filter(m => (m.nombre || '').trim() || +m.consumo || +m.precio || +m.asignados).map(m => ({ nombre: String(m.nombre || '').trim(), colores: m.colores || [], consumo: +m.consumo || 0, precio: +m.precio || 0, asignados: +m.asignados || 0 }));   /* 26-oct · + metros asignados */
   const n = matPrendas(OA, M), met = M.reduce((a, m, i) => a + n[i] * m.consumo, 0), cos = M.reduce((a, m, i) => a + n[i] * m.consumo * m.precio, 0);
   try { const r = await rpc('prod_costos2_guardar', { p_id: OA.id, p_costo_unit: v('kCu'), p_adelanto_pct: v('kAd'), p_materiales: M,
       p_tela_metros: met ? Math.round(met * 100) / 100 : null, p_tela_precio_m: met ? Math.round(cos / met * 100) / 100 : null });
