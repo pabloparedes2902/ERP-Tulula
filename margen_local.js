@@ -407,7 +407,10 @@ function _aplicarConjuntos_(productosPedido, conjuntos) {
 // ---------- Inversión Meta Ads (Fase 1: lee cache; Fase 2: lo llena la API) ----------
 
 function _inversionPorProductoYMes_(mesDesde, mesHasta) {
-  var rows = _leerHojaComoObjetos_('MetaAdsInversion');
+  // 26-oct (Pablo: «Margen no jala la inversión de anuncios ni el CPA») · la pestaña MetaAdsInversion se llenaba A MANO por mes y
+  // octubre nunca se cargó (S/ 0). Ahora, en el ERP, la inversión sale SOLA del gasto real de Meta por anuncio y por día
+  // (bot_remote.gasto_anuncios vía public.margen_inversion_auto), del rango exacto. Si eso falla o no trae nada, sigue la planilla.
+  var rows = (typeof window !== 'undefined' && window.__mgInvAuto && window.__mgInvAuto.length) ? window.__mgInvAuto : _leerHojaComoObjetos_('MetaAdsInversion');
   var out = {};
   rows.forEach(function (r) {
     var mes = _mesNormalizado_(r.Mes);
@@ -2566,9 +2569,36 @@ async function __bajar(f) {
   var body = await r.text();
   __RUTAS[f.k] = { code: r.status, body: body, getResponseCode: function () { return r.status; }, getContentText: function () { return body; } };
 }
+// 26-oct · inversión automática: gasto de Meta del rango, por anuncio → producto (2.ª parte del nombre: «Con Catalina» = CONJUNTO CATALINA).
+// El Margen cuenta solo ventas de WhatsApp: los anuncios de la WEB no entran (se informan aparte). Sin producto reconocible → VARIOS (no atribuible).
+var __MG_ABR = { PAN:'PANTALON', BLA:'BLAZER', BLU:'BLUSA', CON:'CONJUNTO', ABR:'ABRIGO', GAB:'GABARDINA', VES:'VESTIDO', CHA:'CHALECO', TOP:'TOP', FAL:'FALDA',
+                 COR:'CORREA', BIK:'BIKINI', TRI:'TRIKINI', CAM:'CAMISA', SHO:'SHORT', ENT:'ENTERIZO', JUM:'JUMPSUIT', POL:'POLO', CAS:'CASACA', CHO:'CHOMPA' };
+function __mgNorm(t) { return String(t || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim(); }
+function __mgProdDeAnuncio(a) {
+  var p = String(a || '').replace(/^\D*?🆕\s*/, '').split('/'); if (p.length < 2) return null;
+  var seg = __mgNorm(p[1]).split(' '), k = seg[0] || '', t = __MG_ABR[k] || __MG_ABR[k.slice(0, 3)]; if (!t) return null;
+  var mod = seg.slice(1).join(' '); return mod ? t + ' ' + mod : (t === 'TOP' ? 'TOPS' : t + 'S');
+}
+function __mgEsWeb(x) { var s = __mgNorm((x.campana || '') + ' ' + (x.anuncio || '')); return !/(WHATSAPP|WHASTAPP|WATSAPP|WSP|WPP|MENSAJE)/.test(s) && /(PAGINA WEB|WEB|SHOPIFY|PURCHASE|CATALOGO)/.test(s); }
+async function __mgInvAutoCargar(desde, hasta) {
+  var tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión');
+  var r = await fetch(SB_URL + '/rest/v1/rpc/margen_inversion_auto', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_desde: desde, p_hasta: hasta }) });
+  if (!r.ok) throw new Error('margen_inversion_auto ' + r.status);
+  var j = await r.json(), F = (j && j.filas) || [], acc = {}, info = { fuente: 'Meta (automático)', total: 0, web: 0, sinProducto: 0, ultimo: j && j.ultimo, n: F.length };
+  F.forEach(function (x) { var g = +x.gasto || 0; if (!(g > 0)) return;
+    if (__mgEsWeb(x)) { info.web += g; return; }
+    var prod = __mgProdDeAnuncio(x.anuncio); if (!prod) { prod = 'VARIOS'; info.sinProducto += g; }
+    acc[prod] = (acc[prod] || 0) + g; info.total += g; });
+  var mes = String(desde).slice(0, 7);
+  window.__mgInvInfo = info;
+  return Object.keys(acc).map(function (k) { return { Mes: mes, Producto: k, InversionSoles: Math.round(acc[k] * 100) / 100 }; });
+}
 window.margenLocalCalcular = async function (desde, hasta) {
   var t0 = Date.now(), viajes = 0;
   __RUTAS = {};
+  window.__mgInvAuto = null; window.__mgInvInfo = null;
+  try { window.__mgInvAuto = await __mgInvAutoCargar(desde, hasta); } catch (e) { window.__mgInvInfo = { fuente: 'planilla MetaAdsInversion', error: String(e && e.message || e) }; }
   if (typeof _productosListarRapido === 'function') { __PRODUCTOS = await _productosListarRapido(); }
   if (!Array.isArray(__PRODUCTOS) || !__PRODUCTOS.length) throw new Error('margen_local: la lista de productos no vino');
   for (var vuelta = 0; vuelta < 15; vuelta++) {
@@ -2577,7 +2607,7 @@ window.margenLocalCalcular = async function (desde, hasta) {
     try { res = margenCalcular(desde, hasta); } catch (e) { err = e; }
     if (!__FALTAN.length) {
       if (err) { try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {} throw err; }
-      res.__local = { ms: Date.now() - t0, vueltas: vuelta + 1, viajes: viajes };
+      res.__local = { ms: Date.now() - t0, vueltas: vuelta + 1, viajes: viajes, inversion: window.__mgInvInfo };
       try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {}
       return res;
     }
