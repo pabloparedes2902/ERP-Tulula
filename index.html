@@ -10794,18 +10794,29 @@ async function _cdPagosAsegurar(){
     if (!r.ok) throw new Error('Drive ' + r.status);
     const DI = await r.json(), Dp = [], Ep = [];
     (DI || []).forEach(x => { const v = x.valores || []; const f = fp(v[21]); const p = num(v[18]); if (p && f >= a && f <= b) Dp.push({ f, p, fo: String(v[19] || ''), c: String(v[1] || ''), fila: x.fila }); });
-    (pRaw || []).forEach(q => { if (String(q['Eliminado'] || '').toUpperCase() === 'SI') return; const f = fp(q['Fecha Pago']); const p = num(q['Pago']);
+    (pRaw || []).forEach(q => { if (String(q['Eliminado'] || '').toUpperCase() === 'SI' || /^AJUSTE/i.test(String(q['Forma pago'] || ''))) return; const f = fp(q['Fecha Pago']); const p = num(q['Pago']);   /* 27-oct · un «ajuste» no es plata: no cuenta */
       if (p && f >= a && f <= b) Ep.push({ f, p, fo: String(q['Forma pago'] || ''), c: String(q['Nombres y Apellidos'] || ''), n: q['NroPedido'] }); });
     const dd = (x, z) => Math.abs((new Date(x) - new Date(z)) / 864e5), used = new Set();
-    for (const pass of [0, 1, 3]) for (const e of Ep) { if (e.m) continue; const k = Dp.findIndex((d, j) => !used.has(j) && Math.abs(d.p - e.p) < 0.05 && dd(d.f, e.f) <= pass); if (k >= 0) { used.add(k); e.m = Dp[k]; } }
+    /* 27-oct (Pablo) · ANTES el pago se emparejaba solo por monto y fecha, a veces con el pago de OTRA clienta del mismo monto: salían «faltas» que no eran.
+       Ahora: primero misma clienta (nombre + un apellido), después nombre parecido (comparten una palabra de 4+ letras: «Yuly/Yuli Ampudia»), siempre con monto y fecha (±0, ±1, ±3 días). */
+    const tk = t => String(t || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z ]/g, ' ').trim().split(/\s+/).filter(Boolean);
+    const nm = t => tk(t)[0] || '';
+    const sim = (x, y) => { const A = tk(x), B = new Set(tk(y)); if (A[0] && B.has(A[0]) && A.slice(1).some(w => w.length >= 4 && B.has(w))) return 2; return A.some(w => w.length >= 4 && B.has(w)) ? 1 : 0; };
+    for (const lvl of [2, 1]) for (const pass of [0, 1, 3]) for (const e of Ep) { if (e.m) continue; const k = Dp.findIndex((d, j) => !used.has(j) && sim(e.c, d.c) >= lvl && Math.abs(d.p - e.p) < 0.05 && dd(d.f, e.f) <= pass); if (k >= 0) { used.add(k); e.m = Dp[k]; } }
     const enMes = f => f.slice(0, 7) === mes;
     const soloE = Ep.filter(e => !e.m && enMes(e.f)), soloD = Dp.filter((d, j) => !used.has(j) && enMes(d.f));
     const otroMes = Ep.filter(e => e.m && (enMes(e.f) !== enMes(e.m.f)) && (enMes(e.f) || enMes(e.m.f)));
-    const nm = t => String(t || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z ]/g, ' ').trim().split(/\s+/)[0];
     const grupos = {}; soloE.forEach(e => { const k = nm(e.c); (grupos[k] = grupos[k] || { e: [], d: [] }).e.push(e); }); soloD.forEach(d => { const k = nm(d.c); (grupos[k] = grupos[k] || { e: [], d: [] }).d.push(d); });
     const filas = Object.values(grupos).map(g => { const te = g.e.reduce((s, x) => s + x.p, 0), td = g.d.reduce((s, x) => s + x.p, 0);
       return { dif: Math.round((te - td) * 100) / 100, cli: (g.e[0] || g.d[0]).c, e: g.e, d: g.d, tipo: !g.d.length ? 'Falta en el Drive' : !g.e.length ? 'Falta en el ERP' : 'Montos distintos' }; })
       .filter(x => Math.abs(x.dif) >= 0.5).sort((x, z) => Math.abs(z.dif) - Math.abs(x.dif));
+    /* 27-oct · el mismo pago anotado con OTRO nombre (ej. la agencia Shalom en el ERP y la clienta en el Drive): un «falta en el Drive» y un «falta en el ERP»
+       por el mismo monto y en fechas cercanas se anulan entre sí: no es plata que falte. */
+    { const fz = x => x.e.concat(x.d).map(y => y.f), quita = new Set();
+      filas.forEach((x, i) => { if (quita.has(i) || x.tipo === 'Montos distintos') return;
+        const j = filas.findIndex((y, k) => k !== i && !quita.has(k) && y.tipo !== x.tipo && y.tipo !== 'Montos distintos' && Math.abs(x.dif + y.dif) < 0.05 && fz(x).some(f => fz(y).some(g => dd(f, g) <= 3)));
+        if (j >= 0) { quita.add(i); quita.add(j); } });
+      for (let i = filas.length - 1; i >= 0; i--) if (quita.has(i)) filas.splice(i, 1); }
     const totE = Ep.filter(e => enMes(e.f)).reduce((s, x) => s + x.p, 0), totD = Dp.filter(d => enMes(d.f)).reduce((s, x) => s + x.p, 0);
     CD.pagos[mes] = { filas, otroMes, totE, totD };
     if (mes === _cdPagosMes()) CD.pagosN = filas.length + otroMes.length;
@@ -29374,6 +29385,18 @@ try { window.addEventListener('load', () => { _cuadreActualizarDesdeEnlace(); })
 // código que lo vuelve a pintar no lo reabre). La barra de «clientas esperando» ya tenía su ✕ propia.
 var AVISOS_CON_X = ['fe-barra', 'al-barra-roja', 'logros-aviso', 'upd-banner', 'f1-aviso', 'masivo-franja', 'salud-sync-banner',
   'ver-como-franja', 'espia-badge', 'paint-mode-badge', 'np-save-indicator', 'cam-save-indicator', 'c2-edit-indicator', 'dev-save-indicator', 'lg-barra', 'sf-barra'];
+function _avxHash(el){ let t = ''; el.childNodes.forEach(c => { if (!(c.classList && c.classList.contains('avx-x'))) t += c.textContent || ''; });
+  t = t.replace(/\s+/g, ' ').trim(); let h = 0; for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0; return String(h); }
+function _avxCerrados(){ try { return JSON.parse(sessionStorage.getItem('avx_cerrados') || '{}') || {}; } catch (_) { return {}; } }
+function _avxGuardar(m){ try { sessionStorage.setItem('avx_cerrados', JSON.stringify(m)); } catch (_) {} }
+/* avisos flotantes de abajo a la derecha que nadie anotó en la lista (fijos, chicos, pegados abajo a la derecha) */
+var AVX_NO = ['toast', 'avisos-dock', 'authOverlay', 'selloErp', 'campana-espera-barra', 'campana-espera-badge', 'cr-globo', 'cr-panel'];   /* estos ya traen su propia ✕ o son la bandeja */
+function _avxAuto(){ const out = [];
+  try { [].forEach.call(document.body.children, el => { if (!el.id || AVX_NO.indexOf(el.id) >= 0) return; const cs = getComputedStyle(el);
+    if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; const r = el.getBoundingClientRect();
+    if (!r.width || !r.height || r.width > innerWidth * 0.6 || r.height > innerHeight * 0.5 || r.bottom < innerHeight - 260 || r.left < innerWidth * 0.4) return;
+    out.push(el.id); }); } catch (_) {}
+  return out; }
 function _avisosPonerX() {
   try {
     if (!document.getElementById('avx-css')) {
@@ -29381,12 +29404,21 @@ function _avisosPonerX() {
       st.textContent = '[data-avx-cerrado="1"]{display:none!important}.avx-x{position:absolute;top:4px;right:6px;z-index:2;border:0;border-radius:50%;width:22px;height:22px;line-height:22px;padding:0;font-size:13px;font-weight:600;cursor:pointer;background:rgba(0,0,0,.35);color:#fff}.avx-x:hover{background:rgba(0,0,0,.6)}';
       document.head.appendChild(st);
     }
-    AVISOS_CON_X.forEach(id => {
-      const el = document.getElementById(id);
-      if (!el || el.getAttribute('data-avx-cerrado') === '1' || el.querySelector(':scope > .avx-x')) return;
+    /* 27-oct (Pablo) · (1) TODO aviso flotante de abajo a la derecha recibe su ✕, aunque no esté en la lista (los que se crean sin aviso previo,
+       como el negro de «actualizaciones» que no se podía cerrar). (2) Lo cerrado NO vuelve en esta sesión mientras diga lo mismo:
+       se recuerda su texto; si el aviso trae un dato nuevo (cambia el texto), vuelve a salir. */
+    const m = _avxCerrados(); window._avxVistos = window._avxVistos || [];
+    _avxAuto().forEach(id => { if (window._avxVistos.indexOf(id) < 0) window._avxVistos.push(id); });   /* una vez visto, se sigue cuidando aunque ya esté en la bandeja */
+    const ids = AVISOS_CON_X.concat(window._avxVistos.filter(id => AVISOS_CON_X.indexOf(id) < 0));
+    ids.forEach(id => {
+      const el = document.getElementById(id); if (!el) return;
+      const h = _avxHash(el), cerrado = el.getAttribute('data-avx-cerrado') === '1';
+      if (m[id] && m[id] === h) { if (!cerrado) el.setAttribute('data-avx-cerrado', '1'); return; }
+      if (cerrado && m[id] && m[id] !== h) el.removeAttribute('data-avx-cerrado');   /* dato nuevo: vuelve */
+      if (el.querySelector(':scope > .avx-x')) return;
       if (getComputedStyle(el).position === 'static') el.style.position = 'relative';
-      const x = document.createElement('button'); x.className = 'avx-x'; x.type = 'button'; x.title = 'Cerrar este aviso (vuelve al recargar)'; x.textContent = '✕';
-      x.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); el.setAttribute('data-avx-cerrado', '1'); });
+      const x = document.createElement('button'); x.className = 'avx-x'; x.type = 'button'; x.title = 'Cerrar este aviso (no vuelve en esta sesión salvo que traiga un dato nuevo)'; x.textContent = '✕';
+      x.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); const mm = _avxCerrados(); mm[id] = _avxHash(el); _avxGuardar(mm); el.setAttribute('data-avx-cerrado', '1'); });
       el.appendChild(x);
       if (parseFloat(getComputedStyle(el).paddingRight) < 30) el.style.paddingRight = '34px';
     });
@@ -29411,7 +29443,7 @@ function _avisosDock() {
       document.head.appendChild(st);
       d = document.createElement('div'); d.id = 'avisos-dock'; document.body.appendChild(d);
     }
-    AVISOS_DOCK.forEach(id => { const el = document.getElementById(id); if (el && el.parentNode !== d) d.appendChild(el); });
+    AVISOS_DOCK.concat(typeof _avxAuto === 'function' ? _avxAuto() : []).forEach(id => { const el = document.getElementById(id); if (el && el.parentNode !== d) d.appendChild(el); });   /* 27-oct · también los avisos sueltos */
   } catch (_) {}
 }
 try { setInterval(_avisosDock, 800); } catch (_) {}
