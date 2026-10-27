@@ -4406,20 +4406,27 @@ function ctAcuerdo(sem){
   return {n:c.length, ok, pct:100*ok/c.length};
 }
 
-/* 26-oct (Pablo) · TOQUES A CLIENTAS QUE YA PAGARON: el motor de seguimiento les escribió después de pagar (molesta y gasta).
-   Sale del mismo /marcador (toques_tardios) para la semana elegida. Meta 0. */
-function ctTileTardios(sem, tile){
+/* 26-oct 20:36 (Pablo) · NO TOCA A CLIENTAS QUE PAGARON, en positivo como los otros: % de las clientas que pagaron en la semana
+   a las que el motor de seguimiento NO les escribió después de pagar. Meta 100%. Sale del mismo /marcador (ventas y toques_tardios). */
+function ctTardiosSem(sem){
   CT.tt = CT.tt || {};
-  const x = CT.tt[sem];
-  if (x === undefined) {
-    CT.tt[sem] = null;
-    _flGetJSON(BASE_N8N + '/marcador?desde=' + sem + '&hasta=' + ctMas(sem, 6)).then(v => { const m = Array.isArray(v) ? v[0] : v;
-      CT.tt[sem] = { n: (m && m.toques_tardios && m.toques_tardios.n) || 0, ped: (m && m.toques_tardios && m.toques_tardios.pedidos) || [], ventas: (m && m.ventas) || 0 };
-      if (CT.semana === sem) pintarCalidadTula(); }).catch(() => { CT.tt[sem] = { err: 1 }; });
-  }
-  if (!x) return tile('Toques a clientas que ya pagaron', '…', '0', null, '', 'cargando', 'var(--bad)');
-  if (x.err) return tile('Toques a clientas que ya pagaron', '—', '0', null, '', 'no se pudo leer', 'var(--bad)');
-  return tile('Toques a clientas que ya pagaron', String(x.n), '0', x.n === 0, '', x.n ? 'pedidos ' + x.ped.slice(0, 6).join(', ') + (x.ped.length > 6 ? '…' : '') : 'ninguna clienta pagada recibió un toque', 'var(--bad)');
+  if (!sem || CT.tt[sem] !== undefined) return CT.tt[sem];
+  CT.tt[sem] = null;
+  _flGetJSON(BASE_N8N + '/marcador?desde=' + sem + '&hasta=' + ctMas(sem, 6)).then(v => { const m = Array.isArray(v) ? v[0] : v;
+    const tt = (m && m.toques_tardios) || {}, ped = [...new Set(tt.pedidos || [])], ventas = Number((m && m.ventas) || 0);
+    const con = Math.min(ventas, ped.length || Number(tt.n || 0));
+    CT.tt[sem] = { ped, ventas, con, pct: ventas ? 100 * (ventas - con) / ventas : null };
+    if (CT.semana === sem || ctSemanas().indexOf(CT.semana) - 1 === ctSemanas().indexOf(sem)) pintarCalidadTula(); }).catch(() => { CT.tt[sem] = { err: 1 }; });
+  return null;
+}
+function ctTileTardios(sem, prev, tile, delta){
+  const T = 'No toca a clientas que pagaron', x = ctTardiosSem(sem), y = prev ? ctTardiosSem(prev) : null;
+  if (!x) return tile(T, '…', '100%', null, '', 'cargando', 'var(--bad)');
+  if (x.err) return tile(T, '—', '100%', null, '', 'no se pudo leer', 'var(--bad)');
+  const pc = x.pct == null ? '—' : (x.pct > 99 && x.pct < 100 ? x.pct.toFixed(1) : Math.round(x.pct)) + '%';
+  const sub = (x.ventas - x.con) + ' de ' + x.ventas + ' clientas sin toques tras pagar'
+    + (x.con ? ' · pedido' + (x.ped.length > 1 ? 's ' : ' ') + x.ped.slice(0, 6).join(', ') + (x.ped.length > 6 ? '…' : '') : '');
+  return tile(T, pc, '100%', x.pct == null ? null : x.pct >= 100, delta(x.pct, y && !y.err ? y.pct : null), sub, 'var(--bad)');
 }
 function pintarCalidadTula(){
   const z=document.getElementById('ctZona'); if(!z||!CT.datos) return;
@@ -4431,13 +4438,13 @@ function pintarCalidadTula(){
     return '<span style="color:'+(d>0?'var(--ok)':'var(--bad)')+'">'+(d>0?'▲ +':'▼ ')+d.toFixed(1)+' pts vs semana anterior</span>'; };
   const ac=ctAcuerdo();
   const tile=(tit,val,meta,ok,dlt,sub,tc)=>'<div style="flex:1 1 220px;min-width:200px;border:1px solid var(--bd);border-radius:14px;padding:13px 15px;background:var(--card)">'   /* 26-oct (Pablo) · tc = color de su línea en el gráfico */
-    +'<div style="font-size:11px;color:'+(tc||'var(--txt2)')+';text-transform:uppercase;letter-spacing:.06em;font-weight:600">'+tit+'</div>'
+    +'<div style="font-size:11px;color:'+(tc||'var(--txt2)')+';text-transform:uppercase;letter-spacing:.06em;font-weight:700">'+tit+'</div>'   /* 26-oct 20:36 (Pablo) · títulos en negrita */
     +'<div style="font-size:22px;font-weight:600;line-height:1.25;color:'+(ok==null?'inherit':ok?'var(--ok)':'var(--bad)')+'">'+val+'</div>'
     +'<div style="font-size:11px;color:var(--txt2)">'+(sub||'')+'</div>'
     +'<div style="font-size:11px;margin-top:5px">'+dlt+'</div>'
     +'<div style="font-size:11px;color:var(--txt2);margin-top:3px">meta '+meta+'</div></div>';
   let h='<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 8px 2px">'
-    +'<div style="font-size:14px;font-weight:600;letter-spacing:0;color:var(--txt);">Calidad de Tula</div>'
+    +'<div style="font-size:14px;font-weight:700;letter-spacing:0;color:var(--txt);">Calidad de Tula</div>'
     +'<select id="ctSem" onchange="CT.semana=this.value;pintarCalidadTula()" style="background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:4px 8px;font-size:12px">'
     + sems.slice().reverse().map(s=>'<option value="'+s+'"'+(s===sem?' selected':'')+'>Semana '+ctFmt(s)+' – '+ctFmt(ctMas(s,6))+'</option>').join('')+'</select>'
     +'<span style="font-size:11px;color:var(--txt2)">'+A.n+' conversaciones evaluadas</span>'
@@ -4457,17 +4464,17 @@ function pintarCalidadTula(){
     + tile('Responde adecuadamente', pc(A.ok), CT_META.ok+'% o más', A.ok==null?null:A.ok>=CT_META.ok, delta(A.ok,P&&P.ok), (A.n-A.mal)+' de '+A.n+' conversaciones sin ninguna respuesta mala', 'var(--bot)')
     + tile('No inventa datos', pc(A.noInv), CT_META.inv+'% o más', A.noInv==null?null:A.noInv>=CT_META.inv, delta(A.noInv,P&&P.noInv), (A.n-A.inv)+' de '+A.n+' sin datos inventados · ya cuenta dentro de "Responde adecuadamente"; se vigila aparte por ser la falla más grave', 'var(--warn)')
     + tile('Escala cuando debe', pc(A.esc), CT_META.esc+'% o más', A.esc==null?null:A.esc>=CT_META.esc, delta(A.esc,P&&P.esc), A.escOk+' de '+A.debe+' conversaciones que necesitaban una asesora', 'var(--ab)')
-    + ctTileTardios(sem, tile)
+    + ctTileTardios(sem, prev, tile, delta)
     +'</div>';
   h+='<div style="margin-top:10px;border:1px solid var(--bd);border-radius:14px;padding:12px 16px;background:var(--card)">'
-    +'<div style="font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;font-weight:500">Día a día · más alto es mejor</div>'
+    +'<div style="font-size:14px;color:var(--txt);margin-bottom:6px;font-weight:700">Día a día · más alto es mejor</div>'
     + ctGrafico() +'</div>';
   /* desagregado: causas de las conversaciones que NO respondieron adecuadamente */
   const malas=evA.filter(e=>e.v==='mal'); const malasP=prev?ctEvSem(prev).filter(e=>e.v==='mal'):null;
   const filas=CT_FALLAS.map(F=>{ const n=malas.filter(e=>(e.x||[]).includes(F.k)).length; const nb=malasP?malasP.filter(e=>(e.x||[]).includes(F.k)).length:null;
     return {F, n, a:malas.length?100*n/malas.length:0, b:(malasP&&malasP.length)?100*nb/malasP.length:null}; }).filter(r=>r.n>0).sort((x,y)=>y.n-x.n);
   h+='<div style="margin-top:10px;border:1px solid var(--bd);border-radius:14px;padding:12px 16px;background:var(--card)">'
-    +'<div style="font-size:11px;color:var(--txt2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;font-weight:500">¿Por qué no responde adecuadamente? · '+malas.length+' conversaciones de la semana</div>'
+    +'<div style="font-size:14px;color:var(--txt);margin-bottom:4px;font-weight:700">¿Por qué no responde adecuadamente? <span style="font-size:12px;font-weight:500;color:var(--txt2)">· '+malas.length+' conversaciones de la semana</span></div>'
     +'<div style="font-size:11px;color:var(--txt2);margin-bottom:8px">Una conversación puede tener más de una causa. Toca una fila para leer los chats.</div>'
     +'<div style="display:grid;grid-template-columns:minmax(180px,2.4fr) 3fr 70px 92px;gap:4px 10px;align-items:center;font-size:12px">'
     +'<span style="color:var(--txt2);font-size:11px">Causa</span><span></span><span style="color:var(--txt2);font-size:11px;text-align:right">% de las malas</span><span style="color:var(--txt2);font-size:11px;text-align:right">vs anterior</span>';
