@@ -593,17 +593,20 @@ const S2 = v => Math.abs(+v || 0) >= 1000 ? 'S/ ' + Math.round(+v || 0).toLocale
    descripción / proveedor, tamaño, código de color del proveedor, colores que la usan, consumo por prenda, precio por unidad.
    Los colores se reparten DENTRO de cada tipo (una tela por color, un botón por color…). «TODOS» o vacío = todos los demás colores. */
 const INS_TIPOS = [['Tela', 'm'], ['Forro', 'm'], ['Entretela', 'm'], ['Botón', 'unid.'], ['Hombrera', 'par'], ['Elástico', 'm'], ['Cierre', 'unid.'], ['Otro', 'unid.']];
-const INS_TODOS = /^(TODOS?|TODAS?|\*)$/;
+const INS_TODOS = /^(TODOS?|TODAS?|\*|TODOS? LOS COLORES)$/;
+/* 27-oct (lista 253) · «TODOS» = TODOS los colores de la orden (antes era «los demás» y, si otra fila de tela ya tenía todos los colores,
+   la fila TODOS quedaba en 0 prendas · 0 m · S/ 0,00, ej. OP-0020 «Seda Francesa»). Vacío = los colores que no tienen otra fila. */
+function insTodos(m){ return ((m && m.colores) || []).map(nrm).some(c => INS_TODOS.test(c)); }
 function insTipo(m){ return (m && m.tipo) || 'Tela'; }
 function insUni(t){ const x = INS_TIPOS.find(y => y[0] === t); return x ? x[1] : 'unid.'; }
 function insCols(m){ return ((m && m.colores) || []).map(nrm).filter(c => c && !INS_TODOS.test(c)); }
-function insColsTxt(v){ return String(v || '').split(',').map(nrm).filter(c => c && !INS_TODOS.test(c)); }
+function insColsTxt(v){ const L = String(v || '').split(',').map(nrm).filter(Boolean); return L.some(c => INS_TODOS.test(c)) ? ['TODOS'] : L; }   /* 27-oct · TODOS se guarda */
 function insPrendas(M, Q){   /* Q = { COLOR: prendas } → prendas de cada fila */
   const tot = M.map(() => 0), G = {};
   M.forEach((m, i) => { (G[insTipo(m)] = G[insTipo(m)] || []).push(i); });
-  Object.values(G).forEach(idx => { const asig = {}; idx.forEach(i => insCols(M[i]).forEach(c => { asig[c] = i; }));
-    const libre = idx.find(i => !insCols(M[i]).length);
-    Object.keys(Q).forEach(c => { const i = c in asig ? asig[c] : libre; if (i !== undefined) tot[i] += Q[c]; }); });
+  Object.values(G).forEach(idx => { const asig = {}; idx.forEach(i => { if (!insTodos(M[i])) insCols(M[i]).forEach(c => { asig[c] = i; }); });
+    const libre = idx.find(i => !insTodos(M[i]) && !insCols(M[i]).length), todos = idx.filter(i => insTodos(M[i]));   /* 27-oct (253) · TODOS = todos los colores */
+    Object.keys(Q).forEach(c => { todos.forEach(i => { tot[i] += Q[c]; }); const i = c in asig ? asig[c] : libre; if (i !== undefined) tot[i] += Q[c]; }); });
   return tot;
 }
 function insDeFicha(d){   /* sugerido de 📦 Productos: tela y avíos de la ficha (sin confección ni packaging) */
@@ -620,7 +623,7 @@ function insFilas(M, v, pre, n, rep, tot){   /* tabla editable común (Nueva pro
         + '<td><input value="' + esc(m.nombre || '') + '" placeholder="' + (t === 'Tela' ? 'Crepé - Colortex' : t === 'Botón' ? 'Botón perla' : t) + '" style="width:140px" oninput="' + pre + v + '[' + i + '].nombre=this.value"></td>'
         + '<td><input value="' + esc(m.tam || '') + '" placeholder="' + (t === 'Botón' ? '18 mm' : t === 'Cierre' ? '20 cm' : '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].tam=this.value"></td>'
         + '<td><input value="' + esc(m.codigo || '') + '" placeholder="Cód." title="Código del color en el proveedor" style="width:70px" oninput="' + pre + v + '[' + i + '].codigo=this.value"></td>'
-        + '<td><input value="' + esc((m.colores || []).join(', ')) + '" placeholder="todos" title="Colores que usan este insumo, separados por coma. Vacío o TODOS = todos los demás" style="width:130px" onchange="' + pre + v + '[' + i + '].colores=insColsTxt(this.value);' + rep + '()"></td>'
+        + '<td><input value="' + esc((m.colores || []).join(', ')) + '" placeholder="todos" title="Colores que usan este insumo, separados por coma. TODOS = todos los colores de la orden · vacío = los colores que no tienen otra fila" style="width:130px" onchange="' + pre + v + '[' + i + '].colores=insColsTxt(this.value);' + rep + '()"></td>'
         + '<td><input type="number" step="0.01" min="0" value="' + (m.consumo || '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].consumo=+this.value||0;' + tot + '()"> <small>' + u + '</small></td>'
         + '<td><input type="number" step="0.01" min="0" value="' + (m.precio || '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].precio=+this.value||0;' + tot + '()"></td>'
         + '<td><input type="number" step="0.1" min="0" value="' + (m.asignados || '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].asignados=+this.value||0;' + tot + '()"> <small>' + u + '</small></td>'
@@ -641,14 +644,14 @@ function insTotales(box, M, n){   /* pinta prendas, cantidad estimada, diferenci
   return { met, cos };
 }
 function insLimpio(M){ return (M || []).filter(m => (m.nombre || '').trim() || +m.consumo || +m.precio || +m.asignados).map(m => ({ tipo: insTipo(m), nombre: String(m.nombre || '').trim(),
-  tam: String(m.tam || '').trim(), codigo: String(m.codigo || '').trim(), colores: insCols(m), consumo: +m.consumo || 0, precio: +m.precio || 0, asignados: +m.asignados || 0 })); }
+  tam: String(m.tam || '').trim(), codigo: String(m.codigo || '').trim(), colores: insTodos(m) ? ['TODOS'] : insCols(m), consumo: +m.consumo || 0, precio: +m.precio || 0, asignados: +m.asignados || 0 })); }
 function insTela(M, n){ let met = 0, cos = 0; M.forEach((m, i) => { if (insTipo(m) === 'Tela'){ met += n[i] * m.consumo; cos += n[i] * m.consumo * m.precio; } }); return { met, cos }; }
 function matPrendas(o, M){
   const Q = {}; D.lineas.filter(x => x.orden_id === o.id).forEach(l => { const k = nrm(l.color); Q[k] = (Q[k] || 0) + (+l.pedido || 0); });
-  return insPrendas(M, Q);   /* 26-oct · por tipo de insumo; «TODOS» = todos los demás (lista 253) */
+  return insPrendas(M, Q);   /* 26-oct · por tipo de insumo · 27-oct (lista 253): «TODOS» = todos los colores; vacío = los demás */
 }
 function matSinAsignar(o, M){
-  const T = M.filter(m => insTipo(m) === 'Tela'); if (!T.length || T.some(m => !insCols(m).length)) return [];
+  const T = M.filter(m => insTipo(m) === 'Tela'); if (!T.length || T.some(m => insTodos(m) || !insCols(m).length)) return [];
   const A = new Set(); T.forEach(m => insCols(m).forEach(c => A.add(c)));
   return [...new Set(D.lineas.filter(x => x.orden_id === o.id && !A.has(nrm(x.color))).map(x => x.color))];
 }
@@ -682,7 +685,7 @@ function matPintar(){
   const colsOrden = [...new Set(D.lineas.filter(x => x.orden_id === o.id).map(x => x.color))];
   box.innerHTML = insFilas(MT.M, 'MT.M', '', null, 'matPintar', 'matTot')
     + '<datalist id="lColO">' + colsOrden.map(c => '<option value="' + esc(c) + '">').join('') + '</datalist>'
-    + (falt.length ? '<div class="err" style="font-size:12px">Colores sin tela asignada: ' + esc(falt.join(', ')) + ' (deja una fila de tela con «Colores» vacío o TODOS para «todos los demás»).</div>' : '')
+    + (falt.length ? '<div class="err" style="font-size:12px">Colores sin tela asignada: ' + esc(falt.join(', ')) + ' (deja una fila de tela con «Colores» vacío para «los demás», o TODOS para todos los colores).</div>' : '')
     + (MT.sug && MT.de ? '<div class="mu" style="font-size:12px">Sugerido de ' + esc(MT.de) + ': revísalo y guarda.</div>' : '')
     + '<button onclick="MT.M.push({tipo:\'Tela\',nombre:\'\',colores:[],consumo:0,precio:0});matPintar()">＋ Otro insumo</button> <span class="mu" style="font-size:12px">Una fila por tela o avío; si según el color cambia (y su precio o código), otra fila con esos colores.</span>';
   matTot();

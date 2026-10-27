@@ -530,10 +530,13 @@ function cua_13_EMPAREJAR_VENTAS() {
   try { EB = _cmErpBase_(parDia); } catch (eB) { EB = null; Logger.log('[cua_13] no pude leer la base, uso la copia de siempre: ' + eB); }
   var erpDeBase = !!(EB && EB.length);
   var CONJ = {}; try { CONJ = _cmConjuntos_(); } catch (eC) { CONJ = {}; }
+  var DEVERP = {};   // 27-oct (Pablo, lista 257 · pedido 21135): prendas que el ERP tiene en estado DEVOLUCION, por pedido y prenda+color
   if (erpDeBase) {
     EB.forEach(function (p) {
       if (['si', 'true', 't'].indexOf(String(p.eliminado || '').trim().toLowerCase()) >= 0) return;
-      var est = String(p.estado || '').trim().toUpperCase(); if (est === 'CANCELADO' || est === 'DEVOLUCION') return;
+      var est = String(p.estado || '').trim().toUpperCase();
+      if (est === 'DEVOLUCION') { var sdv = libroResolverPrenda(String(p.prenda || '').trim()); if (sdv) DEVERP[String(p.nro_pedido) + '|' + sdv.p + '|' + sdv.d + '|' + sdv.c] = 1; }
+      if (est === 'CANCELADO' || est === 'DEVOLUCION') return;
       if (/^C2DEV /.test(String(p.cambio2 || ''))) return;   // 15-oct: devuelta en un cambio sin prenda nueva (ej. 22378 CAM-0219): ya no es venta
       var pr = String(p.prenda || '').trim(); if (!pr || vocCanon(pr) === '_PAGO_') return;
       if (String(p.yay || '').trim().toUpperCase() === 'SI' || /^\s*YAYITA\s*[-\u2013\u2014]?\s+/i.test(pr)) return;
@@ -632,7 +635,12 @@ function cua_13_EMPAREJAR_VENTAS() {
     var resto = ((GRP[gk] || {}).pag || 0) - ePag;
     L.sort(function (a, b) { return a.f < b.f ? -1 : 1; }).forEach(function (d) {
       if (/transito/i.test(d.ref)) return;
-      if (!(d.pre > 0)) { d.causa = 'SIN PRECIO en el Drive (regalo o falta el precio)'; regla2.sinPrecio++; }
+      // 27-oct (257) · ANTES: la prenda que el ERP tiene como DEVOLUCION y el Drive como vendida salía «SOBRA EN EL DRIVE: no tiene pago»
+      // (el pago del pedido ya estaba contado entero en el ERP, así que no «sobraba» plata para ella) aunque los dos lados tenían el pago completo.
+      // AHORA se dice lo que es: el estado no coincide. Va primero y no consume plata.
+      var devN = Object.keys(d.nros).filter(function (n) { return DEVERP[n + '|' + d.sku]; });
+      if (devN.length) { d.causa = 'DEVOLUCION EN EL ERP: el pedido ' + devN.join(', ') + ' tiene esta prenda como DEVOLUCION y el Drive la tiene vendida (pago completo en los dos): si no hubo devolución, corregir el estado en el ERP'; regla2.devErp = (regla2.devErp || 0) + 1; }
+      else if (!(d.pre > 0)) { d.causa = 'SIN PRECIO en el Drive (regalo o falta el precio)'; regla2.sinPrecio++; }
       else if (resto >= d.pre - 0.5) { d.causa = 'FALTA EN EL ERP: el Drive tiene el pago'; resto -= d.pre; regla2.falta++; }
       else { d.causa = 'SOBRA EN EL DRIVE: no tiene pago'; regla2.sobra++; }
       d.causa += Object.keys(d.nros).length ? ' (la clienta tiene el pedido ' + Object.keys(d.nros).join(', ') + ')' : ' (la clienta no tiene pedido en el ERP)';

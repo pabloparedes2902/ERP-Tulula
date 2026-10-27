@@ -5362,7 +5362,7 @@ function _cosInsRender() {
     + '<td class="cin-s" style="text-align:right;font-size:12px;padding:0 6px"></td><td><button type="button" class="btn bg bs cin-x" title="Quitar">✕</button></td></tr>';
   box.innerHTML = '<details' + (CIN.L.length ? ' open' : '') + '><summary style="cursor:pointer;font-size:13px;color:var(--ac)">🧾 Detalle de insumos (cantidad × precio por prenda)' + (CIN.L.length ? ' · ' + CIN.L.length : ' · opcional') + '</summary>'
     + '<div style="font-size:12px;color:var(--mu);margin:6px 0">Lo que pongas aquí calcula solo la casilla de ese componente (queda en gris). Es el mismo costo que ve 🧵 Producción.</div>'
-    + '<div style="overflow:auto"><table style="border-collapse:collapse;width:100%"><tr style="font-size:11px;color:var(--mu)"><th style="text-align:left">Componente</th><th style="text-align:left">Material / proveedor</th><th style="text-align:left">Colores</th><th>Cant.</th><th>Unidad</th><th>Precio S/</th><th>Subtotal</th><th></th></tr>'
+    + '<div style="overflow:auto"><table style="border-collapse:collapse;width:100%"><tr style="font-size:11px;color:var(--mu)"><th style="text-align:left">Componente</th><th style="text-align:left">Material / proveedor</th><th style="text-align:left">Colores</th><th title="27-oct (248) · consumo por prenda producida: metros de tela por unidad, unidades de botón…">Cant. por prenda</th><th>Unidad</th><th>Precio S/ por unidad</th><th>Subtotal</th><th></th></tr>'
     + CIN.L.map(fila).join('') + '</table></div><button type="button" class="btn bg bs" id="cin-add" style="margin-top:6px">＋ Insumo</button> <span id="cin-alt" style="font-size:12px;color:var(--mu)"></span></div></details>';
   const leer = () => { CIN.L = [...box.querySelectorAll('tr[data-i]')].map(tr => ({ comp: tr.querySelector('.cin-c').value, descripcion: tr.querySelector('.cin-d').value, colores: (tr.querySelector('.cin-k') || {}).value || '', cantidad: tr.querySelector('.cin-q').value, unidad: tr.querySelector('.cin-u').value, precio: tr.querySelector('.cin-p').value })); };
   box.querySelectorAll('tr[data-i] input, tr[data-i] select').forEach(i => { i.addEventListener('input', () => { leer(); _cosInsAplicar(true); }); i.addEventListener('change', () => { leer(); _cosInsAplicar(true); }); });
@@ -5373,8 +5373,9 @@ function _cosInsAplicar(cambio) {
   if (cambio) CIN.dirty = true;
   /* 26-oct (Pablo) · dos telas según el color: si un componente tiene filas con colores, son ALTERNATIVAS → el costo del producto toma la más cara; cada orden de 🧵 Producción calcula el exacto por color */
   const sum = {}, G = {}; CIN.L.forEach(x => { (G[x.comp] = G[x.comp] || []).push((+x.cantidad || 0) * (+x.precio || 0)); });
-  Object.keys(G).forEach(k => { const alt = CIN.L.some(x => x.comp === k && String(x.colores || '').trim()); sum[k] = alt ? Math.max(...G[k]) : G[k].reduce((a, v) => a + v, 0); });
-  { const n = document.getElementById('cin-alt'), al = Object.keys(G).filter(k => CIN.L.some(x => x.comp === k && String(x.colores || '').trim())); if (n) n.textContent = al.length ? 'Material según el color: el costo del producto toma el más caro; cada orden de 🧵 Producción calcula el costo exacto por color.' : ''; }
+  const _cinPorColor = x => { const c = String(x.colores || '').trim(); return !!c && !/^(TODOS?|TODAS?|\*|TODOS? LOS COLORES)$/i.test(c); };   /* 27-oct (253) · «TODOS» no es alternativa por color */
+  Object.keys(G).forEach(k => { const alt = CIN.L.some(x => x.comp === k && _cinPorColor(x)); sum[k] = alt ? Math.max(...G[k]) : G[k].reduce((a, v) => a + v, 0); });
+  { const n = document.getElementById('cin-alt'), al = Object.keys(G).filter(k => CIN.L.some(x => x.comp === k && _cinPorColor(x))); if (n) n.textContent = al.length ? 'Material según el color: el costo del producto toma el más caro; cada orden de 🧵 Producción calcula el costo exacto por color.' : ''; }
   document.querySelectorAll('#cf-ins tr[data-i]').forEach(tr => { tr.querySelector('.cin-s').textContent = ((+tr.querySelector('.cin-q').value || 0) * (+tr.querySelector('.cin-p').value || 0)).toFixed(2); });
   let toco = null;
   (COS.comps || []).forEach(k => { const i = document.getElementById('cc-' + k.k); if (!i) return;
@@ -20737,7 +20738,13 @@ function mkTBody(rows) {
         const _camb     = _cambOrig.toUpperCase();
         const _prenU    = String(v||'').trim().toUpperCase();
         const _esCam    = /\bCAM\s*CAM-?\d+/.test(_camb);
-        const _esDev    = /\bDEV\s*DEV-?\d+/.test(_camb);
+        // 27-oct (Pablo, lista 256 · pedido 20301) · la marca «DEV DEV-XXXX» quedó escrita en la columna Cambio de una devolución de PRUEBA
+        // (DEV-0028, 2-set) que nunca existió en Devoluciones: el pedido se veía como devolución sin serlo. Si las devoluciones ya están
+        // cargadas y esa DEV no existe, la prenda NO se pinta como devuelta (se respeta la marca solo si la devolución existe).
+        const _devMarca = (_camb.match(/\bDEV\s*DEV-?(\d+)/) || [])[1];
+        const _devExiste = !_devMarca || typeof histDevData === 'undefined' || !Array.isArray(histDevData) || !histDevData.length
+          || histDevData.some(d => String((d && d['NroDevolucion']) || '').trim().toUpperCase() === 'DEV-' + String(_devMarca).padStart(4, '0'));
+        const _esDev    = /\bDEV\s*DEV-?\d+/.test(_camb) && _devExiste;
         // Normalizador: trim + uppercase + colapsar espacios múltiples
         const _norm = (s) => String(s||'').trim().toUpperCase().replace(/\s+/g, ' ');
         // Parsing de prenda original y nueva (Cambios).
@@ -25851,7 +25858,7 @@ async function _guardarPedidoModal(nro, body) {
     const _hayCam = _camArr.some(c => String(c['NroPedido']||'').trim() === _nroS)
       || (Array.isArray(pRaw) && pRaw.some(r => String(r['NroPedido']||'').trim() === _nroS && /CAM\s*CAM-?\d+/i.test(String(r['Cambio']||''))));
     const _hayDev = _devArr.some(d => String(d['NroPedido']||'').trim() === _nroS)
-      || (Array.isArray(pRaw) && pRaw.some(r => String(r['NroPedido']||'').trim() === _nroS && /DEV\s*DEV-?\d+/i.test(String(r['Cambio']||''))));
+      || (!_devArr.length && Array.isArray(pRaw) && pRaw.some(r => String(r['NroPedido']||'').trim() === _nroS && /DEV\s*DEV-?\d+/i.test(String(r['Cambio']||''))));   // 27-oct (256) · con Devoluciones cargadas manda la lista real, no la marca vieja
     let _msg = '¿Está seguro de eliminar este pedido?\n\nEl pedido pasará a la Papelera. Más adelante un administrador podrá eliminarlo definitivamente.';
     if (_hayCam || _hayDev) {
       _msg = '⚠️ ATENCIÓN: este pedido tiene '
