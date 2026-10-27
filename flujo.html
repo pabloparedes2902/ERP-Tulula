@@ -4345,6 +4345,13 @@ function ctKpi(ev){
   return { n, mal, inv, debe:debe.length, escOk:debe.length-falla,
     ok: n?100*(n-mal)/n:null, noInv: n?100*(n-inv)/n:null, esc: debe.length?100*(debe.length-falla)/debe.length:null };
 }
+/* 27-oct: cabecera del juez = acuerdo de la ULTIMA semana calibrada; se repinta al marcar cada chat */
+function ctCabDer(){
+  const dd=document.getElementById('ctDer'); if(!dd) return;
+  const c=(CT.datos&&CT.datos.cal)||[]; const sems=c.map(x=>x.s).sort(); const ult=sems.pop();
+  const ac=ult?ctAcuerdo(ult):null;
+  dd.innerHTML='<span style="font-size:11px;color:'+(ac&&ac.pct>=80?'var(--ok)':ac?'var(--bad)':'var(--txt2)')+'">'+(ac?'Juez: '+Math.round(ac.pct)+'% de acuerdo contigo ('+ac.ok+' de '+ac.n+' chats, semana '+ctFmt(ult)+')':'Juez sin calibrar')+'</span><button class="btn" onclick="ctCalibrar()">🎯 Calibrar juez (10 chats)</button>';
+}
 function ctEvRango(d0,d1){ return (CT.datos.evals||[]).filter(e=>e.f>=d0&&e.f<=d1); }
 function ctEvSem(sem){ return (CT.datos.evals||[]).filter(e=>ctLunes(e.f)===sem); }
 /* acuerdo juez-Pablo: binario (mal vs no-mal), como se valido el 10-oct */
@@ -4387,7 +4394,6 @@ function pintarCalidadTula(){
   const evA=ctEvRango(r.desde, r.hasta), A=ctKpi(evA);
   const ult=evA.map(e=>e.f).sort().pop(); CT.semana = ult ? ctLunes(ult) : ctSemanaDefault();   /* la calibracion usa la ultima semana con datos del rango */
   const pc=v=>v==null?'—':Math.round(v)+'%';
-  const ac=ctAcuerdo();
   const fi=document.getElementById('filtroInfo'); if(fi) fi.textContent = r.desde+' → '+r.hasta;
   /* 26-oct (Pablo) · tarjetas iguales: titulo en una linea / numero centrado / "X de Y" + "meta N%" */
   /* 27-oct (Pablo) · semaforo del numero: verde desde la meta, amarillo desde el umbral, rojo debajo */
@@ -4410,7 +4416,7 @@ function pintarCalidadTula(){
     : tile('Costo IA', 'US$ '+co.usd.toFixed(2), nConv?('US$ '+(co.usd/nConv).toFixed(3)+' por conversación'):'', '', null);
   { const tt=document.getElementById('ctTit'), dd=document.getElementById('ctDer');
     if(tt) tt.innerHTML='<b style="font-size:14px;color:var(--txt)">Calidad de Tula</b><span style="font-size:11px;color:var(--txt2)">'+A.n+' conversaciones evaluadas</span>';
-    if(dd) dd.innerHTML='<span style="font-size:11px;color:'+(ac&&ac.pct>=80?'var(--ok)':ac?'var(--bad)':'var(--txt2)')+'">'+(ac?'Juez: '+Math.round(ac.pct)+'% de acuerdo contigo ('+ac.n+' chats)':'Juez validado 10/10 el 10-oct')+'</span><button class="btn" onclick="ctCalibrar()">🎯 Calibrar juez (10 chats)</button>'; }
+    ctCabDer(); }
   let h='';
   h+='<div style="display:flex;gap:12px">'
     + tile('Responde adecuadamente', pc(A.ok), (A.n-A.mal)+' de '+A.n, CT_META.ok+'%', sem(A.ok,80,90), 'var(--bot)')
@@ -4549,6 +4555,13 @@ function ctPintarCal(){
   const hechos=L.filter(x=>x.hecho).length, ok=L.filter(x=>x.hecho&&((x.vp==='mal')===(x.v==='mal'))).length;
   h+='<div style="display:flex;gap:5px;margin-bottom:10px;flex-wrap:wrap">'+L.map((x,i)=>'<span onclick="CT.calI='+i+';ctPintarCal()" style="cursor:pointer;width:26px;height:26px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;border:1.5px solid '+(i===CT.calI?'var(--bot)':'var(--bd)')+';background:'+(x.hecho?((x.vp==='mal')===(x.v==='mal')?'rgba(67,201,138,.25)':'rgba(255,93,93,.25)'):'transparent')+'">'+(i+1)+'</span>').join('')
     +'<span style="margin-left:8px;font-size:12px;color:var(--txt2);align-self:center">'+hechos+'/10 marcados'+(hechos?' · acuerdo '+Math.round(100*ok/hechos)+'%':'')+'</span></div>';
+  if(hechos===L.length && !L.some(y=>y.edit)){
+    const pc=Math.round(100*ok/hechos), bien=pc>=80;
+    h+='<div style="margin-bottom:10px;padding:10px 12px;border-radius:10px;border:1.5px solid '+(bien?'var(--ok)':'var(--bad)')+';font-size:12px;line-height:1.6">'
+      +'<b style="font-size:13px">✅ Calibración terminada · '+ok+' de '+hechos+' coinciden = '+pc+'%</b><br>'
+      +(bien?'El juez mide igual que tú (meta 80%): sus números son confiables. Tus respuestas ya quedaron guardadas.':'El juez no mide igual que tú (meta 80%): Claude lo ajusta con tus notas. Tus respuestas ya quedaron guardadas.')
+      +'<div style="margin-top:8px"><button class="btn on" onclick="CT.cal=null;document.getElementById(\'ctCal\').innerHTML=\'\';ctCabDer()">Finalizar</button></div></div>';
+  }
   const x=L[CT.calI];
   h+='<div style="font-size:11px;color:var(--txt2)">Conversación #'+x.c+' · '+ctFmt(x.f)+'</div>'+ctChatHtml(x.chat);
   if(!x.hecho){
@@ -4573,8 +4586,9 @@ function ctMarcar(){
   if(!v){ alertaSuave('Elige bien, dudosa o mal'); return; }
   const fallas=[...document.querySelectorAll('.ctX:checked')].map(i=>i.value); const nota=(document.getElementById('ctNota')||{}).value||'';
   ctPost({accion:'calib_marcar', semana:CT.cal.sem, fecha:x.f, conversacion:x.c, veredicto:v, fallas, nota}).then(()=>{
-    x.hecho=true; x.vp=v; x.xp=fallas; x.np=nota; delete x.edit; ctPintarCal();
     CT.datos.cal=(CT.datos.cal||[]).filter(k=>!(k.f===x.f&&k.c===x.c)).concat([{s:CT.cal.sem,f:x.f,c:x.c,vp:v,vj:x.v,xp:fallas,xj:x.x}]);
+    x.hecho=true; x.vp=v; x.xp=fallas; x.np=nota; delete x.edit; ctPintarCal(); ctCabDer();
+    if(CT.cal.lista.every(y=>y.hecho)) ctIrCal();
   }).catch(()=>alertaSuave('No se pudo guardar, intenta de nuevo'));
 }
 function alertaSuave(t){ const d=document.createElement('div'); d.textContent=t; d.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bad);color:#fff;padding:8px 14px;border-radius:10px;font-size:12px;z-index:9999'; document.body.appendChild(d); setTimeout(()=>d.remove(),2500); }
