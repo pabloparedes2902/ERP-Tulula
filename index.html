@@ -28149,6 +28149,7 @@ async function npGuardar() {
 
   const errs = npValidar();
   if (!errs.length && !(await _confirmarOtraAsesora((document.getElementById('np-asesora') || {}).value, 'un pedido', 'np-asesora'))) return;
+  if (!errs.length && !(await _npOrigenConfirmar())) return;   /* 28-oct · ¿de verdad vino de un anuncio? */
   const vbox = document.getElementById('np-vbox');
   if (errs.length) {
     vbox.innerHTML = '<div class="vbox"><p>Corrige los siguientes campos:</p><ul>' + errs.map(e => '<li>' + esc(e) + '</li>').join('') + '</ul></div>';
@@ -29336,6 +29337,67 @@ document.addEventListener('click', ev => {
 setTimeout(() => { try { _lnCargar(); } catch (_) {} }, 4000);
 // ══ fin LISTA NEGRA ══════════════════════════════════════════════════════════
 
+/* 28-oct-2026 (Pablo) · CONFIRMAR QUE LA VENTA VINO DE UN ANUNCIO.
+   Al elegir WhatsApp + «ADS…», el ERP busca por el celular si esa clienta tocó un anuncio en los últimos 30 días
+   (public.anuncio_por_telefono, la misma fuente que ya le pone anuncio a las ventas). Con clic: «✓ Vino del anuncio X» y nada más.
+   Sin clic: al guardar pregunta «¿Seguro vino por anuncio?» → «Sí, por anuncio» o «Cambiar a Orgánico». Lo contestado se guarda
+   (public.origen_confirmaciones) para ver por asesora cuántos «Ads» sin clic hay. Si la función no está instalada, no pregunta nada. */
+const NP_ORI = { tel: '', res: null };
+function _npTel1(){ const i = document.querySelector('#np-tels input'); return i ? String(i.value || '').replace(/\D/g, '').slice(-9) : ''; }
+function _npEsAds(){ const c = String((document.getElementById('np-canal') || {}).value || '').toUpperCase(), o = String((document.getElementById('np-origen') || {}).value || '').toUpperCase(); return c === 'WHATSAPP' && o.indexOf('ADS') === 0; }
+async function _npClicDe(t){
+  if (t.length !== 9) return null;
+  if (NP_ORI.tel === t && NP_ORI.res) return NP_ORI.res;
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/anuncio_por_telefono', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_tel: t }) });
+    if (!r.ok) return null;
+    const j = await r.json(); NP_ORI.tel = t; NP_ORI.res = { tel9: t, clic: j && j.ad_id ? j : null }; return NP_ORI.res;
+  } catch (_) { return null; }
+}
+async function _npOrigenPista(){
+  const sel = document.getElementById('np-origen'); if (!sel) return;
+  let el = document.getElementById('np-ori-pista');
+  if (!el){ el = document.createElement('div'); el.id = 'np-ori-pista'; el.style.cssText = 'font-size:12px;margin-top:4px'; sel.parentElement.appendChild(el); }
+  if (!_npEsAds()){ el.textContent = ''; return; }
+  const c = await _npClicDe(_npTel1());
+  if (!c){ el.textContent = ''; return; }
+  el.style.color = c.clic ? 'var(--gr,#16a34a)' : 'var(--am,#d97706)';
+  el.textContent = c.clic ? '✓ Vino del anuncio: ' + _npAdCorto(c.clic.anuncio) + ' (hace ' + c.clic.dias + ' día' + (c.clic.dias === 1 ? '' : 's') + ')'
+                          : '⚠ Este celular no tocó ningún anuncio en los últimos 30 días';
+}
+function _npAdCorto(a){ const p = String(a || '').split('/'); return (p[1] || p[0] || 'anuncio').trim(); }
+function _npOrigenPreguntar(){
+  return new Promise(resolve => {
+    const o = document.createElement('div');
+    o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:300;display:flex;align-items:center;justify-content:center;padding:20px';
+    o.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);padding:24px;max-width:420px;width:100%;position:relative">'
+      + '<button id="oc-x" title="Cerrar" style="position:absolute;top:8px;right:10px;background:none;border:none;color:var(--mu);font-size:18px;cursor:pointer">✕</button>'
+      + '<p style="font-size:14px;font-weight:600;margin:0 0 8px">¿Seguro que esta clienta vino por un anuncio?</p>'
+      + '<p style="font-size:13px;color:var(--mu);margin:0 0 18px">Su celular no tocó ningún anuncio en los últimos 30 días. Si escribió por su cuenta, es <b>Orgánico</b>.</p>'
+      + '<div style="display:flex;gap:10px;justify-content:flex-end"><button id="oc-org" class="btn">Cambiar a Orgánico</button><button id="oc-si" class="btn btn-p">Sí, vino por anuncio</button></div></div>';
+    document.body.appendChild(o);
+    o.querySelector('#oc-x').onclick = () => { o.remove(); resolve(null); };
+    o.querySelector('#oc-org').onclick = () => { o.remove(); resolve('org'); };
+    o.querySelector('#oc-si').onclick = () => { o.remove(); resolve('si'); };
+  });
+}
+function _npOrigenLog(res, ori, c){
+  try { _sbSesionAsegurar().then(tok => { if (!tok) return; fetch(SB_URL + '/rest/v1/rpc/origen_confirmacion_guardar', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_asesora: (document.getElementById('np-asesora') || {}).value || '', p_tel9: c.tel9, p_origen: ori, p_resultado: res, p_ad_id: c.clic ? String(c.clic.ad_id) : null, p_ad_name: c.clic ? c.clic.anuncio : null, p_dias: c.clic ? c.clic.dias : null }) }).catch(() => {}); }); } catch (_) {}
+}
+async function _npOrigenConfirmar(){
+  if (!_npEsAds()) return true;
+  const ori = String(document.getElementById('np-origen').value || '');
+  const c = await _npClicDe(_npTel1()); if (!c) return true;   /* sin celular o sin la función: no se pregunta */
+  if (c.clic){ _npOrigenLog('clic', ori, c); return true; }
+  const r = await _npOrigenPreguntar(); if (r === null) return false;
+  if (r === 'org'){ const s = document.getElementById('np-origen'); s.value = 'ORGANICO DIRECTO'; if (s.value !== 'ORGANICO DIRECTO'){ const op = document.createElement('option'); op.value = op.textContent = 'ORGANICO DIRECTO'; s.appendChild(op); s.value = 'ORGANICO DIRECTO'; }
+    _npOrigenLog('cambio_organico', ori, c); try { _npOrigenPista(); } catch (_) {} return true; }
+  _npOrigenLog('si_sin_clic', ori, c); return true;
+}
+document.addEventListener('change', e => { const id = e.target && e.target.id; if (id === 'np-origen' || id === 'np-canal') _npOrigenPista(); });
+document.addEventListener('focusout', e => { if (e.target && e.target.closest && e.target.closest('#np-tels')) _npOrigenPista(); });
 function npConfirm(msg) {
   return new Promise(resolve => {
     const o = document.createElement('div');
