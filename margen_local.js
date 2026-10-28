@@ -2579,7 +2579,14 @@ async function __bajar(f) {
 }
 // 27-oct (Pablo) · CANAL del Margen: 'wsp' (WhatsApp, como siempre) · 'web' (Página web) · 'todos'. Lo fija margenLocalCalcular(desde, hasta, canal).
 var __MG_CANAL = 'wsp';
-var __MG_INV_FILAS = [];   // 28-oct · gasto por ANUNCIO del canal (para repartirlo entre lo que ese anuncio vendió)
+var __MG_INV_FILAS = [];
+var __MG_PED = null, __MG_POR = null;   // 28-oct · pedido → producto principal (lo arma __mgRepartir) y sus prendas
+/* 28-oct (Pablo aprobó «la tabla de enlaces») · ENVÍO Y PAGO en el margen de contribución:
+   + lo que la clienta pagó de envío − lo que le cuesta a Tulula el courier − la comisión de la tarjeta.
+   Tarifas de courier: no están en el ERP; se usan las del envío que cobra Tulula (Lima S/ 10, provincias S/ 15) — EDITABLE aquí.
+   Comisión Mercado Pago (tarjeta, web): 4.49% + IGV = 5.30% (kom.pe, 2026) — EDITABLE aquí. Yape/Plin/transferencia: 0. */
+var __MG_TARIFA = { SALVA: 10, OLVA: 15, SHALOM: 15, RECOJO: 0, 'N/A': 0 };
+var __MG_TARIFA_DEF = 10, __MG_COMISION_TARJETA = 0.053, __MG_PRENDAS_GRANDE = 6;   // 28-oct · gasto por ANUNCIO del canal (para repartirlo entre lo que ese anuncio vendió)
 // 26-oct · inversión automática: gasto de Meta del rango, por anuncio → producto (2.ª parte del nombre: «Con Catalina» = CONJUNTO CATALINA).
 // El Margen cuenta solo ventas de WhatsApp: los anuncios de la WEB no entran (se informan aparte). Sin producto reconocible → VARIOS (no atribuible).
 var __MG_ABR = { PAN:'PANTALON', BLA:'BLAZER', BLU:'BLUSA', CON:'CONJUNTO', ABR:'ABRIGO', GAB:'GABARDINA', VES:'VESTIDO', CHA:'CHALECO', TOP:'TOP', FAL:'FALDA',
@@ -2671,6 +2678,7 @@ function __mgRepartir(res) {
     if (!vivos[mej]) return;   // el motor no contó este pedido en el período
     ped[n] = { prod: mej, ing: L.reduce(function (a, l) { return a + _toFloat_(l.PrecioUnit); }, 0) };
   });
+  __MG_PED = ped; __MG_POR = por;
   var porAd = {}; Object.keys(ped).forEach(function (n) { var a = adDe[n]; if (a) (porAd[a] = porAd[a] || []).push(n); });
   var inv = {}, propia = {}, atrib = {}, repartido = 0, quedo = 0;
   __MG_INV_FILAS.forEach(function (x) {
@@ -2700,6 +2708,38 @@ function __mgRepartir(res) {
   var conAd = Object.keys(ped).filter(function (n) { return adDe[n]; }).length;
   return { aplicado: true, repartido: r2(repartido), seQuedo: r2(quedo), pedidos: Object.keys(ped).length, pedidosConAnuncio: conAd };
 }
+async function __mgEnvioPago(res) {
+  if (!__MG_PED || !__MG_POR || !res || !Array.isArray(res.productos)) return { aplicado: false };
+  var nros = Object.keys(__MG_PED), cour = {};
+  if (nros.length && typeof _sbSesionAsegurar === 'function') {
+    var tok = await _sbSesionAsegurar();
+    for (var i = 0; i < nros.length; i += 100) {
+      try { var r = await fetch(SB_URL + '/rest/v1/pedidos?select=nro_pedido,courier:row_json-%3E%3ECourier&nro_pedido=in.(' + nros.slice(i, i + 100).join(',') + ')', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+        if (r.ok) (await r.json()).forEach(function (x) { var c = String(x.courier || '').trim().toUpperCase(); if (c && !cour[x.nro_pedido]) cour[x.nro_pedido] = c; }); } catch (_) {}
+    }
+  }
+  var porProd = {}, grandes = {}, tot = { envioCobrado: 0, courier: 0, comision: 0 };
+  nros.forEach(function (n) {
+    var L = __MG_POR[n] || [], p = __MG_PED[n].prod;
+    var cobrado = L.reduce(function (a, l) { return Math.max(a, _toFloat_(l.Envio)); }, 0);
+    var forma = String((L.find(function (l) { return String(l.FormaPago || '').trim(); }) || {}).FormaPago || '').toUpperCase();
+    var c = cour[n] || '', tarifa = Object.prototype.hasOwnProperty.call(__MG_TARIFA, c) ? __MG_TARIFA[c] : (cobrado > 0 ? cobrado : __MG_TARIFA_DEF);
+    var comision = /TARJETA/.test(forma) ? __MG_COMISION_TARJETA * (__MG_PED[n].ing + cobrado) : 0;
+    var neto = tarifa + comision - cobrado;   // positivo = le cuesta a Tulula
+    porProd[p] = (porProd[p] || 0) + neto;
+    tot.envioCobrado += cobrado; tot.courier += tarifa; tot.comision += comision;
+    var nP = L.filter(function (l) { return String(l.Prenda || '').trim() && String(l.Prenda).toUpperCase().indexOf('CAMBIO') !== 0; }).length;
+    if (nP > __MG_PRENDAS_GRANDE) (grandes[p] = grandes[p] || []).push(n + ' (' + nP + ' prendas)');
+  });
+  var r2 = function (v) { return Math.round(v * 100) / 100; };
+  res.productos.forEach(function (r) {
+    var e = porProd[r.Producto] || 0; r.EnvioPago = r2(e);
+    if (r.Ventas) { r.CPAMax = r2((r.CPAMax || 0) - e / r.Ventas); r.Margen = r2(r.CPAMax - (r.CPA || 0)); }
+    if (grandes[r.Producto]) r.PedidosGrandes = grandes[r.Producto];
+  });
+  res.envioPagoTotal = r2(tot.courier + tot.comision - tot.envioCobrado);
+  return { aplicado: true, envioCobrado: r2(tot.envioCobrado), courier: r2(tot.courier), comision: r2(tot.comision), neto: res.envioPagoTotal, conCourier: Object.keys(cour).length, pedidos: nros.length };
+}
 async function __mgCalcular(desde, hasta, canal) {
   var t0 = Date.now(), viajes = 0;
   __MG_CANAL = (canal === 'web' || canal === 'todos') ? canal : 'wsp';
@@ -2718,6 +2758,7 @@ async function __mgCalcular(desde, hasta, canal) {
       if (err) { try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {} throw err; }
       res.__local = { ms: Date.now() - t0, vueltas: vuelta + 1, viajes: viajes, inversion: window.__mgInvInfo, canal: __MG_CANAL };
       try { res.__local.reparto = __mgRepartir(res); } catch (eR) { res.__local.reparto = { error: String(eR && eR.message || eR) }; }
+      try { res.__local.envioPago = await __mgEnvioPago(res); } catch (eE) { res.__local.envioPago = { error: String(eE && eE.message || eE) }; }
       try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {}
       return res;
     }
