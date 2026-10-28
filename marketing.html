@@ -9382,6 +9382,9 @@ function invPintar(){
   let h = '<div class="inv">';
   if (INV.err) h += '<div class="inv-msg mal"><span>' + _invQ(INV.err) + '</span></div>';
   if (INV.msg) h += '<div class="inv-msg' + (INV.mal ? ' mal' : '') + '"><span>' + _invQ(INV.msg) + '</span><button type="button" title="Cerrar" onclick="INV.msg=\'\';invPintar()">✕</button></div>';
+  h += _invTabs(prop.length);   /* 27-oct (3) · pestañas de Investigación */
+  if (INV.tab === 'gan') { el.innerHTML = h + _invGanHtml() + '</div>'; return; }
+  if (INV.tab === 'kw') { el.innerHTML = h + _invKwHtml() + '</div>'; return; }
   h += '<div class="inv-kpis">' + K(prop.length, 'Ideas por aprobar') + K(apr.length, 'Aprobadas') + K(aire.length + ' · ' + pct(aire.length, apr.length), 'Al aire')
      + K(venden.length + ' · ' + pct(venden.length, aire.length), 'Venden') + K(gan.length, 'Ganadores de otras marcas') + K((INV.marcas || []).length + ' · ' + nuevas + ' nuevas', 'Marcas vigiladas') + '</div>';
   /* 1 · ideas esperando a Pablo */
@@ -9429,5 +9432,100 @@ function invPintar(){
 document.addEventListener('DOMContentLoaded', function(){ if (!MK_RESUMEN && !MK_LIQ) setTimeout(function(){ invCargar().catch(function(){}); }, 4000); });
 </script>
 
+<script>
+/* ── 27-oct (3) · 🏆 BIBLIOTECA DE GANADORES + 🔑 PALABRAS CLAVE Y CRITERIOS (pedido de Pablo) ──
+   Se cosechan de la Biblioteca de anuncios de Meta con SUS criterios (mk_inv_criterios) y SUS palabras clave por prenda e idioma (mk_inv_palabras).
+   Ganador = de moda (relevante) + activo hace min_dias o más + página con min_seguidores o más. Las imágenes viven en publico/inv/<ad_id>.jpg. */
+INV.tab = INV.tab || 'ideas'; INV.gf = INV.gf || { prenda:'', idioma:'', solo:true, orden:'puntaje' }; INV.pal = INV.pal || null; INV.crit = INV.crit || null;
+async function invCargarKw(){
+  try { const [p, c] = await Promise.all([_mklSb('/rest/v1/mk_inv_palabras?select=*&order=prenda,idioma,palabra'), _mklSb('/rest/v1/mk_inv_criterios?select=*&order=clave')]);
+    INV.pal = Array.isArray(p) ? p : []; INV.crit = Array.isArray(c) ? c : []; } catch (e) { INV.pal = INV.pal || []; INV.crit = INV.crit || []; }
+}
+function _invCrit(k, d){ const x = (INV.crit || []).find(c => c.clave === k); return x ? x.valor : d; }
+function _invSeg(r){ return Math.max(+r.seguidores_fb || 0, +r.seguidores_ig || 0); }
+function _invEsGan(r){ return r.relevante !== false && (_invDias(r.inicio) || 0) >= +_invCrit('min_dias', 30) && _invSeg(r) >= +_invCrit('min_seguidores', 10000); }
+function _invK(n){ n = +n || 0; return n >= 1e6 ? (n / 1e6).toFixed(1).replace('.0', '') + ' M' : n >= 1e3 ? Math.round(n / 1e3) + ' mil' : String(n); }
+const INV_PRENDAS = { pantalon:'👖 Pantalón', blazer:'🧥 Blazer', conjunto:'👔 Conjunto', blusa:'👚 Blusa', otro:'Otros' };
+const INV_IDIOMAS = { es:'Español', pt:'Portugués', en:'Inglés', it:'Italiano', fr:'Francés' };
+const INV_OFERTAS = [
+  ['Envío gratis', /env[ií]o gratis|frete gr[aá]tis|free shipping|livraison gratuite|spedizione gratuita/i],
+  ['Cuotas sin interés', /cuotas sin inter|sem juros|parcel/i],
+  ['% de descuento', /\d+ ?% ?(off|dcto|desc)|descuento|desconto|\boff\b|sconto|réduction/i],
+  ['Cupón primera compra', /primera compra|primeira compra|cupom|cup[oó]n|first order/i],
+  ['Pago contra entrega', /contra ?entrega|contraentrega|cash on delivery/i],
+  ['Precio a la vista', /S\/ ?\d|R\$ ?\d|ARS ?\d|€ ?\d|\$ ?\d/i],
+  ['Cashback', /cashback/i],
+  ['Pocas unidades / urgencia', /pocas unidades|últimas|ultimas|enquanto durar|limited|por tiempo/i]];
+function _invTxt(r){ return [r.copy, r.cta_titulo, r.cta_desc, r.titulo].filter(Boolean).join(' '); }
+function _invDestino(r){ const d = String(r.destino || '').toUpperCase(); return /WHATSAPP/.test(d) || /WhatsApp/i.test(r.boton || '') ? 'WhatsApp' : /INSTAGRAM/.test(d) ? 'Instagram' : d ? 'Web' : '—'; }
+function _invTabs(nIdeas){
+  const n = (INV.refs || []).filter(_invEsGan).length;
+  const B = (k, t) => '<button type="button" class="ib' + (INV.tab === k ? ' si' : '') + '" onclick="INV.tab=\'' + k + '\';invPintar()">' + t + '</button>';
+  return '<div style="display:flex;gap:8px;flex-wrap:wrap">' + B('ideas', '💡 Ideas para aprobar · ' + nIdeas) + B('gan', '🏆 Biblioteca de ganadores · ' + n) + B('kw', '🔑 Palabras clave y criterios') + '</div>';
+}
+function _invGanHtml(){
+  if (!INV.pal) { invCargarKw().then(() => { if (MKSUB === 'investiga' && INV.tab === 'gan') invPintar(); }); }
+  const F = INV.gf, hoy = (INV.refs || []);
+  let L = hoy.filter(r => (!F.prenda || r.prenda === F.prenda) && (!F.idioma || r.idioma === F.idioma) && (!F.solo || _invEsGan(r)));
+  const ord = { puntaje: r => -(+r.puntaje || 0), dias: r => -(_invDias(r.inicio) || 0), seg: r => -_invSeg(r), impr: r => (+r.rank_impr || 999) };
+  L.sort((a, b) => ord[F.orden](a) - ord[F.orden](b));
+  const chip = (campo, v, t) => '<button type="button" class="ib' + (F[campo] === v ? ' si' : '') + '" onclick="INV.gf.' + campo + '=\'' + v + '\';invPintar()">' + t + '</button>';
+  let h = '<div class="inv-b"><div class="inv-h"><b>Biblioteca de ganadores</b><span class="inv-n">Meta · activos · desde ' + _invQ(_invCrit('desde', '2025-01-01')) + ' · imágenes · Facebook e Instagram · por impresiones · ganador = ' + _invQ(_invCrit('min_dias', 30)) + '+ días y ' + _invK(_invCrit('min_seguidores', 10000)) + '+ seguidores</span></div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">' + chip('prenda', '', 'Todas') + Object.keys(INV_PRENDAS).map(k => chip('prenda', k, INV_PRENDAS[k])).join('') + '</div>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' + chip('idioma', '', 'Todos los idiomas') + Object.keys(INV_IDIOMAS).map(k => chip('idioma', k, INV_IDIOMAS[k])).join('')
+    + '<span style="flex:1"></span><button type="button" class="ib' + (F.solo ? ' si' : '') + '" onclick="INV.gf.solo=!INV.gf.solo;invPintar()">' + (F.solo ? '🏆 Solo ganadores' : 'Todos los cosechados') + '</button>'
+    + '<select class="ib" onchange="INV.gf.orden=this.value;invPintar()">' + [['puntaje','Orden: puntaje'],['dias','Orden: más días activo'],['seg','Orden: más seguidores'],['impr','Orden: más impresiones']].map(o => '<option value="' + o[0] + '"' + (F.orden === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></div></div>';
+  /* patrones de lo que se ve: a dónde llevan, qué dice el botón, qué ofertas usan */
+  const G = L.filter(_invEsGan), N = G.length || 1;
+  const cuenta = f => { const M = {}; G.forEach(r => { const k = f(r); if (k) M[k] = (M[k] || 0) + 1; }); return Object.entries(M).sort((a, b) => b[1] - a[1]).slice(0, 5); };
+  const fila = (t, A) => '<div style="flex:1;min-width:230px"><div class="inv-n" style="text-transform:uppercase;font-size:11px;margin-bottom:6px">' + t + '</div>' + (A.length ? A.map(([k, n]) => '<div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0"><span>' + _invQ(k) + '</span><span class="inv-n">' + n + ' de ' + G.length + ' · ' + Math.round(n * 100 / N) + '%</span></div>').join('') : '<div class="inv-n">—</div>') + '</div>';
+  const ofertas = INV_OFERTAS.map(([t, re]) => [t, G.filter(r => re.test(_invTxt(r))).length]).filter(x => x[1]).sort((a, b) => b[1] - a[1]);
+  h += '<div class="inv-b"><div class="inv-h"><b>Patrones de los ganadores</b><span class="inv-n">' + G.length + ' ganadores con este filtro</span></div><div style="display:flex;gap:18px;flex-wrap:wrap">'
+    + fila('A dónde llevan', cuenta(_invDestino)) + fila('Qué dice el botón (CTA)', cuenta(r => r.boton)) + fila('Ofertas en el texto', ofertas) + fila('País', cuenta(r => r.pais)) + '</div></div>';
+  h += L.length ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px">' + L.slice(0, 100).map(r => {
+    const d = _invDias(r.inicio), g = _invEsGan(r), of = INV_OFERTAS.filter(([, re]) => re.test(_invTxt(r))).map(o => o[0]);
+    return '<div class="inv-b" style="padding:10px;display:flex;flex-direction:column;gap:6px">'
+      + '<a href="' + _invQ(r.snapshot_url) + '" target="_blank" rel="noopener" style="display:block;height:300px;background:#fff;border-radius:8px;overflow:hidden">' + (r.imagen ? '<img src="' + _invQ(r.imagen) + '" loading="lazy" style="width:100%;height:100%;object-fit:contain" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{textContent:\'Ver imagen en Meta ↗\',style:\'display:flex;height:100%;align-items:center;justify-content:center;color:#555;font-size:12px\'}))">' : '<span style="display:flex;height:100%;align-items:center;justify-content:center;color:#555;font-size:12px">Ver imagen en Meta ↗</span>') + '</a>'
+      + '<div style="display:flex;justify-content:space-between;gap:6px;align-items:baseline"><b style="font-size:13px">' + _invQ(r.marca) + '</b><span class="inv-n">' + _invQ(r.pais || '') + '</span></div>'
+      + '<div style="display:flex;gap:4px;flex-wrap:wrap">' + (g ? '<span class="chip ok">🏆 ganador</span>' : '') + (d != null ? '<span class="chip ' + (d >= 30 ? 'ok' : 'am') + '">' + d + ' días</span>' : '') + (_invSeg(r) ? '<span class="chip">' + _invK(_invSeg(r)) + ' seguidores</span>' : '') + (r.rank_impr ? '<span class="chip">#' + r.rank_impr + ' impresiones</span>' : '') + '</div>'
+      + '<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="chip am">→ ' + _invDestino(r) + '</span>' + (r.boton ? '<span class="chip">' + _invQ(r.boton) + '</span>' : '') + of.map(o => '<span class="chip no">' + o + '</span>').join('') + '</div>'
+      + (r.cta_titulo ? '<div style="font-size:13px;font-weight:600">' + _invQ(String(r.cta_titulo).slice(0, 80)) + '</div>' : '')
+      + '<div class="inv-n" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden">' + _invQ(r.copy || '') + '</div>'
+      + '<div class="inv-n">' + _invQ(INV_PRENDAS[r.prenda] || '') + (r.palabra ? ' · «' + _invQ(r.palabra) + '»' : '') + (r.categoria ? ' · ' + _invQ(r.categoria) : '') + '</div></div>'; }).join('') + '</div>'
+    : '<div class="inv-b"><div class="inv-n">Nada con este filtro. Prueba «Todos los cosechados» u otra prenda.</div></div>';
+  return h;
+}
+function _invUrlMeta(p){
+  return 'https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&q=' + encodeURIComponent(p.palabra) + '&search_type=keyword_unordered&media_type=image&publisher_platforms[0]=facebook&publisher_platforms[1]=instagram&content_languages[0]=' + p.idioma + '&start_date[min]=' + encodeURIComponent(_invCrit('desde', '2025-01-01')) + '&sort_data[mode]=total_impressions&sort_data[direction]=desc';
+}
+async function invKwGuardar(id, act){
+  try { await _plRpc('mk_inv_palabra_guardar', { p_id: id, p_palabra: null, p_idioma: null, p_prenda: null, p_activa: act }); await invCargarKw(); } catch (e) { INV.msg = 'No se guardó: ' + e.message; INV.mal = true; }
+  invPintar();
+}
+async function invKwNueva(){
+  const pal = (document.getElementById('invKwP') || {}).value, idi = (document.getElementById('invKwI') || {}).value, pre = (document.getElementById('invKwR') || {}).value;
+  if (!String(pal || '').trim()) return;
+  try { await _plRpc('mk_inv_palabra_guardar', { p_id: null, p_palabra: pal, p_idioma: idi, p_prenda: pre, p_activa: true }); await invCargarKw(); INV.msg = 'Palabra agregada: la usa la próxima investigación.'; INV.mal = false; } catch (e) { INV.msg = 'No se guardó: ' + e.message; INV.mal = true; }
+  invPintar();
+}
+async function invCritGuardar(k){
+  const v = (document.getElementById('invCr_' + k) || {}).value;
+  try { await _plRpc('mk_inv_criterio_guardar', { p_clave: k, p_valor: v }); await invCargarKw(); INV.msg = 'Criterio guardado.'; INV.mal = false; } catch (e) { INV.msg = 'No se guardó: ' + e.message; INV.mal = true; }
+  invPintar();
+}
+function _invKwHtml(){
+  if (!INV.pal) { invCargarKw().then(() => { if (MKSUB === 'investiga' && INV.tab === 'kw') invPintar(); }); return '<div class="inv-n">Cargando…</div>'; }
+  let h = '<div class="inv-b"><div class="inv-h"><b>Criterios de búsqueda</b><span class="inv-n">los usa la investigación de cada lunes</span></div><table><tbody>'
+    + (INV.crit || []).map(c => '<tr><td>' + _invQ(c.que_es || c.clave) + '</td><td style="width:260px"><input id="invCr_' + _invQ(c.clave) + '" class="ib" style="width:100%" value="' + _invQ(c.valor) + '"></td><td class="n"><button type="button" class="ib" onclick="invCritGuardar(\'' + _invQ(c.clave) + '\')">Guardar</button></td></tr>').join('') + '</tbody></table></div>';
+  h += '<div class="inv-b"><div class="inv-h"><b>Palabras clave por prenda e idioma</b><span class="inv-n">Claude sugiere · tú apagas o agregas · el enlace abre la búsqueda en Meta con tus filtros</span></div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"><input id="invKwP" class="ib" placeholder="Nueva palabra clave" style="min-width:220px"><select id="invKwI" class="ib">' + Object.keys(INV_IDIOMAS).map(k => '<option value="' + k + '">' + INV_IDIOMAS[k] + '</option>').join('') + '</select><select id="invKwR" class="ib">' + Object.keys(INV_PRENDAS).map(k => '<option value="' + k + '">' + INV_PRENDAS[k] + '</option>').join('') + '</select><button type="button" class="ib si" onclick="invKwNueva()">➕ Agregar</button></div>'
+    + '<table><thead><tr><th>Prenda</th><th>Palabra clave</th><th>Idioma</th><th class="n">Anuncios</th><th class="n">De moda</th><th class="n">Ganadores</th><th>Último uso</th><th></th></tr></thead><tbody>'
+    + (INV.pal || []).map(p => { const gan = (INV.refs || []).filter(r => r.palabra === p.palabra && _invEsGan(r)).length;
+      return '<tr style="' + (p.activa ? '' : 'opacity:.45') + '"><td>' + _invQ(INV_PRENDAS[p.prenda] || p.prenda) + '</td><td><a href="' + _invQ(_invUrlMeta(p)) + '" target="_blank" rel="noopener">' + _invQ(p.palabra) + ' ↗</a></td><td>' + _invQ(INV_IDIOMAS[p.idioma] || p.idioma) + '</td>'
+        + '<td class="n">' + (p.tarjetas != null ? p.tarjetas : '—') + '</td><td class="n">' + (p.de_moda != null ? p.de_moda : '—') + '</td><td class="n">' + (gan || (p.ganadores != null ? p.ganadores : '—')) + '</td><td class="inv-n">' + (p.ultimo_uso ? String(p.ultimo_uso).slice(0, 10) : 'sin usar') + '</td>'
+        + '<td class="n"><button type="button" class="ib" onclick="invKwGuardar(' + p.id + ',' + (!p.activa) + ')">' + (p.activa ? 'Apagar' : 'Encender') + '</button></td></tr>'; }).join('') + '</tbody></table></div>';
+  return h;
+}
+</script>
 </body>
 </html>
