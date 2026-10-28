@@ -2579,6 +2579,7 @@ async function __bajar(f) {
 }
 // 27-oct (Pablo) · CANAL del Margen: 'wsp' (WhatsApp, como siempre) · 'web' (Página web) · 'todos'. Lo fija margenLocalCalcular(desde, hasta, canal).
 var __MG_CANAL = 'wsp';
+var __MG_INV_FILAS = [];   // 28-oct · gasto por ANUNCIO del canal (para repartirlo entre lo que ese anuncio vendió)
 // 26-oct · inversión automática: gasto de Meta del rango, por anuncio → producto (2.ª parte del nombre: «Con Catalina» = CONJUNTO CATALINA).
 // El Margen cuenta solo ventas de WhatsApp: los anuncios de la WEB no entran (se informan aparte). Sin producto reconocible → VARIOS (no atribuible).
 var __MG_ABR = { PAN:'PANTALON', BLA:'BLAZER', BLU:'BLUSA', CON:'CONJUNTO', ABR:'ABRIGO', GAB:'GABARDINA', VES:'VESTIDO', CHA:'CHALECO', TOP:'TOP', FAL:'FALDA',
@@ -2595,12 +2596,14 @@ async function __mgInvAutoCargar(desde, hasta) {
   var r = await fetch(SB_URL + '/rest/v1/rpc/margen_inversion_auto', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
     body: JSON.stringify({ p_desde: desde, p_hasta: hasta }) });
   if (!r.ok) throw new Error('margen_inversion_auto ' + r.status);
+  __MG_INV_FILAS = [];
   var j = await r.json(), F = (j && j.filas) || [], acc = {}, info = { fuente: 'Meta (automático)', total: 0, web: 0, sinProducto: 0, ultimo: j && j.ultimo, n: F.length };
   F.forEach(function (x) { var g = +x.gasto || 0; if (!(g > 0)) return;
     var _w = __mgEsWeb(x);   /* 27-oct · por canal: wsp = sin anuncios web · web = solo anuncios web · todos = todo */
     if (__MG_CANAL === 'wsp' && _w) { info.web += g; return; }
     if (__MG_CANAL === 'web' && !_w) { info.wsp = (info.wsp || 0) + g; return; }
     var prod = __mgProdDeAnuncio(x.anuncio); if (!prod) { prod = 'VARIOS'; info.sinProducto += g; }
+    __MG_INV_FILAS.push({ anuncio: String(x.anuncio || '').trim(), gasto: g, prod: prod });
     acc[prod] = (acc[prod] || 0) + g; info.total += g; });
   var mes = String(desde).slice(0, 7);
   info.canal = __MG_CANAL; window.__mgInvInfo = info;
@@ -2613,6 +2616,61 @@ window.margenLocalCalcular = function (desde, hasta, canal) {
   __mgCola = p.catch(function () {});
   return p;
 };
+/* 28-oct (Pablo aprobó «la forma de los referentes») · EL GASTO SIGUE A LO QUE SE VENDIÓ.
+   Antes: la venta se contaba en el producto comprado y el gasto en el producto del NOMBRE del anuncio → el Conjunto Mirella
+   (comprado entrando por anuncios del pantalón y del blazer) salía con CPA S/ 13. Ahora el gasto de CADA anuncio se reparte
+   entre los productos de los pedidos que ESE anuncio trajo, según lo que pesó cada pedido en soles (como Triple Whale:
+   «Ad spend gets attributed to each product in proportion to its share»). Si el anuncio no vendió nada en el período, su gasto
+   se queda en su producto (o en VARIOS si su nombre no dice producto). Las ventas, ingresos, costos y el total de inversión
+   NO cambian: solo dónde cae cada sol de inversión. */
+function __mgRepartir(res) {
+  if (!res || !Array.isArray(res.productos) || !__MG_INV_FILAS.length || !_MARGEN_ULTIMAS_FILAS) return { aplicado: false, motivo: 'sin datos' };
+  var cfgP = _configProductos_(), activos = cfgP.activos, conjuntos = cfgP.conjuntos;
+  var adDe = {};   // nro → nombre del anuncio (de erp.v_compras_ads, ya filtrada por canal)
+  Object.keys(__RUTAS).forEach(function (k) { if (k.indexOf('GET v_compras_ads?') !== 0) return;
+    try { (JSON.parse(__RUTAS[k].body || '[]') || []).forEach(function (x) { var n = String(x.numero != null ? x.numero : '').trim(); if (n && x.ad_name) adDe[n] = String(x.ad_name).trim(); }); } catch (_) {} });
+  var vivos = {}; res.productos.forEach(function (r) { if (r.Ventas > 0) vivos[r.Producto] = r; });
+  var por = {}; _MARGEN_ULTIMAS_FILAS.forEach(function (f) { var n = String(f.NroPedido).trim(), pr = String(f.Prenda || '').trim().toUpperCase(); if (pr.indexOf('CAMBIO') === 0) return; (por[n] = por[n] || []).push(f); });
+  var ped = {};   // nro → { prod principal (MISMA regla que el motor), ingreso }
+  Object.keys(por).forEach(function (n) {
+    var L = por[n], prods = [], lpp = {};
+    L.forEach(function (l) { var b = _productoBase_(l.Prenda, activos); if (!b) return; prods.push(b); (lpp[b] = lpp[b] || []).push(l); });
+    prods = _aplicarConjuntos_(prods, conjuntos);
+    if (!prods.length) prods = ['OTROS (SIN PRODUCTO)'];
+    var mej = prods[0], mv = -1;
+    if (prods.length > 1) prods.forEach(function (pp) { var ls = lpp[pp], v = ls ? ls.reduce(function (a, l) { return a + _toFloat_(l.PrecioUnit); }, 0) : Infinity; if (v > mv) { mv = v; mej = pp; } });
+    if (!vivos[mej]) return;   // el motor no contó este pedido en el período
+    ped[n] = { prod: mej, ing: L.reduce(function (a, l) { return a + _toFloat_(l.PrecioUnit); }, 0) };
+  });
+  var porAd = {}; Object.keys(ped).forEach(function (n) { var a = adDe[n]; if (a) (porAd[a] = porAd[a] || []).push(n); });
+  var inv = {}, propia = {}, atrib = {}, repartido = 0, quedo = 0;
+  __MG_INV_FILAS.forEach(function (x) {
+    var os = porAd[x.anuncio] || [], T = os.reduce(function (a, n) { return a + ped[n].ing; }, 0);
+    if (!os.length || !(T > 0)) { inv[x.prod] = (inv[x.prod] || 0) + x.gasto; propia[x.prod] = (propia[x.prod] || 0) + x.gasto; quedo += x.gasto; return; }
+    os.forEach(function (n) { var p = ped[n].prod, m = x.gasto * ped[n].ing / T; inv[p] = (inv[p] || 0) + m;
+      if (p === x.prod) propia[p] = (propia[p] || 0) + m; else atrib[p] = (atrib[p] || 0) + m; });
+    repartido += x.gasto;
+  });
+  var r2 = function (v) { return Math.round(v * 100) / 100; }, idx = {};
+  res.productos.forEach(function (r) { idx[r.Producto] = r; });
+  Object.keys(inv).forEach(function (p) { if (!idx[p]) { idx[p] = { Producto: p, Ventas: 0, PrecioVentaProm: 0, CostoProm: 0, MargenBrutoPct: 0, InversionMetaAds: 0, CPA: 0, CPAMax: 0, Margen: 0, IngresoTotal: 0, CostoTotal: 0 }; res.productos.push(idx[p]); } });
+  res.productos.forEach(function (r) {
+    var i = inv[r.Producto] || 0; r.InversionMetaAds = r2(i); r.InversionPropia = r2(propia[r.Producto] || 0); r.InversionAtribuida = r2(atrib[r.Producto] || 0);
+    r.CPA = r.Ventas ? r2(i / r.Ventas) : 0; r.Margen = r2((r.CPAMax || 0) - r.CPA);
+  });
+  res.productos = res.productos.filter(function (r) { return r.Ventas > 0 || r.InversionMetaAds > 0; });
+  var bal = { total: 0, conVentas: 0, sinVentas: 0, noAtribuido: 0, detalleSinVentas: [], detalleNoAtribuido: [] };
+  res.productos.forEach(function (r) { var m = r.InversionMetaAds; bal.total += m; delete r.BaldeInversion;
+    if (r.Ventas > 0) { r.BaldeInversion = 'CON_VENTAS'; bal.conVentas += m; return; }
+    if (_margenEsProductoReal_(r.Producto, activos, conjuntos)) { r.BaldeInversion = 'PRODUCTO_SIN_VENTAS'; if (m > 0) { bal.sinVentas += m; bal.detalleSinVentas.push({ nombre: r.Producto, monto: r2(m) }); } return; }
+    r.BaldeInversion = 'NO_ATRIBUIBLE'; if (m > 0) { bal.noAtribuido += m; bal.detalleNoAtribuido.push({ nombre: r.Producto, monto: r2(m) }); } });
+  bal.detalleSinVentas.sort(function (a, b) { return b.monto - a.monto; }); bal.detalleNoAtribuido.sort(function (a, b) { return b.monto - a.monto; });
+  ['total', 'conVentas', 'sinVentas', 'noAtribuido'].forEach(function (k) { bal[k] = r2(bal[k]); });
+  res.inversionBaldes = bal;
+  res.productos.sort(function (a, b) { return b.Ventas - a.Ventas; });
+  var conAd = Object.keys(ped).filter(function (n) { return adDe[n]; }).length;
+  return { aplicado: true, repartido: r2(repartido), seQuedo: r2(quedo), pedidos: Object.keys(ped).length, pedidosConAnuncio: conAd };
+}
 async function __mgCalcular(desde, hasta, canal) {
   var t0 = Date.now(), viajes = 0;
   __MG_CANAL = (canal === 'web' || canal === 'todos') ? canal : 'wsp';
@@ -2630,6 +2688,7 @@ async function __mgCalcular(desde, hasta, canal) {
     if (!__FALTAN.length) {
       if (err) { try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {} throw err; }
       res.__local = { ms: Date.now() - t0, vueltas: vuelta + 1, viajes: viajes, inversion: window.__mgInvInfo, canal: __MG_CANAL };
+      try { res.__local.reparto = __mgRepartir(res); } catch (eR) { res.__local.reparto = { error: String(eR && eR.message || eR) }; }
       try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {}
       return res;
     }
