@@ -2623,12 +2623,41 @@ window.margenLocalCalcular = function (desde, hasta, canal) {
    «Ad spend gets attributed to each product in proportion to its share»). Si el anuncio no vendió nada en el período, su gasto
    se queda en su producto (o en VARIOS si su nombre no dice producto). Las ventas, ingresos, costos y el total de inversión
    NO cambian: solo dónde cae cada sol de inversión. */
+/* 28-oct (Pablo: «el Conjunto Catalina ya está registrado») · los conjuntos que están en Costos (CATEGORÍA CONJUNTOS,
+   «CATALINA (BLUSA CATALINA + PANTALON CATALINA)») también cuentan como conjunto en Margen, aunque no sean blazer + pantalón.
+   El motor solo reconocía blazer + pantalón; ahora la pieza de arriba (blusa, top, chaleco) hace de «blazer». No pisa los ya armados. */
+var __mgCfgOrig = _configProductos_;
+_configProductos_ = function () {
+  var c = __mgCfgOrig();
+  try {
+    Object.keys(__RUTAS).forEach(function (k) {
+      if (k.indexOf('GET cost_hoja') !== 0) return;
+      var a = []; try { a = JSON.parse(__RUTAS[k].body || '[]') || []; } catch (_) {}
+      a.forEach(function (x) {
+        var r = x.row_json || x; if (String(r['CATEGORÍA'] || r.CATEGORIA || '').trim().toUpperCase() !== 'CONJUNTOS') return;
+        var m = /^\s*([^()]+?)\s*\(([^)+]+)\+([^)]+)\)/.exec(String(r.MODELO || '').toUpperCase()); if (!m) return;
+        var g = m[1].trim(), p1 = m[2].trim(), p2 = m[3].trim();
+        if (c.conjuntos[g] || !c.activos[p1] || !c.activos[p2]) return;
+        var abajo1 = /^(PANTALON|FALDA|SHORT)/.test(p1), arriba = abajo1 ? p2 : p1, abajo = abajo1 ? p1 : p2;
+        c.conjuntos[g] = { BLAZER: arriba, PANTALON: abajo };
+      });
+    });
+  } catch (_) {}
+  return c;
+};
 function __mgRepartir(res) {
   if (!res || !Array.isArray(res.productos) || !__MG_INV_FILAS.length || !_MARGEN_ULTIMAS_FILAS) return { aplicado: false, motivo: 'sin datos' };
   var cfgP = _configProductos_(), activos = cfgP.activos, conjuntos = cfgP.conjuntos;
   var adDe = {};   // nro → nombre del anuncio (de erp.v_compras_ads, ya filtrada por canal)
   Object.keys(__RUTAS).forEach(function (k) { if (k.indexOf('GET v_compras_ads?') !== 0) return;
     try { (JSON.parse(__RUTAS[k].body || '[]') || []).forEach(function (x) { var n = String(x.numero != null ? x.numero : '').trim(); if (n && x.ad_name) adDe[n] = String(x.ad_name).trim(); }); } catch (_) {} });
+  /* 28-oct · nombre del anuncio con otro tipo de prenda que el catálogo («Blu Valentina» y en el catálogo es TOP VALENTINA): se usa el del catálogo */
+  __MG_INV_FILAS.forEach(function (x) {
+    if (!x.prod || x.prod === 'VARIOS' || activos[x.prod] || (x.prod.indexOf('CONJUNTO ') === 0 && conjuntos[x.prod.slice(9)])) return;
+    var d = x.prod.split(' ').slice(1).join(' '); if (!d) return;
+    var cand = Object.keys(activos).filter(function (n) { return n.split(' ').slice(1).join(' ') === d; });
+    if (cand.length === 1) x.prod = cand[0];
+  });
   var vivos = {}; res.productos.forEach(function (r) { if (r.Ventas > 0) vivos[r.Producto] = r; });
   var por = {}; _MARGEN_ULTIMAS_FILAS.forEach(function (f) { var n = String(f.NroPedido).trim(), pr = String(f.Prenda || '').trim().toUpperCase(); if (pr.indexOf('CAMBIO') === 0) return; (por[n] = por[n] || []).push(f); });
   var ped = {};   // nro → { prod principal (MISMA regla que el motor), ingreso }
