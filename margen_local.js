@@ -2567,8 +2567,18 @@ async function __bajar(f) {
   }
   var r = await fetch(SB_URL + '/rest/v1/' + f.ruta, { headers: h });
   var body = await r.text();
+  /* 27-oct · canal del Margen sobre erp.v_compras_ads: wsp = igual que siempre · web = solo PAGINA WEB · todos = las dos */
+  if (__MG_CANAL !== 'wsp' && r.status >= 200 && r.status < 300 && /^v_compras_ads\?/.test(f.ruta)) {
+    try { var _a = JSON.parse(body || '[]');
+      if (Array.isArray(_a)) { var _esW = function (x) { return String(x.canal || '').trim().toUpperCase() === 'PAGINA WEB'; };
+        if (__MG_CANAL === 'web') _a = _a.filter(_esW);
+        _a.forEach(function (x) { if (_esW(x)) x.canal = 'WEB'; });
+        body = JSON.stringify(_a); } } catch (_) {}
+  }
   __RUTAS[f.k] = { code: r.status, body: body, getResponseCode: function () { return r.status; }, getContentText: function () { return body; } };
 }
+// 27-oct (Pablo) · CANAL del Margen: 'wsp' (WhatsApp, como siempre) · 'web' (Página web) · 'todos'. Lo fija margenLocalCalcular(desde, hasta, canal).
+var __MG_CANAL = 'wsp';
 // 26-oct · inversión automática: gasto de Meta del rango, por anuncio → producto (2.ª parte del nombre: «Con Catalina» = CONJUNTO CATALINA).
 // El Margen cuenta solo ventas de WhatsApp: los anuncios de la WEB no entran (se informan aparte). Sin producto reconocible → VARIOS (no atribuible).
 var __MG_ABR = { PAN:'PANTALON', BLA:'BLAZER', BLU:'BLUSA', CON:'CONJUNTO', ABR:'ABRIGO', GAB:'GABARDINA', VES:'VESTIDO', CHA:'CHALECO', TOP:'TOP', FAL:'FALDA',
@@ -2587,15 +2597,27 @@ async function __mgInvAutoCargar(desde, hasta) {
   if (!r.ok) throw new Error('margen_inversion_auto ' + r.status);
   var j = await r.json(), F = (j && j.filas) || [], acc = {}, info = { fuente: 'Meta (automático)', total: 0, web: 0, sinProducto: 0, ultimo: j && j.ultimo, n: F.length };
   F.forEach(function (x) { var g = +x.gasto || 0; if (!(g > 0)) return;
-    if (__mgEsWeb(x)) { info.web += g; return; }
+    var _w = __mgEsWeb(x);   /* 27-oct · por canal: wsp = sin anuncios web · web = solo anuncios web · todos = todo */
+    if (__MG_CANAL === 'wsp' && _w) { info.web += g; return; }
+    if (__MG_CANAL === 'web' && !_w) { info.wsp = (info.wsp || 0) + g; return; }
     var prod = __mgProdDeAnuncio(x.anuncio); if (!prod) { prod = 'VARIOS'; info.sinProducto += g; }
     acc[prod] = (acc[prod] || 0) + g; info.total += g; });
   var mes = String(desde).slice(0, 7);
-  window.__mgInvInfo = info;
+  info.canal = __MG_CANAL; window.__mgInvInfo = info;
   return Object.keys(acc).map(function (k) { return { Mes: mes, Producto: k, InversionSoles: Math.round(acc[k] * 100) / 100 }; });
 }
-window.margenLocalCalcular = async function (desde, hasta) {
+/* 27-oct · una cuenta a la vez: Escalamiento (iframe de Marketing) y 💰 Margen pueden pedirla juntas y comparten __RUTAS/__MG_CANAL */
+var __mgCola = Promise.resolve();
+window.margenLocalCalcular = function (desde, hasta, canal) {
+  var p = __mgCola.then(function () { return __mgCalcular(desde, hasta, canal); });
+  __mgCola = p.catch(function () {});
+  return p;
+};
+async function __mgCalcular(desde, hasta, canal) {
   var t0 = Date.now(), viajes = 0;
+  __MG_CANAL = (canal === 'web' || canal === 'todos') ? canal : 'wsp';
+  /* la lista de la vista se guarda por fechas (_MRGV_MEMO): con canales distintos hay que pedirla de nuevo en cada cuenta */
+  try { if (typeof _MRGV_MEMO === 'object' && _MRGV_MEMO) Object.keys(_MRGV_MEMO).forEach(function (k) { delete _MRGV_MEMO[k]; }); } catch (_) {}
   __RUTAS = {};
   window.__mgInvAuto = null; window.__mgInvInfo = null;
   try { window.__mgInvAuto = await __mgInvAutoCargar(desde, hasta); } catch (e) { window.__mgInvInfo = { fuente: 'planilla MetaAdsInversion', error: String(e && e.message || e) }; }
@@ -2607,7 +2629,7 @@ window.margenLocalCalcular = async function (desde, hasta) {
     try { res = margenCalcular(desde, hasta); } catch (e) { err = e; }
     if (!__FALTAN.length) {
       if (err) { try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {} throw err; }
-      res.__local = { ms: Date.now() - t0, vueltas: vuelta + 1, viajes: viajes, inversion: window.__mgInvInfo };
+      res.__local = { ms: Date.now() - t0, vueltas: vuelta + 1, viajes: viajes, inversion: window.__mgInvInfo, canal: __MG_CANAL };
       try { window.__mlRutas = Object.keys(__RUTAS).map(function (k) { return __RUTAS[k].code + ' ' + k.slice(0, 90); }); } catch (_) {}
       return res;
     }
@@ -2616,6 +2638,6 @@ window.margenLocalCalcular = async function (desde, hasta) {
     await Promise.all(pedir.map(__bajar));
   }
   throw new Error('margen_local: demasiadas vueltas');
-};
+}
 
 })();

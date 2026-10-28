@@ -7318,6 +7318,7 @@ let ESC_MED = null;   /* 22-oct · fase 7: {total, seguidas, por_accion} de mk_p
 let ESC_LLEGO = {};   /* 21-oct (Pablo) · { 'blazer mirella': { n, fecha, colores } } — lo que Producción ingresó al stock en los últimos días (prod_llego_stock) */
 let ESC_CAMINO = {};   /* 21-oct · 🧵 Producción F1b: { 'BLAZER MIRELLA': { n, fecha, ordenes } } desde prod_en_camino */
 let ESC_FOCO = null, ESC_SEL = null, ESC_NODO = null, ESC_PICK = false, ESC_PICKSEL = null, ESC_REGLAS = false, ESC_DUENO = null;
+let ESC_TT = null, ESC_MGV = null, ESC_MGV_R = null, ESC_SPMSG = '';   /* 27-oct · ESC_TT = prendas vendidas por TikTok Live (14 d) · ESC_MGV = margen de lo VENDIDO por producto (el mismo motor de 💰 Margen) */
 const _ep = k => { const v = Number(ESC_P[k]); return isNaN(v) ? ESC_DEF[k] : v; };
 const ESC_COL = { verde:'#00f5a0', ama:'#ffc53d', rojo:'#ff3d6e', gris:'#6b7a90' };
 const ESC_RESP = { port:'Pablo · Ana', stock:'Ana', crea:'Heily', gana:'Paola', anun:'Heily · Paola', esc:'Paola · Ana' };
@@ -7386,7 +7387,49 @@ async function escCargar(forzar){
   ESC_CARGANDO = false;
   escPintar();
   escAlertaPublicar();   /* 20-oct · tarjeta 🚀 Escalamiento en Alertas */
+  _escExtrasCargar();    /* 27-oct · TikTok Live + margen de lo vendido (sin frenar la pantalla) */
 }
+/* 27-oct (Pablo) · 1) ventas por TikTok Live de los últimos 14 días (para «Candidatos sin pauta»)
+   2) MARGEN SINCRONIZADO: el margen de cada producto sale del MISMO motor que 💰 Margen (lo que se VENDIÓ de ese producto,
+      venga del anuncio que venga), para el período elegido arriba y con WhatsApp + Web. Antes Escalamiento sumaba lo que vendieron
+      SUS anuncios (un anuncio de Blazer Mirella que vendía el conjunto se contaba en Blazer) y por eso los dos módulos no coincidían. */
+async function _escExtrasCargar(){
+  try {
+    const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+    if (tok){
+      const d14 = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
+      const r = await fetch(MK_SB_URL + '/rest/v1/pedidos?select=prenda&eliminado=is.null&fecha_pedido=gte.' + d14 + '&row_json-%3E%3ECANAL=eq.TIKTOK&limit=20000',
+        { headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok } });
+      if (r.ok){ const L = await r.json(); if (Array.isArray(L)){ const T = {}; L.forEach(x => { const t = _mkNorm(x.prenda || '').replace(/\s+/g, ' ').trim(); if (t) T[t] = (T[t] || 0) + 1; }); ESC_TT = T; } }
+    }
+  } catch (_) {}
+  try { await _escMgvCargar(); } catch (e) { try { console.warn('[escMgv]', e); } catch (_) {} }
+  escPintar();
+}
+function _escTTde(pk){ if (!ESC_TT) return null; let n = 0; Object.keys(ESC_TT).forEach(t => { if (t === pk || t.indexOf(pk + ' ') === 0) n += ESC_TT[t]; }); return n; }
+function _escRangoMk(){
+  const v = (document.getElementById('mkPeriodo') || {}).value || 'm', sv = x => x.toLocaleDateString('sv'), h = new Date();
+  if (v === 'hoy') return [sv(h), sv(h)];
+  if (v === 'ayer'){ const a = new Date(); a.setDate(a.getDate() - 1); return [sv(a), sv(a)]; }
+  if (v === 'm') return [sv(new Date(h.getFullYear(), h.getMonth(), 1)), sv(h)];
+  if (v === 'mp') return [sv(new Date(h.getFullYear(), h.getMonth() - 1, 1)), sv(new Date(h.getFullYear(), h.getMonth(), 0))];
+  if (v === 'c'){ const a = (document.getElementById('mkDesde') || {}).value, b = (document.getElementById('mkHasta') || {}).value; if (a && b) return [a, b]; }
+  const n = +v || 30, d = new Date(); d.setDate(d.getDate() - (n - 1)); return [sv(d), sv(h)];
+}
+async function _escMgvCargar(){
+  const P = window.parent; if (!P || P === window || typeof P._mgLocalCargar !== 'function') return;
+  const [a, b] = _escRangoMk(); if (ESC_MGV && ESC_MGV_R === a + '_' + b) return;
+  if (!(await P._mgLocalCargar())) return;
+  const d = await P.margenLocalCalcular(a, b, 'todos');
+  const M = {};
+  ((d && d.productos) || []).forEach(p => { const t = _mkNorm(p.Producto || '').replace(/\s+/g, ' ').trim().split(' '); if (t.length < 2) return;
+    const k = t[0] + '|' + t.slice(1).join(' '), mc = (+p.IngresoTotal || 0) - (+p.CostoTotal || 0) - (+p.InversionMetaAds || 0);
+    M[k] = { mc, ven: +p.Ventas || 0, inv: +p.InversionMetaAds || 0 }; });
+  ESC_MGV = M; ESC_MGV_R = a + '_' + b;
+}
+/* margen y ventas que manda: los de lo VENDIDO (💰 Margen) cuando ya cargaron; si no, los de sus anuncios como antes */
+function _escMcOf(f){ return ESC_MGV ? ((ESC_MGV[f.k] || {}).mc != null ? ESC_MGV[f.k].mc : 0) : f.mc; }
+function _escVenOf(f){ return ESC_MGV ? ((ESC_MGV[f.k] || {}).ven || 0) : f.venv; }
 /* ── 20-oct · DEMANDA FANTASMA: clientas que tocaron una talla agotada en la web (PostHog) o la pidieron por WhatsApp.
    df_resumen trae el handle de Shopify (blazer-ejecutivo-mirella, conjunto-mirella, pantalon-recto-atenas-copia…):
    se reconoce el DISEÑO (nombre que existe en Stock) y la PRENDA (blazer, pantalón…); un «conjunto-X» sin prendas nombradas
@@ -7674,7 +7717,8 @@ function _escConv(filas, canal){
 /* 20-oct 19h (Pablo) · prioridad = mayor margen de contribución entre los que TIENEN STOCK para escalar (stock verde o amarillo);
    los de stock rojo o sin stock van después aunque tengan más margen */
 function escSugeridos(F){ const conSt = f => (f.stock && (f.stock.col === 'verde' || f.stock.col === 'ama')) ? 1 : 0;
-  return F.filter(f => f.venv >= _ep('esc_sug_ventas') && f.mc > 0).sort((a, b) => (conSt(b) - conSt(a)) || (b.mc - a.mc)).slice(0, _ep('esc_portafolio')); }
+  const mcOf = f => (typeof _escMcOf === 'function' ? _escMcOf(f) : f.mc), venOf = f => (typeof _escVenOf === 'function' ? _escVenOf(f) : f.venv);   /* 27-oct · margen de lo vendido (💰 Margen) */
+  return F.filter(f => venOf(f) >= _ep('esc_sug_ventas') && mcOf(f) > 0).sort((a, b) => (conSt(b) - conSt(a)) || (mcOf(b) - mcOf(a))).slice(0, _ep('esc_portafolio')); }
 function escFilas(){
   if (!MK || !MK.filas) return [];
   ESC_DUENO = null;
@@ -8227,7 +8271,7 @@ function escPintar(cambio){
   let h = '<div class="esx">';
   /* cabecera + paso 0 · ¿hay 3 productos ganadores? */
   h += '<div class="esx-top"><span class="esx-tit">ESCALAMIENTO</span>'
-     + '<span class="esx-port" style="--g:' + ESC_COL[colP] + '" title="Producto ganador = margen de contribución mayor a 0 con ' + _ep('esc_sug_ventas') + '+ ventas">'
+     + '<span class="esx-port" style="--g:' + ESC_COL[colP] + '" title="Producto ganador = margen de contribución de lo VENDIDO en el período (el mismo número de 💰 Margen, WhatsApp + Web) mayor a 0 con ' + _ep('esc_sug_ventas') + '+ ventas">'
      + '<b>' + nG + '/' + meta + '</b> PRODUCTOS GANADORES' + Array.from({ length: meta }, (_, i) => '<i class="' + (i < nG ? 'on' : '') + '"></i>').join('')
      + (nG < meta ? '<em>→ BENCHMARKING DE MODELOS · MUESTRAS · ' + ESC_RESP.port + '</em>' : '') + '</span>'
      + (fuera ? '<span class="esx-pill esx-sug" onclick="ESC_PICK=true;ESC_PICKSEL=null;escPintar()">★ ' + fuera + ' sugerido' + (fuera > 1 ? 's' : '') + ' fuera</span>' : '')
@@ -8238,12 +8282,12 @@ function escPintar(cambio){
   try { h += (typeof _escResumenHtml === 'function' ? _escResumenHtml() : _escTareasHtml()); } catch (e) { try { console.warn('[escTareas]', e); } catch (_) {} }   /* 26-oct (Pablo) · primero el Resumen; los demás bloques van debajo de la prenda elegida */   /* 21-oct · Mis tareas */
   const f = L.find(x => x.k === ESC_SEL);
   if (!f) h += '<div class="esx-load">ELIGE TUS PRODUCTOS EN FOCO (✦ ELEGIR)</div>';
-  else if (f.vacio) h += '<div class="esx-load">' + esc(f.nombre) + ': SIN ANUNCIOS EN EL PERIODO</div>';
+  else if (f.vacio) h += _escCandHtml(f);   /* 27-oct · producto en foco SIN anuncios (p. ej. viene de TikTok Live): qué hacer para lanzarlo */
   else {
     const foco = ESC_NODO || _escUrgente(f);
     h += '<div class="esx-stage' + (cambio ? ' esx-entra' : '') + '">';
     h += '<div class="esx-prod">' + (f.img ? '<img src="' + esc(f.img) + '" alt="">' : '<div class="esx-noimg">' + esc(f.nombre.charAt(0)) + '</div>')
-       + '<div><b>' + esc(f.nombre) + '</b><span>' + (SUG.some(s => s.k === f.k) ? '★ ganador · ' : '') + 'margen S/ ' + mkNum(f.mc) + '</span>'
+       + '<div><b>' + esc(f.nombre) + '</b><span>' + (SUG.some(s => s.k === f.k) ? '★ ganador · ' : '') + 'margen S/ ' + mkNum(_escMcOf(f)) + (ESC_MGV ? ' · lo vendido en el período (igual que 💰 Margen)' : '') + '</span>'
        + '<a href="#" class="esx-ver" style="font-size:12px;color:var(--accent,#7c5cff);font-weight:600;text-decoration:none;display:inline-block;margin-top:3px" onclick="event.preventDefault();escVerAnuncios(\'' + esc(f.k).replace(/'/g, "\\'") + '\')">📣 Ver sus ' + f.filas.length + ' anuncios →</a></div></div>';
     const [fc, fx] = String(foco || '').split('|');
     const ln0 = f.lanes.find(l => !l.vacio);
@@ -8953,27 +8997,38 @@ function _escLiqLista(){
    Fuerte = 6+ prendas en 14 días (criterio propio, editable aquí). Misma cuenta de stock y propuesta de confección (en número par) que el resto. */
 const ESC_SP_MIN14 = 6;
 function _escSinPautaLista(){
+  /* 27-oct (Pablo) · «productos con más acogida que NO tienen pauta» = candidatos para lanzar en Meta. Se agrupa por DISEÑO
+     (Blazer Paula + Pantalón Paula = Conjunto Paula), se ordena primero por TikTok Live (14 d) y después por ventas totales.
+     Sin el filtro de «1.5× la mediana»: dejaba fuera a Paula y Cloe. Mínimo ESC_SP_MIN14 prendas en 14 días (criterio propio). */
   if (!ESC_STOCK || !ESC_STOCK.length) return [];
   const cub = new Set();
-  try { ((MK && MK.filas) || []).filter(r => (+((r.act && r.act.gasto) || r.gasto) || 0) > 0).forEach(r =>   /* 27-oct · el gasto viene en r.act.gasto (antes leía r.gasto = vacío y todo salía «sin pauta») */ { const k = _escClave(r); if (!k) return; const [t, m] = k.split('|');
+  try { ((MK && MK.filas) || []).filter(r => (+((r.act && r.act.gasto) || r.gasto) || 0) > 0).forEach(r => { const k = _escClave(r); if (!k) return; const [t, m] = k.split('|');
     _escPiezas(t, m).forEach(pz => cub.add(_mkNorm(pz.p + ' ' + pz.d).trim())); }); } catch (_) {}
-  const out = [];
+  const G = {};
   ESC_STOCK.forEach(pz => {
     if (!(pz.x || []).length || _escEsComp(pz.p)) return;
     const pk = _mkNorm(pz.p + ' ' + pz.d).trim(); if (cub.has(pk)) return;
     const v14 = pz.x.reduce((a, x) => a + (x.length > 5 && x[5] != null ? +x[5] || 0 : (+x[3] || 0) / 2), 0);
-    if (v14 < ESC_SP_MIN14) return;
-    let st = null; try { st = _escStock([pz], null); } catch (_) {}
-    if (!st || !st.piezas || !st.piezas.length) return;
-    out.push({ pz, pk, v14: Math.round(v14), st });
+    const d = _mkNorm(pz.d).trim(); const g = G[d] = G[d] || { d, pzs: [], v14: 0, tt: 0 };
+    g.pzs.push(Object.assign({ _v: v14 }, pz)); g.v14 += v14; g.tt += _escTTde(pk) || 0;
   });
-  out.sort((a, b) => b.v14 - a.v14);
-  /* 26-oct (Pablo: «no pueden ser todos ganadores») · solo los que sobresalen: máximo 5 y con 1.5× o más la mediana del grupo (criterio propio) */
-  if (out.length > 1) { const vs = out.map(x => x.v14).sort((a, b) => a - b), med = vs[Math.floor(vs.length / 2)];
-    return out.filter(x => x.v14 >= ESC_SP_SOBRE * med).slice(0, ESC_SP_MAX); }
-  return out;
+  const cap = t => String(t || '').toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase());
+  const out = [];
+  Object.values(G).forEach(g => {
+    if (g.v14 < ESC_SP_MIN14) return;
+    let st = null; try { st = _escStock(g.pzs, null); } catch (_) {}
+    if (!st || !st.piezas || !st.piezas.length) return;
+    const tipos = g.pzs.map(p => _mkNorm(p.p).trim());
+    const conj = tipos.some(t => /^(blazer|chaleco)/.test(t)) && tipos.some(t => /^(pantalon|falda)/.test(t));
+    const main = g.pzs.slice().sort((a, b) => b._v - a._v)[0], tipo = conj ? 'conjunto' : _mkNorm(main.p).trim();
+    const k = tipo + '|' + g.d;
+    out.push({ k, nombre: cap(tipo + ' ' + g.d), pz: { p: conj ? 'CONJUNTO' : main.p, d: main.d, x: [].concat.apply([], g.pzs.map(p => p.x)) }, pk: tipo + ' ' + g.d,
+               v14: Math.round(g.v14), tt: ESC_TT ? g.tt : null, st, pzs: g.pzs });
+  });
+  out.sort((a, b) => ((b.tt || 0) - (a.tt || 0)) || (b.v14 - a.v14));
+  return out.slice(0, ESC_SP_MAX);
 }
-const ESC_SP_MAX = 5, ESC_SP_SOBRE = 1.5;
+const ESC_SP_MAX = 6, ESC_SP_SOBRE = 1.5;   /* 27-oct · hasta 6 candidatos (ESC_SP_SOBRE ya no se usa) */
 function _escSinPautaHtml(){
   let L = []; try { L = _escSinPautaLista(); } catch (_) { L = []; } if (!L.length) return '';
   const cap = s => String(s || '').toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase()), riesgo = L.filter(x => x.st.col !== 'verde').length;
@@ -8982,12 +9037,14 @@ function _escSinPautaHtml(){
   const fila = (x, i) => { const st = x.st, c = ESC_COL[st.col] || ESC_COL.gris, stock = (x.pz.x || []).reduce((a, r) => a + (+r[2] || 0), 0);
     return '<tr onclick="const d=document.getElementById(\'esx-sp-' + i + '\');if(d)d.style.display=d.style.display===\'none\'?\'\':\'none\'"><th style="white-space:nowrap">'
       + '<i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + c + ';margin-right:6px"></i>' + esc(cap(x.pz.p) + ' ' + cap(x.pz.d)) + '</th>'
-      + '<td>' + x.v14 + '</td><td>' + stock + '</td><td>' + esc(st.big) + '</td><td style="color:' + c + ';font-weight:600">' + (RIE[st.col] || '—') + '</td>'
-      + '<td>' + (st.tot > 0 ? 'confeccionar <b>' + st.tot + '</b> ▸' : '<span class="m">no hace falta</span>') + '</td></tr>'
-      + (st.tot > 0 ? '<tr id="esx-sp-' + i + '" style="display:none"><td colspan="6" style="text-align:left;white-space:normal;color:#8aa0c8;font-size:12px">' + esc(_escLoteTxt(st.lote).replace(/^: /, '')) + '</td></tr>' : ''); };
-  return '<details class="esx-tar esx-liq esx-sp"' + (riesgo ? ' open' : '') + '><summary><b>🔥 GANADORES SIN PAUTA</b><span>' + _escPl(L.length, 'producto sobresale', 'productos sobresalen') + ' sin anuncio (TikTok Live, orgánico) · ' + riesgo + ' con riesgo de quiebre</span></summary>'
-    + '<table class="esx-res"><thead><tr><th>Producto</th><th>Vendidas 14 d</th><th>Stock actual</th><th>Días que alcanza</th><th>Riesgo</th><th>Propuesta de confección</th></tr></thead><tbody>' + L.map(fila).join('') + '</tbody></table>'
-    + '<div class="esx-lt-n">Los ' + ESC_SP_MAX + ' que más se venden sin anuncio (' + ESC_SP_MIN14 + '+ prendas en 14 días y ' + ESC_SP_SOBRE + '× o más el promedio del grupo) · toca una fila para ver qué colores y tallas confeccionar · criterio propio</div></details>';
+      + '<td>' + (x.tt == null ? '—' : x.tt) + '</td><td>' + x.v14 + '</td><td>' + stock + '</td><td>' + esc(st.big) + '</td><td style="color:' + c + ';font-weight:600">' + (RIE[st.col] || '—') + '</td>'
+      + '<td>' + (st.tot > 0 ? 'confeccionar <b>' + st.tot + '</b> ▸' : '<span class="m">no hace falta</span>') + '</td>'
+      + '<td>' + ((ESC_FOCO || []).includes(x.k) ? '<span class="m">en foco</span>' : '<button class="esx-b" title="Lo pone en tus productos en foco para lanzarlo en Meta" onclick="event.stopPropagation();escFocoAgregar(\'' + esc(x.k).replace(/'/g, "\\'") + '\')">＋ Foco</button>') + '</td></tr>'
+      + (st.tot > 0 ? '<tr id="esx-sp-' + i + '" style="display:none"><td colspan="8" style="text-align:left;white-space:normal;color:#8aa0c8;font-size:12px">' + esc(_escLoteTxt(st.lote).replace(/^: /, '')) + '</td></tr>' : ''); };
+  return '<details class="esx-tar esx-liq esx-sp"' + (riesgo ? ' open' : '') + '><summary><b>🎥 CANDIDATOS SIN PAUTA</b><span>' + _escPl(L.length, 'producto se vende', 'productos se venden') + ' sin anuncio (sobre todo TikTok Live) · ' + riesgo + ' con riesgo de quiebre</span></summary>'
+    + (ESC_SPMSG ? '<div class="esx-err">' + esc(ESC_SPMSG) + '</div>' : '')
+    + '<table class="esx-res"><thead><tr><th>Producto</th><th>TikTok Live 14 d</th><th>Vendidas 14 d (todo)</th><th>Stock actual</th><th>Días que alcanza</th><th>Riesgo</th><th>Propuesta de confección</th><th></th></tr></thead><tbody>' + L.map(fila).join('') + '</tbody></table>'
+    + '<div class="esx-lt-n">Flujo de Pablo: el producto nuevo se prueba primero en TikTok Live; si pega → fotos y videos, creativos, lanzar en Meta y preparar la confección. Aquí salen los ' + ESC_SP_MAX + ' con más acogida que NO tienen anuncio (' + ESC_SP_MIN14 + '+ prendas en 14 días), ordenados por TikTok Live · «＋ Foco» lo lleva arriba con su plan · criterio propio</div></details>';
 }
 function _escLiqHtml(){
   const T = _escLiqLista(), L = T.filter(x => !x.comp), K = T.filter(x => x.comp && x.niv === 'liq'); if (!T.length) return '';
@@ -9188,14 +9245,49 @@ function _escAlinear(){
 }
 function _escPicker(F, SUG, L){
   if (!ESC_PICKSEL) ESC_PICKSEL = L.filter(p => !p.vacio).map(p => p.k);
-  const sk = SUG.map(x => x.k), cs = f => (f.stock && (f.stock.col === 'verde' || f.stock.col === 'ama')) ? 1 : 0, cand = F.slice().sort((a, b) => (cs(b) - cs(a)) || (b.mc - a.mc) || (b.ven - a.ven));
+  const sk = SUG.map(x => x.k), cs = f => (f.stock && (f.stock.col === 'verde' || f.stock.col === 'ama')) ? 1 : 0, cand = F.slice().sort((a, b) => (cs(b) - cs(a)) || (_escMcOf(b) - _escMcOf(a)) || (b.ven - a.ven));
+  let SP = []; try { SP = _escSinPautaLista().filter(x => !F.some(f => f.k === x.k)); } catch (_) {}   /* 27-oct · también se pueden elegir los que NO tienen anuncios */
   return '<div class="esx-modal"><div class="esx-mbox"><div class="esx-top"><span class="esx-tit">ELIGE HASTA 5</span><span style="flex:1"></span>'
     + '<button class="esx-b" title="Cerrar" onclick="ESC_PICK=false;escPintar()">✕</button></div><div class="esx-mlist">'
     + cand.map(p => '<div class="esx-mi' + (ESC_PICKSEL.includes(p.k) ? ' on' : '') + '" onclick="escPick(\'' + p.k.replace(/'/g, "\\'") + '\')">'
         + (p.img ? '<img src="' + esc(p.img) + '" alt="">' : '<div class="esx-noimg">' + esc(p.nombre.charAt(0)) + '</div>')
-        + '<b>' + (sk.includes(p.k) ? '<em class="esx-star">★</em> ' : '') + esc(p.nombre) + '</b><span>Margen <b style="color:' + (p.mc >= 0 ? ESC_COL.verde : ESC_COL.rojo) + '">S/ ' + mkNum(p.mc) + '</b> · ' + p.venv + ' ventas · Stock: ' + ({ verde:'🟢 alcanza', ama:'🟡 bajo', rojo:'🔴 crítico', gris:'— no está en Stock' })[(p.stock || {}).col || 'gris'] + '</span></div>').join('')
+        + '<b>' + (sk.includes(p.k) ? '<em class="esx-star">★</em> ' : '') + esc(p.nombre) + '</b><span>Margen <b style="color:' + (_escMcOf(p) >= 0 ? ESC_COL.verde : ESC_COL.rojo) + '">S/ ' + mkNum(_escMcOf(p)) + '</b> · ' + _escVenOf(p) + ' ventas · Stock: ' + ({ verde:'🟢 alcanza', ama:'🟡 bajo', rojo:'🔴 crítico', gris:'— no está en Stock' })[(p.stock || {}).col || 'gris'] + '</span></div>').join('')
+    + (SP.length ? '<div class="esx-lt-n" style="margin:12px 4px 6px;grid-column:1/-1">🎥 SIN ANUNCIOS · se venden por TikTok Live u orgánico (candidatos para lanzar)</div>'
+      + SP.map(x => '<div class="esx-mi' + (ESC_PICKSEL.includes(x.k) ? ' on' : '') + '" onclick="escPick(\'' + x.k.replace(/'/g, "\\'") + '\')"><div class="esx-noimg">' + esc(x.nombre.charAt(0)) + '</div>'
+        + '<b>' + esc(x.nombre) + '</b><span>' + (x.tt != null ? x.tt + ' por TikTok Live · ' : '') + x.v14 + ' vendidas en 14 d · Stock: ' + ({ verde:'🟢 alcanza', ama:'🟡 bajo', rojo:'🔴 crítico' })[x.st.col] + '</span></div>').join('') : '')
     + '</div><div class="esx-mfoot"><button class="esx-b" onclick="ESC_PICKSEL=escSugeridos(escFilas()).map(x=>x.k);escPintar()">★ USAR SUGERIDOS</button><span>' + ESC_PICKSEL.length + '/5</span>'
     + '<span id="escPickMsg" class="esx-err"></span><span style="flex:1"></span><button class="esx-b on" onclick="escPickGuardar()">GUARDAR FOCO</button></div></div></div>';
+}
+/* 27-oct · «＋ Foco» desde Candidatos sin pauta */
+async function escFocoAgregar(k){
+  ESC_SPMSG = '';
+  const cur = (ESC_FOCO || []).slice(); if (cur.includes(k)) { ESC_SEL = k; escPintar(true); return; }
+  if (cur.length >= 5){ ESC_SPMSG = 'Ya tienes 5 productos en foco: quita uno en ✦ ELEGIR y vuelve a tocar ＋ Foco.'; escPintar(); return; }
+  cur.push(k); ESC_PICKSEL = cur; await escPickGuardar();
+  if (!(ESC_FOCO || []).includes(k)) { ESC_SPMSG = 'No se pudo guardar el foco. Prueba de nuevo.'; escPintar(); return; }
+  ESC_SEL = k; escPintar(true); try { document.getElementById('escCuerpo').scrollIntoView({ behavior: 'smooth' }); } catch (_) {}
+}
+/* 27-oct (Pablo) · producto en foco SIN anuncios: su acogida (TikTok Live) y los 4 pasos para lanzarlo, con quién hace cada uno */
+function _escCandHtml(f){
+  let x = null; try { x = _escSinPautaLista().find(c => c.k === f.k) || null; } catch (_) {}
+  if (!x){ try { const [t, m] = f.k.split('|'), pzs = _escPiezas(t, m); if (pzs.length){ const st = _escStock(pzs, null); x = { nombre: f.nombre, pz: { x: [].concat.apply([], pzs.map(p => p.x || [])) }, st, v14: null, tt: null, pzs }; } } catch (_) {} }
+  if (!x) return '<div class="esx-load">' + esc(f.nombre) + ': NO ESTÁ EN STOCK NI TIENE ANUNCIOS</div>';
+  const st = x.st, rows = x.pz.x || [], stock = rows.reduce((a, r) => a + (+r[2] || 0), 0), porCol = {};
+  rows.forEach(r => { porCol[r[0]] = (porCol[r[0]] || 0) + (+r[2] || 0); });
+  const colTop = Object.keys(porCol).sort((a, b) => porCol[b] - porCol[a]).slice(0, 2), capC = t => String(t || '').toLowerCase().replace(/(^|\s)\S/g, z => z.toUpperCase());
+  let P = { lineas: [] }; try { P = _escCreaPlan({ k: f.k, filas: [] }, { filas: [], canal: 'wa' }, 3); } catch (_) {}
+  const RIE = { rojo: '🔴 alto', ama: '🟡 medio', verde: '🟢 bajo' };
+  const crea = (P.lineas || []).map(l => esc(l.formato + ' · ' + l.etapa + ' · ' + l.ang + ' · ' + l.ctx + ' · hook ' + l.hook + ' · CTA ' + l.cta)).join('<br>') || 'Usa los formatos ganadores de 🔎 Investigación (EST-05 ficha, EST-06 flechas)';
+  return '<div class="esx-tar" style="display:block;padding:16px 18px">'
+    + '<div style="font-size:14px;margin-bottom:6px"><b>🎥 ' + esc(f.nombre) + '</b> · candidato sin pauta</div>'
+    + '<div class="esx-lt-n" style="margin-bottom:10px">' + (x.tt != null ? '<b>' + x.tt + '</b> prendas por TikTok Live · ' : '') + (x.v14 != null ? '<b>' + x.v14 + '</b> vendidas en 14 días (todos los canales) · ' : '')
+      + '<b>' + stock + '</b> en stock · alcanza ' + esc(st.big) + ' · riesgo de quiebre ' + (RIE[st.col] || '—') + '</div>'
+    + '<table class="esx-res"><thead><tr><th>Paso</th><th>Quién</th><th>Qué hacer</th></tr></thead><tbody>'
+    + '<tr><th>1 · Fotos y videos</th><td>Heily</td><td style="text-align:left;white-space:normal">Sesión con los colores con más stock: ' + esc(colTop.map(capC).join(' y ') || '—') + '</td></tr>'
+    + '<tr><th>2 · Creativos</th><td>Heily</td><td style="text-align:left;white-space:normal">' + crea + '<br><span class="m">Basado en lo que más vende en ' + esc(P.de || 'la tienda') + '</span></td></tr>'
+    + '<tr><th>3 · Lanzar en Meta</th><td>Paola</td><td style="text-align:left;white-space:normal">2 o 3 anuncios en WhatsApp (el canal que más vende); a los ' + _ep('esc_prueba') + ' días las 📏 Reglas dicen cuál escalar</td></tr>'
+    + '<tr><th>4 · Confección</th><td>Ana</td><td style="text-align:left;white-space:normal">' + (st.tot > 0 ? 'Preparar <b>' + st.tot + '</b> prendas: ' + esc(_escLoteTxt(st.lote).replace(/^: /, '')) : 'Con el stock de hoy no hace falta todavía') + '</td></tr>'
+    + '</tbody></table></div>';
 }
 function escPick(k){ const i = ESC_PICKSEL.indexOf(k); if (i >= 0) ESC_PICKSEL.splice(i, 1); else if (ESC_PICKSEL.length < 5) ESC_PICKSEL.push(k); escPintar(); }
 async function escPickGuardar(){

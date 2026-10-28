@@ -736,6 +736,8 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
     #pg-margen .mg-loading, #pg-margen .mg-empty {
       text-align: center; padding: 40px 0; color: var(--mg-text-dim); font-size: 13px;
     }
+    #pg-margen .mg-cn { background: var(--mg-panel-2); border: 1px solid var(--mg-border); color: var(--mg-text-dim); padding: 6px 14px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    #pg-margen .mg-cn.on { background: var(--mg-accent); border-color: var(--mg-accent); color: #fff; }
     #pg-margen .mg-error {
       background: var(--mg-rojo-bg); border: 1px solid var(--mg-rojo); color: var(--mg-rojo);
       padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; display: none;
@@ -763,6 +765,12 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
       <label>Hasta:</label>
       <input type="date" id="mg-fecha-hasta" onchange="mgAplicarFiltro()">
     </span>
+    <!-- 27-oct (Pablo) · canal del Margen: WhatsApp (como siempre) · Web · Todos -->
+    <span id="mg-canal" style="display:inline-flex;gap:6px;margin-left:12px">
+      <button type="button" class="mg-cn on" data-c="wsp" onclick="mgCanal('wsp')">WhatsApp</button>
+      <button type="button" class="mg-cn" data-c="web" onclick="mgCanal('web')">Web</button>
+      <button type="button" class="mg-cn" data-c="todos" onclick="mgCanal('todos')">Todos</button>
+    </span>
   </div>
 
   <!-- ===== RESUMEN ===== -->
@@ -772,7 +780,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
       <div class="mg-card-value" id="mg-card-ventas-soles">—</div>
     </div>
     <div class="mg-card">
-      <div class="mg-card-label">Ventas #</div>
+      <div class="mg-card-label">Ventas</div>
       <div class="mg-card-value" id="mg-card-ventas">—</div>
       <!-- 20-set · igual que el pie del Embudo: la tarjeta dice en una linea QUE cuenta. -->
       <div class="mg-card-nota" id="mg-card-ventas-nota"></div>
@@ -5560,6 +5568,12 @@ function _flujoLazy(){
     // ============================================================
     // APLICAR FILTRO → llama al backend
     // ============================================================
+    /* 27-oct (Pablo) · botones WhatsApp / Web / Todos del Margen */
+    function mgCanal(c) {
+      window.__mgCanalSel = (c === 'web' || c === 'todos') ? c : 'wsp';
+      document.querySelectorAll('#mg-canal .mg-cn').forEach(function (b) { b.classList.toggle('on', b.dataset.c === window.__mgCanalSel); });
+      mgAplicarFiltro();
+    }
     function mgAplicarFiltro() {
       var rango = mgRangoActivo();
       if (!rango.inicio || !rango.fin) {
@@ -5581,7 +5595,8 @@ function _flujoLazy(){
       // 1-oct · F3b · MARGEN AL INSTANTE: el calculo tarda ~17 s. Si este navegador ya vio ese mismo
       // periodo, se pinta YA y se recalcula por detras. Un numero de turno evita que una respuesta vieja
       // pise un periodo que se eligio despues.
-      var _mgK = rango.inicio + '_' + rango.fin, _mgTk = (window._mgTk = (window._mgTk || 0) + 1), _mgPint = false;
+      var _mgC = window.__mgCanalSel || 'wsp';   /* 27-oct · canal elegido (WhatsApp / Web / Todos) */
+      var _mgK = rango.inicio + '_' + rango.fin + (_mgC !== 'wsp' ? '_' + _mgC : ''), _mgTk = (window._mgTk = (window._mgTk || 0) + 1), _mgPint = false;
       try {
         var _mgG = JSON.parse(localStorage.getItem('erp_swr_margen') || '{}') || {};
         if (_mgG[_mgK] && _mgG[_mgK].d && (Date.now() - _mgG[_mgK].t) < 7 * 86400000) {
@@ -5596,12 +5611,12 @@ function _flujoLazy(){
         try {
           var _mgG2 = JSON.parse(localStorage.getItem('erp_swr_margen') || '{}') || {}, _mgMejor = null;
           Object.keys(_mgG2).forEach(function (k) {
-            var pz = k.split('_'); if (pz[0] !== rango.inicio || !(pz[1] <= rango.fin) || !_mgG2[k] || !_mgG2[k].d) return;
+            var pz = k.split('_'); if (pz[0] !== rango.inicio || !(pz[1] <= rango.fin) || (pz[2] || 'wsp') !== _mgC || !_mgG2[k] || !_mgG2[k].d) return;
             if (!_mgMejor || pz[1] > _mgMejor.fin) _mgMejor = { fin: pz[1], d: _mgG2[k].d };
           });
           if (_mgMejor) { mgRenderizar(_mgMejor.d, rango); _mgPint = true; try { toast('Margen hasta el ' + _mgMejor.fin + ' · actualizando…', 'info'); } catch (_) {} }
         } catch (_) {}
-        if (!_mgPint && typeof _mgFotoBase === 'function') {
+        if (!_mgPint && _mgC === 'wsp' && typeof _mgFotoBase === 'function') {
           _mgFotoBase(rango.inicio, rango.fin).then(function (f) {
             if (!f || _mgTk !== window._mgTk || _mgPint) return;
             mgRenderizar(f.r, rango); _mgPint = true;
@@ -5611,8 +5626,8 @@ function _flujoLazy(){
       }
       // 13-oct · fase B: con MG_LOCAL_ON el cálculo exacto se hace AQUÍ (sin Apps Script); si falla, Apps Script como siempre.
       var _mgCalc = MG_LOCAL_ON
-        ? _mgLocalCargar().then(function (okL) { return okL ? window.margenLocalCalcular(rango.inicio, rango.fin) : Promise.reject(new Error('sin motor local')); })
-            .catch(function () { return api('margen.calcular', { desde: rango.inicio, hasta: rango.fin }); })
+        ? _mgLocalCargar().then(function (okL) { return okL ? window.margenLocalCalcular(rango.inicio, rango.fin, _mgC) : Promise.reject(new Error('sin motor local')); })
+            .catch(function (e) { if (_mgC !== 'wsp') throw e; return api('margen.calcular', { desde: rango.inicio, hasta: rango.fin }); })
         : api('margen.calcular', { desde: rango.inicio, hasta: rango.fin });
       _mgCalc
         .then(function (data) {
@@ -5820,15 +5835,14 @@ function _flujoLazy(){
         // y cada venta se fecha por su DIA DE PAGO, igual que Ventas y Marketing. Antes decia
         // «con producto identificado», que ya no es cierto: la venta cuya prenda no esta en
         // Config_Productos cuenta igual, en la fila OTROS (SIN PRODUCTO).
-        var txt = ventasTot + (ventasTot === 1 ? ' venta' : ' ventas') + ' \u00b7 WhatsApp + Ads, pagadas \u00b7 por d\u00eda de pago';
-        if (noAtrib > 0) txt += ' · ' + mgSoles(noAtrib) + ' de inversión no atribuible';
-        elNota.textContent = txt;
+        /* 27-oct (Pablo) · la tarjeta dice solo el número: sin descripción debajo */
+        elNota.textContent = '';
       }
       document.getElementById('mg-card-costos').textContent = mgSoles(costoTot);
       document.getElementById('mg-card-inversion').textContent = mgSoles(inversionTot);
       /* 26-oct · de dónde sale la inversión (automática desde Meta) y lo que no entra (anuncios de la web) */
       try { var _ii = window.__mgInvInfo, _is = document.getElementById('mg-card-inv-sub');
-        if (_is) _is.textContent = !_ii ? '' : _ii.error ? 'De la planilla (Meta no respondió)' : 'Automático desde Meta' + (_ii.ultimo ? ' · al ' + String(_ii.ultimo).slice(8, 10) + '/' + String(_ii.ultimo).slice(5, 7) : '') + (_ii.web > 0 ? ' · sin ' + mgSoles(_ii.web) + ' de anuncios web' : ''); } catch (_) {}
+        if (_is) _is.textContent = '';   /* 27-oct (Pablo) · sin texto debajo de Inversión (el origen sigue en window.__mgInvInfo) */ } catch (_) {}
 
       var elMargen = document.getElementById('mg-card-margen');
       elMargen.textContent = mgSoles(margenTot);
@@ -10901,6 +10915,7 @@ function _cdPintar() {
   const tabs = D ? [[0, '0 · Stock por talla (control)', (D.l0 || []).length, 0], [1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', D.l4.length, 0], [5, '5 · Cambios ERP vs Drive', n(D.l5), ne(D.l5)], [6, '6 · Prendas que no se reconocen', n6(D.l6), 0]] : [];   // 21-oct (Pablo): todas en 0 (y nada en espera) = 100% cuadrado
   const total = tabs.reduce((a, t) => a + t[2], 0), esp = tabs.reduce((a, t) => a + t[3], 0);
   if (D) tabs.push([7, '7 · Pagos ERP vs Drive', CD.pagosN == null ? '·' : CD.pagosN, 0]);   /* 26-oct (Pablo) · no suma al total de prendas */
+  if (D) tabs.push([8, '8 · Egresos ERP vs Drive', CD.egrN == null ? '·' : CD.egrN, 0]);   /* 27-oct (Pablo) · fase 5 egresos: no suma al total de prendas */
   const veredicto = !D ? '' : (total + esp === 0 ? '<div style="padding:10px 14px;border-radius:10px;background:#dcfce7;color:#14532d;font-weight:600;margin-bottom:10px">✅ ERP y Drive 100% cuadrados (prendas, tallas, confección, no disponibles y cambios)</div>'
     : '<div style="padding:10px 14px;border-radius:10px;background:#fef3c7;color:#713f12;font-weight:600;margin-bottom:10px">Para el 100%: ' + total + ' por resolver' + (esp ? ' + ' + esp + ' en espera' : '') + '. Cuando TODAS las pestañas (0 a 6) estén en 0 y no quede nada en espera, el ERP y el Drive están 100% cuadrados.</div>');
   let h = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px">'
@@ -10912,6 +10927,7 @@ function _cdPintar() {
   h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">' + tabs.map(t => '<button class="btn ' + (CD.tab === t[0] ? 'bp' : 'bg') + ' bs" onclick="CD.tab=' + t[0] + ';_cdPintar()">' + esc(t[1]) + ' <b>' + t[2] + '</b>' + (t[3] ? ' <span style="opacity:.7">(+' + t[3] + ' en espera)</span>' : '') + '</button>').join('')
     + '<span style="align-self:center;font-weight:600">TOTAL por resolver: ' + total + (esp ? ' · en espera: ' + esp : '') + '</span></div>';
   if (CD.tab === 7) { el.innerHTML = h + _cdPagosHtml(); _cdPagosAsegurar(); return; }   /* 26-oct · pagos */
+  if (CD.tab === 8) { el.innerHTML = h + (typeof _egrCruceHtml === 'function' ? _egrCruceHtml() : ''); if (typeof _egrCruceAsegurar === 'function') _egrCruceAsegurar(); return; }   /* 27-oct · egresos */
   const L = D['l' + CD.tab] || [];
   const ir = nro => nro ? '<a href="#" onclick="event.preventDefault();_abrirPedidoDesdeBusqueda(' + esc(JSON.stringify(String(nro).split(/[ ,]/)[0])) + ')" style="color:var(--ac);font-weight:600">' + esc(nro) + ' ↗</a>' : '';
   const cols = CD.tab === 0 ? ['Prenda y talla', 'Stock', 'Qué difiere y si lo explican las listas'] : CD.tab === 6 ? ['Dónde', 'Prenda tal como está escrita', 'Líneas', 'Qué hacer'] : CD.tab === 4 ? ['Prenda y talla', 'Qué difiere'] : CD.tab === 5 ? ['Pedido', 'Cambio', 'Prenda', 'Qué pasa', '¿Mueve el stock?'] : ['Pedido', 'Clienta', 'Fecha', 'Prenda', CD.tab === 3 ? 'Tipo' : 'Estado', 'Causa / qué hacer', 'Fila Drive'];
@@ -45490,8 +45506,8 @@ startAuth();
 // Confidenciales: solo Admin (la base lo hace cumplir). Vive dentro de este mismo bloque de codigo para no sumar bloques.
 (function(){ try { var st = document.createElement('style'); st.id = 'egr-css'; st.textContent = '#egr-w .egr-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}\n#egr-w .egr-tab{padding:8px 14px;border-radius:var(--r);border:1px solid var(--bd);background:var(--bg2);color:var(--tx);cursor:pointer;font-size:13px}\n#egr-w .egr-tab.on{background:var(--ac2);border-color:var(--ac2);color:#fff}\n#egr-w .egr-kpis{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}\n#egr-w .egr-kpi{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r2);padding:10px 14px;min-width:120px}\n#egr-w .egr-kpi b{display:block;font-size:20px}\n#egr-w .egr-kpi span{font-size:11px;color:var(--mu)}\n#egr-w table.egr-t{border-collapse:collapse;width:100%;font-size:12px}\n#egr-w table.egr-t th,#egr-w table.egr-t td{padding:7px 8px;border-bottom:1px solid var(--bd);text-align:left;vertical-align:top}\n#egr-w table.egr-t td.n,#egr-w table.egr-t th.n{text-align:right;white-space:nowrap}\n#egr-w .egr-form{max-width:520px}\n#egr-w .egr-err{color:var(--rd);font-size:12px;margin:6px 0}\n#egr-w .egr-chip{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11px;background:#27272a;color:var(--mu);margin-left:4px}\n@media(max-width:640px){#egr-w .fr{grid-template-columns:1fr}}'; document.head.appendChild(st); } catch (e) {} })();
 (function(){
-  const EGR_CATEGORIAS = ['INSUMOS','CONFECCION','GASTOS ADMINISTRATIVOS','MOVILIDAD','PUBLICIDAD','OTROS','CAJA CHICA'];
-  const EGR_ORIGENES = ['BCP','IBK','ANA EMPRESA','PABLO EMPRESA','ANA','PABLO','CAJA CHICA','EFECTIVO','TARJETA EMPRESA'];
+  const EGR_CATEGORIAS = ['CAJA CHICA','CONFECCION','GASTOS ADMINISTRATIVOS','INSUMOS','MOVILIDAD','PUBLICIDAD','OTROS'];   // 27-oct · orden de Pablo
+  const EGR_ORIGENES = ['BCP','IBK','BBVA','ANA EMPRESA','PABLO EMPRESA','ANA','PABLO','TARJETA CREDITO','EFECTIVO','CAJA CHICA'];   // 27-oct · respaldo si no cargó Maestros › FORMA PAGO
   const EGR = { modo: 'egresos', tab: 'nuevo', mes: null, filas: [], editando: null };
 
   function _egrEsc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -45532,7 +45548,7 @@ startAuth();
   async function _egrSubirFoto(file, confidencial){
     const tok = await _sbSesionAsegurar();
     if (!tok) throw new Error('La sesion vencio: vuelve a entrar al ERP');
-    const ext = /pdf/i.test(file.type) ? 'pdf' : (/png/i.test(file.type) ? 'png' : 'jpg');
+    const ext = /pdf/i.test(file.type) ? 'pdf' : (/png/i.test(file.type) ? 'png' : (/webp/i.test(file.type) ? 'webp' : 'jpg'));   // 27-oct · fase 5: la foto achicada puede salir en webp
     const ruta = (confidencial ? 'conf/' : '') + _egrMesActual() + '/egreso_' + Date.now() + '_' + Math.floor(Math.random() * 46656).toString(36) + '.' + ext;
     const r = await fetch(SB_URL + '/storage/v1/object/egresos/' + ruta, {
       method: 'POST',
@@ -45599,66 +45615,258 @@ startAuth();
     else if (EGR.tab === 'bonos') _egrBonos();
   }
 
-  // ── Registrar / editar ──
+  // ── Registrar / editar · 27-oct-2026 (Pablo) FASE 5: rápido desde el celular, en menos de 30 s ──
+  // Foto del voucher obligatoria salvo efectivo y caja chica · sube apenas se elige (al Registrar solo queda la base, <1 s) ·
+  // categoría, cuenta y quién pagó con un toque · nunca se guarda con cuenta vacía o N/A · dólares al tipo de cambio del día ·
+  // al guardar arma el mensaje 👍 para el grupo de WhatsApp (como Pedidos) · confidencial solo Admin (la base lo hace cumplir).
+  const EGR_CAT_TXT = { 'CAJA CHICA': 'Caja chica', 'CONFECCION': 'Confección', 'GASTOS ADMINISTRATIVOS': 'Gastos administrativos', 'INSUMOS': 'Insumos', 'MOVILIDAD': 'Movilidad', 'PUBLICIDAD': 'Publicidad', 'OTROS': 'Otros', 'MARKETING': 'Marketing' };
+  const EGR_SIN_FOTO = ['EFECTIVO', 'CAJA CHICA'];   // se pagan en efectivo: no hay voucher que fotografiar
+  const EGR_IA_VOUCHER = false;   // 27-oct · INTERRUPTOR APAGADO: lectura del voucher con IA. Encender = true aquí + EGR_IA_VOUCHER = 'SI' en EgresosMigracion.gs (Pablo aprueba el costo antes)
+  function _egrOrigenVacio(o){ return /^(|N\/?A|N\.A\.?|NA|-+|NINGUNO|NINGUNA|SIN|0)$/i.test(String(o == null ? '' : o).trim()); }
+  window._egrOrigenVacio = _egrOrigenVacio;
+  function _egrFotoObligatoria(origen){ return EGR_SIN_FOTO.indexOf(String(origen || '').toUpperCase().trim()) < 0; }
+  window._egrFotoObligatoria = _egrFotoObligatoria;
+  /** Cuentas = las formas de pago de Pedidos (Maestros › FORMA PAGO) + CAJA CHICA. Sin N/A ni vacías. */
+  function _egrOrigenes(actual){
+    let base = [];
+    try { if (typeof mOpts === 'function') base = mOpts('FORMA PAGO') || []; } catch (_) {}
+    if (!base.length) base = EGR_ORIGENES;
+    const L = base.map(x => String(x || '').toUpperCase().trim()).filter(x => !_egrOrigenVacio(x));
+    if (L.indexOf('CAJA CHICA') < 0) L.push('CAJA CHICA');
+    const a = String(actual || '').toUpperCase().trim();
+    if (a && !_egrOrigenVacio(a) && L.indexOf(a) < 0) L.push(a);
+    return L.filter((x, i) => L.indexOf(x) === i);
+  }
+  window._egrOrigenes = _egrOrigenes;
+  /** '' si está todo bien; si no, qué falta (una línea). La base vuelve a revisar lo mismo (egreso_registrar_rapido). */
+  function _egrValidar(p, tieneFoto){
+    const n = v => parseFloat(String(v == null ? '' : v).replace(/,/g, '')) || 0;
+    if (!p.fecha) return 'Falta la fecha';
+    if (String(p.fecha).slice(0, 10) > _egrHoy()) return 'La fecha no puede ser futura';
+    if (p.moneda === 'USD') {
+      if (!(n(p.monto_original) > 0)) return 'Falta el monto en dólares';
+      if (!(n(p.tipo_cambio) > 2 && n(p.tipo_cambio) < 6)) return 'Falta el tipo de cambio del día (ej. 3.75)';
+    } else if (!(n(p.monto) > 0)) return 'Falta el monto';
+    if (!String(p.categoria || '').trim()) return 'Elige la categoría';
+    if (!p.id && EGR_CATEGORIAS.indexOf(String(p.categoria).toUpperCase()) < 0) return 'Categoría no válida';
+    if (_egrOrigenVacio(p.origen)) return 'Elige desde qué cuenta se pagó (no puede quedar vacío ni N/A)';
+    if (['ANA', 'PABLO', 'EMPRESA'].indexOf(String(p.pagado_por || '').toUpperCase()) < 0) return 'Elige quién pagó: Empresa, Ana o Pablo';
+    if (!String(p.concepto || '').trim()) return 'Escribe una descripción corta (ej. taxi a Gamarra)';
+    if (!tieneFoto && _egrFotoObligatoria(p.origen)) return 'Falta la foto del voucher (solo efectivo y caja chica van sin foto)';
+    return '';
+  }
+  window._egrValidar = _egrValidar;
+  function _egrChips(id, opciones, valor){
+    return '<input type="hidden" id="' + id + '" value="' + _egrEsc(valor || '') + '"><div class="egr-chips" id="' + id + '-chips">' +
+      opciones.map(o => '<button type="button" class="egr-c' + (o[0] === valor ? ' on' : '') + '" data-v="' + _egrEsc(o[0]) + '" onclick="_egrChip(\'' + id + '\',this)">' + _egrEsc(o[1]) + '</button>').join('') + '</div>';
+  }
+  function _egrChipMarcar(id, v){
+    const h = document.getElementById(id); if (h) h.value = v;
+    const box = document.getElementById(id + '-chips');
+    if (box && box.querySelectorAll) box.querySelectorAll('.egr-c').forEach(b => b.classList.toggle('on', b.getAttribute('data-v') === v));
+  }
+  window._egrChip = function(id, b){
+    _egrChipMarcar(id, b.getAttribute('data-v'));
+    if (id === 'egr-origen') _egrOrigenCambio();
+    else if (id === 'egr-moneda') _egrMonedaCambio();
+    else if (id === 'egr-quien-v') { EGR.quienManual = true; _egrQuienNota(); }
+  };
   function _egrForm(){
     const c = document.getElementById('egr-cuerpo');
     const e = EGR.editando || {};
     const admin = _egrSoyAdmin();
-    const op = (arr, v) => arr.map(x => '<option' + (x === v ? ' selected' : '') + '>' + _egrEsc(x) + '</option>').join('');
+    EGR.foto = null; EGR.quienManual = !!e.id;
+    const quien0 = e.id ? (Number(e.pago_ana) > 0 ? 'ANA' : Number(e.pago_pablo) > 0 ? 'PABLO' : 'EMPRESA') : '';
+    const cats = EGR_CATEGORIAS.concat(e.categoria && EGR_CATEGORIAS.indexOf(e.categoria) < 0 ? [e.categoria] : []);
     c.innerHTML = '<div class="card egr-form">' +
-      '<h3 style="margin:0 0 12px">' + (e.id ? 'Editar egreso #' + e.id : 'Registrar egreso') + '</h3>' +
-      '<div class="fr"><div class="fg"><label>Fecha</label><input id="egr-fecha" type="date" value="' + _egrEsc(String(e.fecha || _egrHoy()).slice(0, 10)) + '"></div>' +
-      '<div class="fg"><label>Moneda</label><select id="egr-moneda" onchange="_egrMonedaCambio()">' + op(['PEN', 'USD'], e.moneda || 'PEN') + '</select></div></div>' +
-      '<div class="fr"><div class="fg"><label id="egr-monto-lbl">Monto (S/)</label><input id="egr-monto" type="number" step="0.01" inputmode="decimal" value="' + _egrEsc(e.moneda === 'USD' ? (e.monto_original || '') : (e.monto || '')) + '"></div>' +
-      '<div class="fg" id="egr-tc-box" style="display:none"><label>Tipo de cambio del dia</label><input id="egr-tc" type="number" step="0.001" inputmode="decimal" value="' + _egrEsc(e.tipo_cambio || '') + '"></div></div>' +
-      '<div class="fr1 fg"><label>Concepto</label><input id="egr-concepto" maxlength="200" placeholder="Ej: Pago taller Dan, tela Lulumon, courier Shalom" value="' + _egrEsc(e.concepto || '') + '"></div>' +
-      '<div class="fr"><div class="fg"><label>Categoria</label><select id="egr-cat">' + op(EGR_CATEGORIAS, e.categoria || 'GASTOS ADMINISTRATIVOS') + '</select></div>' +
-      '<div class="fg"><label>Se pago desde</label><select id="egr-origen" onchange="_egrOrigenCambio()">' + op(EGR_ORIGENES, e.origen || 'BCP') + '</select></div></div>' +
-      '<div class="fr1 fg" id="egr-lote-box" style="display:none"><label>Lote de caja chica</label><input id="egr-lote" placeholder="Ej: 9 AL 17 OCTUBRE" value="' + _egrEsc(e.lote_caja_chica || '') + '"></div>' +
-      '<div id="egr-quien" style="font-size:12px;color:var(--mu);margin:-6px 0 12px"></div>' +
-      '<div class="fr1 fg"><label>Foto del comprobante</label><input id="egr-foto" type="file" accept="image/*,application/pdf" capture="environment">' +
-      (e.foto_path ? '<div style="font-size:11px;margin-top:4px"><a href="#" onclick="_egrVerFoto(\'' + _egrEsc(e.foto_path) + '\');return false">Ver la foto guardada</a> (subir otra la reemplaza)</div>' : '') + '</div>' +
-      (admin ? '<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:14px"><input id="egr-conf" type="checkbox"' + (e.confidencial ? ' checked' : '') + '> Confidencial (sueldos, bonos: solo Ana y Pablo lo ven)</label>' : '') +
+      '<div class="ui-blo" style="margin:0 0 10px">' + (e.id ? 'Editar egreso #' + e.id : 'Registrar egreso') + '</div>' +
+      '<label class="egr-fotob" id="egr-fotob">📷 <span id="egr-foto-txt">' + (e.foto_path ? 'Cambiar la foto del voucher' : 'Foto del voucher') + '</span>' +
+        '<input id="egr-foto" type="file" accept="image/*,application/pdf" onchange="_egrFotoElegida()"></label>' +
+      '<div id="egr-foto-st" class="ui-nota" style="margin:4px 0 0">' + (e.foto_path ? '<a href="#" onclick="_egrVerFoto(\'' + _egrEsc(e.foto_path) + '\');return false">Ver la foto guardada</a>' : '') + '</div>' +
+      '<div class="egr-lbl" id="egr-monto-lbl">Monto (S/)</div>' +
+      '<div style="display:flex;gap:8px;align-items:center"><input id="egr-monto" class="egr-monto" type="number" step="0.01" inputmode="decimal" placeholder="0.00" value="' + _egrEsc(e.moneda === 'USD' ? (e.monto_original || '') : (e.monto || '')) + '">' +
+        _egrChips('egr-moneda', [['PEN', 'S/'], ['USD', 'US$']], e.moneda || 'PEN') + '</div>' +
+      '<div id="egr-tc-box" style="display:none"><div class="egr-lbl">Tipo de cambio del día</div><input id="egr-tc" type="number" step="0.001" inputmode="decimal" value="' + _egrEsc(e.tipo_cambio || '') + '"><div id="egr-tc-nota" class="ui-nota"></div></div>' +
+      '<div class="egr-lbl">Categoría</div>' + _egrChips('egr-cat', cats.map(x => [x, EGR_CAT_TXT[x] || x]), e.categoria || '') +
+      '<div class="egr-lbl">Se pagó desde</div>' + _egrChips('egr-origen', _egrOrigenes(e.origen).map(x => [x, x]), e.origen || '') +
+      '<div class="egr-lbl">Quién pagó</div>' + _egrChips('egr-quien-v', [['EMPRESA', 'Empresa'], ['ANA', 'Ana'], ['PABLO', 'Pablo']], quien0) +
+      '<div id="egr-quien" class="ui-nota" style="margin-top:4px"></div>' +
+      '<div id="egr-lote-box" style="display:none"><div class="egr-lbl">Lote de caja chica</div><input id="egr-lote" placeholder="Ej: 9 AL 17 OCTUBRE" value="' + _egrEsc(e.lote_caja_chica || _egrLoteRecordado()) + '"></div>' +
+      '<div class="egr-lbl">Descripción corta</div><input id="egr-concepto" maxlength="200" placeholder="Ej: taxi a Gamarra, tela, pago taller" value="' + _egrEsc(e.concepto || '') + '">' +
+      '<div class="egr-lbl">Fecha</div><input id="egr-fecha" type="date" max="' + _egrHoy() + '" value="' + _egrEsc(String(e.fecha || _egrHoy()).slice(0, 10)) + '">' +
+      (admin ? '<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:12px 0 0"><input id="egr-conf" type="checkbox"' + (e.confidencial ? ' checked' : '') + '> Confidencial (sueldos, bonos: solo Ana y Pablo)</label>' : '') +
       '<div id="egr-err" class="egr-err"></div>' +
-      '<div style="display:flex;gap:8px"><button id="egr-guardar" class="btn bp" onclick="_egrGuardar()">' + (e.id ? 'Guardar cambios' : 'Registrar egreso') + '</button>' +
+      '<div style="display:flex;gap:8px;margin-top:10px"><button id="egr-guardar" class="btn bp" style="flex:1;min-height:44px" onclick="_egrGuardar()">' + (e.id ? 'Guardar cambios' : 'Registrar egreso') + '</button>' +
       (e.id ? '<button class="btn" onclick="_egrIr(\'lista\')">Cancelar</button>' : '') + '</div></div>';
     _egrMonedaCambio(); _egrOrigenCambio();
   }
+  function _egrLoteRecordado(){ try { return localStorage.getItem('egr_lote') || ''; } catch (_) { return ''; } }
   window._egrMonedaCambio = function(){
     const usd = (document.getElementById('egr-moneda') || {}).value === 'USD';
     const b = document.getElementById('egr-tc-box'); if (b) b.style.display = usd ? '' : 'none';
     const l = document.getElementById('egr-monto-lbl'); if (l) l.textContent = usd ? 'Monto (US$)' : 'Monto (S/)';
+    const tc = document.getElementById('egr-tc');
+    if (usd && tc && !tc.value) _egrTcDelDia().then(v => {
+      const n = document.getElementById('egr-tc-nota');
+      if (v && !tc.value) { tc.value = v; if (n) n.textContent = 'Tipo de cambio referencial de hoy: corrígelo si el banco usó otro.'; }
+      else if (!v && n) n.textContent = 'No pude traer el tipo de cambio: escríbelo (el del voucher o el del día).';
+    });
   };
+  /** Tipo de cambio del día (servicio gratuito, sin llave ni costo). Si no responde en 3 s, se escribe a mano. */
+  async function _egrTcDelDia(){
+    if (EGR.tcDia) return EGR.tcDia;
+    try {
+      const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+      const tm = ctl && typeof setTimeout === 'function' ? setTimeout(() => ctl.abort(), 3000) : null;
+      const r = await fetch('https://open.er-api.com/v6/latest/USD', ctl ? { signal: ctl.signal } : {});
+      if (tm) clearTimeout(tm);
+      const j = await r.json(); const v = j && j.rates && Number(j.rates.PEN);
+      if (v > 2 && v < 6) { EGR.tcDia = Math.round(v * 1000) / 1000; return EGR.tcDia; }
+    } catch (_) {}
+    return null;
+  }
   window._egrOrigenCambio = function(){
-    const o = (document.getElementById('egr-origen') || {}).value || '';
+    const o = String((document.getElementById('egr-origen') || {}).value || '').toUpperCase();
     const lb = document.getElementById('egr-lote-box'); if (lb) lb.style.display = o === 'CAJA CHICA' ? '' : 'none';
-    const q = document.getElementById('egr-quien'); if (!q) return;
-    const p = _egrPagadoPor(o);
-    q.textContent = p === 'EMPRESA' ? 'Plata de la empresa: no se reembolsa.' : 'Plata personal de ' + (p === 'ANA' ? 'Ana' : 'Pablo') + ': queda en Reembolsos hasta que se le devuelva.';
+    if (!EGR.quienManual && o) _egrChipMarcar('egr-quien-v', _egrPagadoPor(o));
+    const ft = document.getElementById('egr-foto-txt');
+    if (ft && !(EGR.foto && EGR.foto.file) && !(EGR.editando && EGR.editando.foto_path)) ft.textContent = o && !_egrFotoObligatoria(o) ? 'Foto del voucher (opcional en efectivo)' : 'Foto del voucher';
+    _egrQuienNota();
   };
+  function _egrQuienNota(){
+    const q = document.getElementById('egr-quien'); if (!q) return;
+    const v = (document.getElementById('egr-quien-v') || {}).value || '';
+    q.textContent = !v ? '' : v === 'EMPRESA' ? 'Plata de la empresa (también ANA EMPRESA y PABLO EMPRESA): no se reembolsa.' : 'Plata personal de ' + (v === 'ANA' ? 'Ana' : 'Pablo') + ': queda en Reembolsos hasta que se le devuelva.';
+  }
+  /** Achica la foto con el mismo compresor de las constancias de pago, para que suba en ~1 s con datos móviles. */
+  async function _egrPrepararFoto(file){
+    try {
+      if (!/^image\//.test(file.type || '') || typeof _comprimirConstancia !== 'function' || typeof atob !== 'function' || typeof Blob !== 'function') return file;
+      const c = await _comprimirConstancia(file);
+      if (!c || !c.base64) return file;
+      const bin = atob(c.base64), u = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+      const b = new Blob([u], { type: c.mimeType || 'image/jpeg' });
+      return b.size && b.size < (file.size || Infinity) ? b : file;
+    } catch (_) { return file; }
+  }
+  /** Al elegir la foto se sube YA (por detrás): cuando aprieten Registrar solo falta guardar en la base. */
+  window._egrFotoElegida = function(){
+    const inp = document.getElementById('egr-foto'); const file = inp && inp.files && inp.files[0]; if (!file) return;
+    const st = document.getElementById('egr-foto-st'), ft = document.getElementById('egr-foto-txt');
+    const conf = !!(document.getElementById('egr-conf') || {}).checked;
+    if (ft) ft.textContent = '✓ ' + String(file.name || 'foto').slice(0, 30);
+    if (st) st.textContent = '⏳ Subiendo la foto…';
+    const f = { file: file, conf: conf, path: null };
+    f.prom = _egrPrepararFoto(file).then(b => _egrSubirFoto(b, conf)).then(p => { f.path = p; if (EGR.foto === f && st) st.textContent = '✓ Foto lista'; return p; },
+      e => { if (EGR.foto === f && st) st.textContent = '⚠️ No subió la foto: se reintenta al registrar'; throw e; });
+    f.prom.catch(() => {});
+    EGR.foto = f;
+    if (EGR_IA_VOUCHER) _egrIaLeer(file);
+  };
+  /** IA (APAGADA): lee monto, fecha y comercio del voucher y llena SOLO lo que está vacío. Servidor: egresosLeerVoucher (EgresosMigracion.gs). */
+  async function _egrIaLeer(file){
+    if (!EGR_IA_VOUCHER || typeof apiPost !== 'function' || !/^image\//.test(file.type || '')) return null;
+    try {
+      const c = typeof _comprimirConstancia === 'function' ? await _comprimirConstancia(file) : null;
+      if (!c || !c.base64) return null;
+      const r = await apiPost('egresos.leerVoucher', { imageBase64: c.base64, mimeType: c.mimeType || 'image/jpeg' });
+      if (!r || r.apagado) return null;
+      const set = (id, v) => { const x = document.getElementById(id); if (x && !x.value && v != null && v !== '') x.value = v; };
+      if (r.moneda === 'USD') { _egrChipMarcar('egr-moneda', 'USD'); _egrMonedaCambio(); }
+      set('egr-monto', r.monto); set('egr-concepto', r.concepto);
+      if (r.fecha && /^\d{4}-\d{2}-\d{2}$/.test(r.fecha) && r.fecha <= _egrHoy()) { const f = document.getElementById('egr-fecha'); if (f) f.value = r.fecha; }
+      if (r.categoria && EGR_CATEGORIAS.indexOf(r.categoria) >= 0 && !((document.getElementById('egr-cat') || {}).value)) _egrChipMarcar('egr-cat', r.categoria);
+      return r;
+    } catch (_) { return null; }
+  }
+  /** Guarda por la puerta rápida (valida en la base y frena el doble toque); si el SQL de la fase 5 aún no corrió, por la de siempre. */
+  async function _egrGuardarBase(p){
+    if (!EGR.rapidoNo) {
+      try { return await _egrRpc('egreso_registrar_rapido', { p: p }); }
+      catch (e) { if (!/egreso_registrar_rapido|PGRST202|Could not find the function|Error 404/i.test(String((e && e.message) || ''))) throw e; EGR.rapidoNo = true; }
+    }
+    return _egrRpc('egreso_guardar', { p: p });
+  }
   window._egrGuardar = async function(){
     const val = id => (document.getElementById(id) || {}).value || '';
     const err = document.getElementById('egr-err'); err.textContent = '';
-    const btn = document.getElementById('egr-guardar'); btn.disabled = true; const txt0 = btn.textContent; btn.textContent = 'Guardando...';
+    if (EGR.guardando) return;
+    const btn = document.getElementById('egr-guardar');
+    const t0 = Date.now();
+    const usd = val('egr-moneda') === 'USD';
+    const conf = !!(document.getElementById('egr-conf') || {}).checked;
+    const origen = String(val('egr-origen')).toUpperCase().trim();
+    const quienSel = String(val('egr-quien-v')).toUpperCase().trim();
+    const fl = (document.getElementById('egr-foto') || {}).files;
+    const archivo = (fl && fl[0]) || (EGR.foto && EGR.foto.file) || null;
+    const p = {
+      id: EGR.editando ? EGR.editando.id : null, fecha: val('egr-fecha'), moneda: usd ? 'USD' : 'PEN',
+      monto: usd ? null : val('egr-monto'), monto_original: usd ? val('egr-monto') : null, tipo_cambio: usd ? val('egr-tc') : null,
+      concepto: String(val('egr-concepto')).trim(), categoria: String(val('egr-cat')).toUpperCase(), origen: origen,
+      pagado_por: EGR.quienManual && quienSel ? quienSel : _egrPagadoPor(origen), lote_caja_chica: origen === 'CAJA CHICA' ? val('egr-lote') : '',
+      confidencial: conf, foto_path: null
+    };
+    const msg = _egrValidar(p, !!archivo || !!(EGR.editando && EGR.editando.foto_path));
+    if (msg) { err.textContent = msg; return; }
+    EGR.guardando = true; btn.disabled = true; const txt0 = btn.textContent; btn.textContent = 'Guardando...';
     try {
-      const usd = val('egr-moneda') === 'USD';
-      const conf = !!(document.getElementById('egr-conf') || {}).checked;
-      const f = (document.getElementById('egr-foto') || {}).files;
-      let foto = null;
-      if (f && f[0]) foto = await _egrSubirFoto(f[0], conf);
-      const p = {
-        id: EGR.editando ? EGR.editando.id : null, fecha: val('egr-fecha'), moneda: usd ? 'USD' : 'PEN',
-        monto: usd ? null : val('egr-monto'), monto_original: usd ? val('egr-monto') : null, tipo_cambio: usd ? val('egr-tc') : null,
-        concepto: val('egr-concepto'), categoria: val('egr-cat'), origen: val('egr-origen'),
-        pagado_por: _egrPagadoPor(val('egr-origen')), lote_caja_chica: val('egr-origen') === 'CAJA CHICA' ? val('egr-lote') : '',
-        confidencial: conf, foto_path: foto
-      };
-      const r = await _egrRpc('egreso_guardar', { p: p });
-      toast((EGR.editando ? 'Egreso actualizado' : 'Egreso registrado') + ': ' + _egrSoles(r.monto) + ' · ' + (r.rubro || ''), 'ok');
-      EGR.editando = null; EGR.mes = String(r.fecha).slice(0, 7);
-      if (p.id) { EGR.tab = 'lista'; _egrPintar(); } else _egrForm();
-    } catch (e) { err.textContent = e.message || String(e); btn.disabled = false; btn.textContent = txt0; }
+      if (archivo) {
+        let ruta = null;
+        if (EGR.foto && EGR.foto.file === archivo && EGR.foto.conf === conf) { try { ruta = await EGR.foto.prom; } catch (_) { ruta = null; } }
+        if (!ruta) ruta = await _egrSubirFoto(await _egrPrepararFoto(archivo), conf);
+        p.foto_path = ruta;
+      }
+      const r = await _egrGuardarBase(p);
+      const seg = ((Date.now() - t0) / 1000).toFixed(1);
+      if (p.lote_caja_chica) { try { localStorage.setItem('egr_lote', p.lote_caja_chica); } catch (_) {} }
+      toast((r && r.duplicado ? 'Ya estaba registrado (doble toque): no se duplicó' : (EGR.editando ? 'Egreso actualizado' : 'Egreso registrado')) + ': ' + _egrSoles(r.monto) + ' · ' + seg + ' s', 'ok');
+      const edit = !!p.id;
+      EGR.editando = null; EGR.foto = null; EGR.quienManual = false; EGR.mes = String(r.fecha).slice(0, 7);
+      EGR.guardando = false;
+      if (edit) { EGR.tab = 'lista'; _egrPintar(); } else { _egrForm(); _egrListo(r); }
+    } catch (e) { EGR.guardando = false; err.textContent = e.message || String(e); btn.disabled = false; btn.textContent = txt0; }
   };
+  /** Después de registrar: aviso con ✕ y el mensaje para el grupo listo para copiar. */
+  function _egrListo(r){
+    EGR.ultimo = r;
+    const c = document.getElementById('egr-cuerpo');
+    if (c && c.insertAdjacentHTML) c.insertAdjacentHTML('afterbegin', '<div class="card egr-ok" id="egr-ok"><span style="flex:1">✓ Egreso #' + Number(r.id) + ' · ' + _egrSoles(r.monto) + '</span>' +
+      '<button class="btn bp bs" onclick="_egrWa(EGR_ULTIMO())">📲 Mensaje para el grupo</button><button class="btn bg bs" title="Cerrar" onclick="var x=document.getElementById(\'egr-ok\');if(x)x.remove()">✕</button></div>');
+    _egrWa(r);
+  }
+  window.EGR_ULTIMO = () => EGR.ultimo;
+  /** Mensaje para el grupo de WhatsApp: el 👍 = «ya está registrado en el ERP» (la contadora lo pasa sin preguntar). */
+  function _egrTextoWa(r, quien){
+    const S = n => { const x = Math.round((parseFloat(n) || 0) * 100) / 100; return 'S/' + (Number.isInteger(x) ? String(x) : x.toFixed(2)); };
+    const F = v => { const m = String(v || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? m[3] + '/' + m[2] + '/' + m[1] : String(v || ''); };
+    const pago = Number(r.pago_ana) > 0 ? 'Ana (se le reembolsa)' : Number(r.pago_pablo) > 0 ? 'Pablo (se le reembolsa)' : 'Empresa';
+    const L = ['👍 REGISTRADO EN ERP · EGRESO #' + r.id, '📅 ' + F(r.fecha), '💸 ' + S(r.monto) + ' · ' + (EGR_CAT_TXT[r.categoria] || r.categoria || '')];
+    if (r.moneda === 'USD') L.push('💵 US$' + r.monto_original + ' × ' + r.tipo_cambio);
+    L.push('📝 ' + String(r.concepto || '').trim());
+    L.push('🏦 Desde: ' + (r.origen || '—') + ' · Pagó: ' + pago);
+    if (r.lote_caja_chica) L.push('🪙 Lote caja chica: ' + r.lote_caja_chica);
+    if (r.confidencial) L.push('🔒 Confidencial');
+    L.push(r.foto_path ? '📎 Adjunto el voucher' : '💵 Efectivo: sin voucher');
+    if (quien) L.push('👤 Registró: ' + quien);
+    return L.join('\n');
+  }
+  window._egrTextoWa = _egrTextoWa;
+  function _egrQuienSoy(){ try { return (typeof MY_ASESORA !== 'undefined' && MY_ASESORA) || String(typeof MY_EMAIL !== 'undefined' ? MY_EMAIL : '').split('@')[0]; } catch (_) { return ''; } }
+  window._egrWa = function(r){
+    if (!r || typeof _waVentana !== 'function') return;
+    _waVentana({ titulo: 'Egreso #' + r.id + ' · ' + _egrSoles(r.monto),
+      armar: () => ({ texto: _egrTextoWa(r, _egrQuienSoy()), avisos: r.foto_path || !_egrFotoObligatoria(r.origen) ? [] : ['Este egreso no tiene foto del voucher'] }),
+      alCopiar: st => { if (!r.confidencial && typeof _waRegistrarBase === 'function') _waRegistrarBase({ clase: 'egreso', nro: '', ref: 'EGR-' + r.id, tipo: 'EGRESO', texto: st._texto }); } });
+  };
+  window._egrWaDesdeLista = function(id){ const x = (EGR.filas || []).find(f => Number(f.id) === Number(id)); if (x) _egrWa(x); };
+  (function(){ try { if (document.getElementById('egr5-css')) return; const st = document.createElement('style'); st.id = 'egr5-css';
+    st.textContent = '#egr-w .egr-chips{display:flex;flex-wrap:wrap;gap:6px}#egr-w .egr-c{padding:7px 12px;min-height:36px;border-radius:18px;border:1px solid var(--bd);background:var(--bg3);color:var(--tx);font-family:inherit;font-size:13px;font-weight:500;cursor:pointer}#egr-w .egr-c.on{background:var(--ac2);border-color:var(--ac2);color:#fff}' +
+      '#egr-w .egr-fotob{display:flex;align-items:center;justify-content:center;gap:8px;padding:14px;min-height:52px;border:1px dashed var(--bd);border-radius:12px;background:var(--bg3);cursor:pointer;font-size:14px;font-weight:600}#egr-w .egr-fotob input{display:none}' +
+      '#egr-w .egr-lbl{font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase;letter-spacing:.06em;margin:12px 0 6px}#egr-w input.egr-monto{flex:1;min-width:0;font-size:22px;font-weight:600;padding:8px 12px}' +
+      '#egr-w .egr-form input:not([type=checkbox]):not([type=file]){width:100%;box-sizing:border-box;min-height:40px}#egr-w .egr-ok{display:flex;align-items:center;gap:8px;border-color:var(--gn);margin-bottom:12px}' +
+      '@media(max-width:640px){#egr-w .egr-form{max-width:none}}';
+    document.head.appendChild(st); } catch (_) {} })();
 
   // ── Lista del mes ──
   async function _egrLista(){
@@ -45685,6 +45893,7 @@ startAuth();
         '<td>' + _egrEsc(x.origen || '') + '</td>' +
         '<td class="n">' + _egrSoles(x.monto) + (x.moneda === 'USD' ? '<div style="color:var(--mu);font-size:11px">US$' + _egrEsc(x.monto_original) + ' × ' + _egrEsc(x.tipo_cambio) + '</div>' : '') + '</td>' +
         '<td style="white-space:nowrap">' + (x.foto_path ? '<button class="btn bs" onclick="_egrVerFoto(\'' + _egrEsc(x.foto_path) + '\')">📎</button> ' : '') +
+        (x.fuente === 'erp' ? '<button class="btn bs" title="Mensaje para el grupo" onclick="_egrWaDesdeLista(' + Number(x.id) + ')">📲</button> ' : '') +   /* 27-oct · fase 5 */
         (edita ? '<button class="btn bs" onclick="_egrEditar(' + Number(x.id) + ')">✏️</button> ' : '') +
         (admin ? '<button class="btn bs" onclick="_egrBorrar(' + Number(x.id) + ')">🗑</button>' : '') + '</td></tr>').join('') +
       '</tbody></table></div>';
@@ -45891,6 +46100,96 @@ startAuth();
     if (!ok) return;
     try { const r = await _egrRpc('caja_chica_reponer', { p_lote: lote, p_fecha: _egrHoy(), p_monto: pendiente }); toast('Lote ' + lote + ': ' + ((r && r.estado) || 'registrado'), 'ok'); _egrCaja(); }
     catch (e) { toast(e.message, 'err'); }
+  };
+
+  // ── Egresos ERP vs Drive del mes · 27-oct-2026 (Pablo, fase 5) · pestaña 8 de «Cuadre ERP vs Drive» ──
+  // Compara egreso por egreso lo que hay en el ERP (erp.egresos del mes) con la copia del Drive (hojas Egr + Confi,
+  // erp.egresos_drive_espejo, la rehace egresosDriveCopiar cada 2 h). Empareja por monto y fecha (±0, ±1, ±3 días; primero la
+  // misma cuenta). Caja chica: el Drive anota el lote entero en una fila; se compara con la suma de los gastos del lote en el ERP.
+  // La pauta de Meta va aparte (el ERP la toma sola de Meta). No escribe nada.
+  function _egrLoteNorm(s){
+    let t = String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    t = t.replace(/CAJA\s*CHICA/g, ' ').replace(/\bDEL\b/g, ' ').replace(/\bDE\b/g, ' ').replace(/SEPTIEMBRE/g, 'SETIEMBRE');
+    return t.replace(/\s+/g, ' ').trim();
+  }
+  window._egrLoteNorm = _egrLoteNorm;
+  const EGR_PAUTA_RX = /(FACEBOOK ADS|META ADS)/i;
+  function _egrCruzar(E, D){
+    const num = v => Math.round((parseFloat(v) || 0) * 100) / 100;
+    const dd = (a, b) => Math.abs((new Date(String(a).slice(0, 10) + 'T12:00:00Z') - new Date(String(b).slice(0, 10) + 'T12:00:00Z')) / 864e5);
+    const esPauta = x => x.fuente === 'meta_auto' || EGR_PAUTA_RX.test(String(x.concepto || ''));
+    const arma = x => ({ x: x, m: num(x.monto), f: String(x.fecha || x.periodo || '').slice(0, 10), o: String(x.origen || '').toUpperCase().trim(), par: null });
+    const e = [], d = [], pauta = { erp: 0, drive: 0 };
+    (E || []).forEach(x => { if (esPauta(x)) pauta.erp += num(x.monto); else e.push(arma(x)); });
+    (D || []).forEach(x => { if (esPauta(x)) pauta.drive += num(x.monto); else d.push(arma(x)); });
+    const pares = [];
+    for (const mismaCuenta of [true, false]) for (const tol of [0, 1, 3]) for (const a of e) {
+      if (a.par) continue;
+      const k = d.findIndex(b => !b.par && Math.abs(a.m - b.m) < 0.05 && dd(a.f, b.f) <= tol && (!mismaCuenta || a.o === b.o));
+      if (k >= 0) { a.par = d[k]; d[k].par = a; pares.push({ erp: a.x, drive: d[k].x, dias: dd(a.f, d[k].f) }); }
+    }
+    const lotes = [];
+    d.filter(b => !b.par && String(b.x.categoria || '').toUpperCase() === 'CAJA CHICA').forEach(b => {
+      const L = _egrLoteNorm(b.x.lote_caja_chica || b.x.concepto); if (!L) return;
+      const g = e.filter(a => !a.par && a.o === 'CAJA CHICA' && _egrLoteNorm(a.x.lote_caja_chica) === L);
+      if (!g.length) return;
+      const s = num(g.reduce((t, a) => t + a.m, 0)), ok = Math.abs(s - b.m) < 1;
+      if (ok) { g.forEach(a => { a.par = b; }); b.par = g; }
+      lotes.push({ lote: L, erp: s, drive: b.m, gastos: g.length, cuadra: ok });
+    });
+    const soloErp = e.filter(a => !a.par).map(a => a.x).sort((x, y) => num(y.monto) - num(x.monto));
+    const soloDrive = d.filter(b => !b.par).map(b => b.x).sort((x, y) => num(y.monto) - num(x.monto));
+    return { pares: pares, lotes: lotes, soloErp: soloErp, soloDrive: soloDrive,
+      totE: num(e.reduce((t, a) => t + a.m, 0)), totD: num(d.reduce((t, b) => t + b.m, 0)),
+      pauta: { erp: num(pauta.erp), drive: num(pauta.drive) }, fechaDistinta: pares.filter(p => p.dias > 0) };
+  }
+  window._egrCruzar = _egrCruzar;
+  const EGRC = {};
+  function _egrCruceMes(){ return typeof _cdPagosMes === 'function' ? _cdPagosMes() : _egrMesAnterior(); }
+  window._egrCruceAsegurar = async function(){
+    const mes = _egrCruceMes(); if (EGRC[mes] || EGRC['_c' + mes]) return;
+    EGRC['_c' + mes] = 1;
+    try {
+      const [y, m] = mes.split('-').map(Number), hasta = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+      const [E, Dr] = await Promise.all([_egrRpc('egresos_listar', { p_desde: mes + '-01', p_hasta: hasta }), _egrRpc('egresos_drive_listar', { p_mes: mes })]);
+      const filasD = (Dr && Dr.filas) || [];
+      const R = _egrCruzar(Array.isArray(E) ? E : [], filasD);
+      R.leido = Dr && Dr.leido_at; R.nDrive = filasD.length;
+      EGRC[mes] = R;
+      if (typeof CD !== 'undefined' && mes === _egrCruceMes()) CD.egrN = R.soloErp.length + R.soloDrive.length;
+    } catch (e) {
+      const t = String((e && e.message) || e);
+      EGRC[mes] = { err: /egresos_drive_listar|PGRST202|Could not find the function/i.test(t) ? 'Falta correr PEGAR_EN_SUPABASE_fase5_egresos_27oct.sql en Supabase' : t };
+    }
+    delete EGRC['_c' + mes];
+    if (typeof CD !== 'undefined' && CD.tab === 8 && typeof _cdPintar === 'function') _cdPintar();
+  };
+  window._egrCruceRehacer = function(){ delete EGRC[_egrCruceMes()]; if (typeof CD !== 'undefined') CD.egrN = null; if (typeof _cdPintar === 'function') _cdPintar(); };
+  window._egrCruceHtml = function(){
+    const mes = _egrCruceMes(), R = EGRC[mes];
+    const td = (v, n) => '<td style="padding:5px 8px;vertical-align:top' + (n ? ';text-align:right;white-space:nowrap' : '') + '">' + v + '</td>';
+    const th = (v, n) => '<th style="padding:6px 8px;text-align:' + (n ? 'right' : 'left') + '">' + v + '</th>';
+    let h = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px"><span class="ui-nota">Mes</span>' +
+      '<input type="month" value="' + mes + '" onchange="CD.egrN=null;_cdPagosSetMes(this.value)" style="background:var(--bg3);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:4px 8px;color-scheme:dark">' +
+      '<button class="btn bg bs" title="Volver a comparar" onclick="_egrCruceRehacer()">🔄</button>';
+    if (!R) return h + '</div>' + (typeof spin === 'function' ? spin('Comparando los egresos del mes…') : 'Comparando…');
+    if (R.err) return h + '</div><div style="color:var(--rd)">No se pudo comparar: ' + _egrEsc(R.err) + '</div>';
+    const dif = R.totE - R.totD;
+    h += '<span class="ui-nota">ERP <b>' + _egrSoles(R.totE) + '</b> · Drive <b>' + _egrSoles(R.totD) + '</b> · diferencia <b style="color:' + (Math.abs(dif) < 1 ? 'var(--gn)' : 'var(--am)') + '">' + _egrSoles(dif) + '</b> · ' + R.pares.length + ' cuadran' +
+      (R.leido ? ' · Drive copiado ' + new Date(R.leido).toLocaleString('es-PE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '') + '</span></div>';
+    if (!R.nDrive) h += '<div class="ui-nota" style="color:var(--am);margin-bottom:8px">Sin copia del Drive de ese mes: se copian el mes actual y el anterior cada 2 h (egresosDriveCopiar, EgresosMigracion.gs).</div>';
+    if (R.pauta.erp || R.pauta.drive) h += '<div class="ui-nota" style="margin-bottom:6px">Pauta Meta (aparte, el ERP la toma sola de Meta): ERP ' + _egrSoles(R.pauta.erp) + ' · Drive ' + _egrSoles(R.pauta.drive) + '</div>';
+    const filas = [];
+    R.soloDrive.forEach(x => filas.push(['Falta en el ERP', x, 'Estefany / Roxana / Ana lo registran en Egresos (con su voucher)']));
+    R.soloErp.forEach(x => filas.push(['Falta en el Drive', x, 'la contadora lo anota en el Drive (si es repetido, Pablo lo borra del ERP)']));
+    R.fechaDistinta.forEach(p => filas.push(['Fecha distinta (' + p.dias + ' d)', p.erp, 'se corrige el lado que no coincide con el voucher (Drive ' + String(p.drive.fecha || '').slice(5) + ')']));
+    R.lotes.filter(l => !l.cuadra).forEach(l => filas.push(['Caja chica ' + l.lote, { fecha: '', concepto: l.gastos + ' gastos en el ERP · Drive ' + _egrSoles(l.drive), categoria: 'CAJA CHICA', origen: 'CAJA CHICA', monto: l.erp - l.drive }, 'se revisa el lote: falta o sobra un gasto']));
+    if (!filas.length) return h + '<div style="padding:24px;text-align:center;color:var(--gn);font-weight:600">✅ Los egresos del mes cuadran egreso por egreso</div>';
+    h += '<div style="overflow:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr>' + th('Caso') + th('Fecha') + th('Concepto') + th('Categoría') + th('Desde') + th('Monto', 1) + th('Quién lo corrige') + '</tr></thead><tbody>' +
+      filas.map(f => { const x = f[1]; return '<tr>' + td(_egrEsc(f[0])) + td(_egrEsc(String(x.fecha || '').slice(5, 10))) + td(_egrEsc(x.concepto || '') + (x.fila_drive ? ' <span class="ui-nota">(' + (x.fuente === 'drive_confi' ? 'Confi' : 'Egr') + ' fila ' + Number(x.fila_drive) + ')</span>' : '') + (x.id ? ' <span class="ui-nota">#' + Number(x.id) + '</span>' : '')) +
+        td(_egrEsc(x.categoria || '')) + td(_egrEsc(x.origen || '')) + td(_egrSoles(x.monto), 1) + td('<span class="ui-nota">' + _egrEsc(f[2]) + '</span>') + '</tr>'; }).join('') +
+      '</tbody></table></div><div class="ui-nota" style="margin-top:6px">Egreso por egreso, por monto y fecha (±3 días; primero la misma cuenta). Revisar el voucher antes de corregir: no es ajustar por ajustar.</div>';
+    return h;
   };
 })();
 // ============ FIN EGRESOS ============
