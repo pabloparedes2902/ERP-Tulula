@@ -277,8 +277,8 @@ function _comNivelTxt(lv) { lv = Number(lv) || 0; return lv > 0 ? lv + '° Nivel
 function _comFilaPromedio(cumpl, tiers) {
   var lv = nivelDe(Number(cumpl) || 0, tiers);
   return '<div class="com-row" style="border-top:2px solid var(--bd);margin-top:4px;padding-top:10px">' +
-           '<span style="font-weight:700">Promedio equipo</span>' +
-           '<span style="font-weight:700;color:' + NIVEL_COLOR[lv] + '">' + p2(Number(cumpl) || 0) +
+           '<span style="font-weight:600">Promedio equipo</span>' +
+           '<span style="font-weight:600;color:' + NIVEL_COLOR[lv] + '">' + p2(Number(cumpl) || 0) +
              ' · ' + _comNivelTxt(lv) + '</span>' +
          '</div>';
 }
@@ -297,7 +297,7 @@ function medalla(i) {
   return '<svg width="24" height="24" viewBox="0 0 24 24" style="flex-shrink:0" aria-label="Puesto ' + (i + 1) + '">' +
     '<circle cx="12" cy="14" r="7" fill="' + m.fill + '" stroke="' + m.borde + '" stroke-width="1.5"/>' +
     '<path d="M8 2l2 5M16 2l-2 5" stroke="' + m.borde + '" stroke-width="1.5" fill="none"/>' +
-    '<text x="12" y="17.5" text-anchor="middle" font-size="8" font-weight="700" fill="' + m.borde + '">' +
+    '<text x="12" y="17.5" text-anchor="middle" font-size="11" font-weight="600" fill="' + m.borde + '">' +
       (i + 1) + '</text></svg>';
 }
 
@@ -468,7 +468,7 @@ function barra(cumpl, alto, color, tiers, conMarcas) {
         '<div style="position:absolute;left:' + x + '%;top:0;bottom:0;width:1px;' +
              'background:var(--bd2);opacity:' + (esNivel ? '.9' : '.4') + '"></div>' +
         '<div style="position:absolute;left:' + x + '%;top:100%;transform:translateX(-50%);' +
-             'margin-top:3px;font-size:9px;color:var(--mu);' +
+             'margin-top:3px;font-size:11px;color:var(--mu);' +
              (esNivel ? 'font-weight:600' : '') + '">' + p + '%</div>';
     }
   }
@@ -497,13 +497,13 @@ function inyectarEstilos() {
     '.com-bar-mks{position:absolute;inset:0;pointer-events:none;z-index:3}',
     '.com-bar-mks{position:absolute;inset:0;pointer-events:none}',
     '.com-mk{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--bd2)}',
-    '.com-mk span{position:absolute;top:-15px;left:-10px;font-size:10px;color:var(--mu)}',
+    '.com-mk span{position:absolute;top:-15px;left:-10px;font-size:11px;color:var(--mu)}',
     '.com-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}',
     '.com-row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--bd);font-size:13px}',
     '.com-row:last-child{border-bottom:none}',
-    '.com-nom{font-size:18px;font-weight:600;letter-spacing:-.3px}',
+    '.com-nom{font-size:14px;font-weight:600;letter-spacing:-.3px}',
     '.com-sub{font-size:12px;color:var(--mu);margin-top:3px}',
-    '.com-big{font-size:26px;font-weight:700;letter-spacing:-.5px}',
+    '.com-big{font-size:22px;font-weight:600;letter-spacing:-.5px}',
     '.com-mut{color:var(--mu)}',
     '.com-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}',
 '.com-mts{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;align-items:stretch}',
@@ -944,7 +944,7 @@ function tarjetaEquipo(R, P, qTxt, meses, year) {
 
   return '<div class="card">' +
     '<div class="ct">Cumplimiento del equipo · ' + esc(qTxt) + '</div>' +
-    '<div style="font-size:22px;font-weight:700;color:' + NIVEL_COLOR[R.level] + '">' +
+    '<div style="font-size:22px;font-weight:600;color:' + NIVEL_COLOR[R.level] + '">' +
       p2(R.teamCumpl) + ' · ' + NIVEL_NOMBRE[R.level] +
     '</div>' +
     '<div style="margin-top:26px">' + barra(R.teamCumpl, 24, NIVEL_COLOR[R.level], R.tiers, true) + '</div>' +
@@ -976,9 +976,9 @@ function tarjetaRanking(R, qTxt) {
     return '<div class="com-row">' +
              '<div style="display:flex;align-items:center;gap:12px">' +
                medalla(i) +
-               '<span style="font-weight:500;font-size:15px">' + esc(o.nombre) + '</span>' +
+               '<span style="font-weight:500;font-size:14px">' + esc(o.nombre) + '</span>' +
              '</div>' +
-             '<span style="font-weight:700;font-size:18px;color:' + NIVEL_COLOR[lv] + '">' + p2(o.cumpl) + '</span>' +
+             '<span style="font-weight:600;font-size:14px;color:' + NIVEL_COLOR[lv] + '">' + p2(o.cumpl) + '</span>' +
            '</div>';
   }).join('');
 
@@ -1042,9 +1042,9 @@ function tarjetaAsesora(r, proy, R, meses, idxAsesora) {
 
     '<div style="margin-top:18px;border-top:1px solid var(--bd);padding-top:4px">' +
       '<div class="com-row"><span class="com-mut">Margen del trimestre</span>' +
-        '<span style="font-weight:600;font-size:16px">' + fmt(r.sumMar) + '</span></div>' +
+        '<span style="font-weight:600;font-size:14px">' + fmt(r.sumMar) + '</span></div>' +
       '<div class="com-row"><span class="com-mut">Bono acumulado</span>' +
-        '<span style="font-weight:700;font-size:18px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' +
+        '<span style="font-weight:600;font-size:14px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' +
           f2(r.bono) + '</span></div>' +
       '<div class="com-row"><span class="com-mut">Proyección al cierre</span>' +
         '<span style="font-weight:600;color:' + (proy.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(proy.bono) +
@@ -1242,7 +1242,7 @@ function renderPreviewTrim(d, year, q) {
     return '<div style="padding:12px 0;border-bottom:1px solid var(--bd)">' +
       '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">' +
         '<div>' +
-          '<b style="font-size:15px">' + esc(r.nombre) + '</b> ' +
+          '<b style="font-size:14px">' + esc(r.nombre) + '</b> ' +
           '<span style="color:' + NIVEL_COLOR[lv] + ';font-weight:600">' + r.cumpl + '%</span>' +
           '<div class="ml" style="margin-top:4px">margen ' + fmt(r.margen) + ' · tasa ' + r.rate + '%</div>' +
         '</div>' +
@@ -1270,7 +1270,7 @@ function renderPreviewTrim(d, year, q) {
     '<div style="display:flex;justify-content:space-between;align-items:center;' +
          'flex-wrap:wrap;gap:8px;margin-bottom:6px;font-weight:600">' +
       '<span>' + estadoEquipo + '</span>' +
-      '<span>Total a pagar: <span style="color:var(--gn);font-size:18px" id="ct-total">' +
+      '<span>Total a pagar: <span style="color:var(--gn);font-size:14px" id="ct-total">' +
         f2(d.total) + '</span></span>' +
     '</div>' +
     filas +
@@ -1713,7 +1713,7 @@ function tarjetaAnomalias(historico) {
           ' · su promedio venía siendo ' + fmt(a.promedio) +
         '</div>' +
       '</div>' +
-      '<b style="color:' + col + ';font-size:16px;white-space:nowrap">' +
+      '<b style="color:' + col + ';font-size:14px;white-space:nowrap">' +
         flecha + ' ' + Math.abs(a.desvio).toFixed(0) + '%</b>' +
     '</div>';
   }).join('');
@@ -1877,14 +1877,14 @@ function tarjetaAsesoraAdmin(a, d, x, idx) {
     '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;' +
          'flex-wrap:wrap;cursor:pointer" onclick="comAseToggle(' + idx + ')">' +
       '<div>' +
-        '<span style="font-size:16px;font-weight:600">' + esc(a.nombre) + '</span>' +
+        '<span style="font-size:14px;font-weight:600">' + esc(a.nombre) + '</span>' +
         '<span class="com-mut" style="font-size:12px;margin-left:10px">' +
           'base ' + fmt(a.base) + ' · ingreso ' + esc(a.desde || 'sin fecha') + ' · ' +
           mesesActivos + '/12 meses activos' +
           (activa ? '' : ' · <span style="color:var(--rd)">inactiva</span>') +
         '</span>' +
       '</div>' +
-      '<span class="com-mut" style="font-size:18px">' + (abierta ? '−' : '+') + '</span>' +
+      '<span class="com-mut" style="font-size:14px">' + (abierta ? '−' : '+') + '</span>' +
     '</div>';
 
   if (!abierta) return '<div class="card">' + resumen + '</div>';
@@ -2416,7 +2416,7 @@ function graficoBarras(filas, niveles, titulo) {
       '<line x1="' + mIzq + '" y1="' + yy + '" x2="' + (W - mDer) + '" y2="' + yy + '" ' +
         'stroke="var(--bd)" stroke-width="1.5" opacity=".5"/>' +
       '<text x="' + (mIzq - 12) + '" y="' + (yy + 5) + '" text-anchor="end" ' +
-        'font-size="15" fill="var(--mu)">S/' + kk(val) + '</text>';
+        'font-size="14" fill="var(--mu)">S/' + kk(val) + '</text>';
   }
 
   // Barras + etiquetas del eje X
@@ -2440,7 +2440,7 @@ function graficoBarras(filas, niveles, titulo) {
 
     if (i % saltar === 0) {
       etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 24) + '" ' +
-                     'text-anchor="middle" font-size="15" fill="var(--mu)">' + esc(r.label) + '</text>';
+                     'text-anchor="middle" font-size="14" fill="var(--mu)">' + esc(r.label) + '</text>';
       if (r.sub) {
         etiquetas += '<text x="' + cx.toFixed(1) + '" y="' + (H - mAba + 43) + '" ' +
                        'text-anchor="middle" font-size="13" fill="var(--mu)">' + esc(r.sub) + '</text>';
@@ -2458,7 +2458,7 @@ function graficoBarras(filas, niveles, titulo) {
     refs +=
       '<line x1="' + mIzq + '" y1="' + yy + '" x2="' + (W - mDer) + '" y2="' + yy + '" ' +
         'stroke="' + col + '" stroke-width="2.5"/>' +
-      '<text x="' + (W - mDer + 8) + '" y="' + (yy + 5) + '" font-size="15" ' +
+      '<text x="' + (W - mDer + 8) + '" y="' + (yy + 5) + '" font-size="14" ' +
         'font-weight="600" fill="' + col + '">S/' + kk(n.ref || 0) + '</text>';
 
     leyenda += '<span style="display:inline-flex;align-items:center;gap:6px;margin-right:16px">' +
@@ -2770,7 +2770,7 @@ function bannerCelebracion(d, nivel) {
   if (isNaN(previo) || previo < 0 || nivel <= previo) return '';
   return '<div class="card" style="border-color:var(--gn);text-align:center">' +
     '<div style="font-size:20px">🎉</div>' +
-    '<div style="font-weight:700;color:var(--gn)">¡Subiste al ' + nivel + '° nivel!</div>' +
+    '<div style="font-weight:600;color:var(--gn)">¡Subiste al ' + nivel + '° nivel!</div>' +
     '<div class="ml">Tu comisión creció. Sigue así.</div>' +
   '</div>';
 }
@@ -3021,7 +3021,7 @@ function pintarVerComo(d, real) {
   var cabecera = real
     ? '<div style="display:flex;justify-content:space-between;align-items:center;' +
         'gap:10px;margin-bottom:14px;max-width:1200px;margin-left:auto;margin-right:auto">' +
-        '<div style="font-size:17px;font-weight:600">' +
+        '<div style="font-size:14px;font-weight:600">' +
           (VEND.preview ? 'Así lo ve ' + esc(VEND.preview.nombre) : 'Mis comisiones') + '</div>' +
         '<div style="display:flex;gap:8px;align-items:center">' +
           vendSelector() +
@@ -3048,7 +3048,7 @@ function pintarVerComo(d, real) {
         (cerrado ? '<div class="com-sub"><b style="color:var(--gn)">Trimestre cerrado ✓</b></div>' : '') +   // 9-oct: sin el periodo (ya esta en el filtro)
         '<div style="text-align:center;margin:20px 0 8px">' +
           '<div class="ml">' + (cerrado ? 'Tu comisión' : 'Tu comisión del trimestre') + '</div>' +
-          '<div style="font-size:36px;font-weight:700;letter-spacing:-1px;' +
+          '<div style="font-size:22px;font-weight:600;letter-spacing:-1px;' +
                'color:' + (bonoVer > 0 ? 'var(--gn)' : 'var(--mu)') + '">' + f2(bonoVer) + '</div>' +
           (cerrado
             ? (mesesCerradoTxt ? '<div class="ml">' + esc(mesesCerradoTxt) + '</div>' : '')
@@ -3237,8 +3237,8 @@ function tarjetaEscenario() {
 
     return '<div style="padding:14px 0;border-bottom:1px solid var(--bd)">' +
       '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap">' +
-        '<b style="font-size:15px">' + esc(f.nombre) + '</b>' +
-        '<span style="font-weight:700;font-size:17px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' +
+        '<b style="font-size:14px">' + esc(f.nombre) + '</b>' +
+        '<span style="font-weight:600;font-size:14px;color:' + (r.bono > 0 ? 'var(--gn)' : 'var(--mu)') + '">' +
           f2(r.bono) + '</span>' +
       '</div>' +
       '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">' +
@@ -3474,7 +3474,7 @@ function filaVendedora(email, v, i, estilo) {
               'padding:14px;margin-bottom:10px;position:relative">' +
     '<button onclick="this.parentNode.remove()" title="Quitar" ' +
             'style="position:absolute;top:10px;right:12px;background:none;border:none;' +
-            'color:var(--mu);cursor:pointer;font-size:18px;line-height:1">×</button>' +
+            'color:var(--mu);cursor:pointer;font-size:14px;line-height:1">×</button>' +
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">' +
       '<div><div class="ml" style="margin-bottom:3px">Nombre</div>' +
         '<input class="cv-nombre" value="' + esc(v.nombre || '') + '" style="' + estilo + ';width:100%"></div>' +
@@ -4901,7 +4901,7 @@ function _comOfCelebrar(d, R, yo) {
   var html = avisos.map(function (a) {
     return '<div class="card" style="border-color:var(--gn);text-align:center">' +
       '<div style="font-size:22px">' + a[0] + '</div>' +
-      '<div style="font-weight:700;color:var(--gn)">' + esc(a[1]) + '</div>' +
+      '<div style="font-weight:600;color:var(--gn)">' + esc(a[1]) + '</div>' +
       '<div class="ml">' + esc(a[2]) + '</div>' +
     '</div>';
   }).join('');
@@ -5167,18 +5167,18 @@ function _comOfMetaDia(d) {
   // una semana cumplidos (Angie 5, Dayann 5, Lucia 2). Hoy cuenta solo si ya cumplio.
   var porSemana = e.diasSemana || 7, semanas = Math.floor((e.racha || 0) / porSemana), chip = '';
   if (semanas >= 1) {
-    chip = '<span style="font-size:13px;font-weight:700;color:var(--am)">🔥 ¡Semana completa!' +
+    chip = '<span style="font-size:13px;font-weight:600;color:var(--am)">🔥 ¡Semana completa!' +
            (semanas >= 2 ? ' ×' + semanas : '') + '</span>';
   }
   _comOfFiestaHoy(d, e, porSemana);
   var cuerpo;
   if (e.mesCompleto) {
-    cuerpo = '<div style="font-size:15px;color:var(--gn);font-weight:700">🏆 ¡Cumpliste el 100% de tu meta del mes!</div>' +
+    cuerpo = '<div style="font-size:14px;color:var(--gn);font-weight:600">🏆 ¡Cumpliste el 100% de tu meta del mes!</div>' +
              '<div class="ml" style="margin-top:4px">Todo lo que vendas ahora suma a tu comisión del trimestre.</div>';
   } else {
     var pct = e.objV > 0 ? Math.max(0, Math.min(100, e.hechoV / e.objV * 100)) : 0;
     cuerpo =
-      (e.ok ? '<div style="font-size:15px;color:var(--gn);font-weight:700;margin-bottom:8px">🎯 ¡Meta de hoy cumplida!</div>' : '') +
+      (e.ok ? '<div style="font-size:14px;color:var(--gn);font-weight:600;margin-bottom:8px">🎯 ¡Meta de hoy cumplida!</div>' : '') +
       '<div class="com-row" style="border:none;padding-bottom:0">' +
         '<span class="com-mut">Vendido hoy (pago completo)</span>' +
         '<span style="font-weight:600">' + fmt(e.hechoV) + ' <span class="com-mut" style="font-weight:400">de ' + fmt(e.objV) + '</span></span>' +
@@ -5221,8 +5221,8 @@ function _comFiesta(tipo, emoji, texto) {
     var msg = document.createElement('div');
     msg.style.cssText = 'position:fixed;left:50%;top:38%;transform:translate(-50%,-50%) scale(.6);z-index:99999;pointer-events:none;' +
       'background:var(--bg2,#1d1d24);color:var(--tx,#fff);border:2px solid var(--gn,#22c55e);border-radius:18px;padding:18px 26px;' +
-      'text-align:center;font-weight:800;font-size:20px;box-shadow:0 12px 40px rgba(0,0,0,.35);opacity:0;transition:all .35s cubic-bezier(.2,1.4,.4,1)';
-    msg.innerHTML = '<div style="font-size:46px;line-height:1.1">' + emoji + '</div>' + esc(texto);
+      'text-align:center;font-weight:600;font-size:20px;box-shadow:0 12px 40px rgba(0,0,0,.35);opacity:0;transition:all .35s cubic-bezier(.2,1.4,.4,1)';
+    msg.innerHTML = '<div style="font-size:22px;line-height:1.1">' + emoji + '</div>' + esc(texto);
     document.body.appendChild(msg);
     requestAnimationFrame(function () { msg.style.opacity = '1'; msg.style.transform = 'translate(-50%,-50%) scale(1)'; });
     var ctx = cv.getContext('2d'), P = [], colores = ['#f43f5e', '#f59e0b', '#22c55e', '#38bdf8', '#a855f7', '#facc15'];
@@ -5587,7 +5587,7 @@ function _comOfAdminHtml(d) {
       '<td style="padding:6px 8px;text-align:right">' + _comOfSoles(a.meta) + '</td>' +
       '<td style="padding:6px 8px;min-width:140px">' + _comOfBarra(cumpl, 75) + '<div style="font-size:11px;color:var(--mu)">' + _comOfPct(cumpl) + ' de su meta</div></td>' +
       '<td style="padding:6px 8px;text-align:right">' + _comOfPct(a.tasa) + '</td>' +
-      '<td style="padding:6px 8px;text-align:right;font-weight:700">' + _comOfSoles(bono) + '</td>' +
+      '<td style="padding:6px 8px;text-align:right;font-weight:600">' + _comOfSoles(bono) + '</td>' +
       '<td style="padding:6px 8px;font-size:12px">' + estado + '</td>' +
     '</tr>';
   }).join('');
@@ -5620,7 +5620,7 @@ function _comOfAdminHtml(d) {
         '<th style="padding:4px 8px">Estado</th></tr></thead>' +
       '<tbody>' + filas + '</tbody>' +
       '<tfoot><tr><td colspan="5" style="padding:6px 8px;text-align:right;color:var(--mu)">Total a pagar</td>' +
-        '<td style="padding:6px 8px;text-align:right;font-weight:700">' + _comOfSoles(d.total_bonos) + '</td><td></td></tr></tfoot>' +
+        '<td style="padding:6px 8px;text-align:right;font-weight:600">' + _comOfSoles(d.total_bonos) + '</td><td></td></tr></tfoot>' +
     '</table></div>' + fuera +
     '<div style="margin-top:10px"><button class="btn" id="com-of-ant" onclick="comOfVerAnterior()" style="font-size:12px">' +
       (COMOF.verAnterior ? 'Ocultar vista anterior' : 'Ver vista anterior (no usar para pagar)') + '</button></div>' +
@@ -5640,7 +5640,7 @@ function _comOfAsesoraHtml(d) {
               (d.equipo_pasa ? '(pasa la puerta del 75%)' : '(todavía no llega al 75%: entre todas lo empujan)');
   var rk = (d.ranking || []).map(function (r) {
     var yo = String(r.nombre || '').toUpperCase() === String(d.yo || '').toUpperCase();
-    return '<tr' + (yo ? ' style="font-weight:700"' : '') + '><td style="padding:4px 8px">' + r.puesto + '°</td>' +
+    return '<tr' + (yo ? ' style="font-weight:600"' : '') + '><td style="padding:4px 8px">' + r.puesto + '°</td>' +
       '<td style="padding:4px 8px">' + esc(r.nombre) + (yo ? ' (tú)' : '') + '</td>' +
       '<td style="padding:4px 8px;text-align:right">' + (r.pedidos || 0) + ' pedidos</td>' +
       '<td style="padding:4px 8px;min-width:120px">' + _comOfBarra(r.cumplimiento, 75) + '</td>' +
@@ -5649,7 +5649,7 @@ function _comOfAsesoraHtml(d) {
   return '<div class="card" style="margin-bottom:14px">' +
     '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">' +
       '<div class="ct" style="margin:0">Mi comisión</div>' + _comOfSelector() + '</div>' +
-    '<div style="font-size:28px;font-weight:800">' + _comOfPct(cumpl) + '<span style="font-size:13px;font-weight:500;color:var(--mu)"> de tu meta del trimestre</span></div>' +
+    '<div style="font-size:22px;font-weight:600">' + _comOfPct(cumpl) + '<span style="font-size:13px;font-weight:500;color:var(--mu)"> de tu meta del trimestre</span></div>' +
     '<div style="margin:8px 0">' + _comOfBarra(cumpl, 75) + '</div>' +
     '<div style="font-size:14px;margin-bottom:6px">' + linea + '</div>' +
     '<div style="font-size:13px;color:var(--mu);margin-bottom:12px">' + eqTxt + '</div>' +
@@ -5712,7 +5712,7 @@ function _comLogrosHtml(lista) {
       var f = String(l.fecha || '').slice(0, 10).split('-');
       return '<div class="com-row" style="align-items:flex-start;gap:10px">' +
         '<span class="com-mut" style="min-width:44px">' + esc(f[2] + '/' + f[1]) + '</span>' +
-        '<span style="font-size:18px;line-height:1.2">' + esc(l.emoji || '🎉') + '</span>' +
+        '<span style="font-size:14px;line-height:1.2">' + esc(l.emoji || '🎉') + '</span>' +
         '<span style="flex:1"><b>' + esc(l.titulo || '') + '</b>' +
           (l.detalle ? '<div class="com-mut" style="font-size:12px">' + esc(l.detalle) + '</div>' : '') + '</span>' +
       '</div>';
