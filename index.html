@@ -3970,7 +3970,14 @@ async function _fetchJsonCrudo(buildReq, action) {
 //   · fresca → se usa tal cual · vieja (pasó su tiempo) → se usa y se renueva en segundo plano por Apps Script
 //   · sucia (alguien guardó algo de ese módulo) o no existe o la base no responde → Apps Script, como siempre.
 // Apps Script guarda cada lectura en la base al terminar (_puertaTrasAccion_). Las pantallas no cambian.
-const PUERTA = { lista: null, enVuelo: {}, _p: null };
+const PUERTA = { lista: null, enVuelo: {}, _p: null, ultEscr: 0 };   /* 27-oct · ultEscr = cuándo ESTA pestaña guardó algo (fase 1) */
+/* 27-oct (fase 1) · ¿esta acción ESCRIBE? Mismo criterio que Puerta.gs (_puertaGrupoEscritura_). Una escritura propia reciente
+   obliga a leer fresco (Apps Script) durante 2 min; si no, una respuesta «sucia» se muestra al instante y se renueva por detrás. */
+const PUERTA_ESCR_RE = /(guardar|crear|editar|eliminar|desactivar|activar|agregar|actualizar|quitar|ordenar|aplicar|enviar|subir|marcar|registrar|anular|borrar|restaurar|mover|cerrar|reabrir|duplicar|precios|shopify|firmar)/i;
+function _puertaMarcarEscritura(action, body) {
+  try { const a = String(action || ''), sub = a.split('.').slice(1).join('.'), acc = String((body && (body.accion || body.op)) || '');
+        if (PUERTA_ESCR_RE.test(sub) || /^(guardar|crear|editar|eliminar|aplicar|packs|plantilla|vista)$/i.test(acc)) PUERTA.ultEscr = Date.now(); } catch (_) {}
+}
 try { const _pl = JSON.parse(localStorage.getItem('erp_puerta_lista') || 'null'); if (Array.isArray(_pl)) PUERTA.lista = _pl; } catch (_) {}
 function _puertaEstable(v) {
   if (v === null || v === undefined) return 'null';
@@ -4022,9 +4029,10 @@ async function _puertaIntentar(action, body, porApps) {
   let ok = false;
   try {
     const j = await _puertaRpc('puerta_leer', { p_clave: clave }, 2500);
-    if (!j || typeof j !== 'object' || j.e === 'sucio' || !Object.prototype.hasOwnProperty.call(j, 'r') || j.r == null) return undefined;
+    if (!j || typeof j !== 'object' || !Object.prototype.hasOwnProperty.call(j, 'r') || j.r == null) return undefined;
+    if (j.e === 'sucio' && Date.now() - (PUERTA.ultEscr || 0) < 120000) return undefined;   // 27-oct · acabo de guardar: quiero lo fresco
     ok = true;
-    if (j.e === 'viejo' && !PUERTA.enVuelo[clave]) {
+    if ((j.e === 'viejo' || j.e === 'sucio') && !PUERTA.enVuelo[clave]) {   // 27-oct (fase 1) · sucio = se muestra lo guardado y se renueva por detrás
       PUERTA.enVuelo[clave] = 1;
       Promise.resolve().then(porApps).catch(() => {}).finally(() => { delete PUERTA.enVuelo[clave]; });
     }
@@ -4061,6 +4069,7 @@ function _conAlias(a, b) {
 }
 async function apiSend(action, body) {
   { const _al = _conAlias(action, body); if (_al) action = _al; }
+  _puertaMarcarEscritura(action, body);   // 27-oct · fase 1
   if (_salidaAplica(action, body)) { const _sr = await _salidaMandar(action, body); if (_sr !== undefined) return _sr; }   // 11-oct · D4 SALIDA A LA TIENDA
   { const _pr = await _puertaIntentar(action, body, () => _apiSendApps(action, body)); if (_pr !== undefined) return _pr; }   // 10-oct · PUERTA ÚNICA
   return _apiSendApps(action, body);
@@ -4125,6 +4134,7 @@ async function _apiSendApps(action, body) {
 // POST con Content-Type text/plain → no dispara preflight CORS en Apps Script.
 // Usar para payloads grandes (ej. imágenes base64) o cuando GET falla por límite de URL.
 async function apiPost(action, body) {
+  _puertaMarcarEscritura(action, body);   // 27-oct · fase 1
   // 6-oct · la subida de respaldo (Apps Script) también frena la misma constancia
   if (action === 'voucher.subir' && body && body.imageBase64) await _constanciaUnicaOFrenar(body.NroPedido, body.imageBase64);
   const _reqId = 'rq_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10); // 13/07 anti-duplicado (mismo id en todos los reintentos)
@@ -10949,7 +10959,7 @@ function renderEnvios(el) {
       + '<th style="text-align:left">Nro</th><th style="text-align:left">Cliente</th><th style="text-align:left">Prenda</th><th style="text-align:left">Lote</th><th style="text-align:left">Pedida el</th>'
       + '</tr></thead><tbody>'
       + esperando.map(x => '<tr>'
-        + '<td style="'+_ce+';font-family:monospace;color:var(--ac)">'+esc(x.nro||'—')+'</td>'
+        + '<td style="'+_ce+';color:var(--ac)">'+esc(x.nro||'—')+'</td>'
         + '<td style="'+_ce+'">'+esc(x.cliente||'—')+'</td>'
         + '<td style="'+_ce+';font-weight:500">'+esc(x.prenda)+'</td>'
         + '<td style="'+_ce+'">'+(x.lote ? '<span class="badge bgy" style="font-size:11px">'+esc(x.lote)+'</span>' : '—')+'</td>'
@@ -11011,7 +11021,7 @@ function renderEnvios(el) {
       const filas = g.items.map(it =>
         '<tr>'
         + '<td style="'+_c+'">'+badgeTipo(it.tipo)+'</td>'
-        + '<td style="'+_c+';font-family:monospace;color:var(--ac)">'+esc(it.nro||'—')
+        + '<td style="'+_c+';color:var(--ac)">'+esc(it.nro||'—')
           + (it.nro===recienteNro ? ' <span class="badge bgn" style="font-size:11px">FLETE</span>' : '')+'</td>'
         + '<td style="'+_c+';font-weight:500">'+esc(it.prenda||'—')+(it.lote ? ' <span class="badge bgy" style="font-size:11px">'+esc(it.lote)+'</span>' : '')+'</td>'
         + '<td style="'+_c+'">'+esc(it.courier||'—')+'</td>'
@@ -11033,10 +11043,12 @@ function renderEnvios(el) {
   }
 
   // Tabla de envíos sueltos (clientes con un solo pedido)
-  let rows = sueltos.map(it =>
+  /* 27-oct (fase 1) · se dibujaban TODAS (≈125.000 caracteres): ahora de 60 en 60 */
+  const _envLim = window._envLim || 60, _envMas = Math.max(0, sueltos.length - _envLim);
+  let rows = sueltos.slice(0, _envLim).map(it =>
     '<tr>'
     + '<td style="'+_c+'">'+badgeTipo(it.tipo)+'</td>'
-    + '<td style="'+_c+';font-family:monospace;color:var(--ac)">'+esc(it.nro||'—')+'</td>'
+    + '<td style="'+_c+';color:var(--ac)">'+esc(it.nro||'—')+'</td>'
     + '<td style="'+_c+'">'+esc(it.cliente||'—')+'</td>'
     + '<td style="'+_c+';font-weight:500">'+esc(it.prenda||'—')+'</td>'
     + '<td style="'+_c+'">'+esc(it.courier||'—')+'</td>'
@@ -11047,6 +11059,7 @@ function renderEnvios(el) {
     ? '<div class="tw"><table class="pt" style="width:100%"><thead><tr>'
       + '<th style="text-align:left">Tipo</th><th style="text-align:left">Nro</th><th style="text-align:left">Cliente</th><th style="text-align:left">Prenda a enviar</th><th style="text-align:left">Courier</th><th style="text-align:left">Dirección</th>'
       + '</tr></thead><tbody>'+rows+'</tbody></table></div>'
+      + (_envMas ? '<div style="text-align:center;margin:10px 0"><button class="btn bg bs" onclick="window._envLim=(window._envLim||60)+60;renderEnvios(this.closest(\'#envios-w\')||document.getElementById(\'envios-w\'))">Ver ' + Math.min(60, _envMas) + ' más (quedan ' + _envMas + ')</button></div>' : '')
     : '';
 
   const nPed = items.filter(i=>i.tipo==='Pedido').length;
@@ -29588,7 +29601,7 @@ function _feEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => (
 async function _feRevisar() {
   try {
     if (!_avisoPara('pedidos')) return;   /* 26-oct · ventas y logística (y admin); marketing no */
-    const r = await apiPost('cuadre.faltanErp', {});
+    const r = await apiSend('cuadre.faltanErp', {});   // 27-oct (fase 1) · por la PUERTA: 0,2 s en vez de 7,9 s
     try { _FE.hechas = JSON.parse(localStorage.getItem('fe_hechas') || '{}') || {}; } catch (_) { _FE.hechas = {}; }
     _FE.lista = ((r && r.lista) || []).filter(x => !(_FE.hechas[_feClave(x)] && Date.now() - _FE.hechas[_feClave(x)] < 3 * 3600 * 1000));   // la que abrió para registrar se esconde 3 h (hasta la próxima revisión)
     _FE.admin = !!(r && (r.admin || r.logistica));
