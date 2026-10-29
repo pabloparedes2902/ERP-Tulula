@@ -5373,6 +5373,27 @@ window.prodIngresarStock = function(items, alTerminar){
   const faltan = [], ok = [];
   (items || []).forEach(it => { const k = String(it.prenda || '').toUpperCase().replace(/\s+/g, ' ').trim(), p = idx[k];
     if (!p) faltan.push(it.prenda); else ok.push(Object.assign({}, it, { prenda:p, _full:p })); });
+  /* 29-oct (Pablo · ficha única fase 3) · si la orden trae colores o tallas que todavía no están en Stock, se crean solos
+     (con cantidad 0) desde la orden, en vez de mandar a Ana a «Crear SKU». La ficha se enlaza sola por número (trigger). */
+  const crear = (items || []).filter(it => faltan.indexOf(it.prenda) >= 0 && it.ficha && it.color && it.talla);
+  if (faltan.length && crear.length === faltan.length) {
+    const prods = (mOpts('Producto') || []).map(x => String(x).toUpperCase().trim()).filter(Boolean).sort((a, b) => b.length - a.length);
+    const C = crear.map(it => { const f = String(it.ficha).toUpperCase().replace(/\s+/g, ' ').trim();
+      const pr = prods.find(x => f.indexOf(x + ' ') === 0) || f.split(' ')[0];
+      return { categoria: it.categoria || '', producto: pr, diseno: f.slice(pr.length).trim() || f, color: String(it.color).toUpperCase().trim(), talla: String(it.talla).toUpperCase().trim(), cantidad: 0 }; });
+    (async () => {
+      try {
+        toast('Creando ' + C.length + ' color(es)/talla(s) nuevos en Stock…');
+        const res = await _skuCrearRapido(C);
+        if (res && res.listo) await res.listo;
+        if (typeof refrescarMaestros === 'function') { try { await refrescarMaestros(); } catch (_) {} }
+        try { confData = null; _confLsDel(); } catch (_) {}
+        const r2 = window.prodIngresarStock((items || []).map(it => Object.assign({}, it, { ficha: '' })), alTerminar);
+        if (r2 && r2.faltan) toast('Se crearon, pero aún no aparecen: ' + r2.faltan.join(', ') + '. Espera un minuto y vuelve a intentar.', 'err');
+      } catch (e) { toast('No se pudieron crear en Stock: ' + ((e && e.message) || e), 'err'); }
+    })();
+    return { ok:true, creando: C.length };
+  }
   if (faltan.length) return { ok:false, faltan };
   window._stkPrefill = ok; window._stkAlTerminar = alTerminar || null;
   _confAbrirIngresarStock(null);
