@@ -745,7 +745,13 @@ window.cuadreLocalEmparejar = async function (corte) {
   __RUTAS = {}; __SALIDA = {}; __PROPS = { STOCK_CUTOFF: corte };
   _LIBRO_IDX = null; _VOC_FRASES_ = null;
   var desde = new Date(new Date(corte + 'T00:00:00-05:00').getTime() - 46 * 864e5).toISOString().slice(0, 10);   // la ventana del emparejador (corte − 45 días) + 1 de margen
+  /* 30-oct (Pablo: «el cuadre está lento») · VÍA RÁPIDA: el emparejador pedía sus tablas de a poco (6 vueltas, 8 viajes, ~4 s).
+     Ahora baja EN PARALELO, junto con el Drive, las mismas tablas que pidió la vez anterior; lo que falte se pide como siempre. Mismo resultado. */
+  var prev = []; try { prev = JSON.parse(localStorage.getItem('cd_rutas_prev') || '[]') || []; } catch (eP) { prev = []; }
+  var pedidas = [];
+  var pPrev = Promise.all(prev.map(function (f) { return __bajar(f).catch(function () { delete __RUTAS[f.k]; }); }));
   var D = await __bajarDrive(desde); __DRIVE = D.v;
+  await pPrev;
   var tDrive = Date.now() - t0;
   for (var vuelta = 0; vuelta < 20; vuelta++) {
     __FALTAN = []; var res = null, err = null;
@@ -753,10 +759,12 @@ window.cuadreLocalEmparejar = async function (corte) {
     if (!__FALTAN.length) {
       if (err) throw err;
       var M = __SALIDA['claude.cuadre.match'] || null;
+      try { var usadas = prev.filter(function (f) { return __RUTAS[f.k]; }).concat(pedidas); var vk = {};
+            localStorage.setItem('cd_rutas_prev', JSON.stringify(usadas.filter(function (f) { if (vk[f.k]) return false; vk[f.k] = 1; return true; }).map(function (f) { return { k: f.k, ruta: f.ruta }; }))); } catch (eS) {}
       return { match: M, resumen: res, ms: Date.now() - t0, msDrive: tDrive, filasDrive: D.n, vueltas: vuelta + 1, viajes: viajes };
     }
     var vistos = {}, pedir = __FALTAN.filter(function (f) { if (vistos[f.k]) return false; vistos[f.k] = 1; return true; });
-    viajes += pedir.length;
+    viajes += pedir.length; pedidas = pedidas.concat(pedir);
     await Promise.all(pedir.map(__bajar));
     _LIBRO_IDX = null; _VOC_FRASES_ = null;   // se rearman con lo recién bajado
   }
