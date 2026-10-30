@@ -7107,6 +7107,7 @@ const COS_REV_TXT = { bajo: ['Margen bajo (< ' + COS_MARGEN_MIN + '%)', 'Algún 
 function _cosFilas() {
   const q = COS.q.toLowerCase();
   const out = COS.data.filter(r => {
+    if (COS.etapa && (r.EstadoCiclo || 'venta') !== COS.etapa) return false;   // 30-oct · catálogo por etapa
     if (COS.fest === 'ACTIVO' && r.Activo === false) return false;
     if (COS.fest === 'INACTIVO' && r.Activo !== false) return false;
     if (COS.sinManga && COS.esAdmin && !_cosFaltaManga(r)) return false;   // 17-oct (Pablo) · filtro Sin manga
@@ -7328,10 +7329,12 @@ function _cosRender() {
     + (A ? (() => { return '<button class="btn ' + (COS.sinManga ? 'bp' : 'bg') + ' bs cos-mangabtn" title="Prendas superiores enlazadas a la tienda que todavía no tienen la manga cargada. Tocá para ver solo esas (y otra vez para ver todas)." style="font-size:12px;white-space:nowrap">' + _cosMangaBtnTxt() + '</button>'; })() : '')   // 17-oct (Pablo)
     + chips.map(x => '<button class="btn ' + (COS.ver[x[0]] ? 'bp' : 'bg') + ' bs cos-ver" data-v="' + x[0] + '" style="font-size:12px">' + x[1] + '</button>').join('')
     + (A ? '<span style="flex:1"></span><button class="btn bg bs" id="cos-shopsync" title="Pregunta a Shopify cuáles productos están publicados y enlaza los que coinciden por nombre" style="font-size:12px;white-space:nowrap">🔄 Sincronizar con Shopify</button><button class="btn bg bs" id="cos-alertas" style="font-size:12px;white-space:nowrap">🔔 Alertas</button>' : '') + '</div>';
+  if (A) h += _cosEtapasHtml();   // 30-oct (ficha única · 8) · el catálogo por etapa, siempre arriba
   h += '<div id="cos-form"></div>';
   h += '<div id="cos-tabla" style="overflow:auto;max-height:68vh;border:1px solid var(--bd2);border-radius:var(--r)">' + _cosTablaHtml(rows) + '</div>';
   w.innerHTML = h;
   _cosAlto();
+  w.querySelectorAll('.cos-etapa').forEach(b => b.addEventListener('click', () => { COS.etapa = COS.etapa === b.dataset.e ? '' : b.dataset.e; _cosRender(); }));
   document.getElementById('cos-q').addEventListener('input', function () { COS.q = this.value; clearTimeout(COS._t); COS._t = setTimeout(_cosUpdateRows, 150); });
   const bsy = document.getElementById('cos-shopsync'); if (bsy) bsy.addEventListener('click', async () => {
     bsy.disabled = true; bsy.textContent = 'Sincronizando…';
@@ -7354,6 +7357,14 @@ function _cosRender() {
 /* 29-oct (Pablo: «cómo debe estar, no cómo está») · FICHA ÚNICA DEL PRODUCTO, una sola pantalla con pestañas fijas:
    📋 Resumen (etapa + qué falta) · 🧵 Costo (lo carga Producción) · 💲 Precios · 🛍 Tienda · 🏭 Órdenes. Cada dato tiene UN dueño:
    el costo lo edita quien tiene 🧵 Producción en edición; aquí los demás lo ven con candado. */
+function _cosEtapasHtml() {
+  const E = COS_CICLO.concat([['reposicion', '🔁 Reposición'], ['descontinuada', '⏸ Descontinuado']]), n = {};
+  (COS.data || []).forEach(r => { const e = r.EstadoCiclo || 'venta'; n[e] = (n[e] || 0) + 1; });
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 10px;font-size:12px"><span style="color:var(--mu)">Etapa:</span>'
+    + '<button type="button" class="btn ' + (COS.etapa ? 'bg' : 'bp') + ' bs cos-etapa" data-e="" style="font-size:12px">Todas (' + (COS.data || []).length + ')</button>'
+    + E.map(e => '<button type="button" class="btn ' + (COS.etapa === e[0] ? 'bp' : 'bg') + ' bs cos-etapa" data-e="' + e[0] + '" style="font-size:12px' + (n[e[0]] ? '' : ';opacity:.5') + '">' + e[1] + ' (' + (n[e[0]] || 0) + ')</button>').join('')
+    + '</div>';
+}
 function _cosEditaCosto() {
   try { if (MY_PERMISOS) return _permNivPg('produccion') >= 2; } catch (_) {}
   return typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador';
@@ -7383,11 +7394,27 @@ async function _cosOrdenesPintar(v) {
   catch (e) { box.textContent = 'Las órdenes solo las ve quien tiene acceso a 🧵 Producción.'; return; }
   box.dataset.ok = '1';
   const ET = { diseno:'Diseño', muestra:'Muestra y moldes', tela:'Tela e insumos', corte:'Corte y confección', entrega:'Entrega', calidad:'Calidad e inventario', fotos:'Fotos y videos', venta:'A la venta' };
-  box.innerHTML = (L.length ? '<table class="tt" style="width:100%"><thead><tr><th>Orden</th><th>Tipo</th><th>Etapa</th><th>Taller</th><th>Taller S/ por prenda</th><th>A la venta</th><th></th></tr></thead><tbody>'
-      + L.map(o => '<tr><td>#' + o.id + '</td><td>' + (o.tipo === 'reposicion' ? 'Reposición' : 'Nuevo') + '</td><td>' + (o.cerrada ? '✔ Cerrada' : esc(ET[o.etapa] || o.etapa || '')) + '</td><td>' + esc(o.taller || '—') + '</td><td>' + (o.costo_unit == null ? '—' : 'S/ ' + Number(o.costo_unit).toFixed(2)) + '</td><td>' + esc(o.fecha_venta || '—') + '</td>'
+  box.innerHTML = (L.length ? '<table class="tt" style="width:100%"><thead><tr><th>Orden</th><th>Tipo</th><th>Etapa</th><th>Taller</th><th>Taller S/ por prenda</th><th>Costo real por prenda</th><th>A la venta</th><th></th></tr></thead><tbody>'
+      + L.map(o => '<tr><td>#' + o.id + '</td><td>' + (o.tipo === 'reposicion' ? 'Reposición' : 'Nuevo') + '</td><td>' + (o.cerrada ? '✔ Cerrada' : esc(ET[o.etapa] || o.etapa || '')) + '</td><td>' + esc(o.taller || '—') + '</td><td>' + (o.costo_unit == null ? '—' : 'S/ ' + Number(o.costo_unit).toFixed(2)) + '</td><td class="cf-real" data-o="' + Number(o.id) + '">…</td><td>' + esc(o.fecha_venta || '—') + '</td>'
         + '<td><button type="button" class="btn bg bs" style="font-size:12px" onclick="prodIrOrden(' + Number(o.id) + ')">Abrir en 🧵 Producción</button></td></tr>').join('') + '</tbody></table>'
     : '<div>Sin órdenes de producción todavía.</div>')
-    + '<div style="margin-top:8px"><button type="button" class="btn bg bs" style="font-size:12px" onclick="prodIrOrden(0)">🧵 Ir a Producción</button></div>';
+    + '<div style="margin-top:8px"><button type="button" class="btn bg bs" style="font-size:12px" onclick="prodIrOrden(0)">🧵 Ir a Producción</button></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-top:6px">Costo real = (pago al taller + tela) ÷ prendas buenas. En ámbar si supera en más de 10% al costo de la ficha (S/ ' + (Number(v.CostoUnitario) || 0).toFixed(2) + ').</div>';
+  _cosRealPintar(v);
+}
+/* 30-oct · costo real de cada orden, calculado por 🧵 Producción (una sola cuenta). Ámbar si supera al estimado en > 10% (criterio propio). */
+async function _cosRealPintar(v) {
+  const celdas = [...document.querySelectorAll('#cf-ord .cf-real')]; if (!celdas.length) return;
+  try { _produccionLazy(); } catch (_) {}
+  const f = document.getElementById('produccion-frame'); let fn = null;
+  for (let i = 0; i < 40; i++) { try { const w = f && f.contentWindow; if (w && w.costoRealDe && w.costoRealDe(-1) !== undefined) { fn = w.costoRealDe; break; } } catch (_) {} await new Promise(r => setTimeout(r, 500)); }
+  const est = Number(v.CostoUnitario) || 0;
+  celdas.forEach(td => { const c = fn ? fn(Number(td.dataset.o)) : null;
+    if (!c || c.real == null) { td.textContent = '—'; td.title = 'Aún sin entregas o sin costo de taller/tela'; return; }
+    if (!(c.tela > 0)) { td.innerHTML = '<span style="color:var(--mu)" title="La orden no tiene la tela cargada: no se compara con la ficha">S/ ' + c.real.toFixed(2) + ' · solo taller</span>'; return; }   /* sin tela no es comparable */
+    const dif = est > 0 ? (c.real - est) / est * 100 : 0;
+    td.innerHTML = 'S/ ' + c.real.toFixed(2) + (est > 0 ? ' <span style="font-size:11px;color:' + (dif > 10 ? 'var(--am)' : 'var(--mu)') + '">' + (dif >= 0 ? '+' : '') + dif.toFixed(1) + '%</span>' : '');
+    if (dif > 10) td.style.color = 'var(--am)'; });
 }
 window.prodIrOrden = async function(id) {
   try { navegarA('produccion'); } catch (_) {}
