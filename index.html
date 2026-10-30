@@ -10898,7 +10898,7 @@ async function _cdActualizar() {
     let nDv = 0;
     try { const tk = await _sbSesionAsegurar();
       const rv = tk ? await fetch(SB_URL + '/rest/v1/rpc/cuadre_drive_ventas', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' }, body: '{}' }) : null;
-      if (rv && rv.ok) { const av = await rv.json(), C = {}; (av || []).forEach(z => { C[z.t] = z; });
+      if (rv && rv.ok) { const av = await rv.json(), C = {}; (av || []).forEach(z => { C[z.t] = z; }); CD.dvTxt = C;
         Object.keys(FO).forEach(k => { const x = FO[k]; if (!x || !x.d || !x.tx) return; let n = 0, sp = 0;
           String(x.tx).split('\u0001').forEach(t => { const z = C[t]; if (z) { n += Number(z.n) || 0; sp += Number(z.s) || 0; } });
           const d = String(x.d).split(',').map(Number), v = n - sp; if (v === d[3]) return;
@@ -11005,6 +11005,36 @@ function _cdArmar(M, FO, CAMS) {
   ['erp', 'drive'].forEach(lado => (sr[lado] || []).forEach(t => { if (!_noPrenda.test(String(t[0]).trim())) l6.push({ lado: lado === 'erp' ? 'ERP' : 'Drive', prenda: String(t[0]), n: Number(t[1]) || 1,
     que: /<talla>/.test(String(t[0])) ? 'El ERP no tiene este diseño en su stock (falta cargar su confección) o la línea no trae talla: mientras tanto estas ventas NO se comparan' : 'El nombre no coincide con ninguna prenda del catálogo: corregirlo o agregar la homologación' }); }));
   return { l0, l1, l2, l3, l4, l5, l6, cambiosTotal: conCam, cambiosOk: conCam - conProb };
+}
+/** 30-oct-2026 (Pablo: «arma la lista del equipo dentro del ERP») · lo que falta para el 100% y depende de logística o de las asesoras.
+ *  Cada tarea se comprueba SOLA con los datos de la comparación (nada de marcar «hecho» a mano): cuando se corrige, pasa a ✅. */
+function _cdTareas() {
+  const D = CD.datos || {}, sin = new Set((D.l0 || []).filter(x => x.sinExplicar).map(x => x.prenda));
+  const libre = p => !sin.has(p);
+  const enLista = (n, ls) => ls.some(k => (D[k] || []).some(x => String(x.nro || '').split(/[ ,]+/).indexOf(n) >= 0));
+  const fd = (typeof window !== 'undefined' && window.cuadreLocalFilaDrive) || (() => null);
+  const filaCon = (nom, pr, fn) => { for (let i = 2; i < 150000; i++) { const r = fd(i); if (!r) continue; const a = String(r[1] || '').toUpperCase(), b = String(r[13] || '').toUpperCase().replace(/_/g, ' ');
+    if (a.indexOf(nom) >= 0 && b.indexOf(pr) >= 0 && (!fn || fn(r))) return true; } return false; };
+  const C = CD.dvTxt || {};
+  return [
+    { quien: 'Logística', donde: 'Drive · hoja Ing · fila de Janny Naranjo (26-oct)', que: 'PAÑUELO SEDA MORADO está sin talla: escribir «PAÑUELO SEDA MORADO C» (la hoja Stk solo cuenta la C)', ok: libre('PAÑUELO SEDA MORADO U') },
+    { quien: 'Logística', donde: 'Drive · hoja Ing · 3 filas «CORREA CLEOPATRA PERLA U»', que: 'Esa correa solo tiene talla C: cambiar la U por C (después Claude anula el ajuste de apertura y la talla queda igual)', ok: !(C['CORREA CLEOPATRA PERLA U'] && C['CORREA CLEOPATRA PERLA U'].n > 0) },
+    { quien: 'Logística', donde: 'Drive · hoja Ing', que: 'Anotar la venta de LILIA CAMACHO · pedido 23195 (23-oct) · PANTALON MIRELLA AZUL NOCHE XL', ok: filaCon('CAMACHO', 'MIRELLA AZUL NOCHE XL') },
+    { quien: 'Logística', donde: 'Drive · hoja Ing · LOLA MARGARET ALDANA', que: 'Anotar la venta del pedido 23145 (22-oct) · BLUSA TOSCANA MARRON S', ok: !enLista('23145', ['l1']) },
+    { quien: 'Logística', donde: 'Drive · hoja Stk · filas BODY ALBA', que: 'BODY ALBA AZUL S, NEGRO XL y NUDE S: la celda de ventas tiene sumas a mano; dejar solo la fórmula y anotar en Ing las ventas de Marketplace R-26 (Lesly Chávez) y R-17 (Sara Ayala)', ok: libre('BODY ALBA AZUL S') && libre('BODY ALBA NEGRO XL') && libre('BODY ALBA NUDE S') },
+    { quien: 'Logística', donde: 'Drive · hoja Ing · JACQUELINE ALFARO (pedido 22887)', que: 'El cambio se eliminó en el ERP: en el Drive volver a poner BLUSA ALMA ROSA L y BLUSA ALMA BLANCO L en la columna N, vaciar la columna O y borrar la fila de TOP AMELIA VINO M', ok: !enLista('22887', ['l2', 'l3']) },
+    { quien: 'Logística', donde: 'Drive · hoja Ing · SHEYLA (collar) y GLADYS MILAGROS RONDÁN (blusa)', que: 'Fecha mal escrita: COLLAR HERA DORADO de Sheyla dice 18-jun y BLUSA TOSCANA ROJO XL de Gladys dice 05-jul; las dos son del 18-jul', ok: !filaCon('SHEYLA', 'COLLAR HERA', r => String(r[20] || '').slice(0, 7) === '2026-06') && !filaCon('GLADYS MILAGROS', 'TOSCANA ROJO XL', r => String(r[20] || '').slice(0, 10) === '2026-07-05') },
+    { quien: 'Asesora', donde: 'Cambios del ERP · pedido 22910 (BERTHA SHANETT)', que: 'Registrar el cambio: BLAZER ANTONIA AZUL M → BLAZER MIRELLA AZUL NOCHE L y PANTALON ANTONIA AZUL M → PANTALON ANTONIA AZUL L (ya está en el Drive)', ok: !enLista('22910', ['l3']) },
+    { quien: 'Asesora', donde: 'Drive fila de ANAI TATAJE (6-ago) · Pedidos del ERP', que: 'El Drive tiene CHALECO MIRELLA VERDE S vendido a Anai y el ERP no: si se vendió, registrarlo; si no, corregir el Drive', ok: libre('CHALECO MIRELLA VERDE S') },
+    { quien: 'Asesora', donde: 'Devoluciones del ERP · DEV-0018 (ANA MILAGROS BELLIDO, pedido 21251)', que: '¿Devolvió de verdad la BLUSA ALMENDRA BLANCO M? Si no, anular DEV-0018; si sí, anotarla en el Drive', ok: libre('BLUSA ALMENDRA BLANCO M') }
+  ];
+}
+function _cdTareasHtml() {
+  const T = _cdTareas(), pend = T.filter(t => !t.ok);
+  return '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Se comprueban solas con cada comparación: al corregir el dato pasan a ✅. Faltan ' + pend.length + ' de ' + T.length + '. Además quedan los casos de las pestañas 1 a 3.</div>'
+    + '<div style="overflow:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left;padding:6px 8px">Estado</th><th style="text-align:left;padding:6px 8px">Quién</th><th style="text-align:left;padding:6px 8px">Dónde</th><th style="text-align:left;padding:6px 8px">Qué hacer</th></tr></thead><tbody>'
+    + T.map(t => '<tr' + (t.ok ? ' style="opacity:.55"' : '') + '><td style="padding:5px 8px">' + (t.ok ? '✅' : '⏳') + '</td><td style="padding:5px 8px">' + esc(t.quien) + '</td><td style="padding:5px 8px">' + esc(t.donde) + '</td><td style="padding:5px 8px">' + esc(t.que) + '</td></tr>').join('')
+    + '</tbody></table></div>';
 }
 /** 22-oct (logística: «los cambios cancelados siguen apareciendo») · si el pedido tiene cambios CANCELADOS en el ERP, decirlo:
  *  el Drive tiene el cambio hecho y el ERP no lo tiene vigente → registrarlo de nuevo bien (o corregir el Drive si no se hizo). */
@@ -11118,7 +11148,8 @@ function _cdPintar() {
   const tabs = D ? [[0, '0 · Stock por talla (control)', (D.l0 || []).length, 0], [1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', D.l4.length, 0], [5, '5 · Cambios ERP vs Drive', n(D.l5), ne(D.l5)], [6, '6 · Prendas que no se reconocen', n6(D.l6), 0]] : [];   // 21-oct (Pablo): todas en 0 (y nada en espera) = 100% cuadrado
   const total = tabs.reduce((a, t) => a + t[2], 0), esp = tabs.reduce((a, t) => a + t[3], 0);
   if (D) tabs.push([7, '7 · Pagos ERP vs Drive', CD.pagosN == null ? '·' : CD.pagosN, 0]);   /* 26-oct (Pablo) · no suma al total de prendas */
-  if (D) tabs.push([8, '8 · Egresos ERP vs Drive', CD.egrN == null ? '·' : CD.egrN, 0]);   /* 27-oct (Pablo) · fase 5 egresos: no suma al total de prendas */
+  if (D) tabs.push([8, '8 · Egresos ERP vs Drive', CD.egrN == null ? '·' : CD.egrN, 0]);
+  if (D) tabs.push([9, '9 · Tareas del equipo', _cdTareas().filter(t => !t.ok).length, 0]);   /* 30-oct (Pablo) · lo que falta y depende del equipo: se tacha solo al corregirse */   /* 27-oct (Pablo) · fase 5 egresos: no suma al total de prendas */
   const veredicto = !D ? '' : (total + esp === 0 ? '<div style="padding:10px 14px;border-radius:10px;background:#dcfce7;color:#14532d;font-weight:600;margin-bottom:10px">✅ ERP y Drive 100% cuadrados (prendas, tallas, confección, no disponibles y cambios)</div>'
     : '<div style="padding:10px 14px;border-radius:10px;background:#fef3c7;color:#713f12;font-weight:600;margin-bottom:10px">Para el 100%: ' + total + ' por resolver' + (esp ? ' + ' + esp + ' en espera' : '') + '. Cuando TODAS las pestañas (0 a 6) estén en 0 y no quede nada en espera, el ERP y el Drive están 100% cuadrados.</div>');
   let h = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px">'
@@ -11131,6 +11162,7 @@ function _cdPintar() {
     + '<span style="align-self:center;font-weight:600">TOTAL por resolver: ' + total + (esp ? ' · en espera: ' + esp : '') + '</span></div>';
   if (CD.tab === 7) { el.innerHTML = h + _cdPagosHtml(); _cdPagosAsegurar(); return; }   /* 26-oct · pagos */
   if (CD.tab === 8) { el.innerHTML = h + (typeof _egrCruceHtml === 'function' ? _egrCruceHtml() : ''); if (typeof _egrCruceAsegurar === 'function') _egrCruceAsegurar(); return; }   /* 27-oct · egresos */
+  if (CD.tab === 9) { el.innerHTML = h + _cdTareasHtml(); return; }   /* 30-oct · tareas del equipo */
   const L = D['l' + CD.tab] || [];
   const ir = nro => nro ? '<a href="#" onclick="event.preventDefault();_abrirPedidoDesdeBusqueda(' + esc(JSON.stringify(String(nro).split(/[ ,]/)[0])) + ')" style="color:var(--ac);font-weight:600">' + esc(nro) + ' ↗</a>' : '';
   const cols = CD.tab === 0 ? ['Prenda y talla', 'Stock', 'Qué difiere y si lo explican las listas'] : CD.tab === 6 ? ['Dónde', 'Prenda tal como está escrita', 'Líneas', 'Qué hacer'] : CD.tab === 4 ? ['Prenda y talla', 'Qué difiere'] : CD.tab === 5 ? ['Pedido', 'Cambio', 'Prenda', 'Qué pasa', '¿Mueve el stock?'] : ['Pedido', 'Clienta', 'Fecha', 'Prenda', CD.tab === 3 ? 'Tipo' : 'Estado', 'Causa / qué hacer', 'Fila Drive'];
