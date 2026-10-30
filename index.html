@@ -6752,6 +6752,27 @@ async function _prodSave(orig) {
   if (!body.categoria||!body.producto||!body.diseno||!body.color){ toast('Completa Categoría, Producto, Diseño y Color','err'); return; }
   if (!body.tallas.length){ toast('Agrega al menos una talla','err'); return; }
   const btn=document.getElementById('pf-save'); btn.disabled=true; btn.textContent='Guardando...';
+  /* 30-oct · VÍA RÁPIDA FASE 6 · CREAR un producto nuevo va por la base (la misma puerta que «Stock › Crear SKU»), < 1 s.
+     Medido: productos.guardar tardaba 32 s (Ana creó 14 productos el 29-oct). La hoja Maestros se escribe por detrás.
+     Editar uno existente sigue por el camino de siempre. */
+  if (!orig && body.estado === 'ACTIVO' && !/[,;\/]/.test(body.color + body.diseno) && typeof _skuCrearRapido === 'function') {
+    try {
+      const its = body.tallas.map(t => ({ categoria: body.categoria, producto: body.producto, diseno: body.diseno, color: body.color, talla: t, cantidad: 0 }));
+      const rr = await _skuCrearRapido(its);
+      if (rr && rr.via === 'base-catalogo') {
+        const sku = [body.producto, body.diseno, body.color].join(' ').toUpperCase();
+        if (!rr.items && (rr.yaExistian || []).length === its.length) throw Object.assign(new Error('Ya existe el producto "' + sku + '".'), { _negocio: true });
+        toast('✓ Producto creado: ' + esc(sku) + (rr.yaExistian && rr.yaExistian.length ? ' (' + rr.yaExistian.length + ' talla(s) ya existían)' : ''), 'ok');
+        PROD.editing = null; const cont = document.getElementById('prod-form'); if (cont) cont.innerHTML = '';
+        try { stData = null; _stLsDel(); } catch (e) {}
+        (rr.listo || Promise.resolve()).then(async () => { try { await loadMAESTROS(); } catch (e) {} try { await loadProductos(); } catch (e) {} }).catch(() => {});
+        return;
+      }
+    } catch (eR) {
+      if (eR && eR._negocio) { toast('Error: ' + esc(eR.message), 'err'); btn.disabled = false; btn.textContent = '💾 Guardar costos'; return; }
+      /* cualquier otra falla: sigue por el camino de siempre */
+    }
+  }
   try {
     const r = await apiSend('productos.guardar', body);
     // 10-set-2026 — EL ✓ QUE MENTÍA, SEGUNDA PUERTA. Desde la fase 4.3 el ERP
