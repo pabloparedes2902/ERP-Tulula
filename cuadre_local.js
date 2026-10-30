@@ -588,6 +588,9 @@ function cua_13_EMPAREJAR_VENTAS() {
   // 17-oct (235/237): misma clienta + MISMA prenda y talla hasta 45 días (la fecha del pedido del ERP es la del
   // pedido original aunque la prenda se agregó después). Va antes de P2 para que no la tome otra clienta.
   pasada('P1', deK, function (d, e) { return d.k === e.k && dias(d.f, e.f) <= 45 ? _cmMisma_(d.per, e.per) : ''; });
+  // 30-oct (Pablo, caso 259 Lili 20265): la asesora agregó la compra del 7-ago al pedido del 17-jun (51 días) → misma clienta +
+  // MISMA prenda y talla hasta 90 días. Va después de las de 20 y 45 días (si la clienta compró dos veces lo mismo, gana la más cercana).
+  pasada('P1', deK, function (d, e) { return d.k === e.k && dias(d.f, e.f) <= 90 ? _cmMisma_(d.per, e.per) : ''; });
   pasada('P2', deK, function (d, e) { return d.k === e.k && dias(d.f, e.f) <= 5; });
   pasada('P3', deSku, function (d, e) { return d.sku === e.sku && d.k !== e.k && dias(d.f, e.f) <= 15 ? _cmMisma_(d.per, e.per) : ''; });
   pasada('P4', dePer, function (d, e) { return d.sku !== e.sku && dias(d.f, e.f) <= 15 ? _cmMisma_(d.per, e.per) : ''; });
