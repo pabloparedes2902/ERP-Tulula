@@ -867,7 +867,7 @@ function _margenBaseFecha_(v) {
 /** Costos desde public.cost_hoja (mismo formato que _costMap_). Si falla, la hoja Cost. */
 function _margenCostosBase_() {
   try {
-    var filas = _margenBaseGet_('cost_hoja?select=row_json&order=id.asc');
+    var filas = _margenBaseGet_('costo_margen_v?select=row_json&order=id.asc');   // 30-oct · el costo de la FICHA (costos_erp), no la copia de la hoja Cost
     var rows = [];
     filas.forEach(function (x) { if (x && x.row_json) rows.push(x.row_json); });
     if (!rows.length) throw new Error('cost_hoja vacia');
@@ -2554,7 +2554,7 @@ async function __bajar(f) {
   if (f.perfil) h['Accept-Profile'] = f.perfil;
   // costos y configuracion de Margen no se leen tabla por tabla (son privados): van por public.margen_fuente,
   // que devuelve LO MISMO que la tabla y solo a Admin/Marketing. El paginado se respeta: pagina > 0 = vacia.
-  var mF = /^(cost_hoja|margen_config)\?/.exec(f.ruta);
+  var mF = /^(cost_hoja|costo_margen_v|margen_config)\?/.exec(f.ruta);
   if (mF) {
     var off = /[?&]offset=(\d+)/.exec(f.ruta), pes = /[?&]pestana=eq\.([^&]+)/.exec(f.ruta), cuerpo = '[]', st = 200;
     if (!(off && +off[1] > 0)) {
