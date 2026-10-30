@@ -398,7 +398,7 @@ function _cmMisma_(a, b) {
 // ── CuadreMatch.gs · _cmErpBase_
 function _cmErpBase_(desde) {
   var out = [], off = 0, lim = 1000;
-  var sel = 'select=id,nro_pedido,prenda,estado,dni,celular,nombres,fecha_pedido,eliminado,cambio2,yay:row_json-%3E%3EEsYayita';   // -> y >> van codificados (UrlFetch rechaza el > crudo)
+  var sel = 'select=id,nro_pedido,prenda,estado,dni,celular,nombres,fecha_pedido,eliminado,cambio2,yay:row_json-%3E%3EEsYayita,mue:row_json-%3E%3EEsMuestra';   // 30-oct · + EsMuestra   // -> y >> van codificados (UrlFetch rechaza el > crudo)
   for (var vuelta = 0; vuelta < 60; vuelta++) {
     var r = _sbFetch_('GET', 'pedidos?' + sel + '&fecha_pedido=gte.' + desde + '&prenda=neq._PAGO_&order=id.asc&limit=' + lim + '&offset=' + off, null, {});
     if (r.code >= 300) throw new Error('pedidos HTTP ' + r.code + ' ' + String(r.body).slice(0, 200));
@@ -493,6 +493,16 @@ function cua_13_EMPAREJAR_VENTAS() {
   };
   // Drive: TODAS las filas con prenda (asi cuenta la formula de Stk); se guarda el estado
   var D = [], E = [], RET = [], GRP = {};
+  // 30-oct-2026 (Pablo: «todas estas son fallas vendidas como yayitas, estandarízalo») · VENTAS ESPECIALES.
+  // Una Yayita (falla vendida) o una Muestra NO es venta del stock normal: sale del NO DISPONIBLE, en los dos sistemas.
+  // ERP: «YAYITA - prenda» / «MUESTRA - prenda». Drive (hoja Ing, columna N u O): «prenda - FALLA», «YAYA: prenda» o «... MUESTRA ...».
+  // No se emparejan como ventas: se listan aparte (R.especiales) y la pantalla del cuadre las resta del no disponible del Drive.
+  var ESP = { drive: [], erp: [] };
+  var _cmEsp = function (t) { t = String(t || '').trim(); if (!t) return '';
+    if (/^YAYA\b|^YAYITA\b|[-\u2013\u2014]\s*FALLA\s*$/i.test(t)) return 'YAYITA';
+    if (/\bMUESTRA\b/i.test(t)) return 'MUESTRA'; return ''; };
+  var _cmEspBase = function (t) { return String(t || '').replace(/^\s*(YAYITA|YAYA|MUESTRA)\s*[:\-\u2013\u2014]?\s*/i, '').replace(/\s*[-\u2013\u2014]\s*FALLA\s*$/i, '').replace(/\bMUESTRA\b/ig, ' ').replace(/\s+/g, ' ').trim(); };
+  var _cmEspK = function (t) { var rs = null; try { rs = libroResolverPrenda(_cmEspBase(t)); } catch (e) { rs = null; } return rs ? rs.p + '|' + rs.d + '|' + rs.c + '|' + rs.t : ''; };
   var iv = _planillaSoloLectura_(STK_DRIVE_SS_ID).getSheetByName('Ing').getDataRange().getValues();
   for (var i = 1; i < iv.length; i++) {
     var r = iv[i], f = dia(r[20]); if (!f || f < parDia) continue;
@@ -503,6 +513,7 @@ function cua_13_EMPAREJAR_VENTAS() {
     // 27-set (Pablo): columna O "Cambio". Con la talla entre parentesis = la prenda que
     // VOLVIO (el Drive ya no la cuenta). N vacia + O con parentesis = devolucion completa.
     var cam = String(r[14] || '').trim();
+    if (cam && _cmEsp(cam)) { if (f >= cutDia) ESP.drive.push({ tipo: _cmEsp(cam), k: _cmEspK(cam), texto: cam, fila: i + 1, f: f, per: perR, nom: String(r[1] || '').slice(0, 40) }); cam = ''; }
     if (/\(/.test(cam)) {
       // 4-oct · una celda puede traer VARIOS cambios seguidos separados por "//"
       // (fila 45818: "PANTALON GRECIA NEGRO (L) // PANTALON ANTONIA BEIGE (M)"): cada uno cuenta.
@@ -520,6 +531,7 @@ function cua_13_EMPAREJAR_VENTAS() {
       if (xo) { xo.viejo = f < cutDia; xo.gk = gk; xo.pre = 0; camK = xo.k; D.push(xo); }
     }
     var pr = String(r[13] || '').trim(); if (!pr) continue;
+    if (_cmEsp(pr)) { if (f >= cutDia) ESP.drive.push({ tipo: _cmEsp(pr), k: _cmEspK(pr), texto: pr, fila: i + 1, f: f, per: perR, nom: String(r[1] || '').slice(0, 40) }); continue; }
     var x = mk('drive', pr, persona(r[2], r[3], r[1]), f, 'Ing fila ' + (i + 1) + ' · ' + String(r[1] || '').slice(0, 40), String(r[24] || '').trim().toUpperCase());
     if (x) { x.viejo = f < cutDia; x.gk = gk; x.pre = num(r[15]); x.camK = camK; D.push(x); }
   }
@@ -539,7 +551,8 @@ function cua_13_EMPAREJAR_VENTAS() {
       if (est === 'CANCELADO' || est === 'DEVOLUCION') return;
       if (/^C2DEV /.test(String(p.cambio2 || ''))) return;   // 15-oct: devuelta en un cambio sin prenda nueva (ej. 22378 CAM-0219): ya no es venta
       var pr = String(p.prenda || '').trim(); if (!pr || vocCanon(pr) === '_PAGO_') return;
-      if (String(p.yay || '').trim().toUpperCase() === 'SI' || /^\s*YAYITA\s*[-\u2013\u2014]?\s+/i.test(pr)) return;
+      var _rj = { EsMuestra: p.mue }, _tE = (String(p.yay || '').trim().toUpperCase() === 'SI' || /^\s*YAYITA\b/i.test(pr)) ? 'YAYITA' : ((String(_rj.EsMuestra || '').trim().toUpperCase() === 'SI' || /^\s*MUESTRA\b/i.test(pr)) ? 'MUESTRA' : '');
+      if (_tE) { var _fE = dia(p.fecha_pedido); if (_fE && _fE >= cutDia) ESP.erp.push({ tipo: _tE, k: _cmEspK(pr), texto: pr, nro: String(p.nro_pedido), f: _fE, per: persona(p.dni, p.celular, p.nombres), nom: String(p.nombres || '').slice(0, 40) }); return; }   // 30-oct · venta especial: va aparte
       var f = dia(p.fecha_pedido); if (!f || f < parDia) return;
       // 13-oct (Pablo aprobó): un CONJUNTO se parte en sus piezas igual que el stock (erp.alias_ventas 1→2)
       _cmPiezas_(pr, CONJ).forEach(function (prz) {
@@ -555,7 +568,7 @@ function cua_13_EMPAREJAR_VENTAS() {
       _pedidosRawCached().forEach(function (p) {
       var est = String(p[C.ESTADO] || '').trim().toUpperCase(); if (est === 'CANCELADO' || est === 'DEVOLUCION') return;
       var pr = String(p[C.PRENDA] || '').trim(); if (!pr || vocCanon(pr) === '_PAGO_') return;
-      try { if (_esVentaYayita_(p)) return; } catch (e) {}
+      try { if (_esVentaYayita_(p) || _esVentaMuestra_(p)) return; } catch (e) {}   // 30-oct · la Muestra tampoco es venta del stock normal
       var f = dia(p[C.FECHA_PEDIDO]); if (!f || f < cutDia) return;
       var x = mk('erp', pr, persona(p[C.DNI], p[C.CELULAR], p[C.NOMBRE]), f, 'pedido ' + p[C.NRO] + ' · ' + String(p[C.NOMBRE] || '').slice(0, 40), est);
       if (x) E.push(x);
@@ -682,6 +695,15 @@ function cua_13_EMPAREJAR_VENTAS() {
   R.recientes = { desde: corteReciente, soloDrive: recientes(soloD), soloErp: recientes(soloE) };
   var top = function (o) { return Object.keys(o).map(function (k) { return [k, o[k]]; }).sort(function (x, y) { return y[1] - x[1]; }).slice(0, 80); };
   R.sinResolverTop = { erp: top(sinResolverTxt.erp), drive: top(sinResolverTxt.drive) };
+  // 30-oct · ventas especiales: pareja = misma clienta (DNI, celular o nombre) y fecha a 7 días o menos. Si el Drive no se pudo
+  // leer (ej. «PANTALON MUESTRA GRIS M», sin diseño) toma la prenda de su pareja del ERP.
+  (function () { var mismo = function (a, b) { return (a.dni && a.dni === b.dni) || (a.cel && a.cel === b.cel) || (a.nom && b.nom && a.nom.slice(0, 2).join(' ') === b.nom.slice(0, 2).join(' ')); };
+    var dd = function (a, b) { return Math.abs((new Date(a) - new Date(b)) / 864e5); }, usados = {};
+    ESP.drive.forEach(function (d) { var mejor = -1;
+      ESP.erp.forEach(function (e, j) { if (usados[j] || !mismo(d.per, e.per) || dd(d.f, e.f) > 7) return; if (mejor < 0 || (e.k && e.k === d.k)) mejor = j; });
+      if (mejor >= 0) { usados[mejor] = 1; d.nro = ESP.erp[mejor].nro; d.kErp = ESP.erp[mejor].k; d.tipoErp = ESP.erp[mejor].tipo; ESP.erp[mejor].fila = d.fila; } });
+    var sinPer = function (x) { var o = {}; Object.keys(x).forEach(function (q) { if (q !== 'per') o[q] = x[q]; }); return o; };
+    R.especiales = { drive: ESP.drive.map(sinPer), erp: ESP.erp.map(sinPer) }; })();
   try { _sbFetch_('POST', 'rpc/espejo_cache_set', { p_clave: 'claude.cuadre.match', p_datos: R, p_filas: soloD.length + soloE.length }, {}); } catch (e) { R.errGuardar = String(e); }
   Logger.log('[cua_13] ' + JSON.stringify({ erpDeBase: erpDeBase, drive: D.length, erp: E.length, parejas: cuenta, por: por, otraTalla: talla.length, otraPrenda: prenda.length, soloDrive: soloD.length, soloErp: soloE.length, regla2: regla2, cambioDuplicado: dup.length, homologacion: homo.length, seg: R.seg }));
   return { parejas: cuenta, soloDrive: soloD.length, soloErp: soloE.length };
