@@ -31865,11 +31865,12 @@ let stData=null, stCatActiva='', stOrden='reciente', stFiltroTxt='';
 // Ej: "short malva verde" → prendas SHORT del diseño MALVA en color VERDE.
 const _stNoAcc = s => String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
 function _stFiltrarRows(rows){
+  if(typeof _stYayMode!=='undefined'&&_stYayMode&&typeof _stYayTipo!=='undefined'&&_stYayTipo) rows=rows.filter(d=>d.tipo===_stYayTipo);   /* 30-oct · filtro por Tipo en Yayitas */
   const q=_stNoAcc(stFiltroTxt).trim();
   if(!q) return rows;
   const terms=q.split(/\s+/);
   return rows.filter(d=>{
-    const hay=_stNoAcc((d.cat||'')+' '+(d.prenda||'')+' '+(d.diseno||'')+' '+(d.color||''));
+    const hay=_stNoAcc((d.cat||'')+' '+(d.prenda||'')+' '+(d.diseno||'')+' '+(d.color||'')+(d.tipo&&typeof _yayTipoInfo==='function'?' '+_yayTipoInfo(d.tipo).lbl:''));
     return terms.every(t=>hay.indexOf(t)!==-1);
   });
 }
@@ -32102,6 +32103,83 @@ function _stCtxYay() {
   return null;
 }
 
+// 30-oct-2026 (Pablo: «todo dentro de Yayitas, un solo cuadro con columna Tipo: Confección · Ventas · Stock») · FASE 2A.
+// Lo que NO está disponible para vender, por TIPO. Igual que los referentes (Shopify/NetSuite/Inditex): la prenda sigue siendo
+// el MISMO SKU; lo que cambia es su estado. Fuente única = los MOVIMIENTOS del ERP (lo mismo que el cuadre y el Inventario):
+//   · no disponible de cada talla = movimientos (stock_libro_movimientos.fallas) → ve las DOS fuentes (montón de fallas y las
+//     fallas que vinieron del Drive en Confección), que antes Yayitas no veía (solo veía el montón);
+//   · el desglose por tipo sale del montón (tabla fallas, columna Destino); lo que el montón no explica = «Falla sin decidir»;
+//   · ventas = pedidos «YAYITA - …» / «MUESTRA - …» (con su tipo de prenda: el blazer y el pantalón ya no se mezclan).
+// Confección = cuántas entraron a ese tipo · Ventas = cuántas se vendieron · Stock = lo que queda.
+const YAY_TIPOS = [
+  { k: 'YAYITA',    lbl: 'Yayita',            bg: '#f59e0b', tx: '#1c1917', ayuda: 'Falla que se vende con descuento' },
+  { k: 'MUESTRA',   lbl: 'Muestra',           bg: '#8b5cf6', tx: '#fff',    ayuda: 'Fuera del stock; se puede vender' },
+  { k: 'SESION',    lbl: 'Sesión / TikTok',   bg: '#0ea5e9', tx: '#fff',    ayuda: 'Prestada para fotos o TikTok: vuelve' },
+  { k: 'CORRECCION',lbl: 'Corrección',        bg: '#22c55e', tx: '#052e12', ayuda: 'Se repara y vuelve al stock (Recuperar)' },
+  { k: 'SIN',       lbl: 'Falla sin decidir', bg: '#64748b', tx: '#fff',    ayuda: 'Falla sin destino todavía (incluye las que vinieron del Drive)' },
+  { k: 'DESCARTE',  lbl: 'Descarte',          bg: '#ef4444', tx: '#fff',    ayuda: 'Baja: no se vende' },
+  { k: 'PERDIDA',   lbl: 'Pérdida',           bg: '#7f1d1d', tx: '#fff',    ayuda: 'Robada o perdida' },
+  { k: 'REVISAR',   lbl: '⚠ Por revisar',     bg: '#fde047', tx: '#1c1917', ayuda: 'El montón dice más unidades que los movimientos: hay un registro suelto' }
+];
+const _YAY_DEST = { YAYITAS: 'YAYITA', YAYITA: 'YAYITA', MUESTRA: 'MUESTRA', MUESTRAS: 'MUESTRA', VUELVE: 'SESION', SESION: 'SESION', TIKTOK: 'SESION',
+  REPARAR: 'CORRECCION', CORRECCION: 'CORRECCION', DESCARTAR: 'DESCARTE', DESCARTE: 'DESCARTE', PERDIDA: 'PERDIDA', ROBADA: 'PERDIDA' };
+function _yayTipoDe(destino) { const d = String(destino || '').trim().toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); return _YAY_DEST[d] || 'SIN'; }
+function _yayTipoInfo(k) { return YAY_TIPOS.find(t => t.k === k) || YAY_TIPOS[4]; }
+function _yayTipoPill(k) { const t = _yayTipoInfo(k); return '<span title="' + esc(t.ayuda) + '" style="display:inline-block;background:' + t.bg + ';color:' + t.tx + ';font-size:11px;font-weight:600;padding:1px 7px;border-radius:9px;white-space:nowrap">' + esc(t.lbl) + '</span>'; }
+let _stYayTipo = '';   // filtro por tipo ('' = todos)
+
+async function _yayStockTipos() {
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  const tok = await _sbSesionAsegurar(); if (!tok) return null;
+  const H = { apikey: SB_ANON, Authorization: 'Bearer ' + tok };
+  const TM = { 'S/M': 'S', 'M/L': 'M', 'L/XL': 'L', C: 'M', G: 'XL', STD: 'M', ESTANDAR: 'M', U: 'M', XXL: '2XL', XXXL: '3XL' }, UNI = { U: 1, C: 1, G: 1, STD: 1, ESTANDAR: 1 };
+  const TSTD = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+  const up = v => String(v == null ? '' : v).trim().toUpperCase();
+  const [LM, rf, rp] = await Promise.all([
+    _cdKardex(),
+    fetch(SB_URL + '/rest/v1/fallas?select=prenda,diseno,color,row_json&limit=10000', { headers: H }),
+    fetch(SB_URL + '/rest/v1/pedidos?select=prenda,eliminado,estado,yay:row_json-%3E%3EEsYayita,mue:row_json-%3E%3EEsMuestra&or=(prenda.ilike.YAYITA*,prenda.ilike.MUESTRA*,row_json-%3E%3EEsYayita.eq.SI,row_json-%3E%3EEsMuestra.eq.SI)&limit=5000', { headers: H })
+  ]);
+  if (!LM || !rf.ok || !rp.ok) return null;
+  const fallas = await rf.json(), peds = await rp.json();
+  // nombre completo → prenda/diseño/color/talla: de los MISMOS movimientos (MAESTROS son listas de opciones sueltas, no filas)
+  const IDX = {}, CAT = {};
+  Object.keys(LM).forEach(k => { const p = k.split('|'); IDX[p.join(' ')] = p; });
+  fallas.forEach(f => { const r = f.row_json || {}, kk = up(r.Prenda || f.prenda) + '|' + up(r.Diseno || f.diseno); if (r.Categoria && !CAT[kk]) CAT[kk] = String(r.Categoria).trim(); });
+  (typeof stData !== 'undefined' && Array.isArray(stData) ? stData : []).forEach(x => { const kk = up(x.prenda) + '|' + up(x.diseno); if (x.cat && !CAT[kk]) CAT[kk] = x.cat; });
+  const S = {};   // 'PRENDA|DIS|COL|TALLA' → { tipos:{k:{e,v}}, fecha }
+  const sku = k => S[k] || (S[k] = { t: {}, fechaMs: 0 });
+  const add = (k, tipo, campo, n, fm) => { const o = sku(k), x = o.t[tipo] || (o.t[tipo] = { e: 0, v: 0 }); x[campo] += n; if (fm && fm > o.fechaMs) o.fechaMs = fm; };
+  // 1) el montón, por tipo (lo recuperado ya volvió al stock bueno: no cuenta)
+  fallas.forEach(f => { const r = f.row_json || {}; if (up(r.Eliminado) === 'SI' || up(r.Recuperado) === 'SI') return;
+    const k = [up(r.Prenda || f.prenda), up(r.Diseno || f.diseno), up(r.Color || f.color), up(r.Talla)].join('|');
+    add(k, _yayTipoDe(r.Destino), 'e', parseInt(r.Cantidad, 10) || 1, Date.parse(r.Fecha || '') || 0); });
+  // 2) las ventas con su tipo de prenda
+  peds.forEach(p => { if (up(p.eliminado) === 'SI' || /^(CANCELADO|DEVOLUCION)$/.test(up(p.estado))) return;
+    const txt = String(p.prenda || ''), esY = up(p.yay) === 'SI' || /^\s*YAYITA\b/i.test(txt), esM = !esY && (up(p.mue) === 'SI' || /^\s*MUESTRA\b/i.test(txt));
+    if (!esY && !esM) return;
+    const s = IDX[up(txt.replace(/^\s*(YAYITA|MUESTRA)\s*[-–—]?\s*/i, ''))]; if (!s) return;
+    add(s.join('|'), esY ? 'YAYITA' : 'MUESTRA', 'v', 1, 0); });
+  // 3) lo que el montón no explica, según los movimientos
+  Object.keys(LM).forEach(k => { const n = Math.max(0, Number(LM[k].fallas) || 0); if (!n && !S[k]) return; const o = sku(k);
+    let neto = 0; Object.keys(o.t).forEach(t => { neto += o.t[t].e - (t === 'YAYITA' ? o.t[t].v : 0); });   // la venta de Muestra todavía no mueve el no disponible (fase 2B)
+    const r = n - neto; if (r > 0) { add(k, 'SIN', 'e', r, 0); return; } if (!r) return;
+    // El montón dice MÁS que los movimientos: el cuadre con el Drive (CUADRE_ND12, 12-oct) ya sacó del no disponible unidades
+    // que el montón todavía lista (medido 30-oct: 45 de 46 eran Descarte, Sesión/TikTok, Corrección o sin decidir). Se descuentan
+    // en ese orden (lo que primero se va); si aun así sobra, queda a la vista como «Por revisar» (1 caso: PANTALON CLASSIC MORADO XL).
+    let falta = -r; ['DESCARTE', 'PERDIDA', 'SESION', 'CORRECCION', 'SIN'].forEach(t => { const x = o.t[t]; if (!x || falta <= 0) return; const q = Math.min(falta, x.e); x.e -= q; x.fuera = (x.fuera || 0) + q; falta -= q; });
+    if (falta > 0) add(k, 'REVISAR', 'e', -falta, 0); });
+  // 4) filas para la grilla: una por prenda · diseño · color · TIPO
+  const filas = {};
+  Object.keys(S).forEach(k => { const [pr, d, c, tal0] = k.split('|'); const tal = TM[tal0] || tal0; if (TSTD.indexOf(tal) < 0) return;
+    Object.keys(S[k].t).forEach(tp => { const x = S[k].t[tp]; if (!x.e && !x.v) return;
+      const fk = pr + '|' + d + '|' + c + '|' + tp, f = filas[fk] || (filas[fk] = { prenda: pr, diseno: d, color: c, tipo: tp, cat: CAT[pr + '|' + d] || '', tallas: TSTD, conf: {}, total: {}, fallas: {}, vtas: {}, stock: {}, fechaMs: 0, unica: !!UNI[tal0] });
+      f.total[tal] = (f.total[tal] || 0) + x.e; f.conf[tal] = f.total[tal]; f.vtas[tal] = (f.vtas[tal] || 0) + x.v; f.stock[tal] = f.total[tal] - f.vtas[tal];
+      if (S[k].fechaMs > f.fechaMs) f.fechaMs = S[k].fechaMs; }); });
+  const ord = {}; YAY_TIPOS.forEach((t, i) => { ord[t.k] = i; });
+  return Object.keys(filas).map(k => filas[k]).sort((a, b) => (b.fechaMs - a.fechaMs) || (ord[a.tipo] - ord[b.tipo]));
+}
+
 // El montón, armado en el navegador. Devuelve filas con la MISMA forma que stock.resumen
 // para que la tabla de stock las pinte sin cambiar una línea de estilo.
 async function _yayStockRapido() {
@@ -32132,6 +32210,8 @@ async function _yayStockRapido() {
 async function _yayCargarStock() {
   _yayOlvidarCache();   // leer de nuevo, sí; desconfiar de la copia, NO (ver _yayOlvidar)
   let d = null;
+  // 30-oct (fase 2A) · el cuadro por TIPO, desde los movimientos (la tabla fallas ya es la verdad: FALLAS_BASE_MANDA). Si no se puede, lo de antes.
+  try { const t = await _yayStockTipos(); if (t) { _stDataYay = t; _stYayEspejoOk = true; return; } } catch (eT) { try { _errLog('yay.tipos', eT); } catch (_) {} }
   // 30-jul, tercera vuelta — LA VÍA RÁPIDA NO SIEMPRE SE PUEDE USAR.
   // Lee la tabla `fallas` de la base, que es una COPIA de la hoja. Esa copia viajaba
   // cada 30 minutos: marcabas una falla y la pantalla seguía mostrando el montón de
@@ -32402,7 +32482,7 @@ function renderStock(el) {
       tr+=`<td style="position:sticky;${LC}z-index:3;background:${rowBg};color:${rowTx};${TB}${P}${WCs}border-right:${THK};overflow:hidden;box-shadow:2px 0 6px rgba(0,0,0,.4)">`
          +`<div class="st-color-edit" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}'" style="display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer">`
          +_grip('st-drag-color',[8,14])
-         +`${stDot(d.color)}<span style="white-space:normal;word-break:break-word">${esc(d.color)}</span></div></td>`;
+         +`${stDot(d.color)}<span style="white-space:normal;word-break:break-word">${esc(d.color)}</span>${(_stYayMode&&d.tipo&&typeof _yayTipoPill==='function')?_yayTipoPill(d.tipo):''}</div></td>`;
 
       // Celda de talla inexistente → plomo oscuro (item 3), conservando el guion.
       const STEMPTY='background:#26262c;';
@@ -32899,7 +32979,8 @@ function renderInv(el){
             + 'flex-wrap:wrap;margin-bottom:5px;border-bottom:1px solid var(--bd);padding-bottom:4px">'
             + '<div style="flex:1 1 auto;min-width:0">'+tabs+'</div>'
             + '<div style="flex:0 0 auto">__IV_CTRL__</div></div>'
-            + (_stYayMode ? '<div style="font-size:12px;color:var(--mu);margin:0 0 8px">Prendas con falla marcadas para vender. <b>Conf. Real</b> = cuántas entraron al montón · <b>Ventas</b> = cuántas ya se vendieron · <b>Stock</b> = lo que queda.</div>' : '');
+            + (_stYayMode ? '<div style="font-size:12px;color:var(--mu);margin:0 0 8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span>Todo lo que <b>no está disponible</b> para vender, por tipo. <b>Confección</b> = cuántas entraron a ese tipo · <b>Ventas</b> = cuántas se vendieron (Yayita o Muestra) · <b>Stock</b> = lo que queda.</span>'
+              + '<select id="iv-yay-tipo" style="padding:3px 8px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:12px"><option value="">Todos los tipos</option>' + YAY_TIPOS.map(t => '<option value="' + t.k + '"' + (_stYayTipo === t.k ? ' selected' : '') + '>' + esc(t.lbl) + '</option>').join('') + '</select></div>' : '');
 
   // Barra de FILTROS (mismo estado que Stock)
   /* 26-oct (Pablo) · el buscador sube a la barra del título (angosto, «Buscar…»); los filtros van a la derecha de las categorías */
@@ -32922,7 +33003,7 @@ function renderInv(el){
   // estado de orden (stOrden), así que tienen que ofrecer lo mismo.
   ctrl+='<button id="iv-ordenar" class="btn bg bs" style="font-size:11px;flex-shrink:0" title="Crear/editar un orden manual arrastrando diseños">↕ Ordenar</button>';
   ctrl+='<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mu);cursor:pointer;white-space:nowrap"><input id="iv-hide" type="checkbox"'+(stHideNoStock?' checked':'')+' style="accent-color:var(--ac);width:14px;height:14px;cursor:pointer"> Ocultar sin stock</label>';
-  ctrl+='<button id="iv-cols" class="btn bg bs" style="font-size:11px;flex-shrink:0" title="Mostrar/ocultar Conf. Total y Fallas">'+(invShowAll?'▾ Total/Fallas':'▸ Total/Fallas')+'</button>';
+  if(!_stYayMode) ctrl+='<button id="iv-cols" class="btn bg bs" style="font-size:11px;flex-shrink:0" title="Mostrar/ocultar Conf. Total y Fallas">'+(invShowAll?'▾ Total/Fallas':'▸ Total/Fallas')+'</button>';
   if(stFiltroTxt||stCatActiva) ctrl+='<button id="iv-clr" class="btn bg bs" style="font-size:11px;flex-shrink:0">✕ Limpiar</button>';
   ctrl+='</div>';
 
@@ -32979,7 +33060,9 @@ function renderInv(el){
     {lbl:'Stock',       hbg:'#261a0a', hc:'#fbbf24', tc:'#fcd34d'},
   ];
   // Bloques visibles: por defecto Real·Ventas·Stock (2,3,4). Expandido: los 5.
-  const VIS = invShowAll ? [0,1,2,3,4] : [2,3,4];
+  const VIS = _stYayMode ? [0,3,4] : (invShowAll ? [0,1,2,3,4] : [2,3,4]);   /* 30-oct (Pablo) · Yayitas: solo Confección · Ventas · Stock */
+  if (_stYayMode) IVBLK[0] = Object.assign({}, IVBLK[0], { lbl: 'Confección' });
+  const _YT = !!_stYayMode;   /* 30-oct · columna Tipo a la derecha de Color */
 
   // HEADER fila 1
   // 26-jul: Categoría/Prenda/Diseño/Color ocupan las DOS filas del encabezado.
@@ -32990,6 +33073,7 @@ function renderInv(el){
   th1+=`<th rowspan="2" style="${_thStk}${LP}${WPs}${TB}">Prenda<span class="iv-crs" data-ivk="p" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido"></span></th>`;
   th1+=`<th rowspan="2" style="${_thStk}${LD}${WDs}${TB}">Diseño<span class="iv-crs" data-ivk="d" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido"></span></th>`;
   th1+=`<th rowspan="2" style="${_thStk}${LC}${WCs}${TB}border-right:${THK};box-shadow:2px 0 6px rgba(0,0,0,.5)">Color<span class="iv-crs" data-ivk="c" title="Arrastrar para cambiar el ancho · doble clic para ajustar al contenido"></span></th>`;
+  if (_YT) th1+=`<th rowspan="2" style="${_thStk}${TB}border-right:${THK};min-width:120px">Tipo</th>`;
   VIS.forEach((bidx,vi)=>{ const b=IVBLK[bidx]; const last=vi===VIS.length-1; th1+=`<th colspan="${NT}" style="background:${b.hbg};color:${b.hc};font-weight:600;font-size:12px;text-align:center;padding:4px 7px;${TB}${last?'':'border-right:'+THK}">${b.lbl}</th>`; });
   th1+='</tr>';
 
@@ -33003,7 +33087,7 @@ function renderInv(el){
   // BODY
   // 26-jul: 24px de alto (Pablo lo bajó de 28 para ver más filas de golpe).
   const P='padding:1px 8px;height:24px;line-height:1.1;',C='text-align:center;';
-  const NCOLS=4+NT*VIS.length;
+  const NCOLS=4+(_YT?1:0)+NT*VIS.length;
   const STEMPTY='background:#26262c;';
   let tbody='';
   groups.forEach((g,gi)=>{
@@ -33046,6 +33130,7 @@ function renderInv(el){
          +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" draggable="true" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:grab;user-select:none;">`
          +_ivGrip('iv-drag-color',[8,14])
          +`${stDot(d.color)}<span style="white-space:nowrap">${esc(d.color)}</span></span>${_ndIcon}${_kIcon}</div></td>`;
+      if (_YT) tr+=`<td style="background:${rowBg};${TB}${P}border-right:${THK};text-align:center">${_yayTipoPill(d.tipo)}</td>`;
       // Bloques visibles (VIS)
       // 27-set-2026 (Pablo) · talla unica = UNA celda que abarca varias columnas
       // (correas S..XL; el resto de accesorios XS..3XL). Suma lo que haya en todas.
@@ -33395,6 +33480,8 @@ function renderInv(el){
   if(clrBtn) clrBtn.addEventListener('click',()=>{ stFiltroTxt=''; stCatActiva=''; renderInv(el); });
   const yayBtn=document.getElementById('iv-yay');
   if(yayBtn) yayBtn.addEventListener('click',()=>stockYayitasToggle());
+  const yayTipo=document.getElementById('iv-yay-tipo');
+  if(yayTipo) yayTipo.addEventListener('change',()=>{ _stYayTipo=yayTipo.value; renderInv(el); });
   const yayVol=document.getElementById('st-yay-volver');
   if(yayVol) yayVol.addEventListener('click',()=>stockYayitasToggle());
 }
