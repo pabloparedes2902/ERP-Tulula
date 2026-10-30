@@ -5430,10 +5430,14 @@ async function _cosClimaPintar(v) {
   };
 }
 async function _cosInsPintar(v) {
-  CIN.L = []; CIN.dirty = false; CIN.d = _cinNrm(v && v.Diseno);
+  CIN.L = []; CIN.dirty = false; CIN.ok = false; CIN.d = _cinNrm(v && v.Diseno);
   const box = document.getElementById('cf-ins'); if (!box) return;
-  if (CIN.d) { try { CIN.L = (await _cinSb('/rest/v1/prod_insumos?select=comp,descripcion,cantidad,unidad,precio,colores&order=orden&diseno=eq.' + encodeURIComponent(CIN.d))) || []; }
-    catch (_) { try { CIN.L = (await _cinSb('/rest/v1/prod_insumos?select=comp,descripcion,cantidad,unidad,precio&order=orden&diseno=eq.' + encodeURIComponent(CIN.d))) || []; } catch (__) { CIN.L = []; } } }   /* 26-oct · colores (si falta el SQL, sigue sin ellos) */
+  const _src = v && v._dup ? _cinNrm(v._dup) : CIN.d;   /* 29-oct · «Duplicar» copia también la lista de materiales */
+  if (_src) { try { CIN.L = (await _cinSb('/rest/v1/prod_insumos?select=comp,descripcion,cantidad,unidad,precio,colores&order=orden&diseno=eq.' + encodeURIComponent(_src))) || []; }
+    catch (_) { try { CIN.L = (await _cinSb('/rest/v1/prod_insumos?select=comp,descripcion,cantidad,unidad,precio&order=orden&diseno=eq.' + encodeURIComponent(_src))) || []; } catch (__) { CIN.L = null; } } }
+  if (v && v._dup && Array.isArray(CIN.L) && CIN.L.length) CIN.dirty = true;   /* 26-oct · colores (si falta el SQL, sigue sin ellos) */
+  CIN.ok = Array.isArray(CIN.L); CIN.err = !CIN.ok; if (!CIN.ok) CIN.L = [];
+  if (CIN.ok && !CIN.L.length && Number(v && v.CostoUnitario) > 0 && !(v && v._dup)) CIN.ok = false;   /* 29-oct · costo viejo sin lista todavía: se respeta tal cual (nunca se pone en cero) */   /* 29-oct · si no se pudo leer la lista, NO se recalcula nada (no pisa el costo con ceros) */
   if (!document.getElementById('cf-ins')) return;
   _cosInsRender(); _cosInsAplicar(false);
 }
@@ -5447,17 +5451,19 @@ function _cosInsRender() {
     + '<td><input class="cin-u" value="' + esc(x.unidad || '') + '" placeholder="m, und" style="' + st + ';width:60px"></td>'
     + '<td><input class="cin-p" type="number" step="0.01" min="0" value="' + (x.precio == null ? '' : x.precio) + '" style="' + st + ';width:74px;text-align:center"></td>'
     + '<td class="cin-s" style="text-align:right;font-size:12px;padding:0 6px"></td><td><button type="button" class="btn bg bs cin-x" title="Quitar">✕</button></td></tr>';
-  box.innerHTML = '<details' + (CIN.L.length ? ' open' : '') + '><summary style="cursor:pointer;font-size:13px;color:var(--ac)">🧾 Detalle de insumos (cantidad × precio por prenda)' + (CIN.L.length ? ' · ' + CIN.L.length : ' · opcional') + '</summary>'
-    + '<div style="font-size:12px;color:var(--mu);margin:6px 0">Lo que pongas aquí calcula solo la casilla de ese componente (queda en gris). Es el mismo costo que ve 🧵 Producción.</div>'
+  box.innerHTML = '<details open><summary style="cursor:pointer;font-size:13px;color:var(--ac)">🧾 Materiales y confección (cantidad × precio por prenda) · ' + CIN.L.length + '</summary>'   /* 29-oct (Pablo: aprobado) · el costo es SIEMPRE la suma de esta lista */
+    + '<div style="font-size:12px;color:var(--mu);margin:6px 0">El costo de la prenda es la <b>suma de esta lista</b>: una fila por cada material (cantidad × precio) y una por la confección del taller. Las casillas de arriba se llenan solas.</div>'
     + '<div style="overflow:auto"><table style="border-collapse:collapse;width:100%"><tr style="font-size:11px;color:var(--mu)"><th style="text-align:left">Componente</th><th style="text-align:left">Material / proveedor</th><th style="text-align:left">Colores</th><th title="27-oct (248) · consumo por prenda producida: metros de tela por unidad, unidades de botón…">Cant. por prenda</th><th>Unidad</th><th>Precio S/ por unidad</th><th>Subtotal</th><th></th></tr>'
-    + CIN.L.map(fila).join('') + '</table></div><button type="button" class="btn bg bs" id="cin-add" style="margin-top:6px">＋ Insumo</button> <span id="cin-alt" style="font-size:12px;color:var(--mu)"></span></div></details>';
+    + CIN.L.map(fila).join('') + '</table></div><button type="button" class="btn bg bs" id="cin-add" style="margin-top:6px">＋ Material</button> <span id="cin-alt" style="font-size:12px;color:var(--mu)"></span></div></details>';
   const leer = () => { CIN.L = [...box.querySelectorAll('tr[data-i]')].map(tr => ({ comp: tr.querySelector('.cin-c').value, descripcion: tr.querySelector('.cin-d').value, colores: (tr.querySelector('.cin-k') || {}).value || '', cantidad: tr.querySelector('.cin-q').value, unidad: tr.querySelector('.cin-u').value, precio: tr.querySelector('.cin-p').value })); };
   box.querySelectorAll('tr[data-i] input, tr[data-i] select').forEach(i => { i.addEventListener('input', () => { leer(); _cosInsAplicar(true); }); i.addEventListener('change', () => { leer(); _cosInsAplicar(true); }); });
   box.querySelectorAll('.cin-x').forEach(b => b.addEventListener('click', () => { b.closest('tr').remove(); leer(); _cosInsAplicar(true); _cosInsRender(); }));
-  document.getElementById('cin-add').addEventListener('click', () => { leer(); CIN.L.push({ comp: 'otros', descripcion: '', cantidad: 1, unidad: 'und', precio: '' }); _cosInsRender(); _cosInsAplicar(true); });
+  document.getElementById('cin-add').addEventListener('click', () => { leer();
+    if (!CIN.ok && !CIN.err && !CIN.L.length) (COS.comps || []).forEach(k => { const v0 = +((document.getElementById('cc-' + k.k) || {}).value || 0); if (v0 > 0) CIN.L.push({ comp: k.k, descripcion: 'Monto cargado antes', cantidad: 1, unidad: 'und', precio: v0 }); });   /* 29-oct · el costo viejo pasa a la lista, no se pierde */
+    CIN.L.push({ comp: CIN.L.some(x => x.comp === 'confeccion') ? 'tela1' : 'confeccion', descripcion: '', cantidad: 1, unidad: 'und', precio: '' }); _cosInsRender(); _cosInsAplicar(true); });
 }
 function _cosInsAplicar(cambio) {
-  if (cambio) CIN.dirty = true;
+  if (cambio && !CIN.err) { CIN.dirty = true; CIN.ok = true; }   /* al tocar la lista, el costo pasa a ser su suma */
   /* 26-oct (Pablo) · dos telas según el color: si un componente tiene filas con colores, son ALTERNATIVAS → el costo del producto toma la más cara; cada orden de 🧵 Producción calcula el exacto por color */
   const sum = {}, G = {}; CIN.L.forEach(x => { (G[x.comp] = G[x.comp] || []).push((+x.cantidad || 0) * (+x.precio || 0)); });
   const _cinPorColor = x => { const c = String(x.colores || '').trim(); return !!c && !/^(TODOS?|TODAS?|\*|TODOS? LOS COLORES)$/i.test(c); };   /* 27-oct (253) · «TODOS» no es alternativa por color */
@@ -5465,13 +5471,16 @@ function _cosInsAplicar(cambio) {
   { const n = document.getElementById('cin-alt'), al = Object.keys(G).filter(k => CIN.L.some(x => x.comp === k && _cinPorColor(x))); if (n) n.textContent = al.length ? 'Material según el color: el costo del producto toma el más caro; cada orden de 🧵 Producción calcula el costo exacto por color.' : ''; }
   document.querySelectorAll('#cf-ins tr[data-i]').forEach(tr => { tr.querySelector('.cin-s').textContent = ((+tr.querySelector('.cin-q').value || 0) * (+tr.querySelector('.cin-p').value || 0)).toFixed(2); });
   let toco = null;
+  /* 29-oct (Pablo: aprobado) · cada casilla = suma de sus materiales; sin materiales = 0. Ninguna se escribe a mano. */
+  if (!CIN.ok) return;
   (COS.comps || []).forEach(k => { const i = document.getElementById('cc-' + k.k); if (!i) return;
-    if (k.k in sum) { i.value = (Math.round(sum[k.k] * 100) / 100).toFixed(2); i.readOnly = true; i.dataset.cin = '1'; i.style.opacity = '.65'; i.title = 'Se calcula con el detalle de insumos'; toco = i; }
-    else if (i.dataset.cin) { i.readOnly = false; delete i.dataset.cin; i.style.opacity = ''; i.title = ''; toco = i; } });
+    const nv = (Math.round((sum[k.k] || 0) * 100) / 100).toFixed(2);
+    if (i.value !== nv) { i.value = nv; toco = i; }
+    i.readOnly = true; i.dataset.cin = '1'; i.style.opacity = '.65'; i.title = 'Se calcula con la lista de materiales'; });
   if (toco) try { toco.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
 }
 async function _cosInsGuardar(nombre) {
-  if (!CIN.dirty) return;
+  if (!CIN.dirty || CIN.err) return;   /* 29-oct · si la lista no se pudo leer, nunca se reescribe */
   const r = await _cinSb('/rest/v1/rpc/prod_insumos_guardar', { p_diseno: _cinNrm(nombre), p_items: CIN.L.filter(x => x.comp) });
   if (r && r.ok === false) throw new Error(r.error || 'error'); CIN.dirty = false;
 }
@@ -7370,12 +7379,12 @@ async function _cosOrdenesPintar(v) {
   const box = document.getElementById('cf-ord'); if (!box || box.dataset.ok) return;
   if (!v.ProductoId) { box.textContent = 'Este producto todavía no tiene número; se asigna solo.'; return; }
   let L = [];
-  try { L = (await _cinSb('/rest/v1/prod_ordenes?select=id,tipo,etapa,taller,fecha_venta,cerrada,creado&order=creado.desc&producto_id=eq.' + Number(v.ProductoId))) || []; }
+  try { L = (await _cinSb('/rest/v1/prod_ordenes?select=id,tipo,etapa,taller,fecha_venta,cerrada,creado,costo_unit&order=creado.desc&producto_id=eq.' + Number(v.ProductoId))) || []; }
   catch (e) { box.textContent = 'Las órdenes solo las ve quien tiene acceso a 🧵 Producción.'; return; }
   box.dataset.ok = '1';
   const ET = { diseno:'Diseño', muestra:'Muestra y moldes', tela:'Tela e insumos', corte:'Corte y confección', entrega:'Entrega', calidad:'Calidad e inventario', fotos:'Fotos y videos', venta:'A la venta' };
-  box.innerHTML = (L.length ? '<table class="tt" style="width:100%"><thead><tr><th>Orden</th><th>Tipo</th><th>Etapa</th><th>Taller</th><th>A la venta</th><th></th></tr></thead><tbody>'
-      + L.map(o => '<tr><td>#' + o.id + '</td><td>' + (o.tipo === 'reposicion' ? 'Reposición' : 'Nuevo') + '</td><td>' + (o.cerrada ? '✔ Cerrada' : esc(ET[o.etapa] || o.etapa || '')) + '</td><td>' + esc(o.taller || '—') + '</td><td>' + esc(o.fecha_venta || '—') + '</td>'
+  box.innerHTML = (L.length ? '<table class="tt" style="width:100%"><thead><tr><th>Orden</th><th>Tipo</th><th>Etapa</th><th>Taller</th><th>Taller S/ por prenda</th><th>A la venta</th><th></th></tr></thead><tbody>'
+      + L.map(o => '<tr><td>#' + o.id + '</td><td>' + (o.tipo === 'reposicion' ? 'Reposición' : 'Nuevo') + '</td><td>' + (o.cerrada ? '✔ Cerrada' : esc(ET[o.etapa] || o.etapa || '')) + '</td><td>' + esc(o.taller || '—') + '</td><td>' + (o.costo_unit == null ? '—' : 'S/ ' + Number(o.costo_unit).toFixed(2)) + '</td><td>' + esc(o.fecha_venta || '—') + '</td>'
         + '<td><button type="button" class="btn bg bs" style="font-size:12px" onclick="prodIrOrden(' + Number(o.id) + ')">Abrir en 🧵 Producción</button></td></tr>').join('') + '</tbody></table>'
     : '<div>Sin órdenes de producción todavía.</div>')
     + '<div style="margin-top:8px"><button type="button" class="btn bg bs" style="font-size:12px" onclick="prodIrOrden(0)">🧵 Ir a Producción</button></div>';
@@ -7469,7 +7478,7 @@ function _cosForm(r) {
   document.getElementById('cf-x').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; });
   const bcp = document.getElementById('cf-copiar-cp'); if (bcp) bcp.addEventListener('change', function () { if (this.value) _cosPendCopiar(this.value); });
   try { _cosEstadosPintar(v); } catch (_) {}
-  try { _cosInsPintar(v); } catch (_) {}
+  try { if (!esConj) cont.querySelectorAll('input[id^="cc-"]').forEach(i => { i.readOnly = true; i.style.opacity = '.65'; i.title = 'Se calcula con la lista de materiales'; }); _cosInsPintar(v); } catch (_) {}
   try { _cosClimaPintar(v); } catch (_) {}   // 24-oct (Pablo) · clima de la prenda para la temporada   // 21-oct (Pablo) · detalle de insumos: única forma de cargar costos
   const bx = document.getElementById('cf-del'); if (bx) bx.addEventListener('click', () => _cosEliminar(v.Diseno));
   const bh = document.getElementById('cf-hist'); if (bh) bh.addEventListener('click', () => _cosHistorial(v.Diseno));
@@ -8738,6 +8747,9 @@ function _cosPendInfo(v) {
 }
 function _cosPendCopiar(nombre) {
   const o = COS.data.find(x => String(x.Diseno) === nombre); if (!o) return;
+  /* 29-oct · el costo es la lista de materiales: se copia la lista del otro producto (las casillas se recalculan solas) */
+  _cinSb('/rest/v1/prod_insumos?select=comp,descripcion,cantidad,unidad,precio&order=orden&diseno=eq.' + encodeURIComponent(_cinNrm(nombre)))
+    .then(L => { if (Array.isArray(L) && L.length) { CIN.L = L; CIN.ok = true; CIN.dirty = true; _cosInsRender(); _cosInsAplicar(true); } }).catch(() => {});
   (COS.comps || []).forEach(k => { const el = document.getElementById('cc-' + k.k); const val = (o.comp || {})[k.k]; if (el) { el.value = val == null ? '' : _cosN2(val); el.dispatchEvent(new Event('input', { bubbles: true })); } });
   COS_BLOQUES.forEach(b => b.p.forEach(p => { const el = document.getElementById('cp-' + p[0]); const val = (o.precios || {})[p[0]]; if (el) el.value = val == null ? '' : _cosN2(val); }));
   try { _cosRecalc && _cosRecalc(); } catch (_) {}
