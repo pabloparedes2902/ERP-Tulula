@@ -2973,7 +2973,7 @@ const _ERRG = { ult: {}, off: false };
 function _errGuardar(ctx, msg) {
   try {
     if (_ERRG.off || typeof SB_URL === 'undefined' || !SB_ANON || typeof _sbSesionAsegurar !== 'function') return;
-    msg = String(msg || '').slice(0, 900); if (!msg) return;
+    msg = String(msg || '').slice(0, 900); if (msg.replace(/[^A-Za-zÁÉÍÓÚáéíóúñÑ]/g, '').length < 12) return;   // «1 pedidos» y similares no dicen nada
     const k = msg.slice(-150); if (_ERRG.ult[k] && Date.now() - _ERRG.ult[k] < 60000) return; _ERRG.ult[k] = Date.now();
     const nros = (msg.match(/\b(2\d{4}|CAM-\d{4}|DEV-\d{4})\b/g) || []).join(' ');
     const pag = (typeof curPg !== 'undefined' && curPg) || '';
@@ -10927,7 +10927,7 @@ async function _cdActualizar() {
     // del NO DISPONIBLE (su fila de Conf sigue en FALLA), igual que la Yayita del ERP (movimiento YAYITA: fallas −1). Se resta acá, al instante.
     // Una MUESTRA del ERP todavía no descuenta nada (fase 2: montón de muestras), así que solo se resta si la pareja del ERP es Yayita.
     const ES = (res.match && res.match.especiales) || { drive: [], erp: [] }; let nEsp = 0;
-    (ES.drive || []).forEach(z => { if ((z.tipoErp || z.tipo) !== 'YAYITA' || /^YAYA\b/i.test(String(z.texto || ''))) return;   /* 30-oct · «YAYA: …» (agosto): ahí el Drive ya sacó la unidad del no disponible (medido: 19 tallas iguales) → no se resta */
+    (ES.drive || []).forEach(z => { if (['YAYITA', 'MUESTRA'].indexOf(z.tipoErp || z.tipo) < 0 || /^YAYA\b/i.test(String(z.texto || ''))) return;   /* 30-oct · «YAYA: …» (agosto): ahí el Drive ya sacó la unidad del no disponible (medido: 19 tallas iguales) → no se resta */
       const k = z.kErp || z.k; if (!k) return;
       const kk = FO[k] ? k : Object.keys(FO).find(q => q.replace(/_/g, ' ') === k), x = kk && FO[kk]; if (!x || !x.d) return;
       const d = String(x.d).split(',').map(Number); d[0] -= 1; d[1] -= 1; FO[kk] = Object.assign({}, x, { d: d.join(',') }); z.resta = kk; nEsp++; });
@@ -14093,7 +14093,7 @@ async function _sbLibroMovimientos() {
   } catch (e) { return null; }
 }
 const _MOV_ETQ = { SALDO_INICIAL:'Saldo inicial', PRODUCCION:'Producción', DIGITAL:'Producción', VENTA:'Venta',
-  VENTA_HISTORICA:'Ventas hasta el corte (Drive)', YAYITA:'Yayita (sale de fallas)', FALLA_MONTON:'Falla al montón',
+  VENTA_HISTORICA:'Ventas hasta el corte (Drive)', YAYITA:'Yayita (sale de fallas)', MUESTRA:'Muestra vendida (sale de no disponibles)', FALLA_MONTON:'Falla al montón',
   BAJA:'Baja', REINGRESO:'Reingreso', DEVOLUCION_CLIENTE:'Devolución de clienta', DEVOLUCION_CLIENTE_REV:'Devolución anulada',
   CAMBIO:'Cambio', RECUPERACION:'Recuperación', DEVOLUCION:'Devolución', FALLA:'No disponible (ajuste)', AJUSTE:'Ajuste',
   PRODUCCION_EN_CAMINO:'Producción (registrándose)', FALLA_EN_CAMINO:'Falla (registrándose)', FALLA_TALLER_EN_CAMINO:'Falla del taller (registrándose)',
@@ -27927,6 +27927,25 @@ function npAddPrenda() {
   mueChk.type = 'checkbox'; mueChk.className = 'np-muestra';
   mueEl.append(mueChk, document.createTextNode('Muestra'));
   div.appendChild(mueEl);
+  // 30-oct (fase 2B, Pablo aprobó «un selector») · «Sale de: Stock · Yayita · Muestra». Cada opción dice cuántas hay y no deja elegir si no hay:
+  // una Yayita o una Muestra solo se vende si nació antes en Stock › Movimiento de stock › No disponible (destino Yayitas o Muestra).
+  mueEl.style.display = 'none';
+  const saleSel = document.createElement('select');
+  saleSel.className = 'np-sale-de';
+  saleSel.style.cssText = 'display:none;margin-top:6px;padding:3px 8px;font-size:12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit';
+  div.appendChild(saleSel);
+  function _npSaleOpts(n, nm) {
+    saleSel.innerHTML = '<option value="">Sale de: Stock</option>'
+      + '<option value="YAY"' + (n > 0 ? '' : ' disabled') + '>Sale de: Yayita (' + n + ' con falla)</option>'
+      + '<option value="MUE"' + (nm > 0 ? '' : ' disabled') + '>Sale de: Muestra (' + nm + (nm > 0 ? '' : ' · regístrala primero como No disponible → Muestra') + ')</option>';
+    saleSel.style.display = (n > 0 || nm > 0) ? 'inline-block' : 'none';
+  }
+  saleSel.addEventListener('change', () => {
+    const v = saleSel.value;
+    if (yayChk.checked !== (v === 'YAY')) { yayChk.checked = (v === 'YAY'); yayChk.dispatchEvent(new Event('change')); }
+    if (mueChk.checked !== (v === 'MUE')) { mueChk.checked = (v === 'MUE'); mueChk.dispatchEvent(new Event('change')); }
+    yayEl.style.display = 'none';
+  });
   mueChk.addEventListener('change', () => {
     if (mueChk.checked && yayChk.checked) { yayChk.checked = false; yayChk.dispatchEvent(new Event('change')); }
     div.style.borderLeft = mueChk.checked ? '3px solid #8b5cf6' : (yayChk.checked ? '3px solid #f59e0b' : '');
@@ -27955,14 +27974,17 @@ function npAddPrenda() {
   // versión preguntaba al servidor por cada prenda y el aviso tardaba 3-4 s en aparecer.
   async function npMostrarYayitas(nombre) {
     yayEl.style.display = 'none'; yayChk.checked = false; div.style.borderLeft = '';
+    if (mueChk.checked) { mueChk.checked = false; }
+    saleSel.value = ''; saleSel.style.display = 'none';
     if (!nombre) return;
-    let n = 0;
-    try { n = await _yayDisponibles(nombre); }
+    let n = 0, nm = 0;
+    try { [n, nm] = await Promise.all([_yayDisponibles(nombre), _mueDisponibles(nombre)]); }
     catch (e) { return; }   // si falla, simplemente no se ofrece: nunca bloquea la venta normal
+    _npSaleOpts(n, nm);
     if (n <= 0) return;
     yayTxt.innerHTML = '<b>Hay ' + n + ' con falla</b> de esta prenda listas para vender como Yayita. '
       + 'Marcá la casilla para vender una de esas — sale del montón de fallas, no del stock, y el precio lo ponés vos.';
-    yayEl.style.display = 'block';
+    yayEl.style.display = 'none';   // 30-oct · lo dice el selector «Sale de»
   }
 
   // ── Lógica autocomplete ──
@@ -32195,7 +32217,7 @@ async function _yayStockTipos() {
     add(s.join('|'), esY ? 'YAYITA' : 'MUESTRA', 'v', 1, 0); });
   // 3) lo que el montón no explica, según los movimientos
   Object.keys(LM).forEach(k => { const n = Math.max(0, Number(LM[k].fallas) || 0); if (!n && !S[k]) return; const o = sku(k);
-    let neto = 0; Object.keys(o.t).forEach(t => { neto += o.t[t].e - (t === 'YAYITA' ? o.t[t].v : 0); });   // la venta de Muestra todavía no mueve el no disponible (fase 2B)
+    let neto = 0; Object.keys(o.t).forEach(t => { neto += o.t[t].e - ((t === 'YAYITA' || t === 'MUESTRA') ? o.t[t].v : 0); });   // 30-oct (fase 2B) · la venta de Muestra también sale del no disponible
     const r = n - neto; if (r > 0) { add(k, 'SIN', 'e', r, 0); return; } if (!r) return;
     // El montón dice MÁS que los movimientos: el cuadre con el Drive (CUADRE_ND12, 12-oct) ya sacó del no disponible unidades
     // que el montón todavía lista (medido 30-oct: 45 de 46 eran Descarte, Sesión/TikTok, Corrección o sin decidir). Se descuentan
@@ -33655,7 +33677,7 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
         +'<div class="fr" style="align-items:flex-end"><div class="fg" style="max-width:100px"><label>Cantidad</label><input id="ivt-cant" type="number" min="1" max="'+Math.max(real0,1)+'" step="1" style="'+inpSt+'"></div>'
         +'<div class="fg"><label>Motivo</label><select id="ivt-mot" style="'+inpSt+'">'+MOTIVOS.map(m=>'<option value="'+esc(m)+'">'+esc(m)+'</option>').join('')+'</select></div></div>'
         +'<div class="fr" style="align-items:flex-end;margin-top:6px"><div class="fg"><label>Destino</label><select id="ivt-dst" style="'+inpSt+'">'
-          +'<option value="">Sugerido por el motivo</option><option value="REPARAR">Reparar y devolver al stock</option><option value="YAYITAS">Yayitas (se vende con falla)</option>'
+          +'<option value="">Sugerido por el motivo</option><option value="REPARAR">Reparar y devolver al stock</option><option value="YAYITAS">Yayitas (se vende con falla)</option><option value="MUESTRA">Muestra (fuera del stock, se puede vender)</option>'
           +'<option value="VUELVE">Prestada — vuelve sola</option><option value="DESCARTAR">Descartar</option><option value="PERDIDA">Perdida / robada</option></select></div>'
         +'<button id="ivt-ok" class="btn bp bs" style="font-size:12px;align-self:flex-end">Registrar</button></div>';
     } else if(acc==='rec'){
@@ -33792,7 +33814,7 @@ function _ndDestinosHtml(r){
   const ks = Object.keys(dst).sort((a,b)=>dst[b]-dst[a]);
   if (!ks.length) return '';
   const ETIQ = {
-    YAYITAS:'Yayitas — se venden con falla', REPARAR:'Reparar y vuelven al stock',
+    YAYITAS:'Yayitas — se venden con falla', MUESTRA:'Muestras — fuera del stock, se pueden vender', REPARAR:'Reparar y vuelven al stock',
     VUELVE:'Prestadas — vuelven solas', DESCARTAR:'Descartadas', PERDIDA:'Perdidas / robadas',
     '(SIN DECIDIR)':'Sin decidir todavía',
   };
@@ -33845,7 +33867,7 @@ async function _invNoDispDetalle(pren, dis, col){
 const _HIS_TIPO = {
   SALDO_INICIAL: 'Saldo inicial (entró al ERP)', PRODUCCION: 'Producción / lote', AJUSTE: 'Ajuste de cuadre',
   BAJA: 'Baja', RECUPERACION: 'Recuperada (vuelve a disponible)', FALLA: 'Pasa a no disponible',
-  FALLA_MONTON: 'No disponible (registro de fallas)', VENTA: 'Venta', VENTA_HISTORICA: 'Ventas antes del ERP (Drive)',
+  FALLA_MONTON: 'No disponible (registro de fallas)', MUESTRA: 'Muestra vendida (sale de no disponibles)', VENTA: 'Venta', VENTA_HISTORICA: 'Ventas antes del ERP (Drive)',
   YAYITA: 'Venta yayita', CAMBIO: 'Sale por cambio', REINGRESO: 'Ajuste de cambio (compensa)',
   DEVOLUCION_CLIENTE: '↩️ Devolución de clienta', DEVOLUCION_CLIENTE_REV: 'Devolución revertida'
 };
@@ -34939,6 +34961,7 @@ function _confAbrirIngresarStock(confEl) {
       + '<option value="">Sugerido por el motivo</option>'
       + '<option value="REPARAR">Reparar y devolver al stock</option>'
       + '<option value="YAYITAS">Yayitas (se vende con falla)</option>'
+      + '<option value="MUESTRA">Muestra (fuera del stock, se puede vender)</option>'
       + '<option value="VUELVE">Prestada — vuelve sola</option>'
       + '<option value="DESCARTAR">Descartar</option>'
       + '<option value="PERDIDA">Perdida / robada</option>'
@@ -35523,6 +35546,12 @@ function _yayClaveDe(nombreCompleto) {
   return String(nombreCompleto || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// 30-oct (fase 2B) · cuántas MUESTRAS hay de esa prenda (montón con destino Muestra − muestras vendidas), del mismo cuadro de Stock › Yayitas.
+async function _mueDisponibles(nombreCompleto) {
+  try { const k = _yayClaveDe(nombreCompleto); if (!k) return 0; const t = await _yayStockTipos(); if (!t) return 0; let n = 0;
+    t.forEach(f => { if (f.tipo !== 'MUESTRA') return; Object.keys(f.stock || {}).forEach(tal => { if (_yayClaveDe(f.prenda + ' ' + f.diseno + ' ' + f.color + ' ' + tal) === k) n += Number(f.stock[tal]) || 0; }); });
+    return Math.max(0, n); } catch (e) { return 0; }
+}
 async function _yayDisponibles(nombreCompleto) {
   const k = _yayClaveDe(nombreCompleto);
   if (!k) return 0;
@@ -35575,7 +35604,7 @@ function _falDestinoSugerido(motivo) {
 }
 function _falDestinoTxt(d) {
   return ({
-    REPARAR: 'Reparar y vuelve', YAYITAS: 'Yayitas', VUELVE: 'Prestada, vuelve',
+    REPARAR: 'Reparar y vuelve', YAYITAS: 'Yayitas', MUESTRA: 'Muestra', VUELVE: 'Prestada, vuelve',
     DESCARTAR: 'Descartar', PERDIDA: 'Perdida / robada',
   })[String(d || '').toUpperCase()] || '—';
 }
@@ -35617,6 +35646,7 @@ function _confAbrirIngresarFalla(confEl) {
       + '<option value="">Sugerido por el motivo</option>'
       + '<option value="REPARAR">Reparar y devolver al stock</option>'
       + '<option value="YAYITAS">Yayitas (se vende con falla)</option>'
+      + '<option value="MUESTRA">Muestra (fuera del stock, se puede vender)</option>'
       + '<option value="VUELVE">Prestada — vuelve sola</option>'
       + '<option value="DESCARTAR">Descartar</option>'
       + '<option value="PERDIDA">Perdida / robada</option>'
