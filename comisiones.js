@@ -630,7 +630,7 @@ function _comCargarViejo() {
       if (!f.fresca) refrescarDetras();
       return;
     }
-    return traer(yF, qF).then(function () { COM.cargando = false; pintarHome(); });
+    return traer(yF, qF, true).then(function () { COM.cargando = false; pintarHome(); });
   }).catch(function (e) { COM.cargando = false; pintarError(e); });
 }
 
@@ -640,12 +640,34 @@ function _comCargarViejo() {
  * Cada ida y vuelta a Apps Script cuesta ~3 segundos (redirect incluido),
  * así que pedir cinco cosas por separado son 15 segundos de espera.
  */
-function traer(year, q) {
+function traer(year, q, soloViejo) {
+  // 31-oct · vía rápida: con el cálculo oficial vivo NO se pide el bootstrap viejo de Apps Script
+  // (medido: p50 31 s, p90 62 s, y corría en cada arranque del ERP de un admin). Va a la base (≈0,5 s).
+  if (!soloViejo && _comOfVivo()) return _comTraerOficial(year, q);
   var t0 = Date.now();
   return comApi('bootstrap', { year: year, q: q }).then(function (b) {
     COM.ms = Date.now() - t0;
     return aplicarBoot(b, year, q, Date.now(), false);
   });
+}
+
+/** 31-oct · vía rápida: lo mismo que traía el bootstrap, desde el cálculo oficial de la base.
+ *  Mismos números que ya pinta la pantalla (el Panel siempre muestra lo oficial vía _comOfMapear).
+ *  Sueldos/asesoras/cierres llegan por _comOfExtras (cfg por la puerta + RPC de la base).
+ *  Si la base no responde o no deja (no admin): el camino de antes (Apps Script). */
+function _comTraerOficial(year, q) {
+  var t0 = Date.now(), k = _comOfClave(year, q);
+  return _comOfRpc('comisiones_trimestre', { p_year: Number(year), p_q: Number(q) }).then(function (t) {
+    var dS = (t && t.asesoras) ? _comOfDataSintetica(year, q, t) : null;
+    if (!dS) return traer(year, q, true);
+    COMOF.cache[k] = t; COMOF.activo = true; delete COMOF.fallo[k];
+    try { localStorage.setItem('com_of_' + k, JSON.stringify({ t: Date.now(), d: t })); } catch (e) {}
+    COM.ms = Date.now() - t0;
+    if (!COM.year || (COM.year === year && COM.q === q)) { COM.data = dS; COM.traidoEn = Date.now(); }
+    cacheGuardar(year, q, dS);
+    try { _comOfExtras(); } catch (e) {}
+    return dS;
+  }, function () { return traer(year, q, true); });
 }
 
 /** Aplica una respuesta de 'bootstrap' (del servidor o de la foto en la base). */

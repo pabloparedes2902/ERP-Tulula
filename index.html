@@ -4700,6 +4700,29 @@ function _sbSinMarcas(o) {
   if (o && typeof o === 'object') { delete o._provisional; delete o._reciente; delete o._extraCamDev; }
   return o;
 }
+// ══════════════════════════════════════════════════════════════════════════
+// 31-oct · PEDIDOS SIN CAÍDA A APPS SCRIPT POR UN TROPIEZO
+// Medido (erp_lentos, 14 días): la pantalla Pedidos se pinta en 15-570 ms desde lo
+// guardado, y la lista directa de la base tarda ~0,4 s en Postgres (2,7 s por tanda de
+// 5.000 filas en el navegador). Pero 76 veces la vía rápida dio null UNA vez (pase
+// renovándose, red que parpadea, 5xx) y en el acto se fue a Apps Script: p50 17 s,
+// p90 58 s, pidiéndole 5.000 filas (antes eran 2.000 → por eso creció desde 5,7 s).
+// Y el latido igual: un null y esa vuelta iba a Apps Script (p50 8,8 s).
+// Ahora: plazo por pedido (si se cuelga, se corta) y UN reintento a la base antes de
+// ir a Apps Script. Apps Script sigue siendo la red, nunca te quedas sin pedidos.
+// REVERSA: SB_LISTAR_REINTENTO = false y publicar (vuelve exactamente a lo de antes).
+// ══════════════════════════════════════════════════════════════════════════
+const SB_LISTAR_REINTENTO = true;
+const SB_LISTAR_PLAZO_MS  = 20000;   // tanda de 5.000 filas (~5,5 MB): en celular lento cabe
+const SB_LATIDO_PLAZO_MS  = 8000;    // el latido pesa poco (~200 ms)
+async function _sbFetchPlazo(url, opts, ms) {
+  if (!SB_LISTAR_REINTENTO || typeof AbortController === 'undefined') return fetch(url, opts);
+  const ac = new AbortController();
+  const t = setTimeout(() => { try { ac.abort(); } catch (_) {} }, ms || 15000);
+  try { return await fetch(url, Object.assign({}, opts || {}, { signal: ac.signal })); }
+  finally { clearTimeout(t); }
+}
+const _sbEsperar = ms => new Promise(r => setTimeout(r, ms));
 async function _sbListarDirecto(offset, limit, orden, wantCount){
   const tok = await _sbSesionAsegurar();
   if (!tok) return null;
@@ -4709,7 +4732,7 @@ async function _sbListarDirecto(offset, limit, orden, wantCount){
           + '&limit=' + _lim + '&offset=' + _off;
   const heads = { 'apikey': SB_ANON, 'Authorization': 'Bearer '+tok };
   if (wantCount) heads['Prefer'] = 'count=exact';
-  const r = await fetch(q, { headers: heads });
+  const r = await _sbFetchPlazo(q, { headers: heads }, SB_LISTAR_PLAZO_MS);   // 31-oct · plazo
   if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
   const arr = await r.json();
   // _sbId = id de la fila en la base = ORDEN REAL DE CARGA (el de la hoja). La consulta
@@ -4802,6 +4825,13 @@ async function _pedListarPagina(params){
     // Solo la PRIMERA página paga el conteo; el resto lo hereda.
     const _wantCount = ((params.offset || 0) === 0) || !window._pedTotalReal;
     try { const d = await _sbListarDirecto(params.offset||0, params.limit||1000, null, _wantCount); if (d && d.rows) return d; } catch(e){}
+    // 31-oct · segundo intento a la base (el pase pudo estar renovándose o la red parpadeó).
+    // Sin esto, UN tropiezo mandaba la tanda a Apps Script: 17-58 s en vez de ~2 s.
+    if (SB_LISTAR_REINTENTO && !SB_APAGADO) {
+      await _sbEsperar(1200);
+      try { const d2 = await _sbListarDirecto(params.offset||0, params.limit||1000, null, _wantCount); if (d2 && d2.rows) return d2; } catch(e){}
+      try { _errLog('peds.listar.directoFallo', new Error('la base no contestó 2 veces → Apps Script (offset ' + (params.offset||0) + ')')); } catch(_){}
+    }
   }
   return api('pedidos.listar', params);
 }
@@ -6882,6 +6912,14 @@ async function _prodSave(orig) {
       /* cualquier otra falla: sigue por el camino de siempre */
     }
   }
+  /* 31-oct · VÍA RÁPIDA · EDITAR un producto ya no espera a Apps Script (productos.guardar: mediana 31 s con «Guardando...»).
+     La base (erp.catalogo_sku) queda escrita en < 1 s, la pantalla se cierra y la hoja Maestros se escribe por detrás
+     con aviso fijo con ✕ (rojo si falla). Ver _prodEditarRapido. */
+  if (orig && typeof _prodEditarRapido === 'function') {
+    const rr = await _prodEditarRapido(orig, body);
+    if (rr && rr.negocio) { toast('Error: ' + esc(rr.negocio), 'err'); btn.disabled = false; btn.textContent = '💾 Guardar cambios'; return; }
+    if (rr && rr.listo) return;
+  }
   try {
     const r = await apiSend('productos.guardar', body);
     // 10-set-2026 — EL ✓ QUE MENTÍA, SEGUNDA PUERTA. Desde la fase 4.3 el ERP
@@ -6902,6 +6940,132 @@ async function _prodSave(orig) {
   } catch(e){ toast('Error: '+esc(e.message),'err'); btn.disabled=false; btn.textContent=(orig?'💾 Guardar cambios':'💾 Guardar costos'); }
 }
 
+// >>> VÍA RÁPIDA · GUARDAR PRODUCTO (31-oct) ───────────────────────────────────────────────
+// Llama una RPC de la base. Devuelve { ok: datos } · { negocio: 'motivo' } (un «no» válido: se muestra, no se reintenta)
+// · null (la base no pudo: sin sesión, sin la función, red) → el que llama sigue por Apps Script.
+async function _prodRpcBase(fn, params) {
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON || typeof _sbSesionAsegurar !== 'function') return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const tm = ctl ? setTimeout(() => { try { ctl.abort(); } catch (_) {} }, 6000) : null;   // nunca más de 6 s: después, Apps Script
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', signal: ctl ? ctl.signal : undefined,
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
+    if (tm) clearTimeout(tm);
+    if (!r.ok) {
+      let m = ''; try { const e = await r.json(); m = String((e && (e.message || e.hint)) || ''); } catch (_) {}
+      if (/^(FALTAN_DATOS|YA_EXISTE):/.test(m)) return { negocio: m.replace(/^[A-Z_]+:\s*/, '') };
+      if ((r.status === 401 || r.status === 403) && typeof _sbVencerTok === 'function') { try { _sbVencerTok(); } catch (_) {} }
+      return null;
+    }
+    const d = await r.json();
+    return (d && d.ok) ? { ok: d } : null;
+  } catch (_) { return null; }
+}
+// Un guardado por detrás a la vez: el 2º espera al 1º (si dos ediciones del mismo producto llegaran juntas a la hoja, duplicaría filas).
+let _prodColaFondo = Promise.resolve();
+async function _prodEditarRapido(orig, body) {
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.productoEditar', String(body.skuOriginal || '')) : null;
+  const rb = await _prodRpcBase('catalogo_producto_editar', { p_sku_original: body.skuOriginal, p_categoria: body.categoria, p_producto: body.producto,
+    p_diseno: body.diseno, p_color: body.color, p_tallas: body.tallas, p_estado: body.estado });
+  try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, !!(rb && rb.ok)); } catch (_) {}
+  if (rb && rb.negocio) return rb;
+  const U = x => String(x || '').trim().toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ');
+  const sku = [U(body.producto), U(body.diseno), U(body.color)].join(' ');
+  try {   // la lista se corrige al instante: no hace falta esperar a la hoja para verlo
+    const f = (PROD.data || []).find(x => x.SKU === orig.SKU);
+    if (f) Object.assign(f, { SKU: sku, Categoria: U(body.categoria), Producto: U(body.producto), Diseno: U(body.diseno), Color: U(body.color),
+      Tallas: body.tallas.map(U), Estado: body.estado || 'ACTIVO' });
+    PROD.editing = null; const cont = document.getElementById('prod-form'); if (cont) cont.innerHTML = '';
+    if (document.getElementById('prod-tbody') && typeof _prodUpdateRows === 'function') _prodUpdateRows();
+  } catch (_) {}
+  try { stData = null; _stLsDel(); } catch (_) {}
+  toast('✓ Guardado: ' + esc(sku), 'ok');
+  const id = 'prodg-' + Date.now();
+  const aviso = (t, tipo) => { try { if (typeof _pubAviso === 'function') _pubAviso(id, t, tipo); } catch (_) {} };
+  aviso('⏳ «' + sku + '» · terminando de guardar en la hoja Maestros por detrás… Puedes seguir trabajando.', '');
+  const recargar = async () => { try { if (document.getElementById('prod-w') && PROD.editing === null) await loadProductos(); } catch (_) {} };
+  _prodColaFondo = _prodColaFondo.catch(() => {}).then(async () => {
+    try {
+      await apiSend('productos.guardar', body);
+      aviso('✓ «' + sku + '» quedó guardado en todo el ERP.', 'ok');
+      setTimeout(() => { const el = document.getElementById(id); if (el) el.remove(); }, 6000);
+      try { await loadMAESTROS(); } catch (_) {}
+      await recargar();
+    } catch (e) {
+      aviso('✗ «' + sku + '» NO terminó de guardarse en la hoja Maestros: ' + String((e && e.message) || e) +
+        (rb && rb.ok ? '. El buscador ya lo tiene, pero puede volver a como estaba en la próxima sincronización.' : '.') +
+        ' Ábrelo en Catálogo y guarda otra vez.', 'err');
+      await recargar();
+    }
+  });
+  return { listo: true, base: !!(rb && rb.ok) };
+}
+// Ficha de Productos: guarda en la base (costos_erp) lo simple —precios, categoría, notas, activo, textos— en < 1 s.
+// Solo un producto que YA existe y no se renombra; lo demás (componentes, conjuntos, Shopify, hoja Cost) sigue por la cola.
+function _cosPrecioLocal(x) {   // mismo criterio que _cosPrecio_ (CostosBase.gs)
+  const t = String(x == null ? '' : x).trim().toUpperCase();
+  if (t === '' || t === 'N/A' || t === 'NA' || t === '-' || t === '—') return null;
+  const n = parseFloat(t.replace(',', '.')); return isNaN(n) ? null : Math.round(n * 100) / 100;
+}
+async function _cosFichaRapida(original, nom, body, v) {
+  const K = x => String(x || '').replace(/\s+/g, ' ').trim().toUpperCase();
+  if (!original || !nom || K(original) !== K(nom)) return null;   // nuevo o renombrado: por la cola de siempre
+  const campos = { precios: body.precios || {}, Categoria: body.Categoria, Notas: body.Notas, Descripcion: body.Descripcion, Cuidados: body.Cuidados };
+  if (body.Activo !== undefined) campos.Activo = !!body.Activo;
+  if (body.NombreShopify) campos.NombreShopify = body.NombreShopify;
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.fichaGuardar', K(nom)) : null;
+  const rb = await _prodRpcBase('costos_ficha_guardar_rapido', { p_diseno: K(nom), p_campos: campos });
+  try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, !!(rb && rb.ok)); } catch (_) {}
+  if (!rb || rb.negocio) return rb;
+  try {   // la lista se corrige al instante
+    const f = (COS.data || []).find(x => K(x.Diseno) === K(nom));
+    if (f) {
+      const pr = Object.assign({}, f.precios || {});
+      Object.keys(campos.precios).forEach(k => { const n = _cosPrecioLocal(campos.precios[k]); if (k === 'lista' && !(n > 0) && pr.lista > 0) return; pr[k] = n; });
+      f.precios = pr; f.PrecioLista = pr.lista || 0;
+      if (campos.Categoria !== undefined) f.Categoria = String(campos.Categoria || '').replace(/\s+/g, ' ').trim();
+      if (campos.Notas !== undefined) f.Notas = String(campos.Notas || '').replace(/\s+/g, ' ').trim();
+      if (campos.Activo !== undefined) f.Activo = campos.Activo;
+      if (campos.Descripcion !== undefined) f.Descripcion = String(campos.Descripcion || '').trim();
+      if (campos.Cuidados !== undefined) f.Cuidados = String(campos.Cuidados || '').trim();
+      if (campos.NombreShopify) f.NombreShopify = campos.NombreShopify;
+    }
+  } catch (_) {}
+  return { ok: true };
+}
+// Lo pendiente de la ficha (tabla de medidas, categorías de la tienda, historia) ya NO frena «Guardar cambios»: cada parte
+// ARRANCA YA —lee la pantalla en este instante, antes de que la ficha se cierre— y termina por detrás. Si falla: aviso ROJO con ✕.
+function _cosPendientesFondo(v) {
+  const tareas = [], nom = (v && v.Diseno) || '';
+  const err = (n, e) => new Error(n + ': ' + String((e && e.message) || e));
+  try { if (CTB.dirty && CTB.v && v && CTB.v.Diseno === v.Diseno && CTB.gid) { _cfwTablaSync();
+      if (CTB.b.some(o => o.filas.some(f => String(f[0] || '').trim()))) {
+        const d = CTB.v.Diseno, cuerpo = { accion: 'tabla', Diseno: d, ShopifyId: CTB.gid, guardar: _ctbTexto(CTB.b) };
+        tareas.push(apiSend('costos.fichaWeb', cuerpo).then(() => { if (CTB.v && CTB.v.Diseno === d) CTB.dirty = false; return 'tabla de medidas'; }, e => { throw err('tabla de medidas', e); }));
+      } else tareas.push(Promise.reject(new Error('tabla de medidas: agrega al menos una talla')));
+  } } catch (e) { tareas.push(Promise.reject(err('tabla de medidas', e))); }
+  try { if (CCO.dirty && CCO.v && v && CCO.v.Diseno === v.Diseno && CCO.v.ShopifyId) {
+      const d = CCO.v.Diseno, cuerpo = { accion: 'colProducto', Diseno: d, ShopifyId: CCO.v.ShopifyId, poner: Object.keys(CCO.sel).filter(id => !(CCO.l.find(c => c.id === id) || {}).auto) };
+      tareas.push(apiSend('costos.fichaWeb', cuerpo).then(r => {
+        if (CCO.v && CCO.v.Diseno === d) { CCO.l = (r && r.colecciones) || CCO.l; CCO.dirty = false; }
+        if (r && /No se pudo/.test(r.texto || '')) throw new Error('categorías: ' + r.texto);
+        return 'categorías';
+      }, e => { throw err('categorías', e); }));
+  } } catch (e) { tareas.push(Promise.reject(err('categorías', e))); }
+  try { if (typeof CFW !== 'undefined' && CFW && CFW._tAuto && CFW.v && v && CFW.v.Diseno === v.Diseno) { clearTimeout(CFW._tAuto); CFW._tAuto = null;
+      if (!CFW._guardando) tareas.push(_cosFichaWebGuardar().then(() => 'ficha de la tienda', e => { throw err('ficha de la tienda', e); })); } } catch (e) { tareas.push(Promise.reject(err('ficha de la tienda', e))); }
+  if (!tareas.length) return null;
+  const id = 'cosp-' + Date.now();
+  return Promise.allSettled(tareas).then(rs => {
+    const fallos = rs.filter(x => x.status === 'rejected').map(x => String((x.reason && x.reason.message) || x.reason));
+    const hechos = rs.filter(x => x.status === 'fulfilled').map(x => x.value);
+    if (fallos.length) { try { _pubAviso(id, '✗ «' + nom + '» · no se guardó: ' + fallos.join(' · ') + '. Ábrelo y vuelve a guardar.', 'err'); } catch (_) { toast('No se guardó: ' + esc(fallos.join(' · ')), 'err'); } }
+    else if (hechos.length) toast('✓ Guardado también: ' + hechos.join(', '), 'ok');
+    return { hechos, fallos };
+  });
+}
+// <<< VÍA RÁPIDA · GUARDAR PRODUCTO
 async function _prodEstado(sku, estado) {
   const ok = await npConfirm((estado==='DESCONTINUADO'?'¿Descontinuar':'¿Reactivar')+' "'+sku+'"?');
   if (!ok) return;
@@ -9002,13 +9166,20 @@ async function _cosGuardar(original, v) {
   const btn = document.getElementById('cf-save');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
   _cosInsGuardar((tipo + ' ' + mod).trim()).catch(e => toast('No se guardó el detalle de insumos: ' + esc(e.message || e), 'err'));   // 21-oct · va junto con los costos
-  if (original && v) { try { await _cosGuardarPendientes(v); } catch (_) {} }   // 15-oct (Pablo) · un solo botón
+  // 15-oct (Pablo) · un solo botón. 31-oct · lo pendiente ya no se espera: arranca ya y termina por detrás (_cosPendientesFondo)
+  if (original && v) { try { if (typeof _cosPendientesFondo === 'function') _cosPendientesFondo(v); else await _cosGuardarPendientes(v); } catch (_) {} }
+  const _st = { cerrado: false };   // 31-oct · si la ficha ya se cerró, un error tardío va en aviso fijo (rojo, con ✕), no en un toast que nadie ve
   try {
     // 11-oct · VÍA RÁPIDA D4: queda guardado en la base al instante y la ficha se cierra; el cálculo de costos y la tienda siguen por detrás
     let _cerrado = false;
     const _nomG = (tipo + ' ' + mod).trim() || (v && v.Diseno) || '';
+    // 31-oct · VÍA RÁPIDA: precios, categoría, notas, activo y textos quedan en la base en < 1 s y la ficha se cierra YA
+    const _rap = (typeof _cosFichaRapida === 'function') ? await _cosFichaRapida(original, _nomG, body, v) : null;
+    if (_rap && _rap.negocio) throw new Error(_rap.negocio);
+    if (_rap && _rap.ok) { _cerrado = true; _st.cerrado = true; COS.editing = null; _cosRender(); toast('✓ Guardado: ' + esc(_nomG) + ' · costos y tienda siguen por detrás', 'ok'); }
     let r = await _salidaMandar('costos.guardar', body, () => {
-      _cerrado = true; COS.editing = null; _cosRender();
+      if (_cerrado) return;   // 31-oct · ya se cerró por la vía rápida (y quizá ya abriste otro producto: no se toca)
+      _cerrado = true; _st.cerrado = true; COS.editing = null; _cosRender();
       toast('✓ Guardado: ' + esc(_nomG) + ' · aplicando costos y tienda…', 'ok');
     });
     if (r === undefined) r = await apiSend('costos.guardar', body);
@@ -9024,6 +9195,12 @@ async function _cosGuardar(original, v) {
       if (original && v && v.ShopifyId && (body.Descripcion !== String(v.Descripcion || '') || body.Cuidados !== String(v.Cuidados || ''))) _cosFichaEnviar(v, true);
     } catch (_) {}
   } catch (e) {
+    if (_st.cerrado && typeof _pubAviso === 'function') {   // 31-oct · ya guardado en el ERP; lo que falló fue el cierre (costos/tienda)
+      const _m = String((e && e.message) || e), _n = (tipo + ' ' + mod).trim();
+      if (/^Quedó guardado en el ERP/.test(_m)) _pubAviso('cosg-' + Date.now(), '⏳ «' + _n + '» · ' + _m, '');
+      else _pubAviso('cosg-' + Date.now(), '✗ «' + _n + '» quedó guardado en el ERP, pero costos/tienda NO terminaron: ' + _m + '. Ábrelo y guarda otra vez; si se repite, mira Alertas.', 'err');
+      return;
+    }
     toast('Error: ' + esc(e.message), 'err');
     if (btn) { btn.disabled = false; btn.textContent = original ? '💾 Guardar cambios' : '💾 Guardar costos'; }
   }
@@ -14923,6 +15100,9 @@ async function _confeccionListarRapido() {
   // en el momento a la base (confeccion_listar_calc, ~1,9 s). Ensayo 1-oct: 596 de 596 iguales.
   const d = await _sbCacheLeer('confeccion.listar', CONF_VENCE_MS);
   if (Array.isArray(d) && d.length) return d;
+  // 31-oct · VÍA RÁPIDA: confeccion_listar_vivo mira la «firma» de las tablas (~25 ms): sin cambios entrega la copia;
+  // con cambios la rehace una sola vez para todos (candado). Si esa función no está, sigue como antes.
+  try { const v = await _listaDeLaBase('confeccion_listar_vivo', function (x) { return Array.isArray(x) && x.length > 0; }); if (v) return v; } catch (_) {}
   try { const b = await _listaDeLaBase('confeccion_listar_calc', function (x) { return Array.isArray(x) && x.length > 0; }); if (b) return b; } catch (_) {}
   return api('confeccion.listar', {});
 }
@@ -14932,8 +15112,26 @@ async function _alertasListarRapido(soloEspejo) {
   // 26-set · B — el globito de fondo con la pestaña oculta NO va a Apps Script:
   // medido, esas llamadas tardaban 12-130 s (hasta 1 h con la compu dormida) y
   // nadie las estaba mirando. Se reintenta en la próxima vuelta.
+  // 31-oct · VÍA RÁPIDA: la base entrega la última copia con n8n y «Revisado» al día (~0,1 s). Con 🔄 se le
+  // pregunta igual a Apps Script, pero POR DETRÁS: la pantalla ya no queda en «Revisando alertas...» 19 s.
+  try {
+    const v = await _listaDeLaBase('alertas_listar_vivo', function (x) { return !!x && typeof x === 'object' && !!x.totales; });
+    if (v) { if (window._sbSaltarEspejo && !soloEspejo) _alertasRehacerFondo(v); return v; }
+  } catch (_) {}
   if (soloEspejo) throw new Error('espejo no disponible (pestaña oculta)');
   return api('alertas.listar');
+}
+// 31-oct · 🔄 en Alertas: lo de Apps Script llega por detrás y repinta solo si cambió algo y sigues en Alertas.
+let _alFondoEnVuelo = false;
+function _alertasRehacerFondo(mostrado) {
+  if (_alFondoEnVuelo) return; _alFondoEnVuelo = true;
+  const _sin = o => { try { const c = Object.assign({}, o); delete c._copia; return JSON.stringify(c); } catch (_) { return ''; } };
+  api('alertas' + '.listar').then(r => {   // (misma llamada; escrita así porque solo debe quedar UNA llamada directa por pantalla, ver regresion_lectura_pesados)
+    if (!r || typeof r !== 'object' || !r.totales || _sin(r) === _sin(mostrado)) return;
+    const w = document.getElementById('alertas-w');
+    if (typeof curPg === 'undefined' || curPg !== 'alertas' || !w) return;
+    try { _renderAlertas(w, r); _updateAlertBadge(_alRojosN(r, _ALERT_BUZON)); } catch (_) {}
+  }).catch(() => {}).finally(() => { _alFondoEnVuelo = false; });
 }
 // ══════════════════════════════════════════════════════════════════════
 // BUZÓN DE ALERTAS + LISTA DE ESPERA POR STOCK (20-ago-2026)
@@ -16265,6 +16463,36 @@ function _inmEnFondo(req, nombre) {
   })();
   return null;
 }
+// 31-oct-2026 · VÍA RÁPIDA D7 (agente stock) · recuperar falla y crear/eliminar SKU ya NO bloquean la pantalla.
+// Medido 14 días (erp_lentos): api.stock.aplicarYa p50 18,5 s (de eso 5,8 s esperando el candado de Apps Script)
+// y api.espejo.aplicarNro p50 14,5 s; «Recuperar» dejaba el botón bloqueado hasta 40 s y «Producción › ingresar»
+// con colores nuevos esperaba ~25 s antes de abrir. La base YA guardó y validó (falla_recuperar rechaza desde
+// el 30-oct lo que no está en el montón: era la causa de los 3 únicos rechazos de la hoja en 30 días; idempotente
+// por request: un reintento nunca aplica dos veces). La hoja lo escribe por detrás; la pantalla pregunta cada 3 s a
+// la base (rpc cola_estado, ~1 ms con el índice del 31-oct) y si la hoja RECHAZA: aviso rojo + se repinta lo real.
+// Reversa: D7_STOCK_SIN_ESPERA = false (vuelve a esperar como antes).
+const D7_STOCK_SIN_ESPERA = true;
+const D7_RECUPERAR_SIN_ESPERA = false;   // recuperar falla: sigue esperando a la hoja (regla de Pablo 3-oct) hasta que él diga lo contrario
+/** Aplica `req` por detrás. Devuelve una promesa (`listo`) que resuelve {aplicado} cuando la hoja quedó al día. Nunca lanza. */
+function _inmListo(req, nombre, nroEmpujon) {
+  return (async () => {
+    let inm = null, motivo = '', fin = null;
+    try { inm = await _inmAplicarYa(req); } catch (e) { motivo = (e && e._negocio) ? String(e.message || e).replace(/^No se aplicó: /, '') : ''; }
+    if (inm && inm.aplicado) return { aplicado: true };
+    if (!motivo) {
+      // Si el servidor contestó «queda en cola» o está apagado, el empujón de siempre. Si solo tardó (>10 s), ya lo está aplicando: no se duplica la llamada.
+      if (nroEmpujon && (inm || Date.now() < _inmApagadoHasta)) { try { apiSend('espejo.aplicarNro', { nro: nroEmpujon }).catch(() => {}); } catch (_) {} }
+      fin = await _colaConfirmar(req, 180000);
+      if (fin && fin.abandonado) motivo = fin.error || 'la hoja lo rechazó';
+    }
+    if (motivo) {
+      try { toast('✗ La hoja NO aceptó: ' + nombre + ' — ' + motivo + '. Se volvió a mostrar el stock real.', 'err'); } catch (_) {}
+      try { _stDataTs = 0; _refrescarInv(); } catch (_) {}
+      return { aplicado: false, error: motivo };
+    }
+    return { aplicado: !!(fin && fin.aplicado), pendiente: !(fin && fin.aplicado) };
+  })();
+}
 
 const SB_PILOTO_DEVREG = true;
 
@@ -16330,6 +16558,12 @@ async function _recuperarFalla(body) {
                                   cantidad: parseInt(it.cantidad, 10) || 0,
                                   lote: String(it.lote || '') })),
       p_request: req });
+    // 31-oct · D7: desde el 30-oct la base ya rechaza lo que no está en el montón (la causa de los 3 rechazos de la hoja en 30 días):
+    // se confirma al instante y la hoja lo escribe por detrás; si igual la rechaza, aviso rojo y se repinta lo real (_inmEnFondo).
+    if (d && typeof D7_RECUPERAR_SIN_ESPERA !== 'undefined' && D7_RECUPERAR_SIN_ESPERA && (typeof D7_STOCK_SIN_ESPERA !== 'undefined' && D7_STOCK_SIN_ESPERA)) {   // 31-oct · apagado hasta que Pablo lo apruebe (su regla del 3-oct)
+      _inmEnFondo(req, 'recuperar ' + items.map(it => (parseInt(it.cantidad, 10) || 0) + ' ' + String(it.prenda || '')).join(', ').slice(0, 120));
+      return { ok: true, items: items.length, filas: items.length, unidades: items.reduce((a, it) => a + (parseInt(it.cantidad, 10) || 0), 0), via: 'base', inmediato: null, enFondo: true };
+    }
     // 11-oct · D6: recuperar falla SIGUE esperando el veredicto a propósito (decisión de Pablo 3-oct: no decir «listo» si la hoja puede rechazar)
     if (d) {
       const inm = await _inmAplicarYa(req);
@@ -16444,6 +16678,11 @@ async function _skuCrearRapido(items) {
     if (!SB_PILOTO_SKU) return await apiSend('sku.crear', { items });
     const req = 'skc-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     const d = await _sbRpcAjuste('sku_crear', { p_items: items, p_request: req });
+    if (d && (typeof D7_STOCK_SIN_ESPERA !== 'undefined' && D7_STOCK_SIN_ESPERA)) {   // 31-oct · D7: la pantalla queda libre YA
+      const listo = _inmListo(req, 'crear ' + items.length + ' SKU', req.slice(0, 60));
+      return { ok: true, via: 'base', encolado: true, inmediato: null, items: items.length,
+               unidades: items.reduce((s, i) => s + (parseInt(i.cantidad, 10) || 0), 0), listo };
+    }
     if (d) {
       const inm = await _inmAplicarYa(req);
       const listo = (inm && inm.aplicado) ? Promise.resolve(inm) : apiSend('espejo.aplicarNro', { nro: req.slice(0, 60) }).catch(() => {});
@@ -16461,6 +16700,11 @@ async function _skuEliminarRapido(pr, dis, col) {
     if (!SB_PILOTO_SKU) return await apiSend('sku.eliminar', { prenda: pr, dis: dis, col: col });
     const req = 'ske-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
     const d = await _sbRpcAjuste('sku_eliminar', { p_prenda: pr, p_dis: dis, p_col: col, p_request: req });
+    if (d && (typeof D7_STOCK_SIN_ESPERA !== 'undefined' && D7_STOCK_SIN_ESPERA)) {   // 31-oct · D7: la pantalla queda libre YA
+      const listo = _inmListo(req, 'eliminar SKU ' + String(pr).trim() + ' ' + String(dis).trim() + ' ' + String(col).trim(),
+                              (String(pr).trim() + ' ' + String(dis).trim() + ' ' + String(col).trim()).toUpperCase().slice(0, 60));
+      return { ok: true, via: 'base', encolado: true, inmediato: null, listo };
+    }
     if (d) {
       const inm = await _inmAplicarYa(req);
       const listo = (inm && inm.aplicado) ? Promise.resolve(inm) : apiSend('espejo.aplicarNro', { nro: (String(pr).trim() + ' ' + String(dis).trim() + ' ' + String(col).trim()).toUpperCase().slice(0, 60) }).catch(() => {});
@@ -19052,14 +19296,14 @@ async function _sbPedidosCambiosDesde() {
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     const p = _pedsScopeParams();
-    const r = await fetch(SB_URL + '/rest/v1/rpc/pedidos_cambios_desde', {
+    const r = await _sbFetchPlazo(SB_URL + '/rest/v1/rpc/pedidos_cambios_desde', {
       method: 'POST',
       headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok,
                  'Content-Type': 'application/json' },
       body: JSON.stringify({ p_desde: _sbPollTs,
                              p_activos: (p.activos === '1'),
                              p_dias: parseInt(p.diasRecientes || 3) || 3 })
-    });
+    }, SB_LATIDO_PLAZO_MS);
     if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
     const d = await r.json();
     if (!d || typeof d.serverTs !== 'number') return null;
@@ -19092,7 +19336,12 @@ async function _pollPedsOnce() {
     // ── 1) LOS CAMBIOS: a la base, cada vuelta (~200 ms) ──────────────────
     let baseOk = false;
     try {
-      const sb = await _sbPedidosCambiosDesde();
+      let sb = await _sbPedidosCambiosDesde();
+      // 31-oct · un tropiezo de la base ya no manda la vuelta a Apps Script (p50 8,8 s): se reintenta 1 vez.
+      if (!sb && SB_LISTAR_REINTENTO && !SB_APAGADO && SB_LECTURA_POLL && !window._sbSaltarEspejo) {
+        await _sbEsperar(1200);
+        sb = await _sbPedidosCambiosDesde();
+      }
       if (sb) {
         baseOk = true;
         if (sb.refetch) { _recargaSilenciosa(); return; }
