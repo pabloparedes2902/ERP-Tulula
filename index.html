@@ -2942,6 +2942,7 @@ function _uiSeguro(msg, okTxt){ return _uiVentana(msg, false, null, okTxt || 'S�
 function _uiTexto(msg, inicial){ return _uiVentana(msg, true, inicial, 'Aceptar'); }
 function toast(msg, t, action) {
   msg = _toastPlano_(msg);
+  if (t === 'err') { try { _errGuardar('aviso', msg); } catch (_) {} }   // 30-oct · todo aviso rojo queda guardado (erp_errores)
   const el = document.getElementById('toast');
   if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
   el.className = 'toast '+(t==='ok'?'ts':t==='err'?'te':'');
@@ -2966,9 +2967,26 @@ function toast(msg, t, action) {
 //       fn().catch(e => _errLog('contexto.flow', e, {toast:'No se pudo X'}));
 // Si opts.toast viene, también muestra notificación al usuario.
 window._erpErrLog = [];
+/** 30-oct (Pablo aprobó) · CADA ERROR QUE VE EL EQUIPO QUEDA GUARDADO (tabla erp_errores): quién, en qué pantalla, qué pedido o cambio y el
+ *  mensaje exacto. Así Claude lo lee directo sin pedir capturas. Nunca rompe nada: si no se puede guardar, se sigue igual (y no se reintenta). */
+const _ERRG = { ult: {}, off: false };
+function _errGuardar(ctx, msg) {
+  try {
+    if (_ERRG.off || typeof SB_URL === 'undefined' || !SB_ANON || typeof _sbSesionAsegurar !== 'function') return;
+    msg = String(msg || '').slice(0, 900); if (!msg) return;
+    const k = msg.slice(-150); if (_ERRG.ult[k] && Date.now() - _ERRG.ult[k] < 60000) return; _ERRG.ult[k] = Date.now();
+    const nros = (msg.match(/\b(2\d{4}|CAM-\d{4}|DEV-\d{4})\b/g) || []).join(' ');
+    const pag = (typeof curPg !== 'undefined' && curPg) || '';
+    _sbSesionAsegurar().then(tok => { if (!tok) return;
+      return fetch(SB_URL + '/rest/v1/erp_errores', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+        body: JSON.stringify({ usuario: (typeof MY_EMAIL !== 'undefined' && MY_EMAIL) || '', pantalla: String(pag), contexto: String(ctx || '').slice(0, 120), mensaje: msg, referencias: nros }) })
+        .then(r => { if (r.status === 404) _ERRG.off = true; }); }).catch(() => {});
+  } catch (_) {}
+}
 function _errLog(ctx, e, opts) {
   try {
     const msg = (e && (e.message || e.toString())) || String(e);
+    try { _errGuardar(ctx, msg); } catch (_) {}
     console.error('[ERP:'+ctx+']', e && e.stack ? e.stack : msg);
     // Buffer en memoria para diagnóstico (cap 50)
     try {
@@ -10986,6 +11004,10 @@ function _cdArmar(M, FO, CAMS) {
   });
   const l3 = [].concat((M.otraTalla || []).map(z => Object.assign({ tipo: 'Otra talla' }, z)), (M.otraPrenda || []).map(z => Object.assign({ tipo: 'Otra prenda' }, z)))
     .map(z => ({ nro: nro(z.erp[2]), cli: nom(z.erp[2]), f: z.erp[1], prenda: (z.erp[5] || prend(z.erp[0])) + '  →  Drive: ' + (z.drive[5] || prend(z.drive[0])), est: z.tipo, que: (/^CAMBIO: el Drive/.test(z.causa || '') && _cdCanc([nro(z.erp[2])], CAMS) ? 'SOLO EN EL DRIVE: el Drive todavía tiene este cambio' + _cdCanc([nro(z.erp[2])], CAMS) : (z.causa || '') + (/^CAMBIO: el Drive/.test(z.causa || '') ? _cdCanc([nro(z.erp[2])], CAMS) : '')),/* 29-oct (Pablo: «eliminé el cambio y sigue figurando»): decir que lo que falta es el Drive */  fila: (String(z.drive[2]).match(/fila (\d+)/) || [])[1] || '' }));
+  // 30-oct (logística, punto 272 · Mariella 23051) · el ERP registra la llegada de las devueltas UNA vez por cambio (todas juntas): si el Drive
+  // ya anotó que volvieron algunas y el cambio sigue abierto en el ERP, no es un error: queda EN ESPERA hasta que vuelvan todas y se marque la recepción.
+  l3.forEach(x => { const ab = (CAMS.__abiertos || {})[x.nro]; if (!ab || !/^CAMBIO: el Drive ya lo apl/.test(String(x.que || ''))) return;
+    x.que = 'CAMBIO en curso en el ERP (' + (CAMS[x.nro] || []).join(', ') + '): el Drive ya anotó que volvió; en el ERP se marca la recepción cuando vuelvan TODAS las prendas del cambio'; x.espera = true; });
   // 30-oct (logística, punto 271 · Alicia 22730: «el Drive y el ERP están iguales») · «SIN CAMBIO» confundía cuando el pedido SÍ tiene un cambio vivo
   // en el ERP: el cambio existe, pero su prenda NUEVA no es la que el Drive dice que salió. Se dice así, con quién lo corrige y dónde.
   l3.forEach(x => { const cs = CAMS[x.nro]; if (!cs || !/^SIN CAMBIO/.test(String(x.que || ''))) return; const pz = String(x.prenda).split(/\s+→\s+Drive:\s*/);
@@ -15518,7 +15540,7 @@ async function _cliHistorialRapido(body) {
       Cambio:      String(f['Cambio'] || ''),
     })).sort((a, b) => new Date(b.FechaPedido || 0) - new Date(a.FechaPedido || 0));
 
-    const cams = camsT.filter(x => _cliClaveDeFila(x) === clave);
+    const cams = camsT.filter(x => _cliClaveDeFila(x) === clave && String(x['Estado'] || '').trim().toUpperCase() !== 'CANCELADO');   // 30-oct (Pablo) · los anulados no cuentan para la clienta (quedan en Cambios › Cancelados)
     const devs = devsT.filter(x => _cliClaveDeFila(x) === clave)
                       .sort((a, b) => new Date(_c2Fecha(b['FechaSolicitud']) || 0) - new Date(_c2Fecha(a['FechaSolicitud']) || 0));
 
@@ -26245,7 +26267,11 @@ async function _guardarPedidoModal(nro, body) {
   // Cargar cambios de este pedido en background
   if (nro) {
     _cambiosPorPedidoRapido(nro).then(cambios => {
-      if (!cambios || !cambios.length) return;
+      // 30-oct (Pablo: «los cambios eliminados en Cambios tienen que estar eliminados en Pedidos») · un cambio ANULADO ya no existe para el
+      // pedido (su stock y su dinero se revirtieron al anularlo): no se muestra acá. El historial queda solo en Cambios › Cancelados.
+      const _anul = (cambios || []).filter(c => String(c['Estado'] || '').trim().toUpperCase() === 'CANCELADO');
+      cambios = (cambios || []).filter(c => String(c['Estado'] || '').trim().toUpperCase() !== 'CANCELADO');
+      if (!cambios.length) { const _el0 = document.getElementById('modal-cambios-detalle'); if (_el0 && _anul.length) _el0.innerHTML = '<div style="font-size:11px;color:var(--mu);margin-top:6px">' + [...new Set(_anul.map(c => c['NroCambio']))].join(', ') + ' anulado: ya no cuenta para este pedido (historial en Cambios › Cancelados)</div>'; return; }
       const el = document.getElementById('modal-cambios-detalle');
       if (!el) return;
       let ultimaFechaMs = 0, ultimaFechaStr = '—';
