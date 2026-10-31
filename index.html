@@ -2943,6 +2943,9 @@ function _uiSeguro(msg, okTxt){ return _uiVentana(msg, false, null, okTxt || 'S�
 function _uiTexto(msg, inicial){ return _uiVentana(msg, true, inicial, 'Aceptar'); }
 function toast(msg, t, action) {
   msg = _toastPlano_(msg);
+  // 31-oct (Pablo aprobó) · todo aviso de «eliminado/borrado/quitado» trae «↩️ Deshacer» (12 s). Devuelve lo último que TÚ borraste
+  // en los últimos 10 min (public.papelera_deshacer_mio, archivo PEGAR_EN_SUPABASE_dashboard_pago_ltv_31oct.sql). Vale para todos los módulos.
+  try { if (!action && t !== 'err' && /(eliminad|borrad|quitad|elimin[oó]|borr[oó])/i.test(String(msg))) action = { label: '↩️ Deshacer', fn: _papDeshacer }; } catch (_) {}
   if (t === 'err') { try { _errGuardar('aviso', msg); } catch (_) {} }   // 30-oct · todo aviso rojo queda guardado (erp_errores)
   const el = document.getElementById('toast');
   if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
@@ -7098,14 +7101,16 @@ async function loadCostos() {
   }
   _cosRender();
   // 4-oct · lo pesado va después y de a una: primero la ficha (≈6 s); la revisión de ventas (≈17 s, la más lenta) 20 s más tarde para no frenar la pantalla
-  if (COS.esAdmin) { _cosFichaCargar(true); _cftCargar(); clearTimeout(window._cosSinT); window._cosSinT = setTimeout(() => { if (document.getElementById('cos-tabla')) loadCostosSin(); }, 20000); }
+  if (COS.esAdmin) { _cosFichaCargar(true); _cftCargar(); clearTimeout(window._cosSinT); window._cosSinT = setTimeout(() => { if (document.getElementById('cos-tabla')) loadCostosSin(); }, 1500); }   // 31-oct · ya es rápido (base): 20 s → 1,5 s
 }
 
 // La tabla «vendidas sin costo» lee las ventas (tarda): se pide DESPUÉS de pintar la pantalla.
 async function loadCostosSin() {
   COS.sin = null; COS.sinMsg = 'Revisando las ventas…'; _cosPintarSin();
   try {
-    const r = await apiSend('costos.sinCosto', {});
+    // 31-oct · VÍA RÁPIDA: la base lo calcula en ~1 s (public.costos_sin_costo). Si aún no existe, el camino de siempre (34 s).
+    let r = null; try { r = await _npRpc('costos_sin_costo', {}); } catch (_) { r = null; }
+    if (!r || !r.ok) r = await apiSend('costos.sinCosto', {});
     COS.sin = r.sin || []; COS.ign = r.ignorados || []; COS.sinMsg = '';
   } catch (e) { COS.sin = null; COS.sinMsg = 'No se pudo revisar las ventas: ' + e.message; }
   _cosPintarSin();
@@ -44159,6 +44164,11 @@ async function _papTodoCargar() {
     catch (e) { b.disabled = false; b.textContent = '↩️ Restaurar'; toast('No se pudo: ' + (e && e.message || e), 'err'); }
   });
 }
+async function _papDeshacer() {
+  try { const r = await _npRpc('papelera_deshacer_mio', {}); if (!r || !r.ok) throw new Error((r && r.error) || 'no se pudo');
+    toast('✓ Deshecho: volvió (' + r.filas + ' fila(s)). Actualizando…', 'ok'); setTimeout(() => { try { if (typeof curPg !== 'undefined' && typeof loadPg === 'function') loadPg(curPg); } catch (_) {} }, 600); }
+  catch (e) { toast('No se pudo deshacer: ' + (e && e.message || e), 'err'); }
+}
 async function loadPapelera() {
   try { _papTodoCargar(); } catch (_) {}
   const w = document.getElementById('papelera-w');
@@ -46810,25 +46820,60 @@ startAuth();
   function _kpiN(n){ n = Math.round(Number(n) || 0); return n ? n.toLocaleString('es-PE') : '—'; }
   function _kpiPct(a, b){ return b ? Math.round(a / b * 100) + '%' : '—'; }
   function _kpiMg(a, b){ return b ? (a / b * 100).toFixed(2) + '%' : '—'; }   // margen: 2 decimales (Pablo)
-  /* 28-oct 23h (Pablo eligió el gráfico) · barras ingresos (verde) vs egresos (rojo) por mes + punto de utilidad; con «Todo», por año */
+  /* 31-oct (Pablo) · gráfico rehecho: 3 barras por mes (ingresos verde · egresos rojo · utilidad azul, roja si es negativa),
+     el monto encima de cada barra en miles (134k), líneas horizontales con montos (cada S/20k en meses; con «Todo», un paso que
+     no pase de ~10 líneas), siempre ene → dic (mes sin datos = vacío) y el dibujo centrado sin estirarse. */
   function _kpiGrafico(filas){
     if (!filas.length) return '';
-    const W = 1000, H = 190, top = 18, bot = 26, n = filas.length, paso = W / n, bw = Math.min(26, paso * 0.3);
-    const max = Math.max(1, ...filas.map(f => Math.max(f.ing, f.egr))), minU = Math.min(0, ...filas.map(f => f.util));
-    const y = v => top + (H - top - bot) * (1 - (v - minU) / (max - minU)), y0 = y(0);
-    let g = '<line x1="0" x2="' + W + '" y1="' + y0 + '" y2="' + y0 + '" stroke="var(--bd)"/>';
-    const pts = [];
+    const W = 1000, H = 300, izq = 56, der = 10, top = 22, bot = 28, n = filas.length, ancho = W - izq - der, paso = ancho / n;
+    const bw = Math.max(6, Math.min(24, paso * 0.26)), gap = Math.max(1, bw * 0.12);
+    const con = filas.filter(f => f.ing || f.egr || f.util);
+    const vmax = Math.max(1, ...con.map(f => Math.max(f.ing, f.egr, f.util))), vmin = Math.min(0, ...con.map(f => f.util));
+    let st = 20000; while ((vmax - vmin) / st > 10) st *= (String(st)[0] === '2' ? 2.5 : 2);
+    const hi = Math.ceil(vmax / st) * st, lo = Math.floor(vmin / st) * st;
+    const y = v => top + (H - top - bot) * (1 - (v - lo) / ((hi - lo) || 1)), y0 = y(0);
+    const k = v => (v < 0 ? '−' : '') + Math.round(Math.abs(v) / 1000).toLocaleString('es-PE') + 'k';
+    let g = '';
+    for (let v = lo; v <= hi + 1; v += st) g += '<line x1="' + izq + '" x2="' + (W - der) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="var(--bd)" stroke-dasharray="' + (v === 0 ? '0' : '3 4') + '" opacity="' + (v === 0 ? 1 : .6) + '"/>'
+      + '<text x="' + (izq - 6) + '" y="' + (y(v) + 4) + '" text-anchor="end" font-size="11" fill="var(--mu)">' + (v ? k(v) : '0') + '</text>';
+    const barra = (x, v, col, et, nom) => {
+      const yy = v >= 0 ? y(v) : y0, h = Math.max(v ? 1 : 0, Math.abs(y(v) - y0));
+      return '<rect x="' + x + '" y="' + yy + '" width="' + bw + '" height="' + h + '" rx="2" fill="' + col + '"><title>' + et + ' · ' + nom + ' S/ ' + Math.round(v).toLocaleString('es-PE') + '</title></rect>'
+        + (v ? '<text x="' + (x + bw / 2) + '" y="' + (v >= 0 ? yy - 4 : yy + h + 11) + '" text-anchor="middle" font-size="' + (bw < 14 ? 8 : 10) + '" fill="var(--tx)">' + k(v) + '</text>' : '');
+    };
     filas.forEach((f, i) => {
-      const cx = paso * i + paso / 2;
-      g += '<rect x="' + (cx - bw - 1) + '" y="' + y(f.ing) + '" width="' + bw + '" height="' + Math.max(0, y0 - y(f.ing)) + '" rx="3" fill="var(--gn)" opacity=".85"><title>' + f.et + ' · Ingresos S/' + Math.round(f.ing).toLocaleString('es-PE') + '</title></rect>';
-      g += '<rect x="' + (cx + 1) + '" y="' + y(f.egr) + '" width="' + bw + '" height="' + Math.max(0, y0 - y(f.egr)) + '" rx="3" fill="var(--rd)" opacity=".75"><title>' + f.et + ' · Egresos S/' + Math.round(f.egr).toLocaleString('es-PE') + '</title></rect>';
-      g += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="var(--mu)">' + f.et + '</text>';
-      pts.push([cx, y(f.util), f]);
+      const cx = izq + paso * i + paso / 2, x0 = cx - bw * 1.5 - gap;
+      if (f.ing || f.egr || f.util) {
+        g += barra(x0, f.ing, 'var(--gn)', f.et, 'Ingresos');
+        g += barra(x0 + bw + gap, f.egr, 'var(--rd)', f.et, 'Egresos');
+        g += barra(x0 + 2 * (bw + gap), f.util, f.util < 0 ? '#ef4444' : '#3b82f6', f.et, 'Utilidad');
+      }
+      g += '<text x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle" font-size="12" fill="' + (f.ing || f.egr ? 'var(--tx)' : 'var(--mu)') + '">' + f.et + '</text>';
     });
-    g += '<polyline points="' + pts.map(p => p[0] + ',' + p[1]).join(' ') + '" fill="none" stroke="var(--ac)" stroke-width="2"/>';
-    pts.forEach(p => { g += '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="4" fill="' + (p[2].util < 0 ? 'var(--rd)' : 'var(--ac)') + '"><title>' + p[2].et + ' · Utilidad S/' + Math.round(p[2].util).toLocaleString('es-PE') + '</title></circle>'; });
-    return '<div class="card" style="padding:10px 12px;margin-bottom:10px"><div style="display:flex;gap:14px;font-size:11px;color:var(--mu);margin-bottom:4px"><span><b style="color:var(--gn)">■</b> Ingresos</span><span><b style="color:var(--rd)">■</b> Egresos</span><span><b style="color:var(--ac)">●</b> Utilidad</span></div>' +
-      '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:190px" preserveAspectRatio="none">' + g + '</svg></div>';
+    return '<div class="card" style="padding:12px;margin-bottom:10px"><div style="display:flex;justify-content:center;gap:16px;font-size:12px;color:var(--mu);margin-bottom:6px">'
+      + '<span><b style="color:var(--gn)">■</b> Ingresos</span><span><b style="color:var(--rd)">■</b> Egresos</span><span><b style="color:#3b82f6">■</b> Utilidad <span style="color:#ef4444">(roja si es pérdida)</span></span><span>montos en miles de soles</span></div>'
+      + '<svg viewBox="0 0 ' + W + ' ' + H + '" style="display:block;width:100%;max-width:1000px;height:auto;margin:0 auto">' + g + '</svg></div>';
+  }
+  /* 31-oct (Pablo) · los años (2026 · 2025 · … · Todo) suben a la fila de pestañas, a la derecha, a la altura de «📊 KPI» */
+  function _kpiAniosArriba(anios){
+    let tabs = null; try { tabs = document.querySelector('#egr-w .egr-tabs'); } catch (_) {} if (!tabs) return;
+    let d = document.getElementById('kpi-anios'); if (d) d.remove();
+    d = document.createElement('div'); d.id = 'kpi-anios'; d.style.cssText = 'margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center';
+    d.innerHTML = anios.concat(['todo']).map(a => '<button class="egr-tab' + (EGR.kpiA === a ? ' on' : '') + '" onclick="_egrKpiAnio(\'' + a + '\')">' + (a === 'todo' ? 'Todo' : a) + '</button>').join('');
+    tabs.appendChild(d);
+  }
+  /* 31-oct (Pablo) · LTV:CAC = (lo que una clienta compra en toda su vida × margen bruto) ÷ (pauta ÷ clientas nuevas del período).
+     Regla de los referentes (e-commerce/SaaS): ≥ 3x sano · 1-3x justo · < 1x se pierde plata al captar. Datos: public.kpi_ltv_cac (desde jul-2025). */
+  function _kpiLtvCac(sel, T){
+    const L = EGR.kpiL; if (!L || !L.ok) return '<div class="egr-kpi" title="Falta correr PEGAR_EN_SUPABASE_dashboard_pago_ltv_31oct.sql"><b>—</b><span>LTV:CAC</span></div>';
+    const nuevas = sel.reduce((s, m) => s + (Number(L.nuevas && L.nuevas[m.mes]) || 0), 0), pauta = sel.reduce((s, m) => s + (Number(m.costos && m.costos.publicidad) || 0), 0);
+    const prod = sel.reduce((s, m) => s + (Number(m.costos && m.costos.insumos) || 0) + (Number(m.costos && m.costos.confeccion) || 0), 0);
+    if (!nuevas || !pauta || !T.ing) return '<div class="egr-kpi" title="Sin clientas nuevas o sin pauta registradas en este período (el ERP las tiene desde jul-2025)"><b>—</b><span>LTV:CAC</span></div>';
+    const mb = Math.max(0, 1 - prod / T.ing), ltv = (Number(L.ltv_ingreso) || 0) * mb, cac = pauta / nuevas, r = ltv / cac;
+    const col = r >= 3 ? 'var(--gn)' : r >= 1 ? 'var(--am)' : 'var(--rd)';
+    return '<div class="egr-kpi" title="LTV = S/ ' + Math.round(L.ltv_ingreso).toLocaleString('es-PE') + ' que compra una clienta en su vida × ' + Math.round(mb * 100) + '% de margen bruto = S/ ' + Math.round(ltv).toLocaleString('es-PE')
+      + ' · CAC = S/ ' + Math.round(pauta).toLocaleString('es-PE') + ' de pauta ÷ ' + nuevas + ' clientas nuevas = S/ ' + Math.round(cac).toLocaleString('es-PE') + ' · sano ≥ 3x"><b style="color:' + col + '">' + r.toFixed(1) + 'x</b><span>LTV:CAC</span>'
+      + '<div style="font-size:11px;color:var(--mu)">LTV S/ ' + Math.round(ltv).toLocaleString('es-PE') + ' · CAC S/ ' + Math.round(cac).toLocaleString('es-PE') + '</div></div>';
   }
   /* comparación con el mismo período del año anterior (mismos meses) */
   function _kpiVs(M, sel, anio){
@@ -46847,7 +46892,7 @@ startAuth();
     const c = document.getElementById('egr-cuerpo');
     if (forzar || !EGR.kpiD) {
       c.innerHTML = '<div class="ld"><div class="sp"></div>Cargando KPI…</div>';
-      try { EGR.kpiD = await _egrRpc('kpi_mensual', {}); }
+      try { const pL = _egrRpc('kpi_ltv_cac', {}).catch(() => null); EGR.kpiD = await _egrRpc('kpi_mensual', {}); EGR.kpiL = await pL; if (EGR.tab && EGR.tab !== 'kpi') return; }   /* si ya cambió de pestaña, no pisarla */
       catch (e) {
         const t = String((e && e.message) || e);
         c.innerHTML = '<div class="egr-err">' + (/kpi_mensual|PGRST202|Could not find the function/i.test(t) ? 'Falta correr PEGAR_EN_SUPABASE_kpi_mensual_28oct.sql en Supabase' : _egrEsc(t)) + '</div>';
@@ -46859,6 +46904,10 @@ startAuth();
     const anios = [...new Set(M.map(m => m.mes.slice(0, 4)))].sort().reverse();
     if (!EGR.kpiA) EGR.kpiA = anios[0];
     const sel = EGR.kpiA === 'todo' ? M : M.filter(m => m.mes.slice(0, 4) === EGR.kpiA);
+    /* 31-oct (Pablo) · lo que no tiene canal (o categoría) va a «Otros»: el total de canales = ingresos y el de costos = egresos, siempre */
+    M.forEach(m => { if (m._otrosOk) return; m._otrosOk = 1; m.canales = Object.assign({}, m.canales || {}); m.costos = Object.assign({}, m.costos || {});
+      const sc = (+m.ing || 0) - KPI_CAN.reduce((s, k) => s + (Number(m.canales[k[0]]) || 0), 0), sk = (+m.egr || 0) - KPI_COS.reduce((s, k) => s + (Number(m.costos[k[0]]) || 0), 0);
+      if (Math.abs(sc) >= 1) m.canales.otros = (Number(m.canales.otros) || 0) + sc; if (Math.abs(sk) >= 1) m.costos.otros = (Number(m.costos.otros) || 0) + sk; });
     const can = m => KPI_CAN.reduce((s, k) => s + (Number(m.canales && m.canales[k[0]]) || 0), 0);
     const cos = m => KPI_COS.reduce((s, k) => s + (Number(m.costos && m.costos[k[0]]) || 0), 0);
     const T = { ing: 0, egr: 0, util: 0, sc: 0, sk: 0, c: {}, k: {} };
@@ -46874,9 +46923,9 @@ startAuth();
     /* tarjetas a la izquierda y años a la derecha, en la misma fila (Pablo) */
     const V = _kpiVs(M, sel, EGR.kpiA), vsTxt = V ? ' vs ' + V.anio : '';
     const k2 = (v, t, col, extra) => '<div class="egr-kpi"><b' + (col ? ' style="color:' + col + '"' : '') + '>' + v + '</b><span>' + t + '</span>' + (extra || '') + '</div>';
-    let h = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div class="egr-kpis" style="margin:6px 0">' + k2(_egrSoles(T.ing), 'Ingresos' + vsTxt, 'var(--gn)', V && _kpiDelta(T.ing, V.ing)) + k2(_egrSoles(T.egr), 'Egresos' + vsTxt, 'var(--rd)', V && _kpiDelta(T.egr, V.egr, true)) + k2(_egrSoles(T.util), 'Utilidad' + vsTxt, colU(T.util), V && _kpiDelta(T.util, V.util)) +
-      k(_kpiMg(T.util, T.ing), 'Margen', colU(T.util)) + (sel.length ? k(_egrSoles(T.util / sel.length), 'Utilidad promedio por mes', colU(T.util)) : '') + '</div>' +
-      '<div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">' + anios.concat(['todo']).map(a => '<button class="egr-tab' + (EGR.kpiA === a ? ' on' : '') + '" style="padding:5px 12px" onclick="_egrKpiAnio(\'' + a + '\')">' + (a === 'todo' ? 'Todo' : a) + '</button>').join('') + '</div></div>';
+    let h = '<div style="display:flex;justify-content:center"><div class="egr-kpis" style="margin:6px 0;justify-content:center">' + k2(_egrSoles(T.ing), 'Ingresos' + vsTxt, 'var(--gn)', V && _kpiDelta(T.ing, V.ing)) + k2(_egrSoles(T.egr), 'Egresos' + vsTxt, 'var(--rd)', V && _kpiDelta(T.egr, V.egr, true)) + k2(_egrSoles(T.util), 'Utilidad' + vsTxt, colU(T.util), V && _kpiDelta(T.util, V.util)) +
+      k(_kpiMg(T.util, T.ing), 'Margen', colU(T.util)) + (sel.length ? k(_egrSoles(T.util / sel.length), 'Utilidad promedio por mes', colU(T.util)) : '') + _kpiLtvCac(sel, T) + '</div></div>';
+    _kpiAniosArriba(anios);
     if (EGR.kpiA === 'todo') {
       const porA = anios.slice().reverse().map(a => { const xs = M.filter(m => m.mes.slice(0, 4) === a); const i = xs.reduce((s, m) => s + (+m.ing || 0), 0), e = xs.reduce((s, m) => s + (+m.egr || 0), 0); return [a, i, e, i - e, xs.length]; });
       h += '<div class="tt-w" style="margin-bottom:12px;max-height:none"><table class="tt"><thead><tr><th>Año</th><th class="tt-ing">Ingresos</th><th class="tt-egr">Egresos</th><th>Utilidad</th><th>Margen</th><th>Meses</th></tr></thead><tbody>' +
@@ -46885,7 +46934,7 @@ startAuth();
     }
     h += _kpiGrafico(EGR.kpiA === 'todo'
       ? anios.slice().reverse().map(a => { const xs = M.filter(m => m.mes.slice(0, 4) === a), i = xs.reduce((t, m) => t + (+m.ing || 0), 0), e = xs.reduce((t, m) => t + (+m.egr || 0), 0); return { et: a, ing: i, egr: e, util: i - e }; })
-      : sel.map(m => ({ et: KPI_MES[+m.mes.slice(5) - 1], ing: +m.ing || 0, egr: +m.egr || 0, util: +m.util || 0 })));
+      : KPI_MES.map((et, i) => { const m = sel.find(x => +x.mes.slice(5) === i + 1); return m ? { et, ing: +m.ing || 0, egr: +m.egr || 0, util: +m.util || 0 } : { et, ing: 0, egr: 0, util: 0 }; }));
     const nC = KPI_CAN.length + 1 + (verSC ? 1 : 0), nK = KPI_COS.length + 1 + (verSK ? 1 : 0);
     let t = '<thead><tr><th class="tt-fija" data-no-ord></th><th colspan="3" data-no-ord>Total</th><th colspan="' + nC + '" class="tt-can" data-no-ord>Canales de venta</th><th colspan="' + nK + '" class="tt-cos" data-no-ord>Costos</th></tr>' +
       '<tr><th class="tt-fija">Mes</th><th class="tt-ing">Ing</th><th class="tt-egr">Egr</th><th>Util</th>' +
@@ -46910,10 +46959,7 @@ startAuth();
     const pc = (v, b, cl) => '<td class="' + (cl || '') + '" style="color:var(--mu)">' + _kpiPct(v, b) + '</td>';
     t += '<tr data-fijo><td class="tt-fija" style="color:var(--mu)">%</td><td class="tt-ing"></td><td class="tt-egr"></td><td style="color:var(--mu)">' + _kpiMg(T.util, T.ing) + '</td>' +
       KPI_CAN.map(x => pc(T.c[x[0]], T.ing, 'tt-can')).join('') + (verSC ? pc(T.sc, T.ing, 'tt-can') : '') + pc(T.ing, T.ing, 'tt-can') + KPI_COS.map(x => pc(T.k[x[0]], T.egr, 'tt-cos')).join('') + (verSK ? pc(T.sk, T.egr, 'tt-cos') : '') + pc(T.egr, T.egr, 'tt-cos') + '</tr></tbody>';
-    h += '<div class="tt-w"><table class="tt" style="min-width:1150px">' + t + '</table></div><div id="kpi-mes"></div>' +
-      '<div class="ui-nota" style="margin-top:8px">Hasta set-2026: la hoja KPI de la Matriz (meses cerrados, copiados el ' + (D.hoja_copiada ? new Date(D.hoja_copiada).toLocaleDateString('es-PE') : '—') + '). ' +
-      'Desde oct-2026, en vivo: ingresos = lo cobrado en el ERP por fecha de pago · egresos = ' + (D.egresos_erp_desde ? 'Drive hasta ' + _egrEsc(D.egresos_erp_desde) + ' y desde ahí el ERP' : 'el Drive (Egr + Confi) hasta el corte; después, el módulo Egresos') +
-      (D.drive_leido ? ' · Drive copiado ' + new Date(D.drive_leido).toLocaleString('es-PE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '') + '.</div>';
+    h += '<div class="tt-w"><table class="tt" style="min-width:1150px">' + t + '</table></div><div id="kpi-mes"></div>';   /* 31-oct (Pablo) · sin la nota de fuentes */
     c.innerHTML = h;
     if (EGR.kpiMes && sel.some(m => m.mes === EGR.kpiMes)) _kpiMesPintar(EGR.kpiMes);
   }
