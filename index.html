@@ -1505,6 +1505,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
 
     <!-- J-3 — Papelera de pedidos -->
     <div id="pg-papelera" class="pg">
+      <div id="papelera-todo" style="margin-bottom:18px"></div>
       <div id="papelera-w"><div class="ld"><div class="sp"></div>Cargando...</div></div>
     </div>
 
@@ -5503,6 +5504,92 @@ async function _cosInsGuardar(nombre) {
   if (r && r.ok === false) throw new Error(r.error || 'error'); CIN.dirty = false;
 }
 window.prodMotivosFalla = function(){ try { return mOpts('Motivo Falla') || []; } catch (e) { return []; } };
+/* ══ 31-oct (Pablo aprobó «una sola puerta») · ➕ NUEVO PRODUCTO — EL MISMO CUADRO DESDE PRODUCCIÓN, PRODUCTOS, CATÁLOGO Y STOCK ══
+   3 datos: nombre, categoría, taller o comprado. Colores y tallas en el mismo cuadro, con fichas para tocar (colores × curva de tallas
+   = todos los SKU en un clic, por la base, < 1 s). Si el nombre ya existe, el cuadro agrega colores a ESA ficha (nunca otra). */
+const NP_CATS = ['BLUSAS Y TOPS', 'FALDAS Y VESTIDOS', 'PANTALONES', 'BLAZERS Y ABRIGOS', 'CONJUNTOS', 'SWIMWEAR', 'ROPA INTERIOR', 'ACCESORIOS'];
+const NP_TALLAS = ['XS', 'S', 'M', 'L', 'XL', '2XL', 'U'];
+const NP_SUG = { BLUSA: 'BLUSAS Y TOPS', TOP: 'BLUSAS Y TOPS', BODY: 'BLUSAS Y TOPS', CAMISA: 'BLUSAS Y TOPS', FALDA: 'FALDAS Y VESTIDOS', VESTIDO: 'FALDAS Y VESTIDOS',
+  PANTALON: 'PANTALONES', SHORT: 'PANTALONES', BERMUDA: 'PANTALONES', BLAZER: 'BLAZERS Y ABRIGOS', ABRIGO: 'BLAZERS Y ABRIGOS', CHALECO: 'BLAZERS Y ABRIGOS', CASACA: 'BLAZERS Y ABRIGOS',
+  GABARDINA: 'BLAZERS Y ABRIGOS', CONJUNTO: 'CONJUNTOS', BIKINI: 'SWIMWEAR', TRIKINI: 'SWIMWEAR', ENTERIZO: 'SWIMWEAR', INTERIOR: 'ROPA INTERIOR', FAJA: 'ROPA INTERIOR',
+  CORREA: 'ACCESORIOS', ARETE: 'ACCESORIOS', COLLAR: 'ACCESORIOS', PULSERA: 'ACCESORIOS', ANILLO: 'ACCESORIOS', PANUELO: 'ACCESORIOS', COLETS: 'ACCESORIOS' };
+async function _npRpc(fn, params) {
+  const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión con la base');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(params || {}) });
+  const t = await r.text(); if (!r.ok) throw new Error(t.slice(0, 200)); return t ? JSON.parse(t) : null;
+}
+window._npAbrir = async function (nombreIni) {
+  if (document.getElementById('np-ov')) return;
+  let fichas = []; try { fichas = (await _npRpc('prod_productos', {})) || []; } catch (_) {}
+  const F = {}; fichas.forEach(x => { F[String(x.diseno || '').toUpperCase()] = x; });
+  const st = 'width:100%;padding:9px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:14px';
+  const ov = document.createElement('div'); ov.id = 'np-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:700;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto';
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:560px;width:100%;padding:20px">'
+    + '<div style="display:flex;align-items:center;margin-bottom:14px"><b style="font-size:16px">➕ Nuevo producto</b><span style="flex:1"></span><button type="button" class="btn bg bs" id="np-x" title="Cerrar">✕</button></div>'
+    + '<div class="fg"><label>Nombre</label><input id="np-nom" list="np-nom-l" autocomplete="off" placeholder="Ej. BLAZER ATENAS" style="' + st + '"><datalist id="np-nom-l">' + fichas.map(x => '<option value="' + esc(x.diseno) + '"></option>').join('') + '</datalist>'
+    + '<div id="np-ya" style="font-size:12px;color:var(--ac);margin-top:4px;display:none"></div></div>'
+    + '<div class="fg"><label>Categoría</label><select id="np-cat" style="' + st + '"><option value="">— Elegir —</option>' + NP_CATS.map(c => '<option>' + c + '</option>').join('') + '</select></div>'
+    + '<div id="np-nuevo"><div class="fg"><label>¿Cómo se hace?</label><div style="display:flex;gap:8px"><button type="button" class="btn bp np-ori" data-o="confeccion" style="flex:1">🧵 Lo hace un taller</button><button type="button" class="btn bg np-ori" data-o="comprado" style="flex:1">🛍 Se compra hecho</button></div></div></div>'
+    + '<div class="fg"><label>Colores <span style="color:var(--mu);font-weight:400" id="np-col-nota">(opcional si lo hace un taller: salen de la orden)</span></label>'
+    + '<div id="np-cols" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px"></div><input id="np-col" list="np-col-l" autocomplete="off" placeholder="Escribe un color y Enter" style="' + st + '"><datalist id="np-col-l">' + ((typeof mOpts === 'function' ? mOpts('Color') : []) || []).map(c => '<option value="' + esc(c) + '"></option>').join('') + '</datalist></div>'
+    + '<div class="fg" id="np-tal-w"><label>Tallas</label><div style="display:flex;flex-wrap:wrap;gap:6px">' + NP_TALLAS.map(t => '<button type="button" class="btn bg bs np-tal" data-t="' + t + '">' + t + '</button>').join('') + '</div></div>'
+    + '<div id="np-msg" style="font-size:12px;min-height:16px;margin:6px 0"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn bg" id="np-cancel">Cancelar</button><button type="button" class="btn bp" id="np-ok">Crear</button></div></div>';
+  document.body.appendChild(ov);
+  const $ = id => document.getElementById(id), S = { ori: 'confeccion', cols: [], tal: ['S', 'M', 'L', 'XL'] };
+  const cerrar = () => ov.remove();
+  $('np-x').onclick = cerrar; $('np-cancel').onclick = cerrar;
+  const pintar = () => {
+    const nom = String($('np-nom').value || '').toUpperCase().replace(/\s+/g, ' ').trim(), ya = F[nom];
+    $('np-ya').style.display = ya ? '' : 'none'; $('np-nuevo').style.display = ya ? 'none' : '';
+    if (ya) $('np-ya').textContent = 'Ya existe: aquí le agregas colores y tallas (la ficha es la misma).';
+    ov.querySelectorAll('.np-ori').forEach(b => { b.classList.toggle('bp', b.dataset.o === S.ori); b.classList.toggle('bg', b.dataset.o !== S.ori); });
+    $('np-col-nota').style.display = (!ya && S.ori === 'confeccion') ? '' : 'none';
+    $('np-cols').innerHTML = S.cols.map((c, i) => '<span style="padding:3px 8px;border-radius:999px;background:var(--bg3);border:1px solid var(--bd);font-size:12px">' + esc(c) + ' <b data-i="' + i + '" style="cursor:pointer">✕</b></span>').join('');
+    $('np-cols').querySelectorAll('b[data-i]').forEach(b => b.onclick = () => { S.cols.splice(+b.dataset.i, 1); pintar(); });
+    ov.querySelectorAll('.np-tal').forEach(b => { const on = S.tal.indexOf(b.dataset.t) >= 0; b.classList.toggle('bp', on); b.classList.toggle('bg', !on); });
+    $('np-tal-w').style.display = S.cols.length ? '' : 'none';
+    $('np-ok').textContent = ya ? (S.cols.length ? 'Agregar ' + S.cols.length + ' color(es)' : 'Agregar') : 'Crear';
+  };
+  $('np-nom').addEventListener('input', () => { const n = String($('np-nom').value || '').toUpperCase().trim(), w = n.split(' ')[0].normalize('NFD').replace(/[̀-ͯ]/g, '');
+    if (NP_SUG[w] && !$('np-cat').dataset.toc) $('np-cat').value = NP_SUG[w]; if (/^(CORREA|ARETE|COLLAR|PULSERA|ANILLO|PANUELO|COLETS|FAJA)/.test(w) && !S._oriToc) S.ori = 'comprado'; pintar(); });
+  $('np-cat').addEventListener('change', () => { $('np-cat').dataset.toc = '1'; });
+  ov.querySelectorAll('.np-ori').forEach(b => b.onclick = () => { S.ori = b.dataset.o; S._oriToc = true; pintar(); });
+  ov.querySelectorAll('.np-tal').forEach(b => b.onclick = () => { const t = b.dataset.t, i = S.tal.indexOf(t);
+    if (t === 'U') S.tal = i >= 0 ? [] : ['U']; else { S.tal = S.tal.filter(x => x !== 'U'); if (i >= 0) S.tal.splice(S.tal.indexOf(t), 1); else S.tal.push(t); } pintar(); });
+  $('np-col').addEventListener('keydown', e => { if (e.key !== 'Enter') return; e.preventDefault(); const c = String($('np-col').value || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    if (c && S.cols.indexOf(c) < 0) S.cols.push(c); $('np-col').value = ''; pintar(); });
+  $('np-ok').onclick = async () => {
+    const msg = $('np-msg'), nom = String($('np-nom').value || '').toUpperCase().replace(/\s+/g, ' ').trim(), ya = F[nom];
+    { const c = String($('np-col').value || '').toUpperCase().trim(); if (c && S.cols.indexOf(c) < 0) S.cols.push(c); $('np-col').value = ''; }
+    msg.style.color = 'var(--rd)';
+    if (nom.split(' ').length < 2) { msg.textContent = 'Escribe la prenda y el modelo (ej. BLAZER ATENAS).'; return; }
+    if (!$('np-cat').value) { msg.textContent = 'Elige la categoría.'; return; }
+    if (!ya && S.ori === 'comprado' && !S.cols.length) { msg.textContent = 'Agrega al menos un color (lo comprado no tiene orden de producción).'; return; }
+    if (S.cols.length && !S.tal.length) { msg.textContent = 'Elige las tallas.'; return; }
+    if (ya && !S.cols.length) { msg.textContent = 'Agrega al menos un color.'; return; }
+    $('np-ok').disabled = true; msg.style.color = 'var(--mu)'; msg.textContent = 'Guardando…';
+    try {
+      const cat = $('np-cat').value;
+      if (!ya) { const r = await _npRpc('prod_producto_crear', { p_nombre: nom, p_categoria: cat, p_origen: S.ori }); if (!r || r.ok === false) throw new Error((r && r.error) || 'no se pudo crear'); }
+      let nSku = 0;
+      if (S.cols.length) {
+        const prods = ((typeof mOpts === 'function' ? mOpts('Producto') : []) || []).map(x => String(x).toUpperCase().trim()).filter(Boolean).sort((a, b) => b.length - a.length);
+        const pr = prods.find(x => nom.indexOf(x + ' ') === 0) || nom.split(' ')[0], dis = nom.slice(pr.length).trim();
+        const its = []; S.cols.forEach(c => S.tal.forEach(t => its.push({ categoria: cat, producto: pr, diseno: dis, color: c, talla: t, cantidad: 0 })));
+        const rr = await _skuCrearRapido(its); nSku = (rr && (rr.items || rr.nCreados)) || its.length;
+        if (rr && rr.listo) rr.listo.then(() => { try { if (typeof refrescarMaestros === 'function') refrescarMaestros(); } catch (_) {} }).catch(() => {});
+      }
+      cerrar();
+      toast('✓ ' + (ya ? 'Agregado a ' : 'Creado: ') + nom + (S.cols.length ? ' · ' + S.cols.length + ' color(es) × ' + S.tal.length + ' talla(s)' : ' · colores y tallas: desde su orden de producción'), 'ok');
+      try { COS.pend = undefined; if (typeof curPg !== 'undefined' && curPg === 'costos' && typeof loadCostos === 'function') loadCostos(true); } catch (_) {}
+      try { const f = document.getElementById('produccion-frame'); if (f && f.contentWindow && f.contentWindow.cargar) f.contentWindow.cargar(); } catch (_) {}
+    } catch (e) { $('np-ok').disabled = false; msg.style.color = 'var(--rd)'; msg.textContent = 'No se pudo: ' + (e && e.message || e); }
+  };
+  if (nombreIni) $('np-nom').value = nombreIni;
+  pintar(); setTimeout(() => $('np-nom').focus(), 50);
+};
 // 21-oct · 🧵 F3 (Pablo): el producto NACE en Producción › Diseño pero se crea por la puerta de siempre (📦 Productos), una sola fuente.
 // Abre 📦 Productos con la ficha del producto (si existe) o con el formulario de producto nuevo ya prellenado con el nombre.
 window.prodAbrirProducto = async function(nombre, aviso){
@@ -6673,8 +6760,9 @@ function _prodRender() {
   const rows = _prodFilteredRows();
   const nAct = PROD.data.filter(p=>String(p.Estado)!=='DESCONTINUADO').length;
   let h = (typeof _bcInv==='function'?_bcInv():'');
-  h += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px">'
-    + '<button class="btn bp" id="prod-nuevo">＋ Nuevo producto</button>'
+  h += '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">🗂 Aquí ves cada SKU (color × talla). El costo, los precios y la tienda se editan en su ficha: <b>📦 Productos</b>.</div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px">'
+    + '<button class="btn bp" id="prod-nuevo">➕ Nuevo producto</button>'
     // 26-jul: el Reporte de fallas y mermas se mudó acá desde Stock. El reporte
     // habla de PRODUCTOS (qué modelo falla más), así que su lugar es Catálogo.
     + '<button class="btn bg" id="prod-repfallas" title="Fallas y mermas por producto">📊 Reporte de fallas</button>'
@@ -6695,7 +6783,7 @@ function _prodRender() {
   document.getElementById('prod-q').addEventListener('input', function(){ PROD.q=this.value; clearTimeout(PROD._t); PROD._t=setTimeout(_prodUpdateRows,150); });
   document.getElementById('prod-fcat').addEventListener('change', function(){ PROD.fcat=this.value; _prodRender(); });
   document.getElementById('prod-fest').addEventListener('change', function(){ PROD.fest=this.value; _prodRender(); });
-  document.getElementById('prod-nuevo').addEventListener('click', ()=>_prodForm(null));
+  document.getElementById('prod-nuevo').addEventListener('click', ()=>_npAbrir());   // 31-oct · una sola puerta
   _prodBindReporte();
   _prodBindRowBtns(w);
   if (PROD.editing!==null) _prodForm(PROD.editing);
@@ -7362,6 +7450,7 @@ function _cosRender() {
   if (A && COS.aviso) h += '<div class="card" style="margin-bottom:12px;font-size:12px;color:var(--rd)">' + esc(COS.aviso) + '</div>';
   const chips = [['comp', 'Costo', A], ['lista', 'Lista', 1], ['live', 'Live', 1], ['cyber', 'Promoción', 1], ['show', 'Showroom', 1], ['colab', 'Colaborador', 1]].filter(x => x[2]);
   h += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">'
+    + '<button class="btn bp" id="cos-nuevo" style="white-space:nowrap">➕ Nuevo producto</button>'   // 31-oct · una sola puerta
     + (A ? '<button class="btn ' + ((COS.pend || []).length ? 'bp' : 'bg') + '" id="cos-pend" style="white-space:nowrap" title="Los productos nacen en 🧵 Producción (o en Stock si se compran hechos). Aquí completas el costo, los precios y la ficha para la tienda">🆕 Por completar' + (COS.pend ? ' (' + _cosPorCompletar().length + ')' : '') + '</button>' : '')
     + '<input id="cos-q" placeholder="Buscar…" autocomplete="off" value="' + esc(COS.q) + '" style="width:150px;' + sel + '">'
     + (A ? '<button class="btn bp bs cos-festbtn" title="Tocá para alternar: todos → solo activos → solo inactivos (del ERP)" style="font-size:12px">' + ({ '': 'Todos', ACTIVO: 'Activos', INACTIVO: 'Inactivos' })[COS.fest || ''] + '</button>' : '')
@@ -7386,6 +7475,7 @@ function _cosRender() {
   const bal = document.getElementById('cos-alertas'); if (bal) { bal.addEventListener('click', _cosAlertasAbrir); _cosAlertasBadge(); }
   w.querySelectorAll('.cos-ver').forEach(b => b.addEventListener('click', () => { COS.ver[b.dataset.v] = !COS.ver[b.dataset.v]; _cosRender(); }));
   const nb = document.getElementById('cos-pend'); if (nb) nb.addEventListener('click', _cosPendAbrir);
+  { const nn = document.getElementById('cos-nuevo'); if (nn) nn.addEventListener('click', () => _npAbrir()); }
   if (COS.esAdmin && COS.pend === undefined && !COS._pendCargando) _cosPendCargar();
   _cosBindRowBtns(w);
   if (COS.esAdmin && !MCT.cargado) _cosFichaCargar();
@@ -8491,7 +8581,7 @@ async function _cosMediaPintar(v) {
     // 13-oct 18:30 (Pablo) · sin el recuadro «Ya en Shopify» (30 fotos más que cargar): quedan solo las fotos de la tienda por color
     + '<div style="font-size:12px;font-weight:600;margin-top:6px">📷 Fotos de la tienda, por color</div>'
     + (colores.length ? '<div class="cfm-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(max(260px,calc((100% - 32px) / 3)),1fr));gap:0 16px">' + colores.map(c => '<div class="cfm-colb" data-col="' + esc(nd(c)) + '" style="margin-top:6px;border-radius:var(--r)"><span class="cfm-colh" draggable="true" data-col="' + esc(nd(c)) + '" title="Arrastra el color para cambiar su lugar en la tienda (se mueven todas sus fotos)" style="cursor:grab;user-select:none"><span style="color:var(--mu)">⠿</span> <b style="font-size:12px">' + esc(c) + '</b></span> ' + (delDe(c).length ? '<span style="font-size:11px;color:var(--mu)">' + delDe(c).length + ' fotos · la 1ª es la portada</span> ' : '') + btn('＋ Agregar foto', 'color', 'image/*', c) + filaColor(c, shF ? '<span></span>' : '')).join('') + '</div>'
-        : '<div style="font-size:12px;color:var(--mu);margin:4px 0">Este producto aún no tiene colores en el catálogo. Los colores se crean en Stock → Crear SKU; apenas existan aparecen aquí.</div>')
+        : '<div style="font-size:12px;color:var(--mu);margin:4px 0">Este producto aún no tiene colores en el catálogo. Los colores se agregan con ➕ Nuevo producto (escribiendo este mismo nombre); apenas existan aparecen aquí.</div>')
     + (sinColor.length ? '<div style="margin-top:6px"><b style="font-size:12px">Sin color</b>' + fila(sinColor) + '</div>' : '')
     + '<div style="margin:6px 0"><label class="btn bp bs" style="cursor:pointer;margin:0;font-size:12px">📦 Subir fotos en bloque<input type="file" id="cfm-blq-in" accept="image/*" multiple style="display:none"></label></div><div id="cfm-blq"></div>'
     + ordHtml
@@ -8792,7 +8882,7 @@ function _cosPendAbrir() {
     + '<td style="padding:7px 10px;text-align:right"><button class="btn bp bs cos-pend-go" data-i="' + i + '" style="font-size:12px">Completar</button></td></tr>').join('');
   cont.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--ac);border-radius:var(--r);padding:16px;margin-bottom:16px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-weight:600">🆕 Por completar (' + PC.length + ')</div><button class="btn bg bs" id="cos-pend-x">✕ Cerrar</button></div>'
-    + '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Un producto nuevo nace en <b>🧵 Producción</b> (o en <b>Stock → Crear SKU</b> si se compra hecho). Aquí le completas costo, precios y la ficha para la tienda.</div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Un producto nuevo nace en <b>🧵 Producción</b> (o con <b>➕ Nuevo producto</b> si se compra hecho). Aquí le completas costo, precios y la ficha para la tienda.</div>'
     + (PC.length ? '<div style="overflow:auto;max-height:320px"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="text-align:left;background:var(--bg3)"><th style="padding:7px 10px;color:var(--mu)">Producto</th><th style="padding:7px 10px;color:var(--mu)">Colores · tallas (del catálogo)</th><th></th></tr></thead><tbody>' + filas + '</tbody></table></div>'
       : '<div style="font-size:13px;color:var(--gn)">Todo lo que tiene SKU ya tiene su fila de costos.</div>')
     + '</div>';
@@ -8808,8 +8898,8 @@ function _cosPendInfo(v) {
   const p = v && v._pend;
   const otros = COS.data.filter(x => String(x.TipoPrenda) === String(v.TipoPrenda || '') && x.Diseno !== v.Diseno).concat(COS.data.filter(x => String(x.TipoPrenda) !== String(v.TipoPrenda || '')));
   return '<div style="margin:0 0 12px;padding:10px;border:1px solid var(--bd);border-radius:var(--r);font-size:12px">'
-    + (p && p.tipo !== 'CONJUNTO' ? '<div><b>Colores y tallas</b> <span style="color:var(--mu)">(vienen de Stock → Crear SKU; para cambiarlos se hace allá)</span></div><div style="margin-top:4px">' + esc((p.colores || []).join(', ') || '—') + ' · ' + esc((p.tallas || []).join(' ') || '—') + '</div>'
-      : '<div style="color:var(--mu)">' + (p ? 'Conjunto: su stock sale del mínimo de sus piezas (' + esc(p.piezas) + '); no lleva SKU propio.' : 'Los productos nuevos se crean en <b>Stock → Crear SKU</b> y luego aparecen en «Por costear».') + '</div>')
+    + (p && p.tipo !== 'CONJUNTO' ? '<div><b>Colores y tallas</b> <span style="color:var(--mu)">(se agregan con ➕ Nuevo producto)</span></div><div style="margin-top:4px">' + esc((p.colores || []).join(', ') || '—') + ' · ' + esc((p.tallas || []).join(' ') || '—') + '</div>'
+      : '<div style="color:var(--mu)">' + (p ? 'Conjunto: su stock sale del mínimo de sus piezas (' + esc(p.piezas) + '); no lleva SKU propio.' : 'Los productos nuevos se crean en <b>➕ Nuevo producto</b> y luego aparecen en «Por costear».') + '</div>')
     + '<div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span style="color:var(--mu)">Copiar costos y precios de</span><select id="cf-copiar-cp" style="padding:4px 6px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:12px;max-width:260px"><option value="">— elegir producto —</option>'
     + otros.map(x => '<option value="' + esc(x.Diseno) + '">' + esc(x.Diseno) + '</option>').join('') + '</select></div></div>';
 }
@@ -30449,6 +30539,23 @@ function _avisoCorteEgresos() {
   } catch (_) {}
 }
 try { window.addEventListener('load', () => setTimeout(_avisoCorteEgresos, 6000)); } catch (_) {}
+/* 31-oct · aviso «una sola puerta» para quien crea productos (Producción, Productos, Catálogo o Stock). ✕ lo cierra para siempre. */
+function _avisoUnaPuerta() {
+  try {
+    const hoy = new Date().toISOString().slice(0, 10); if (hoy > '2026-11-30') return;
+    const ok = ['produccion', 'costos', 'productos', 'confeccion'].some(p => typeof _pgPermitida === 'function' && _pgPermitida(p)); if (!ok) return;
+    try { if (localStorage.getItem('aviso_una_puerta') === '1') return; } catch (_) {}
+    if (document.getElementById('aviso-corte-egr') || document.getElementById('aviso-una-puerta')) { setTimeout(_avisoUnaPuerta, 20000); return; }
+    const d = document.createElement('div'); d.id = 'aviso-una-puerta';
+    d.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);top:12px;z-index:99998;max-width:min(640px,calc(100vw - 32px));background:#eff6ff;color:#0c1a3a;border:2px solid #3b82f6;border-radius:12px;padding:10px 14px;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,.25);display:flex;gap:10px;align-items:flex-start';
+    d.innerHTML = '<div style="flex:1"><b>➕ Nuevo producto: ahora es UN solo cuadro.</b><br>Desde Producción, Productos, Catálogo o Stock se abre el mismo: nombre, categoría y si lo hace un taller o se compra. '
+      + 'Los colores y tallas se agregan ahí mismo o salen de la orden. Para un color nuevo, escribe el nombre que ya existe.</div>'
+      + '<span id="aviso-una-puerta-x" title="Cerrar" style="cursor:pointer;font-weight:600;padding:0 6px;font-size:16px">✕</span>';
+    document.body.appendChild(d);
+    document.getElementById('aviso-una-puerta-x').onclick = () => { try { localStorage.setItem('aviso_una_puerta', '1'); } catch (_) {} d.remove(); };
+  } catch (_) {}
+}
+try { window.addEventListener('load', () => setTimeout(_avisoUnaPuerta, 9000)); } catch (_) {}
 
 /* 26-oct (Pablo) · cada aviso solo a quien le toca. Admin ve todo; ventas = rol Ventas o asesora que comisiona; logística = rol Logística; marketing nada */
 function _avisoPara(area) {
@@ -34663,7 +34770,7 @@ function renderConf(el) {
   ctrl += '<button id="cf-ingresar-stock" class="btn bp bs" style="font-size:12px;flex-shrink:0;align-self:flex-end;margin-left:auto">＋ Ingresar stock</button>';
   ctrl += '<button id="cf-ingresar-falla" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end;color:var(--rd);border-color:var(--rd)">＋ Ingresar falla</button>';
   ctrl += '<button id="cf-reporte-fallas" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end" title="Reporte de mermas / fallas">📊 Fallas</button>';
-  ctrl += '<button id="cf-crear-sku" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end">＋ Crear SKU</button>';
+  ctrl += '<button id="cf-crear-sku" class="btn bg bs" style="font-size:12px;flex-shrink:0;align-self:flex-end">➕ Nuevo producto</button>';
   // 2-set-2026 — panel de revisión de SKUs eliminados (ocultos). Solo Administrador:
   // las asesoras ya pueden eliminar (ocultar) desde la ✕ de cada fila; este panel es
   // el "qué hago con lo oculto" que faltaba (restaurar / borrar para siempre / dejar así).
@@ -34856,7 +34963,7 @@ function renderConf(el) {
   const repFallaBtn = document.getElementById('cf-reporte-fallas');
   if (repFallaBtn) repFallaBtn.addEventListener('click', () => _confAbrirReporteFallas(el));
   const skuBtn = document.getElementById('cf-crear-sku');
-  if (skuBtn) skuBtn.addEventListener('click', () => _confAbrirCrearSku(el));
+  if (skuBtn) skuBtn.addEventListener('click', () => _npAbrir());   // 31-oct · una sola puerta (antes: Crear SKU)
   const elimBtn = document.getElementById('cf-eliminados');
   if (elimBtn) elimBtn.addEventListener('click', () => _confAbrirEliminados(el));
   // Eliminar SKU (borrado suave) — ✕ por fila, con alerta
@@ -38377,7 +38484,8 @@ function editarCambios2(nc){
     +'<div style="'+fg+'"><span style="'+lbl+'">3. F. Envío nueva</span><input id="c2e-fenv" type="date" style="'+inp+'" value="'+dInput(c.FechaEnvioNueva)+'"></div></div>'
     +'<div style="display:flex;flex-direction:column;gap:4px;margin-bottom:14px"><span style="'+lbl+'">Comentario</span><textarea id="c2e-com" rows="2" style="'+inp+';resize:vertical">'+esc(c.Comentario||'')+'</textarea></div>'
     +'<div style="display:flex;justify-content:space-between;align-items:center">'
-        +'<button class="btn bg bs" data-c2del style="font-size:12px;color:#f87171;border-color:#f8717155">🗑 Anular cambio</button>'
+        +'<span style="display:flex;gap:6px"><button class="btn bg bs" data-c2del style="font-size:12px;color:#f87171;border-color:#f8717155">🗑 Anular cambio</button>'
+        +(!String(c.FechaRecepcionOriginal||'').trim() ? '<button class="btn bg bs" data-c2partir style="font-size:12px" title="La clienta devuelve en dos tandas: las que faltan (con su prenda nueva) pasan a un cambio nuevo y cada parte se recibe cuando llega">✂ Volvieron solo algunas</button>' : '')+'</span>'
     // 14-oct (Pablo) · el boton "Eliminar cambio (prueba)" siempre daba error (la funcion no existe desde el 19-set) y confundia
     // a las asesoras (incidencias 222/223). En su lugar: "Corregir" SOLO para administradores.
     +((typeof _soyAdminERP === 'function' && _soyAdminERP()) ? '<button class="btn bg bs" data-c2corregir style="font-size:12px;color:#7cc4ff;border-color:#7cc4ff55" title="Solo administradores: corrige prendas de un cambio ya cerrado, con motivo e historial">🛠 Corregir (admin)</button>' : '')
@@ -38562,6 +38670,38 @@ function editarCambios2(nc){
   });
   var corr=ov.querySelector('[data-c2corregir]');
   if(corr) corr.addEventListener('click', function(){ ov.remove(); _c2CorregirAdmin(nc); });
+  // 31-oct (fase 2B, Pablo aprobó) · LLEGADA POR TANDAS: las devueltas que todavía NO volvieron, con su prenda nueva, pasan a un cambio nuevo
+  // (rpc cambio_partir). No mueve stock ni dinero. Después se recibe cada cambio normal, cuando llega su parte.
+  var part=ov.querySelector('[data-c2partir]');
+  if(part) part.addEventListener('click', _c2PartirAbrir);
+  // 31-oct · función con nombre: la prueba de «salida de emergencia» (regresion_reversa) la ve como ruta propia; pide el token por _sbSesionAsegurar
+  async function _c2PartirAbrir(){
+    var box=ov.querySelector('#c2e-partir'); if(box){ box.remove(); return; }
+    box=document.createElement('div'); box.id='c2e-partir';
+    box.style.cssText='margin-top:10px;padding:10px;border:1px solid var(--bd);border-radius:var(--r);background:var(--bg3);font-size:12px';
+    box.innerHTML='Cargando…'; part.closest('div').parentElement.appendChild(box);
+    try{
+      const tok=await _sbSesionAsegurar();
+      const rs=await (await fetch(SB_URL+'/rest/v1/cambios2?select=prenda,rid:row_json-%3E%3EID,rol:row_json-%3E%3ERol&nro_cambio=eq.'+encodeURIComponent(nc)+'&order=id.asc',{headers:{apikey:SB_ANON,Authorization:'Bearer '+tok}})).json();
+      const dv=rs.filter(x=>String(x.rol).toUpperCase()==='DEVUELTA'), nv=rs.filter(x=>String(x.rol).toUpperCase()==='NUEVA');
+      const li=(x,cls)=>'<label style="display:block;margin:2px 0;cursor:pointer"><input type="checkbox" class="'+cls+'" value="'+esc(x.rid)+'" style="margin-right:6px">'+esc(x.prenda)+'</label>';
+      box.innerHTML='<b>¿Qué prendas TODAVÍA NO volvieron?</b> Esas, con la prenda nueva que les corresponde, pasan a un cambio nuevo.'
+        +'<div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap"><div><div style="color:var(--mu);margin-bottom:4px">Devueltas que faltan</div>'+dv.map(x=>li(x,'c2p-d')).join('')+'</div>'
+        +'<div><div style="color:var(--mu);margin-bottom:4px">Su prenda nueva</div>'+nv.map(x=>li(x,'c2p-n')).join('')+'</div></div>'
+        +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center"><button class="btn bp bs" id="c2p-ok">✂ Partir el cambio</button><span id="c2p-msg"></span></div>';
+      box.querySelector('#c2p-ok').addEventListener('click', async function(){
+        const d=[...box.querySelectorAll('.c2p-d:checked')].map(x=>x.value), n=[...box.querySelectorAll('.c2p-n:checked')].map(x=>x.value), msg=box.querySelector('#c2p-msg');
+        if(!d.length||!n.length){ msg.textContent='Marca al menos una devuelta y una nueva.'; return; }
+        this.disabled=true; msg.textContent='Guardando…';
+        try{
+          const r=await fetch(SB_URL+'/rest/v1/rpc/cambio_partir',{method:'POST',headers:{apikey:SB_ANON,Authorization:'Bearer '+tok,'Content-Type':'application/json'},body:JSON.stringify({p_nc:nc,p_devs:d,p_nuevas:n})});
+          const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error((j&&(j.message||j.hint))||('error '+r.status));
+          toast('✓ '+nc+' partido: lo que falta volver pasó a '+j.nuevo,'ok'); try{ _sbEspejarYa(nc); _sbEspejarYa(j.nuevo); }catch(_){}
+          refresca();
+        }catch(e){ this.disabled=false; msg.style.color='#f87171'; msg.textContent='✗ '+e.message; try{ _errGuardar('cambio.partir', e.message); }catch(_){} }
+      });
+    }catch(e){ box.innerHTML='✗ '+esc(e.message); }
+  }
 }
 // ══════════════════════════════════════════════════════════════════════════
 // 14-oct-2026 (aprobado por Pablo) · CORREGIR CAMBIO CERRADO — SOLO ADMINISTRADOR
@@ -43987,7 +44127,40 @@ async function cfgBkListar() {
 // ════════════════════════════════════════════════════════════
 // ── J-3: PAPELERA DE PEDIDOS ────────────────────────────────
 // ════════════════════════════════════════════════════════════
+/* 31-oct (Pablo) · 🗑 TODO LO BORRADO: cualquier cosa borrada en el ERP (fichas, órdenes, cambios, egresos, SKUs, fotos…)
+   queda guardada 180 días y se devuelve con un clic. Los pedidos siguen abajo, en su papelera de siempre. */
+const PAP_NOMBRES = { 'public.costos_erp': '📦 Ficha de producto', 'public.prod_ordenes': '🏭 Orden de producción', 'public.prod_lineas': '🏭 Línea de orden',
+  'public.prod_movs': '🏭 Movimiento de orden', 'public.prod_pagos': '🏭 Pago de orden', 'public.prod_etapas_log': '🏭 Etapa de orden', 'public.prod_archivos': '🏭 Archivo de producto',
+  'public.confeccion': '🧵 Confección', 'public.cambios2': '🔄 Cambio', 'public.multimedia_erp': '🖼 Foto / video', 'erp.catalogo_sku': '🏷 SKU', 'erp.clientes': '👤 Cliente',
+  'erp.envios': '🚚 Envío', 'erp.egresos': '💸 Egreso', 'public.fallas': '⚠️ Falla', 'public.pagos': '💳 Pago', 'erp.pagos': '💳 Pago', 'erp.pedido_cargos': '💳 Cargo de pedido',
+  'public.resenas': '⭐ Reseña', 'public.lista_espera': '⏳ Lista de espera', 'public.mk_creativos': '🎬 Creativo' };
+async function _papTodoCargar() {
+  const box = document.getElementById('papelera-todo'); if (!box) return;
+  const A = typeof MY_ROLE !== 'undefined' && /^admin/i.test(String(MY_ROLE || ''));
+  if (!A) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div style="font-weight:600;margin-bottom:6px">🗑 Todo lo borrado (últimos 60 días)</div>' + spin('Cargando…');
+  let r; try { r = await _npRpc('papelera_listar', { p_dias: 60 }); } catch (e) {
+    box.innerHTML = /papelera_listar|PGRST202|Could not find/i.test(String(e.message)) ? '<div class="empty" style="font-size:12px">Falta correr PEGAR_EN_SUPABASE_papelera_universal_31oct.sql</div>' : '<div class="empty">Error: ' + esc(e.message) + '</div>'; return; }
+  const F = (r && r.filas) || [];
+  const fmt = t => { try { return new Date(t).toLocaleString('es-PE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch (_) { return t; } };
+  box.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><b>🗑 Todo lo borrado</b><span style="font-size:12px;color:var(--mu)">· últimos 60 días · se guarda 180 días · lo borrado junto (una orden y sus líneas) vuelve junto</span></div>'
+    + (F.length ? '<div style="overflow:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr><th>Cuándo</th><th>Qué</th><th>Detalle</th><th>Quién</th><th></th></tr></thead><tbody>'
+      + F.map(x => '<tr' + (x.restaurado_en ? ' style="opacity:.5"' : '') + '><td style="white-space:nowrap">' + esc(fmt(x.borrado_en)) + '</td><td style="white-space:nowrap">' + esc(PAP_NOMBRES[x.tabla] || x.tabla) + '</td>'
+        + '<td>' + esc(x.resumen || ('N.º ' + ((x.fila && (x.fila.id || x.fila.codigo)) || ''))) + (x.partes > 0 ? ' <span style="color:var(--mu)">+ ' + x.partes + ' parte(s)</span>' : '') + '</td>'
+        + '<td>' + esc(String(x.borrado_por || '').split('@')[0]) + '</td><td style="text-align:right">'
+        + (x.restaurado_en ? '✓ Restaurado' : '<button class="btn bg bs pap-rest" data-id="' + x.id + '">↩️ Restaurar</button>') + '</td></tr>').join('') + '</tbody></table></div>'
+      : '<div class="empty" style="font-size:12px">Nada borrado en los últimos 60 días.</div>');
+  box.querySelectorAll('.pap-rest').forEach(b => b.onclick = async () => {
+    const x = F.find(y => String(y.id) === b.dataset.id);
+    if (!(await _uiSeguro('¿Restaurar «' + ((x && x.resumen) || 'esto') + '»' + (x && x.partes > 0 ? ' y sus ' + x.partes + ' parte(s)' : '') + '?', '↩️ Sí, restaurar'))) return;
+    b.disabled = true; b.textContent = 'Restaurando…';
+    try { const rr = await _npRpc('papelera_restaurar', { p_id: +b.dataset.id }); if (!rr || !rr.ok) throw new Error((rr && rr.error) || 'no se pudo');
+      toast('✓ Restaurado (' + rr.filas + ' fila(s))', 'ok'); _papTodoCargar(); }
+    catch (e) { b.disabled = false; b.textContent = '↩️ Restaurar'; toast('No se pudo: ' + (e && e.message || e), 'err'); }
+  });
+}
 async function loadPapelera() {
+  try { _papTodoCargar(); } catch (_) {}
   const w = document.getElementById('papelera-w');
   // FIX QA — INSTANTÁNEO: pintar PRIMERO el overlay optimista (pedidos recién
   // eliminados que el servidor aún no devuelve, ventana ~3-4s) para que se vean
