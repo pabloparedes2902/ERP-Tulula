@@ -32182,6 +32182,41 @@ function _yayTipoDe(destino) { const d = String(destino || '').trim().toUpperCas
 function _yayTipoInfo(k) { return YAY_TIPOS.find(t => t.k === k) || YAY_TIPOS[4]; }
 function _yayTipoPill(k) { const t = _yayTipoInfo(k); return '<span title="' + esc(t.ayuda) + '" style="display:inline-block;background:' + t.bg + ';color:' + t.tx + ';font-size:11px;font-weight:600;padding:1px 7px;border-radius:9px;white-space:nowrap">' + esc(t.lbl) + '</span>'; }
 let _stYayTipo = '';   // filtro por tipo ('' = todos)
+/** 30-oct (fase 2B, Pablo aprobó) · CAMBIAR TIPO con historial: mueve unidades no disponibles de un tipo a otro (rpc falla_cambiar_tipo).
+ *  No toca el stock vendible ni el total de no disponibles; cada movimiento queda guardado en la fila (quién, cuándo, de, a, cuántas). */
+function _yayCambiarTipoAbrir(prenda, diseno, color, tipo, alTerminar) {
+  const f = (_stDataYay || []).find(x => x.prenda === prenda && x.diseno === diseno && x.color === color && x.tipo === tipo); if (!f) return;
+  let m = document.getElementById('yay-tipo-mod'); if (m) m.remove();
+  m = document.createElement('div'); m.id = 'yay-tipo-mod';
+  m.style.cssText = 'position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center';
+  const tal = Object.keys(f.stock || {}).filter(t => (Number(f.stock[t]) || 0) > 0);
+  const opts = YAY_TIPOS.filter(t => t.k !== tipo && t.k !== 'REVISAR').map(t => '<option value="' + t.k + '">' + esc(t.lbl) + '</option>').join('');
+  m.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:12px;min-width:340px;max-width:94vw;padding:14px 16px">'
+    + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><b style="font-size:14px;flex:1">Cambiar tipo · ' + esc(prenda + ' ' + diseno + ' ' + color) + '</b><button type="button" class="btn bg bs" data-x="1">✕</button></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Hoy: ' + _yayTipoPill(tipo) + ' · no cambia el stock, solo el destino. Queda en el historial.</div>'
+    + (tal.length ? tal.map(t => '<div style="display:flex;gap:8px;align-items:center;margin:6px 0"><b style="width:44px">' + esc(t) + '</b><span style="font-size:12px;color:var(--mu);width:70px">hay ' + f.stock[t] + '</span>'
+        + '<input type="number" min="1" max="' + f.stock[t] + '" value="1" data-tal="' + esc(t) + '" class="yt-cant" style="width:56px;padding:3px 6px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx)">'
+        + '<select class="yt-a" style="padding:3px 6px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx)">' + opts + '</select>'
+        + '<button type="button" class="btn bp bs yt-ok" data-tal="' + esc(t) + '">Cambiar</button></div>').join('')
+      : '<div style="font-size:12px">No hay unidades en stock de este tipo.</div>')
+    + '<div id="yt-msg" style="font-size:12px;margin-top:8px"></div></div>';
+  m.addEventListener('click', async e => {
+    if (e.target === m || (e.target.closest && e.target.closest('[data-x]'))) { m.remove(); return; }
+    const b = e.target.closest && e.target.closest('.yt-ok'); if (!b) return;
+    const fila = b.parentElement, cant = parseInt(fila.querySelector('.yt-cant').value, 10) || 0, a = fila.querySelector('.yt-a').value, t = b.dataset.tal, msg = m.querySelector('#yt-msg');
+    b.disabled = true; msg.textContent = 'Guardando…';
+    try {
+      const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión');
+      const r = await fetch(SB_URL + '/rest/v1/rpc/falla_cambiar_tipo', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_prenda: prenda, p_diseno: diseno, p_color: color, p_talla: (f.treal && f.treal[t]) || t, p_de: tipo, p_a: a, p_cant: cant }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((j && (j.message || j.hint)) || ('error ' + r.status));
+      toast('✓ ' + (j.movidas || cant) + ' de ' + prenda + ' ' + diseno + ' ' + color + ' ' + t + ' pasaron a ' + _yayTipoInfo(a).lbl, 'ok');
+      m.remove(); try { _yayOlvidar(); await _yayCargarStock(); } catch (_) {} if (typeof alTerminar === 'function') alTerminar();
+    } catch (err) { b.disabled = false; msg.style.color = '#f87171'; msg.textContent = '✗ ' + err.message; try { _errGuardar('yay.cambiarTipo', err.message); } catch (_) {} }
+  });
+  document.body.appendChild(m);
+}
 
 async function _yayStockTipos() {
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
@@ -32228,7 +32263,8 @@ async function _yayStockTipos() {
   const filas = {};
   Object.keys(S).forEach(k => { const [pr, d, c, tal0] = k.split('|'); const tal = TM[tal0] || tal0; if (TSTD.indexOf(tal) < 0) return;
     Object.keys(S[k].t).forEach(tp => { const x = S[k].t[tp]; if (!x.e && !x.v) return;
-      const fk = pr + '|' + d + '|' + c + '|' + tp, f = filas[fk] || (filas[fk] = { prenda: pr, diseno: d, color: c, tipo: tp, cat: CAT[pr + '|' + d] || '', tallas: TSTD, conf: {}, total: {}, fallas: {}, vtas: {}, stock: {}, fechaMs: 0, unica: !!UNI[tal0] });
+      const fk = pr + '|' + d + '|' + c + '|' + tp, f = filas[fk] || (filas[fk] = { prenda: pr, diseno: d, color: c, tipo: tp, cat: CAT[pr + '|' + d] || '', tallas: TSTD, conf: {}, total: {}, fallas: {}, vtas: {}, stock: {}, fechaMs: 0, unica: !!UNI[tal0], treal: {} });
+      f.treal[tal] = tal0;
       f.total[tal] = (f.total[tal] || 0) + x.e; f.conf[tal] = f.total[tal]; f.vtas[tal] = (f.vtas[tal] || 0) + x.v; f.stock[tal] = f.total[tal] - f.vtas[tal];
       if (S[k].fechaMs > f.fechaMs) f.fechaMs = S[k].fechaMs; }); });
   const ord = {}; YAY_TIPOS.forEach((t, i) => { ord[t.k] = i; });
@@ -33185,7 +33221,7 @@ function renderInv(el){
          +`<div style="display:flex;align-items:center;justify-content:center"><span class="iv-color-edit" draggable="true" data-col="${esc(d.color)}" title="Editar color de '${esc(d.color)}' — o arrastrar para reordenar" style="display:inline-flex;align-items:center;gap:5px;cursor:grab;user-select:none;">`
          +_ivGrip('iv-drag-color',[8,14])
          +`${stDot(d.color)}<span style="white-space:nowrap">${esc(d.color)}</span></span>${_ndIcon}${_kIcon}</div></td>`;
-      if (_YT) tr+=`<td style="background:${rowBg};${TB}${P}border-right:${THK};text-align:center">${_yayTipoPill(d.tipo)}</td>`;
+      if (_YT) tr+=`<td class="iv-yay-tipo-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-col="${esc(d.color)}" data-tipo="${esc(d.tipo)}" title="${d.tipo==='REVISAR'?'Por revisar: no se puede cambiar de tipo':'Clic: cambiar de tipo (queda en el historial)'}" style="background:${rowBg};${TB}${P}border-right:${THK};text-align:center;cursor:${d.tipo==='REVISAR'?'default':'pointer'}">${_yayTipoPill(d.tipo)}</td>`;
       // Bloques visibles (VIS)
       // 27-set-2026 (Pablo) · talla unica = UNA celda que abarca varias columnas
       // (correas S..XL; el resto de accesorios XS..3XL). Suma lo que haya en todas.
@@ -33537,6 +33573,7 @@ function renderInv(el){
   if(yayBtn) yayBtn.addEventListener('click',()=>stockYayitasToggle());
   const yayTipo=document.getElementById('iv-yay-tipo');
   if(yayTipo) yayTipo.addEventListener('change',()=>{ _stYayTipo=yayTipo.value; renderInv(el); });
+  el.querySelectorAll('.iv-yay-tipo-cell').forEach(td=>td.addEventListener('click',()=>{ if(td.dataset.tipo!=='REVISAR') _yayCambiarTipoAbrir(td.dataset.pren, td.dataset.dis, td.dataset.col, td.dataset.tipo, ()=>renderInv(el)); }));
   const yayVol=document.getElementById('st-yay-volver');
   if(yayVol) yayVol.addEventListener('click',()=>stockYayitasToggle());
 }
