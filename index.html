@@ -14,6 +14,8 @@ function hoyLima(){
 </script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
+<!-- 31-oct ola 2 · cambios_clientes · abre la conexión con la base al cargar (el primer viaje medía 514 ms; los siguientes 150 ms) -->
+<link rel="preconnect" href="https://vlilvrxfppppzwyaeviu.supabase.co" crossorigin>
 <!-- Google Identity Services (login Fase 1) -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <title>Tulula · ERP</title>
@@ -4395,6 +4397,78 @@ const SB_PASE_TIMEOUT_MS = 12000;            // tope CON alguien esperando (no s
 const SB_PASE_TIMEOUT_FONDO_MS = 90000;      // B6: tope SIN nadie esperando
 let _sbPaseRenovando = false;
 let _sbPaseUltFallo  = 0;
+// ══════════════════════════════════════════════════════════════════════════
+// 31-oct ola 2 · config_sesion — EL PASE NUNCA BLOQUEA
+// Medido 7 dias: api.auth.sbPase p50 8,3 s, p90 510 s (8 personas). Tres agujeros:
+//  1. Cada PESTAÑA pedia su propio pase y no veia el que otra ya habia renovado
+//     (y la llave de Google rotada en otra pestaña se reusaba vieja).
+//     → antes de mirar el reloj se ADOPTA el pase mas largo guardado en localStorage.
+//  2. Si el pase tardaba mas que el tope (12 s), la respuesta que llegaba despues
+//     se TIRABA y a los 60 s se pedia otra vez (mas cola). → UN solo pedido en vuelo,
+//     compartido por todas las llamadas y por todas las pestañas (candado en
+//     localStorage); llegue cuando llegue, se guarda.
+//  3. La renovacion solo se miraba cuando algo pedia el pase. → vigilante cada
+//     4 min + al volver a la pestaña / recuperar internet (ver _sbPaseVigilar).
+// ══════════════════════════════════════════════════════════════════════════
+var _sbPaseVuelo = null;
+const SB_PASE_LOCK_KEY = 'erp_sb_pase_vuelo';
+const SB_PASE_LOCK_MS  = 90000;
+const _SB_TAB_ID = Math.random().toString(36).slice(2);
+function _sbAdoptarDeOtraPestana() {
+  try {
+    var o = JSON.parse(localStorage.getItem('erp_sb_sess') || 'null');
+    if (!o || !o.access_token || (o.expires_at || 0) <= Date.now()) return false;
+    if (_sbTok && o.access_token === _sbTok.access_token) return false;
+    if (_sbTok && (_sbTok.expires_at || 0) >= (o.expires_at || 0)) return false;
+    _sbTok = o; return true;
+  } catch (_) { return false; }
+}
+function _sbPaseLockAjeno() {
+  try { var v = JSON.parse(localStorage.getItem(SB_PASE_LOCK_KEY) || 'null');
+        return !!(v && v.id !== _SB_TAB_ID && (Date.now() - (v.t || 0)) < SB_PASE_LOCK_MS); }
+  catch (_) { return false; }
+}
+function _sbPaseGuardarRespuesta(d) {
+  try {
+    if (!d || d.ok !== true || !d.access_token) { if (d && d.motivo === 'sin_secreto') _sbPaseBackendHay = false; return; }
+    if (d._adoptado) return;
+    var exp = Date.now() + Math.max(60, (d.expires_in || 3300) - 60) * 1000;
+    if (_sbTok && (_sbTok.expires_at || 0) > exp) return;          // ya hay uno que dura mas
+    _sbPaseBackendHay = true;
+    _sbTok = { access_token: d.access_token, refresh_token: '', expires_at: exp };
+    try { localStorage.setItem('erp_sb_sess', JSON.stringify(_sbTok)); } catch (_) {}
+    try { if (typeof _pillViaRapida === 'function') _pillViaRapida(true); } catch (_) {}
+  } catch (_) {}
+}
+// Devuelve la promesa del pedido en vuelo (o lo arranca). Nunca rechaza.
+function _sbPaseVueloTomar(pedir) {
+  if (_sbPaseVuelo) return _sbPaseVuelo;
+  var p;
+  if (_sbPaseLockAjeno()) {
+    // otra pestaña ya lo esta pidiendo: se espera a que lo deje guardado (sin otro viaje a Apps Script)
+    p = new Promise(function (res) {
+      var t0 = Date.now(), exp0 = _sbTok ? (_sbTok.expires_at || 0) : 0;
+      (function mirar() {
+        _sbAdoptarDeOtraPestana();
+        if (_sbTok && (_sbTok.expires_at || 0) > Math.max(exp0, Date.now()))   // llego uno nuevo (de la otra pestaña)
+          return res({ ok: true, access_token: _sbTok.access_token, expires_in: Math.round(((_sbTok.expires_at || 0) - Date.now()) / 1000) + 60, _adoptado: true });
+        if (!_sbPaseLockAjeno() || Date.now() - t0 > SB_PASE_LOCK_MS) return res({ ok: false, motivo: 'otra_pestana' });
+        setTimeout(mirar, 400);
+      })();
+    });
+  } else {
+    try { localStorage.setItem(SB_PASE_LOCK_KEY, JSON.stringify({ id: _SB_TAB_ID, t: Date.now() })); } catch (_) {}
+    p = Promise.resolve().then(pedir)
+      .then(function (d) { _sbPaseGuardarRespuesta(d); return d; }, function () { return { ok: false, motivo: 'error' }; })
+      .then(function (d) {
+        try { var v = JSON.parse(localStorage.getItem(SB_PASE_LOCK_KEY) || 'null'); if (v && v.id === _SB_TAB_ID) localStorage.removeItem(SB_PASE_LOCK_KEY); } catch (_) {}
+        return d;
+      });
+  }
+  _sbPaseVuelo = p;
+  p.then(function () { _sbPaseVuelo = null; });
+  return p;
+}
 
 function _sbPaseProactivo() {
   try { return String(localStorage.getItem('erp_sb_pase_proactivo') || 'SI').toUpperCase() !== 'NO'; }
@@ -4409,6 +4483,7 @@ function _sbPaseRenovarFondo(motivo) {
     if (SB_APAGADO || !SB_ANON) return;
     if (!SESSION_TOKEN) return;                       // sin sesion de ERP no hay a quien pedirle
     if (Date.now() - _sbPaseUltFallo < SB_REAUTH_ESPERA) return;   // no insistir en vano
+    if (typeof _sbAdoptarDeOtraPestana === 'function' && _sbAdoptarDeOtraPestana() && _sbTok && ((_sbTok.expires_at || 0) - Date.now()) > SB_PASE_MARGEN_MS) return;   // 31-oct ola 2 · otra pestaña ya lo renovo
     _sbPaseRenovando = true;
     _sbRefrescarGoogle()                                // 26-set: primero Supabase directo (~0,3 s)
       .then(function (g) { return g || _sbPaseDelBackend(SB_PASE_TIMEOUT_FONDO_MS); })   // B6: nadie espera, puede aguantar la cola
@@ -4426,6 +4501,7 @@ function _sbPaseRenovarFondo(motivo) {
 function _sbPasePrecalentar() {
   try {
     if (!_sbPaseProactivo()) return;
+    try { if (typeof _sbAdoptarDeOtraPestana === 'function') _sbAdoptarDeOtraPestana(); } catch (_) {}   // 31-oct ola 2
     var falta = _sbTok ? ((_sbTok.expires_at || 0) - Date.now()) : -1;
     if (falta > SB_PASE_MARGEN_MS) return;            // todavia alcanza
     _sbPaseRenovarFondo('arranque');
@@ -4435,6 +4511,7 @@ function _sbPasePrecalentar() {
 async function _sbTokenVigente(){
   if (SB_APAGADO) return null;   // ver SB_APAGADO
   if (!SB_ANON) return null;
+  try { if (typeof _sbAdoptarDeOtraPestana === 'function') _sbAdoptarDeOtraPestana(); } catch (_) {}   // 31-oct ola 2 · el que renovo otra pestaña
   if (!_sbTok) return await _sbRefrescarGoogle();   // 26-set: sin pase pero con llave de Google
   if (Date.now() < (_sbTok.expires_at||0)) {
     // Etapa 1.5: si le queda poco, se renueva por atras y se devuelve el que
@@ -4526,8 +4603,9 @@ async function _sbPaseDelBackend(topeMs){
     // Etapa 1.5 — TOPE DE 12 s. Sin esto, una llamada colgada (la telemetria vio
     // una de 1 hora) deja `_sbReauthEnCurso` tomado y TODAS las vias rapidas de
     // esa persona esperando la misma promesa durante todo ese rato.
+    // 31-oct ola 2 · el pedido es UNO solo (entre llamadas y pestañas) y su respuesta se guarda aunque llegue despues del tope
     const d = await Promise.race([
-      api('auth.sbPase'),
+      (typeof _sbPaseVueloTomar === 'function') ? _sbPaseVueloTomar(function () { return api('auth.sbPase'); }) : api('auth.sbPase'),
       new Promise(function (res) { setTimeout(function () { res({ ok: false, motivo: 'timeout' }); }, _tope); })
     ]);
     if (d && d.motivo === 'timeout') {
@@ -4633,6 +4711,23 @@ function viaRapida(){
   return o;
 }
 try { window.viaRapida = viaRapida; } catch(_){}
+// 31-oct ola 2 · config_sesion — VIGILANTE DEL PASE. Cada 4 min, al volver a la pestaña, al
+// recuperar internet: si le quedan < 25 min, se renueva POR ATRAS (nadie espera). Y si otra
+// pestaña lo renovo, esta lo adopta al instante (evento storage).
+(function _sbPaseVigilar() {
+  try {
+    if (typeof window === 'undefined' || typeof document === 'undefined' || window.__sbPaseVigilando) return;
+    window.__sbPaseVigilando = true;
+    var mirar = function () { try { if (SESSION_TOKEN) _sbPasePrecalentar(); } catch (_) {} };
+    setInterval(mirar, 4 * 60 * 1000);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') mirar(); });
+    window.addEventListener('focus', mirar);
+    window.addEventListener('online', mirar);
+    window.addEventListener('storage', function (e) {
+      try { if (e && e.key === 'erp_sb_sess' && _sbAdoptarDeOtraPestana()) _pillViaRapida(true); } catch (_) {}
+    });
+  } catch (_) {}
+})();
 // Una página de pedidos DIRECTO de la base. Mismo contrato que pedidos.listar.
 // FIX 25-jul-2026 — CONTEO UNA SOLA VEZ (medido: ~1.060 ms por pedido).
 // Antes TODA petición mandaba 'Prefer: count=exact', y eso obliga a Postgres a contar las
@@ -4964,7 +5059,11 @@ function _pantallaMedir(pg, t0) {
   // 12-oct · E3: Marketing y Flujo son una página dentro de otra (iframe): «lista» = cuando terminó de cargar (1 sola vez por sesión)
   const ifr = el.querySelector(':scope > iframe');
   // solo el «Cargando…» PRINCIPAL (hasta 3 niveles: #pg-x > #x-w > .ld); los giradores de sub-paneles (fotos, pestañas) no cuentan
-  const listo = () => ifr ? !!ifr._cargado : (!el.querySelector(':scope > .ld, :scope > * > .ld, :scope > * > * > .ld') && el.textContent.trim().length > 0);
+  /* 31-oct ola 2 · solo cuenta el «Cargando…» que SE VE: Productos trae dos listas (#cos-w y #con-w) y la que no se usa queda oculta con
+     su girador para siempre → pantalla.costos se anotaba SIEMPRE como 30 s sin terminar (38 de 38 en 3 días). */
+  const _ldVisible = () => Array.prototype.some.call(el.querySelectorAll(':scope > .ld, :scope > * > .ld, :scope > * > * > .ld'),
+    x => (typeof x.getClientRects !== 'function') || x.getClientRects().length > 0);
+  const listo = () => ifr ? !!ifr._cargado : ((!el.classList || el.classList.contains('on')) && !_ldVisible() && el.textContent.trim().length > 0);
   const cerrar = (ok) => {
     if (fin) return; fin = true; try { if (obs) obs.disconnect(); } catch (_) {}
     try { document.removeEventListener('visibilitychange', _alOcultar); } catch (_) {}
@@ -8136,6 +8235,9 @@ async function _cosMmLeer(v, fresco) {
     const dir = await _mmDirecto();
     if (dir) {
       const e = _mmDeProducto(dir, v.Diseno);
+      if (!(e._colOk || (v._cols && v._cols.length)) && typeof _mmCatalogo === 'function') {   // 31-oct ola 2 · colores desde el catálogo de la base (antes: contenido.media ≈8 s)
+        const cat = await _mmCatalogo(); if (cat) { e.colores = _mmColoresCat(cat, v.Diseno); e._colOk = true; }
+      }
       if (e._colOk || (v._cols && v._cols.length)) {
         v._mm = e.rows; v._cols = e._colOk ? e.colores : v._cols; v._ord = e.orden; v._nbot = e.nombreBot;
         v._deCopia = false; _cosMmCopiar(v);
@@ -8458,9 +8560,16 @@ async function _cfwColAbrir(v) {
   const w = document.getElementById('cfw-colw'); if (!w) return; CCO.v = v;
   if (!v.ShopifyId) { w.innerHTML = '<div style="font-size:12px;color:var(--mu);margin:8px 0">🗂️ Categorías en la tienda: se eligen apenas el producto esté creado en la tienda (después de guardar).</div>'; return; }
   w.innerHTML = '<div style="font-size:12px;color:var(--mu);margin:8px 0">Leyendo las categorías…</div>'; CCO.dirty = false;
+  /* 31-oct ola 2 · abre al instante con la última copia (solo para VER: no se puede marcar hasta que llegue lo de hoy, ≈9 s por detrás) */
+  const _kc = 'col|' + v.ShopifyId, _cc = (typeof _fwlLeer === 'function') ? _fwlLeer(_kc) : null;
+  CCO.previa = false;
+  if (_cc && Array.isArray(_cc.colecciones)) { CCO.l = _cc.colecciones; CCO.sel = {}; CCO.l.forEach(c => { if (c.esta) CCO.sel[c.id] = 1; }); CCO.previa = true; _cfwColPintar('⏳ Actualizando desde la tienda… (para cambiar, espera unos segundos)'); }
   try { const r = await apiSend('costos.fichaWeb', { accion: 'colProducto', Diseno: v.Diseno, ShopifyId: v.ShopifyId, ver: true });
+    if (CCO.v !== v) return;
+    try { if (typeof _fwlGuardar === 'function' && r && Array.isArray(r.colecciones)) _fwlGuardar(_kc, { colecciones: r.colecciones }); } catch (_) {}
+    CCO.previa = false;
     CCO.l = (r && r.colecciones) || []; CCO.sel = {}; CCO.l.forEach(c => { if (c.esta) CCO.sel[c.id] = 1; }); _cfwColPintar(''); }
-  catch (e) { w.innerHTML = '<div style="font-size:12px;color:var(--rd)">' + esc(e.message || e) + '</div>'; }
+  catch (e) { if (CCO.v !== v) return; if (CCO.previa) _cfwColPintar('No pude actualizar desde la tienda (' + String(e.message || e) + '): se muestra la última copia, sin poder cambiarla.'); else w.innerHTML = '<div style="font-size:12px;color:var(--rd)">' + esc(e.message || e) + '</div>'; }
 }
 function _cfwColPintar(msg) {
   const w = document.getElementById('cfw-colw'); if (!w) return;
@@ -8471,8 +8580,8 @@ function _cfwColPintar(msg) {
     + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + (menu.length ? menu.map(chip).join('') : '<span style="font-size:12px;color:var(--mu)">La tienda no tiene categorías en el menú.</span>') + '</div>'
     + (otras.length ? '<div style="font-size:11px;color:var(--mu);margin:8px 0 4px">Otras colecciones (⚙ = automática)</div><div style="display:flex;gap:6px;flex-wrap:wrap">' + otras.map(chip).join('') + '</div>' : '')
     + '<div style="margin-top:8px"><span id="cco-st" style="font-size:12px;color:var(--mu)">' + esc(msg || (CCO.dirty ? 'Se guarda con «Guardar cambios»' : '')) + '</span></div></div>';
-  w.querySelectorAll('.cco-chip').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); if (b.disabled) return; const id = b.dataset.id; if (CCO.sel[id]) delete CCO.sel[id]; else CCO.sel[id] = 1; CCO.dirty = true; _cfwColPintar(''); }));
-  const g = document.getElementById('cco-g'); if (g) g.addEventListener('click', async ev => { ev.preventDefault(); const st = document.getElementById('cco-st'); g.disabled = true; st.style.color = 'var(--mu)'; st.textContent = 'Guardando en la tienda…';
+  w.querySelectorAll('.cco-chip').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); if (b.disabled) return; if (CCO.previa) { toast('Un momento: se están trayendo las categorías de hoy desde la tienda.', 'warn'); return; } const id = b.dataset.id; if (CCO.sel[id]) delete CCO.sel[id]; else CCO.sel[id] = 1; CCO.dirty = true; _cfwColPintar(''); }));
+  const g = document.getElementById('cco-g'); if (g) g.addEventListener('click', async ev => { ev.preventDefault(); if (CCO.previa) { toast('Un momento: se están trayendo las categorías de hoy desde la tienda.', 'warn'); return; } const st = document.getElementById('cco-st'); g.disabled = true; st.style.color = 'var(--mu)'; st.textContent = 'Guardando en la tienda…';
     try { const r = await apiSend('costos.fichaWeb', { accion: 'colProducto', Diseno: CCO.v.Diseno, ShopifyId: CCO.v.ShopifyId, poner: Object.keys(CCO.sel).filter(id => !(CCO.l.find(c => c.id === id) || {}).auto) });
       CCO.l = (r && r.colecciones) || CCO.l; CCO.sel = {}; CCO.l.forEach(c => { if (c.esta) CCO.sel[c.id] = 1; }); _cfwColPintar((r && r.texto) || '✓'); }
     catch (e) { g.disabled = false; st.style.color = 'var(--rd)'; st.textContent = e.message || String(e); } });
@@ -8481,8 +8590,16 @@ async function _cfwTablaAbrir(v) {
   const w = document.getElementById('cfw-tablaw'); if (!w) return; CTB.v = v; CTB.gid = v.ShopifyId || '';
   if (!CTB.gid) { w.innerHTML = ''; return; }
   w.innerHTML = '<div style="font-size:12px;color:var(--mu);margin:8px 0">Leyendo la tabla de medidas…</div>';
-  try { const r = await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: v.Diseno, ShopifyId: CTB.gid }); CTB.b = _ctbLeer(r && r.tabla); CTB.dirty = false; _cfwTablaPintar(CTB.b.length ? '' : 'Este producto todavía no tiene tabla de medidas.'); }
-  catch (e) { w.innerHTML = '<div style="font-size:12px;color:var(--rd)">' + esc(e.message || e) + '</div>'; }
+  /* 31-oct ola 2 · abre al instante con la última copia; lo de hoy llega por detrás (≈9 s) y se pinta si no empezaste a editar */
+  const _kt = 'tabla|' + CTB.gid, _ct = (typeof _fwlLeer === 'function') ? _fwlLeer(_kt) : null, _txtC = _ct ? String(_ct.tabla || '') : null;
+  if (_ct) { CTB.b = _ctbLeer(_txtC); CTB.dirty = false; _cfwTablaPintar('⏳ Actualizando desde la tienda…'); }
+  try { const r = await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: v.Diseno, ShopifyId: CTB.gid });
+    if (CTB.v !== v) return;
+    const _txtN = String((r && r.tabla) || '');
+    try { if (typeof _fwlGuardar === 'function' && r) _fwlGuardar(_kt, { tabla: _txtN }); } catch (_) {}
+    if (_ct && CTB.dirty) { if (_txtN !== _txtC) toast('La tabla de medidas cambió en la tienda mientras la editabas: si guardas, queda la tuya.', 'warn'); return; }
+    CTB.b = _ctbLeer(_txtN); CTB.dirty = false; _cfwTablaPintar(CTB.b.length ? '' : 'Este producto todavía no tiene tabla de medidas.'); }
+  catch (e) { if (CTB.v !== v) return; if (_ct) { if (!CTB.dirty) _cfwTablaPintar('No pude actualizar desde la tienda (' + String(e.message || e) + '): se muestra la última copia.'); } else w.innerHTML = '<div style="font-size:12px;color:var(--rd)">' + esc(e.message || e) + '</div>'; }
 }
 function _cfwTablaSync() { const w = document.getElementById('cfw-tablaw'); if (!w) return;
   w.querySelectorAll('[data-tb]').forEach(el => { const [b, k, i, j] = el.dataset.tb.split('|'), o = CTB.b[+b]; if (!o) return;
@@ -9011,7 +9128,10 @@ function _cosPreview(v) {
 // 4-oct · UNA SOLA PUERTA (decisión de Pablo): los productos NACEN en Stock → Crear SKU (ahí se crean colores y tallas). Costos solo completa lo que falta: costo, precios y ficha.
 async function _cosPendCargar() {
   COS._pendCargando = true;
-  try { const r = await apiSend('costos.pendientes', {}); COS.pend = (r && r.rows) || []; }
+  try {   // 31-oct ola 2 · la base primero (catálogo + costos_admin, ≈0,6 s); Apps Script (≈9 s) solo si la base no pudo
+    const b = (typeof _cosPendBase === 'function') ? await _cosPendBase() : null;
+    if (b) COS.pend = b; else { const r = await apiSend('costos.pendientes', {}); COS.pend = (r && r.rows) || []; }
+  }
   catch (e) { COS.pend = null; }
   COS._pendCargando = false;
   const b = document.getElementById('cos-pend'); if (b && COS.pend) { const n = _cosPorCompletar().length; b.textContent = '🆕 Por completar (' + n + ')'; b.className = 'btn ' + (n ? 'bp' : 'bg'); }
@@ -9270,23 +9390,44 @@ async function _cosDesactivar(diseno, activar) {
 const HOM = { data: [], huer: [], falta: [], q: '', fsis: '', fest: '', soloHuer: false,
               encendido: false, aviso: '', nota: '', editing: null, sistemas: [], _t: null };
 
+// 31-oct ola 2 · pinta al instante lo último que vio ESTE usuario (copia del navegador) y trae lo nuevo por detrás
+// (homologaciones.listar: Apps Script 15-34 s). Si estás editando, lo nuevo se guarda sin repintar (no se pierde lo escrito).
+const HOM_SWR_KEY = 'erp_swr_hom1';
+function _homCargarR(r) {
+  HOM.data = (r && r.rows) || [];
+  HOM.huer = (r && r.huerfanos) || [];
+  HOM.falta = (r && r.faltanImportar) || [];
+  HOM.encendido = !!(r && r.encendido);
+  HOM.aviso = (r && r.aviso) || '';
+  HOM.nota = (r && r.huerfanosNota) || '';
+  HOM.sistemas = (r && r.sistemas) || ['BOT', 'SHOPIFY', 'COSTOS', 'CATALOGO', 'OTRO'];
+}
+function _homCopiaGuardar(r) { try { if (r && r.rows) localStorage.setItem(HOM_SWR_KEY, JSON.stringify({ t: Date.now(), u: MY_EMAIL, r: r })); } catch (_) {} }
+function _homRenderQuieto() {   // repinta sin robarle el foco al buscador
+  const a = document.activeElement, enQ = a && a.id === 'hom-q', pos = enQ ? a.selectionStart : 0;
+  _homRender();
+  if (enQ) { const q = document.getElementById('hom-q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch (_) {} } }
+}
 async function loadHomologaciones() {
   const w = document.getElementById('hom-w');
-  w.innerHTML = spin('Cargando homologaciones...');
+  let pintado = false;
   try {
-    const r = await apiSend('homologaciones.listar', {});
-    HOM.data = (r && r.rows) || [];
-    HOM.huer = (r && r.huerfanos) || [];
-    HOM.falta = (r && r.faltanImportar) || [];
-    HOM.encendido = !!(r && r.encendido);
-    HOM.aviso = (r && r.aviso) || '';
-    HOM.nota = (r && r.huerfanosNota) || '';
-    HOM.sistemas = (r && r.sistemas) || ['BOT', 'SHOPIFY', 'COSTOS', 'CATALOGO', 'OTRO'];
+    const g = JSON.parse(localStorage.getItem(HOM_SWR_KEY) || 'null');
+    if (g && g.r && g.u === MY_EMAIL && (Date.now() - g.t) < 7 * 86400000) { _homCargarR(g.r); _homRender(); pintado = true; }
+  } catch (_) {}
+  if (!pintado) w.innerHTML = spin('Cargando homologaciones...');
+  let r;
+  try {
+    r = await apiSend('homologaciones.listar', {});
   } catch (e) {
+    if (pintado) { toast('No se pudo actualizar homologaciones: ' + esc(e.message) + ' (se muestra lo anterior)', 'err'); return; }
     w.innerHTML = '<div style="padding:24px;color:var(--rd)">Error cargando homologaciones: ' + esc(e.message) + '</div>';
     return;
   }
-  _homRender();
+  _homCopiaGuardar(r);
+  _homCargarR(r);
+  if (pintado && HOM.editing) return;   // estás editando: lo nuevo ya quedó en HOM y se ve al cerrar el formulario
+  if (document.getElementById('hom-w') === w) _homRenderQuieto();
 }
 
 function _homFilas() {
@@ -9500,6 +9641,7 @@ async function _homDesactivar(clave, activar) {
 
 function _homAplicar(r) {
   if (!r) { loadHomologaciones(); return; }
+  try { if (typeof _homCopiaGuardar === 'function') _homCopiaGuardar(r); } catch (_) {}   // 31-oct ola 2 · la copia del navegador queda al día
   HOM.data = r.rows || [];
   HOM.huer = r.huerfanos || [];
   HOM.falta = r.faltanImportar || [];
@@ -9533,7 +9675,13 @@ try { const _mt = JSON.parse(localStorage.getItem('erp_swr_mmtodos1') || 'null')
 function _mctTodosGuardar() { try { localStorage.setItem('erp_swr_mmtodos1', JSON.stringify({ t: MCT.todosT || Date.now(), por: MCT.todos || {} })); } catch (_) {} }
 function _mctTodosCargar() {
   if (MCT._pT) return MCT._pT;
-  MCT._pT = apiSend('multimedia.todos', {}).then(rt => { if (rt && rt.por) { MCT.todos = rt.por; MCT.todosT = Date.now(); _mctTodosGuardar(); } }).catch(() => {}).finally(() => { MCT._pT = null; });
+  /* 31-oct ola 2 · primero la base (≈0,5 s; antes Apps Script ≈9 s y para Logística fallaba por permiso). Respaldo: Apps Script. */
+  MCT._pT = (async () => {
+    const b = (typeof _mctTodosBase === 'function') ? await _mctTodosBase() : null;
+    if (b) { MCT.todos = Object.assign({}, MCT.todos || {}, b); MCT.todosT = Date.now(); _mctTodosGuardar(); return; }
+    const rt = await apiSend('multimedia.todos', {});
+    if (rt && rt.por) { MCT.todos = rt.por; MCT.todosT = Date.now(); _mctTodosGuardar(); }
+  })().catch(() => {}).finally(() => { MCT._pT = null; });
   return MCT._pT;
 }
 // >>> 7-oct-2026 · MÓDULO «CONTENIDO DE PRODUCTO» (pedido de Pablo: Marketing sube fotos, video, textos e historia; directo a la tienda)
@@ -10152,6 +10300,100 @@ function _mmResumen(rows) {   // = multimediaResumen
   });
   return out;
 }
+// >>> OLA2 · PRODUCTOS RÁPIDO (31-oct) ──────────────────────────────────────────────────────
+// Los COLORES de cada producto (para ordenar las fotos por color) venían de Apps Script (multimedia.todos ≈9 s, y para Logística
+// ni siquiera respondía: sin permiso → cada producto abierto iba a contenido.media ≈8 s). Ahora salen del catálogo vivo de la base
+// (rpc catalogo_listar, ya en uso en el ERP) con la MISMA regla que _cosShopColoresCat_ (CostosBase.gs).
+function _mmNormCat(x) {   // = _cosShopNorm_ (CostosBase.gs)
+  return String(x == null ? '' : x).toUpperCase().replace(/[ÁÀÄÂ]/g, 'A').replace(/[ÉÈËÊ]/g, 'E').replace(/[ÍÌÏÎ]/g, 'I').replace(/[ÓÒÖÔ]/g, 'O').replace(/[ÚÙÜÛ]/g, 'U').replace(/Ñ/g, 'N')
+    .replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function _mmConjLargo(d) {   // = _cosConjLargo_ (CostosBase.gs): «CONJUNTO X (BLAZER)» → «CONJUNTO X (BLAZER X + PANTALON X)»
+  const m = /^CONJUNTO\s+(.+?)\s*\(\s*([^()+\s]+)\s*\)\s*$/.exec(String(d || '').trim().toUpperCase());
+  if (!m) return d;
+  const n = m[1].trim();
+  return 'CONJUNTO ' + n + ' (' + m[2] + ' ' + n + ' + PANTALON ' + (n === 'MADONNA' ? 'ATENAS' : n) + ')';
+}
+function _mmColoresCat(cat, diseno) {   // = _cosShopColoresCat_ (CostosBase.gs)
+  const d = _mmConjLargo(_mmNormCat(diseno)), mc = /^CONJUNTO\s+(.+?)\s*\((.+)\)\s*$/.exec(d);
+  const de = nombre => { const o = {}; (cat || []).forEach(x => { if (_mmNormCat(String(x.producto || '') + ' ' + String(x.diseno || '')) === nombre) o[_mmNormCat(x.color)] = 1; }); return o; };
+  let out;
+  if (mc) { const ps = mc[2].split('+').map(_mmNormCat); if (ps.length !== 2) return []; const a = de(ps[0]), b = de(ps[1]); out = Object.keys(a).filter(k => b[k]); }
+  else out = Object.keys(de(d));
+  return out.sort();
+}
+async function _mmCatalogo() {   // catálogo vivo (se baja solo si cambió: _memoVersion). null = la base no pudo → Apps Script
+  try { if (typeof _catalogoVivoRapido !== 'function') return null; const c = await _catalogoVivoRapido(); return (Array.isArray(c) && c.length) ? c : null; } catch (_) { return null; }
+}
+async function _mctTodosBase() {   // = multimediaTodos (MultimediaBase.gs), armado con la base: material + orden + colores de cada producto
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.multimediaTodos', '') : null;
+  let por = null;
+  try {
+    const [dir, cat] = await Promise.all([_mmDirecto(), _mmCatalogo()]);
+    const dis = {}; [(typeof COS !== 'undefined' && COS.data) || [], (typeof CTN !== 'undefined' && CTN.rows) || []].forEach(l => l.forEach(r => { if (r && r.Diseno) dis[r.Diseno] = 1; }));
+    if (dir && cat && Object.keys(dis).length) {
+      por = {};
+      Object.keys(dis).forEach(d => { const e = _mmDeProducto(dir, d); por[d] = { rows: e.rows, colores: _mmColoresCat(cat, d), orden: e.orden, nombreBot: e.nombreBot }; });
+    }
+  } catch (_) { por = null; }
+  try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, !!por); } catch (_) {}
+  return por;
+}
+// «Por completar» (= costosPendientes, CostosBase.gs): productos del catálogo de SKUs sin fila en Costos + conjuntos posibles. Antes 9 s por Apps Script.
+async function _cosPendBase() {
+  if (typeof _cosYoAdmin !== 'function' || !_cosYoAdmin()) return null;
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.costosPendientes', '') : null;
+  let salida = null;
+  try {
+    const [cat, j] = await Promise.all([_mmCatalogo(), _cfRpc('costos_admin')]);
+    if (cat && j && Array.isArray(j.rows) && j.rows.length) {
+      const N = _mmNormCat, K = x => String(x == null ? '' : x).replace(/\s+/g, ' ').trim().toUpperCase();   // K = _cosClave_
+      const base = j.rows.map(_cfDeBase);
+      const tengo = {}, conj = {}, inactivo = {};
+      base.forEach(r => {
+        const m = String(r.Modelo || '').toUpperCase().replace(/\s+-\s+\S+$/, '').trim();
+        tengo[N(String(r.TipoPrenda || '') + ' ' + m)] = 1; tengo[N(r.Diseno)] = 1;
+        const mp = /^(.+?)\s+(TOP|BOTTOM)\s+(.+)$/.exec(K(r.Diseno)); if (mp) tengo[N(mp[1] + ' ' + mp[3])] = 1;
+        if (r.Activo === false) inactivo[N(r.Diseno)] = 1;
+        const mc = /^CONJUNTO\s+(.+?)\s*\((.+?)\)\s*$/.exec(_mmConjLargo(K(r.Diseno))); if (mc) conj[N(mc[1])] = 1;
+      });
+      const por = {}, orden = [];
+      cat.forEach(x => {
+        const tipo = K(x.producto), mod = K(x.diseno); if (!tipo || !mod) return;
+        const k = N(tipo + ' ' + mod); let o = por[k];
+        if (!o) { o = por[k] = { TipoPrenda: tipo, Modelo: mod, Categoria: K(x.categoria), colores: {}, tallas: {}, skus: 0 }; orden.push(k); }
+        if (x.color) o.colores[K(x.color)] = 1; if (x.talla) o.tallas[K(x.talla)] = 1; o.skus++;
+      });
+      salida = [];
+      orden.forEach(k => { const o = por[k]; if (tengo[k] || o.TipoPrenda === 'CONJUNTO') return;
+        salida.push({ TipoPrenda: o.TipoPrenda, Modelo: o.Modelo, Categoria: o.Categoria, colores: Object.keys(o.colores).sort(), tallas: Object.keys(o.tallas).sort(), skus: o.skus, tipo: 'PRODUCTO' }); });
+      const modelos = {};
+      orden.forEach(k => { const o = por[k]; (modelos[o.Modelo] = modelos[o.Modelo] || {})[o.TipoPrenda] = o; });
+      Object.keys(modelos).forEach(m => {
+        const t = modelos[m]; if (!t.PANTALON || conj[N(m)]) return;
+        ['BLAZER', 'CHALECO', 'BLUSA'].forEach(top => {
+          if (!t[top]) return;
+          if (inactivo[N(top + ' ' + m)] || inactivo[N('PANTALON ' + m)]) return;
+          salida.push({ TipoPrenda: 'CONJUNTO', Modelo: m + ' (' + top + ')', Categoria: t[top].Categoria, colores: [], tallas: [], skus: 0, tipo: 'CONJUNTO', piezas: top + ' ' + m + ' + PANTALON ' + m });
+        });
+      });
+    }
+  } catch (_) { salida = null; }
+  try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, !!salida); } catch (_) {}
+  return salida;
+}
+// Copia en este navegador de lecturas de la ficha que van a la tienda (categorías, tabla de medidas): abren al instante y se actualizan por detrás.
+const FWL_KEY = 'erp_swr_fwlect1';
+function _fwlLeer(k) {
+  try { const o = JSON.parse(localStorage.getItem(FWL_KEY) || '{}') || {}, x = o[(typeof MY_EMAIL !== 'undefined' ? MY_EMAIL : '') + '|' + k];
+        return (x && (Date.now() - x.t) < 30 * 86400000) ? x.r : null; } catch (_) { return null; }
+}
+function _fwlGuardar(k, r) {
+  try { const o = JSON.parse(localStorage.getItem(FWL_KEY) || '{}') || {}; o[(typeof MY_EMAIL !== 'undefined' ? MY_EMAIL : '') + '|' + k] = { t: Date.now(), r: r };
+        const ks = Object.keys(o); if (ks.length > 160) ks.sort((a, b) => o[a].t - o[b].t).slice(0, ks.length - 160).forEach(x => { delete o[x]; });
+        localStorage.setItem(FWL_KEY, JSON.stringify(o)); } catch (_) {}
+}
+// <<< OLA2 · PRODUCTOS RÁPIDO
 // <<< VÍA RÁPIDA DE FOTOS Y VIDEO
 // >>> 6-oct-2026 · LO QUE YA ESTÁ EN SHOPIFY (pedido de Pablo: muchos productos se cargaron directo en la tienda y la ficha decía «falta»)
 // Una sola lectura de TODA la tienda (costos.fichaWeb accion «todos», FichaWeb.gs), en segundo plano y guardada en el navegador.
@@ -11215,8 +11457,11 @@ async function _cdActualizar() {
 /** 22-oct · ventas por talla según los MOVIMIENTOS del ERP (prenda|diseño|color|talla → {ventas}). Una llamada (~0,5 s). */
 async function _cdKardex() {
   const tok = await _sbSesionAsegurar(); if (!tok) return null;
-  const r = await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
-  if (!r.ok) return null; const a = await r.json(), M = {};
+  const _slK = async () => { const q = await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!q.ok) return null; const x = await q.json(); return Array.isArray(x) ? x : null; };
+  // 31-oct ola 2 · exacta (la función de siempre), pero por versión: sin movimientos nuevos no viaja (era el 6,9 s de yayitas.mapa)
+  const a = (typeof SL_STOCK_V2 !== 'undefined' && SL_STOCK_V2 && typeof _memoVersion === 'function') ? await _memoVersion('libro_mov', ['libro_mov'], _slK).catch(() => null) : await _slK();
+  if (!a) return null; const M = {};
   (a || []).forEach(x => { M[[x.prenda, x.diseno, x.color, x.talla].map(v => String(v || '').toUpperCase().trim()).join('|')] = x; });
   return M;
 }
@@ -13722,7 +13967,7 @@ async function _memoVersion(clave, tablas, cargar) {
     if (!c) { try { c = JSON.parse(localStorage.getItem('erp_memov_' + clave) || 'null'); if (c) MEMOV.mem[clave] = c; } catch (_) { c = null; } }
     if (c && c.f === firma && c.d != null) return _memoClon(c.d);
   }
-  const d = await cargar();
+  const d = await cargar(firma);   // 31-oct ola 2 · la firma la usa _sbFilasEspejoDelta
   if (firma && d != null) {
     MEMOV.mem[clave] = { f: firma, d: _memoClon(d) };
     if (!_lsGuardar('erp_memov_' + clave, JSON.stringify(MEMOV.mem[clave]))) { try { localStorage.removeItem('erp_memov_' + clave); } catch (__) {} }   // 13-oct · con lugar
@@ -13732,7 +13977,7 @@ async function _memoVersion(clave, tablas, cargar) {
 // <<< VÍA RÁPIDA C1
 function _sbFilasEspejo(tabla) {
   if (_sbEspejoEnVuelo[tabla]) return _sbEspejoEnVuelo[tabla];
-  const p = (tabla === 'cambios2' || tabla === 'devoluciones') ? _memoVersion('espejo_' + tabla, [tabla], () => _sbFilasEspejoAhora(tabla)) : _sbFilasEspejoAhora(tabla);   // 10-oct · C1
+  const p = (tabla === 'cambios2' || tabla === 'devoluciones') ? _memoVersion('espejo_' + tabla, [tabla], (f) => ((typeof SB_ESPEJO_DELTA !== 'undefined' && SB_ESPEJO_DELTA && typeof _sbFilasEspejoDelta === 'function') ? _sbFilasEspejoDelta(tabla, f) : _sbFilasEspejoAhora(tabla))) : _sbFilasEspejoAhora(tabla);   // 10-oct · C1
   _sbEspejoEnVuelo[tabla] = p;
   p.then(function () { delete _sbEspejoEnVuelo[tabla]; },
          function () { delete _sbEspejoEnVuelo[tabla]; });
@@ -13766,6 +14011,67 @@ async function _c2VersionEnLaBase(nc) {
     if (!Array.isArray(j) || !j.length) return null;
     return String((j[0].row_json && j[0].row_json.C2Version) || '').trim();
   } catch (e) { return null; }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 31-oct ola 2 · cambios_clientes · CAMBIOS Y DEVOLUCIONES: SE BAJA SOLO LO QUE CAMBIÓ
+// Medido (erp_lentos 14 d): rapido.c2Listar p50 0,38 s pero p90 1,5 s (6.447 veces), igual
+// cambiosListar / c2HistMap / devListar. En la base la lectura tarda 3 ms; el resto era bajar
+// la tabla ENTERA (1.041 filas = 1 MB, 550-620 ms en fibra, 1-3 s en el celular) cada vez que
+// CUALQUIER cambio se tocaba (versión 970: decenas de veces por día, para cada pestaña abierta).
+// Ahora: se manda la huella de cada fila que ya tengo y la base (rpc espejo_delta) devuelve solo
+// las filas nuevas o distintas + la lista de ids (las borradas desaparecen solas). ~25 KB.
+// Ante cualquier duda (sin copia, otra versión, respuesta rara) se baja todo como antes.
+// REVERSA: SB_ESPEJO_DELTA = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+var SB_ESPEJO_DELTA = true;
+var _ESPD = {};
+function _espdLeer(tabla) {
+  if (_ESPD[tabla]) return _ESPD[tabla];
+  try { const x = JSON.parse(localStorage.getItem('erp_espd_' + tabla) || 'null');
+        if (x && Array.isArray(x.ids) && Array.isArray(x.h)) { _ESPD[tabla] = x; return x; } } catch (_) {}
+  return null;
+}
+function _espdGuardar(tabla, x) {
+  _ESPD[tabla] = x;
+  try { if (!_lsGuardar('erp_espd_' + tabla, JSON.stringify(x))) localStorage.removeItem('erp_espd_' + tabla); } catch (_) {}
+}
+// La copia anterior (la que guardó _memoVersion) + sus huellas. Solo vale si son de la MISMA versión.
+function _espdBase(tabla) {
+  const clave = 'espejo_' + tabla;
+  let c = MEMOV.mem[clave];
+  if (!c) { try { c = JSON.parse(localStorage.getItem('erp_memov_' + clave) || 'null'); } catch (_) { c = null; } }
+  const sc = _espdLeer(tabla);
+  if (!c || !sc || !c.f || c.f !== sc.f || !Array.isArray(c.d) || c.d.length !== sc.ids.length || sc.h.length !== sc.ids.length) return null;
+  return { d: c.d, ids: sc.ids, h: sc.h };
+}
+async function _sbFilasEspejoDelta(tabla, firma) {
+  if (!SB_LECTURA_CAMBIOS || window._sbSaltarBase || !firma) return _sbFilasEspejoAhora(tabla);
+  if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (!tok) return null;
+    const base = _espdBase(tabla);
+    const huellas = {}, pos = {};
+    if (base) base.ids.forEach((id, i) => { huellas[String(id)] = base.h[i]; pos[String(id)] = i; });
+    const r = await fetch(SB_URL + '/rest/v1/rpc/espejo_delta', {
+      method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_tabla: tabla, p_h: huellas })
+    });
+    if (!r.ok) { if (r.status === 401 && typeof _sbVencerTok === 'function') { try { _sbVencerTok(); } catch (_) {} } return _sbFilasEspejoAhora(tabla); }
+    const j = await r.json();
+    if (!j || j.ok !== true || !Array.isArray(j.ids) || !Array.isArray(j.h) || j.ids.length !== j.h.length || !j.f || typeof j.f !== 'object') return _sbFilasEspejoAhora(tabla);
+    const out = new Array(j.ids.length);
+    for (let i = 0; i < j.ids.length; i++) {
+      const k = String(j.ids[i]);
+      if (Object.prototype.hasOwnProperty.call(j.f, k)) out[i] = _sbFilaNativa(j.f[k]);
+      else if (base && pos[k] !== undefined && base.h[pos[k]] === j.h[i]) out[i] = _memoClon(base.d[pos[k]]);
+      else return _sbFilasEspejoAhora(tabla);   // no tengo esa fila: se baja todo
+    }
+    _espdGuardar(tabla, { f: firma, ids: j.ids, h: j.h });
+    return out;
+  } catch (e) { try { _errLog('sb.espejo.delta.' + tabla, e); } catch (_) {} return _sbFilasEspejoAhora(tabla); }
 }
 
 async function _sbFilasEspejoAhora(tabla) {
@@ -14022,6 +14328,12 @@ function _espejoConfiar(clave){ try { const m=_espejoDudaMap(); if (m[clave]!==u
 // quedaba vieja hasta la vuelta de 5/30 min. Ahora tambien avisan.
 // _stockMovido = el aviso solo. _stockEscrito = el aviso + el webhook de la
 // lista de espera, que es exclusivo de los INGRESOS de stock.
+// 31-oct ola 2 · cuadre_faltan · copia de ED_SOLO_RESPALDO (EspejoDatos.gs): espejoRefrescar() las SALTA siempre
+// (saltadas, sin rehacer nada), pero cada pedido costaba un viaje de 8 s a Apps Script (87 en 4 días, todos de fondo).
+// Si se agrega una clave allá, agregarla acá (si falta, solo vuelve el viaje inútil; no se pierde nada).
+const _ESP_SOLO_RESPALDO_SRV = { 'stock.resumen':1, 'dashboard.serieDiaria':1, 'catalogo.prendas':1, 'colores.listar':1, 'maestros.listar':1,
+  'vistas.stock.listar':1, 'productos.listar':1, 'lotes.listar':1, 'fallas.resumen':1, 'cambios.listar':1, 'dashboard.todo':1,
+  'clientes.index':1, 'confeccion.listar':1, 'catalogo.stock':1, 'reposicion.calc':1 };
 const _ESP_CLAVES_STOCK = ['stock.resumen','catalogo.stock','lotes.listar','confeccion.listar','fallas.resumen'];
 // 1-oct · F3 item 6: estas pantallas ya leen DIRECTO de la base (su copia es solo respaldo, la rehace el
 // espejo cada hora — ED_SOLO_RESPALDO en EspejoDatos.gs). Pedirle a Apps Script que la rehaga despues de
@@ -14033,7 +14345,7 @@ const _ESP_LEE_BASE = { 'productos.listar':1, 'lotes.listar':1, 'fallas.resumen'
 // en 1 hora de una sola asesora). Con el libro sucio se sigue pidiendo como siempre.
 function _espRefrescables(arr) {
   const libroOk = !!(window._libroLimpioTs && (Date.now() - window._libroLimpioTs) < 10 * 60 * 1000);
-  return (arr || []).filter(c => !_ESP_LEE_BASE[c] && !(libroOk && c === 'stock.resumen')).slice(0, 3);
+  return (arr || []).filter(c => !_ESP_LEE_BASE[c] && !(libroOk && c === 'stock.resumen') && !(typeof _ESP_SOLO_RESPALDO_SRV !== 'undefined' && _ESP_SOLO_RESPALDO_SRV[c])).slice(0, 3);   // 31-oct ola 2 · cuadre_faltan
 }
 function _stockMovido(claves, refrescarYa){
   _espejoDudar(claves);
@@ -14043,6 +14355,7 @@ function _stockMovido(claves, refrescarYa){
       .then(r => { try { ((r && r.hechas) || []).forEach(_espejoConfiar); } catch(e){}
                    try { _stRefrescarYa(); } catch(e){} })
       .catch(()=>{});   // si falla, el disparador de 5/30 min lo pone al dia igual
+    else setTimeout(function(){ try { _stRefrescarYa(); } catch(_){} }, 1500);   // 31-oct ola 2 · cuadre_faltan · sin viaje: igual se repinta Stock
   } catch(e) {}
 }
 
@@ -14162,7 +14475,7 @@ function _f1PedirRefresco(clave, edad) {
   if (_f1Pedidos[clave] && ahora - _f1Pedidos[clave] < SB_F1_ESPERA_MS) return false;
   _f1Pedidos[clave] = ahora;
   try { _f1Aviso(edad); } catch (_) {}
-  try { if (typeof apiSend === 'function' && !(typeof _ESP_LEE_BASE !== 'undefined' && _ESP_LEE_BASE[clave])) apiSend('espejo.refrescar', { claves: [clave], motivo: 'vencida' }).catch(function(){}); } catch (_) {}
+  try { if (typeof apiSend === 'function' && !(typeof _ESP_SOLO_RESPALDO_SRV !== 'undefined' && _ESP_SOLO_RESPALDO_SRV[clave]) && !(typeof _ESP_LEE_BASE !== 'undefined' && _ESP_LEE_BASE[clave])) apiSend('espejo.refrescar', { claves: [clave], motivo: 'vencida' }).catch(function(){}); } catch (_) {}
   return true;
 }
 function _f1Aviso(edad) {
@@ -14338,20 +14651,114 @@ const SB_LECTURA_LIBRO = true;           // 31-ago: encendido con 0 diferencias
 const SB_STOCK_MOVIMIENTOS = true;
 const SB_MOV_MEMO = true;    // 12-oct · VÍA RÁPIDA E3c: movimientos por versión (PEGAR_EN_SUPABASE_via_rapida_e3c_12oct.sql). REVERSA: false
 const SB_LIBRO_META = true;   // 12-oct · VÍA RÁPIDA E3: Inventario pide el libro resumido (rpc stock_libro_meta). REVERSA: false
+// 31-oct-2026 · ola 2 · STOCK_LECTURAS (agente). Medido 14 días (erp_lentos): rapido.stockResumen p90 8 s (hoy 9 s),
+// api.fallas.listar 8,6 s, api.fallas.lotesDisponibles 8,4 s, yayitas.mapa 6,9 s. Causa del stock: cada movimiento obliga a
+// rehacer la copia (3,4 s con la base tranquila; hoy 7-10 s, máx. 33 s, porque Inventario la rehacía OTRA VEZ en paralelo
+// al reloj de 5 s y pasaba el tope de 8 s → caía al libro viejo). Ahora la base hace un solo recálculo a la vez
+// (PEGAR_EN_SUPABASE_stock_lecturas_31oct_b.sql) y la pantalla no lo espera. REVERSA: cada constante en false.
+const SL_STOCK_V2 = true;          // Inventario/Stock: rpc stock_libro_movimientos_v2 (espera ≤0,7 s; si no llegó, copia anterior + aviso)
+const SL_LECTURAS_BASE = true;     // Historial de fallas y lotes de «Recuperar» desde la base (Apps Script = respaldo / confirmación)
+const SL_LISTAS_UN_VIAJE = true;   // colores y vistas de Stock: 1 viaje cuando el timbre no confirma la versión
+const SL_CORTE_FALLAS = '2026-07-11';   // = STOCK_CUTOFF de Apps Script (comprobado: 48/48 prendas iguales con este corte)
+let _slReintentos = 0, _slTimer = null;
+/** La copia del stock vino un movimiento atrás: aviso una vez y se repinta sola en 3 s (hasta 12 veces). Nunca lanza. */
+function _slStockAtrasado() {
+  try {
+    if (!_slTimer && !_slReintentos && typeof toast === 'function') toast('⏳ Stock: está entrando el último movimiento — se actualiza solo en unos segundos');
+    if (_slTimer || _slReintentos >= 12) return;
+    _slReintentos++;
+    _slTimer = setTimeout(function () {
+      _slTimer = null;
+      try {
+        if (typeof _stDataTs !== 'undefined') _stDataTs = 0;
+        if (typeof curPg === 'undefined' || (curPg !== 'stock' && curPg !== 'inventario') || typeof _stRevalidar !== 'function') return;
+        const el = document.getElementById(curPg === 'stock' ? 'st-w' : 'inv-w');
+        if (el) _stRevalidar(el, curPg === 'stock' ? renderStock : renderInv);
+      } catch (_) {}
+    }, 3000);
+  } catch (_) {}
+}
+/** Historial de fallas desde la base (mismas filas y mismo orden que fallas.listar). null = usar Apps Script. */
+async function _slFallasListarBase() {
+  try {
+    if (typeof SL_LECTURAS_BASE === 'undefined' || !SL_LECTURAS_BASE || window._sbSaltarBase || typeof _sbTablaLeer !== 'function') return null;
+    const a = await _sbTablaLeer('fallas?select=id,row_json&order=id.asc');
+    if (!Array.isArray(a) || !a.length) return null;
+    return a.map(function (x) { return x && x.row_json; }).filter(function (r) { return r && typeof r === 'object' && (r['Diseno'] || r['Diseño']); });
+  } catch (_) { return null; }
+}
+/** Lotes con No disponibles de una prenda, calculados como fallasLotesDisponibles (Code.js) con las filas de la base. null = no se pudo. */
+async function _slLotesBase(full) {
+  if (typeof SL_LECTURAS_BASE === 'undefined' || !SL_LECTURAS_BASE || window._sbSaltarBase || typeof _sbTablaLeer !== 'function') return null;
+  const U = v => String(v == null ? '' : v).trim().toUpperCase();
+  const cat = await _maestrosSkusRapido();
+  if (!Array.isArray(cat) || !cat.length) return null;
+  const x = cat.find(y => U(y && y.prenda) === U(full));
+  let dis = '', col = '', tal = '';
+  if (x) { dis = String(x.diseno || '').trim(); col = String(x.color || '').trim(); tal = String(x.talla || '').trim(); }
+  if (!dis && !col && !tal) { const p = String(full || '').trim().split(/\s+/); tal = p.pop() || ''; }
+  const TM = { 'S/M': 'S', 'M/L': 'M', 'L/XL': 'L', C: 'M', G: 'XL', U: 'M', STD: 'M', ESTANDAR: 'M', 'ESTÁNDAR': 'M', XXL: '2XL', XXXL: '3XL' };
+  const TS = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+  const pref = (dis + '|' + col + '|' + (TM[U(tal)] || U(tal)) + '|').toUpperCase();
+  const cutMs = new Date(SL_CORTE_FALLAS + 'T00:00:00-05:00').getTime();
+  const fro = v => { const d = new Date(v || 0); return !isNaN(d.getTime()) && d.getTime() < cutMs; };
+  const sel = ['Diseno', 'Color', 'Talla', 'Tipo', 'Cantidad', 'Lote', 'Eliminado', 'Fecha', 'Referencia'].map((n, i) => 'c' + i + ':row_json->>' + n).join(',').replace(/>/g, '%3E');
+  const filt = 'or=(row_json->>Tipo.ilike.*falla*,row_json->>Tipo.ilike.*recuperacion*)'.replace(/>/g, '%3E').replace(/\*/g, '%2A');
+  const traer = () => Promise.all([_sbTablaLeer('confeccion?select=' + sel + '&' + filt + '&order=id.asc'), _sbTablaLeer('fallas?select=row_json&order=id.asc')])
+    .then(r => (Array.isArray(r[0]) && Array.isArray(r[1])) ? { c: r[0], f: r[1] } : null);
+  // confección y fallas suben la versión 'libro_mov' (trigger zz_mov_bump): sin cambios, sin viaje
+  const src = (typeof _memoVersion === 'function') ? await _memoVersion('sl_lotes_fuentes', ['libro_mov'], traer) : await traer();
+  if (!src) return null;
+  const map = {};
+  const add = (d, c, ta, l, n) => { const tt = TM[U(ta)] || U(ta); if (TS.indexOf(tt) < 0) return; const k = (d + '|' + c + '|' + tt + '|' + String(l == null ? '' : l).trim()).toUpperCase(); map[k] = (map[k] || 0) + n; };
+  const S = v => v == null ? '' : String(v);
+  src.c.forEach(o => { if (U(o.c6) === 'SI') return; const tipo = U(o.c3); if (tipo !== 'FALLA' && tipo !== 'RECUPERACION') return; if (fro(o.c7)) return;
+    if (tipo === 'RECUPERACION' && S(o.c8).trim()) return; const cant = parseInt(o.c4, 10) || 1;
+    add(S(o.c0).trim(), S(o.c1).trim(), S(o.c2).trim(), o.c5, tipo === 'RECUPERACION' ? -cant : cant); });
+  src.f.forEach(f => { const r = (f && f.row_json) || {}; if (U(r.Eliminado) === 'SI' || U(r.Recuperado) === 'SI') return;
+    if (['PERDIDA', 'DESCARTAR'].indexOf(U(r.Destino)) >= 0) return; if (fro(r.Fecha)) return;
+    add(S(r.Diseno).trim(), S(r.Color).trim(), S(r.Talla).trim(), r.Lote, Math.max(0, (parseInt(r.Cantidad, 10) || 1) - (parseInt(r.Recuperado, 10) || 0))); });
+  const out = [];
+  Object.keys(map).forEach(k => { if (k.indexOf(pref) !== 0 || map[k] <= 0) return; const lote = k.substring(pref.length); out.push({ lote: lote, etiqueta: lote ? lote : '(sin lote)', disponibles: map[k] }); });
+  out.sort((a, b) => a.lote < b.lote ? -1 : a.lote > b.lote ? 1 : 0);
+  return out;
+}
+/** Base primero (al toque); Apps Script confirma por detrás: si dice otra cosa, manda la hoja y se llama alCorregir(listaHoja). */
+async function _slLotesDisponibles(prenda, alCorregir) {
+  const viaApi = () => api('fallas.lotesDisponibles', { prenda: prenda });
+  let b = null;
+  try { b = await _slLotesBase(prenda); } catch (_) { b = null; }
+  if (!Array.isArray(b)) return viaApi();
+  try {
+    Promise.resolve(viaApi()).then(function (srv) {
+      if (!Array.isArray(srv) || JSON.stringify(srv) === JSON.stringify(b)) return;
+      try { if (typeof _errLog === 'function') _errLog('sl.lotes.difiere', new Error(String(prenda))); } catch (_) {}
+      if (typeof alCorregir === 'function') { try { alCorregir(srv); } catch (_) {} }
+    }).catch(function () {});
+  } catch (_) {}
+  return b;
+}
 async function _sbLibroMovimientos() {
   try {
     if (!SB_STOCK_MOVIMIENTOS || window._sbSaltarBase) return null;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
+    let _slAtras = null;   // 31-oct ola 2: copia un movimiento atrás (no se guarda en el memo)
     const traer = async () => {
-      const r = await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', {
+      const _v2 = typeof SL_STOCK_V2 !== 'undefined' && SL_STOCK_V2 && !window._slSinV2;
+      const r = await fetch(SB_URL + '/rest/v1/rpc/' + (_v2 ? 'stock_libro_movimientos_v2' : 'stock_libro_movimientos'), {
         method: 'POST',
         headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
-        body: '{}',
+        body: _v2 ? '{"p_espera_ms":700}' : '{}',
       });
-      if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
-      const a = await r.json();
+      if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); if (_v2 && r.status === 404) { window._slSinV2 = true; return traer(); } return null; }
+      let a = await r.json();
+      if (_v2) {
+        if (!a || typeof a !== 'object' || !Array.isArray(a.datos)) return null;
+        if (a.al_dia !== true) { _slAtras = a.datos; return null; }
+        a = a.datos; _slReintentos = 0;
+      }
       // Solo filas con la forma de la vista; cualquier otra cosa = no confiar (camino de siempre).
       const forma = x => x && typeof x.prenda === 'string' && typeof x.diseno === 'string' && typeof x.color === 'string'
                           && typeof x.talla === 'string' && x.conf !== undefined && x.ventas !== undefined;
@@ -14360,8 +14767,12 @@ async function _sbLibroMovimientos() {
     // 12-oct · VÍA RÁPIDA E3c: los movimientos (267 KB) se bajan SOLO si cambió algo del stock. La base sube la versión
     // 'libro_mov' por evento (confección, fallas, pedidos, cambios, devoluciones… → erp.mov_version) y toca el timbre:
     // sin cambios, Inventario usa su copia sin viajar. REVERSA: SB_MOV_MEMO = false.
-    if (typeof SB_MOV_MEMO !== 'undefined' && SB_MOV_MEMO && typeof _memoVersion === 'function') return await _memoVersion('libro_mov', ['libro_mov'], traer);
-    return await traer();
+    const _res = (typeof SB_MOV_MEMO !== 'undefined' && SB_MOV_MEMO && typeof _memoVersion === 'function') ? await _memoVersion('libro_mov', ['libro_mov'], traer) : await traer();
+    if (_res == null && Array.isArray(_slAtras) && _slAtras.length && _slAtras.every(x => x && typeof x.prenda === 'string' && typeof x.diseno === 'string' && typeof x.color === 'string' && typeof x.talla === 'string')) {
+      if (typeof _slStockAtrasado === 'function') _slStockAtrasado();
+      return _slAtras;
+    }
+    return _res;
   } catch (e) { return null; }
 }
 const _MOV_ETQ = { SALDO_INICIAL:'Saldo inicial', PRODUCCION:'Producción', DIGITAL:'Producción', VENTA:'Venta',
@@ -14996,7 +15407,8 @@ async function _cambiosListarRapido() {
 async function _listaDeLaBase(fn, valida) {
   if (window._sbSaltarBase) return null;   // 1-oct F3b: ver _sbSaltarBase
   const _tv = { maestros_listar_calc: ['maestros_hoja'], colores_listar_calc: ['colores_hoja'], vistas_stock_listar_calc: ['vistas_stock'] }[fn];   // 10-oct · C1
-  const d = _tv ? await _memoVersion('rpc_' + fn, _tv, () => _sbRpcLeer(fn, {})) : await _sbRpcLeer(fn, {});
+  const _sl1 = typeof SL_LISTAS_UN_VIAJE !== 'undefined' && SL_LISTAS_UN_VIAJE && (fn === 'colores_listar_calc' || fn === 'vistas_stock_listar_calc') && typeof _verVivoTomar === 'function' && !_verVivoTomar(_tv || []);   // 31-oct ola 2: lista chica → 1 viaje
+  const d = (_tv && !_sl1) ? await _memoVersion('rpc_' + fn, _tv, () => _sbRpcLeer(fn, {})) : await _sbRpcLeer(fn, {});
   try { return (d != null && valida(d)) ? d : null; } catch (_) { return null; }
 }
 function _esMapaLleno(d) { return !!d && typeof d === 'object' && !Array.isArray(d) && Object.keys(d).length > 0; }
@@ -16472,7 +16884,7 @@ function _inmEnFondo(req, nombre) {
 // la base (rpc cola_estado, ~1 ms con el índice del 31-oct) y si la hoja RECHAZA: aviso rojo + se repinta lo real.
 // Reversa: D7_STOCK_SIN_ESPERA = false (vuelve a esperar como antes).
 const D7_STOCK_SIN_ESPERA = true;
-const D7_RECUPERAR_SIN_ESPERA = false;   // recuperar falla: sigue esperando a la hoja (regla de Pablo 3-oct) hasta que él diga lo contrario
+const D7_RECUPERAR_SIN_ESPERA = true;    // 31-oct 09:29 · Pablo aprobó: recuperar falla ya no espera a la hoja (la base valida; si la hoja rechaza, aviso rojo)
 /** Aplica `req` por detrás. Devuelve una promesa (`listo`) que resuelve {aplicado} cuando la hoja quedó al día. Nunca lanza. */
 function _inmListo(req, nombre, nroEmpujon) {
   return (async () => {
@@ -30517,7 +30929,11 @@ function _feEsc(x){ return String(x == null ? '' : x).replace(/[&<>"']/g, c => (
 async function _feRevisar() {
   try {
     if (!_avisoPara('pedidos')) return;   /* 26-oct · ventas y logística (y admin); marketing no */
-    const r = await apiSend('cuadre.faltanErp', {});   // 27-oct (fase 1) · por la PUERTA: 0,2 s en vez de 7,9 s
+    /* 31-oct ola 2 · cuadre_faltan · la base arma lo mismo que cuadreFaltanErp() (CuadreTresHojas.gs) en ~0,1 s:
+       antes cada lectura de la puerta disparaba una renovación por Apps Script (1.086 viajes en 4 días, 8,6 s c/u). */
+    let r = null;
+    try { if (typeof _puertaRpc === 'function') r = await _puertaRpc('cuadre_faltan_erp', {}, 4000); } catch (_) { r = null; }
+    if (!r || typeof r !== 'object' || !Array.isArray(r.lista)) r = await apiSend('cuadre.faltanErp', {});   // respaldo: puerta / Apps Script
     try { _FE.hechas = JSON.parse(localStorage.getItem('fe_hechas') || '{}') || {}; } catch (_) { _FE.hechas = {}; }
     _FE.lista = ((r && r.lista) || []).filter(x => !(_FE.hechas[_feClave(x)] && Date.now() - _FE.hechas[_feClave(x)] < 3 * 3600 * 1000));   // la que abrió para registrar se esconde 3 h (hasta la próxima revisión)
     _FE.admin = !!(r && (r.admin || r.logistica));
@@ -30608,7 +31024,7 @@ async function _feRegistrar(x) {
     } catch (e) { toast('No se pudo llenar el pedido: ' + (e && e.message || e), 'err'); }
   }, 400);
 }
-try { window.addEventListener('load', () => { setTimeout(_feRevisar, 8000); setTimeout(_feRevisar, 45000); setInterval(_feRevisar, 15 * 60 * 1000); setInterval(() => { if (_FE.lista.length) _fePintar(); }, 30000); }); } catch (_) {}
+try { window.addEventListener('load', () => { setTimeout(_feRevisar, 8000); setTimeout(_feRevisar, 45000); setInterval(() => { if (!(typeof document !== 'undefined' && document.hidden)) _feRevisar(); }, 15 * 60 * 1000);   /* 31-oct ola 2 · cuadre_faltan · pestaña escondida no pregunta */ setInterval(() => { if (_FE.lista.length) _fePintar(); }, 30000); }); } catch (_) {}
 
 // ═══ 21-oct (Pablo) · AVISO A LOGÍSTICA: sus pendientes dentro del ERP (con ✕, vuelve al recargar) ═══
 // 1) Cambios con la prenda ORIGINAL por recibir (estado «CLIENTE SOLICITA CAMBIO») · 2) cambios con la original recibida y la
@@ -31704,6 +32120,7 @@ function _cliDatosFicha(c, cuenta) {
 // salir ni abrir otra ventana.
 // ══════════════════════════════════════════════════════════════════════════
 const CLI_EDITABLES = { Cumpleanos:'date', Email:'email', Notas:'text' };
+var CLI_FICHA_FONDO = true;   // 31-oct ola 2 · cambios_clientes · guardar la ficha por detrás
 
 function _cliAbrirEditarDato(c, campo) {
   const TIT = { Cumpleanos:'Cumpleaños', Email:'Correo', Notas:'Notas' };
@@ -31732,7 +32149,24 @@ function _cliAbrirEditarDato(c, campo) {
       const cuerpo = { clave: c.Clave || '', Nombre: c.Nombre || '' };
       cuerpo[campo] = nuevo;
       if (!cuerpo.clave) throw new Error('No se pudo identificar a la clienta');
-      await apiSend('clientes.ficha.guardar', cuerpo);
+      // 31-oct ola 2 · cambios_clientes · Apps Script tardaba 7-9 s con el botón trabado. Ahora se ve al
+      // instante y se guarda por detrás; si falla, vuelve el valor anterior y se avisa. REVERSA: CLI_FICHA_FONDO = false.
+      const _cliAntes = c[campo];
+      if (typeof CLI_FICHA_FONDO !== 'undefined' && CLI_FICHA_FONDO) {
+        apiSend('clientes.ficha.guardar', cuerpo).catch(err => {
+          try {
+            if (c[campo] === nuevo) c[campo] = _cliAntes;
+            const _enL = (cliData||[]).find(x => x.Clave === c.Clave);
+            if (_enL && _enL[campo] === nuevo) _enL[campo] = _cliAntes;
+            if (typeof renderClis === 'function' && curPg === 'clientes') renderClis();
+            const _dh2 = document.getElementById('cli-hist-datos');
+            if (_dh2) { _dh2.innerHTML = _cliFichaDatosHtml(c, (_cliHist._cuenta||{})); _cliBindEditables(c); }
+          } catch(_){}
+          try { toast('No se pudo guardar ' + TIT[campo] + ' de ' + (c.Nombre||'la clienta') + ': ' + ((err && err.message) || err) + '. Quedó el valor anterior.', 'err'); } catch(_){}
+        });
+      } else {
+        await apiSend('clientes.ficha.guardar', cuerpo);
+      }
       c[campo] = nuevo;
       // Que se vea al instante, sin esperar a que el servidor rehaga la lista.
       try {
@@ -32459,7 +32893,7 @@ async function loadStock() {
   const cached = _stLsGet();
   if(cached){ stData = cached; _stDataTs = _stLsTs(); renderStock(el); cargarVistasStock().then(()=>renderStock(el)); _stRevalidar(el, renderStock); return; }
   el.innerHTML=spin('Calculando stock...');
-  try{stData=await _stockResumenRapido(); _stDataTs=Date.now(); _stLsSet(stData); await cargarVistasStock(); renderStock(el);}
+  try{const _pv=cargarVistasStock(); stData=await _stockResumenRapido(); _stDataTs=Date.now(); _stLsSet(stData); await _pv; renderStock(el);}   // 31-oct ola 2: vistas a la vez
   catch(e){el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>';}
 }
 
@@ -33157,7 +33591,7 @@ async function loadInv(){
   const cached=_stLsGet();
   if(cached){ stData=cached; _stDataTs=_stLsTs(); renderInv(el); cargarVistasStock().then(()=>renderInv(el)); _stRevalidar(el, renderInv); return; }
   el.innerHTML=spin('Calculando inventario...');
-  try{ stData=await _stockResumenRapido(); _stDataTs=Date.now(); _stLsSet(stData); await cargarVistasStock(); renderInv(el); }
+  try{ const _pv=cargarVistasStock(); stData=await _stockResumenRapido(); _stDataTs=Date.now(); _stLsSet(stData); await _pv; renderInv(el); }   // 31-oct ola 2: vistas a la vez
   catch(e){ el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 
@@ -34093,7 +34527,8 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
         +'<div class="fg"><label>Lote</label><select id="ivt-lote" style="'+inpSt+'"><option value="__">Cargando lotes…</option></select></div>'
         +'<button id="ivt-ok" class="btn bp bs" style="font-size:12px;align-self:flex-end">Recuperar</button></div>';
       const sel=panel.querySelector('#ivt-lote');
-      (async()=>{ if(_lotesRec===null){ try{ _lotesRec=await api('fallas.lotesDisponibles',{prenda:full})||[]; }catch(e){ _lotesRec=[]; } }
+      const _slPint=()=>{ if(!sel.isConnected) return; const v=sel.value; sel.innerHTML=_lotesRec.length?_lotesRec.map(l=>'<option value="'+esc(l.lote)+'">'+esc(l.etiqueta)+' · '+l.disponibles+' disp.</option>').join(''):'<option value="">(sin lote)</option>'; if([...sel.options].some(o=>o.value===v)) sel.value=v; };
+      (async()=>{ if(_lotesRec===null){ try{ _lotesRec=await _slLotesDisponibles(full, srv=>{ _lotesRec=srv; _slPint(); })||[]; }catch(e){ _lotesRec=[]; } }   // 31-oct ola 2: base primero, la hoja confirma
         if(!sel.isConnected) return;
         sel.innerHTML=_lotesRec.length?_lotesRec.map(l=>'<option value="'+esc(l.lote)+'">'+esc(l.etiqueta)+' · '+l.disponibles+' disp.</option>').join(''):'<option value="">(sin lote)</option>';
       })();
@@ -34552,7 +34987,7 @@ async function loadFallasHist(){
   const el = document.getElementById('fallashist-w');
   el.innerHTML = spin('Cargando historial de fallas...');
   try {
-    fallasHistData = await apiSend('fallas.listar', {});
+    fallasHistData = (await _slFallasListarBase()) || await apiSend('fallas.listar', {});   // 31-oct ola 2: base primero (8,6 s → <1 s)
     renderFallasHist(el);
   } catch(e) { el.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
@@ -35659,7 +36094,10 @@ function _invAbrirRecuperarFalla(){
   const _recCargarLotes=async(prenda)=>{
     _recLotes=[]; const sel=document.getElementById('rec-lote'), wrap=document.getElementById('rec-lote-wrap');
     if(!sel||!wrap) return; wrap.style.display=''; sel.innerHTML='<option value="__">Cargando lotes...</option>';
-    try{ _recLotes=await api('fallas.lotesDisponibles',{prenda})||[]; }catch(e){ _recLotes=[]; }
+    const _slTk=(window._slRecTk=(window._slRecTk||0)+1);   // 31-oct ola 2: base primero; si la hoja dice otra cosa, se corrige la lista (solo si sigue la misma prenda)
+    try{ _recLotes=await _slLotesDisponibles(prenda, srv=>{ if(window._slRecTk!==_slTk||!sel.isConnected) return; const v=sel.value; _recLotes=srv;
+      sel.innerHTML=_recLotes.length?_recLotes.map(l=>'<option value="'+esc(l.lote)+'">'+esc(l.etiqueta)+' · '+l.disponibles+' disp.</option>').join(''):'<option value="">(sin lotes con No disp.)</option>';
+      if([...sel.options].some(o=>o.value===v)) sel.value=v; })||[]; }catch(e){ _recLotes=[]; }
     if(!_recLotes.length){ sel.innerHTML='<option value="">(sin lotes con No disp.)</option>'; }
     else sel.innerHTML=_recLotes.map(l=>'<option value="'+esc(l.lote)+'">'+esc(l.etiqueta)+' · '+l.disponibles+' disp.</option>').join('');
   };
@@ -43663,12 +44101,45 @@ function _upAplicarRes(res){
 function _upGuardarFoto(){
   try { localStorage.setItem('erp_up_foto', JSON.stringify({usuarios:_cfgUsersData, roles:_cfgUsersRoles, plantillas:_upPropias, t:Date.now()})); } catch (e) {}
 }
+// 31-oct ola 2 · config_sesion — USUARIOS POR LA BASE. Lista: rpc erp_usuarios_listar (~0,3 s, antes 9 s
+// por Apps Script). Guardar permisos: rpc erp_usuarios_permisos_guardar (antes 11,6 s). Mismas reglas
+// (la base las hace cumplir: ver lista = Administrador; cambiar permisos = SOLO el dueño). Si la base
+// no responde o la función no existe todavía, todo sigue por Apps Script como antes.
+async function _upListarBase(){
+  if (window._VER_COMO || typeof _npRpc !== 'function') return null;
+  const c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.erp_usuarios_listar', '') : null;
+  try {
+    const r = await _npRpc('erp_usuarios_listar', {});
+    const ok = !!(r && Array.isArray(r.usuarios) && r.usuarios.length);
+    try { if (c) _cronCerrar(c, ok); } catch (_) {}
+    return ok ? r : null;
+  } catch (e) { try { if (c) _cronCerrar(c, false); } catch (_) {} return null; }
+}
+async function _upPermisosGuardar(lista){
+  if (!window._VER_COMO && typeof _npRpc === 'function') {
+    const c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.erp_usuarios_permisos_guardar', '') : null;
+    try {
+      const r = await _npRpc('erp_usuarios_permisos_guardar', { p_lista: lista });
+      try { if (c) _cronCerrar(c, !!(r && r.ok)); } catch (_) {}
+      if (r && r.ok) return r;
+    } catch (e) {
+      try { if (c) _cronCerrar(c, false); } catch (_) {}
+      const m = String((e && e.message) || '');
+      // la base dijo que NO por una regla: es el mismo NO que daria Apps Script, sin esperar 11 s
+      if (/Solo el due|no se tocan|Correo invalido|Permisos invalidos|Nada que guardar/i.test(m)) {
+        const mm = /"message"\s*:\s*"([^"]*)"/.exec(m); throw new Error(mm ? mm[1] : m);
+      }
+    }
+  }
+  return apiSend('config.usuarios.permisosGuardar', {lista: lista});
+}
 function _upTraerDelServidor(){
   const t0 = Date.now();
-  return api('config.usuarios.listar', {}).then(res => {
+  const aplicar = res => {
     if (_upGuardando > 0 || _upUltimoCambio > t0) return false;   // hubo cambios durante el viaje: no pisar
     _upAplicarRes(res); _upGuardarFoto(); return true;
-  });
+  };
+  return _upListarBase().then(res => res ? aplicar(res) : api('config.usuarios.listar', {}).then(aplicar));
 }
 async function loadCfgUsuarios() {
   _upWire();
@@ -43783,7 +44254,7 @@ async function _upGuardar(cambios, msg, silencioso){
   cfgUsersRender();
   _upGuardando++; _upUltimoCambio = Date.now();
   try {
-    await apiSend('config.usuarios.permisosGuardar', {lista: cambios.map(c => ({email:c.u.email, permisos:c.permisos}))});
+    await _upPermisosGuardar(cambios.map(c => ({email:c.u.email, permisos:c.permisos})));   // 31-oct ola 2 · por la base
     _upGuardando--; _upGuardarFoto();
     if (!silencioso) _upToast('✓ ' + msg, () => _upGuardar(antes.map(a => ({u:a.u, permisos:a.p})), 'Deshecho', true));
     return true;
