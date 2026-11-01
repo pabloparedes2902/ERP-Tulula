@@ -17435,6 +17435,40 @@ function _saldoEnvioDescUnaVez(g) {
 // reintenta por la via vieja — saltarse la proteccion seria peor que fallar.
 const SB_PILOTO_ELIMINAR = true;
 
+/* ══ VR_DIRECTO_1NOV · VÍA RÁPIDA DEFINITIVA: escribir DIRECTO en la base (la verdad) ══════════════════
+   Apps Script ya no hace de pasamanos: la pantalla llama a la RPC y la base guarda en el acto, todo o nada.
+   null = la base no contestó (red/RPC faltante) → el que llama cae a Apps Script, nada se rompe.
+   Un rechazo de NEGOCIO (rx) se muestra tal cual. REVERSA: VR_DIRECTO = false y publicar. */
+const VR_DIRECTO = true;
+async function _vrDirecto(fn, params, rxNegocio) {
+  try {
+    if (!(typeof VR_DIRECTO !== 'undefined' && VR_DIRECTO)) return null;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    let _cr = null; try { if (typeof _cronAbrir === 'function') _cr = _cronAbrir('directo.' + fn); } catch (_) {}
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(params || {}) });
+    if (!r.ok) {
+      let m = ''; try { const e = await r.json(); m = String(e && (e.message || e.hint) || ''); } catch (_) {}
+      if ((rxNegocio && rxNegocio.test(m)) || /SIN_PERMISO|Sin permiso/i.test(m)) { const er = new Error(m.replace(/^[A-Z_]+:\s*/, '')); er._negocio = true; throw er; }
+      try { console.warn('[directo] ' + fn + ' HTTP ' + r.status + ' → Apps Script'); } catch (_) {}
+      return null;
+    }
+    const d = await r.json();
+    try { if (_cr && typeof _cronCerrar === 'function') _cronCerrar(_cr, !!(d && d.ok === true)); } catch (_) {}   // medidor: erp_lentos «directo.<rpc>»
+    return (d && d.ok === true) ? d : null;
+  } catch (e) { if (e && e._negocio) throw e; return null; }
+}
+/** Historial «quién cambió qué» (public.auditoria) para lo que se guarda directo. Nunca frena la pantalla. */
+function _vrAuditar(accion, entidad, nro, detalles, payload) {
+  try { _vrDirecto('erp_auditar', { p_accion: accion, p_entidad: entidad, p_nro: String(nro || ''), p_detalles: String(detalles || ''), p_payload: payload || {} }).catch(() => {}); } catch (_) {}
+}
+/** El motivo con la fusión, igual que pedidosEliminarConBase (Code.js). */
+function _vrMotivoPedido(m) {
+  let mot = String((m && m.motivo) || '').trim(); const fus = String((m && m.fusionadoEn) || '').trim();
+  if (fus && !/fusionado en el pedido\s+/i.test(mot)) mot = (mot ? mot + ' · ' : '') + 'fusionado en el pedido ' + fus;
+  return mot;
+}
 async function _sbRpcEliminar(fn, params) {
   try {
     if (!SB_PILOTO_ELIMINAR) return null;
@@ -27297,7 +27331,7 @@ async function _guardarPedidoModal(nro, body) {
       // El motivo viaja por LAS DOS vías con una sola llamada: la RPC lo guarda en el
       // payload de la cola y el Aplicador se lo pasa tal cual a `pedidosEliminar`
       // (Aplicador.gs ya hacía eso; lo que faltaba era que alguien lo mandara).
-      const _base = await _sbRpcEliminar('pedido_eliminar', { p_nro: String(nro), p_motivo: _mot.motivo, p_force: _forz });
+      const _base = await _sbRpcEliminar('pedido_eliminar', { p_nro: String(nro), p_motivo: _vrMotivoPedido(_mot), p_force: _forz });   // 1-nov · motivo con la fusión, igual que Code.js
       if (_base) return _base;
       return apiSend('pedidos.eliminar', {NroPedido:nro, Force:_forz, motivo:_mot.motivo, fusionadoEn:_mot.fusionadoEn});
     })()
@@ -32300,7 +32334,7 @@ async function cliSaveEdit() {
   const btn=document.getElementById('cli-edit-save');
   btn.disabled=true;btn.textContent='Guardando...';
   try {
-    await apiSend('clientes.actualizar',{
+    const _cliB = {
       _key:cliEditKey,
       Nombre:document.getElementById('ce-nom').value.trim(),
       DNI:document.getElementById('ce-dni').value.trim(),
@@ -32311,7 +32345,13 @@ async function cliSaveEdit() {
       Region:document.getElementById('ce-reg').value.trim(),
       Referencia:document.getElementById('ce-ref').value.trim(),
       Canal:document.getElementById('ce-can').value,
-    });
+    };
+    // 1-nov · VR_DIRECTO: directo a la base (antes ~5-10 s por Apps Script, que llamaba a esta misma RPC)
+    const _cliMapa = { Nombre:'Nombres y Apellidos', DNI:'DNI', Celular:'Celular', Direccion:'Direccion', Distrito:'Distrito', Provincia:'Provincia', Region:'Region', Referencia:'Referencia', Canal:'CANAL' };
+    const _cliC = {}; Object.keys(_cliMapa).forEach(k => { if (_cliB[k] !== undefined) _cliC[_cliMapa[k]] = String(_cliB[k]); });
+    const _cliR = await _vrDirecto('cliente_actualizar', { p_key: cliEditKey, p_campos: _cliC });
+    if (_cliR) _vrAuditar('cliente.actualizar', 'Cliente', cliEditKey, Object.keys(_cliC).join(',') + ' (directo, ' + (_cliR.filas || 0) + ' filas)', { key: cliEditKey, via: 'directo' });
+    else await apiSend('clientes.actualizar', _cliB);
     toast('Cliente actualizado','ok');
     document.getElementById('modal-cli-edit').classList.remove('on');
     // PERF v10 — update optimista: actualizar el cliente en memoria, NO recargar 2000
@@ -32340,7 +32380,9 @@ async function cliDelete(key) {
   if(!c)return;
   if(!await _uiSeguro('¿Eliminar a '+c.Nombre+' y TODOS sus pedidos? Esta acción no se puede deshacer.'))return;
   try {
-    const res=await apiSend('clientes.eliminar',{_key:key});
+    let res=await _vrDirecto('cliente_eliminar',{ p_key:key });   // 1-nov · VR_DIRECTO
+    if (res) _vrAuditar('cliente.eliminar', 'Cliente', key, 'Eliminado (directo) — ' + (res.filasEliminadas || 0) + ' filas', { key: key, via: 'directo' });
+    else res=await apiSend('clientes.eliminar',{_key:key});
     toast(c.Nombre+' eliminado ('+res.filasEliminadas+' filas)','ok');
     cliData=cliData.filter(x=>(x.Telefono||x.Nombre)!==key);
     _cliLsSet(cliData); _cliHistCache = {};
@@ -45274,7 +45316,9 @@ function _renderPapelera(w, rows) {
     if (!await npConfirm('¿Restaurar el pedido #'+nro+'? Volverá a aparecer en la lista de Pedidos.')) return;
     this.disabled = true; this.textContent = 'Restaurando...';
     try {
-      await apiSend('pedidos.papelera.restaurar', {NroPedido: nro});
+      const _rs = await _vrDirecto('pedido_restaurar', { p_nro: String(nro) });   // 1-nov · VR_DIRECTO
+      if (_rs) _vrAuditar('pedido.restaurar', 'Pedido', nro, 'Restaurado de la papelera (directo)', { nro: nro, via: 'directo' });
+      else await apiSend('pedidos.papelera.restaurar', {NroPedido: nro});
       _papeleraPendDel(nro);   // FIX QA: sacar del overlay (ya no está en papelera)
       // F1 23-jul: quitar la lápida y traer el pedido restaurado al grid AL INSTANTE
       try { _pedsTombDel(nro); } catch(_){}
@@ -45288,7 +45332,9 @@ function _renderPapelera(w, rows) {
     if (!await npConfirm('⚠ Eliminar DEFINITIVAMENTE el pedido #'+nro+'?\n\nEsta acción NO se puede deshacer. El pedido se borrará para siempre.')) return;
     this.disabled = true; this.textContent = 'Eliminando...';
     try {
-      await apiSend('pedidos.papelera.eliminarDefinitivo', {NroPedido: nro});
+      const _pg = await _vrDirecto('pedido_purgar', { p_nro: String(nro) }, /NO_ESTA_EN_PAPELERA/);   // 1-nov · VR_DIRECTO
+      if (_pg) _vrAuditar('pedido.eliminarDefinitivo', 'Pedido', nro, 'Eliminado DEFINITIVO (directo) — ' + (_pg.filas || 0) + ' filas', { nro: nro, via: 'directo' });
+      else await apiSend('pedidos.papelera.eliminarDefinitivo', {NroPedido: nro});
       _papeleraPendDel(nro);   // FIX QA: sacar del overlay
       toast('✓ Pedido #'+nro+' eliminado definitivamente', 'ok');
       loadPapelera();
@@ -45334,7 +45380,8 @@ async function papEscanearDuplicados(){
     if(!_mot) return;
     this.disabled=true; this.textContent='Eliminando…';
     try{
-      await apiSend('pedidos.eliminar',{NroPedido:nro, motivo:_mot.motivo, fusionadoEn:_mot.fusionadoEn});
+      const _el = await _vrDirecto('pedido_eliminar', { p_nro: String(nro), p_motivo: _vrMotivoPedido(_mot), p_force: false }, /No se puede eliminar/i);   // 1-nov · VR_DIRECTO
+      if (!_el) await apiSend('pedidos.eliminar',{NroPedido:nro, motivo:_mot.motivo, fusionadoEn:_mot.fusionadoEn});
       try{ _pedsTombAdd(nro); }catch(_){}
       pRaw=pRaw.filter(r=>String(r['NroPedido']||'').trim()!==String(nro));
       try{ lsSetPeds(pRaw.filter(r=>!r._extraCamDev&&!r._reciente&&!r._provisional), pLastSyncTs||Date.now()); }catch(_){}
