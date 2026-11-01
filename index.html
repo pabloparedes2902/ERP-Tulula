@@ -9886,7 +9886,11 @@ async function _homGuardar(original) {
   const btn = document.getElementById('hf-save');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
   try {
-    const r = await apiSend('homologaciones.guardar', body);
+    // VR_HOM_1NOV · se guarda directo en la base (homologaciones_erp es la verdad); Apps Script solo de respaldo
+    let r = await _vrDirecto('hom_guardar', { p_sistema: body.Sistema, p_entra: body.NombreEntra, p_oficial: body.NombreOficial,
+                                              p_original: body.original, p_notas: body.Notas }, /HOM:/);
+    if (!r) r = await apiSend('homologaciones.guardar', body);
+    else if (r.recargar || !r.rows) r = null;
     HOM.editing = null;
     _homAplicar(r);
     toast('✓ Homologación guardada: ' + esc(body.NombreEntra) + ' → ' + esc(body.NombreOficial), 'ok');
@@ -9903,7 +9907,9 @@ async function _homDesactivar(clave, activar) {
     if (!ok) return;
   }
   try {
-    const r = await apiSend('homologaciones.desactivar', { Clave: clave, Activar: !!activar });
+    let r = await _vrDirecto('hom_activar', { p_clave: clave, p_activar: !!activar }, /HOM:/);   // VR_HOM_1NOV
+    if (!r) r = await apiSend('homologaciones.desactivar', { Clave: clave, Activar: !!activar });
+    else if (r.recargar || !r.rows) r = null;
     _homAplicar(r);
     toast(activar ? ('✓ Reactivada: ' + esc(clave)) : ('✓ Marcada inactiva: ' + esc(clave)), 'ok');
     if (r && r.aviso) toast(r.aviso, 'warn');
@@ -12707,8 +12713,9 @@ function _renderAsesorasMes(d, mes){
   const filas = ((d && d.asesoras) || []).map(a => {
     const x = (a.meses || []).find(k => +k.mes === +mes) || {};
     const pct = (+x.meta > 0) ? (+x.margen || 0) / (+x.meta) * 100 : null;
-    return { n: String(a.nombre || '').charAt(0) + String(a.nombre || '').slice(1).toLowerCase(), v: +x.ventas || 0, p: +x.pedidos || 0, pct: pct };
-  }).filter(f => f.v > 0 || f.pct != null).sort((a, b) => b.v - a.v);
+    return { n: String(a.nombre || '').charAt(0) + String(a.nombre || '').slice(1).toLowerCase(), v: +x.ventas || 0, p: +x.pedidos || 0, pct: pct, act: x.activa };
+  /* 1-nov (Pablo: Dayann hasta oct, Camila desde nov) · el mes en que la asesora no trabaja (activa=false) no se muestra */
+  }).filter(f => f.act !== false && (f.v > 0 || f.pct != null)).sort((a, b) => b.v - a.v);
   if (!filas.length) return '<div class="empty">Sin ventas de asesoras en el mes</div>';
   const col = p => p == null ? 'var(--mu)' : p >= 125 ? '#38bdf8' : p >= 100 ? 'var(--gn)' : p >= 75 ? 'var(--am)' : 'var(--rd)';
   let h = '';
@@ -22930,7 +22937,7 @@ const EDIT_CELDA_COLS = {
   'Courier':           { tipo:'select', campo:'Courier',          opts:()=>mOpts('Courier') },
   'ORIGEN':            { tipo:'select', campo:'Origen',           opts:()=>mOpts('Origen') },
   'CANAL':             { tipo:'select', campo:'Canal',            opts:()=>mOpts('Canal') },
-  'Asesora':           { tipo:'select', campo:'Asesora',          opts:()=>mOpts('Asesora', ['DAYANN','ANGIE','LUCIA','OTROS','N/A']) },
+  'Asesora':           { tipo:'select', campo:'Asesora',          opts:()=>mOpts('Asesora', ['ANGIE','CAMILA','LUCIA','OTROS','N/A']) },
   'Comentarios Envio': { tipo:'text',   campo:'ComentariosEnvio' },
   'Fecha Envio':       { tipo:'date',   campo:'FechaEnvio' },
   // ── Datos de la clienta (ago-2026) ──────────────────────────────────────────
@@ -33313,6 +33320,37 @@ function _yayTipoPill(k) { const t = _yayTipoInfo(k); return '<span title="' + e
 let _stYayTipo = '';   // filtro por tipo ('' = todos)
 /** 30-oct (fase 2B, Pablo aprobó) · CAMBIAR TIPO con historial: mueve unidades no disponibles de un tipo a otro (rpc falla_cambiar_tipo).
  *  No toca el stock vendible ni el total de no disponibles; cada movimiento queda guardado en la fila (quién, cuándo, de, a, cuántas). */
+/** 1-nov (Pablo: «sugiéreme qué hacer con las 1,130 fallas sin decidir») · SUGERENCIA por talla para «Falla sin decidir».
+ *  Solo sugiere (preselecciona el destino en el modal); la decisión y el clic siguen siendo de logística.
+ *  Reglas: accesorio/interior → Descarte · se agotó en bueno y se vende (60 días) → Corrección (arreglar y vuelve a precio completo)
+ *  · no se vende hace 60 días → Yayita de liquidación · si hay stock bueno → Yayita. Todas vinieron del cuadre con el Drive del 27-sep
+ *  sin detalle: primero confirmar que la prenda está físicamente. */
+async function _yaySugerir(prenda, diseno, color, tallas, treal) {
+  const out = {}; const up = v => String(v || '').trim().toUpperCase();
+  let v60 = null, LM = null;
+  try { LM = await _cdKardex(); } catch (_) {}
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (tok) {
+      const d = new Date(Date.now() - 60 * 864e5).toISOString().slice(0, 10);
+      const u = SB_URL + '/rest/v1/v_movimientos_stock?select=d_ventas&prenda=eq.' + encodeURIComponent(prenda) + '&diseno=eq.' + encodeURIComponent(diseno)
+        + '&color=eq.' + encodeURIComponent(color) + '&d_ventas=neq.0&fecha=gte.' + d;
+      const r = await fetch(u, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Accept-Profile': 'erp' } });
+      if (r.ok) { const j = await r.json(); v60 = (j || []).reduce((a, x) => a + (Number(x.d_ventas) || 0), 0); }
+    }
+  } catch (_) {}
+  (tallas || []).forEach(t => {
+    const k = [up(prenda), up(diseno), up(color), up((treal && treal[t]) || t)].join('|'), L = (LM && LM[k]) || null;
+    const bueno = L ? (Number(L.conf) || 0) - (Number(L.ventas) || 0) : null;
+    let a = 'YAYITA', por;
+    if (/^(INTERIOR|ARETE|COLLAR|ANILLO|PULSERA|COLETS)$/.test(up(prenda))) { a = 'DESCARTE'; por = 'accesorio o prenda interior con falla: no conviene arreglarla ni venderla'; }
+    else if (bueno != null && bueno <= 0 && v60 > 0) { a = 'CORRECCION'; por = 'se agotó en bueno y se vendió ' + v60 + ' en 60 días: si la falla se arregla, vuelve a precio completo'; }
+    else if (v60 === 0) { por = 'no se vende hace 60 días: sácala como yayita de liquidación (si está muy dañada, Descarte)'; }
+    else { por = 'hay ' + (bueno == null ? '?' : bueno) + ' en bueno' + (v60 != null ? ' y se vendió ' + v60 + ' en 60 días' : '') + ': véndela como yayita'; }
+    out[t] = { a: a, por: por };
+  });
+  return out;
+}
 function _yayCambiarTipoAbrir(prenda, diseno, color, tipo, alTerminar) {
   const f = (_stDataYay || []).find(x => x.prenda === prenda && x.diseno === diseno && x.color === color && x.tipo === tipo); if (!f) return;
   let m = document.getElementById('yay-tipo-mod'); if (m) m.remove();
@@ -33345,6 +33383,16 @@ function _yayCambiarTipoAbrir(prenda, diseno, color, tipo, alTerminar) {
     } catch (err) { b.disabled = false; msg.style.color = '#f87171'; msg.textContent = '✗ ' + err.message; try { _errGuardar('yay.cambiarTipo', err.message); } catch (_) {} }
   });
   document.body.appendChild(m);
+  if (tipo === 'SIN' && tal.length) {   // 1-nov · sugerencia preseleccionada (logística decide)
+    _yaySugerir(prenda, diseno, color, tal, f.treal).then(sg => {
+      if (!document.body.contains(m)) return;
+      m.querySelectorAll('.yt-ok').forEach(b => { const t = b.dataset.tal, x = sg[t]; if (!x) return; const fila = b.parentElement, sel = fila.querySelector('.yt-a');
+        if (sel) sel.value = x.a;
+        const n = document.createElement('div'); n.style.cssText = 'font-size:11px;color:var(--mu);margin:-2px 0 6px 52px';
+        n.textContent = '💡 Sugerido: ' + _yayTipoInfo(x.a).lbl + ' — ' + x.por; fila.after(n); });
+      const msg = m.querySelector('#yt-msg'); if (msg && !msg.textContent) msg.textContent = 'Vinieron del cuadre con el Drive (27-sep) sin detalle: antes de cambiar, confirma que la prenda está físicamente. Si no está, elige Pérdida.';
+    }).catch(() => {});
+  }
 }
 
 async function _yayStockTipos() {
