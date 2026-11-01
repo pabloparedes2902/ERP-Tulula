@@ -634,7 +634,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
   <!-- I-13 — Modal de búsqueda global -->
   <div id="modal-search" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:600;align-items:flex-start;justify-content:center;padding-top:80px">
     <div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);padding:18px;width:520px;max-width:92vw;box-shadow:0 10px 40px rgba(0,0,0,.5)">
-      <input id="search-input" type="text" placeholder="Buscar por NroPedido, cliente, DNI o teléfono..." style="width:100%;padding:12px 14px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:14px;outline:none" autocomplete="off">
+      <div style="display:flex;gap:8px;align-items:center"><input id="search-input" type="text" placeholder="Pedido (Nro, cliente, DNI, teléfono) o módulo..." style="flex:1;min-width:0;width:100%;padding:12px 14px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:14px;outline:none" autocomplete="off"><button id="search-x" class="btn bg bs" title="Cerrar (Esc)" style="font-size:12px">✕</button></div>
       <div id="search-results" style="margin-top:10px;max-height:50vh;overflow-y:auto"></div>
       <div style="margin-top:8px;font-size:11px;color:var(--mu);text-align:right">ESC para cerrar · ENTER para abrir el primero</div>
     </div>
@@ -2646,6 +2646,7 @@ function _runSearch(q) {
   // 1) INSTANTÁNEO: lo que ya está cargado en el navegador
   const locales = _searchLocal(q);
   _pintarSearch(locales, res, true);
+  try { if (typeof _f8ModPintar === 'function') _f8ModPintar(q, res); } catch (_) {}   // 1-nov · Fase 8
   // 2) BACKEND: busca en TODO el historial (aunque el pedido no esté cargado)
   if (q.length >= 2) {
     _buscarRapido(q).then(bk => {
@@ -2667,6 +2668,7 @@ function _runSearch(q) {
       locales.forEach(o => { map.set(String(o.nro || '').trim(), o); });
       rows.forEach(o => { const k = String(o.nro || '').trim(); if (!map.has(k)) map.set(k, o); });
       _pintarSearch([...map.values()].slice(0, 30), res, false);
+      try { if (typeof _f8ModPintar === 'function') _f8ModPintar(q, res); } catch (_) {}   // 1-nov · Fase 8
     }).catch(() => { /* si falla el backend, quedan los locales */ });
   }
 }
@@ -2725,6 +2727,112 @@ async function _abrirPedidoDesdeBusqueda(nro) {
     if (typeof toast === 'function') toast('No se pudo abrir el pedido ' + nro, '');
   } catch(e) {}
 }
+
+// ══ FASE8:INICIO (1-nov-2026) · historial «quién cambió qué» · Ctrl+K con módulos · inicio por rol ══
+// Reversa por pieza: poner en false y publicar.
+const F8_HIST = true;        // 📦 Historial pedido: suma la tabla «Quién cambió qué» (public.auditoria, por nro)
+const F8_BUSCA_MOD = true;   // Ctrl+K: además de pedidos, ofrece «Ir a <módulo>»
+const F8_INICIO_ROL = false; // 1-nov · APAGADO hasta que Pablo lo apruebe (cambia su regla «volver al último módulo»).
+// Primera pantalla de cada rol (se toma la primera permitida y visible). Criterio propio, a confirmar por Pablo.
+const F8_INICIO = { Administrador: ['dashboard', 'pedidos'], Logistica: ['pedidos', 'inventario'], Ventas: ['pedidos', 'clientes'], Marketing: ['marketing', 'flujo'] };
+
+/** Pantalla de inicio del rol. permitida(pg) y visible(pg) los pone quien llama (bootApp). '' = no hay. */
+function _f8InicioRol(rol, permitida, visible) {
+  const lista = (typeof F8_INICIO !== 'undefined' && F8_INICIO[rol]) || ['pedidos'];
+  for (const pg of lista) { try { if (permitida(pg) && visible(pg)) return pg; } catch (_) {} }
+  return '';
+}
+
+const _f8Norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+/** Módulos que coinciden con lo escrito: [{pg, t}] (máx. 5, sin repetir título). Un número puro no busca módulos. */
+function _f8Modulos(q, titulos, permitida, visible) {
+  const n = _f8Norm(q);
+  if (n.length < 2 || /^[\d\s#-]+$/.test(n)) return [];
+  const out = [], vistos = new Set();
+  Object.keys(titulos || {}).forEach(pg => {
+    if (out.length >= 5) return;
+    const t = titulos[pg], nt = _f8Norm(t);
+    if (vistos.has(nt)) return;
+    if (nt.indexOf(n) < 0 && _f8Norm(pg).indexOf(n) < 0) return;
+    try { if (!permitida(pg) || !visible(pg)) return; } catch (_) { return; }
+    vistos.add(nt); out.push({ pg: pg, t: t });
+  });
+  return out;
+}
+function _f8PgVisible(pg) {
+  const b = document.querySelector('.nb[data-pg="' + pg + '"]');
+  if (b) return b.style.display !== 'none';
+  const pad = (typeof PG_PADRE !== 'undefined' && PG_PADRE[pg]) || '';
+  const bp = pad && document.querySelector('.nb[data-pg="' + pad + '"]');
+  return !!(bp && bp.style.display !== 'none' && document.getElementById('pg-' + pg));
+}
+/** Pinta «Ir a <módulo>» arriba de los pedidos encontrados (Enter abre el primero). */
+function _f8ModPintar(q, res) {
+  if (!(typeof F8_BUSCA_MOD !== 'undefined' && F8_BUSCA_MOD) || !res) return;
+  const viejo = res.querySelector('.sr-mods'); if (viejo) viejo.remove();
+  const mods = _f8Modulos(q, (typeof TITLES !== 'undefined' && TITLES) || {}, (typeof _pgPermitida === 'function' ? _pgPermitida : () => true), _f8PgVisible);
+  if (!mods.length) return;
+  if (!res.querySelector('.sr-item')) res.innerHTML = res.innerHTML.indexOf('Sin resultados') >= 0 ? '' : res.innerHTML;
+  const box = document.createElement('div'); box.className = 'sr-mods';
+  box.innerHTML = mods.map(m => '<div class="sr-item sr-mod" data-pg="' + esc(m.pg) + '" style="padding:8px 12px;border-radius:var(--r);cursor:pointer;display:flex;align-items:center;gap:10px;font-size:13px" onmouseenter="this.style.background=\'var(--bg3)\'" onmouseleave="this.style.background=\'\'">'
+    + '<span style="color:var(--mu);min-width:80px;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.04em">Módulo</span><span style="flex:1">Ir a ' + esc(m.t) + '</span></div>').join('');
+  res.insertBefore(box, res.firstChild);
+  box.querySelectorAll('.sr-mod').forEach(it => it.addEventListener('click', () => {
+    try { window._globalSearchClose(); } catch (_) {}
+    try { navegarA(it.getAttribute('data-pg')); } catch (_) {}
+  }));
+}
+// ✕ del buscador (regla de diseño: todo flotante se cierra con ✕)
+setTimeout(() => { const x = document.getElementById('search-x'); if (x && !x._f8) { x._f8 = 1; x.addEventListener('click', () => { try { window._globalSearchClose(); } catch (_) {} }); } }, 0);
+
+const _F8_ACC = { 'pedido.crear': 'Creó el pedido', 'pedido.actualizar': 'Editó', 'pedido.agregar': 'Agregó prendas', 'pedido.eliminarPrenda': 'Quitó una prenda',
+  'pedido.eliminar': 'Mandó a la papelera', 'pedido.restaurar': 'Restauró', 'pedido.eliminarDefinitivo': 'Borró definitivo', 'pago.agregar': 'Agregó pago',
+  'pago.eliminar': 'Borró pago', 'constancia.setPago': 'Constancia', 'pedido.loteActualizar': 'Cambió lote', 'pedido.moverLote': 'Movió lote',
+  'pedido.aplicarSaldo': 'Aplicó saldo a favor', 'reserva.convertir': 'Reserva → pedido', 'pedidos.actualizar.choque': 'Choque de edición' };
+/** Filas de la bitácora (public.auditoria) de un número. null = no se pudo leer. */
+async function _f8HistLeer(nro) {
+  const n = String(nro || '').trim(); if (!n) return [];
+  try {
+    if (typeof SB_URL !== 'undefined' && typeof SB_ANON !== 'undefined' && SB_ANON && typeof _sbSesionAsegurar === 'function') {
+      const tok = await _sbSesionAsegurar();
+      if (tok) {
+        const r = await fetch(SB_URL + '/rest/v1/auditoria?select=ts,usuario,accion,entidad,detalles&nro_entidad=eq.' + encodeURIComponent(n) + '&order=ts.desc&limit=200',
+          { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+        if (r.ok) { const a = await r.json(); if (Array.isArray(a)) return a; }
+      }
+    }
+  } catch (e) { try { _errLog('f8.hist', e); } catch (_) {} }
+  // Respaldo: la bitácora de Configuración › Auditoría (solo quien ve Configuración)
+  try {
+    if (typeof _pgPermitida === 'function' && _pgPermitida('config')) {
+      const r = await apiSend('auditoria.listar', { limite: 200, buscar: n });
+      return (r && r.logs || []).filter(l => String(l.nroEntidad || '').trim() === n)
+        .map(l => ({ ts: l.timestamp, usuario: l.usuario, accion: l.accion, entidad: l.entidad, detalles: l.detalles })).reverse();
+    }
+  } catch (_) {}
+  return null;
+}
+function _f8HistHtml(filas) {
+  if (filas === null) return '<div class="ui-nota">No se pudo leer el historial de cambios.</div>';
+  if (!filas.length) return '<div class="ui-nota">Sin cambios anotados para este número.</div>';
+  const f = v => { const d = new Date(v); return isNaN(d.getTime()) ? esc(String(v || '')) : d.toLocaleString('es-PE', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }); };
+  const td = 'padding:7px 12px;font-size:13px;vertical-align:top';
+  return '<div style="border:1px solid var(--bd);border-radius:var(--r);overflow:auto;max-height:40vh"><table style="width:100%;border-collapse:collapse">'
+    + '<thead><tr style="background:var(--bg3)">' + ['Cuándo', 'Quién', 'Qué', 'Detalle'].map(t => '<th class="ui-th" style="padding:8px 12px;text-align:left">' + t + '</th>').join('') + '</tr></thead><tbody>'
+    + filas.map(x => '<tr style="border-top:1px solid var(--bd)"><td style="' + td + ';white-space:nowrap">' + f(x.ts) + '</td>'
+      + '<td style="' + td + '">' + esc(String(x.usuario || '—').split('@')[0]) + '</td>'
+      + '<td style="' + td + ';white-space:nowrap">' + esc(_F8_ACC[x.accion] || x.accion || '—') + '</td>'
+      + '<td style="' + td + ';color:var(--mu);font-size:12px">' + esc(x.detalles || '') + '</td></tr>').join('')
+    + '</tbody></table></div>';
+}
+async function _f8HistPintar(nro, el) {
+  if (!el) return;
+  el.innerHTML = '<div class="ui-blo" style="margin:14px 0 8px">Quién cambió qué</div><div class="ui-nota">Cargando…</div>';
+  const filas = await _f8HistLeer(nro);
+  if (!el.isConnected) return;
+  el.innerHTML = '<div class="ui-blo" style="margin:14px 0 8px">Quién cambió qué' + (filas && filas.length ? ' <span class="ui-nota">(' + filas.length + ')</span>' : '') + '</div>' + _f8HistHtml(filas);
+}
+// ══ FASE8:FIN ══
 
 // I-6 — Sidebar colapsable. Por defecto COLAPSADA. Botón "📌" para fijar abierta.
 (function _initSidebar(){
@@ -8444,6 +8552,7 @@ async function _cosFichaWebAbrir(v, shopifyId) {
     CFW.mangaOk = ('manga' in sh); CFW.manga = CFW.mangaOk ? (sh.manga || '') : _cfwMangaDe(sh.ficha); CFW.mangaToc = false;   // 16-oct · manga desde la base (o la que ya muestra la web)
     if (_cfwMangaFija()) { CFW.manga = _cfwMangaFija(); CFW.mangaToc = true; }   // 17-oct · chaleco
     _cosFichaWebPintar();
+    CFW._copia = { v: v, ficha: _cfwEst(sh.ficha || null), arm: (() => { try { _cfwLeer(); } catch (_) {} return JSON.stringify(CFW.f); })() }; CFW._fresca = false; CFW._conflicto = null;   // 1-nov (ola 3)
     _cfwFotosFrescas(v);   // 20-oct (Angie) · la copia del navegador puede traer fotos viejas: se trae la lista de hoy por detrás
     return;
   }
@@ -8459,6 +8568,7 @@ async function _cosFichaWebAbrir(v, shopifyId) {
     if (!r || !r.ok) throw new Error((r && r.texto) || 'La tienda no respondió.');
     CFW.v = v; CFW.fotos = r.fotos || []; CFW.gid = r.shopifyId || ''; CFW.handle = r.handle || ''; CFW.titulo = r.titulo || '';
     CFW.comun = (r.comun && r.comun.length) ? r.comun : CFW.comun; CFW.abierto = ''; CFW.abre = ''; CFW.nueva = !r.ficha;
+    CFW._copia = null; CFW._fresca = true; CFW._conflicto = null; CFW._frescaP = null; try { _cfwFrescaAviso(''); } catch (_) {}   // 1-nov (ola 3) · leída de la tienda: no es copia
     CFW.vistasOp = (r.vistas && r.vistas.length) ? r.vistas : CFW_VISTAS; if (r.plantillas) CFW.plant = r.plantillas; CFW.vista = r.vista; CFW.editOp = false;
     CFW.f = _cfwArmar(r.ficha);
     CFW.mangaOk = r.manga != null; CFW.manga = CFW.mangaOk ? (r.manga || '') : _cfwMangaDe(r.ficha); CFW.mangaToc = false;   // 16-oct · manga
@@ -8475,17 +8585,73 @@ function _cfwRemap(a, lst) {   // misma regla que _fwRemap_ (FichaWeb.gs)
   if (!cand.length) { const cmp = x => sinU(tallo(x)).replace(/[^a-z0-9]/g, ''), c = cmp(a); if (c.length >= 12) cand = lst.filter(f => { const k = cmp(f); return k.length >= 12 && (k.indexOf(c) >= 0 || c.indexOf(k) >= 0); }); }   // 21-oct
   const sf = cand.filter(f => /sinfondo-/.test(f)); return (sf.length ? sf : cand)[0] || '';
 }
-async function _cfwFotosFrescas(v) {
+// 1-nov-2026 (ola 3 · preventa/ficha) · La copia de la tienda (shopify_ficha) puede estar VIEJA: Shopify dejó de avisar los cambios
+// (medido 1-nov: no queda el aviso PRODUCTS_UPDATE). La ficha se sigue pintando al instante con la copia, pero por detrás se compara con
+// la tienda: fotos Y historia. Si la historia cambió y aún no editaste → se muestra la de la tienda. Si ya editaste → NO se guarda encima
+// (aviso con ✕ y botón para cargar lo de la tienda). Guardar espera esa comprobación. Lo leído deja la copia de la base al día (BLOQUE_2).
+function _cfwEst(o) { const f = x => (x === null || x === undefined || typeof x !== 'object') ? JSON.stringify(x === undefined ? null : x) : Array.isArray(x) ? '[' + x.map(f).join(',') + ']' : '{' + Object.keys(x).filter(k => x[k] !== undefined).sort().map(k => JSON.stringify(k) + ':' + f(x[k])).join(',') + '}'; return f(o); }
+function _cfwFrescaAviso(html, tipo) {   // arriba de la historia, FUERA de cfw-box (no se borra al redibujar) · siempre con ✕
+  const box = document.getElementById('cfw-box'); if (!box || !box.parentNode) return null;
+  let el = document.getElementById('cfw-fresca');
+  if (!html) { if (el) el.remove(); return null; }
+  if (!el) { el = document.createElement('div'); el.id = 'cfw-fresca'; box.parentNode.insertBefore(el, box); }
+  const c = tipo === 'err' ? 'color:#991b1b;background:#fee2e2' : tipo === 'warn' ? 'color:#92400e;background:#fef3c7' : tipo === 'ok' ? 'color:var(--gn);background:transparent' : 'color:var(--mu);background:transparent';
+  el.style.cssText = 'position:relative;font-size:12px;border-radius:8px;padding:5px 28px 5px 10px;margin:4px 0;' + c;
+  el.innerHTML = html + '<button type="button" class="cfw-fr-x" title="Cerrar" style="position:absolute;top:2px;right:6px;border:none;background:none;cursor:pointer;font-size:14px;color:inherit">✕</button>';
+  const x = el.querySelector('.cfw-fr-x'); if (x) x.onclick = ev => { ev.preventDefault(); el.remove(); };
+  return el;
+}
+function _cfwEspejoRefrescar(r) {   // BLOQUE_2 · deja la copia de la base igual a lo que se acaba de leer de la tienda (si la función no está, no pasa nada)
   try {
-    const r = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: CFW.gid || '' });
-    if (!r || !r.ok || !Array.isArray(r.fotos) || CFW.v !== v || !CFW.f) return;
-    const lst = r.fotos.map(p => p.archivo);
-    if (lst.join('|') === (CFW.fotos || []).map(p => p.archivo).join('|')) return;   // nada cambió: no se redibuja
-    _cfwLeer(); CFW.fotos = r.fotos;
-    ['beneficios', 'ocasiones'].forEach(s => (CFW.f[s] || []).forEach(x => { if (x && x.foto && lst.indexOf(x.foto) < 0) { const n = _cfwRemap(x.foto, lst); if (n) x.foto = n; } }));
-    try { const k = _cftGid(CFW.gid); if (CFT.por && CFT.por[k]) { CFT.por[k].fotos = r.fotos.map(p => String(p.mini || '').replace(/[?&]width=240$/, '')); localStorage.setItem(CFT_KEY, JSON.stringify({ t: CFT.t, por: CFT.por })); } } catch (_) {}
-    _cosFichaWebPintar();
+    const id = String(r.shopifyId || CFW.gid || '').replace(/\D/g, ''); if (!id || typeof _puertaRpc !== 'function') return;
+    const fotos = (r.fotos || []).map(p => String(p.mini || '').replace(/[?&]width=240$/, ''));
+    if (!fotos.every(u => /^https:\/\/cdn\.shopify\.com\//.test(u))) return;
+    _puertaRpc('shopify_ficha_refrescar', { p_id: id, p_titulo: r.titulo || null, p_handle: r.handle || null, p_estado: String(r.estado || ''), p_fotos: fotos, p_ficha: r.ficha || null }, 4000).catch(() => {});
   } catch (_) {}
+}
+function _cfwConflictoAviso(v) {
+  const a = _cfwFrescaAviso('⚠ La tienda tiene una versión MÁS NUEVA de esta historia que la copia con la que empezaste a editar. Para no borrar lo de la tienda, <b>no se guarda encima</b>. <a href="#" class="cfw-fr-c">Cargar lo de la tienda</a> (se pierde lo que escribiste aquí).', 'err');
+  const l = a && a.querySelector('.cfw-fr-c'); if (!l) return;
+  l.onclick = ev => { ev.preventDefault(); const r = CFW._conflicto; if (!r || CFW.v !== v) return;
+    CFW.f = _cfwArmar(r.ficha); CFW.nueva = !r.ficha; CFW._conflicto = null; if (CFW._copia) CFW._copia.ficha = _cfwEst(r.ficha || null);
+    _cosFichaWebPintar(); try { _cfwLeer(); } catch (_) {} if (CFW._copia) CFW._copia.arm = JSON.stringify(CFW.f);
+    _cfwFrescaAviso('✓ Cargado lo último de la tienda.', 'ok'); };
+}
+function _cfwFotosFrescas(v) { const p = _cfwFrescasLeer(v); CFW._frescaP = p; return p; }
+async function _cfwFrescasLeer(v) {
+  CFW._fresca = false; _cfwFrescaAviso('↻ Comprobando con la tienda… (lo que ves sale de la copia del ERP)');
+  let r = null; try { r = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: CFW.gid || '' }); } catch (_) { r = null; }
+  if (CFW.v !== v || !CFW.f) return false;
+  if (!r || !r.ok || !Array.isArray(r.fotos)) {
+    const a = _cfwFrescaAviso('⚠ No pude comprobar con la tienda: lo que ves sale de la copia del ERP y puede estar viejo. Antes de guardar lo vuelvo a comprobar. <a href="#" class="cfw-fr-r">Reintentar</a>', 'warn');
+    const l = a && a.querySelector('.cfw-fr-r'); if (l) l.onclick = ev => { ev.preventDefault(); _cfwFotosFrescas(v); };
+    return false;
+  }
+  const lst = r.fotos.map(p => p.archivo), cop = (CFW._copia && CFW._copia.v === v) ? CFW._copia : null;
+  const cambioFotos = lst.join('|') !== (CFW.fotos || []).map(p => p.archivo).join('|');
+  const viva = _cfwEst(r.ficha || null), cambioFicha = !!(cop && cop.ficha !== viva);
+  let alDia = false;
+  _cfwLeer();
+  if (cambioFicha) {
+    if (!CFW._conflicto && JSON.stringify(CFW.f) === cop.arm) { CFW.f = _cfwArmar(r.ficha); CFW.nueva = !r.ficha; cop.ficha = viva; alDia = true; }   // nada editado todavía
+    else CFW._conflicto = r;   // ya editó sobre la copia vieja
+  }
+  if (cambioFotos) {
+    CFW.fotos = r.fotos;
+    ['beneficios', 'ocasiones'].forEach(s => (CFW.f[s] || []).forEach(x => { if (x && x.foto && lst.indexOf(x.foto) < 0) { const n = _cfwRemap(x.foto, lst); if (n) x.foto = n; } }));
+  }
+  CFW._fresca = true;
+  let sh = null;
+  try { const k = _cftGid(CFW.gid); sh = (CFT.por && CFT.por[k]) || null;
+    const difiere = cambioFotos || cambioFicha || !!(sh && ((r.estado && sh.estado !== r.estado) || (r.titulo && sh.titulo !== r.titulo)));
+    if (difiere) { if (sh) { sh.fotos = r.fotos.map(p => String(p.mini || '').replace(/[?&]width=240$/, '')); sh.ficha = r.ficha || null; if (r.estado) sh.estado = r.estado; if (r.titulo) sh.titulo = r.titulo; localStorage.setItem(CFT_KEY, JSON.stringify({ t: CFT.t, por: CFT.por })); }
+      _cfwEspejoRefrescar(r); }
+  } catch (_) {}
+  if (cambioFotos || alDia) { _cosFichaWebPintar(); if (cop && !CFW._conflicto) { try { _cfwLeer(); } catch (_) {} cop.arm = JSON.stringify(CFW.f); } }
+  if (CFW._conflicto) _cfwConflictoAviso(v);
+  else if (alDia || cambioFotos) _cfwFrescaAviso('✓ Al día con la tienda' + (alDia ? ': la historia de la copia estaba vieja y ya ves la de la tienda.' : ' (fotos actualizadas).'), 'ok');
+  else _cfwFrescaAviso('');
+  return true;
 }
 function _cfwLeer() {      // lo escrito en pantalla → CFW.f (antes de redibujar o guardar, para no perder texto)
   const box = document.getElementById('cfw-box'); if (!box || !CFW.f) return;
@@ -8782,6 +8948,18 @@ function _cosFichaWebPintar(estado) {
   try { _cosFichaSugerir(); _cosFichaPrev(); } catch (_) {}   // 9-oct (Pablo) · el texto para Google se prellena solo (solo lo vacío)
 }
 async function _cosFichaWebGuardar() {
+  if (CFW._guardando) return;
+  { const v0 = CFW.v, cop = (CFW._copia && CFW._copia.v === v0) ? CFW._copia : null;   // 1-nov (ola 3) · nunca se guarda encima de algo más nuevo de la tienda
+    const no = t => { const o = document.getElementById('cfw-st'); if (o) { o.style.color = 'var(--rd)'; o.textContent = t; } toast(t, 'err'); throw new Error(t); };
+    if (cop && !CFW._fresca) {
+      const o0 = document.getElementById('cfw-st'); if (o0) { o0.style.color = 'var(--mu)'; o0.textContent = 'Comprobando con la tienda antes de guardar…'; }
+      try { await CFW._frescaP; } catch (_) {}
+      if (CFW.v !== v0) return;
+      if (!CFW._fresca) { try { await _cfwFotosFrescas(v0); } catch (_) {} if (CFW.v !== v0) return; }
+      if (!CFW._fresca) no('No se guardó: no pude comprobar con la tienda (puede tener algo más nuevo). Reintenta en un momento.');
+    }
+    if (cop && CFW._conflicto) no('No se guardó: la tienda tiene una versión más nueva de esta historia. Usa «Cargar lo de la tienda» (aviso de arriba).');
+  }
   if (CFW._guardando) return; CFW._guardando = true; setTimeout(() => { CFW._guardando = false; }, 4000);   // 13-oct · sin dobles guardados (botón + automático)
   _cfwLeer();
   CFW.f.ocasiones = CFW.f.ocasiones.map(o => o.foto ? o : { nombre: '', foto: '' }); CFW.f.comparacion = []; delete CFW.f.prenda.borrador;   // 8-oct · Tienda (al guardar Pablo, el borrador prellenado pasa a revisado)
@@ -8798,6 +8976,7 @@ async function _cosFichaWebGuardar() {
     if (r === undefined) r = await apiSend('costos.fichaWeb', _cuerpoFw);
     if (!r || !r.ok) throw new Error((r && r.texto) || 'La tienda no respondió.');
     CFW.f = _cfwArmar(r.ficha); CFW.nueva = false;
+    if (CFW._copia && CFW._copia.v === CFW.v) { CFW._copia.ficha = _cfwEst(r.ficha || null); CFW._conflicto = null; }   // 1-nov (ola 3) · lo guardado es lo último
     if (r.manga != null) { CFW.manga = r.manga || ''; CFW.mangaOk = true; CFW.mangaToc = false; }   // 16-oct · manga
     try { const k = _cftGid(CFW.gid); if (CFT.por && CFT.por[k]) { CFT.por[k].ficha = r.ficha || null; if (r.manga != null) CFT.por[k].manga = r.manga || ''; localStorage.setItem(CFT_KEY, JSON.stringify({ t: CFT.t, por: CFT.por })); } } catch (_) {}   // 6-oct · la copia queda al día
     _cosFichaWebPintar('✓ ' + esc(r.texto || 'Guardado en la tienda.') + (r.handle ? ' <a href="https://tulula.com.pe/products/' + esc(r.handle) + '" target="_blank" rel="noopener" style="color:var(--ac)">Ver el producto →</a>' : ''));
@@ -9204,10 +9383,70 @@ function _cosPendCopiar(nombre) {
 }
 // 15-oct (Pablo) · «Guardar cambios» guarda TODO lo editado en la ficha: tabla de medidas, categorías y la historia de la tienda
 // >>> 22-oct-2026 (Pablo) · STOCK Y PREVENTA en la ficha: sin stock no se publica, salvo preventa con fecha de llegada (Preventa.gs)
+// >>> 1-nov-2026 (ola 3 · preventa) · STOCK Y PREVENTA AL INSTANTE desde la base (antes: Apps Script ~9-13 s por cada ficha abierta)
+// Mismo cálculo que el servidor (Preventa.gs _pvStockDe_ → CostosBase.gs _cosShopDeseado0_/_cosShopSaldos_): stock = conf − ventas de
+// los MOVIMIENTOS (rpc stock_libro_movimientos), sumado por SKU, cada SKU con piso 0. La preventa sale de rpc preventa_base (BLOQUE_1).
+// Si algo no responde (o la prenda no se puede armar), se usa el camino de siempre (Apps Script). Guardar/quitar siguen yendo al
+// servidor, que vuelve a leer todo y vuelve a exigir la regla al publicar: la copia nunca pisa nada.
+function _pvSku(x) { return String(x == null ? '' : x).toUpperCase().replace(/\s+/g, ''); }
+function _pvSaldos(L, prod, dis) {
+  let suf = '', dd = String(dis); const msf = /^(.+?)\s+-\s+(\S+)$/.exec(dd);
+  if (msf) { dd = msf[1]; suf = msf[2].toUpperCase(); }
+  const m = {};
+  L.forEach(x => {
+    if (String(x.prenda) !== String(prod) || String(x.diseno) !== dd) return;
+    let c = String(x.color == null ? '' : x.color).toUpperCase().trim();
+    if (suf) { if (!(c.length > suf.length && c.slice(-(suf.length + 1)) === ' ' + suf)) return; c = c.slice(0, c.length - suf.length - 1); }
+    const k = _pvSku(String(x.prenda) + dd + c + (suf ? ' ' + suf : '') + x.talla);
+    m[k] = (m[k] || 0) + ((Number(x.conf) || 0) - (Number(x.ventas) || 0));
+  });
+  return m;
+}
+function _pvStockCalc(L, diseno) {
+  let d = String(diseno || '').trim().toUpperCase();
+  const cc = /^CONJUNTO\s+(.+?)\s*\(\s*([^()+\s]+)\s*\)\s*$/.exec(d);   // nombre corto «CONJUNTO X (BLAZER)» → largo, como _cosConjLargo_ (CostosBase.gs)
+  if (cc) { const n = cc[1].trim(); d = 'CONJUNTO ' + n + ' (' + cc[2] + ' ' + n + ' + PANTALON ' + (n === 'MADONNA' ? 'ATENAS' : n) + ')'; }
+  const mc = /^CONJUNTO\s+(.+?)\s*\((.+)\)\s*$/.exec(d);
+  if (mc) {
+    if (mc[2].indexOf('+') < 0) return null;
+    const partes = mc[2].split('+').map(x => x.trim()); if (partes.length !== 2) return null;
+    const ms = partes.map(p => { const sp = p.indexOf(' '); return sp < 0 ? null : _pvSaldos(L, p.slice(0, sp), p.slice(sp + 1)); });
+    if (!ms[0] || !ms[1]) return null;
+    const pre = partes.map(_pvSku), vistos = {};
+    [0, 1].forEach(i => Object.keys(ms[i]).forEach(k => { vistos[k.slice(pre[i].length)] = 1; }));
+    let t = 0; Object.keys(vistos).forEach(s => { const a = Math.max(0, Math.round(ms[0][pre[0] + s] || 0)), b = Math.max(0, Math.round(ms[1][pre[1] + s] || 0)); t += Math.min(a, b); });
+    return t;
+  }
+  const sp = d.indexOf(' '); if (sp < 0) return null;
+  const m = _pvSaldos(L, d.slice(0, sp), d.slice(sp + 1));
+  let t = 0; Object.keys(m).forEach(k => { const q = Math.max(0, Math.round(m[k])); if (q > 0) t += q; });
+  return t;
+}
+async function _pvMovs() {
+  const tok = await _sbSesionAsegurar(); if (!tok) return null;
+  const ld = async () => { const q = await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!q.ok) return null; const x = await q.json(); return Array.isArray(x) ? x : null; };
+  const a = (typeof _memoVersion === 'function') ? await _memoVersion('libro_mov', ['libro_mov'], ld).catch(() => null) : await ld();   // misma memoria que el Cuadre (_cdKardex)
+  if (!Array.isArray(a) || !a.length || !a.every(x => x && x.prenda && x.diseno && x.talla != null && x.conf != null)) return null;   // misma validación que el servidor
+  return a;
+}
+const PV_BASE = true;   // apagar = volver a Apps Script (~9 s)
+async function _pvBase(v) {
+  if (typeof PV_BASE === 'undefined' || !PV_BASE || typeof SB_URL === 'undefined') return null;
+  try {
+    const [L, P] = await Promise.all([_pvMovs(), _puertaRpc('preventa_base', {}, 4000)]);
+    if (!L || !P || typeof P !== 'object' || !P.hoy) return null;
+    const st = _pvStockCalc(L, v.Diseno); if (st == null) return null;
+    const pv = (P.preventa || {})[String(v.Diseno || '').replace(/\s+/g, ' ').trim().toUpperCase()] || null;   // _cosClave_
+    const vig = !!(pv && /^\d{4}-\d{2}-\d{2}$/.test(String(pv.llega || '')) && String(pv.llega) >= P.hoy);
+    return { ok: true, stock: st, preventa: pv, vigente: vig, hoy: P.hoy, _base: true };
+  } catch (_) { return null; }
+}
+// <<< STOCK Y PREVENTA AL INSTANTE
 async function _pvPintar(v, dato) {
   const w = document.getElementById('cf-est-pv'); if (!w) return;
   if (!dato) { w.innerHTML = '<span style="color:var(--mu)">📦 Revisando el stock…</span>';
-    try { dato = await apiSend('costos.fichaWeb', { accion: 'preventa', op: 'ver', Diseno: v.Diseno }); } catch (e) { w.innerHTML = '<span style="color:var(--mu)">📦 No pude leer el stock (' + esc(e.message || e) + ')</span>'; return; } }
+    try { dato = (typeof _pvBase === 'function' ? await _pvBase(v) : null) || await apiSend('costos.fichaWeb', { accion: 'preventa', op: 'ver', Diseno: v.Diseno }); } catch (e) { w.innerHTML = '<span style="color:var(--mu)">📦 No pude leer el stock (' + esc(e.message || e) + ')</span>'; return; } }
   v._pv = dato; if (!document.getElementById('cf-est-pv')) return;
   const pv = dato.preventa, st = dato.stock;
   let h = st == null ? '📦 Stock: <b>no pude leerlo</b>' : (st > 0 ? '📦 Stock: <b style="color:var(--gn)">' + st + ' unidades</b>' : '📦 Stock: <b style="color:var(--rd)">0 — sin stock</b>');
@@ -9408,7 +9647,20 @@ function _homRenderQuieto() {   // repinta sin robarle el foco al buscador
   _homRender();
   if (enQ) { const q = document.getElementById('hom-q'); if (q) { q.focus(); try { q.setSelectionRange(pos, pos); } catch (_) {} } }
 }
-async function loadHomologaciones() {
+// 1-nov ola 3 · HOM_RAPIDO_RPC: la lista sale de la base (rpc hom_listar_rapido · BLOQUE_1.sql): las equivalencias EN VIVO de
+// homologaciones_erp + huérfanos/faltan importar de la última respuesta de Apps Script (erp_puerta_cache), descontando lo ya
+// homologado. ~0,3 s. Apps Script corre POR DETRÁS solo si esa respuesta tiene más de 30 min, quedó sucia o tocaste «Actualizar».
+// Si la base no responde, sigue todo como antes (Apps Script).
+const HOM_RAPIDO_MAX_MS = 30 * 60 * 1000;
+async function _homRapido() {
+  if (typeof _puertaRpc !== 'function') return null;
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.homologaciones.listar') : null;
+  let j = null; try { j = await _puertaRpc('hom_listar_rapido', {}, 4000); } catch (_) { j = null; }
+  const ok = !!(j && typeof j === 'object' && Array.isArray(j.rows));
+  try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, ok); } catch (_) {}
+  return ok ? j : null;
+}
+async function loadHomologaciones(forzar) {
   const w = document.getElementById('hom-w');
   let pintado = false;
   try {
@@ -9416,6 +9668,25 @@ async function loadHomologaciones() {
     if (g && g.r && g.u === MY_EMAIL && (Date.now() - g.t) < 7 * 86400000) { _homCargarR(g.r); _homRender(); pintado = true; }
   } catch (_) {}
   if (!pintado) w.innerHTML = spin('Cargando homologaciones...');
+  const rr = await _homRapido();
+  if (rr) {
+    _homCopiaGuardar(rr);
+    _homCargarR(rr);
+    if (!(pintado && HOM.editing) && document.getElementById('hom-w') === w) { if (pintado) _homRenderQuieto(); else _homRender(); }
+    pintado = true;
+    const info = rr._rapido || {};
+    const viejo = !(Number(info.edadSeg) >= 0) || Number(info.edadSeg) * 1000 > HOM_RAPIDO_MAX_MS || info.sucio === true;
+    if (!forzar && !viejo) return;
+    if (typeof _apiSendApps === 'function') {   // por detrás: renueva huérfanos (y la respuesta guardada) sin que nadie espere
+      _apiSendApps('homologaciones.listar', {}).then(r2 => {
+        if (!(r2 && r2.rows)) return;
+        _homCopiaGuardar(r2); _homCargarR(r2);
+        if (HOM.editing) return;
+        if (document.getElementById('hom-w') === w) _homRenderQuieto();
+      }).catch(e => { if (forzar) toast('No se pudo actualizar homologaciones: ' + esc(e.message) + ' (se muestra lo anterior)', 'err'); });
+      return;
+    }
+  }
   let r;
   try {
     r = await apiSend('homologaciones.listar', {});
@@ -9571,7 +9842,7 @@ function _homRender() {
   document.getElementById('hom-fsis').addEventListener('change', function () { HOM.fsis = this.value; _homRender(); });
   document.getElementById('hom-fest').addEventListener('change', function () { HOM.fest = this.value; _homRender(); });
   document.getElementById('hom-fhuer').addEventListener('click', () => { HOM.soloHuer = !HOM.soloHuer; _homRender(); });
-  document.getElementById('hom-recargar').addEventListener('click', () => loadHomologaciones());
+  document.getElementById('hom-recargar').addEventListener('click', () => loadHomologaciones(true));   // 1-nov ola 3 · Actualizar = también renueva huérfanos
   document.getElementById('hom-nuevo').addEventListener('click', () => _homForm(null));
   _homBindRowBtns(w);
   if (HOM.editing) _homForm(HOM.editing);
@@ -42813,7 +43084,7 @@ function meditAbrirHistorialPedido(nro) {
   ov.innerHTML = '<div style="background:var(--bg);border:1px solid var(--bd2);border-radius:var(--r);max-width:760px;width:100%;max-height:85vh;overflow:auto;padding:18px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
     + '<span class="ct" style="margin:0;color:var(--ac)">📦 Historial pedido #' + esc(nroStr) + '</span>'
-    + '<button id="mph-cls" class="btn bg bs" style="font-size:11px">Cerrar</button>'
+    + '<button id="mph-cls" class="btn bg bs" style="font-size:11px">✕ Cerrar</button>'
     + '</div>'
     + aviso
     + '<div style="border:1px solid var(--bd);border-radius:var(--r);overflow:hidden">'
@@ -42827,8 +43098,9 @@ function meditAbrirHistorialPedido(nro) {
     + '<th style="padding:8px 12px;font-size:11px;font-weight:600;color:var(--mu);text-align:left">Asesora</th>'
     + '<th style="padding:8px 12px;font-size:11px;font-weight:600;color:var(--mu);text-align:left">Prendas</th>'
     + '<th style="padding:8px 12px;font-size:11px;font-weight:600;color:var(--mu);text-align:left">Coment. envío</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div><div id="mph-aud"></div></div>';
   document.body.appendChild(ov);
+  try { if (typeof F8_HIST !== 'undefined' && F8_HIST && typeof _f8HistPintar === 'function') _f8HistPintar(nroStr, document.getElementById('mph-aud')); } catch (_) {}   // 1-nov · Fase 8
   const cerrar = () => ov.remove();
   ov.addEventListener('click', e => { if (e.target === ov) cerrar(); });
   document.getElementById('mph-cls').addEventListener('click', cerrar);
@@ -46565,6 +46837,8 @@ function bootApp(){
   var _pesPg=''; try{ _pesPg=(_pesLeer().pg)||''; }catch(e){}   // 16-oct · la memoria de ESTA pestaña manda
   if(_pesPg) _lastPg=_pesPg;
   var _pgPorDefecto = (MY_ROLE === 'Marketing') ? 'marketing' : 'pedidos'; // 15-sep: Marketing no ve Pedidos
+  // 1-nov · Fase 8 · pestaña nueva o login = pantalla de su rol; recargar ESTA pestaña sigue donde estaba (_pesPg)
+  try { if (typeof F8_INICIO_ROL !== 'undefined' && F8_INICIO_ROL && typeof _f8InicioRol === 'function') { var _f8pg = _f8InicioRol(MY_ROLE, _pgPermitida, _f8PgVisible); if (_f8pg) { _pgPorDefecto = _f8pg; if (!_pesPg) _lastPg = ''; } } } catch (_f8e) {}
   var _goPg = _lastPg || _pgPorDefecto;
   var _goBtn = document.querySelector('.nb[data-pg="'+_goPg+'"]');
   if(!_goBtn || _goBtn.style.display==='none'){ _goPg=_pgPorDefecto; _goBtn=document.querySelector('.nb[data-pg="'+_pgPorDefecto+'"]'); }
