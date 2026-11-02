@@ -6659,6 +6659,7 @@ function margenLazy(){
   if(typeof mgAplicarFiltro==='function') mgAplicarFiltro();
 }
 function loadPg(pg) {
+  try { INS.abre = { pg: pg, t: performance.now() }; } catch (_) {}   // VR_INSTANTE_2NOV
   window._modoContenido = (pg === 'contenido') || (pg === 'costos' && !_cosYoAdmin());   // 13-oct (Pablo) · PRODUCTOS: quien no es Admin ve la vista SIN costos (rutas contenido.*)
   // P5 — si salimos del módulo Pedidos, detener el polling. Cada loadPeds lo reanuda.
   if (pg !== 'pedidos') {
@@ -14629,7 +14630,197 @@ async function _vjMandar(c) {
   try { if (_cr && typeof _cronCerrar === 'function') _cronCerrar(_cr, !!out); } catch (_) {}
   c.forEach(function (x, i) { const o = out ? out[i] : null; x.res.forEach(function (f, n) { try { f((n && o) ? _memoClon(o) : o); } catch (_) {} }); });
 }
+// ══════════════════════════════════════════════════════════════════════════
+// >>> VR_INSTANTE_2NOV · PANTALLAS AL INSTANTE + STOCK "SOLO LO QUE CAMBIÓ" (2-nov-2026, ola 22, referente Amazon/Zara)
+// 1) Al ABRIR una pantalla de la lista INS_PAGINAS se pinta YA (<50 ms) con la última copia que el ERP guardó, SOLO si es del
+//    MISMO usuario y rol, de esta misma versión del ERP y de menos de 24 h, y si en esta pestaña no se guardó nada en los
+//    últimos 20 s (después de guardar, la pantalla espera el dato nuevo como siempre). Por detrás se pregunta a la base
+//    (1 viaje) y, SOLO si cambió, se vuelve a pintar — sin tocar lo que alguien está escribiendo ni una ventana abierta,
+//    y respetando el desplazamiento. Mientras tanto, una píldora chica «↻ actualizando…» (con ✕) abajo a la izquierda.
+// 2) Inventario/Stock: en vez de bajar las 2.432 tallas (277 KB) en cada movimiento, manda su número de cambio y la base
+//    devuelve solo las tallas que cambiaron (rpc stock_libro_cambios, ~1 KB). Talla nueva, número viejo o cualquier duda →
+//    se baja todo como antes. El resumen (69 KB, rpc stock_libro_meta_cambios) viaja solo si su huella cambió.
+// Escrituras: nunca salen de la copia. Al cerrar sesión se borran todas las copias de este equipo.
+// REVERSA: VR_INSTANTE = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+var VR_INSTANTE = true;
+var INS = { abre: null, escr: 0, rev: {}, vuelo: {}, ind: 0, n: { swr: 0, repinta: 0, delta: 0, completo: 0, nueva: 0, igual: 0 } };
+var INS_MAX_MS = 24 * 3600 * 1000;      // copia más vieja que esto: no se muestra, se espera el dato
+var INS_SIN_ESCRIBIR_MS = 20000;        // tras un guardado en esta pestaña, la pantalla espera el dato nuevo
+// qué cuenta como GUARDADO en esta pestaña: escribir una tabla, o una función de la base que guarda (por su nombre).
+// Los guardados por Apps Script ya los anota la puerta (PUERTA.ultEscr). Las lecturas por POST (comisiones, cuadre…) no cuentan.
+var INS_ESCRITURAS_RX = /\/rpc\/(([a-z0-9_]*_)?(guardar|crear|editar|registrar|cancelar|corregir|partir|pasar|agregar|eliminar|borrar|marcar|atender|revisar|ingresar|cambiar|despachar|mover|set|cerrar|aplicar|anular|actualizar|subir|enviar|archivar|restaurar|confirmar|asignar|encolar)(_[a-z0-9_]*)?|alerta_[a-z_]*|cambio_[a-z_]*|campo_[a-z_]*|devolucion_[a-z_]*|encargo_[a-z_]*|envio_[a-z_]*|falla_[a-z_]*|pago_[a-z_]*|pedido_[a-z_]*|ficha_[a-z_]*_admin|shopify_[a-z_]*_admin)(\?|$)/;
+// Pantallas que se vuelven a pintar solas sin perder nada (probadas en Chromium con la base simulada a 300 ms).
+// Stock/Inventario/Devoluciones ya se pintaban al instante con su propia copia: acá solo bajan menos.
+var INS_PAGINAS = { cambios2: 1 };
+function _insUsuario() { try { const e = String((typeof MY_EMAIL !== 'undefined' && MY_EMAIL) || '').trim().toLowerCase(); return e ? e + '|' + String((typeof MY_ROLE !== 'undefined' && MY_ROLE) || '') : ''; } catch (_) { return ''; } }
+function _insBuild() { try { return (typeof ERP_BUILD !== 'undefined') ? ERP_BUILD : ''; } catch (_) { return ''; } }
+function _insDeltaOn() { return VR_INSTANTE && !window._insSinDelta; }
+function _insLeer(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (_) { return null; } }
+function _insCopia(clave) {
+  let c = MEMOV.mem[clave];
+  if (!c) { c = _insLeer('erp_memov_' + clave); if (c) MEMOV.mem[clave] = c; }
+  return c || null;
+}
+function _insClave(x) { return [x && x.prenda, x && x.diseno, x && x.color, x && x.talla].join('\u0001'); }
+/** Aplica «solo lo que cambió» sobre la copia. Talla desconocida o copia rara → null (se baja todo). Mismo orden que la base. */
+function _insAplicarDelta(base, j) {
+  if (!Array.isArray(base) || !j || !Array.isArray(j.cambios) || !Array.isArray(j.borrados)) return null;
+  const pos = new Map();
+  for (let i = 0; i < base.length; i++) pos.set(_insClave(base[i]), i);
+  if (pos.size !== base.length) return null;
+  const out = base.slice(), quitar = new Set();
+  for (const b of j.borrados) { const i = pos.get(_insClave(b)); if (i !== undefined) quitar.add(i); }
+  for (const c of j.cambios) {
+    const i = pos.get(_insClave(c));
+    if (i === undefined) return null;   // talla nueva: su lugar en el orden lo decide la base → se baja todo
+    out[i] = c; quitar.delete(i);
+  }
+  return quitar.size ? out.filter((_, i) => !quitar.has(i)) : out;
+}
+function _insMovEstado() {
+  const s = _insLeer('erp_ins_mov'), u = _insUsuario();
+  if (!s || !u || s.u !== u || s.sq == null || !s.era) return null;
+  const c = _insCopia('libro_mov');
+  if (!c || !c.f || c.f !== s.f || !Array.isArray(c.d) || !c.d.length) return null;
+  return { sq: s.sq, era: s.era, d: c.d };
+}
+function _insMovSpec() { const st = _insMovEstado(); return { fn: 'stock_libro_cambios', a: { p_desde: st ? st.sq : null, p_era: st ? st.era : null, p_espera_ms: 700 } }; }
+async function _insRpc(fn, a, tok) {
+  if (typeof SB_APAGADO !== 'undefined' && SB_APAGADO) return undefined;   // simulacro: camino de siempre
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST',
+    headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(a) });
+  if (r.status === 404) { window._insSinDelta = true; return undefined; }   // falta el BLOQUE 2 en la base: camino de siempre
+  if (!r.ok) { if ((r.status === 401 || r.status === 403) && typeof _sbVencerTok === 'function') { try { _sbVencerTok(); } catch (_) {} } return undefined; }
+  return r.json();
+}
+/** Stock «solo lo que cambió». undefined = seguir por el camino de siempre (v2). */
+async function _insMovTraer(f, pre, tok) {
+  try {
+    const st = _insMovEstado();
+    let j = (pre && pre.fn === 'stock_libro_cambios') ? pre.d : await _insRpc('stock_libro_cambios', { p_desde: st ? st.sq : null, p_era: st ? st.era : null, p_espera_ms: 700 }, tok);
+    if (!j || typeof j !== 'object' || j.al_dia !== true) return undefined;   // copia del stock sin terminar: camino de siempre (aviso + reintento)
+    let out = null;
+    if (Array.isArray(j.datos)) { out = j.datos; INS.n.completo++; }
+    else if (Array.isArray(j.cambios) && st && j.desde === st.sq && j.era === st.era) {
+      out = _insAplicarDelta(_memoClon(st.d), j);
+      if (out) INS.n.delta++; else INS.n.nueva++;
+    }
+    if (!out) {
+      j = await _insRpc('stock_libro_cambios', { p_desde: null, p_era: null, p_espera_ms: 700 }, tok);
+      if (!j || j.al_dia !== true || !Array.isArray(j.datos)) return undefined;
+      out = j.datos; INS.n.completo++;
+    }
+    const forma = x => x && typeof x.prenda === 'string' && typeof x.diseno === 'string' && typeof x.color === 'string'
+                        && typeof x.talla === 'string' && x.conf !== undefined && x.ventas !== undefined;
+    if (!out.length || !out.every(forma)) { try { localStorage.removeItem('erp_ins_mov'); } catch (_) {} return null; }
+    if (f && j.sq != null && j.era) { try { localStorage.setItem('erp_ins_mov', JSON.stringify({ f: f, sq: j.sq, era: j.era, u: _insUsuario() })); } catch (_) {} }
+    else { try { localStorage.removeItem('erp_ins_mov'); } catch (_) {} }
+    _slReintentos = 0;
+    return out;
+  } catch (e) { try { _errLog('ins.mov', e); } catch (_) {} return undefined; }
+}
+/** El resumen de Inventario (stock_libro_meta) solo si cambió su huella. */
+function _insMetaCargador(H, original) {
+  const est = () => {
+    const s = _insLeer('erp_ins_meta'), u = _insUsuario();
+    if (!s || !u || s.u !== u || !s.m) return null;
+    const c = _insCopia('libro_meta');
+    return (c && c.f && c.f === s.f && c.d != null) ? { m: s.m, d: c.d } : null;
+  };
+  const pedir = (m) => fetch(SB_URL + '/rest/v1/rpc/stock_libro_meta_cambios', { method: 'POST',
+    headers: Object.assign({ 'Content-Type': 'application/json' }, H), body: JSON.stringify({ p_md5: m }) })
+    .then(r => { if (r.status === 404) { window._insSinDelta = true; return undefined; } return r.ok ? r.json() : null; }).catch(() => null);
+  const cargar = async function (f, pre) {
+    if (typeof SB_APAGADO !== 'undefined' && SB_APAGADO) return original(f);   // simulacro: camino de siempre
+    const st = est();
+    let j = (pre && pre.fn === 'stock_libro_meta_cambios') ? pre.d : await pedir(st ? st.m : null);
+    if (j === undefined) return original(f);
+    let out = null;
+    if (j && j.igual === true && st && j.md5 === st.m) { out = _memoClon(st.d); INS.n.igual++; }
+    else if (j && Array.isArray(j.datos)) out = j.datos;
+    else if (j && j.igual === true) { j = await pedir(null); if (j && Array.isArray(j.datos)) out = j.datos; }
+    if (out != null && f && j && j.md5) { try { localStorage.setItem('erp_ins_meta', JSON.stringify({ f: f, m: j.md5, u: _insUsuario() })); } catch (_) {} }
+    else { try { localStorage.removeItem('erp_ins_meta'); } catch (_) {} }
+    return out;
+  };
+  cargar.__vj = function () { const st = est(); return { fn: 'stock_libro_meta_cambios', a: { p_md5: st ? st.m : null } }; };   // mismo paquete viaje_versiones
+  return cargar;
+}
+/** ¿Se puede pintar ya con la copia? Solo al abrir una pantalla de la lista, mismo usuario, misma versión, < 24 h, sin guardado reciente. */
+function _insSwr(clave) {
+  try {
+    if (!VR_INSTANTE) return null;
+    const a = INS.abre;
+    if (!a || typeof curPg === 'undefined' || curPg !== a.pg || !INS_PAGINAS[a.pg] || performance.now() - a.t > 2000) return null;
+    const ue = Math.max(INS.escr || 0, (typeof PUERTA !== 'undefined' && PUERTA.ultEscr) || 0);   // guardados de esta pestaña (base y Apps Script)
+    if (Date.now() - ue < INS_SIN_ESCRIBIR_MS) return null;
+    const c = _insCopia(clave), u = _insUsuario();
+    if (!c || c.d == null || !c.f || !u || c.u !== u || !c.b || c.b !== _insBuild() || !(Date.now() - (c.t || 0) < INS_MAX_MS)) return null;
+    return { c: c, pg: a.pg };
+  } catch (_) { return null; }
+}
+function _insIndicador(d) {
+  try {
+    INS.ind = Math.max(0, INS.ind + d);
+    let p = document.getElementById('ins-act');
+    if (!INS.ind) { if (p) p.style.display = 'none'; return; }
+    if (!p) {
+      p = document.createElement('div'); p.id = 'ins-act';
+      p.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:50;font-size:11px;padding:3px 6px 3px 9px;border-radius:12px;background:var(--bg2,#222);color:var(--tx2,#aaa);border:1px solid var(--bd,#444);opacity:.85;display:flex;gap:6px;align-items:center;pointer-events:auto';
+      p.innerHTML = '<span>↻ actualizando…</span><button type="button" aria-label="Cerrar" style="background:none;border:0;color:inherit;cursor:pointer;font-size:12px;line-height:1;padding:0 2px">✕</button>';
+      p.querySelector('button').onclick = function () { p.style.display = 'none'; p._cerrado = true; };
+      document.body.appendChild(p);
+    }
+    if (!p._cerrado) p.style.display = 'flex';
+  } catch (_) {}
+}
+function _insModalAbierto() {
+  try {
+    if (document.querySelector('.modal.on') || document.body.classList.contains('modal-lock')) return true;
+    return Array.prototype.some.call(document.body.children, e => e.id !== 'ins-act' && e.style && e.style.position === 'fixed' && (e.style.inset === '0px' || e.style.inset === '0')
+      && e.getClientRects().length > 0 && getComputedStyle(e).display !== 'none');
+  } catch (_) { return true; }
+}
+/** Vuelve a pintar la pantalla con el dato nuevo, sin pisar lo que se está escribiendo ni una ventana abierta. */
+function _insRepintar(pg) {
+  let n = 0;
+  const intento = function () {
+    try {
+      if (typeof curPg === 'undefined' || curPg !== pg) return;   // se fue: al volver ve lo nuevo
+      const ae = document.activeElement;
+      const escribe = !!(ae && ae !== document.body && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable));
+      if (escribe || _insModalAbierto() || document.hidden) { if (n++ < 120) setTimeout(intento, 1500); return; }
+      const raiz = document.getElementById('pg-' + pg);
+      const sy = window.scrollY, sx = window.scrollX, sc = [];
+      if (raiz) Array.prototype.forEach.call(raiz.querySelectorAll('div,table,section,ul'), (e, i) => { if (e.scrollTop || e.scrollLeft) sc.push([i, e.scrollTop, e.scrollLeft]); });
+      INS.n.repinta++;
+      loadPg(pg);
+      const volver = () => { try { window.scrollTo(sx, sy); if (raiz && sc.length) { const L = raiz.querySelectorAll('div,table,section,ul'); sc.forEach(x => { const e = L[x[0]]; if (e) { e.scrollTop = x[1]; e.scrollLeft = x[2]; } }); } } catch (_) {} };
+      volver(); setTimeout(volver, 0); requestAnimationFrame(volver);
+    } catch (_) {}
+  };
+  intento();
+}
+function _insFondo(clave, tablas, cargar, f0, pg) {
+  if (INS.vuelo[clave]) return;
+  if (Date.now() - (INS.rev[clave] || 0) < 10000) return;   // recién confirmada contra la base
+  INS.vuelo[clave] = 1; _insIndicador(+1);
+  Promise.resolve().then(() => _memoVersionRed(clave, tablas, cargar)).then(function () {
+    INS.rev[clave] = Date.now();
+    const c = MEMOV.mem[clave];
+    if (c && c.f && c.f !== f0) _insRepintar(pg);
+  }).catch(function () {}).finally(function () { delete INS.vuelo[clave]; _insIndicador(-1); });
+}
 async function _memoVersion(clave, tablas, cargar) {
+  const sw = _insSwr(clave);
+  if (!sw) return _memoVersionRed(clave, tablas, cargar);
+  INS.n.swr++;
+  _insFondo(clave, tablas, cargar, sw.c.f, sw.pg);
+  return _memoClon(sw.c.d);
+}
+// <<< VR_INSTANTE_2NOV
+async function _memoVersionRed(clave, tablas, cargar) {   // VR_INSTANTE_2NOV · antes _memoVersion (el de arriba decide si pinta ya con la copia)
   let ver = _verVivoTomar(tablas);   // 12-oct E3: el timbre confirma que no cambió → sin viaje
   let _vjPre;   // VR_VIAJE_2NOV · los datos que ya vinieron junto con la versión
   if (!ver && cargar && cargar.__vj && _vjListo()) {
@@ -14659,7 +14850,7 @@ async function _memoVersion(clave, tablas, cargar) {
   if (_vjPre !== undefined) { const _c0 = cargar; cargar = (f) => _c0(f, _vjPre); }   // VR_VIAJE_2NOV · + lo que ya vino con la versión
   const d = await cargar(firma);   // 31-oct ola 2 · la firma la usa _sbFilasEspejoDelta
   if (firma && d != null) {
-    MEMOV.mem[clave] = { f: firma, d: _memoClon(d) };
+    MEMOV.mem[clave] = { f: firma, d: _memoClon(d), u: _insUsuario(), b: _insBuild(), t: Date.now() };   // VR_INSTANTE_2NOV · dueño + versión + hora
     if (!_lsGuardar('erp_memov_' + clave, JSON.stringify(MEMOV.mem[clave]))) { try { localStorage.removeItem('erp_memov_' + clave); } catch (__) {} }   // 13-oct · con lugar
   }
   return d;
@@ -15455,6 +15646,7 @@ async function _sbLibroMovimientos() {
     let _slAtras = null;   // 31-oct ola 2: copia un movimiento atrás (no se guarda en el memo)
     const traer = Object.assign(async (_f, _pre) => {   // VR_VIAJE_2NOV
       const _v2 = typeof SL_STOCK_V2 !== 'undefined' && SL_STOCK_V2 && !window._slSinV2;
+      if (_v2 && typeof _insDeltaOn === 'function' && _insDeltaOn()) { const _ri = await _insMovTraer(_f, _pre, tok); if (_ri !== undefined) return _ri; _pre = undefined; }   // VR_INSTANTE_2NOV
       const _fnM = _v2 ? 'stock_libro_movimientos_v2' : 'stock_libro_movimientos';
       const r = (_pre && _pre.fn === _fnM) ? _vjResp(_pre.d) : await fetch(SB_URL + '/rest/v1/rpc/' + (_v2 ? 'stock_libro_movimientos_v2' : 'stock_libro_movimientos'), {
         method: 'POST',
@@ -15473,6 +15665,7 @@ async function _sbLibroMovimientos() {
                           && typeof x.talla === 'string' && x.conf !== undefined && x.ventas !== undefined;
       return (Array.isArray(a) && a.length && a.every(forma)) ? a : null;
     }, { __vj: () => { const _v2 = typeof SL_STOCK_V2 !== 'undefined' && SL_STOCK_V2 && !window._slSinV2;   // v2 puede esperar 0,7 s: va sola
+      if (_v2 && typeof _insDeltaOn === 'function' && _insDeltaOn()) return _insMovSpec();   // VR_INSTANTE_2NOV · ya no espera: va en el mismo paquete que el resumen
       return _v2 ? { fn: 'stock_libro_movimientos_v2', a: { p_espera_ms: 700 }, solo: true } : { fn: 'stock_libro_movimientos', a: {} }; } });
     // 12-oct · VÍA RÁPIDA E3c: los movimientos (267 KB) se bajan SOLO si cambió algo del stock. La base sube la versión
     // 'libro_mov' por evento (confección, fallas, pedidos, cambios, devoluciones… → erp.mov_version) y toca el timbre:
@@ -15573,8 +15766,9 @@ async function _sbLibroDirecto(forzar) {
     // 12-oct · VÍA RÁPIDA E3 (medido: Inventario p50 981 ms). Con movimientos, del libro solo se usan categoría y fecha
     // por producto: se piden ya resumidas (≈400 filas, 1 viaje, A LA VEZ que la pregunta de arriba) en vez de las
     // 2.500 filas en 3 páginas DESPUÉS de la pregunta. Sin movimientos sigue el camino de siempre. REVERSA: SB_LIBRO_META = false.
-    const _traerMeta = Object.assign((_f, _pre) => ((_pre && _pre.fn === 'stock_libro_meta') ? Promise.resolve(_vjResp(_pre.d)) : fetch(SB_URL + '/rest/v1/rpc/stock_libro_meta', { headers: H }))   // GET: la función solo lee
+    const _traerMeta0 = Object.assign((_f, _pre) => ((_pre && _pre.fn === 'stock_libro_meta') ? Promise.resolve(_vjResp(_pre.d)) : fetch(SB_URL + '/rest/v1/rpc/stock_libro_meta', { headers: H }))   // GET: la función solo lee
           .then(r => r.ok ? r.json() : null).catch(() => null), { __vj: { fn: 'stock_libro_meta', a: {} } });   // VR_VIAJE_2NOV
+    const _traerMeta = (typeof _insDeltaOn === 'function' && _insDeltaOn()) ? _insMetaCargador(H, _traerMeta0) : _traerMeta0;   // VR_INSTANTE_2NOV · el resumen solo si cambió su huella
     // 12-oct E3d: el resumen se baja solo si cambió stock_saldos (versión por evento + timbre)
     const pMeta = (!forzar && typeof SB_LIBRO_META !== 'undefined' && SB_LIBRO_META)
       ? ((typeof _memoVersion === 'function') ? _memoVersion('libro_meta', ['stock_saldos'], _traerMeta).catch(() => null) : _traerMeta())
@@ -25037,6 +25231,7 @@ function _verVivoVigilarEscrituras() {
     try {
       const m = String((o && o.method) || 'GET').toUpperCase(), url = String((u && u.url) || u || '');
       if (m !== 'GET' && m !== 'HEAD' && (url.indexOf('/rest/v1/') >= 0 || url.indexOf('script.google') >= 0) && !VER_LECTURAS_RX.test(url)) _verVivoEscribi();
+      if (m !== 'GET' && m !== 'HEAD' && url.indexOf('/rest/v1/') >= 0 && !VER_LECTURAS_RX.test(url) && (url.indexOf('/rest/v1/rpc/') < 0 || (typeof INS_ESCRITURAS_RX !== 'undefined' && INS_ESCRITURAS_RX.test(url)))) { try { INS.escr = Date.now(); } catch (_) {} }   // VR_INSTANTE_2NOV
     } catch (_) {}
     return f0.apply(this, arguments);
   };
@@ -34515,7 +34710,7 @@ async function loadInv(){
 // probaba una y creia que el cambio no habia llegado. Ahora, a los 3 segundos, se
 // compara la marca del archivo del servidor con la que se esta ejecutando y, si
 // cambio, se recarga una sola vez (sessionStorage evita cualquier bucle).
-const ERP_BUILD='b2026110204';   /* VR_CARGA02_2NOV · apertura con pregunta corta al servidor (antes b2026110203) */   // VR_ARRANQUE_2NOV · 2-nov noche: renovación única del pase + recarga escalonada (antes b2026110202)
+const ERP_BUILD='b2026110205';   /* VR_INSTANTE_2NOV · pantallas al instante + stock solo lo que cambió (antes b2026110204) */   /* VR_CARGA02_2NOV · apertura con pregunta corta al servidor (antes b2026110203) */   // VR_ARRANQUE_2NOV · 2-nov noche: renovación única del pase + recarga escalonada (antes b2026110202)
 setTimeout(async function(){
   try{
     if(sessionStorage.getItem('erp_build_reload')===ERP_BUILD) return;
@@ -47322,6 +47517,7 @@ function logout(){
   try { _stLsDel(); } catch(e){}
   try { _confLsDel(); } catch(e){}
   try { localStorage.removeItem('erp_espejo_duda'); } catch(e){}
+  try { Object.keys(localStorage).forEach(function (k) { if (/^erp_(memov_|ins_|espd_)/.test(k)) localStorage.removeItem(k); }); } catch(e){}   // VR_INSTANTE_2NOV
   // 26-set · el pase a la base y la llave de renovacion tambien se van: si no,
   // quien entra despues en esta compu hereda el acceso a la base de la anterior.
   try { localStorage.removeItem('erp_sb_sess'); localStorage.removeItem(SB_REFRESH_KEY); } catch(e){}
