@@ -2,15 +2,19 @@
 // Tulula ERP — Service Worker
 //
 // Estrategias:
-//   • index.html → stale-while-revalidate (siempre se ve algo, se refresca en bg).
+//   • index.html → network-first CON PREGUNTA CORTA (VR_CARGA02_2NOV, 2-nov-2026): si ya hay copia guardada, se le
+//     pregunta al servidor «¿cambió?» con su huella (ETag). Si no cambió responde 304 (0 KB) y se abre la copia guardada;
+//     si cambió llega la nueva entera, como siempre. La red sigue mandando: nunca se abre una versión vieja.
 //   • Libs CDN (xlsx, lz-string, Google Fonts) → cache-first (no cambian).
 //   • API Apps Script (script.google.com/macros) → bypass total (siempre fresh, sin cache).
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20261102-144832';
+const SW_VERSION = 'tulula-20261102-161412';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
+// VR_CARGA02_2NOV · interruptor: false = vuelve el network-first de siempre (baja el index.html entero en cada apertura).
+const VR_CARGA02 = true;
 
 // Recursos pre-cacheados al instalar (carga inmediata desde la 2ª visita).
 const PRECACHE_URLS = [
@@ -30,13 +34,34 @@ const NEVER_CACHE_HOSTS = [
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_STATIC)
-      .then(cache => cache.addAll(PRECACHE_URLS).catch(err => {
+      .then(cache => (VR_CARGA02 ? precargar(cache) : cache.addAll(PRECACHE_URLS)).catch(err => {
         // No abortamos la instalación si una sola lib falla — seguimos con lo que sí entró.
         console.warn('[SW] precache parcial:', err);
       }))
       .then(() => self.skipWaiting())
   );
 });
+
+// VR_CARGA02_2NOV · PRECARGA SIN BAJAR TRES VECES LO MISMO. Antes, la primera apertura (y cada publicación) bajaba
+// index.html 3 veces (la página + './' + './index.html', ~1 MB cada una) y volvía a bajar las librerías del CDN.
+// Ahora: lo que ya está guardado en el caché de la versión anterior se copia (el network-first con pregunta corta lo
+// corrige solo si quedó viejo: el servidor contesta con la versión nueva); lo que no está, se baja UNA vez.
+// Cada pieza por separado: si una falla, las demás igual entran.
+async function precargar(cache) {
+  const html = ['./', './index.html'];
+  let pag = null;
+  for (const u of html) { try { pag = await caches.match(u); } catch (_) { pag = null; } if (pag) break; }
+  if (!pag) { try { pag = await fetch('./index.html', { cache: 'no-store', credentials: 'same-origin' }); } catch (_) { pag = null; } }
+  const tareas = [];
+  if (pag && pag.ok) html.forEach(u => tareas.push(cache.put(u, pag.clone())));
+  PRECACHE_URLS.filter(u => html.indexOf(u) < 0).forEach(u => tareas.push((async () => {
+    const vieja = await caches.match(u).catch(() => null);
+    if (vieja) return cache.put(u, vieja);
+    return cache.add(u);
+  })()));
+  const r = await Promise.allSettled(tareas);
+  if (r.some(x => x.status === 'rejected')) console.warn('[SW] precache parcial');
+}
 
 // ── ACTIVATE ──────────────────────────────────────────────────
 self.addEventListener('activate', event => {
@@ -104,6 +129,14 @@ self.addEventListener('fetch', event => {
     return;
   }
 
+  // 4.5. VR_CARGA02_2NOV · el propio index.html pedido por la página (la revisión de versión a los 3 s, `fetch(...index.html)`)
+  //      → misma regla que la navegación: la red manda, con pregunta corta. Antes caía en el paso 5 (stale-while-revalidate
+  //      en otro caché): bajaba ~1 MB más en cada apertura y podía contestar con una copia vieja.
+  if (VR_CARGA02 && url.origin === self.location.origin && esPaginaErp(url)) {
+    event.respondWith(networkFirst(req, CACHE_STATIC));
+    return;
+  }
+
   // 5. Otros assets same-origin → stale-while-revalidate en runtime
   if (url.origin === self.location.origin) {
     event.respondWith(staleWhileRevalidate(req, CACHE_RUNTIME));
@@ -111,6 +144,12 @@ self.addEventListener('fetch', event => {
   }
   // Resto: ir a red directo.
 });
+
+// VR_CARGA02_2NOV · ¿es el index.html del ERP (la carpeta del Service Worker o su index.html)?
+function esPaginaErp(url) {
+  try { const dir = new URL('./', self.location.href).pathname; return url.pathname === dir || url.pathname === dir + 'index.html'; }
+  catch (_) { return false; }
+}
 
 // ── ESTRATEGIAS ───────────────────────────────────────────────
 async function cacheFirst(req, cacheName) {
@@ -145,7 +184,19 @@ async function networkFirst(req, cacheName) {
        del propio navegador (GitHub Pages manda max-age=600), y "network-first"
        en realidad seguia sirviendo una version de hasta 10 min de antiguedad.
        Se vio en vivo: Marketing publicado y sin aparecer tras recargar. */
-    const res = await fetch(req.url, { cache: 'no-store', credentials: 'same-origin' });
+    // VR_CARGA02_2NOV · PREGUNTA CORTA. Si hay copia guardada con huella (ETag / Last-Modified), se pide con
+    // If-None-Match: el servidor contesta 304 (0 KB, ~1 viaje) si no cambió, y se usa la copia; si cambió, manda la
+    // nueva entera y sigue todo como antes (aviso a las otras pestañas incluido). Sin huella → pedido entero, igual que antes.
+    let previo = null, h = null;
+    if (typeof VR_CARGA02 === 'undefined' || VR_CARGA02) {
+      try { previo = (await cache.match(req)) || (await cache.match(req, { ignoreSearch: true })) || null; } catch (_) { previo = null; }
+      const et = previo && previo.headers && previo.headers.get('etag');
+      const lm = previo && previo.headers && previo.headers.get('last-modified');
+      if (et) h = { 'If-None-Match': et }; else if (lm) h = { 'If-Modified-Since': lm };
+    }
+    const res = await fetch(req.url, h ? { cache: 'no-store', credentials: 'same-origin', headers: h }
+                                       : { cache: 'no-store', credentials: 'same-origin' });
+    if (h && res && res.status === 304 && previo) return previo;
     if (res && res.ok) {
       if (esHtml) {
         const hit = await cache.match(req);
