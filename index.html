@@ -4503,6 +4503,7 @@ function _sbRefreshLeer(){
 async function _sbRefrescarGoogle(){
   if (SB_APAGADO || !SB_ANON) return null;
   if (_sbRefrescando) return _sbRefrescando;
+  if (typeof ARR !== 'undefined' && ARR.vueloRt) return ARR.vueloRt;   // VR_ARRANQUE_2NOV · ya hay una renovación con la misma llave en vuelo
   const rt = _sbRefreshLeer();
   if (!rt) return null;
   _sbRefrescando = (async function(){
@@ -4896,6 +4897,7 @@ async function _sbSesionAsegurar(){
     try { const vr = await _sbRefrescarGoogle(); if (vr) return vr; } catch (_) {}   // VR_APPS0_2NOV · ingreso nativo: sin sesión de Apps Script
   }
   if (!SB_REAUTH_SILENCIOSO || !SB_ANON) return null;
+  if (typeof _arrNoEsperarPase === 'function' && _arrNoEsperarPase()) return null;   // VR_ARRANQUE_2NOV · hay llave de Supabase y falló la red: no se esperan 3-20 s del pase de Apps Script
   // Sin sesión de ERP no hay a quién renovarle nada, y si el login clásico ya
   // está pidiendo un pase, no se le pisa.
   try { if (!SESSION_TOKEN || _sessRenovando) return null; } catch(_){ return null; }
@@ -4965,6 +4967,81 @@ try { window.viaRapida = viaRapida; } catch(_){}
     });
   } catch (_) {}
 })();
+// >>> VR_ARRANQUE_2NOV · EL PRIMER ARRANQUE TRAS RECARGAR, IGUAL DE RÁPIDO QUE EL RESTO (2-nov-2026)
+// Medido (erp_lentos + auth.refresh_tokens): la sesión de Supabase SÍ sobrevive a la recarga (erp_sb_sess) y se reusa
+// (la ráfaga de Angie 12:46:58 tenía pase vigente desde 12:19 y ningún auth.sbPase). Pero cuando el pase ya venció
+// (laptop dormida, la mañana) cada lectura del arranque (10-17 a la vez) disparaba SU PROPIA renovación: 16 ráfagas de
+// renovaciones repetidas en < 3 s en 7 días (Angie 4, Estefany 7, Pablo 3, Roxana 2). Si una llegaba tarde y Supabase
+// la rechazaba, se BORRABA la sesión buena y todo esperaba el pase de Apps Script (3-20 s).
+// Ahora: 1) UNA sola renovación en vuelo, compartida por todas las lecturas (y entre pestañas: la segunda adopta el pase
+// que guardó la primera); 2) arranca al cargar la página, antes de que las pantallas pidan; 3) con llave de Supabase y
+// una falla de red, la lectura NO se queda esperando el pase de Apps Script (va una vez por su respaldo; la llave se
+// reintenta); 4) quien entró por el ingreso directo (sin sesión de Apps Script) renueva por atrás antes de que venza.
+// Apps Script sigue de respaldo para quien no tiene llave. REVERSA: VR_ARRANQUE = false y publicar.
+var VR_ARRANQUE = true;
+var ARR = { vuelo: null, vueloRt: null, fondoT: 0, falloRed: 0 };
+const ARR_LOCK_KEY = 'erp_sb_renov_vuelo', ARR_LOCK_MS = 6000;
+const _sbTokenVigenteSolo = _sbTokenVigente;
+function _arrHayLlave() { try { return !!((_sbTok && _sbTok.refresh_token) || _sbRefreshLeer()); } catch (_) { return !!(_sbTok && _sbTok.refresh_token); } }
+function _arrVigente() { return !!(_sbTok && _sbTok.access_token && Date.now() < (_sbTok.expires_at || 0)); }
+function _arrLockAjeno() { try { const v = JSON.parse(localStorage.getItem(ARR_LOCK_KEY) || 'null'); return !!(v && v.id !== _SB_TAB_ID && Date.now() - (v.t || 0) < ARR_LOCK_MS); } catch (_) { return false; } }
+function _arrEsperarOtraPestana() {   // otra pestaña está renovando: se espera a que deje su pase guardado (máx. 3 s)
+  return new Promise(function (res) {
+    const t0 = Date.now();
+    (function mirar() {
+      try { _sbAdoptarDeOtraPestana(); } catch (_) {}
+      if (_arrVigente()) return res(true);
+      if (!_arrLockAjeno() || Date.now() - t0 > 3000) return res(false);
+      setTimeout(mirar, 120);
+    })();
+  });
+}
+_sbTokenVigente = function () {
+  if (!VR_ARRANQUE) return _sbTokenVigenteSolo();
+  try { _sbAdoptarDeOtraPestana(); } catch (_) {}
+  if (_arrVigente()) {
+    // por vencer y sin sesión de Apps Script (ingreso directo): la renovación de fondo de siempre no corre → con la llave, por atrás
+    try { if (((_sbTok.expires_at || 0) - Date.now()) < SB_PASE_MARGEN_MS && !SESSION_TOKEN && !ARR.vuelo && Date.now() - ARR.fondoT > 60000 && _arrHayLlave()) { ARR.fondoT = Date.now(); _sbRefrescarGoogle(); } } catch (_) {}
+    return _sbTokenVigenteSolo();
+  }
+  if (ARR.vuelo) return ARR.vuelo;   // ya hay una renovación en vuelo: todas la comparten
+  if (ARR.falloRed && Date.now() - ARR.falloRed < 5000 && _arrHayLlave()) return Promise.resolve(null);   // recién falló la red: no se reintenta en cada lectura (5 s)
+  const llave = _arrHayLlave();
+  const p = (async function () {
+    const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.sbRenovar', '') : null;
+    let tok = null;
+    try {
+      if (_sbRefrescando) { try { tok = await _sbRefrescando; } catch (_) { tok = null; } }   // la de fondo ya salió: se espera esa
+      if (!tok && llave && _arrLockAjeno() && await _arrEsperarOtraPestana()) tok = _sbTok.access_token;
+      if (!tok && _arrVigente()) tok = _sbTok.access_token;
+      if (!tok) {
+        if (llave) { try { localStorage.setItem(ARR_LOCK_KEY, JSON.stringify({ id: _SB_TAB_ID, t: Date.now() })); } catch (_) {} }
+        tok = await _sbTokenVigenteSolo();
+      }
+      ARR.falloRed = (!tok && llave && _arrHayLlave()) ? Date.now() : 0;   // la llave sigue: falló la red, no la llave
+      return tok;
+    } catch (_) { return null; }
+    finally {
+      try { const v = JSON.parse(localStorage.getItem(ARR_LOCK_KEY) || 'null'); if (v && v.id === _SB_TAB_ID) localStorage.removeItem(ARR_LOCK_KEY); } catch (_) {}
+      try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, !!tok); } catch (_) {}
+    }
+  })();
+  ARR.vuelo = p; if (_sbTok && _sbTok.refresh_token) ARR.vueloRt = p;   // con llave propia: la de fondo la comparte
+  const _fin = function () { if (ARR.vuelo === p) ARR.vuelo = null; if (ARR.vueloRt === p) ARR.vueloRt = null; };
+  p.then(_fin, _fin);
+  return p;
+};
+function _arrNoEsperarPase() { return VR_ARRANQUE && ARR.falloRed > 0 && Date.now() - ARR.falloRed < 30000 && _arrHayLlave(); }
+// Al cargar la página: si el pase guardado venció y hay llave, se renueva YA (las pantallas del arranque lo encuentran listo).
+(function _arrPrecalentar() {
+  try {
+    if (!VR_ARRANQUE || SB_APAGADO || !SB_ANON) return;
+    try { _sbAdoptarDeOtraPestana(); } catch (_) {}
+    if (_arrVigente()) return;
+    if (_sbTok && _sbTok.refresh_token) _sbTokenVigente();
+  } catch (_) {}
+})();
+// <<< VR_ARRANQUE_2NOV
 // Una página de pedidos DIRECTO de la base. Mismo contrato que pedidos.listar.
 // FIX 25-jul-2026 — CONTEO UNA SOLA VEZ (medido: ~1.060 ms por pedido).
 // Antes TODA petición mandaba 'Prefer: count=exact', y eso obliga a Postgres a contar las
@@ -34410,7 +34487,7 @@ async function loadInv(){
 // probaba una y creia que el cambio no habia llegado. Ahora, a los 3 segundos, se
 // compara la marca del archivo del servidor con la que se esta ejecutando y, si
 // cambio, se recarga una sola vez (sessionStorage evita cualquier bucle).
-const ERP_BUILD='b2026110202';   // VR_APPS0_2NOV · 2-nov tarde: VR_VIAJE_2NOV + ingreso directo
+const ERP_BUILD='b2026110203';   // VR_ARRANQUE_2NOV · 2-nov noche: renovación única del pase + recarga escalonada (antes b2026110202)
 setTimeout(async function(){
   try{
     if(sessionStorage.getItem('erp_build_reload')===ERP_BUILD) return;
@@ -34487,6 +34564,17 @@ if (location.protocol === 'https:') {
   }, VER_CADA_MS);
 }
 // <<< VR_APPS0_2NOV
+// >>> VR_ARRANQUE_2NOV · después de publicar, las pestañas del equipo NO se recargan todas en el mismo segundo: cada una
+// espera al azar 0-60 s antes de empezar a mirar si puede recargarse, y sigue exigiendo lo mismo de siempre (sin ventana
+// abierta, nada a medio escribir, oculta o quieta 2 min). El aviso con ✕ y su botón «Recargar» (al instante) no cambian.
+const VER_JITTER_MS = 60000;
+const _verMarcarNuevaYa = _verMarcarNueva;
+_verMarcarNueva = function () {
+  if (typeof VR_ARRANQUE !== 'undefined' && !VR_ARRANQUE) return _verMarcarNuevaYa();
+  if (_VER.lista || _VER.jit) return;
+  _VER.jit = setTimeout(function () { try { _verMarcarNuevaYa(); } catch (_) {} }, Math.floor(Math.random() * VER_JITTER_MS));
+};
+// <<< VR_ARRANQUE_2NOV
 // ══ Filas sin SKU en el maestro ("huerfanas") — 5-sep-2026 ══════════════════
 // Stock se calcula desde los MOVIMIENTOS, no desde el maestro: una fila sigue
 // apareciendo mientras exista una confeccion, una venta o una falla que la nombre,
