@@ -7444,6 +7444,48 @@ async function _conDirecto() {   // Contenido de producto: la base ya filtra (si
       Descripcion: r.Descripcion || '', Cuidados: r.Cuidados || '', precios: r.precios || {}, UltimaActualizacion: r.UltimaActualizacion || '', Quien: r.Quien || '' }; }),
     plantillas: _cfPlantillas(j.plantillas), tiposPrenda: a.tiposPrenda, _directo: true };
 }
+// >>> VR_COS_1NOV · Productos/Costos: guardar, activar/desactivar (ERP) y eliminar DIRECTO en la base (rpc cos_guardar / cos_activar /
+// cos_eliminar · ola13). La base responde con la lista completa (costos_admin) → la pantalla se pinta sin otro viaje. Un «no» de negocio
+// (prefijo COS:) se muestra; si la base no contesta (o dice COLA: producto nuevo / sin borrador en Shopify) → la cola de siempre (Apps Script).
+// Shopify (precio/nombre) y la hoja Cost (respaldo) NO van en la base: después de guardar se piden por detrás a costos.preciosTras.
+function _cosVrLista(d) {   // = lo que devolvía costosListar, armado con la lista que mandó la base
+  const j = d && d.lista;
+  let r = { ok: true };
+  if (j && Array.isArray(j.rows) && j.rows.length) {
+    const a = _cfArmar(j.rows, true);
+    r = { ok: true, esAdmin: true, destino: 'base', encendido: true, aviso: '', rows: a.filas, tiposPrenda: a.tiposPrenda, categorias: a.categorias,
+          tipoCategoria: a.tipoCategoria, componentes: CF_COMP.map(function (c) { return { k: c[0], t: c[2] }; }), plantillas: _cfPlantillas(j.plantillas), _directo: true };
+  }
+  r.aviso = (d && d.aviso) || '';
+  if (d && d.guardado) r.guardado = d.guardado;
+  if (d && d.eliminado) r.eliminado = d.eliminado;
+  return r;   // sin rows (no Admin): _cosAplicar(null) recarga la lista como siempre
+}
+function _cosVrTras(d) {   // Shopify + hoja Cost por detrás (lo mismo que hacía costosGuardar después de escribir); nunca frena la pantalla
+  const t = d && d.tras; if (!t || !t.Diseno || typeof apiSend !== 'function') return;
+  const nom = t.Diseno;
+  Promise.resolve().then(() => apiSend(t.accion || 'costos.preciosTras', { Diseno: nom })).then(x => {
+    if (x && x.shop) { try { toast(esc(x.shop), /no se pudo|no pude|falló/i.test(x.shop) ? 'warn' : 'info'); } catch (_) {} }
+  }, e => {
+    const m = '✗ «' + nom + '» quedó guardado en el ERP, pero la tienda / hoja Cost NO se actualizó: ' + String((e && e.message) || e) + '. Guarda otra vez; si se repite, mira Alertas.';
+    try { if (typeof _pubAviso === 'function') _pubAviso('cosvr-' + Date.now(), m, 'err'); else toast(esc(m), 'err'); } catch (_) {}
+  });
+}
+async function _cosVrGuardar(body) {
+  const d = await _vrDirecto('cos_guardar', { p_body: body || {} }, /^COS:/);
+  if (!d) return null;
+  _cosVrTras(d);
+  return _cosVrLista(d);
+}
+async function _cosVrActivar(diseno, activar) {
+  const d = await _vrDirecto('cos_activar', { p_diseno: diseno, p_activar: !!activar }, /^COS:/);
+  return d ? _cosVrLista(d) : null;
+}
+async function _cosVrEliminar(diseno) {
+  const d = await _vrDirecto('cos_eliminar', { p_diseno: diseno }, /^COS:/);
+  return d ? _cosVrLista(d) : null;
+}
+// <<< VR_COS_1NOV
 // <<< PASO 3
 
 // Se muestra AL INSTANTE lo último que vio este navegador y se trae lo nuevo por detrás.
@@ -9211,7 +9253,8 @@ function _cosEstadosPintar(v) {
     try {
       msg('Guardando…');
       // 11-oct · D4: guardado en la base al instante; el resto confirma por detrás
-      let r = await _salidaMandar('costos.desactivar', { Diseno: v.Diseno, Activar: quiere, Canal: 'ERP' }, () => { msg('✓ ERP: ' + (quiere ? 'activo' : 'inactivo') + ' · confirmando…', 'var(--gn)'); });
+      let r = (typeof _cosVrActivar === 'function') ? await _cosVrActivar(v.Diseno, quiere) : null;   // VR_COS_1NOV
+      if (!r) r = await _salidaMandar('costos.desactivar', { Diseno: v.Diseno, Activar: quiere, Canal: 'ERP' }, () => { msg('✓ ERP: ' + (quiere ? 'activo' : 'inactivo') + ' · confirmando…', 'var(--gn)'); });
       if (r === undefined) r = await apiSend('costos.desactivar', { Diseno: v.Diseno, Activar: quiere, Canal: 'ERP' });
       _cosAplicar(r && r.rows ? r : null); sincronizar(); msg('✓ ERP: ' + (quiere ? 'activo' : 'inactivo'), 'var(--gn)');
     } catch (er) { e.checked = !quiere; e.disabled = false; msg('Error: ' + er.message, 'var(--rd)'); }
@@ -9536,7 +9579,8 @@ async function _cosGuardar(original, v) {
     const _rap = (typeof _cosFichaRapida === 'function') ? await _cosFichaRapida(original, _nomG, body, v) : null;
     if (_rap && _rap.negocio) throw new Error(_rap.negocio);
     if (_rap && _rap.ok) { _cerrado = true; _st.cerrado = true; COS.editing = null; _cosRender(); toast('✓ Guardado: ' + esc(_nomG) + ' · costos y tienda siguen por detrás', 'ok'); }
-    let r = await _salidaMandar('costos.guardar', body, () => {
+    let r = (typeof _cosVrGuardar === 'function') ? await _cosVrGuardar(body) : null;   // VR_COS_1NOV · directo en la base; la cola solo de respaldo
+    if (!r) r = await _salidaMandar('costos.guardar', body, () => {
       if (_cerrado) return;   // 31-oct · ya se cerró por la vía rápida (y quizá ya abriste otro producto: no se toca)
       _cerrado = true; _st.cerrado = true; COS.editing = null; _cosRender();
       toast('✓ Guardado: ' + esc(_nomG) + ' · aplicando costos y tienda…', 'ok');
@@ -9575,7 +9619,7 @@ async function _cosEliminar(diseno) {
   try { _cosRender(); } catch (_) {}
   toast('Eliminando «' + esc(diseno) + '»…', 'info');
   try {
-    const r = await apiSend('costos.eliminar', { Diseno: diseno });
+    const r = ((typeof _cosVrEliminar === 'function') ? await _cosVrEliminar(diseno) : null) || await apiSend('costos.eliminar', { Diseno: diseno });   // VR_COS_1NOV
     COS.editing = null; const f = document.getElementById('cos-form'); if (f) f.innerHTML = '';
     _cosAplicar(r); try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: true, r: r })); } catch (_) {}
     _cosRender(); toast('✓ Eliminado: ' + esc(diseno), 'ok');
@@ -9602,7 +9646,9 @@ async function _cosDesactivar(diseno, activar) {
   try {
     // 11-oct · D4: se ve al instante; la base y la tienda confirman por detrás
     const _f = (COS.data || []).find(x => x.Diseno === diseno), _antes = _f ? _f.Activo : undefined;
-    let r = await _salidaMandar('costos.desactivar', { Diseno: diseno, Activar: !!activar }, () => {
+    let r = (typeof _cosVrActivar === 'function') ? await _cosVrActivar(diseno, !!activar) : null;   // VR_COS_1NOV
+    if (r) toast(activar ? ('✓ Reactivado: ' + esc(diseno)) : ('✓ Marcado inactivo: ' + esc(diseno)), 'ok');
+    if (!r) r = await _salidaMandar('costos.desactivar', { Diseno: diseno, Activar: !!activar }, () => {
       if (_f) { _f.Activo = !!activar; _cosRender(); }
       toast(activar ? ('✓ Reactivado: ' + esc(diseno)) : ('✓ Marcado inactivo: ' + esc(diseno)), 'ok');
     }).catch(e => { if (_f) { _f.Activo = _antes; _cosRender(); } throw e; });
@@ -17730,6 +17776,15 @@ async function _devolucionActualizar(payload) {
     try { window._ultimoGuardadoMs = Date.now() - _t0; } catch (_) {}
     try { console.log('[devolucion] ' + payload.ID + ' por la via rapida en ' + (Date.now() - _t0) + ' ms'); } catch (_) {}
     return { ok: true, Estado: r.Estado || (payload && payload.Estado) || '' };
+  }
+  // VR_DEVACT_1NOV · recibir / reembolsar / foto: directo en la base (rpc devolucion_actualizar: fila + stock + pedido +
+  // historial en UNA transaccion, ~0,5 s). Rechazo de negocio («DEV: ...», SIN_PERMISO) se muestra tal cual;
+  // si la base no contesta (null) → Apps Script de respaldo, como siempre.
+  const _rd = await _vrDirecto('devolucion_actualizar', { p_body: payload }, /DEV:/);
+  if (_rd) {
+    try { window._ultimoGuardadoMs = Date.now() - _t0; } catch (_) {}
+    try { console.log('[devolucion] ' + payload.ID + ' directo en la base en ' + (Date.now() - _t0) + ' ms'); } catch (_) {}
+    return _rd;
   }
   return apiSend('devoluciones.actualizar', payload);
 }
@@ -43634,7 +43689,8 @@ function hdAbrirEditor(r, containerEl) {
     this.disabled = true;
     overlay.remove();
     toast('Eliminando devolución ' + id + '…', 'info');
-    apiSend('devoluciones.eliminar', { ID: id }).then(() => {
+    // VR_DEV_1NOV · se elimina directo en la base (rpc devolucion_eliminar: stock + pedido + historial); Apps Script solo de respaldo
+    (async () => (await _vrDirecto('devolucion_eliminar', { p_id: id }, /DEV:/)) || apiSend('devoluciones.eliminar', { ID: id }))().then(() => {
       toast('✓ Devolución ' + id + ' eliminada', 'ok');
     }).catch(e => {
       toast('Error al eliminar ' + id + ': ' + esc(e.message) + ' · no se borró nada', 'err');
