@@ -2059,6 +2059,7 @@ function setHTMLKeepScroll(container, html) {
           // codigo viejo). Ahora: si la pestaña queda en segundo plano 5 min, sin ventana abierta, sin nada
           // escribiendose y sin pedidos al servidor en curso, se recarga sola. Al volver, ya esta la nueva.
           window._erpVersionNueva = true;
+          try { if (typeof _verMarcarNueva === 'function') { _verMarcarNueva(); return; } } catch (_) {}   // VR_APPS0_2NOV · aviso con ✕ y recarga segura
           try { if (!window._erpAutoVersion) { window._erpAutoVersion = true;
             document.addEventListener('visibilitychange', function () {
               if (!document.hidden || !window._erpVersionNueva) return;
@@ -2082,7 +2083,7 @@ function setHTMLKeepScroll(container, html) {
             + 'box-shadow:0 6px 24px rgba(0,0,0,.35)';
           b.innerHTML = 'Hay una versión nueva del ERP. '
             + '<button id="upd-reload" style="background:#2563eb;color:#fff;border:0;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">Recargar</button>'
-            + '<button id="upd-later" style="background:transparent;color:inherit;border:0;cursor:pointer;font-size:12px;opacity:.7">Después</button>';
+            + '<button id="upd-later" title="Cerrar" style="background:transparent;color:inherit;border:0;cursor:pointer;font-size:15px;opacity:.7">✕</button>';   // VR_APPS0_2NOV
           document.body.appendChild(b);
           document.getElementById('upd-reload').addEventListener('click', () => location.reload());
           document.getElementById('upd-later').addEventListener('click', () => b.remove());
@@ -4370,6 +4371,22 @@ async function _shopLeer(v, gid) {
   if (id.length >= 5) { const r = await _shopCola('producto.leer', { shopify_id: id }, 15000); if (r && r.ok && r.existe !== false && Array.isArray(r.fotos)) return r; }
   return apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: gid || '' });
 }
+// >>> VR_APPS0_2NOV · interruptores (false = vuelve lo de antes)
+const VR_APPS0_EXTRA = true;          // tabla de medidas y categorías por el trabajador (producto.extra) en vez de Apps Script
+const VR_APPS0_POLL = true;           // Pedidos: con la base andando, el sondeo no va a Apps Script
+const VR_APPS0_ALERTAS_VIVO = true;   // Alertas: primero la base en vivo
+const _SHOP_EXTRA = {};
+/** = costos.fichaWeb {accion:'tabla'} (leer) + {accion:'colProducto', ver:true} en UN viaje al trabajador. null → Apps Script. */
+function _shopExtra(gid) {
+  const id = String(gid || '').replace(/\D/g, '');
+  if (!VR_APPS0_EXTRA || id.length < 5 || typeof _shopCola !== 'function') return Promise.resolve(null);
+  const m = _SHOP_EXTRA[id]; if (m && Date.now() - m.t < 5000) return m.p;   // la tabla y las categorías se piden juntas: 1 solo viaje
+  const pr = _shopCola('producto.extra', { shopify_id: id }, 15000)
+    .then(r => (r && r.ok && r.existe !== false && typeof r.tabla === 'string' && Array.isArray(r.colecciones)) ? r : null, () => null);
+  _SHOP_EXTRA[id] = { t: Date.now(), p: pr };
+  return pr;
+}
+// <<< VR_APPS0_2NOV
 /** Precio y nombre a Shopify (= costos.preciosTras). La hoja Cost (respaldo) sigue en Apps Script, por detrás y sin esperar. */
 async function _shopPreciosTras(diseno) {   // lo llama apiSend('costos.preciosTras') (los dos lugares de la pantalla, sin tocarlos)
   const r = await _shopCola('precios.tras', { diseno: diseno }, 25000);
@@ -4517,7 +4534,14 @@ async function _sbRefrescarGoogle(){
   return _sbRefrescando;
 }
 // Con el "pase" de Google (el mismo del login del ERP) abrimos sesión en Supabase.
-async function _sbAuthConCredencial(cred){
+// VR_APPS0_2NOV · el canje del pase de Google queda a la vista (window._sbCredVuelo) para que _sbSesionAsegurar lo espere
+function _sbAuthConCredencial(cred){
+  if (SB_APAGADO) return null;   // ver SB_APAGADO (regresion_reversa.js)
+  const pr = _sbAuthConCredencial0(cred);
+  try { window._sbCredVuelo = pr; Promise.resolve(pr).finally(function () { if (window._sbCredVuelo === pr) window._sbCredVuelo = null; }); } catch (_) {}
+  return pr;
+}
+async function _sbAuthConCredencial0(cred){
   if (SB_APAGADO) return null;   // ver SB_APAGADO
   if (!SB_ANON || !cred) return;
   try {
@@ -4864,6 +4888,13 @@ async function _sbSesionAsegurar(){
   if (SB_APAGADO) return null;   // simulacro: sin token, todo se va por Apps Script
   const v = await _sbTokenVigente();
   if (v) { _pillViaRapida(true); return v; }
+  if (window._sbCredVuelo) {   // VR_APPS0_2NOV · recién se entró con Google: el pase llega en ~0,5 s, no se va a Apps Script
+    try { await Promise.race([window._sbCredVuelo, new Promise(function (r) { setTimeout(r, 4000); })]); } catch (_) {}
+    const v2 = await _sbTokenVigente(); if (v2) { _pillViaRapida(true); return v2; }
+  }
+  if (typeof SB_LOGIN_NATIVO !== 'undefined' && SB_LOGIN_NATIVO && SESSION_TOKEN === '' && _sbTok && _sbTok.refresh_token) {
+    try { const vr = await _sbRefrescarGoogle(); if (vr) return vr; } catch (_) {}   // VR_APPS0_2NOV · ingreso nativo: sin sesión de Apps Script
+  }
   if (!SB_REAUTH_SILENCIOSO || !SB_ANON) return null;
   // Sin sesión de ERP no hay a quién renovarle nada, y si el login clásico ya
   // está pidiendo un pase, no se le pisa.
@@ -7692,6 +7723,7 @@ async function loadCostosSin() {
   try {
     // 31-oct · VÍA RÁPIDA: la base lo calcula en ~1 s (public.costos_sin_costo). Si aún no existe, el camino de siempre (34 s).
     let r = null; try { r = await _npRpc('costos_sin_costo', {}); } catch (_) { r = null; }
+    if (!r || !r.ok) { try { await new Promise(z => setTimeout(z, 2500)); r = await _npRpc('costos_sin_costo', {}); } catch (_) { r = null; } }   // VR_APPS0_2NOV · 1 reintento
     if (!r || !r.ok) r = await apiSend('costos.sinCosto', {});
     COS.sin = r.sin || []; COS.ign = r.ignorados || []; COS.sinMsg = '';
   } catch (e) { COS.sin = null; COS.sinMsg = 'No se pudo revisar las ventas: ' + e.message; }
@@ -8769,7 +8801,7 @@ async function _cosFichaWebAbrir(v, shopifyId) {
   }
   box.innerHTML = '<div style="font-size:12px;color:var(--mu);padding:8px 0">Leyendo la tienda…</div>';
   try {
-    const r = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: shopifyId || '' });
+    const r = (shopifyId && String(shopifyId).replace(/\D/g, '').length >= 5 && typeof _shopLeer === 'function') ? await _shopLeer(v, shopifyId) : await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: shopifyId || '' });   // VR_APPS0_2NOV
     if (r && r.elegir) {
       box.innerHTML = '<div style="font-size:12px;margin:6px 0">' + esc(r.texto || '') + '</div>'
         + (r.candidatos || []).map(p => '<button type="button" class="btn bg bs cfw-cand" data-id="' + esc(p.id) + '" style="font-size:12px;margin:0 6px 6px 0">' + esc(p.titulo) + (p.estado === 'ACTIVE' ? '' : ' (borrador)') + '</button>').join('');
@@ -8941,7 +8973,7 @@ async function _cfwColAbrir(v) {
   const _kc = 'col|' + v.ShopifyId, _cc = (typeof _fwlLeer === 'function') ? _fwlLeer(_kc) : null;
   CCO.previa = false;
   if (_cc && Array.isArray(_cc.colecciones)) { CCO.l = _cc.colecciones; CCO.sel = {}; CCO.l.forEach(c => { if (c.esta) CCO.sel[c.id] = 1; }); CCO.previa = true; _cfwColPintar('⏳ Actualizando desde la tienda… (para cambiar, espera unos segundos)'); }
-  try { const r = await apiSend('costos.fichaWeb', { accion: 'colProducto', Diseno: v.Diseno, ShopifyId: v.ShopifyId, ver: true });
+  try { const r = (await _shopExtra(v.ShopifyId)) || await apiSend('costos.fichaWeb', { accion: 'colProducto', Diseno: v.Diseno, ShopifyId: v.ShopifyId, ver: true });   // VR_APPS0_2NOV
     if (CCO.v !== v) return;
     try { if (typeof _fwlGuardar === 'function' && r && Array.isArray(r.colecciones)) _fwlGuardar(_kc, { colecciones: r.colecciones }); } catch (_) {}
     CCO.previa = false;
@@ -8970,7 +9002,7 @@ async function _cfwTablaAbrir(v) {
   /* 31-oct ola 2 · abre al instante con la última copia; lo de hoy llega por detrás (≈9 s) y se pinta si no empezaste a editar */
   const _kt = 'tabla|' + CTB.gid, _ct = (typeof _fwlLeer === 'function') ? _fwlLeer(_kt) : null, _txtC = _ct ? String(_ct.tabla || '') : null;
   if (_ct) { CTB.b = _ctbLeer(_txtC); CTB.dirty = false; _cfwTablaPintar('⏳ Actualizando desde la tienda…'); }
-  try { const r = await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: v.Diseno, ShopifyId: CTB.gid });
+  try { const r = (await _shopExtra(CTB.gid)) || await apiSend('costos.fichaWeb', { accion: 'tabla', Diseno: v.Diseno, ShopifyId: CTB.gid });   // VR_APPS0_2NOV
     if (CTB.v !== v) return;
     const _txtN = String((r && r.tabla) || '');
     try { if (typeof _fwlGuardar === 'function' && r) _fwlGuardar(_kt, { tabla: _txtN }); } catch (_) {}
@@ -9456,7 +9488,7 @@ function _cosEstadosPintar(v) {
         // 15-oct (Pablo) · «activo» = se ve en la tienda: sin una categoría del menú no se activa
         // 22-oct · VÍA RÁPIDA: las categorías ya se leyeron al abrir el producto (sección «Categorías en la tienda»): si ahí ya hay una del menú, 0 s. Si no, se pregunta al servidor.
         const _ccoOk = CCO.v && CCO.v.Diseno === v.Diseno && !CCO.dirty && (CCO.l || []).some(c => c.menu && c.esta);
-        if (!_ccoOk) try { const rc = await apiSend('costos.fichaWeb', { accion: 'colProducto', Diseno: v.Diseno, ShopifyId: v.ShopifyId, ver: true });
+        if (!_ccoOk) try { const rc = (await _shopExtra(v.ShopifyId)) || await apiSend('costos.fichaWeb', { accion: 'colProducto', Diseno: v.Diseno, ShopifyId: v.ShopifyId, ver: true });   // VR_APPS0_2NOV
           if (!((rc && rc.colecciones) || []).some(c => c.menu && c.esta)) falta.push('una categoría del menú de la tienda (sección «Categorías en la tienda»)'); } catch (_) { /* 22-oct (Pablo · Angie, Pantalón Paula) · si la revisión se cae (tiempo, red) NO se bloquea: el servidor vuelve a exigir la categoría del menú al publicar (_cosShopRequisitos_ · CostosBase.gs) */ }
         if (falta.length) { msg('No se puede publicar: falta ' + falta.join(', ') + '. Complétalo, guarda y vuelve a intentar.', 'var(--rd)'); volver(); return; }
         if (!(await npConfirm('Esto PUBLICA «' + v.Diseno + '» en tulula.com.pe y en Facebook e Instagram: lo verán tus clientes.\n\nSe envían fotos, descripción, cuidados, precios y las variantes de color y talla, y luego se publica.\n\n¿Publicar?'))) { volver(); return; }
@@ -10823,6 +10855,7 @@ async function _mctTodosBase() {   // = multimediaTodos (MultimediaBase.gs), arm
   try {
     const [dir, cat] = await Promise.all([_mmDirecto(), _mmCatalogo()]);
     const dis = {}; [(typeof COS !== 'undefined' && COS.data) || [], (typeof CTN !== 'undefined' && CTN.rows) || []].forEach(l => l.forEach(r => { if (r && r.Diseno) dis[r.Diseno] = 1; }));
+    if (dir && cat && !Object.keys(dis).length) (dir.rows || []).forEach(r => { if (r && r.Diseno) dis[r.Diseno] = 1; });   // VR_APPS0_2NOV · Costos aún no cargó: los productos con material
     if (dir && cat && Object.keys(dis).length) {
       por = {};
       Object.keys(dis).forEach(d => { const e = _mmDeProducto(dir, d); por[d] = { rows: e.rows, colores: _mmColoresCat(cat, d), orden: e.orden, nombreBot: e.nombreBot }; });
@@ -16025,6 +16058,10 @@ async function _confeccionListarRapido() {
   return api('confeccion.listar', {});
 }
 async function _alertasListarRapido(soloEspejo) {
+  if (VR_APPS0_ALERTAS_VIVO) {   // VR_APPS0_2NOV · en vivo (10 ms): sin copia vencida no hay pedido de refresco a Apps Script
+    try { const v0 = await _listaDeLaBase('alertas_listar_vivo', function (x) { return !!x && typeof x === 'object' && !!x.totales; });
+          if (v0) { if (window._sbSaltarEspejo && !soloEspejo) _alertasRehacerFondo(v0); return v0; } } catch (_) {}
+  }
   const d = await _sbCacheLeer('alertas.listar');
   if (d && typeof d === 'object' && d.totales) return d;
   // 26-set · B — el globito de fondo con la pestaña oculta NO va a Apps Script:
@@ -20360,6 +20397,13 @@ async function _pollPedsOnce() {
     // igual que antes de este cambio. Nunca se degrada la frescura en silencio.
     _pollVuelta++;
     if (baseOk && (_pollVuelta % POLL_APPS_CADA) !== 0) return;
+    // VR_APPS0_2NOV · la base ya trajo editados/eliminados/salidos (pedidos_cambios_desde). Apps Script solo si la base NO contestó.
+    // El aviso de salud sale de la copia 'latido.avisos' (la rehace el servidor cada pocos minutos; se acepta hasta 3 h).
+    if (baseOk && VR_APPS0_POLL) {
+      let _av0 = null; try { _av0 = await _sbCacheLeer('latido.avisos', 3 * 60 * 60 * 1000); } catch (_) { _av0 = null; }
+      if (_av0) { try { _saludBanner(_av0.baseCaida || _av0.saludSync || '', !!_av0.baseCaidaGrave, !!_av0.baseCaida); } catch (_) {} }
+      return;
+    }
 
     // 25-set · con la base andando, el AVISO DE SALUD sale del espejo
     // ('latido.avisos', EspejoDatos.gs) y Apps Script queda como red: 1 de cada
@@ -31537,6 +31581,9 @@ async function _feRevisar() {
        antes cada lectura de la puerta disparaba una renovación por Apps Script (1.086 viajes en 4 días, 8,6 s c/u). */
     let r = null;
     try { if (typeof _puertaRpc === 'function') r = await _puertaRpc('cuadre_faltan_erp', {}, 4000); } catch (_) { r = null; }
+    if (!r || typeof r !== 'object' || !Array.isArray(r.lista)) {   // VR_APPS0_2NOV · un tropiezo de la base (o el pase llegando): 1 reintento
+      try { await new Promise(z => setTimeout(z, 2500)); if (typeof _puertaRpc === 'function') r = await _puertaRpc('cuadre_faltan_erp', {}, 6000); } catch (_) { r = null; }
+    }
     if (!r || typeof r !== 'object' || !Array.isArray(r.lista)) r = await apiSend('cuadre.faltanErp', {});   // respaldo: puerta / Apps Script
     try { _FE.hechas = JSON.parse(localStorage.getItem('fe_hechas') || '{}') || {}; } catch (_) { _FE.hechas = {}; }
     _FE.lista = ((r && r.lista) || []).filter(x => !(_FE.hechas[_feClave(x)] && Date.now() - _FE.hechas[_feClave(x)] < 3 * 3600 * 1000));   // la que abrió para registrar se esconde 3 h (hasta la próxima revisión)
@@ -34268,7 +34315,7 @@ async function loadInv(){
 // probaba una y creia que el cambio no habia llegado. Ahora, a los 3 segundos, se
 // compara la marca del archivo del servidor con la que se esta ejecutando y, si
 // cambio, se recarga una sola vez (sessionStorage evita cualquier bucle).
-const ERP_BUILD='b2026090502';
+const ERP_BUILD='b2026110201';   // VR_APPS0_2NOV
 setTimeout(async function(){
   try{
     if(sessionStorage.getItem('erp_build_reload')===ERP_BUILD) return;
@@ -34281,6 +34328,70 @@ setTimeout(async function(){
     }
   }catch(_e){}
 }, 3000);
+// >>> VR_APPS0_2NOV · PESTAÑAS VIEJAS SE ACTUALIZAN SOLAS. Antes: una pestaña abierta días seguía con el código viejo
+// (y sus viajes a Apps Script) hasta que alguien la recargara. Ahora cada 3 min se mira la marca del archivo publicado
+// (HEAD, ~0 KB) y, si cambió, se recarga sola apenas: no hay ventana abierta, nada a medio escribir, ningún pedido al
+// servidor en curso, y la pestaña está oculta o sin uso hace 2 min. Mientras tanto: aviso con ✕ y botón «Recargar».
+const VER_CADA_MS = 3 * 60 * 1000, VER_QUIETO_MS = 2 * 60 * 1000;
+const _VER = { base: '', lista: false, ultUso: Date.now(), t: null };
+try { ['keydown', 'input', 'pointerdown', 'wheel', 'touchstart'].forEach(function (ev) { document.addEventListener(ev, function () { _VER.ultUso = Date.now(); }, { passive: true, capture: true }); }); } catch (_) {}
+async function _verMarca() {
+  try { const r = await fetch(location.pathname.replace(/[^/]*$/, '') + 'index.html', { method: 'HEAD', cache: 'no-store' });
+        if (!r.ok) return ''; return String(r.headers.get('etag') || r.headers.get('last-modified') || ''); } catch (_) { return ''; }
+}
+function _verHayAlgoAbierto() {
+  try {
+    if (document.body.classList.contains('modal-lock')) return true;
+    if (typeof _apiEnVuelo !== 'undefined' && _apiEnVuelo > 0) return true;
+    if (window._sesionPendiente || window._erpFormSucio) return true;
+    if (typeof CTB !== 'undefined' && CTB && CTB.dirty) return true;
+    if (typeof CCO !== 'undefined' && CCO && CCO.dirty) return true;
+    if (document.querySelector('[id$="-ov"], .modal.on, .modal.open, .modal.show')) return true;
+    const ae = document.activeElement;
+    if (!document.hidden && ae && (ae.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return true;
+    const tx = document.querySelectorAll('textarea');
+    for (let i = 0; i < tx.length; i++) if (tx[i].offsetParent !== null && tx[i].value !== tx[i].defaultValue) return true;
+    return false;
+  } catch (_) { return true; }
+}
+async function _verRecargar() {
+  try { const u = parseInt(sessionStorage.getItem('erp_ver_recarga') || '0', 10) || 0;
+        if (Date.now() - u < 5 * 60 * 1000) return false;   // nunca en bucle
+        sessionStorage.setItem('erp_ver_recarga', String(Date.now())); } catch (_) {}
+  try { if (window.caches) { const dir = location.origin + location.pathname.replace(/[^/]*$/, ''); const ks = await caches.keys();
+        for (const k of ks) { const c = await caches.open(k); await c.delete(dir); await c.delete(dir + 'index.html'); await c.delete(location.href.split('#')[0]); } } } catch (_) {}
+  location.reload(); return true;
+}
+function _verAviso() {
+  if (document.getElementById('upd-banner')) return;
+  const b = document.createElement('div'); b.id = 'upd-banner';
+  b.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:99999;background:var(--bg3,#1e293b);color:var(--tx,#e2e8f0);'
+    + 'border:1px solid var(--bd,#334155);border-radius:10px;padding:10px 14px;font-size:13px;display:flex;gap:10px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.35);max-width:calc(100vw - 32px)';
+  b.innerHTML = '<span>Hay una versión nueva del ERP. Se actualiza sola cuando no estés escribiendo.</span>'
+    + '<button id="upd-reload" style="background:#2563eb;color:#fff;border:0;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">Recargar</button>'
+    + '<button id="upd-later" title="Cerrar" style="background:transparent;color:inherit;border:0;cursor:pointer;font-size:15px;opacity:.7">✕</button>';
+  document.body.appendChild(b);
+  document.getElementById('upd-reload').addEventListener('click', function () { try { sessionStorage.removeItem('erp_ver_recarga'); } catch (_) {} _verRecargar(); });
+  document.getElementById('upd-later').addEventListener('click', function () { b.remove(); });
+}
+function _verMarcarNueva() {
+  _VER.lista = true; window._erpVersionNueva = true;
+  try { _verAviso(); } catch (_) {}
+  if (_VER.t) return;
+  _VER.t = setInterval(function () {
+    try { if (!_verHayAlgoAbierto() && (document.hidden || Date.now() - _VER.ultUso > VER_QUIETO_MS)) _verRecargar(); } catch (_) {}
+  }, 20000);
+}
+if (location.protocol === 'https:') {
+  setTimeout(async function () { _VER.base = await _verMarca(); }, 5000);
+  setInterval(async function () {
+    if (_VER.lista) return;
+    const m = await _verMarca(); if (!m) return;
+    if (!_VER.base) { _VER.base = m; return; }
+    if (m !== _VER.base) _verMarcarNueva();
+  }, VER_CADA_MS);
+}
+// <<< VR_APPS0_2NOV
 // ══ Filas sin SKU en el maestro ("huerfanas") — 5-sep-2026 ══════════════════
 // Stock se calcula desde los MOVIMIENTOS, no desde el maestro: una fila sigue
 // apareciendo mientras exista una confeccion, una venta o una falla que la nombre,
@@ -47296,7 +47407,56 @@ function bootApp(){
 //     no hay riesgo de seguridad: solo se ve el cascarón + caché local propia.
 //   • Si falla por red/backend frío → NO cerramos sesión (las llamadas de datos
 //     tienen sus propios reintentos).
+// >>> VR_APPS0_2NOV · INGRESO NATIVO CON GOOGLE EN SUPABASE (signInWithOAuth): el ingreso no toca Apps Script.
+// Supabase manda a Google, vuelve a esta misma dirección con la sesión (#access_token…), y los permisos salen de la base
+// (rpc mi_sesion). La sesión de Apps Script (solo para lo que aún va por ahí) se pide por detrás con Google en silencio.
+// APAGADO hasta que Pablo haga la configuración (ver nota). Encender: SB_LOGIN_NATIVO = true y publicar. Reversa: false.
+const SB_LOGIN_NATIVO = false;
+function _sbOAuthIr() {
+  try { sessionStorage.setItem('erp_oauth_ida', String(Date.now())); } catch (_) {}
+  location.href = SB_URL + '/auth/v1/authorize?provider=google&redirect_to=' + encodeURIComponent(location.origin + location.pathname);
+}
+function _sbOAuthVolver() {
+  try {
+    const h = String(location.hash || '');
+    if (h.indexOf('access_token=') < 0 && h.indexOf('error=') < 0) return null;
+    const q = new URLSearchParams(h.slice(1));
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (_) {}   // la llave no queda en la dirección
+    const at = q.get('access_token'); if (!at) return null;
+    let em = ''; try { em = String(JSON.parse(atob(at.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).email || '').toLowerCase(); } catch (_) {}
+    _sbGuardarTok({ access_token: at, refresh_token: q.get('refresh_token') || '', expires_in: parseInt(q.get('expires_in') || '3600', 10) || 3600, user: { email: em } });
+    return em || null;
+  } catch (_) { return null; }
+}
+async function _sbOAuthIngreso(em) {
+  let rs = null; try { rs = await _puertaRpc('mi_sesion', {}, 5000); } catch (_) { rs = null; }
+  if (!rs || !rs.pong || !rs.rol) { try { _sbGuardarTok(null); } catch (_) {} return false; }   // el correo no está en el ERP
+  const c = _ingresoCache(em) || {};
+  MY_EMAIL = rs.email || em; MY_ROLE = rs.rol; MY_ASESORA = c.asesora || ''; MY_PERMISOS = rs.permisos || null;
+  try { localStorage.setItem('erp_rol', MY_ROLE); localStorage.setItem('erp_email', MY_EMAIL); localStorage.setItem('erp_asesora', MY_ASESORA);
+        localStorage.setItem('erp_permisos', JSON.stringify(MY_PERMISOS)); localStorage.setItem('erp_auth_chk_r', String(Date.now())); } catch (_) {}
+  _hideLogin(); _sessRenovando = false; try { _pillConn(true); } catch (_) {}
+  try { bootApp(); } catch (_) {}
+  setTimeout(async function () {   // respaldo: la sesión de Apps Script, por detrás (nadie la espera)
+    try { const cred = await _googleCredSilenciosa(); if (!cred) return;
+          const data = await apiPost('auth.login', { idToken: cred }); _ingresoAplicar(data, { credential: cred }); } catch (_) {}
+  }, 1500);
+  return true;
+}
+function _sbOAuthBoton() {
+  if (!SB_LOGIN_NATIVO || document.getElementById('gbtn-nativo')) return;
+  const g = document.getElementById('gbtn'); if (!g || !g.parentNode) return;
+  const b = document.createElement('button'); b.id = 'gbtn-nativo'; b.type = 'button'; b.textContent = 'Entrar con Google (directo)';
+  b.style.cssText = 'margin-top:12px;background:#2563eb;color:#fff;border:0;border-radius:999px;padding:9px 18px;font-size:14px;cursor:pointer';
+  b.addEventListener('click', _sbOAuthIr); g.parentNode.insertBefore(b, g.nextSibling);
+}
+// <<< VR_APPS0_2NOV
 async function startAuth(){
+  if (SB_LOGIN_NATIVO) {   // VR_APPS0_2NOV · volvió de Google por Supabase: se entra sin Apps Script
+    const _emN = _sbOAuthVolver();
+    if (_emN) { try { if (await _sbOAuthIngreso(_emN)) return; } catch (_) {} }
+    try { setTimeout(_sbOAuthBoton, 0); } catch (_) {}
+  }
   _initGoogleButton();
   if(SESSION_TOKEN && MY_ROLE){
     _hideLogin(); bootApp();
