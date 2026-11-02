@@ -1026,7 +1026,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <!-- 22. Fecha envío + 23. Estado pedido -->
         <div class="fr">
           <div class="fg"><label>Fecha envío</label><input id="np-fenv" type="date"></div>
-          <div class="fg"><label>Estado pedido</label><select id="np-est"><option>ENVIAR</option><option>EN CAMINO</option><option>SEPARAR</option></select></div>
+          <div class="fg"><label>Estado pedido</label><select id="np-est"><option>ENVIAR</option><option>EN CAMINO</option><option>SEPARAR</option><option>PREVENTA</option></select></div>
         </div>
         <!-- 24. Courier + 25. Comentario Envío -->
         <div class="fr">
@@ -29863,19 +29863,29 @@ async function npGuardar() {
       try { stData = await _stockResumenRapido(); } catch(e) { /* skip stock check */ }
     }
     if (stData && stData.length) {
-      function _alertaStock(msg) {
+      // 2-nov (Pablo) · VR_PREVENTA_2NOV · el botón no se veía en modo claro (usaba un color que no existe → blanco sobre blanco):
+      // las asesoras quedaban «trabadas» en este aviso. Ahora el botón se ve, tiene ✕, y sin stock se ELIGE:
+      // PREVENTA (se envía cuando llegue el stock) · registrar igual · cancelar.
+      function _alertaStock(msg, opciones) {
         return new Promise(resolve => {
           const o = document.createElement('div');
           o.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px';
-          o.innerHTML = '<div style="background:var(--bg2);border:2px solid var(--am);border-radius:var(--r2);padding:24px;max-width:360px;width:100%;text-align:center">'
+          const bt = (id, txt, fondo) => '<button id="' + id + '" style="padding:9px 18px;border-radius:var(--r);background:' + fondo + ';color:#fff;font-weight:600;font-size:13px;border:none;cursor:pointer;font-family:inherit;margin:4px">' + txt + '</button>';
+          const botones = opciones
+            ? bt('alert-pv-stock', '⏳ Registrar en PREVENTA', 'var(--ac)') + bt('alert-ok-stock', 'Registrar igual', '#6b7280')
+            : bt('alert-ok-stock', 'OK', 'var(--ac)');
+          o.innerHTML = '<div style="position:relative;background:var(--bg2);border:2px solid var(--am);border-radius:var(--r2);padding:24px;max-width:380px;width:100%;text-align:center">'
+            +'<button id="alert-x-stock" title="Cancelar" style="position:absolute;top:8px;right:10px;background:none;border:none;color:var(--mu);font-size:18px;cursor:pointer">✕</button>'
             +'<div style="font-size:26px;margin-bottom:8px">📦</div>'
             +'<div style="font-size:14px;color:var(--tx);margin-bottom:18px;line-height:1.5">'+msg+'</div>'
-            +'<button style="padding:9px 28px;border-radius:var(--r);background:var(--bp);color:#fff;font-weight:600;font-size:13px;border:none;cursor:pointer;font-family:inherit" id="alert-ok-stock">OK</button>'
-            +'</div>';
+            + botones + '</div>';
           document.body.appendChild(o);
-          o.querySelector('#alert-ok-stock').addEventListener('click', () => { o.remove(); resolve(); });
+          o.querySelector('#alert-ok-stock').addEventListener('click', () => { o.remove(); resolve('ok'); });
+          const pv = o.querySelector('#alert-pv-stock'); if (pv) pv.addEventListener('click', () => { o.remove(); resolve('preventa'); });
+          o.querySelector('#alert-x-stock').addEventListener('click', () => { o.remove(); resolve(opciones ? 'cancelar' : 'ok'); });
         });
       }
+      window._pvCancelado = false;
       for (const nombre of _prendasNombres) {
         const nl = nombre.toLowerCase();
         // Buscar todas las variantes (mismo diseño puede tener varios colores/tallas)
@@ -29889,7 +29899,11 @@ async function npGuardar() {
           const totalStock = matches.reduce((s, d) =>
             s + Object.values(d.stock||{}).reduce((ss, v) => ss + (typeof v === 'number' ? v : 0), 0), 0);
           if (totalStock <= 0) {
-            await _alertaStock('<strong style="color:var(--am)">Alerta: este producto no tiene stock</strong><br>Asegúrate de que la cliente tenga conocimiento.<br><em style="color:var(--mu);font-size:12px">'+esc(nombre)+'</em>');
+            const _estSel = document.getElementById('np-est');
+            if (_estSel && _estSel.value === 'PREVENTA') continue;   // ya está en PREVENTA: no se vuelve a preguntar
+            const _dec = await _alertaStock('<strong style="color:var(--am)">Este producto no tiene stock</strong><br>¿Es una venta en <b>PREVENTA</b>? (la clienta sabe que se envía cuando llegue el stock)<br><em style="color:var(--mu);font-size:12px">'+esc(nombre)+'</em>', true);
+            if (_dec === 'cancelar') { window._pvCancelado = true; break; }
+            if (_dec === 'preventa' && _estSel) _estSel.value = 'PREVENTA';
           } else if (totalStock === 1) {
             await _alertaStock('<strong style="color:var(--am)">Última unidad de esta prenda, color y talla</strong><br><em style="color:var(--mu)">'+esc(nombre)+'</em>');
           }
@@ -29898,6 +29912,7 @@ async function npGuardar() {
     }
   }
 
+  if (window._pvCancelado) { window._pvCancelado = false; toast('No se guardó: cancelaste en el aviso de stock', 'warn'); return; }   // VR_PREVENTA_2NOV
   const btn = document.getElementById('btn-guardar');
   btn.disabled = true; btn.textContent = 'Guardando...';
 
@@ -36563,6 +36578,11 @@ function _confAbrirIngresarStock(confEl) {
       // LOTES F3 — AVISO: prendas vendidas en PREVENTA que YA tienen stock con este ingreso
       if (res && Array.isArray(res.preventaListas)) _stkAvisoPreventa(res.preventaListas);
       if (empujon && Array.isArray(empujon.preventaListas)) _stkAvisoPreventa(empujon.preventaListas);
+      // 2-nov · VR_PREVENTA_2NOV · con el ingreso por la base nadie calculaba qué PREVENTAS quedan cubiertas: lo dice la base
+      // (rpc preventa_cubiertas: pedidos en PREVENTA cuyo SKU ya alcanza, por orden de llegada).
+      if (!(res && Array.isArray(res.preventaListas)) && !(empujon && Array.isArray(empujon.preventaListas))) {
+        try { const _pc = await _puertaRpc('preventa_cubiertas', {}, 4000); if (Array.isArray(_pc)) _stkAvisoPreventa(_pc); } catch (_) {}
+      }
       _stkCart = [];
       _close();
       if (_prodAlTerminar) { try { _prodAlTerminar({ ok:true, lotes:(res && res.lotes) || [], escrito }); } catch (_) {} }   // 21-oct · 🧵 Producción F1b
