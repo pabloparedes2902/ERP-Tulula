@@ -4265,6 +4265,7 @@ function _conAlias(a, b) {
 async function apiSend(action, body) {
   { const _al = _conAlias(action, body); if (_al) action = _al; }
   _puertaMarcarEscritura(action, body);   // 27-oct · fase 1
+  if (action === 'costos.preciosTras' && body && body.Diseno && !body.soloHoja && !body._sinShop && typeof _shopPreciosTras === 'function') return _shopPreciosTras(body.Diseno);   // VR_SHOP_1NOV · precio a Shopify por el trabajador
   if (_salidaAplica(action, body)) { const _sr = await _salidaMandar(action, body); if (_sr !== undefined) return _sr; }   // 11-oct · D4 SALIDA A LA TIENDA
   { const _pr = await _puertaIntentar(action, body, () => _apiSendApps(action, body)); if (_pr !== undefined) return _pr; }   // 10-oct · PUERTA ÚNICA
   return _apiSendApps(action, body);
@@ -4307,6 +4308,50 @@ async function _salidaMandar(action, body, alEncolar) {
   throw new Error('Quedó guardado en el ERP y la tienda lo sigue procesando. Si falla, aparece en Alertas.');
 }
 // <<< SALIDA A LA TIENDA
+// >>> 2-nov-2026 · VR_SHOP_1NOV · SHOPIFY FUERA DE APPS SCRIPT (paso 4). La pantalla deja el pedido en la base (rpc shopify_cola_encolar)
+// y la base despierta al trabajador (Edge Function shopify-worker), que habla con Shopify y deja la respuesta en la misma fila
+// (rpc shopify_cola_esperar). Si la base no lo recibe o el trabajador no lo toma en ~5 s → Apps Script como siempre (respaldo).
+const SHOP_WORKER = true;              // false = todo vuelve a Apps Script
+const SHOP_ENVIAR_WORKER = false;      // contenido.enviar por el trabajador: APAGADO hasta portar fotos y video (tajada 2)
+const SHOP_COLA = { muertoHasta: 0 };
+async function _shopCola(op, payload, topeMs) {
+  if (!SHOP_WORKER || typeof _puertaRpc !== 'function' || Date.now() < SHOP_COLA.muertoHasta) return undefined;
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.shop', op) : null;
+  const fin = (ok, r) => { try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, ok); } catch (_) {} return r; };
+  let enc = null; try { enc = await _puertaRpc('shopify_cola_encolar', { p_op: op, p_payload: payload || {} }, 5000); } catch (_) { enc = null; }
+  if (!(enc && enc.id)) return fin(false, undefined);
+  const t0 = Date.now(), tope = topeMs || 20000;
+  while (Date.now() - t0 < tope) {
+    const r = await _puertaRpc('shopify_cola_esperar', { p_id: enc.id }, 8000);
+    if (r && r.estado === 'ok') return fin(true, r.resultado || { ok: true });
+    if (r && r.estado === 'error') return fin(false, undefined);   // el trabajador o la tienda fallaron: Apps Script lo intenta
+    if (r && r.estado === 'pendiente' && !r.intentos && Date.now() - t0 > 4500) { SHOP_COLA.muertoHasta = Date.now() + 10 * 60 * 1000; return fin(false, undefined); }   // nadie lo tomó: el trabajador no está → 10 min por Apps Script
+    if (!r) await new Promise(z => setTimeout(z, 1000));
+  }
+  return fin(false, undefined);
+}
+/** Leer la ficha de la tienda (= costos.fichaWeb {accion:'leer'}) de un producto YA enlazado. Mismo formato de respuesta. */
+async function _shopLeer(v, gid) {
+  const id = String(gid || (v && v.ShopifyId) || '').replace(/\D/g, '');
+  if (id.length >= 5) { const r = await _shopCola('producto.leer', { shopify_id: id }, 15000); if (r && r.ok && r.existe !== false && Array.isArray(r.fotos)) return r; }
+  return apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: gid || '' });
+}
+/** Precio y nombre a Shopify (= costos.preciosTras). La hoja Cost (respaldo) sigue en Apps Script, por detrás y sin esperar. */
+async function _shopPreciosTras(diseno) {   // lo llama apiSend('costos.preciosTras') (los dos lugares de la pantalla, sin tocarlos)
+  const r = await _shopCola('precios.tras', { diseno: diseno }, 25000);
+  if (!(r && r.ok)) return apiSend('costos.preciosTras', { Diseno: diseno, _sinShop: true });   // respaldo: Apps Script hace todo como hoy
+  Promise.resolve().then(() => apiSend('costos.preciosTras', { Diseno: diseno, soloHoja: true })).catch(() => {});
+  return r;
+}
+/** Contenido a la tienda: texto y metacampos por el trabajador; fotos y video siguen por Apps Script. Apagado (SHOP_ENVIAR_WORKER). */
+async function _shopEnviar(v, acc) {
+  if (SHOP_ENVIAR_WORKER) {
+    const r = await _shopCola('contenido.enviar', { diseno: v.Diseno }, 25000);
+    if (r && r.ok && !r.resto_apps) return r;
+  }
+  return apiSend(acc, { fichaProducto: v.Diseno });
+}
+// <<< VR_SHOP_1NOV
 async function _apiSendApps(action, body) {
   // 13/07 ANTI-DUPLICADO: id único por operación. Los reintentos automáticos de red
   // llevan el MISMO id → si el servidor ya la procesó (y la respuesta se perdió en el
@@ -8364,7 +8409,7 @@ async function _cosFichaEnviar(v, auto, accShop) {   // 22-oct · accShop: la ru
   if (out) out.textContent = 'Enviando a Shopify…';
   try {
     const _acc = accShop || 'costos.shopify';
-    let r = await apiSend(_acc, { fichaProducto: v.Diseno });
+    let r = await (typeof _shopEnviar === 'function' ? _shopEnviar(v, _acc) : apiSend(_acc, { fichaProducto: v.Diseno }));   // VR_SHOP_1NOV
     // 4-oct · con subida en bloque quedan fotos por mandar (tope de 12 por vuelta): se repite sola hasta terminar (máx. 6 vueltas)
     for (let k = 2; k <= 6 && /faltan \d+ fotos/.test(String((r && r.texto) || '')); k++) {
       if (out) out.textContent = 'Enviando a Shopify… (vuelta ' + k + ')';
@@ -8666,7 +8711,7 @@ function _cfwConflictoAviso(v) {
 function _cfwFotosFrescas(v) { const p = _cfwFrescasLeer(v); CFW._frescaP = p; return p; }
 async function _cfwFrescasLeer(v) {
   CFW._fresca = false; _cfwFrescaAviso('↻ Comprobando con la tienda… (lo que ves sale de la copia del ERP)');
-  let r = null; try { r = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: CFW.gid || '' }); } catch (_) { r = null; }
+  let r = null; try { r = await (typeof _shopLeer === 'function' ? _shopLeer(v, CFW.gid || '') : apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: CFW.gid || '' })); } catch (_) { r = null; }   // VR_SHOP_1NOV
   if (CFW.v !== v || !CFW.f) return false;
   if (!r || !r.ok || !Array.isArray(r.fotos)) {
     const a = _cfwFrescaAviso('⚠ No pude comprobar con la tienda: lo que ves sale de la copia del ERP y puede estar viejo. Antes de guardar lo vuelvo a comprobar. <a href="#" class="cfw-fr-r">Reintentar</a>', 'warn');
@@ -8885,7 +8930,7 @@ async function _cfwBenSinFondo(sec, i, archivo) {
   const nuevo = 'sinfondo-' + tallo(r.Url);
   for (let k = 0; k < 8; k++) {   // la tienda tarda unos segundos en tener la foto nueva
     await new Promise(z => setTimeout(z, 8000));
-    try { const rr = await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: CFW.gid || '' });
+    try { const rr = await (typeof _shopLeer === 'function' ? _shopLeer(v, CFW.gid || '') : apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: CFW.gid || '' }));   // VR_SHOP_1NOV
       const f = (rr && rr.fotos || []).find(x => (String(x.archivo || '') + ' ' + String(x.mini || '')).toLowerCase().indexOf(nuevo) >= 0);
       if (!f) continue;
       if (CFW.v !== v) return;   // ya abrió otra ficha
@@ -9219,7 +9264,7 @@ function _cosHistCabecera(v) {
 function _cfwPacksPintar(v, handle) {
   const w = document.getElementById('cfw-packs'); if (!w) return;
   const sh = _cosShopDe(v), h = handle || (sh && sh.handle) || (typeof CFW !== 'undefined' && CFW && CFW.v === v && CFW.handle) || '';
-  if (!h) { w.innerHTML = ''; if (!handle && v.ShopifyId) apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: v.ShopifyId }).then(r => { if (r && r.handle) _cfwPacksPintar(v, r.handle); }).catch(() => {}); return; }
+  if (!h) { w.innerHTML = ''; if (!handle && v.ShopifyId) (typeof _shopLeer === 'function' ? _shopLeer(v, v.ShopifyId) : apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: v.ShopifyId })).then(r => { if (r && r.handle) _cfwPacksPintar(v, r.handle); }).catch(() => {}); return; }
   const pr = v.precios || {}, base = 'https://tulula.com.pe/products/' + h;
   const L = [['×1', base]].concat(Number(pr.lista2) > 0 ? [['×2', base + '?pack=2']] : []).concat(Number(pr.lista3) > 0 ? [['×3', base + '?pack=3']] : []);
   w.innerHTML = '<div style="border:1px solid var(--bd);border-radius:var(--r);padding:8px 12px;margin:6px 0 10px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">🔗 Enlaces para anuncios</div>'
@@ -9283,7 +9328,7 @@ function _cosEstadosPintar(v) {
         await _cosGuardarPendientes(v);   // 22-oct · primero se guarda lo pendiente; después se revisa
         // 22-oct (Pablo: «50 s es demasiado») · VÍA RÁPIDA: la ficha se revisa con la copia que la pantalla ya tiene (0 s). Solo si esa copia dice que falta algo se pregunta al servidor (por si quedó vieja).
         const _fwOk = f => !!(f && f.prenda && !f.prenda.borrador && (f.beneficios || []).filter(b => b && b.titulo && b.foto).length >= 2);
-        try { const fi = _fwOk(shY && shY.ficha) ? shY.ficha : (((await apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: v.ShopifyId || '' })) || {}).ficha || {});
+        try { const fi = _fwOk(shY && shY.ficha) ? shY.ficha : (((await (typeof _shopLeer === 'function' ? _shopLeer(v, v.ShopifyId || '') : apiSend('costos.fichaWeb', { accion: 'leer', Diseno: v.Diseno, ShopifyId: v.ShopifyId || '' }))) || {}).ficha || {});
           if (!fi.prenda || fi.prenda.borrador) falta.push('«La prenda» (pestaña Tienda)');
           if ((fi.beneficios || []).filter(b => b && b.titulo && b.foto).length < 2) falta.push('al menos 2 beneficios con su foto (pestaña Tienda)');
           if (false && (fi.ocasiones || []).filter(o => o && o.foto).length < 2) falta.push('las fotos «En la oficina» y «Fuera de la oficina» (si no las tienes, pídeselas a Claude: las arma con tus fotos de la tienda)');
