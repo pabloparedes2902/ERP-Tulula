@@ -4936,6 +4936,10 @@ async function _sbListarDirecto(offset, limit, orden, wantCount){
   const heads = { 'apikey': SB_ANON, 'Authorization': 'Bearer '+tok };
   if (wantCount) heads['Prefer'] = 'count=exact';
   const r = await _sbFetchPlazo(q, { headers: heads }, SB_LISTAR_PLAZO_MS);   // 31-oct · plazo
+  if (r.status === 416) {   // VR_LEC_1NOV · offset más allá del total = no hay más filas (antes: null → 2 reintentos → Apps Script 30-40 s)
+    const cr = r.headers.get('content-range') || ''; const tt = (cr.indexOf('/') >= 0) ? (parseInt(cr.split('/')[1]) || 0) : 0;
+    return { rows: [], total: tt || window._pedTotalReal || 0, offset: _off, limit: _lim, hayMas: false, serverTs: Date.now() };
+  }
   if (!r.ok) { if (r.status === 401 || r.status === 403) _sbVencerTok(); return null; }
   const arr = await r.json();
   // _sbId = id de la fila en la base = ORDEN REAL DE CARGA (el de la hoja). La consulta
@@ -10594,7 +10598,7 @@ async function _mmDirecto() {
     const rows = j.rows.map(x => ({ Clave: _mmTxt(x.clave), Diseno: _mmTxt(x.diseno), Color: _mctClave(x.color || ''),
       Canal: MM_CANALES.indexOf(_mmTxt(x.canal).toUpperCase()) >= 0 ? _mmTxt(x.canal).toUpperCase() : 'CATALOGO',
       Tipo: MM_TIPOS.indexOf(_mmTxt(x.tipo).toUpperCase()) >= 0 ? _mmTxt(x.tipo).toUpperCase() : 'EXTRA',
-      Url: _mmTxt(x.url), Categoria: _mmTxt(x.categoria), Notas: _mmTxt(x.notas), Origen: _mmTxt(x.origen), Activo: x.activo !== false, Quien: _mmTxt(x.actualizado_por) }));
+      Url: _mmTxt(x.url), Categoria: _mmTxt(x.categoria), Notas: _mmTxt(x.notas), Origen: _mmTxt(x.origen), Activo: x.activo !== false, UltimaActualizacion: (typeof _cfFecha === 'function' ? _cfFecha(x.actualizado) : ''), Quien: _mmTxt(x.actualizado_por) }));   // VR_LEC_1NOV · = multimedia.todos
     const orden = {};
     Object.keys(j.orden || {}).forEach(k => { try { const l = JSON.parse(j.orden[k] || '[]'); if (Array.isArray(l)) orden[k] = l.map(String); } catch (_) {} });
     return { rows, orden };
@@ -14668,6 +14672,15 @@ const _ESP_CLAVES_STOCK = ['stock.resumen','catalogo.stock','lotes.listar','conf
 // cada escritura costaba ~26 s de servidor y cuota, para una copia que nadie lee. Se dejan de pedir.
 const _ESP_LEE_BASE = { 'productos.listar':1, 'lotes.listar':1, 'fallas.resumen':1, 'cambios.listar':1, 'dashboard.todo':1,
                         'clientes.index':1, 'confeccion.listar':1, 'catalogo.stock':1, 'reposicion.calc':1 };
+/* VR_CARGA_1NOV · copia de las claves de _edTareas_ (EspejoDatos.gs): las ÚNICAS que espejoRefrescar() sabe rehacer.
+   Cualquier otra (dashboard.base, margen.foto|…, cuadre.logistica…) la arma la base y el servidor la «salta»:
+   pedírsela costaba un viaje de 8-18 s a Apps Script para nada. Si se agrega una tarea allá, agregarla acá. */
+const _ESP_SRV_TAREAS = { 'stock.resumen':1, 'clientes.listar':1, 'dashboard.todo':1, 'panel.roas':1, 'productos.listar':1,
+  'catalogo.maestrosSkus':1, 'lotes.listar':1, 'reposicion.calc':1, 'catalogo.prendas':1, 'catalogo.stock':1, 'cambios.listar':1,
+  'colores.listar':1, 'maestros.listar':1, 'dashboard.serieDiaria':1, 'confeccion.listar':1, 'alertas.listar':1, 'latido.avisos':1,
+  'fallas.resumen':1, 'vistas.stock.listar':1, 'archivo.simular':1, 'auditoria.config.obtener':1, 'backup.listar':1,
+  'backup.config.obtener':1, 'backup.trigger.estado':1, 'config.segmentos.obtener':1, 'archivo.nros':1, 'archivo.resumen':1,
+  'vocabulario.homologaciones':1, 'stock.cutoff':1, 'metacapi.badge':1, 'clientes.index':1, 'metacapi.panel':1 };
 // 1-oct F4: stock.resumen tambien se lee del LIBRO VIVO (_sbLibroDirecto). Si el libro se leyo limpio en los
 // ultimos 10 min, la copia de Apps Script es solo respaldo: no se pide rehacerla (medido: 6 pedidos de 11-26 s
 // en 1 hora de una sola asesora). Con el libro sucio se sigue pidiendo como siempre.
@@ -14803,7 +14816,7 @@ function _f1PedirRefresco(clave, edad) {
   if (_f1Pedidos[clave] && ahora - _f1Pedidos[clave] < SB_F1_ESPERA_MS) return false;
   _f1Pedidos[clave] = ahora;
   try { _f1Aviso(edad); } catch (_) {}
-  try { if (typeof apiSend === 'function' && !(typeof _ESP_SOLO_RESPALDO_SRV !== 'undefined' && _ESP_SOLO_RESPALDO_SRV[clave]) && !(typeof _ESP_LEE_BASE !== 'undefined' && _ESP_LEE_BASE[clave])) apiSend('espejo.refrescar', { claves: [clave], motivo: 'vencida' }).catch(function(){}); } catch (_) {}
+  try { if (typeof apiSend === 'function' && !(typeof _ESP_SOLO_RESPALDO_SRV !== 'undefined' && _ESP_SOLO_RESPALDO_SRV[clave]) && !(typeof _ESP_LEE_BASE !== 'undefined' && _ESP_LEE_BASE[clave]) && !(typeof _ESP_SRV_TAREAS !== 'undefined' && !_ESP_SRV_TAREAS[clave])) apiSend('espejo.refrescar', { claves: [clave], motivo: 'vencida' }).catch(function(){}); } catch (_) {}
   return true;
 }
 function _f1Aviso(edad) {
@@ -17162,7 +17175,42 @@ async function _sbRpcAjuste(fn, params) {
 // REVERSA: SB_STOCK_INMEDIATO = false y publicar (o stockDirectoApagar()).
 const SB_STOCK_INMEDIATO = true;
 let _inmApagadoHasta = 0;
+// >>> VR_ESC_1NOV · stock.aplicarYa costaba 22 s × 31 en 7 días (erp_lentos) y desde la ola 7-10 la BASE ya aplica en el
+// mismo clic conteo (caj-), lote (laj-), registrar falla (fal-) y recuperar falla (fre-): la tarea nace con «aplicado».
+// Se pregunta primero a la base (rpc cola_estado, ~30 ms); si ya está aplicada, Apps Script no se llama (él contestaría
+// lo mismo: «ya estaba», sin libroSync). Rechazo definitivo = mismo error que daría Apps Script. Cualquier duda → como antes.
+// Crear/eliminar SKU (skc-/ske-) y devoluciones (dvr-) siguen por Apps Script (escriben la hoja Maestros/Pedidos).
+// REVERSA: VR_ESC_INM_BASE = false.
+const VR_ESC_INM_BASE = true;
+const _INM_EN_BASE_RX = /^(caj|laj|fal|fre)-\d{10,}-[a-z0-9]{2,20}$/;
+async function _inmEstadoBase(req) {
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.cola_estado.inm', '') : null;
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON || typeof _sbSesionAsegurar !== 'function') return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const tm = ctl ? setTimeout(() => { try { ctl.abort(); } catch (_) {} }, 4000) : null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/cola_estado', { method: 'POST', signal: ctl ? ctl.signal : undefined,
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_request: req }) });
+    if (tm) clearTimeout(tm);
+    if (!r.ok) { try { if (_c) _cronCerrar(_c, false); } catch (_) {} return null; }
+    const e = await r.json();
+    try { if (_c) _cronCerrar(_c, !!(e && e.aplicado)); } catch (_) {}
+    return (e && e.existe) ? e : null;
+  } catch (_) { try { if (_c) _cronCerrar(_c, false); } catch (__) {} return null; }
+}
+// <<< VR_ESC_1NOV
 async function _inmAplicarYa(req) {
+  if (VR_ESC_INM_BASE && req && _INM_EN_BASE_RX.test(req)) {   // VR_ESC_1NOV
+    const e0 = await _inmEstadoBase(req);
+    if (e0 && e0.aplicado && e0.abandonado) {
+      const err = new Error('No se aplicó: ' + (e0.error || 'la operación fue rechazada'));
+      err._negocio = true; err._inmediato = true;
+      throw err;
+    }
+    if (e0 && e0.aplicado) return { ok: true, directo: true, aplicado: true, via: 'base' };
+  }
   if (!SB_STOCK_INMEDIATO || !req || Date.now() < _inmApagadoHasta) return null;
   let r = null;
   try {
