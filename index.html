@@ -3857,15 +3857,26 @@ async function _lentoCentralizar(reg) {
 }
 
 let _cronLatido = null;
+// VR_VAR_2NOV · si la pestaña se oculta (o la laptop se duerme) mientras algo se mide, esa medición
+// se anota como «cortada»: el reloj siguió corriendo sin que nadie esperara (ej. auth.sbPase 653 s / 3.600 s).
+let _cronOcultoGen = 0, _cronUltLatido = Date.now();
+try {
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', function () { if (document.hidden) _cronOcultoGen++; });
+    document.addEventListener('freeze', function () { _cronOcultoGen++; });
+  }
+} catch (_) {}
+function _cronOculta() { try { return !!(typeof document !== 'undefined' && document.hidden); } catch (_) { return false; } }
 function _cronAbrir(etiqueta, detalle) {
   try {
     const id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     const ab = _cronLeer(_CRON_ABIERTAS);
-    ab.push({ id: id, q: String(etiqueta || ''), det: detalle ? String(detalle).slice(0, 80) : '', t0: Date.now(), vivo: Date.now() });
+    ab.push({ id: id, q: String(etiqueta || ''), det: detalle ? String(detalle).slice(0, 80) : '', t0: Date.now(), vivo: Date.now(),
+              g: _cronOcultoGen, h: _cronOculta() ? 1 : 0 });   // VR_VAR_2NOV
     _cronGuardar(_CRON_ABIERTAS, ab);
     // El "sigo vivo": sin esto, una operación cortada por una recarga solo diría
     // "empezó a tal hora" y no cuánto llegó a durar.
-    if (!_cronLatido) _cronLatido = setInterval(_cronLatir, 2000);
+    if (!_cronLatido) { _cronUltLatido = Date.now(); _cronLatido = setInterval(_cronLatir, 2000); }
     return id;
   } catch (_) { return null; }
 }
@@ -3875,6 +3886,8 @@ function _cronLatir() {
     const ab = _cronLeer(_CRON_ABIERTAS);
     if (!ab.length) { clearInterval(_cronLatido); _cronLatido = null; return; }
     const ahora = Date.now();
+    if (ahora - _cronUltLatido > 30000) _cronOcultoGen++;   // VR_VAR_2NOV · el latido de 2 s se frenó > 30 s: laptop dormida
+    _cronUltLatido = ahora;
     ab.forEach(function (x) { x.vivo = ahora; });
     _cronGuardar(_CRON_ABIERTAS, ab);
   } catch (_) {}
@@ -3906,7 +3919,8 @@ function _cronCerrar(id, ok) {
     _cronGuardar(_CRON_ABIERTAS, ab);
     const ms = Date.now() - x.t0;
     if (ms >= _CRON_LENTO_MS || _CRON_SIEMPRE.test(x.q)) {
-      _cronAnotar({ q: x.q, det: x.det, ms: ms, ok: ok ? 1 : 0, cortada: 0, ts: x.t0 });
+      const _oc = (x.h || (x.g !== undefined && x.g !== _cronOcultoGen) || _cronOculta()) ? 1 : 0;   // VR_VAR_2NOV
+      _cronAnotar({ q: x.q, det: x.det, ms: ms, ok: ok ? 1 : 0, cortada: _oc, ts: x.t0 });
     }
   } catch (_) {}
 }
@@ -4262,9 +4276,27 @@ function _conAlias(a, b) {
   if (a === 'costos.fichaWeb') return (b && b.accion === 'guardar') ? 'contenido.historiaGuardar' : 'contenido.historia';
   return CON_ALIAS[a] || '';
 }
+// VR_VAR_2NOV · Comisiones «cfg» (reglas, asesoras, admins) desde la base: public.comisiones_cfg_leer
+// (la copia la deja Apps Script en comisiones_cfg_espejo al guardar y cada 10 min: ComisionesCfgBase.gs).
+// Antes: la puerta la daba en 0,2 s pero la renovaba por detrás en Apps Script (6-14 s cada vez).
+// Si la base no contesta, no deja (sin permiso) o la copia tiene > 3 días → Apps Script, como siempre.
+// REVERSA: VR_VAR_COMCFG = false y publicar.
+const VR_VAR_COMCFG = true;
+async function _comCfgBase() {
+  try {
+    if (!VR_VAR_COMCFG) return null;
+    if (Date.now() - (PUERTA.ultEscr || 0) < 120000) return null;   // acabo de guardar algo: lo fresco de Apps Script
+    let _c = null; try { _c = _cronAbrir('rapido.comisionesCfg'); } catch (_) {}
+    const j = await _puertaRpc('comisiones_cfg_leer', {}, 2500);
+    const ok = !!(j && typeof j === 'object' && j.vendedoras && Array.isArray(j.admin));
+    try { _cronCerrar(_c, ok); } catch (_) {}
+    return ok ? j : null;
+  } catch (_) { return null; }
+}
 async function apiSend(action, body) {
   { const _al = _conAlias(action, body); if (_al) action = _al; }
   _puertaMarcarEscritura(action, body);   // 27-oct · fase 1
+  if (action === 'comisiones.admin' && body && body.op === 'cfg') { const _cc = await _comCfgBase(); if (_cc) return _cc; }   // VR_VAR_2NOV
   if (action === 'costos.preciosTras' && body && body.Diseno && !body.soloHoja && !body._sinShop && typeof _shopPreciosTras === 'function') return _shopPreciosTras(body.Diseno);   // VR_SHOP_1NOV · precio a Shopify por el trabajador
   if (_salidaAplica(action, body)) { const _sr = await _salidaMandar(action, body); if (_sr !== undefined) return _sr; }   // 11-oct · D4 SALIDA A LA TIENDA
   { const _pr = await _puertaIntentar(action, body, () => _apiSendApps(action, body)); if (_pr !== undefined) return _pr; }   // 10-oct · PUERTA ÚNICA
@@ -4458,14 +4490,26 @@ async function _sbRefrescarGoogle(){
   if (!rt) return null;
   _sbRefrescando = (async function(){
     try {
-      const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
-        method: 'POST', headers: {'Content-Type':'application/json','apikey':SB_ANON},
-        body: JSON.stringify({ refresh_token: rt })
-      });
-      const j = await r.json().catch(()=>({}));
-      if (r.ok && j.access_token) { _sbGuardarTok(j); try { console.log('[SB] pase renovado directo con Supabase (sin Apps Script)'); } catch(_){} return j.access_token; }
-      const _mot = String((j && (j.error || j.error_code || j.msg)) || '');
-      if (r.status === 400 || /invalid[_ ]grant|refresh[_ ]token/i.test(_mot)) { try { localStorage.removeItem(SB_REFRESH_KEY); } catch(_){} }
+      // VR_VAR_2NOV · Supabase ROTA la llave en cada uso. Si otra pestaña la usó primero (típico al despertar la
+      // laptop), esta recibe «invalid_grant»: antes se borraba la llave buena y desde ahí todo pedía el pase a
+      // Apps Script (3-20 s). Ahora: si la guardada ya es otra, se reintenta con esa; solo se borra si sigue siendo la misma.
+      let rtU = rt;
+      for (let _i = 0; _i < 2; _i++) {
+        const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+          method: 'POST', headers: {'Content-Type':'application/json','apikey':SB_ANON},
+          body: JSON.stringify({ refresh_token: rtU })
+        });
+        const j = await r.json().catch(()=>({}));
+        if (r.ok && j.access_token) { _sbGuardarTok(j); try { console.log('[SB] pase renovado directo con Supabase (sin Apps Script)'); } catch(_){} return j.access_token; }
+        const _mot = String((j && (j.error || j.error_code || j.msg)) || '');
+        if (r.status === 400 || /invalid[_ ]grant|refresh[_ ]token/i.test(_mot)) {
+          try { if (typeof _sbAdoptarDeOtraPestana === 'function' && _sbAdoptarDeOtraPestana() && _sbTok && Date.now() < (_sbTok.expires_at || 0)) return _sbTok.access_token; } catch(_){}
+          const rt2 = _sbRefreshLeer();
+          if (rt2 && rt2 !== rtU) { rtU = rt2; continue; }   // otra pestaña la rotó: se usa la nueva
+          try { localStorage.removeItem(SB_REFRESH_KEY); } catch(_){}
+        }
+        return null;
+      }
       return null;
     } catch(_) { return null; }
     finally { _sbRefrescando = null; }
@@ -4641,9 +4685,16 @@ function _sbPaseRenovarFondo(motivo) {
     if (typeof _sbAdoptarDeOtraPestana === 'function' && _sbAdoptarDeOtraPestana() && _sbTok && ((_sbTok.expires_at || 0) - Date.now()) > SB_PASE_MARGEN_MS) return;   // 31-oct ola 2 · otra pestaña ya lo renovo
     _sbPaseRenovando = true;
     _sbRefrescarGoogle()                                // 26-set: primero Supabase directo (~0,3 s)
-      .then(function (g) { return g || _sbPaseDelBackend(SB_PASE_TIMEOUT_FONDO_MS); })   // B6: nadie espera, puede aguantar la cola
+      .then(function (g) {
+        if (g) return g;
+        // VR_VAR_2NOV · con la pestaña oculta (o la laptop cerrada) nadie espera: no se gasta un viaje a Apps Script;
+        // al volver a la pestaña el vigilante lo pide (y el pase actual sigue sirviendo hasta 25 min).
+        try { if (typeof document !== 'undefined' && document.hidden) return 'oculta'; } catch (_) {}
+        return _sbPaseDelBackend(SB_PASE_TIMEOUT_FONDO_MS);   // B6: nadie espera, puede aguantar la cola
+      })
       .then(function (t) {
-        if (t) { try { console.log('[SB] pase renovado en segundo plano (' + (motivo || '') + ')'); } catch (_) {} }
+        if (t === 'oculta') { /* VR_VAR_2NOV · se reintenta al volver a la pestaña, sin castigo de 60 s */ }
+        else if (t) { try { console.log('[SB] pase renovado en segundo plano (' + (motivo || '') + ')'); } catch (_) {} }
         else   { _sbPaseUltFallo = Date.now(); }
       })
       .catch(function () { _sbPaseUltFallo = Date.now(); })
@@ -7149,6 +7200,18 @@ async function _prodSave(orig) {
   if (!body.categoria||!body.producto||!body.diseno||!body.color){ toast('Completa Categoría, Producto, Diseño y Color','err'); return; }
   if (!body.tallas.length){ toast('Agrega al menos una talla','err'); return; }
   const btn=document.getElementById('pf-save'); btn.disabled=true; btn.textContent='Guardando...';
+  /* 2-nov · VR_P6_2NOV · crear o editar va ENTERO a la base (catálogo + hoja Maestros + su espejo) en < 1 s: ya no queda nada «por detrás».
+     Si la base no puede, siguen los caminos de siempre de abajo (sku_crear / catalogo_producto_editar + productos.guardar). */
+  { const rr = (typeof _maeRpc === 'function') ? await _maeRpc('catalogo_producto_guardar', { p_body: body }) : null;
+    if (rr && rr.negocio) { toast('Error: '+esc(rr.negocio),'err'); btn.disabled=false; btn.textContent=(orig?'💾 Guardar cambios':'💾 Guardar costos'); return; }
+    if (rr && rr.ok) {
+      toast('✓ Producto '+esc(rr.ok.modo||'guardado')+': '+esc(rr.ok.sku||''),'ok');
+      PROD.editing=null; const _cf=document.getElementById('prod-form'); if (_cf) _cf.innerHTML='';
+      try { stData=null; _stLsDel(); } catch(e){}
+      try { await loadProductos(); } catch(e){}
+      Promise.resolve().then(async () => { try { await loadMAESTROS(); } catch(e){} }).catch(() => {});   // los desplegables con el valor nuevo, sin frenar
+      return;
+    } }
   /* 30-oct · VÍA RÁPIDA FASE 6 · CREAR un producto nuevo va por la base (la misma puerta que «Stock › Crear SKU»), < 1 s.
      Medido: productos.guardar tardaba 32 s (Ana creó 14 productos el 29-oct). La hoja Maestros se escribe por detrás.
      Editar uno existente sigue por el camino de siempre. */
@@ -7324,11 +7387,40 @@ function _cosPendientesFondo(v) {
   });
 }
 // <<< VÍA RÁPIDA · GUARDAR PRODUCTO
+// >>> VR_P6_2NOV · MAESTROS: LA BASE MANDA. Crear/editar/descontinuar/eliminar productos y la papelera de prendas van DIRECTO a la base
+// (erp.catalogo_sku + maestros_hoja + maestros_skus en una sola transacción, < 1 s). Devuelve { ok: datos } · { negocio: 'motivo' }
+// (un «no» válido: se muestra, no se reintenta) · null (la base no pudo: sin sesión, sin la función, red) → el que llama sigue por Apps Script.
+const VR_P6_MAESTROS = true;   // false = todo vuelve a Apps Script (productos.guardar / productos.estado / productos.eliminar / sku.restaurar / sku.eliminarDefinitivo)
+async function _maeRpc(fn, params) {
+  if (!VR_P6_MAESTROS) return null;
+  const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('directo.' + fn) : null;
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON || typeof _sbSesionAsegurar !== 'function') return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const tm = ctl ? setTimeout(() => { try { ctl.abort(); } catch (_) {} }, 12000) : null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', signal: ctl ? ctl.signal : undefined,
+      headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(params || {}) });
+    if (tm) clearTimeout(tm);
+    if (!r.ok) {
+      let m = ''; try { const e = await r.json(); m = String((e && (e.message || e.hint)) || ''); } catch (_) {}
+      if (/^(FALTAN_DATOS|YA_EXISTE|NEGOCIO):/.test(m)) return { negocio: m.replace(/^[A-Z_]+:\s*/, '') };
+      if ((r.status === 401 || r.status === 403) && typeof _sbVencerTok === 'function') { try { _sbVencerTok(); } catch (_) {} }
+      return null;   // SIN_PERMISO / COLA: / lo que sea → Apps Script decide, como siempre
+    }
+    const d = await r.json();
+    try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, !!(d && d.ok)); } catch (_) {}
+    return (d && d.ok) ? { ok: d } : null;
+  } catch (_) { return null; }
+}
+// <<< VR_P6_2NOV
 async function _prodEstado(sku, estado) {
   const ok = await npConfirm((estado==='DESCONTINUADO'?'¿Descontinuar':'¿Reactivar')+' "'+sku+'"?');
   if (!ok) return;
   try {
-    await apiSend('productos.estado', {sku, estado});
+    const _rr = (typeof _maeRpc === 'function') ? await _maeRpc('catalogo_producto_estado', { p_sku: sku, p_estado: estado }) : null;   // VR_P6_2NOV
+    if (_rr && _rr.negocio) throw new Error(_rr.negocio);
+    if (!(_rr && _rr.ok)) await apiSend('productos.estado', {sku, estado});
     toast('✓ '+esc(sku)+' → '+estado,'ok');
     await loadProductos();
   } catch(e){ toast('Error: '+esc(e.message),'err'); }
@@ -7339,7 +7431,9 @@ async function _prodEliminar(sku) {
   const ok = await npConfirm('Estás por eliminar este SKU:\n\n'+sku+'\n\nEsta acción NO se puede deshacer. ¿Estás seguro?');
   if (!ok) return;
   try {
-    const r = await apiSend('productos.eliminar', {sku});
+    const _rr = (typeof _maeRpc === 'function') ? await _maeRpc('catalogo_producto_eliminar', { p_sku: sku }) : null;   // VR_P6_2NOV
+    if (_rr && _rr.negocio) throw new Error(_rr.negocio);
+    const r = (_rr && _rr.ok) ? _rr.ok : await apiSend('productos.eliminar', {sku});
     toast('✓ Eliminado: '+esc(sku)+(r&&r.filas?(' ('+r.filas+' talla'+(r.filas!==1?'s':'')+')'):''),'ok');
     try { stData=null; _stLsDel(); } catch(e){}
     await loadProductos();
@@ -7526,7 +7620,31 @@ async function _cosVrGuardar(body) {
   const d = await _vrDirecto('cos_guardar', { p_body: body || {} }, /^COS:/);
   if (!d) return null;
   _cosVrTras(d);
+  _cosVrBorrador(d);   // VR_P6_2NOV
   return _cosVrLista(d);
+}
+// VR_P6_2NOV · producto NUEVO: la base lo creó y el trabajador (shopify-worker, op producto.crear) hace el BORRADOR en Shopify.
+// Se pregunta por detrás cómo terminó (hasta ~60 s) y se avisa en un cartel fijo con ✕; nunca frena la pantalla.
+function _cosVrBorrador(d) {
+  const id = d && d.shopify_cola; if (!id || typeof _npRpc !== 'function') return;
+  const nom = String(d.guardado || ''), av = 'cosb-' + id;
+  const msg = (t, tipo) => { try { if (typeof _pubAviso === 'function') _pubAviso(av, t, tipo); else toast(esc(t), tipo === 'err' ? 'err' : 'info'); } catch (_) {} };
+  msg('⏳ «' + nom + '» · creando el borrador en Shopify…', '');
+  (async () => {
+    for (let i = 0; i < 30; i++) {
+      await new Promise(z => setTimeout(z, 2000));
+      let r = null; try { r = await _npRpc('cos_borrador_estado', { p_id: id }); } catch (_) { r = null; }
+      if (r && r.estado === 'ok') {
+        const t = String((r.resultado && r.resultado.texto) || ('Shopify: «' + nom + '» creado como BORRADOR.'));
+        msg('✓ ' + t, /NO creé|no se pudo/i.test(t) ? 'err' : 'ok');
+        if (!/NO creé|no se pudo/i.test(t)) setTimeout(() => { const el = document.getElementById(av); if (el) el.remove(); }, 8000);
+        try { if (document.getElementById('cos-w') && !COS.editing) loadCostos(); } catch (_) {}
+        return;
+      }
+      if (r && r.estado === 'error') { msg('✗ «' + nom + '» quedó en el ERP, pero el borrador de Shopify NO se creó: ' + String(r.error || '') + '. Ábrelo y guarda otra vez; si se repite, avisa.', 'err'); return; }
+    }
+    msg('⏳ «' + nom + '» · el borrador de Shopify sigue en camino (la cola lo reintenta sola). Recarga Costos en un minuto para ver el enlace.', '');
+  })().catch(() => {});
 }
 async function _cosVrActivar(diseno, activar) {
   const d = await _vrDirecto('cos_activar', { p_diseno: diseno, p_activar: !!activar }, /^COS:/);
@@ -33170,6 +33288,11 @@ const COLOR_PALETTE = [
  '#831843','#db2777','#ec4899','#f472b6','#f9a8d4','#fbcfe8','#fce7f3','#fdf2f8',
  '#78350f','#92400e','#b45309','#a96a3c','#c08842','#d4b483','#e0b9a8','#e6dfcd'
 ];
+// VR_VAR_2NOV · colores.set DIRECTO en la base (rpc colores_set → colores_hoja + auditoria 'colores.set'), ~0,3 s.
+// Antes: Apps Script coloresSet ~12 s. Después de guardar en la base, el MISMO cambio se le pasa a Apps Script
+// por detrás (nadie espera): así la hoja Colores y la base quedan iguales con COLORES_SOLO_BASE en SI o en NO.
+// REVERSA: VR_VAR_COLORES = false y publicar → vuelve a Apps Script tal cual.
+const VR_VAR_COLORES = true;
 function _abrirColorPicker(colorName, onApplied){
   colorName = String(colorName||'').trim();
   if (!colorName) { toast('Esta fila no tiene nombre de color','err'); return; }
@@ -33206,7 +33329,9 @@ function _abrirColorPicker(colorName, onApplied){
     if(!_ok(h)){ toast('HEX inválido (usa #RRGGBB)','err'); return; }
     this.disabled=true;
     try{
-      await apiSend('colores.set',{color:colorName,hex:h});
+      const _rc = VR_VAR_COLORES ? await _vrDirecto('colores_set', { p_color: colorName, p_hex: h }, /PRD:/) : null;   // VR_VAR_2NOV
+      if (!_rc) await apiSend('colores.set',{color:colorName,hex:h});
+      else { try { apiSend('colores.set',{color:colorName,hex:h}).catch(function(){}); } catch(_){} }   // Apps Script se pone al día por detrás
       COLOR_OVERRIDE[key]=h; _coloresLsSet(COLOR_OVERRIDE);
       try { stData=null; _stLsDel(); } catch(e) {}   // el color afecta también a Stock
       toast('✓ Color "'+colorName+'" actualizado','ok');
@@ -37266,7 +37391,9 @@ async function _confAbrirEliminados(confEl) {
       const r = rows[parseInt(btn.dataset.i,10)];
       btn.disabled = true; btn.textContent = 'Restaurando…';
       try {
-        const res = await apiSend('sku.restaurar', { prenda: r.prenda, dis: r.dis, col: r.col });
+        const _rr = (typeof _maeRpc === 'function') ? await _maeRpc('catalogo_sku_restaurar', { p_prenda: r.prenda, p_dis: r.dis, p_col: r.col }) : null;   // VR_P6_2NOV
+        if (_rr && _rr.negocio) throw new Error(_rr.negocio);
+        const res = (_rr && _rr.ok) ? _rr.ok : await apiSend('sku.restaurar', { prenda: r.prenda, dis: r.dis, col: r.col });
         toast('✓ SKU restaurado: '+r.prenda+' '+r.dis+' '+r.col+' ('+res.restauradas+' fila(s))', 'ok');
         confData = null; try { _confLsDel(); } catch(e) {}
         if (typeof refrescarMaestros === 'function') { try { await refrescarMaestros(); } catch(e){} }
@@ -37280,7 +37407,9 @@ async function _confAbrirEliminados(confEl) {
       if (!ok) return;
       btn.disabled = true; btn.textContent = 'Borrando…';
       try {
-        const res = await apiSend('sku.eliminarDefinitivo', { prenda: r.prenda, dis: r.dis, col: r.col });
+        const _rr = (typeof _maeRpc === 'function') ? await _maeRpc('catalogo_sku_borrar_definitivo', { p_prenda: r.prenda, p_dis: r.dis, p_col: r.col }) : null;   // VR_P6_2NOV
+        if (_rr && _rr.negocio) throw new Error(_rr.negocio);
+        const res = (_rr && _rr.ok) ? _rr.ok : await apiSend('sku.eliminarDefinitivo', { prenda: r.prenda, dis: r.dis, col: r.col });
         toast('✓ Borrado para siempre: '+r.prenda+' '+r.dis+' '+r.col+' ('+res.borradas+' fila(s))', 'ok');
         render();
       } catch(e) { toast('Error al borrar: '+esc(e.message),'err'); btn.disabled=false; btn.textContent='✕ Borrar definitivo'; }
