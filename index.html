@@ -9668,8 +9668,8 @@ function _pvStockCalc(L, diseno) {
 }
 async function _pvMovs() {
   const tok = await _sbSesionAsegurar(); if (!tok) return null;
-  const ld = async () => { const q = await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
-    if (!q.ok) return null; const x = await q.json(); return Array.isArray(x) ? x : null; };
+  const ld = Object.assign(async (_f, _pre) => { const q = (_pre && _pre.fn === 'stock_libro_movimientos') ? _vjResp(_pre.d) : await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!q.ok) return null; const x = await q.json(); return Array.isArray(x) ? x : null; }, { __vj: { fn: 'stock_libro_movimientos', a: {} } });   // VR_VIAJE_2NOV
   const a = (typeof _memoVersion === 'function') ? await _memoVersion('libro_mov', ['libro_mov'], ld).catch(() => null) : await ld();   // misma memoria que el Cuadre (_cdKardex)
   if (!Array.isArray(a) || !a.length || !a.every(x => x && x.prenda && x.diseno && x.talla != null && x.conf != null)) return null;   // misma validación que el servidor
   return a;
@@ -11982,8 +11982,8 @@ async function _cdActualizar() {
 /** 22-oct · ventas por talla según los MOVIMIENTOS del ERP (prenda|diseño|color|talla → {ventas}). Una llamada (~0,5 s). */
 async function _cdKardex() {
   const tok = await _sbSesionAsegurar(); if (!tok) return null;
-  const _slK = async () => { const q = await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
-    if (!q.ok) return null; const x = await q.json(); return Array.isArray(x) ? x : null; };
+  const _slK = Object.assign(async (_f, _pre) => { const q = (_pre && _pre.fn === 'stock_libro_movimientos') ? _vjResp(_pre.d) : await fetch(SB_URL + '/rest/v1/rpc/stock_libro_movimientos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!q.ok) return null; const x = await q.json(); return Array.isArray(x) ? x : null; }, { __vj: { fn: 'stock_libro_movimientos', a: {} } });   // VR_VIAJE_2NOV
   // 31-oct ola 2 · exacta (la función de siempre), pero por versión: sin movimientos nuevos no viaja (era el 6,9 s de yayitas.mapa)
   const a = (typeof SL_STOCK_V2 !== 'undefined' && SL_STOCK_V2 && typeof _memoVersion === 'function') ? await _memoVersion('libro_mov', ['libro_mov'], _slK).catch(() => null) : await _slK();
   if (!a) return null; const M = {};
@@ -14483,8 +14483,71 @@ async function _libroEstadoPedir(url, H) {
   return { ok: true, status: r.status, json: async () => d };
 }
 function _memoClon(d) { try { return (typeof structuredClone === 'function') ? structuredClone(d) : JSON.parse(JSON.stringify(d)); } catch (_) { return d; } }
+// ══════════════════════════════════════════════════════════════════════════
+// VR_VIAJE_2NOV · UN VIAJE POR PANTALLA (2-nov-2026, PEGAR_EN_SUPABASE_viaje_BLOQUE_1_de_2.sql)
+// Medido en el Chrome de Pablo con la versión cambiada: Cambios 1.175 ms, Devoluciones 670, Stock 724 =
+// «¿cambió?» (datos_version, 1 viaje) y DESPUÉS los datos (otro viaje). Ahora van JUNTOS (rpc viaje_versiones):
+// la pantalla manda la firma de su copia y la base contesta la versión y, SOLO si cambió, los datos.
+// Lo que se pide en el mismo instante (abrir una pantalla) sale en UN paquete; lo repetido, una sola vez.
+// Mismas funciones de siempre con el mismo usuario (security invoker). Sin la función o ante cualquier falla →
+// el camino de siempre (datos_version + datos). REVERSA: VR_VIAJE = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+var VR_VIAJE = true;
+const VJ = { cola: [], t: null, no: false, ms: 8 };
+function _vjCon(cargar, spec) { try { cargar.__vj = spec; } catch (_) {} return cargar; }
+function _vjResp(d) { return { ok: true, status: 200, json: async () => d }; }
+function _vjListo() { return VR_VIAJE && !VJ.no && typeof SB_URL !== 'undefined' && typeof SB_ANON !== 'undefined' && !!SB_ANON && !(typeof SB_APAGADO !== 'undefined' && SB_APAGADO); }
+function _vjHuellas(tabla) { const h = {}; try { const b = _espdBase(tabla); if (b) b.ids.forEach((id, i) => { h[String(id)] = b.h[i]; }); } catch (_) {} return h; }
+function _vjPedir(it) {
+  return new Promise(function (res) {
+    it.res = [res];
+    if (it.solo) { _vjMandar([it]); return; }
+    const k = JSON.stringify([it.t, it.f, it.fn, it.a]);
+    const ya = VJ.cola.find(x => x.k === k);   // lo mismo pedido dos veces en el mismo instante: un solo pedido
+    if (ya) { ya.res.push(res); return; }
+    it.k = k; VJ.cola.push(it);
+    if (!VJ.t) VJ.t = setTimeout(function () { const c = VJ.cola; VJ.cola = []; VJ.t = null; _vjMandar(c); }, VJ.ms);
+  });
+}
+async function _vjMandar(c) {
+  let out = null, _cr = null;
+  try {
+    const tok = await _sbSesionAsegurar();
+    if (tok) {
+      try { if (typeof _cronAbrir === 'function') _cr = _cronAbrir('rapido.viaje', String(c.length)); } catch (_) {}
+      const ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const tm = ctl ? setTimeout(function () { try { ctl.abort(); } catch (_) {} }, 9000) : null;
+      try {
+        const r = await fetch(SB_URL + '/rest/v1/rpc/viaje_versiones', { method: 'POST',
+          headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ p_items: c.map(x => ({ t: x.t, f: x.f, fn: x.fn, a: x.a })) }), signal: ctl ? ctl.signal : undefined });
+        if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length === c.length) out = j; }
+        else if (r.status === 404) VJ.no = true;   // falta el BLOQUE 1 en la base: camino de siempre
+        else if (r.status === 401 && typeof _sbVencerTok === 'function') { try { _sbVencerTok(); } catch (_) {} }
+      } finally { if (tm) clearTimeout(tm); }
+    }
+  } catch (_) {}
+  try { if (_cr && typeof _cronCerrar === 'function') _cronCerrar(_cr, !!out); } catch (_) {}
+  c.forEach(function (x, i) { const o = out ? out[i] : null; x.res.forEach(function (f, n) { try { f((n && o) ? _memoClon(o) : o); } catch (_) {} }); });
+}
 async function _memoVersion(clave, tablas, cargar) {
   let ver = _verVivoTomar(tablas);   // 12-oct E3: el timbre confirma que no cambió → sin viaje
+  let _vjPre;   // VR_VIAJE_2NOV · los datos que ya vinieron junto con la versión
+  if (!ver && cargar && cargar.__vj && _vjListo()) {
+    try {
+      const sp = (typeof cargar.__vj === 'function') ? cargar.__vj() : cargar.__vj;
+      if (sp && sp.fn) {
+        const _snap = _verVivoSnap(tablas);
+        let c0 = MEMOV.mem[clave];
+        if (!c0) { try { c0 = JSON.parse(localStorage.getItem('erp_memov_' + clave) || 'null'); if (c0) MEMOV.mem[clave] = c0; } catch (_) { c0 = null; } }
+        const o = await _vjPedir({ t: tablas, f: (c0 && c0.f) || '', fn: sp.fn, a: sp.a || {}, solo: !!sp.solo });
+        if (o && o.v && typeof o.v === 'object' && !Array.isArray(o.v)) {
+          ver = o.v; _verVivoGuardar(ver, tablas, _snap);
+          if (!o.e && Object.prototype.hasOwnProperty.call(o, 'd')) _vjPre = { fn: sp.fn, d: o.d };
+        }
+      }
+    } catch (_) { ver = null; _vjPre = undefined; }
+  }
   if (!ver) { const _snap = _verVivoSnap(tablas);
     try { ver = await _puertaRpc('datos_version', { p_tablas: tablas }, 2500); } catch (_) { ver = null; }
     _verVivoGuardar(ver, tablas, _snap); }
@@ -14494,6 +14557,7 @@ async function _memoVersion(clave, tablas, cargar) {
     if (!c) { try { c = JSON.parse(localStorage.getItem('erp_memov_' + clave) || 'null'); if (c) MEMOV.mem[clave] = c; } catch (_) { c = null; } }
     if (c && c.f === firma && c.d != null) return _memoClon(c.d);
   }
+  if (_vjPre !== undefined) { const _c0 = cargar; cargar = (f) => _c0(f, _vjPre); }   // VR_VIAJE_2NOV · + lo que ya vino con la versión
   const d = await cargar(firma);   // 31-oct ola 2 · la firma la usa _sbFilasEspejoDelta
   if (firma && d != null) {
     MEMOV.mem[clave] = { f: firma, d: _memoClon(d) };
@@ -14504,7 +14568,7 @@ async function _memoVersion(clave, tablas, cargar) {
 // <<< VÍA RÁPIDA C1
 function _sbFilasEspejo(tabla) {
   if (_sbEspejoEnVuelo[tabla]) return _sbEspejoEnVuelo[tabla];
-  const p = (tabla === 'cambios2' || tabla === 'devoluciones') ? _memoVersion('espejo_' + tabla, [tabla], (f) => ((typeof SB_ESPEJO_DELTA !== 'undefined' && SB_ESPEJO_DELTA && typeof _sbFilasEspejoDelta === 'function') ? _sbFilasEspejoDelta(tabla, f) : _sbFilasEspejoAhora(tabla))) : _sbFilasEspejoAhora(tabla);   // 10-oct · C1
+  const p = (tabla === 'cambios2' || tabla === 'devoluciones') ? _memoVersion('espejo_' + tabla, [tabla], Object.assign((f, pre) => ((pre && typeof SB_ESPEJO_DELTA !== 'undefined' && SB_ESPEJO_DELTA && typeof _sbFilasEspejoDelta === 'function') ? _sbFilasEspejoDelta(tabla, f, pre) : (typeof SB_ESPEJO_DELTA !== 'undefined' && SB_ESPEJO_DELTA && typeof _sbFilasEspejoDelta === 'function') ? _sbFilasEspejoDelta(tabla, f) : _sbFilasEspejoAhora(tabla)), { __vj: () => ((typeof SB_ESPEJO_DELTA !== 'undefined' && SB_ESPEJO_DELTA && typeof _sbFilasEspejoDelta === 'function' && SB_LECTURA_CAMBIOS && !window._sbSaltarBase) ? { fn: 'espejo_delta', a: { p_tabla: tabla, p_h: _vjHuellas(tabla) } } : null) })) : _sbFilasEspejoAhora(tabla);   // VR_VIAJE_2NOV   // 10-oct · C1
   _sbEspejoEnVuelo[tabla] = p;
   p.then(function () { delete _sbEspejoEnVuelo[tabla]; },
          function () { delete _sbEspejoEnVuelo[tabla]; });
@@ -14572,7 +14636,7 @@ function _espdBase(tabla) {
   if (!c || !sc || !c.f || c.f !== sc.f || !Array.isArray(c.d) || c.d.length !== sc.ids.length || sc.h.length !== sc.ids.length) return null;
   return { d: c.d, ids: sc.ids, h: sc.h };
 }
-async function _sbFilasEspejoDelta(tabla, firma) {
+async function _sbFilasEspejoDelta(tabla, firma, pre) {   // VR_VIAJE_2NOV · pre = la diferencia que ya vino con la versión
   if (!SB_LECTURA_CAMBIOS || window._sbSaltarBase || !firma) return _sbFilasEspejoAhora(tabla);
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
   try {
@@ -14581,7 +14645,7 @@ async function _sbFilasEspejoDelta(tabla, firma) {
     const base = _espdBase(tabla);
     const huellas = {}, pos = {};
     if (base) base.ids.forEach((id, i) => { huellas[String(id)] = base.h[i]; pos[String(id)] = i; });
-    const r = await fetch(SB_URL + '/rest/v1/rpc/espejo_delta', {
+    const r = (pre && pre.fn === 'espejo_delta') ? _vjResp(pre.d) : await fetch(SB_URL + '/rest/v1/rpc/espejo_delta', {
       method: 'POST',
       headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
       body: JSON.stringify({ p_tabla: tabla, p_h: huellas })
@@ -15284,9 +15348,10 @@ async function _sbLibroMovimientos() {
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     let _slAtras = null;   // 31-oct ola 2: copia un movimiento atrás (no se guarda en el memo)
-    const traer = async () => {
+    const traer = Object.assign(async (_f, _pre) => {   // VR_VIAJE_2NOV
       const _v2 = typeof SL_STOCK_V2 !== 'undefined' && SL_STOCK_V2 && !window._slSinV2;
-      const r = await fetch(SB_URL + '/rest/v1/rpc/' + (_v2 ? 'stock_libro_movimientos_v2' : 'stock_libro_movimientos'), {
+      const _fnM = _v2 ? 'stock_libro_movimientos_v2' : 'stock_libro_movimientos';
+      const r = (_pre && _pre.fn === _fnM) ? _vjResp(_pre.d) : await fetch(SB_URL + '/rest/v1/rpc/' + (_v2 ? 'stock_libro_movimientos_v2' : 'stock_libro_movimientos'), {
         method: 'POST',
         headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
         body: _v2 ? '{"p_espera_ms":700}' : '{}',
@@ -15302,7 +15367,8 @@ async function _sbLibroMovimientos() {
       const forma = x => x && typeof x.prenda === 'string' && typeof x.diseno === 'string' && typeof x.color === 'string'
                           && typeof x.talla === 'string' && x.conf !== undefined && x.ventas !== undefined;
       return (Array.isArray(a) && a.length && a.every(forma)) ? a : null;
-    };
+    }, { __vj: () => { const _v2 = typeof SL_STOCK_V2 !== 'undefined' && SL_STOCK_V2 && !window._slSinV2;   // v2 puede esperar 0,7 s: va sola
+      return _v2 ? { fn: 'stock_libro_movimientos_v2', a: { p_espera_ms: 700 }, solo: true } : { fn: 'stock_libro_movimientos', a: {} }; } });
     // 12-oct · VÍA RÁPIDA E3c: los movimientos (267 KB) se bajan SOLO si cambió algo del stock. La base sube la versión
     // 'libro_mov' por evento (confección, fallas, pedidos, cambios, devoluciones… → erp.mov_version) y toca el timbre:
     // sin cambios, Inventario usa su copia sin viajar. REVERSA: SB_MOV_MEMO = false.
@@ -15402,8 +15468,8 @@ async function _sbLibroDirecto(forzar) {
     // 12-oct · VÍA RÁPIDA E3 (medido: Inventario p50 981 ms). Con movimientos, del libro solo se usan categoría y fecha
     // por producto: se piden ya resumidas (≈400 filas, 1 viaje, A LA VEZ que la pregunta de arriba) en vez de las
     // 2.500 filas en 3 páginas DESPUÉS de la pregunta. Sin movimientos sigue el camino de siempre. REVERSA: SB_LIBRO_META = false.
-    const _traerMeta = () => fetch(SB_URL + '/rest/v1/rpc/stock_libro_meta', { headers: H })   // GET: la función solo lee
-          .then(r => r.ok ? r.json() : null).catch(() => null);
+    const _traerMeta = Object.assign((_f, _pre) => ((_pre && _pre.fn === 'stock_libro_meta') ? Promise.resolve(_vjResp(_pre.d)) : fetch(SB_URL + '/rest/v1/rpc/stock_libro_meta', { headers: H }))   // GET: la función solo lee
+          .then(r => r.ok ? r.json() : null).catch(() => null), { __vj: { fn: 'stock_libro_meta', a: {} } });   // VR_VIAJE_2NOV
     // 12-oct E3d: el resumen se baja solo si cambió stock_saldos (versión por evento + timbre)
     const pMeta = (!forzar && typeof SB_LIBRO_META !== 'undefined' && SB_LIBRO_META)
       ? ((typeof _memoVersion === 'function') ? _memoVersion('libro_meta', ['stock_saldos'], _traerMeta).catch(() => null) : _traerMeta())
@@ -15678,15 +15744,15 @@ async function _catalogoVivoRapido() {
     const tok = await _sbSesionAsegurar();
     if (!tok) return null;
     // 11-oct · D1: el catálogo de SKUs (300 KB) solo se baja si cambió (versión de erp.catalogo_sku, por evento)
-    const d = await _memoVersion('rpc_catalogo_listar', ['catalogo_sku'], async () => {
-      const r = await fetch(SB_URL + '/rest/v1/rpc/catalogo_listar', {
+    const d = await _memoVersion('rpc_catalogo_listar', ['catalogo_sku'], Object.assign(async (_f, _pre) => {   // VR_VIAJE_2NOV
+      const r = (_pre && _pre.fn === 'catalogo_listar') ? _vjResp(_pre.d) : await fetch(SB_URL + '/rest/v1/rpc/catalogo_listar', {
         method: 'POST',
         headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
         body: JSON.stringify({ p_solo_activos: true }),
       });
       if (!r.ok) return null;
       return await r.json();
-    });
+    }, { __vj: { fn: 'catalogo_listar', a: { p_solo_activos: true } } }));
     if (!Array.isArray(d) || !d.length) return null;
     // al formato de siempre: el resto del ERP espera `prenda` como nombre completo
     return d.map(x => ({
@@ -15828,7 +15894,7 @@ async function _reposicionRapido(dias) {
 // se sigue por la copia de siempre.
 async function _catPrendasDeLaBase() {
   if (window._sbSaltarBase) return null;   // 1-oct F3b: ver _sbSaltarBase
-  const o = await _memoVersion('rpc_catalogo_prendas_calc', ['confeccion', 'stat:public.pedidos'], () => _sbRpcLeer('catalogo_prendas_calc', {}));   // 11-oct · D1: solo baja si cambió
+  const o = await _memoVersion('rpc_catalogo_prendas_calc', ['confeccion', 'stat:public.pedidos'], Object.assign((_f, _pre) => (_pre && _pre.fn === 'catalogo_prendas_calc') ? Promise.resolve(_pre.d == null ? null : _pre.d) : _sbRpcLeer('catalogo_prendas_calc', {}), { __vj: { fn: 'catalogo_prendas_calc', a: {}, solo: true } }));   // VR_VIAJE_2NOV · tarda 0,5 s en la base: va sola   // 11-oct · D1: solo baja si cambió
   if (!o || typeof o !== 'object') return null;
   if (!Array.isArray(o.categorias) || !o.categorias.length) return null;
   if (!o.colores_por_dis || typeof o.colores_por_dis !== 'object') return null;
@@ -15924,7 +15990,7 @@ function _c2ComoFilasHist_(grupos) {
 // 1-oct · los cambios VIEJOS (v1, historicos: 85, ya no se escriben) se leen directo de la tabla
 // cambios_historico, igual que cambiosListar (Code.js): mismas filas, orden por FechaSolicitud desc.
 async function _cambiosViejosDeLaBase() {
-  const f = await _memoVersion('cambios_historico', ['cambios_historico'], () => _sbTablaLeer('cambios_historico?select=row_json&order=id.asc'));   // 10-oct · C1
+  const f = await _memoVersion('cambios_historico', ['cambios_historico'], Object.assign((_f, _pre) => (_pre && _pre.fn === 'tabla:cambios_historico' && !window._sbSaltarBase && Array.isArray(_pre.d) && _pre.d.length < 1000) ? Promise.resolve(_pre.d) : _sbTablaLeer('cambios_historico?select=row_json&order=id.asc'), { __vj: { fn: 'tabla:cambios_historico', a: {} } }));   // VR_VIAJE_2NOV   // 10-oct · C1
   if (!Array.isArray(f) || !f.length) return null;
   return f.map(function (x) { return x && x.row_json; }).filter(Boolean)
     .sort(function (a, b) { return new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0); });
@@ -15947,7 +16013,7 @@ async function _listaDeLaBase(fn, valida) {
   if (window._sbSaltarBase) return null;   // 1-oct F3b: ver _sbSaltarBase
   const _tv = { maestros_listar_calc: ['maestros_hoja'], colores_listar_calc: ['colores_hoja'], vistas_stock_listar_calc: ['vistas_stock'] }[fn];   // 10-oct · C1
   const _sl1 = typeof SL_LISTAS_UN_VIAJE !== 'undefined' && SL_LISTAS_UN_VIAJE && (fn === 'colores_listar_calc' || fn === 'vistas_stock_listar_calc') && typeof _verVivoTomar === 'function' && !_verVivoTomar(_tv || []);   // 31-oct ola 2: lista chica → 1 viaje
-  const d = (_tv && !_sl1) ? await _memoVersion('rpc_' + fn, _tv, () => _sbRpcLeer(fn, {})) : await _sbRpcLeer(fn, {});
+  const d = (_tv && !_sl1) ? await _memoVersion('rpc_' + fn, _tv, Object.assign((_f, _pre) => (_pre && _pre.fn === fn) ? Promise.resolve(_pre.d == null ? null : _pre.d) : _sbRpcLeer(fn, {}), { __vj: { fn: fn, a: {}, solo: fn === 'maestros_listar_calc' } }))   /* VR_VIAJE_2NOV */ : await _sbRpcLeer(fn, {});
   try { return (d != null && valida(d)) ? d : null; } catch (_) { return null; }
 }
 function _esMapaLleno(d) { return !!d && typeof d === 'object' && !Array.isArray(d) && Object.keys(d).length > 0; }
@@ -16853,16 +16919,45 @@ async function _cliPagoOficial(nros) {
   return out;
 }
 
+// VR_VIAJE_2NOV · lo pagado oficial por la clave de la clienta (rpc viaje_pago_oficial, BLOQUE 2), sin esperar al historial.
+// Resultado = el de _cliPagoOficial: solo los pedidos del historial; si a alguno no lo trajo, ese se pide como siempre.
+async function _vjPagoOficialDe(body) {
+  try {
+    if (!_vjListo() || VJ.noPago) return null;
+    const clave = String((body && body.clave) || '').trim() || _cliClaveDe(body && body.nombre, body && body.telefono, body && body.dni, '');
+    if (!clave) return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/viaje_pago_oficial', { method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_clave: clave }) });
+    if (!r.ok) { if (r.status === 404) VJ.noPago = true; return null; }
+    const j = await r.json(); if (!Array.isArray(j)) return null;
+    const m = {}; j.forEach(x => { m[String(x.numero)] = { total: parseFloat(x.total) || 0, pagado: parseFloat(x.pagado) || 0 }; });
+    return m;
+  } catch (_) { return null; }
+}
+async function _vjPagoOficial(pOf, nros) {
+  let m = null; try { m = await pOf; } catch (_) { m = null; }
+  const lista = [...new Set((nros || []).map(n => String(n || '').trim()).filter(Boolean))];
+  if (!m || !lista.length) return _cliPagoOficial(nros);
+  const falta = lista.filter(n => !Object.prototype.hasOwnProperty.call(m, n));
+  const out = {}; lista.forEach(n => { if (Object.prototype.hasOwnProperty.call(m, n)) out[n] = m[n]; });
+  if (!falta.length) return out;
+  const extra = await _cliPagoOficial(falta);
+  if (!extra) return null;
+  return Object.assign(out, extra);
+}
 async function _cliSaldosRapido(body) {
   body = body || {};
   const porApps = () => apiSend('clientes.saldosVigentes', body);
   if (!SB_LECTURA_CLIENTE) return porApps();
   if (window._sbSaltarEspejo) return porApps();
   try {
+    const _pOf = (typeof _vjListo === 'function' && _vjListo()) ? _vjPagoOficialDe(body) : null;   // VR_VIAJE_2NOV · sale A LA VEZ que el historial
     const hist = await _cliHistorialRapido(body);
     if (!hist || !Array.isArray(hist.pedidos)) return porApps();
     // 13-oct: lo pagado OFICIAL (lo mismo que usan el cuadre y los informes).
-    try { hist.oficial = await _cliPagoOficial(hist.pedidos.map(p => p.NroPedido)); } catch (_) { hist.oficial = null; }
+    if (_pOf) { try { hist.oficial = await _vjPagoOficial(_pOf, hist.pedidos.map(p => p.NroPedido)); } catch (_) { hist.oficial = null; } }
+    else { try { hist.oficial = await _cliPagoOficial(hist.pedidos.map(p => p.NroPedido)); } catch (_) { hist.oficial = null; } }
     return _cliSaldosDe(hist, body);
   } catch (e) { try { _errLog('sb.cli.saldos', e); } catch (_) {} return porApps(); }
 }
@@ -24829,7 +24924,7 @@ setTimeout(_rtConectar, 6000);   // arrancar cuando login + token ya existieron
 // 12-oct · VÍA RÁPIDA E3 · cualquier escritura de ESTA pantalla (a la base o a Apps Script) pone 5 s de "duda":
 // en ese rato las versiones se preguntan siempre (el timbre de la propia escritura puede llegar unos ms después).
 // Las lecturas conocidas no cuentan; si una escritura no está en la lista, igual cuenta (duda de más = solo un viaje).
-const VER_LECTURAS_RX = /\/rpc\/(datos_version|mi_sesion|pref_get|salida_esperar|erp_lento_registrar|puerta_[a-z_]*|stock_libro_[a-z_]*|pedidos_(pagina|buscar|huella|contadores|pendiente_de|pendientes|duplicados|cambios_desde|colores_snapshot)|clientes_buscar|dashboard_[a-z_]*|comisiones_trimestre|cola_estado|prendas_no_reconocidas|catalogo_listar|pedido_por_request|[a-z_]*_(listar|calc|leer))(\?|$)/;
+const VER_LECTURAS_RX = /\/rpc\/(viaje_versiones|viaje_pago_oficial|datos_version|mi_sesion|pref_get|salida_esperar|erp_lento_registrar|puerta_[a-z_]*|stock_libro_[a-z_]*|pedidos_(pagina|buscar|huella|contadores|pendiente_de|pendientes|duplicados|cambios_desde|colores_snapshot)|clientes_buscar|dashboard_[a-z_]*|comisiones_trimestre|cola_estado|prendas_no_reconocidas|catalogo_listar|pedido_por_request|[a-z_]*_(listar|calc|leer))(\?|$)/;
 function _verVivoVigilarEscrituras() {
   if (window._verVivoFetch) return; window._verVivoFetch = true;
   const f0 = window.fetch;
@@ -34315,7 +34410,7 @@ async function loadInv(){
 // probaba una y creia que el cambio no habia llegado. Ahora, a los 3 segundos, se
 // compara la marca del archivo del servidor con la que se esta ejecutando y, si
 // cambio, se recarga una sola vez (sessionStorage evita cualquier bucle).
-const ERP_BUILD='b2026110201';   // VR_APPS0_2NOV
+const ERP_BUILD='b2026110202';   // VR_APPS0_2NOV · 2-nov tarde: VR_VIAJE_2NOV + ingreso directo
 setTimeout(async function(){
   try{
     if(sessionStorage.getItem('erp_build_reload')===ERP_BUILD) return;
@@ -47411,7 +47506,7 @@ function bootApp(){
 // Supabase manda a Google, vuelve a esta misma dirección con la sesión (#access_token…), y los permisos salen de la base
 // (rpc mi_sesion). La sesión de Apps Script (solo para lo que aún va por ahí) se pide por detrás con Google en silencio.
 // APAGADO hasta que Pablo haga la configuración (ver nota). Encender: SB_LOGIN_NATIVO = true y publicar. Reversa: false.
-const SB_LOGIN_NATIVO = false;
+const SB_LOGIN_NATIVO = true;   // 2-nov · ENCENDIDO (Pablo configuró Supabase + Google). Reversa: false.
 function _sbOAuthIr() {
   try { sessionStorage.setItem('erp_oauth_ida', String(Date.now())); } catch (_) {}
   location.href = SB_URL + '/auth/v1/authorize?provider=google&redirect_to=' + encodeURIComponent(location.origin + location.pathname);
