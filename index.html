@@ -4312,22 +4312,24 @@ async function _salidaMandar(action, body, alEncolar) {
 // y la base despierta al trabajador (Edge Function shopify-worker), que habla con Shopify y deja la respuesta en la misma fila
 // (rpc shopify_cola_esperar). Si la base no lo recibe o el trabajador no lo toma en ~5 s → Apps Script como siempre (respaldo).
 const SHOP_WORKER = true;              // false = todo vuelve a Apps Script
-const SHOP_ENVIAR_WORKER = false;      // contenido.enviar por el trabajador: APAGADO hasta portar fotos y video (tajada 2)
+const SHOP_ENVIAR_WORKER = true;       // VR_SHOP2_2NOV · contenido.enviar ENTERO por el trabajador (texto, metacampos, fotos y video). false = Apps Script
 const SHOP_COLA = { muertoHasta: 0 };
-async function _shopCola(op, payload, topeMs) {
+async function _shopCola(op, payload, topeMs, sigueSiTomado) {   // VR_SHOP2_2NOV · sigueSiTomado: si el trabajador ya lo tomó, no se repite por Apps Script
   if (!SHOP_WORKER || typeof _puertaRpc !== 'function' || Date.now() < SHOP_COLA.muertoHasta) return undefined;
   const _c = (typeof _cronAbrir === 'function') ? _cronAbrir('rapido.shop', op) : null;
   const fin = (ok, r) => { try { if (_c && typeof _cronCerrar === 'function') _cronCerrar(_c, ok); } catch (_) {} return r; };
   let enc = null; try { enc = await _puertaRpc('shopify_cola_encolar', { p_op: op, p_payload: payload || {} }, 5000); } catch (_) { enc = null; }
   if (!(enc && enc.id)) return fin(false, undefined);
-  const t0 = Date.now(), tope = topeMs || 20000;
+  const t0 = Date.now(), tope = topeMs || 20000; let _ult = null;
   while (Date.now() - t0 < tope) {
-    const r = await _puertaRpc('shopify_cola_esperar', { p_id: enc.id }, 8000);
+    const r = await _puertaRpc('shopify_cola_esperar', { p_id: enc.id }, 8000); if (r) _ult = r;
     if (r && r.estado === 'ok') return fin(true, r.resultado || { ok: true });
     if (r && r.estado === 'error') return fin(false, undefined);   // el trabajador o la tienda fallaron: Apps Script lo intenta
     if (r && r.estado === 'pendiente' && !r.intentos && Date.now() - t0 > 4500) { SHOP_COLA.muertoHasta = Date.now() + 10 * 60 * 1000; return fin(false, undefined); }   // nadie lo tomó: el trabajador no está → 10 min por Apps Script
     if (!r) await new Promise(z => setTimeout(z, 1000));
   }
+  if (sigueSiTomado && _ult && (_ult.estado === 'enviando' || _ult.intentos > 0)) return fin(true, { ok: true, enCurso: true, fuente: 'worker',   // VR_SHOP2_2NOV
+    texto: 'Shopify: «' + String((payload && payload.diseno) || '') + '»: se sigue enviando en segundo plano (fotos o video pesados). Vuelve a abrir la ficha en un minuto para ver el resultado.' });
   return fin(false, undefined);
 }
 /** Leer la ficha de la tienda (= costos.fichaWeb {accion:'leer'}) de un producto YA enlazado. Mismo formato de respuesta. */
@@ -4346,7 +4348,7 @@ async function _shopPreciosTras(diseno) {   // lo llama apiSend('costos.preciosT
 /** Contenido a la tienda: texto y metacampos por el trabajador; fotos y video siguen por Apps Script. Apagado (SHOP_ENVIAR_WORKER). */
 async function _shopEnviar(v, acc) {
   if (SHOP_ENVIAR_WORKER) {
-    const r = await _shopCola('contenido.enviar', { diseno: v.Diseno }, 25000);
+    const r = await _shopCola('contenido.enviar', { diseno: v.Diseno }, 75000, true);   // VR_SHOP2_2NOV
     if (r && r.ok && !r.resto_apps) return r;
   }
   return apiSend(acc, { fichaProducto: v.Diseno });
@@ -8411,9 +8413,9 @@ async function _cosFichaEnviar(v, auto, accShop) {   // 22-oct · accShop: la ru
     const _acc = accShop || 'costos.shopify';
     let r = await (typeof _shopEnviar === 'function' ? _shopEnviar(v, _acc) : apiSend(_acc, { fichaProducto: v.Diseno }));   // VR_SHOP_1NOV
     // 4-oct · con subida en bloque quedan fotos por mandar (tope de 12 por vuelta): se repite sola hasta terminar (máx. 6 vueltas)
-    for (let k = 2; k <= 6 && /faltan \d+ fotos/.test(String((r && r.texto) || '')); k++) {
+    for (let k = 2; k <= 6 && /faltan \d+ (fotos|videos)/.test(String((r && r.texto) || '')); k++) {   // VR_SHOP2_2NOV · también el video
       if (out) out.textContent = 'Enviando a Shopify… (vuelta ' + k + ')';
-      r = await apiSend(_acc, { fichaProducto: v.Diseno });
+      r = await (typeof _shopEnviar === 'function' ? _shopEnviar(v, _acc) : apiSend(_acc, { fichaProducto: v.Diseno }));   // VR_SHOP2_2NOV
     }
     const t = String((r && r.texto) || '');
     const mal = /FALLARON|FALLO|no pude/i.test(t);
