@@ -157,10 +157,10 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g.lote{margin:4px 0 8px}table
   <div class="f">
     <div><label>Producto</label><input id="nDis" list="lDis" placeholder="BLAZER MIRELLA" oninput="nProducto();nFechaSug()"><datalist id="lDis"></datalist></div>
     <div><label>Tipo</label><select id="nTipo" onchange="nFechaSug()"><option value="reposicion">Reposición</option><option value="nuevo">Nuevo</option></select></div>
-    <div><label>Taller</label><input id="nTaller" list="lTaller"><datalist id="lTaller"></datalist></div>
+    <div><label>Taller</label><input id="nTaller" list="lTaller" oninput="nCostoSug()"><datalist id="lTaller"></datalist></div>
     <input id="nTela" type="hidden">   <!-- 26-oct (lista 255) · la tela va en «Insumos»; se conserva oculto lo que tenían las órdenes viejas -->
     <div><label>Fecha para venta</label><input id="nFecha" type="date" oninput="NV.fechaMano=true;nFechaSug()"><small id="nFechaSug" class="mu" style="font-size:12px"></small></div>
-    <div><label>Costo por prenda (S/)</label><input id="nCosto" type="number" step="0.5" min="0"></div>
+    <div style="display:none"><label>Costo por prenda (S/)</label><input id="nCosto" type="number" step="0.5" min="0"></div>   <!-- 3-nov (F4) · el costo del taller se sugiere solo (por taller) y se cambia en «Costo y pagos» -->
     <div><label>Derivado al taller el (tela e insumos entregados)</label><input id="nFTal" type="date"></div>
     <div><label>Días de confección del taller</label><input id="nDias" type="number" min="0" max="120" step="1" placeholder="10" oninput="nFechaSug()"></div>
   </div>
@@ -204,6 +204,16 @@ const ETAPA_VIEJA = { molde:'muestra', escalado:'tela', inventario:'calidad' }; 
 const TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
 const TALLERES = ['José Luis','Dan','Pedro','Ángel','Bella'];   /* 26-oct (lista 243) · Jhon y Jefferson ya no trabajan con Tulula: fuera de Nueva producción (sus órdenes viejas quedan) */
 const TALLERES_BAJA = ['JHON','JEFFERSON'];
+/* 3-nov (Pablo · F4) · los talleres viven en la base (📊 Talleres › ＋ Taller); si la tabla no está, se usan los de arriba */
+function talActivos(){ return Array.isArray(D.talleres) && D.talleres.length ? D.talleres.filter(t => t.activo).map(t => t.nombre) : TALLERES; }
+function talBaja(){ return Array.isArray(D.talleres) && D.talleres.length ? D.talleres.filter(t => !t.activo).map(t => nrm(t.nombre)) : TALLERES_BAJA; }
+/* costo del taller: lo que ESE taller cobró la última vez por ESA prenda; si nunca la hizo, la confección de la ficha (📦 Productos) */
+function sugTallerDe(d, t){
+  const k = nrm(d), kt = nrm(t);
+  if (kt){ const o = (D.ordenes || []).filter(x => nrm(x.diseno) === k && nrm(x.taller) === kt && x.costo_unit != null && +x.costo_unit > 0).sort((a, b) => b.id - a.id)[0];
+    if (o) return { v: +o.costo_unit, de: 'lo que cobró ' + o.taller + ' en ' + o.codigo }; }
+  const f = sugTaller(k); return f != null ? { v: f, de: 'confección de 📦 Productos' } : null;
+}
 /* ══ 3-nov (Pablo · F2) · 📚 BIBLIOTECA DE MATERIALES: cada tela y avío una sola vez (tipo, proveedor, unidad, precio, colores).
    En la ficha del producto y en los insumos de la orden se JALA de aquí (se llenan tipo, unidad y precio). Solo administración (precios). ══ */
 const MAT_UNI = { confeccion:'und', tela1:'m', entretela:'m', forro:'m', elastico:'m', etiqueta:'und', botones:'und', cierre:'und', packaging:'und', otros:'und' };
@@ -287,6 +297,7 @@ async function cargar(){
     D._etapaGuardada = {}; D.ordenes.forEach(x => { D._etapaGuardada[x.id] = x.etapa; });
     try { D.pagos = await sb('/rest/v1/prod_pagos?select=*&order=fecha'); } catch (_) { D.pagos = []; }
     try { D.arch = await sb('/rest/v1/prod_archivos?select=*&order=id'); } catch (_) { D.arch = []; }
+    try { D.talleres = await sb('/rest/v1/prod_talleres?select=nombre,activo,notas&order=nombre'); } catch (_) { D.talleres = null; }   /* 3-nov (F4) · lista de talleres en la base */
     try { D.ins = await sb('/rest/v1/prod_insumos?select=*&order=orden'); } catch (_) { D.ins = []; }   /* 21-oct · ficha técnica paso 2 */   /* 21-oct · ficha técnica */
     /* 21-oct F3 · 📦 Productos (una sola fuente de productos) y ajustes editables */
     try { const P = await rpc('prod_productos'); D.prod = null; if (Array.isArray(P) && P.length){ D.prod = {}; P.forEach(x => { D.prod[nrm(x.diseno)] = x; }); } } catch (_) { D.prod = null; }   /* sin lista = no se sabe: no se avisa «no existe» */
@@ -327,9 +338,9 @@ function estadoFecha(o){
 }
 function pintar(){
   const ver = document.getElementById('fVer').value, ta = document.getElementById('fTaller').value;
-  const talleres = [...new Set(TALLERES.concat(D.ordenes.map(o => o.taller).filter(Boolean)))];
+  const talleres = [...new Set(talActivos().concat(D.ordenes.map(o => o.taller).filter(Boolean)))];
   const sel = document.getElementById('fTaller'); if (sel.options.length <= 1) talleres.forEach(t => sel.add(new Option(t, t)));
-  document.getElementById('lTaller').innerHTML = talleres.filter(t => TALLERES_BAJA.indexOf(nrm(t)) < 0).map(t => '<option value="' + esc(t) + '">').join('');   /* 26-oct · sin talleres de baja */
+  document.getElementById('lTaller').innerHTML = talleres.filter(t => talBaja().indexOf(nrm(t)) < 0).map(t => '<option value="' + esc(t) + '">').join('');   /* 26-oct · sin talleres de baja */
   /* 26-oct (Pablo) · el tope de compra (montos de gasto) es de administración: ya no se muestra en Producción */
   const el = document.getElementById('tablero');
   if (ver === 'talleres'){ el.innerHTML = talleresHtml(ta); return; }
@@ -436,12 +447,13 @@ async function topeGuardar(){
   catch (e) { m.textContent = e.message; m.className = 'err'; }
 }
 function piezasDe(dis){ const k = nrm(dis); return (D.stock || []).filter(x => nrm(x.p + ' ' + x.d) === k); }
+function nCostoSug(){ const nC = document.getElementById('nCosto'); if (!nC || NV.id) return;
+  const s = sugTallerDe(document.getElementById('nDis').value, document.getElementById('nTaller').value); nC.value = s ? s.v : ''; nC.title = s ? s.de : ''; }
 function nProducto(mantener){
   const P = piezasDe(document.getElementById('nDis').value);
   if (!mantener || !NV.colores.length){ if (P.length) NV.colores = [...new Set(P[0].x.filter(a => (+a[2] || 0) > 0 || (+a[4] || 0) > 0).map(a => String(a[0])))].sort(); }
   const nom = nrm(document.getElementById('nDis').value), ay = document.getElementById('nAyuda');
-  const sugC = sugTaller(nom), nC = document.getElementById('nCosto');   /* 21-oct (Pablo) · el pago al taller se sugiere con la confección de 📦 Productos */
-  if (sugC != null && nC && nC.value === '' && !NV.id){ nC.value = sugC; nC.title = 'Sugerido: confección en 📦 Productos'; }
+  nCostoSug();   /* 3-nov (F4) · el costo del taller se sugiere por taller (última vez) o con la ficha */
   ay.innerHTML = esc(P.length ? 'Debajo de cada casilla: hay hoy · vendidas en 90 días.' : 'Producto nuevo (todavía sin stock): agrega sus colores.')
     + (nom && D.prod && !D.prod[nom] ? ' <span class="chip am">Sin ficha</span> <button type="button" onclick="crearProducto(nrm(document.getElementById(\'nDis\').value))">➕ Crear ficha aquí</button>' : '');
   nGrid();
@@ -810,7 +822,7 @@ function cuentas(o, T){
   const PP = D.pagos.filter(x => x.orden_id === o.id), P = PP.filter(x => x.tipo !== 'descuento'), DS = PP.filter(x => x.tipo === 'descuento');
   const pagado = P.reduce((a, x) => a + (+x.monto || 0), 0), desc = DS.reduce((a, x) => a + (+x.monto || 0), 0);
   /* 26-oct · sin costo guardado se usa el sugerido de 📦 Productos (y se avisa), para no mostrar S/ 0 */
-  const cuSug = o.costo_unit == null && typeof sugTaller === 'function' ? sugTaller(nrm(o.diseno)) : null, cu = o.costo_unit != null ? +o.costo_unit || 0 : (cuSug || 0), aPagar = cu * T.buenas, est = cu * (T.pedido || 0);
+  const _sg = o.costo_unit == null ? sugTallerDe(o.diseno, o.taller) : null, cuSug = _sg ? _sg.v : null, cu = o.costo_unit != null ? +o.costo_unit || 0 : (cuSug || 0), aPagar = cu * T.buenas, est = cu * (T.pedido || 0);
   let tela; if (Array.isArray(o.materiales) && o.materiales.length){ const n = matPrendas(o, o.materiales); tela = o.materiales.reduce((a, m, i) => a + n[i] * (+m.consumo || 0) * (+m.precio || 0), 0); }
   else tela = (+o.tela_metros || 0) * (+o.tela_precio_m || 0);
   const base = T.buenas + T.perdidas + T.yayitas;
@@ -880,7 +892,8 @@ function costosHtml(o, T){
     + '<!--INS--><div id="matBox"></div>'
     + (otros.length && pr && pr.costo_unitario != null ? '<div class="mu" style="font-size:12px;margin-top:4px">+ Otros de la ficha: ' + S2(otrosU) + ' × ' + (T.pedido || 0) + ' = <b>' + S2(otrosU * (T.pedido || 0)) + '</b></div>' : '') + '<!--/INS-->'
     + '<h4 style="margin-top:14px">Pago al taller</h4>'
-    + '<div class="f"><div><label>Costo por prenda (taller)' + (o.costo_unit == null && sugTaller(nrm(o.diseno)) != null ? ' <span class="chip am">sugerido de 📦 Productos</span>' : '') + '</label><input id="kCu" type="number" step="0.5" min="0" value="' + (o.costo_unit != null ? o.costo_unit : (sugTaller(nrm(o.diseno)) != null ? sugTaller(nrm(o.diseno)) : '')) + '"></div>'
+    + (() => { const sg = o.costo_unit == null ? sugTallerDe(o.diseno, o.taller) : null;   /* 3-nov (F4) · un solo lugar para el costo del taller de esta orden */
+        return '<div class="f"><div><label>Costo por prenda (taller)' + (sg ? ' <span class="chip am">sugerido de ' + esc(sg.de.replace(/^confección de /, '')) + '</span>' : '') + '</label><input id="kCu" type="number" step="0.5" min="0" value="' + (o.costo_unit != null ? o.costo_unit : (sg ? sg.v : '')) + '"></div>'; })()
     + '<div><label>Adelanto (%)</label><input id="kAd" type="number" step="5" min="0" max="100" value="' + c.pct + '"></div>'
     + '<div style="align-self:end"><button class="p" onclick="guardarCostos()">💾 Guardar costos</button> <span id="kMsg" class="err"></span></div></div>'
 
@@ -959,6 +972,24 @@ function viejas(o){
     let pend = s.correccion; F.forEach(x => { const k = Math.min(pend, x.cantidad); pend -= k; if (k > 0 && new Date(x.fecha + 'T00:00:00').getTime() < lim) n += k; }); });
   return n;
 }
+/* 3-nov (Pablo · F4) · días típicos de cada taller = promedio real entre «derivado al taller» y su primera entrega */
+function talDias(t){ const L = []; D.ordenes.filter(o => o.taller === t && o.fecha_taller).forEach(o => {
+  const f = D.movs.filter(x => x.orden_id === o.id && (x.tipo === 'buena' || x.tipo === 'falla')).map(x => x.fecha).sort()[0];
+  if (f) { const n = Math.round((new Date(f + 'T00:00:00') - new Date(o.fecha_taller + 'T00:00:00')) / 864e5); if (n >= 0 && n < 120) L.push(n); } });
+  return L.length ? Math.round(L.reduce((a, v) => a + v, 0) / L.length) : null; }
+function talListaHtml(){
+  if (!Array.isArray(D.talleres)) return '';
+  const pod = D.nivel >= 2;
+  return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 10px"><span class="ui-lab">Talleres</span>'
+    + D.talleres.map(t => '<span class="chip' + (t.activo ? '' : '" style="opacity:.5') + '">' + esc(t.nombre) + (pod ? ' <b style="cursor:pointer" title="' + (t.activo ? 'Dar de baja (sus órdenes quedan)' : 'Volver a activar') + '" data-n="' + esc(t.nombre) + '" data-a="' + (t.activo ? 0 : 1) + '" onclick="talGuardar(this.dataset.n, this.dataset.a === \'1\')">' + (t.activo ? '✕' : '↩') + '</b>' : '') + '</span>').join('')
+    + (pod ? '<input id="talNuevo" placeholder="Nuevo taller" style="width:140px"><button onclick="talGuardar(document.getElementById(\'talNuevo\').value, true)">＋ Taller</button>' : '')
+    + '<span id="talMsg" class="err" style="font-size:12px"></span></div>';
+}
+async function talGuardar(n, activo){
+  const m = () => document.getElementById('talMsg'); if (!String(n || '').trim()) { m().textContent = 'Escribe el nombre del taller'; return; }
+  try { const r = await rpc('prod_talleres_guardar', { p_nombre: String(n).trim(), p_activo: !!activo, p_notas: null }); if (!r || r.ok === false) throw new Error((r && r.error) || 'no se guardó');
+    await cargar(); } catch (e) { if (m()) m().textContent = /prod_talleres_guardar|PGRST202/.test(String(e.message)) ? 'Falta pegar el SQL de talleres (3-nov).' : e.message; }
+}
 /* 📊 TALLERES: calidad, cumplimiento y plata, por taller */
 function talleresHtml(ta){
   const G = {};
@@ -975,9 +1006,10 @@ function talleresHtml(ta){
   const L = Object.values(G).sort((a, b) => b.rec - a.rec);
   if (!L.length) return '<div class="vacio">Sin órdenes.</div>';
   return '<div style="padding:0 2px;width:100%">' + (ta ? '' : resumenSemanaHtml()) + '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:13px">🏷 Descuento sugerido para Yayitas: <input id="yDesc" type="number" min="0" max="90" step="5" style="width:70px" value="' + (D.param.yayita_desc_pct != null ? D.param.yayita_desc_pct : 40) + '">% <button onclick="guardarDesc()">Guardar</button> <span id="yMsg" class="mu">sobre el precio de lista de 📦 Productos · se puede cambiar en cada venta</span></div>'
-    + '<table class="g" style="width:100%;font-size:13px"><tr><th>Taller</th><th>Órdenes</th><th>Recibidas</th><th>Con falla</th><th>% falla</th><th>Perdidas</th><th>Yayitas</th><th>+30 días en corrección</th><th>Por pagar (desde hoy)</th><th>Sin costo cargado</th></tr>'
+    + talListaHtml()
+    + '<table class="g" style="width:100%;font-size:13px"><tr><th>Taller</th><th>Días típicos</th><th>Órdenes</th><th>Recibidas</th><th>Con falla</th><th>% falla</th><th>Perdidas</th><th>Yayitas</th><th>+30 días en corrección</th><th>Por pagar (desde hoy)</th><th>Sin costo cargado</th></tr>'
     + L.map(g => { const pf = g.rec ? Math.round(g.fal / g.rec * 1000) / 10 : 0;
-      return '<tr><td><b>' + esc(g.t) + '</b></td><td>' + g.ord + (g.abiertas ? ' <small>' + g.abiertas + (g.abiertas === 1 ? ' abierta' : ' abiertas') + '</small>' : '') + '</td><td>' + g.rec + '</td><td>' + g.fal + '</td>'
+      return '<tr><td><b>' + esc(g.t) + '</b></td><td>' + (talDias(g.t) != null ? talDias(g.t) + ' d' : '—') + '</td><td>' + g.ord + (g.abiertas ? ' <small>' + g.abiertas + (g.abiertas === 1 ? ' abierta' : ' abiertas') + '</small>' : '') + '</td><td>' + g.rec + '</td><td>' + g.fal + '</td>'
         + '<td><span class="chip ' + (pf >= 10 ? 'rd' : pf >= 4 ? 'am' : '') + '">' + pf + '%</span></td><td>' + g.per + '</td><td>' + g.yay + '</td>'
         + '<td>' + (g.viejas ? '<span class="chip rd">' + g.viejas + '</span>' : '0') + '</td><td>' + S2(Math.max(0, g.aPagar - g.pagado)) + '</td><td>' + (g.sinCosto ? '<span class="chip am">' + g.sinCosto + '</span>' : '—') + '</td></tr>'; }).join('')
     + '</table><div class="mu" style="font-size:12px;margin-top:6px" title="% falla = con falla ÷ recibidas. Verde menos de 4%, ámbar 4–10%, rojo 10% o más. «Por pagar» cuenta solo órdenes nuevas o pagos registrados desde hoy (lo anterior sigue en el Drive).">% falla: verde &lt;4% · ámbar 4–10% · rojo ≥10% ⓘ</div></div>';
