@@ -12708,20 +12708,20 @@ function _renderVentas(ventas) {
   return '<div class="ui-kpis" style="padding:8px 0"><div><div class="ui-kpi" style="color:var(--gn)">S/ ' + M(v) + '</div><div class="ui-nota">ventas totales del período</div></div></div>';
 }
 
-function _renderTicketCanal(data) {
+function _renderTicketCanal(data, caja) {   /* VR_CAJA_2NOV · caja=true: lo cobrado (con envío) */
   /* 26-oct · UI: encabezado · canal · barra · pedidos · ventas · TICKET (negrita); columnas de ancho fijo para que se alineen */
   const M = v => { const x = parseFloat(v) || 0; return Math.abs(x) >= 1000 ? Math.round(x).toLocaleString('es-PE') : fmt(x); };   /* 26-oct · montos ≥ 1,000 sin decimales */
   const rows = (data || []).slice().sort((a, b) => (b.ventas || 0) - (a.ventas || 0));
   if (!rows.length) return '<div class="empty">Sin datos</div>';
   const maxV = Math.max(...rows.map(r => r.ventas), 1);
-  return '<div class="ui-fila h"><span class="n">Canal</span><span class="b"></span><span class="v">Pedidos</span><span class="v f">Ventas</span><span class="v f">Ticket</span></div>'
+  return '<div class="ui-fila h"><span class="n">Canal</span><span class="b"></span><span class="v">Pedidos</span><span class="v f">' + (caja ? 'Cobrado' : 'Ventas') + '</span><span class="v f">Ticket</span></div>'
     + rows.map(r => '<div class="ui-fila"><span class="n">' + esc(r.canal) + '</span>'
       + '<span class="b"><i style="width:' + Math.round(r.ventas / maxV * 100) + '%"></i></span>'
       + '<span class="v">' + r.pedidos + '</span><span class="v f2">S/ ' + M(r.ventas) + '</span>'
       + '<span class="v f" title="ticket = ventas ÷ pedidos">S/ ' + fmt(r.ticket) + '</span></div>').join('')
     + (() => { const tp = rows.reduce((a, r) => a + (+r.pedidos || 0), 0), tv = rows.reduce((a, r) => a + (+r.ventas || 0), 0);   /* 26-oct · total */
         return '<div class="ui-fila t"><span class="n">Total</span><span class="b"></span><span class="v">' + tp + '</span><span class="v f2">S/ ' + M(tv) + '</span><span class="v f">S/ ' + fmt(tp ? tv / tp : 0) + '</span></div>'; })()
-    + '<div class="ui-nota" style="text-align:right;margin-top:6px">ticket = ventas ÷ pedidos</div>';
+    + '<div class="ui-nota" style="text-align:right;margin-top:6px">' + (caja ? 'ticket = cobrado ÷ pedidos con cobro en el período' : 'ticket = ventas ÷ pedidos') + '</div>';
 }
 
 // Regla 80/20: acumula los principales hasta sumar ≥80%; el resto se junta en "Otros" (≤20%).
@@ -12859,11 +12859,18 @@ let _dashHeroMes = null;   // 'YYYY-MM' o null = mes vigente
 async function renderHeroDiario() {
   const host = document.getElementById('dash-hero-diario');
   if (!host) return;
-  let r;
-  try { r = await _serieDiariaRapido(_dashHeroMes); }
-  catch(e) { host.innerHTML = '<div class="empty" style="margin:0">No se pudo cargar el gráfico diario</div>'; return; }
+  let r, _caja = null;   /* VR_CAJA_2NOV · lo cobrado por día, misma cuenta que la Matriz */
+  try { _caja = await _dashCajaPedir(_dashHeroMes || _dashMesVigente()); } catch(e) { _caja = null; }
+  if (_caja && !_caja.sinCaja) r = _caja;
+  else {
+    _caja = null;
+    try { r = await _serieDiariaRapido(_dashHeroMes); }
+    catch(e) { host.innerHTML = '<div class="empty" style="margin:0">No se pudo cargar el gráfico diario</div>'; return; }
+  }
   const dias = r.dias || [];
   const maxV = Math.max(1, ...dias.map(d => d.actual));         // solo este mes (sin barras sombra)
+  const _nota = (_caja && _caja.fuente === 'hoja' && Math.abs((+_caja.ingresosDias || 0) - (+_caja.ingresos || 0)) >= 1)
+    ? '<div class="ui-nota" style="margin-top:6px">Mes cerrado: el total oficial es el de la Matriz (S/ ' + Math.round(+_caja.ingresos).toLocaleString('es-PE') + '). Los días suman lo cobrado en el ERP (S/ ' + Math.round(+_caja.ingresosDias).toLocaleString('es-PE') + ').</div>' : '';
   const top  = Math.max(2000, Math.ceil(maxV/2000)*2000);        // tope redondeado a múltiplo de S/2K
   const H = 150;
   const kfmt = v => v >= 1000 ? 'S/'+(v/1000).toFixed(1)+'K' : (v>0 ? 'S/'+Math.round(v) : '');
@@ -12885,12 +12892,12 @@ async function renderHeroDiario() {
     const ha=(d.actual/top)*H;
     bars += '<div class="hd-bar" data-dia="'+d.dia+'" style="min-width:44px;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:'+(d.actual>0?'pointer':'default')+'">'
       + (d.actual>0 ? '<div style="font-size:11px;color:var(--tx);margin-bottom:3px;white-space:nowrap;font-weight:500">'+kfmt(d.actual)+'</div>' : '')
-      + '<div style="width:62%;background:var(--ac);border-radius:2px 2px 0 0;height:'+ha+'px"></div></div>';
+      + '<div style="width:62%;background:var(--ac);border-radius:2px 2px 0 0;height:'+Math.max(0, ha)+'px"></div></div>';
     dnum += '<div style="min-width:44px;flex:1;text-align:center;font-size:11px;color:var(--mu)">'+d.dia+'</div>';
   });
   host.innerHTML =
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">'
-    + '<div class="ct" style="margin:0">Facturación por día</div>'
+    + '<div class="ct" style="margin:0">' + (_caja ? 'Cobrado por día · con envío' : 'Facturación por día · vendido (fecha de pedido)') + '</div>'
     + '<div style="display:flex;align-items:center;gap:10px">'
       + '<span style="font-size:13px;font-weight:600;color:'+scol+'">'+sico+' '+deltaTxt+' <span class="ui-nota">vs mes ant.</span></span>'
 
@@ -12901,7 +12908,7 @@ async function renderHeroDiario() {
         + '<div style="position:relative;height:'+H+'px">'+grid+'<div style="position:absolute;inset:0;display:flex;align-items:flex-end;gap:2px">'+bars+'</div></div>'
         + '<div style="display:flex;gap:2px;margin-top:3px;border-top:1px solid var(--bd);padding-top:3px">'+dnum+'</div>'
       + '</div></div>'
-    + '</div>';
+    + '</div>' + _nota;
   const sel = document.getElementById('dash-hero-mes');
   if (sel) sel.onchange = function(){ _dashHeroMes = this.value; renderHeroDiario(); };
   try { _hdDetalleEnganchar(host, curKey); } catch(e) {}   // 30-set: burbuja por dia + lista al hacer clic
@@ -12914,6 +12921,16 @@ async function renderHeroDiario() {
    cuenta que la barra) en paralelo con el grafico: la burbuja aparece al instante. */
 const _hdDetMemo = {};
 async function _hdDetalleMes(mes) {
+  try {   /* VR_CAJA_2NOV · primero lo cobrado (mismo viaje que el gráfico); si no hay caja, lo de antes */
+    const c = await _dashCajaPedir(mes || _dashMesVigente());
+    if (c && !c.sinCaja && c.det) {
+      const dias = {};
+      Object.keys(c.det).forEach(k => { const x = c.det[k] || {};
+        dias[k] = { total: x.total, n: x.n, canales: x.canales || [], asesoras: x.asesoras || [],
+          pedidos: (x.pedidos || []).map(p => Array.isArray(p) ? { nro: p[0], canal: p[1], asesora: p[2], monto: p[3] } : p) }; });
+      return { mes: c.mes, dias: dias, caja: true };
+    }
+  } catch (_) {}
   const k = String(mes || 'vigente'), m = _hdDetMemo[k];
   if (m && (Date.now() - m.ts) < 120000) return m.d;
   if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
@@ -12944,6 +12961,7 @@ function _hdDetalleEnganchar(host, mes) {
       tip.innerHTML = '<div style="display:flex;justify-content:space-between;gap:10px;font-weight:600;font-size:13px"><span>'+fechaTxt(dia)+'</span><span>S/ '+fmt(x.total)+' · '+x.n+' ped.</span></div>'
         + _hdTabla('Por canal', x.canales, 'canal') + _hdTabla('Por asesora (sus prendas, sin envío)', x.asesoras, 'asesora')
         + '<div style="margin-top:6px;color:var(--mu);font-size:11px">Clic en la barra: ver los pedidos</div>';
+      if (d.caja) tip.innerHTML = tip.innerHTML.replace('Por asesora (sus prendas, sin envío)', 'Por asesora (cobrado, con envío)');   /* VR_CAJA_2NOV */
       const r = el.getBoundingClientRect(); tip.style.display = 'block';
       const w = tip.offsetWidth, h = tip.offsetHeight;
       tip.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
@@ -12968,10 +12986,61 @@ function _hdDetalleEnganchar(host, mes) {
 }
 
 // ── MACRO v2: banda de KPIs (período seleccionable, sin re-fetch — lee de porMes) ──
-// 16-set: Utilidad Neta manual (fuente: Google Drive "Matriz", pestaña Cuadre Empresa).
-// No hay conexión automática todavía (pedido de Pablo: primero el dato, luego la conexión viva).
-// Actualizar a mano cada vez que se cierra un mes en la Matriz: {mes, valor, fecha en que se actualizó este dato}.
-const _UTILIDAD_NETA_MANUAL = { mes: 'Ago 2026', valor: 28613.41, actualizado: '2026-09-14' };
+/* ══ VR_CAJA_2NOV · 2-nov-2026 (Pablo) · PLATA REAL EN VIVO, LA MISMA CUENTA QUE LA MATRIZ ══════════════════════
+   Una sola pregunta a la base (rpc dashboard_caja, PEGAR_EN_SUPABASE_caja_real_BLOQUE_4_de_4.sql) trae, calculado en el momento:
+   · Ingresos reales = lo COBRADO por fecha de pago − reembolsos de dinero (con envío). Es el mismo número de la Matriz (pestaña KPI).
+   · Egresos reales = lo PAGADO por fecha de pago, hasta hoy · Utilidad real = ingresos − egresos (con margen).
+     Egresos y utilidad solo llegan a quien hoy ve la Matriz (Admin); al resto la base ni se los manda.
+   · El gráfico por día (vs el mes anterior), la burbuja por canal y asesora, la lista de pedidos de cada día y la tabla por canal.
+   Meses hasta set-2026: el total es el de la Matriz (hoja cerrada); los días suman lo cobrado en el ERP (se avisa si difiere).
+   Antes de ene-2026 no hay caja en el ERP: el gráfico vuelve a la venta por fecha de pedido (y lo dice).
+   Ya no existe la utilidad neta copiada a mano del Drive (16-set). */
+const _dashCajaD = {};
+function _dashMesVigente() { const h = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Lima' })); return h.getFullYear() + '-' + String(h.getMonth() + 1).padStart(2, '0'); }
+// Pide el mes a la base. Comparte la pregunta si ya va en camino; sirve lo de hace < maxEdad ms (por defecto 3 s, para que
+// la banda, el gráfico y la tabla de una misma apertura hagan UN solo viaje). null = no se pudo (se usa el camino viejo).
+async function _dashCajaPedir(mk, maxEdad) {
+  const k = String(mk || _dashMesVigente()), m = _dashCajaD[k];
+  if (m && m.p) return m.p;
+  if (m && m.d !== undefined && (Date.now() - m.ts) < (maxEdad == null ? 3000 : maxEdad)) return m.d;
+  const p = (async () => {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return null;
+    const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/dashboard_caja', { method: 'POST',
+      headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_mes: k }) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j && typeof j === 'object' && Array.isArray(j.dias)) ? j : null;
+  })().catch(() => null).then(d => { _dashCajaD[k] = { d: d, ts: Date.now() }; return d; });
+  _dashCajaD[k] = { d: m ? m.d : undefined, ts: m ? m.ts : 0, p: p };
+  return p;
+}
+// Lo que ya hay (al instante) y, si está viejo, lo pide y repinta solo. undefined = todavía no llegó.
+function _dashCajaVer(mk) {
+  const k = String(mk || _dashMesVigente()), m = _dashCajaD[k];
+  if (m && m.p) m.p.then(() => { try { _dashCajaPintar(k); } catch (_) {} });   // ya va en camino: repinta cuando llegue
+  else if (!m || (Date.now() - m.ts) >= 3000) _dashCajaPedir(k).then(() => { try { _dashCajaPintar(k); } catch (_) {} });
+  return m ? m.d : undefined;
+}
+function _dashCajaPintar(k) {
+  const mk = window._dashCajaMk || _dashMesVigente(); if (k !== mk) return;
+  const el = document.getElementById('dash-macro'); if (el) el.innerHTML = renderMacroBand(mk);
+  _dashTicketCaja(mk);
+}
+// Tabla por canal = lo cobrado (con envío). Si la base no contesta, queda la de antes y lo dice.
+function _dashTicketCaja(mk) {
+  const z = document.getElementById('dash-sec-ticket'), tt = document.getElementById('dash-ticket-tit'); if (!z) return;
+  const c = (_dashCajaD[String(mk || _dashMesVigente())] || {}).d;
+  if (c && Array.isArray(c.canales)) {
+    if (tt) tt.textContent = 'Cobrado por canal · con envío';
+    z.innerHTML = _renderTicketCanal(c.canales, true);
+  } else if (c === null) {
+    const m = _dashData && _dashData.porMes && _dashData.porMes[mk];
+    if (tt) tt.textContent = 'Ticket promedio por canal · vendido (por fecha de pedido)';
+    z.innerHTML = _renderTicketCanal(m ? m.ticketPorCanal : (_dashData || {}).ticketPorCanal30);
+  }
+}
 
 async function _dashUNCargar(mk){
   window._dashUN = window._dashUN || {};
@@ -13018,16 +13087,24 @@ function renderMacroBand(mk){
   const pedDia = (+md.pedidos || 0) / dias, prDia = (+md.totalPrendas || 0) / dias;
   const d1 = v => v.toLocaleString('es-PE', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   let h = '<style>.dash-kpis .mt{text-align:center}</style><div class="mts dash-kpis">';
-  h += mkMt('Facturación mes', 'S/ '+fmtM(md.ventas||0), 'con envío');
-  h += mkMt('Utilidad bruta', 'S/ '+sinDec(md.utilidadBruta), 'margen '+margenPct.toFixed(1)+'%', 'gn');
-  /* 26-oct (Pablo) · Utilidad neta = ingresos − egresos del mes (módulo Egresos: incluye sueldos y bonos de socios y lo confidencial).
-     Mes cerrado: real. Mes en curso: proyección al cierre. Si la persona no tiene acceso a Egresos, queda «—». */
-  window._dashUNmk = mk;
-  const _un = (window._dashUN || {})[mk];
-  if (_un === undefined && mk) _dashUNCargar(mk);
-  const _unOk = _un && _un.v != null;
-  h += mkMt('Utilidad neta', _unOk ? 'S/ ' + sinDec(_un.v) : '—', _unOk ? _un.sub : (_un === null ? 'calculando…' : 'pendiente'), _unOk ? (_un.v >= 0 ? 'gn' : 'rd') : '');
-  h += mkMt('Ticket promedio (sin envío)', 'S/ '+fmt(md.ticketSinEnvio||0), '');
+  /* VR_CAJA_2NOV (Pablo 2-nov) · plata REAL, idéntica a la Matriz (pestaña KPI) del mismo mes (rpc dashboard_caja, en vivo):
+     ingresos = cobrado − reembolsos (con envío) · egresos = pagado hasta hoy · utilidad = ingresos − egresos.
+     Egresos y utilidad: solo Admin (los mismos que ven la Matriz). Reemplaza «Facturación mes» (era lo vendido) y la utilidad neta. */
+  const _mkC = mk || _dashMesVigente(); window._dashCajaMk = _mkC;
+  const _cj = _dashCajaVer(_mkC);
+  const _M = v => { const x = +v || 0; return Math.abs(x) >= 1000 ? Math.round(x).toLocaleString('es-PE') : fmt(x); };   // sin decimales desde S/ 1,000
+  if (_cj === undefined) h += mkMt('Ingresos reales', '…', 'cobrado, con envío');
+  else if (_cj === null) h += mkMt('Facturación mes', 'S/ '+fmtM(md.ventas||0), 'vendido (fecha de pedido), con envío · sin datos de caja');
+  else {
+    const _reb = +_cj.reembolsos || 0;
+    h += mkMt('Ingresos reales', 'S/ ' + _M(_cj.ingresos), _cj.fuente === 'hoja' ? 'cobrado, con envío · Matriz (mes cerrado)' : ('cobrado, con envío' + (_reb ? ' · −S/ ' + _M(_reb) + ' reembolsos' : '')), 'gn');
+    if (_cj.admin && _cj.egresos != null) {
+      h += mkMt('Egresos reales', 'S/ ' + _M(_cj.egresos), 'pagado' + (_cj.esMesActual ? ' hasta hoy' : ''), 'rd');
+      h += mkMt('Utilidad real', 'S/ ' + _M(_cj.utilidad), 'margen ' + (_cj.margen == null ? '—' : (+_cj.margen).toFixed(2) + '%'), (+_cj.utilidad >= 0 ? 'gn' : 'rd'));
+    }
+  }
+  h += mkMt('Utilidad bruta', 'S/ '+sinDec(md.utilidadBruta), 'de lo vendido (fecha de pedido) · margen '+margenPct.toFixed(1)+'%', 'gn');
+  h += mkMt('Ticket promedio (sin envío)', 'S/ '+fmt(md.ticketSinEnvio||0), 'de lo vendido');
   h += mkMt('Pedidos por día', d1(pedDia), vs(pedDia, prom(x => (+x.pedidos||0) / 30.4), d1));
   h += mkMt('Prendas por día', d1(prDia), vs(prDia, prom(x => (+x.totalPrendas||0) / 30.4), d1));
   h += mkMt('LTGP', 'S/ '+fmt(ltgp), vs(ltgp, prom(x => ltv * (+x.margenPct||0) / 100), v => 'S/ ' + fmt(v)));
@@ -13089,7 +13166,8 @@ function onDashPeriodoGlobal(mk){
 function onDashSelectorPrincipal(mk){
   const pg = document.getElementById('dash-periodo-global'); if (pg) pg.value = mk;
   onDashPeriodoGlobal(mk);
-  ['ticket', 'productos', 'region', 'distrito'].forEach(sec => { try { _updateDashSec(sec, mk, null); } catch(e){} });   /* 26-oct · todos los bloques con el mismo período */
+  ['productos', 'region', 'distrito'].forEach(sec => { try { _updateDashSec(sec, mk, null); } catch(e){} });
+  try { window._dashCajaMk = mk; _dashTicketCaja(mk); _dashCajaPedir(mk).then(() => _dashTicketCaja(mk)); } catch(e){}   /* VR_CAJA_2NOV · canal = lo cobrado */   /* 26-oct · todos los bloques con el mismo período */
 }
 
 // ── main render ──
@@ -13121,21 +13199,22 @@ function renderDash(r) {
   const _cm = (mesActualKey && r.porMes && r.porMes[mesActualKey]) ? r.porMes[mesActualKey] : null;
 
   // Ticket por canal (default mes vigente)
-  h += '<div class="card">'+_dashCardHdr('Ticket promedio por canal', 'ticket')
-    +'<div id="dash-sec-ticket">'+_renderTicketCanal(_cm?_cm.ticketPorCanal:r.ticketPorCanal30)+'</div></div>';
+  h += '<div class="card"><div class="ui-blo-h"><div class="ct" style="margin:0" id="dash-ticket-tit">Cobrado por canal · con envío</div></div>'   /* VR_CAJA_2NOV */
+    +'<div id="dash-sec-ticket"><div class="ld"><div class="sp"></div>Cargando…</div></div></div>';
+  setTimeout(function(){ try { _dashTicketCaja(mesActualKey || _dashMesVigente()); } catch(e){} }, 0);
 
   // Productos más vendidos (default mes vigente)
-  h += '<div class="card">'+_dashCardHdr('Productos más vendidos', 'productos')
+  h += '<div class="card">'+_dashCardHdr('Productos más vendidos · vendido (fecha de pedido)', 'productos')
     +'<div id="dash-sec-productos">'+_renderTopProductos(_cm?_cm.topProductos:r.topProductos30)+'</div></div>';
 
   h += '</div><div class="g2">';
 
   // Ventas por región (default mes vigente, 80/20+Otros)
-  h += '<div class="card">'+_dashCardHdr('Ventas por región', 'region')
+  h += '<div class="card">'+_dashCardHdr('Ventas por región · vendido (fecha de pedido)', 'region')
     +'<div id="dash-sec-region">'+_renderRegion(_cm?_cm.ventasPorRegion:r.ventasPorRegion30)+'</div></div>';
 
   // Ventas por distrito Lima (default mes vigente, 80/20+Otros)
-  h += '<div class="card">'+_dashCardHdr('Ventas por distrito — Lima Metropolitana', 'distrito')
+  h += '<div class="card">'+_dashCardHdr('Ventas por distrito — Lima Metropolitana · vendido (fecha de pedido)', 'distrito')
     +'<div id="dash-sec-distrito">'+_renderRegion(_cm?_cm.ventasPorDistritoLima:r.ventasPorDistritoLima30)+'</div></div>';
 
   h += '</div><div class="g2">';
@@ -13151,7 +13230,7 @@ function renderDash(r) {
   const _MCORTO = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Set','Oct','Nov','Dic'];
   const _vm = _MCORTO.map((n, i) => { const k = _anio + '-' + String(i + 1).padStart(2, '0'); const x = r.porMes && r.porMes[k]; return { n: n, v: x ? (+x.ventas || 0) : 0 }; });
   const _maxM = Math.max(..._vm.map(x => x.v), 1);
-  h += '<div class="card"><div class="ct">Ventas por mes · '+_anio+'</div><div style="display:flex;align-items:flex-end;gap:6px;height:130px;margin-top:26px">';
+  h += '<div class="card"><div class="ct">Ventas por mes · '+_anio+' · vendido (fecha de pedido)</div><div style="display:flex;align-items:flex-end;gap:6px;height:130px;margin-top:26px">';
   _vm.forEach(x => {
     const pct = Math.round(x.v / _maxM * 100);
     h += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;height:100%">'
@@ -13364,6 +13443,7 @@ function lsGetPeds() {
       if (json) {
         const obj = JSON.parse(json);
         if (Date.now() - obj.ts > _pedsTtl()) { localStorage.removeItem('erp_' + _pedsLsKeyForScope()); }
+        else if (typeof _insPedsAjena === 'function' && _insPedsAjena(obj)) { /* VR_INSTANTE2_2NOV · copia de OTRO correo: no se usa */ }
         else { if (obj.serverTs) pLastSyncTs = obj.serverTs; return obj.data; }
       }
     }
@@ -13371,6 +13451,7 @@ function lsGetPeds() {
   // 2. IDB snapshot (hidratado en boot, si la última escritura cayó en IDB por quota)
   if (_idbPedsMem && _idbPedsMem.scope === pScope) {
     if (Date.now() - _idbPedsMem.ts > _pedsTtl()) { _idbPedsMem = null; idbDel('peds_'+pScope); }
+    else if (typeof _insPedsAjena === 'function' && _insPedsAjena(_idbPedsMem)) { /* VR_INSTANTE2_2NOV */ }
     else { if (_idbPedsMem.serverTs) pLastSyncTs = _idbPedsMem.serverTs; return _idbPedsMem.data; }
   }
   return null;
@@ -13380,6 +13461,7 @@ let _pedsBigSaveTimer = null, _pedsBigSavePending = null;
 function lsSetPeds(data, serverTs, ya) {
   const ts = Date.now(), st = serverTs || ts;
   const obj = {ts, serverTs: st, data};
+  try { if (typeof _insPedsDueno === 'function') { const _u = _insPedsDueno(); if (_u) obj.u = _u; } } catch (_) {}   // VR_INSTANTE2_2NOV · de quién es la copia
   if (st) pLastSyncTs = st;
   // HISTORIAL COMPLETO (45k filas): stringify+LZ tomaría segundos de CPU en CADA guardado
   // y rebalsa localStorage. → directo a IndexedDB, coalescido: escribe YA la primera vez
@@ -14750,13 +14832,18 @@ function _insMetaCargador(H, original) {
 /** ¿Se puede pintar ya con la copia? Solo al abrir una pantalla de la lista, mismo usuario, misma versión, < 24 h, sin guardado reciente. */
 function _insSwr(clave) {
   try {
+    const no = m => { try { if (INS.no) INS.no[m] = (INS.no[m] || 0) + 1; } catch (_) {} return null; };   // VR_INSTANTE2_2NOV · por qué no (consola: INS.no)
     if (!VR_INSTANTE) return null;
     const a = INS.abre;
     if (!a || typeof curPg === 'undefined' || curPg !== a.pg || !INS_PAGINAS[a.pg] || performance.now() - a.t > 2000) return null;
+    if (typeof window !== 'undefined' && window._sbSaltarEspejo) return no('recargar');   // VR_INSTANTE2_2NOV · el 🔄 quiere el dato de la base
     const ue = Math.max(INS.escr || 0, (typeof PUERTA !== 'undefined' && PUERTA.ultEscr) || 0);   // guardados de esta pestaña (base y Apps Script)
-    if (Date.now() - ue < INS_SIN_ESCRIBIR_MS) return null;
+    if (Date.now() - ue < INS_SIN_ESCRIBIR_MS) return no('guardado_reciente');
     const c = _insCopia(clave), u = _insUsuario();
-    if (!c || c.d == null || !c.f || !u || c.u !== u || !c.b || c.b !== _insBuild() || !(Date.now() - (c.t || 0) < INS_MAX_MS)) return null;
+    if (!c || c.d == null || !c.f) return no('sin_copia');
+    if (!u || c.u !== u) return no(c.u ? 'otro_usuario' : 'copia_sin_dueno');
+    if (!c.b || c.b !== _insBuild()) return no('otra_version');
+    if (!(Date.now() - (c.t || 0) < INS_MAX_MS)) return no('vieja');
     return { c: c, pg: a.pg };
   } catch (_) { return null; }
 }
@@ -14783,19 +14870,21 @@ function _insModalAbierto() {
   } catch (_) { return true; }
 }
 /** Vuelve a pintar la pantalla con el dato nuevo, sin pisar lo que se está escribiendo ni una ventana abierta. */
-function _insRepintar(pg) {
+function _insRepintar(pg, pintar, op) {   // VR_INSTANTE2_2NOV · pintar/op opcionales (sin ellos: loadPg(pg), como antes)
   let n = 0;
   const intento = function () {
     try {
-      if (typeof curPg === 'undefined' || curPg !== pg) return;   // se fue: al volver ve lo nuevo
+      if (op && op.sigue ? !op.sigue() : (typeof curPg === 'undefined' || curPg !== pg)) return;   // se fue: al volver ve lo nuevo
       const ae = document.activeElement;
       const escribe = !!(ae && ae !== document.body && (/^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) || ae.isContentEditable));
-      if (escribe || _insModalAbierto() || document.hidden) { if (n++ < 120) setTimeout(intento, 1500); return; }
-      const raiz = document.getElementById('pg-' + pg);
+      if (escribe || (op && op.modal ? op.modal() : _insModalAbierto()) || document.hidden) { if (n++ < 120) setTimeout(intento, 1500); return; }
+      const raiz = (op && op.raiz) ? op.raiz() : document.getElementById('pg-' + pg);
       const sy = window.scrollY, sx = window.scrollX, sc = [];
       if (raiz) Array.prototype.forEach.call(raiz.querySelectorAll('div,table,section,ul'), (e, i) => { if (e.scrollTop || e.scrollLeft) sc.push([i, e.scrollTop, e.scrollLeft]); });
       INS.n.repinta++;
-      loadPg(pg);
+      const _ab = []; if (raiz) Array.prototype.forEach.call(raiz.querySelectorAll('details[id]'), e => _ab.push([e.id, e.open]));   // VR_INSTANTE2_2NOV · secciones abiertas/cerradas
+      if (pintar) pintar(); else loadPg(pg);   // VR_INSTANTE2_2NOV
+      _ab.forEach(x => { const e = document.getElementById(x[0]); if (e && e.open !== x[1]) e.open = x[1]; });
       const volver = () => { try { window.scrollTo(sx, sy); if (raiz && sc.length) { const L = raiz.querySelectorAll('div,table,section,ul'); sc.forEach(x => { const e = L[x[0]]; if (e) { e.scrollTop = x[1]; e.scrollLeft = x[2]; } }); } } catch (_) {} };
       volver(); setTimeout(volver, 0); requestAnimationFrame(volver);
     } catch (_) {}
@@ -14820,6 +14909,171 @@ async function _memoVersion(clave, tablas, cargar) {
   return _memoClon(sw.c.d);
 }
 // <<< VR_INSTANTE_2NOV
+// ══════════════════════════════════════════════════════════════════════════
+// >>> VR_INSTANTE2_2NOV · MÁS PANTALLAS AL INSTANTE: Pedidos, Devoluciones, Alertas y Panel de Meta (2-nov-2026, ola 23)
+// Mismas reglas que Cambios (arriba): la copia se muestra SOLO al abrir la pantalla, si es del MISMO usuario y rol, de esta
+// versión del ERP, de menos de 24 h, sin un guardado en esta pestaña en los últimos 20 s y sin el 🔄. Por detrás se pide el
+// dato a la base (1 viaje, el mismo de siempre) y SOLO si cambió se vuelve a pintar, sin pisar lo que se escribe ni una
+// ventana abierta y respetando el desplazamiento, filtros y buscador (cada pantalla repinta con su propia función).
+// Si mientras tanto se guardó algo en esta pestaña, lo que llegó por detrás se descarta (el guardado ya repinta).
+// · Pedidos: ya se pintaba con su copia (navegador / IndexedDB); lo nuevo es que al abrir pregunta YA por los cambios
+//   (antes esperaba 15-60 s a la primera vuelta) y que la copia de OTRO correo ya no se usa.
+// · Escrituras: nunca salen de la copia. Al cerrar sesión se borran (erp_ins_*).
+// Consola: INS.t = ms del primer contenido (últimas 5 aperturas por pantalla) · INS.no = por qué no se usó la copia.
+// REVERSA: VR_INSTANTE2 = false y publicar.
+// ══════════════════════════════════════════════════════════════════════════
+var VR_INSTANTE2 = true;
+var INS_PANTALLAS = { pedidos: 1, devoluciones: 1, alertas: 1, metacapi: 1 };
+try { INS.t = INS.t || {}; INS.no = INS.no || {}; INS.pg = INS.pg || {}; INS.n.mismo = INS.n.mismo || 0; } catch (_) {}
+function _insOn2() { return typeof VR_INSTANTE !== 'undefined' && VR_INSTANTE && VR_INSTANTE2 === true; }
+function _insNo(m) { try { INS.no[m] = (INS.no[m] || 0) + 1; } catch (_) {} return false; }
+function _insUltEscr() { return Math.max(INS.escr || 0, (typeof PUERTA !== 'undefined' && PUERTA.ultEscr) || 0); }
+/** Anota cuánto tardó el primer contenido de una pantalla (desde que se la abrió). Últimas 5 por pantalla. */
+function _insMarcaT(pg, t0) {
+  try {
+    const a = INS.abre, ahora = performance.now();
+    const base = (a && a.pg === pg && ahora - a.t < 10000 && (t0 == null || a.t <= t0)) ? a.t : (t0 == null ? ahora : t0);
+    const L = INS.t[pg] || (INS.t[pg] = []);
+    L.push(Math.round(ahora - base)); while (L.length > 5) L.shift();
+  } catch (_) {}
+}
+/** Copia ya confirmada contra la base (misma firma): se le pone dueño, versión y hora para que la próxima apertura sea al instante. */
+function _insSellar(clave, c) {
+  if (!_insOn2() || !c) return;
+  const u = _insUsuario(), b = _insBuild();
+  if (!u || (c.u && c.u !== u)) return;
+  if (c.u === u && c.b === b && Date.now() - (c.t || 0) < 3600000) return;   // ya sellada hace < 1 h: no se reescribe
+  c.u = u; c.b = b; c.t = Date.now();
+  if (!_lsGuardar('erp_memov_' + clave, JSON.stringify(c))) { try { localStorage.removeItem('erp_memov_' + clave); } catch (_) {} }
+}
+/** Cambios/Devoluciones: si la lectura de la base ya estaba en vuelo (otra pantalla la pidió), al abrir igual se pinta con la copia. */
+function _insEnVuelo(tabla, p) {
+  if (!_insOn2() || (tabla !== 'cambios2' && tabla !== 'devoluciones')) return null;
+  const clave = 'espejo_' + tabla, sw = _insSwr(clave);
+  if (!sw) return null;
+  INS.n.swr++; _insIndicador(+1);
+  Promise.resolve(p).then(function () { const c = MEMOV.mem[clave]; if (c && c.f && c.f !== sw.c.f) _insRepintar(sw.pg); })
+    .catch(function () {}).finally(function () { _insIndicador(-1); });
+  return Promise.resolve(_memoClon(sw.c.d));
+}
+/** ¿Se puede pintar esta pantalla con su copia? (mismas reglas que _insSwr) */
+function _insPuede(pg, sinAbre) {
+  if (!_insOn2() || !INS_PANTALLAS[pg]) return false;
+  if (window._sbSaltarEspejo) return _insNo('recargar');
+  if (!sinAbre) {
+    const a = INS.abre;
+    if (!a || a.pg !== pg || performance.now() - a.t > 2000 || (typeof curPg !== 'undefined' && curPg !== pg)) return _insNo('no_es_apertura');
+  }
+  if (Date.now() - _insUltEscr() < INS_SIN_ESCRIBIR_MS) return _insNo('guardado_reciente');
+  return true;
+}
+function _insHuella(d) { try { return JSON.stringify(d, function (k, v) { return (k.charAt(0) === '_' || k === 'generado' || k === 'serverTs') ? undefined : v; }); } catch (_) { return ''; } }   // sin lo que calcula la pantalla (_…) ni sellos de hora
+function _insPgLeer(clave) {
+  let c = INS.pg[clave];
+  if (!c) { c = _insLeer('erp_ins_pg_' + clave); if (c) INS.pg[clave] = c; }
+  if (!c || c.d == null) return _insNo('sin_copia') || null;
+  const u = _insUsuario();
+  if (!u || c.u !== u) return _insNo(c.u ? 'otro_usuario' : 'copia_sin_dueno') || null;
+  if (c.b !== _insBuild()) return _insNo('otra_version') || null;
+  if (!(Date.now() - (c.t || 0) < INS_MAX_MS)) return _insNo('vieja') || null;
+  if (c.t < _insUltEscr()) return _insNo('copia_antes_de_guardar') || null;   // se guardó algo en esta pestaña después de la copia
+  return c;
+}
+function _insPgGuardar(clave, d, h) {
+  try {
+    const c = { d: _memoClon(d), u: _insUsuario(), b: _insBuild(), t: Date.now() };
+    if (!c.u) return;
+    INS.pg[clave] = Object.assign({ h: h || _insHuella(c.d) }, c);
+    if (!_lsGuardar('erp_ins_pg_' + clave, JSON.stringify(c))) { try { localStorage.removeItem('erp_ins_pg_' + clave); } catch (_) {} }
+  } catch (_) {}
+}
+/** ¿Hay OTRA ventana abierta además de la propia (Panel de Meta vive en una ventana)? */
+function _insOtroModal(propio) {
+  try {
+    if (Array.prototype.some.call(document.querySelectorAll('.modal.on'), e => e !== propio)) return true;
+    return Array.prototype.some.call(document.body.children, e => e !== propio && e.id !== 'ins-act' && e.style && e.style.position === 'fixed' && (e.style.inset === '0px' || e.style.inset === '0')
+      && e.getClientRects().length > 0 && getComputedStyle(e).display !== 'none');
+  } catch (_) { return true; }
+}
+/** Pantalla al instante. o = { pg, clave, traer(), pintar(d, modo: 'copia'|'red'|'repinta'), cargando(), valido(d), memoria(), sinAbre, sigue(), modal(), raiz() }.
+ *  Con copia válida: pinta YA y revalida por detrás. Sin copia: el camino de siempre (cargando → traer → pintar) y guarda la copia. */
+async function _insPantalla(o) {
+  const t0 = performance.now(), val = o.valido || (d => d != null);
+  const puede = _insPuede(o.pg, o.sinAbre);
+  let c = puede ? _insPgLeer(o.clave) : null;
+  if (c && !val(c.d)) c = null;
+  if (!c && puede && o.memoria) { const m = o.memoria(); if (val(m)) c = { d: m, t: Date.now() }; }   // lo que esta pestaña ya bajó (mismo usuario)
+  if (c) {
+    let pinto = false;
+    try { o.pintar(_memoClon(c.d), 'copia'); pinto = true; } catch (e) { try { _errLog('ins.copia.' + o.pg, e); } catch (_) {} }
+    if (pinto) {
+      INS.n.swr++; _insMarcaT(o.pg, t0);
+      const e0 = _insUltEscr(); _insIndicador(+1);
+      Promise.resolve().then(o.traer).then(function (d) {
+        if (!val(d) || _insUltEscr() !== e0) return;   // respuesta rara, o se guardó algo mientras tanto (el guardado repinta)
+        const h = _insHuella(d), ch = c.h || (c.h = _insHuella(c.d));
+        if (h === ch) { INS.n.mismo++; if (Date.now() - (c.t || 0) > 3600000) _insPgGuardar(o.clave, d, h); return; }   // no cambió: sin parpadeo
+        _insPgGuardar(o.clave, d, h);
+        _insRepintar(o.pg, function () { o.pintar(_memoClon(d), 'repinta'); }, o);
+      }).catch(function () {}).finally(function () { _insIndicador(-1); });
+      return;
+    }
+  }
+  if (o.cargando) o.cargando();
+  const d = await o.traer();
+  const dc = (_insOn2() && INS_PANTALLAS[o.pg] && val(d)) ? _memoClon(d) : undefined;   // antes de pintar (la pantalla puede anotar campos en las filas)
+  o.pintar(d, 'red');
+  _insMarcaT(o.pg, t0);
+  if (dc !== undefined) _insPgGuardar(o.clave, dc);
+}
+/** Pedidos: ¿la copia del navegador es de OTRO correo? (entonces no se usa: se baja la de quien entró) */
+function _insPedsAjena(obj) {
+  try {
+    if (!_insOn2() || !obj || !obj.u) return false;
+    const e = String((typeof MY_EMAIL !== 'undefined' && MY_EMAIL) || '').trim().toLowerCase();
+    if (e && obj.u !== e) { _insNo('pedidos_otro_usuario'); return true; }
+  } catch (_) {}
+  return false;
+}
+/** Pedidos: al VOLVER a la pantalla en esta pestaña, la tabla que quedó dibujada (misma pestaña Activos/Todos…, mismos datos) se
+ *  muestra ya y se rehace un instante después (rehacerla tarda ~90 ms con 1.500 filas y frenaba el cambio de pantalla). */
+function _insPedsDiferir(el, estVal) {
+  try {
+    if (!_insOn2() || !INS_PANTALLAS.pedidos || !el) return false;
+    const a = INS.abre;
+    if (!a || a.pg !== 'pedidos' || performance.now() - a.t > 2000) return false;
+    return String(pEst || '') === String(estVal || '') && Array.isArray(pRaw) && pRaw.length > 0 && !!el.querySelector('table tbody tr');
+  } catch (_) { return false; }
+}
+function _insPedsPintarLuego(el, cached, estVal, tok) {
+  if (!_insPedsDiferir(el, estVal)) return false;
+  requestAnimationFrame(() => setTimeout(() => { if (tok === _pedsLoadToken && typeof curPg !== 'undefined' && curPg === 'pedidos') _renderPedsDesde(cached, estVal); }, 0));
+  return true;
+}
+function _insPedsDueno() { try { return String((typeof MY_EMAIL !== 'undefined' && MY_EMAIL) || '').trim().toLowerCase(); } catch (_) { return ''; } }
+/** Pedidos: se pintó con la copia → al ABRIR la pantalla, preguntar YA por los cambios (la vuelta de siempre, 1 viaje) en vez de
+ *  esperar 15-60 s. Lo que llega se fusiona y repinta por el camino de siempre (_mergePedsDelta ya espera si se está usando la tabla). */
+function _insPedsAbre() {
+  if (!_insOn2() || !INS_PANTALLAS.pedidos) return;
+  const a = INS.abre;
+  if (!a || a.pg !== 'pedidos' || performance.now() - a.t > 2000) return;   // solo al abrir (no en cada recarga interna)
+  _insMarcaT('pedidos');
+  INS.n.swr++;
+  if (INS.vuelo.pedidos) return;
+  INS.vuelo.pedidos = 1; _insIndicador(+1);
+  setTimeout(async function () {
+    try {
+      if (typeof curPg === 'undefined' || curPg !== 'pedidos' || document.hidden) return;
+      // la primera vuelta de la pestaña solo fijaba la marca y no traía nada: se piden los cambios desde la copia
+      // (2 min de margen; la base devuelve «recargar todo» si son demasiados). Copia de más de 6 h: como antes.
+      if (!_sbPollTs && pLastSyncTs && Date.now() - pLastSyncTs < 6 * 3600000) _sbPollTs = pLastSyncTs - 120000;
+      await _pollPedsOnce();
+      const bb = await _contadoresBase(true);
+      if (bb) { _pintarContadoresBase(bb); _pedsVerificarDeriva(window._cntLocales || {}, bb); }
+    } catch (_) {} finally { delete INS.vuelo.pedidos; _insIndicador(-1); }
+  }, 60);
+}
+// <<< VR_INSTANTE2_2NOV
 async function _memoVersionRed(clave, tablas, cargar) {   // VR_INSTANTE_2NOV · antes _memoVersion (el de arriba decide si pinta ya con la copia)
   let ver = _verVivoTomar(tablas);   // 12-oct E3: el timbre confirma que no cambió → sin viaje
   let _vjPre;   // VR_VIAJE_2NOV · los datos que ya vinieron junto con la versión
@@ -14845,7 +15099,8 @@ async function _memoVersionRed(clave, tablas, cargar) {   // VR_INSTANTE_2NOV ·
   if (firma) {
     let c = MEMOV.mem[clave];
     if (!c) { try { c = JSON.parse(localStorage.getItem('erp_memov_' + clave) || 'null'); if (c) MEMOV.mem[clave] = c; } catch (_) { c = null; } }
-    if (c && c.f === firma && c.d != null) return _memoClon(c.d);
+    if (c && c.u && typeof _insOn2 === 'function' && _insOn2() && c.u !== _insUsuario()) c = null;   // VR_INSTANTE2_2NOV · copia de OTRO usuario: se baja de nuevo
+    if (c && c.f === firma && c.d != null) { try { _insSellar(clave, c); } catch (_) {} return _memoClon(c.d); }   // VR_INSTANTE2_2NOV · confirmada: dueño + versión + hora (antes nunca se sellaba → nunca al instante)
   }
   if (_vjPre !== undefined) { const _c0 = cargar; cargar = (f) => _c0(f, _vjPre); }   // VR_VIAJE_2NOV · + lo que ya vino con la versión
   const d = await cargar(firma);   // 31-oct ola 2 · la firma la usa _sbFilasEspejoDelta
@@ -14857,7 +15112,7 @@ async function _memoVersionRed(clave, tablas, cargar) {   // VR_INSTANTE_2NOV ·
 }
 // <<< VÍA RÁPIDA C1
 function _sbFilasEspejo(tabla) {
-  if (_sbEspejoEnVuelo[tabla]) return _sbEspejoEnVuelo[tabla];
+  if (_sbEspejoEnVuelo[tabla]) { const _ic = (typeof _insEnVuelo === 'function') ? _insEnVuelo(tabla, _sbEspejoEnVuelo[tabla]) : null; return _ic || _sbEspejoEnVuelo[tabla]; }   // VR_INSTANTE2_2NOV · al abrir, aunque ya hubiera una lectura en vuelo
   const p = (tabla === 'cambios2' || tabla === 'devoluciones') ? _memoVersion('espejo_' + tabla, [tabla], Object.assign((f, pre) => ((pre && typeof SB_ESPEJO_DELTA !== 'undefined' && SB_ESPEJO_DELTA && typeof _sbFilasEspejoDelta === 'function') ? _sbFilasEspejoDelta(tabla, f, pre) : (typeof SB_ESPEJO_DELTA !== 'undefined' && SB_ESPEJO_DELTA && typeof _sbFilasEspejoDelta === 'function') ? _sbFilasEspejoDelta(tabla, f) : _sbFilasEspejoAhora(tabla)), { __vj: () => ((typeof SB_ESPEJO_DELTA !== 'undefined' && SB_ESPEJO_DELTA && typeof _sbFilasEspejoDelta === 'function' && SB_LECTURA_CAMBIOS && !window._sbSaltarBase) ? { fn: 'espejo_delta', a: { p_tabla: tabla, p_h: _vjHuellas(tabla) } } : null) })) : _sbFilasEspejoAhora(tabla);   // VR_VIAJE_2NOV   // 10-oct · C1
   _sbEspejoEnVuelo[tabla] = p;
   p.then(function () { delete _sbEspejoEnVuelo[tabla]; },
@@ -20491,8 +20746,9 @@ async function loadPeds(est, force) {
   }
   if (_pedsVieja()) { _pedMarca('carga vieja descartada (cambió la pestaña)'); return; }
   if (cached) {
-    _renderPedsDesde(cached, estVal);
+    if (!(typeof _insPedsPintarLuego === 'function' && _insPedsPintarLuego(el, cached, estVal, _miTok))) _renderPedsDesde(cached, estVal);   // VR_INSTANTE2_2NOV
     _pedMarca('PRIMER DIBUJADO desde lo guardado — ya se ve la tabla');
+    try { _insPedsAbre(); } catch (_) {}   // VR_INSTANTE2_2NOV
     // 25-jul: el arranque desde el snapshot local no pasaba por la carga progresiva, así que
     // los pedidos que el snapshot guardó SIN prendas seguían rotos al reabrir. Repararlos aquí.
     try { setTimeout(() => { _pedsAutorepararSinPrenda(40, 8); }, 3000); } catch(_){}
@@ -20508,6 +20764,7 @@ async function loadPeds(est, force) {
   // a cambiar de módulo sin recargar), renderizar al instante desde memoria. Sin fetch, sin spinner.
   if (!force && Array.isArray(pRaw) && pRaw.length) {
     _renderPedsDesde(pRaw, estVal);
+    try { if (typeof _insPedsAbre === 'function') _insPedsAbre(); } catch (_) {}   // VR_INSTANTE2_2NOV
     try { setTimeout(() => { _pedsAutorepararSinPrenda(40, 8); }, 3000); } catch(_){}
     _startPedsPolling();
     if (pScope !== 'activos') _pedsCargarRestoProgresivo();  // completar histórico en background
@@ -25231,7 +25488,7 @@ function _verVivoVigilarEscrituras() {
     try {
       const m = String((o && o.method) || 'GET').toUpperCase(), url = String((u && u.url) || u || '');
       if (m !== 'GET' && m !== 'HEAD' && (url.indexOf('/rest/v1/') >= 0 || url.indexOf('script.google') >= 0) && !VER_LECTURAS_RX.test(url)) _verVivoEscribi();
-      if (m !== 'GET' && m !== 'HEAD' && url.indexOf('/rest/v1/') >= 0 && !VER_LECTURAS_RX.test(url) && (url.indexOf('/rest/v1/rpc/') < 0 || (typeof INS_ESCRITURAS_RX !== 'undefined' && INS_ESCRITURAS_RX.test(url)))) { try { INS.escr = Date.now(); } catch (_) {} }   // VR_INSTANTE_2NOV
+      if (m !== 'GET' && m !== 'HEAD' && url.indexOf('/rest/v1/') >= 0 && !VER_LECTURAS_RX.test(url) && url.indexOf('/rest/v1/erp_errores') < 0 /* VR_INSTANTE2_2NOV */ && (url.indexOf('/rest/v1/rpc/') < 0 || (typeof INS_ESCRITURAS_RX !== 'undefined' && INS_ESCRITURAS_RX.test(url)))) { try { INS.escr = Date.now(); } catch (_) {} }   // VR_INSTANTE_2NOV
     } catch (_) {}
     return f0.apply(this, arguments);
   };
@@ -34710,7 +34967,7 @@ async function loadInv(){
 // probaba una y creia que el cambio no habia llegado. Ahora, a los 3 segundos, se
 // compara la marca del archivo del servidor con la que se esta ejecutando y, si
 // cambio, se recarga una sola vez (sessionStorage evita cualquier bucle).
-const ERP_BUILD='b2026110205';   /* VR_INSTANTE_2NOV · pantallas al instante + stock solo lo que cambió (antes b2026110204) */   /* VR_CARGA02_2NOV · apertura con pregunta corta al servidor (antes b2026110203) */   // VR_ARRANQUE_2NOV · 2-nov noche: renovación única del pase + recarga escalonada (antes b2026110202)
+const ERP_BUILD='b2026110206';   /* VR_INSTANTE2_2NOV · Pedidos/Devoluciones/Alertas/Panel de Meta al instante + arreglo copia de Cambios (antes b2026110205) */   /* VR_INSTANTE_2NOV · pantallas al instante + stock solo lo que cambió (antes b2026110204) */   /* VR_CARGA02_2NOV · apertura con pregunta corta al servidor (antes b2026110203) */   // VR_ARRANQUE_2NOV · 2-nov noche: renovación única del pase + recarga escalonada (antes b2026110202)
 setTimeout(async function(){
   try{
     if(sessionStorage.getItem('erp_build_reload')===ERP_BUILD) return;
@@ -39817,6 +40074,7 @@ async function loadCambios2(){
   catch(e){ el.innerHTML='<div class="empty">Error: '+esc(e.message)+'</div>'; return; }
   window._c2Data=data||[];
   renderCambios2(el, window._c2Data);
+  try { if (typeof _insMarcaT === 'function') _insMarcaT('cambios2'); } catch (_) {}   // VR_INSTANTE2_2NOV · consola: INS.t.cambios2
   _sfCargar().then(function(){ if (document.getElementById('cambios2-w') === el && window._c2Data === (data||window._c2Data)) renderCambios2(el, window._c2Data); });   // 21-oct · lo que queda de cada saldo
   // El botón morado "Actualizar" se quitó (26-jul): duplicaba el 🔄 del
   // encabezado. Esta línea se deja porque el elemento ya no existe y así el
@@ -43258,6 +43516,15 @@ async function loadDevoluciones(forceReload) {
   // desde memoria y se comprueba contra la base en segundo plano — barato,
   // porque _devListarRapido pasa por el espejo en dos pasos (pide primero el
   // sello de ~60 bytes y solo baja datos si cambiaron).
+  // VR_INSTANTE2_2NOV · al abrir: copia propia al instante + base por detrás; repinta solo si cambió (sin pisar filtros ni lo que se escribe)
+  if (!forceReload && el && typeof _insOn2 === 'function' && _insOn2()) {
+    return _insPantalla({ pg: 'devoluciones', clave: 'devoluciones',
+      traer: () => _devListarRapido(), valido: d => Array.isArray(d) && d.length > 0,   // nunca pisar con vacío (igual que antes)
+      memoria: () => histDevData,   // lo precargado en esta pestaña (antes se pintaba igual, sin revisar)
+      pintar: (d) => { histDevData = d; _hdLsSet(histDevData); if (document.body.contains(el)) renderDevoluciones(el, histDevData); },
+      cargando: () => { el.innerHTML = spin('Cargando devoluciones...'); }
+    }).catch(e => { el.innerHTML = '<div class="empty">Error: ' + esc(e.message) + '</div>'; });
+  }
   if (histDevData && !forceReload) { renderDevoluciones(el, histDevData); refreshBg(false); return; }
   // 2. localStorage — SIEMPRE renderizar lo que tengamos
   if (!forceReload) {
@@ -46267,6 +46534,16 @@ async function papEscanearDuplicados(){
 // ════════════════════════════════════════════════════════════
 async function loadAlertas() {
   const w = document.getElementById('alertas-w');
+  if (w && typeof _insOn2 === 'function' && _insOn2()) {   // VR_INSTANTE2_2NOV · copia al instante + las mismas 3 lecturas por detrás
+    return _insPantalla({ pg: 'alertas', clave: 'alertas',
+      traer: async () => { const [r, buzon, espera] = await Promise.all([_alertasListarRapido(), _sbBuzonTodo(), _sbEsperaStock()]);
+                           return { r: r, buzon: Array.isArray(buzon) ? buzon : [], espera: Array.isArray(espera) ? espera : [] }; },
+      valido: d => !!(d && d.r && typeof d.r === 'object' && d.r.totales),
+      pintar: (d, modo) => { _ALERT_BUZON = d.buzon; _ALERT_ESPERA = d.espera; _renderAlertas(w, d.r); _updateAlertBadge(_alRojosN(d.r, _ALERT_BUZON));
+                             if (modo !== 'repinta') { try { _ESC_AL = null; _alEscRefrescar(); } catch (_) {} try { _alProdRefrescar(); } catch (_) {} } },
+      cargando: () => { w.innerHTML = spin('Revisando alertas...'); }
+    }).catch(e => { w.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; });
+  }
   w.innerHTML = spin('Revisando alertas...');
   try {
     // Las tres fuentes van en paralelo. Las dos de Supabase pueden devolver
@@ -47224,10 +47501,23 @@ async function metaCapiPanelAbrir(){
   const body = document.getElementById('metacapi-body');
   if(!m || !body) return;
   m.classList.add('on');
-  body.innerHTML = '<div class="ld"><div class="sp"></div>Cargando envíos a Meta...</div>';
+  const _cargando = () => { body.innerHTML = '<div class="ld"><div class="sp"></div>Cargando envíos a Meta...</div>'; };
+  if (typeof _insOn2 === 'function' && _insOn2()) {   // VR_INSTANTE2_2NOV · copia al instante + la misma lectura por detrás
+    try {
+      await _insPantalla({ pg: 'metacapi', clave: 'metacapi', sinAbre: true,
+        traer: () => _metaCapiPanelRapido(), valido: r => !!(r && typeof r === 'object' && r.errores && r.enviadosHoy && r.enviadosSemana && Array.isArray(r.ultimas)),
+        pintar: r => _metaCapiPintar(body, r), cargando: _cargando,
+        sigue: () => m.classList.contains('on') && document.body.contains(body), modal: () => _insOtroModal(m), raiz: () => m });
+    } catch(e){ body.innerHTML = '<div style="padding:20px;color:var(--rd)">Error: '+esc(e.message)+'</div>'; }
+    return;
+  }
+  _cargando();
   let r;
   try{ r = await _metaCapiPanelRapido(); }
   catch(e){ body.innerHTML = '<div style="padding:20px;color:var(--rd)">Error: '+esc(e.message)+'</div>'; return; }
+  _metaCapiPintar(body, r);
+}
+function _metaCapiPintar(body, r) {   // VR_INSTANTE2_2NOV · antes vivía dentro de metaCapiPanelAbrir (mismo dibujo)
   _updateMetaCapiBadge((r.errores&&r.errores.count)||0);
   const S = v => 'S/ '+fmt(v||0);
   const card = (t,v,s,col) => '<div style="background:var(--bg3);border:1px solid var(--bd);border-radius:12px;padding:14px 16px;flex:1;min-width:150px">'
@@ -48916,8 +49206,9 @@ startAuth();
       const ctl = vivo && m.egr_control != null && Math.abs((+m.egr_control || 0) - (+m.egr || 0)) >= 1
         ? ' <span style="font-size:11px;color:var(--am)" title="La otra fuente, solo como control">(' + (m.egr_fuente === 'drive' ? 'ERP ' : 'Drive ') + _kpiN(m.egr_control) + ')</span>' : '';
       t += '<tr' + (EGR.kpiMes === m.mes ? ' class="tt-sel"' : '') + '><td class="tt-fija kpi-mes-c" data-v="' + m.mes + '" onclick="_kpiMes(\'' + m.mes + '\')" title="Ver los egresos de este mes por categoría y rubro" style="cursor:pointer;text-decoration:underline dotted">' + KPI_MES[+mm - 1] + ' ' + y +
-        (vivo ? ' <span style="font-size:11px;color:var(--ac)" title="En vivo: cobrado del ERP · egresos del ' + (m.egr_fuente === 'drive' ? 'Drive (hasta el corte)' : 'ERP') + '">● vivo</span>' : '') + '</td>' +
-        '<td class="tt-ing">' + _kpiN(m.ing) + '</td><td class="tt-egr" data-v="' + (+m.egr || 0) + '">' + _kpiN(m.egr) + ctl + '</td><td style="font-weight:600;color:' + colU(+m.util) + '">' + _kpiN(m.util) + '</td>' +
+        (vivo ? ' <span style="font-size:11px;color:var(--ac)" title="En vivo: cobrado del ERP por fecha de pago (− reembolsos) · egresos del ' + (m.egr_fuente === 'drive' ? 'Drive (hasta el corte)' : 'ERP, pagados por fecha de pago hasta hoy') + '">● vivo</span>' : '') + '</td>' +
+        '<td class="tt-ing"' + (vivo && +m.reembolsos ? ' title="Cobrado por fecha de pago, con envío · ya restados S/ ' + _kpiN(m.reembolsos) + ' de reembolsos de dinero"' : '') + '>' + _kpiN(m.ing) + '</td><td class="tt-egr" data-v="' + (+m.egr || 0) + '">' + _kpiN(m.egr) + ctl
+          + (vivo && m.egr_periodo != null && Math.abs((+m.egr_periodo || 0) - (+m.egr || 0)) >= 1 ? ' <span style="font-size:11px;color:var(--mu)" title="VR_CAJA_2NOV · egresos por PERIODO (la cuenta de antes: incluye lo que todavía no se pagó, p. ej. sueldos con fecha 30). Solo como control.">(periodo ' + _kpiN(m.egr_periodo) + ')</span>' : '') + '</td><td style="font-weight:600;color:' + colU(+m.util) + '">' + _kpiN(m.util) + '</td>' +
         KPI_CAN.map(x => '<td class="tt-can">' + _kpiN(m.canales && m.canales[x[0]]) + '</td>').join('') + (verSC ? '<td class="tt-can" style="color:var(--am)">' + (Math.abs(sc) >= 2 ? _kpiN(sc) : '—') + '</td>' : '') +
         '<td class="tt-can" style="font-weight:600">' + _kpiN(m.ing) + '</td>' +
         KPI_COS.map(x => '<td class="tt-cos">' + _kpiN(m.costos && m.costos[x[0]]) + '</td>').join('') + (verSK ? '<td class="tt-cos" style="color:var(--am)">' + (Math.abs(sk) >= 2 ? _kpiN(sk) : '—') + '</td>' : '') +
