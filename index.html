@@ -15539,6 +15539,7 @@ function _stRefrescarYa(){
     _stDataTs = 0;
     const _pg = (typeof curPg === 'undefined') ? '' : curPg;
     if (_pg !== 'stock' && _pg !== 'inventario') {
+      if (typeof _stk2On === 'function' && _stk2On() && !_stk2Guardo()) { _stk2Dudosa(true); return; }   // VR_STOCK02_2NOV · al abrir: copia + revisión por detrás
       stData = null; try { _stLsDel(); } catch(_){}
       return;
     }
@@ -15990,17 +15991,20 @@ const LIBRO_ESTADO_MAX_MIN = 30;         // marca mas vieja que esto = no confia
  * recien creado desapareceria de Inventario. Cambia unicamente al crear o borrar
  * un SKU, y esas dos acciones tiran el memo (`_libroCatalogoOlvidar`).
  */
-let _libroCatMemo = null, _libroCatMemoTs = 0;
+let _libroCatMemo = null, _libroCatMemoTs = 0, _libroCatProm = null;   // VR_STOCK02_2NOV · + el pedido en camino
 const LIBRO_CAT_MEMO_MIN = 10;
 function _libroCatalogoOlvidar() { _libroCatMemo = null; _libroCatMemoTs = 0; }
 function _libroCatalogoMemo() {
   if (_libroCatMemo && (Date.now() - _libroCatMemoTs) < LIBRO_CAT_MEMO_MIN * 60000) {
     return Promise.resolve(_libroCatMemo);
   }
-  return Promise.resolve(_maestrosSkusRapido()).then(function (c) {
+  if (_libroCatProm && typeof _stk2On === 'function' && _stk2On()) return _libroCatProm;   // VR_STOCK02_2NOV · ya está en camino: el mismo pedido
+  const _p = Promise.resolve(_maestrosSkusRapido()).then(function (c) {
     if (Array.isArray(c) && c.length) { _libroCatMemo = c; _libroCatMemoTs = Date.now(); }
     return c;
   }).catch(function () { return _libroCatMemo || []; });
+  _libroCatProm = _p; _p.then(function () { if (_libroCatProm === _p) _libroCatProm = null; });   // VR_STOCK02_2NOV
+  return _p;
 }
 
 async function _sbLibroDirecto(forzar) {
@@ -16014,6 +16018,7 @@ async function _sbLibroDirecto(forzar) {
 
     // 2-oct Fase 2: los MOVIMIENTOS salen en paralelo (no dependen del libro).
     const pMov = forzar ? Promise.resolve(null) : _sbLibroMovimientos();
+    if (!forzar && typeof _stk2On === 'function' && _stk2On()) _libroCatalogoMemo();   // VR_STOCK02_2NOV · el catálogo sale YA, en el mismo paquete (abajo se usa ese mismo pedido)
     // 1) ¿Se puede confiar? Esto va PRIMERO y decide todo lo demas.
     //    Con movimientos el libro solo aporta categoria y fecha: si esta sucio no importa.
     const _urlEst = SB_URL + '/rest/v1/libro_estado?id=eq.1&select=sucio,ts,motivo';
@@ -16566,7 +16571,7 @@ async function _cambiosListarRapido() {
 async function _listaDeLaBase(fn, valida) {
   if (window._sbSaltarBase) return null;   // 1-oct F3b: ver _sbSaltarBase
   const _tv = { maestros_listar_calc: ['maestros_hoja'], colores_listar_calc: ['colores_hoja'], vistas_stock_listar_calc: ['vistas_stock'] }[fn];   // 10-oct · C1
-  const _sl1 = typeof SL_LISTAS_UN_VIAJE !== 'undefined' && SL_LISTAS_UN_VIAJE && (fn === 'colores_listar_calc' || fn === 'vistas_stock_listar_calc') && typeof _verVivoTomar === 'function' && !_verVivoTomar(_tv || []);   // 31-oct ola 2: lista chica → 1 viaje
+  const _sl1 = typeof SL_LISTAS_UN_VIAJE !== 'undefined' && SL_LISTAS_UN_VIAJE && (fn === 'colores_listar_calc' || fn === 'vistas_stock_listar_calc') && typeof _verVivoTomar === 'function' && !_verVivoTomar(_tv || []) && !(typeof _stk2On === 'function' && _stk2On() && typeof _vjListo === 'function' && _vjListo());   // 31-oct ola 2: lista chica → 1 viaje · VR_STOCK02_2NOV: con viaje_versiones ya es 1 viaje (y junto con el stock)
   const d = (_tv && !_sl1) ? await _memoVersion('rpc_' + fn, _tv, Object.assign((_f, _pre) => (_pre && _pre.fn === fn) ? Promise.resolve(_pre.d == null ? null : _pre.d) : _sbRpcLeer(fn, {}), { __vj: { fn: fn, a: {}, solo: fn === 'maestros_listar_calc' } }))   /* VR_VIAJE_2NOV */ : await _sbRpcLeer(fn, {});
   try { return (d != null && valida(d)) ? d : null; } catch (_) { return null; }
 }
@@ -34119,10 +34124,16 @@ function _stLsGet() {
     if (!raw) return null;
     const obj = JSON.parse(raw);
     if (Date.now() - obj.ts > ST_LS_TTL) { localStorage.removeItem('erp_' + ST_LS_KEY); return null; }
+    if (typeof _stk2On === 'function' && _stk2On()) {   // VR_STOCK02_2NOV · solo la copia del MISMO usuario y de esta versión del ERP
+      const _u = _insUsuario();
+      if (!_u || obj.u !== _u) { _insNo(obj.u ? 'stock_otro_usuario' : 'stock_copia_sin_dueno'); return null; }
+      if (obj.b !== _insBuild()) { _insNo('stock_otra_version'); return null; }
+    }
     return obj.data;
   } catch(e) { return null; }
 }
-function _stLsSet(data) { try { localStorage.setItem('erp_' + ST_LS_KEY, JSON.stringify({ts: Date.now(), data})); } catch(e) {} }
+function _stLsSet(data) { try { const _o = {ts: Date.now(), data}; try { if (typeof _stk2On === 'function' && _stk2On()) { _o.u = _insUsuario(); _o.b = _insBuild(); _stk2Dudosa(false); } } catch (_) {}   /* VR_STOCK02_2NOV · dueño + versión */
+  localStorage.setItem('erp_' + ST_LS_KEY, JSON.stringify(_o)); } catch(e) {} }
 function _stLsDel() { try { localStorage.removeItem('erp_' + ST_LS_KEY); } catch(e) {} }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -34157,8 +34168,9 @@ function _stRevalidar(el, renderFn){
     stData = fresco; _stDataTs = Date.now(); _stLsSet(fresco);
     // 11-set-2026 — misma guarda que Confección: Stock tiene celdas editables y
     // un redibujado a destiempo se lleva puesto lo que la persona está tipeando.
-    if (cambio && el && document.body.contains(el) && !_stYayMode && !_confEditando(el)) { try { renderFn(el); } catch(e){} }
-  }).catch(()=>{}).finally(()=>{ _stRevalidando = false; });
+    if (renderFn === renderInv && typeof _stk2On === 'function' && _stk2On()) { if (cambio && el && !_stYayMode) _stk2Repintar(el); _stk2Fresco(); }   // VR_STOCK02_2NOV
+    else if (cambio && el && document.body.contains(el) && !_stYayMode && !_confEditando(el)) { try { renderFn(el); } catch(e){} }
+  }).catch(()=>{}).finally(()=>{ _stRevalidando = false; try { if (typeof STK2 !== 'undefined') STK2.abre = null; } catch (_) {} });
 }
 // El latido: con Stock o Inventario a la vista, revalida cada 60 s.
 setInterval(function(){
@@ -34945,10 +34957,135 @@ function _refrescarInv(){
 
 // Vista por defecto: mostrar Conf. Real · Ventas · Stock. Total y Fallas se ocultan hasta expandir.
 let invShowAll=(function(){ try{ return localStorage.getItem('erp_inv_showall_v2')==='1'; }catch(e){ return false; } })();
+// >>> VR_STOCK02_2NOV · STOCK → INVENTARIO Y VISTAS AL INSTANTE (2-nov-2026, ola 24, referente Amazon/Zara)
+// Antes (medido, base simulada a 300 ms, 2.436 tallas): volver a Inventario 447 ms, Vista ★ 538 ms, tras un movimiento de
+// otra persona 640-710 ms («Calculando inventario…»); tras recargar la Vista ★ no volvía nunca (se olvidaba).
+// Lo que tardaba era DIBUJAR la tabla entera (4,2 MB de HTML). Ahora: primero las filas que entran en la pantalla y en el
+// cuadro siguiente la tabla entera (el mismo dibujo de siempre). La copia del stock lleva dueño y versión (mismas reglas que
+// VR_INSTANTE: mismo usuario y rol, esta versión del ERP, < 24 h, nunca la de antes de un guardado de esta pestaña de los
+// últimos 20 s). Por detrás se pregunta a la base (1 paquete) y SOLO si cambió se repinta, sin pisar lo que se escribe.
+// Consola: INS.t.inventario / INS.t.vistas (+ _fresco) · INS.no.stock_*.  REVERSA: VR_STOCK02 = false y publicar.
+var VR_STOCK02 = true;
+var STK2 = { lim: 0, n: 0, corto: false, abre: null, sem: false, semHecha: false, orden: false, scroll: null, vigila: false };
+function _stk2On() { return VR_STOCK02 === true && typeof _insOn2 === 'function' && _insOn2(); }
+function _stk2Clave() { return (typeof stOrden === 'string' && stOrden.indexOf('view:') === 0) ? 'vistas' : 'inventario'; }
+function _stk2T(k, t0) { try { const L = INS.t[k] || (INS.t[k] = []); L.push(Math.round(performance.now() - t0)); while (L.length > 5) L.shift(); } catch (_) {} }
+/** Desde cuándo cuenta la apertura: el clic en el menú (INS.abre) o, si no, ahora. */
+function _stk2T0() { const a = INS.abre, ahora = performance.now(); return (a && a.pg === 'inventario' && ahora - a.t < 2000) ? a.t : ahora; }
+/** ¿Hubo un guardado en esta pestaña hace < 20 s? (entonces solo vale un dato traído DESPUÉS de ese guardado) */
+function _stk2Guardo() { return Date.now() - _insUltEscr() < INS_SIN_ESCRIBIR_MS; }
+function _stk2Dudosa(v) { try { if (v) localStorage.setItem('erp_ins_stk2_dudosa', '1'); else localStorage.removeItem('erp_ins_stk2_dudosa'); } catch (_) {} }
+function _stk2EsDudosa() { try { return localStorage.getItem('erp_ins_stk2_dudosa') === '1'; } catch (_) { return false; } }
+/** La copia con dueño de una lectura de la base (MEMOV), o null. */
+function _stk2Memo(clave) {
+  try {
+    const c = _insCopia(clave), u = _insUsuario();
+    if (!c || c.d == null || !u || c.u !== u || c.b !== _insBuild() || !(Date.now() - (c.t || 0) < INS_MAX_MS)) return null;
+    return c.d;
+  } catch (_) { return null; }
+}
+/** Inventario recuerda la vista ★ elegida (como ya lo hacía Catálogo): la del equipo, al instante. */
+function _stk2Orden() {
+  if (STK2.orden) return; STK2.orden = true;
+  try { const s = _stOrdenLoad(); if (s) stOrden = s; } catch (_) {}
+}
+/** Lista de vistas ★: si todavía no llegó (recién recargada la pestaña), la copia con dueño. */
+function _stk2VistasSemilla() {
+  if (stVistas && stVistas.length) return;
+  const d = _stk2Memo('rpc_vistas_stock_listar_calc');
+  if (Array.isArray(d) && d.length) stVistas = _memoClon(d);
+}
+/** Filas sin SKU: el catálogo de la copia con dueño, para que el primer dibujo ya las oculte (la base confirma después). */
+function _stk2MaestroSemilla() {
+  const d = _stk2Memo('rpc_catalogo_listar');
+  if (!Array.isArray(d) || !d.length) return null;
+  return new Set(d.map(x => _ivClave(x && x.producto, x && x.diseno, x && x.color)));
+}
+/** Filas sin SKU: el catálogo que ya pidió el stock (memo de 10 min, y si está en camino, ese mismo pedido). null = como antes. */
+function _stk2CatPuerta() { return (_stk2On() && typeof _libroCatalogoMemo === 'function') ? _libroCatalogoMemo() : null; }
+/** ¿El catálogo nuevo cambia qué filas son «sin SKU»? (si no, no hace falta volver a dibujar) */
+function _stk2MismoMaestro(a, b, filas) {
+  try { for (const d of (filas || [])) { const k = _ivClave(d.prenda, d.diseno, d.color); if ((a ? !a.has(k) : false) !== !b.has(k)) return false; } return true; } catch (_) { return false; }
+}
+/** Al salir de Inventario se suelta la tabla (4 MB, ~10.000 celdas): mantenerla escondida hacía que VOLVER tardara
+ *  ~150-180 ms antes de empezar a dibujar. Se recuerda el desplazamiento para volver al mismo lugar. Yayitas no se toca. */
+function _stk2Vigilar(el) {
+  if (STK2.vigila) return; STK2.vigila = true;
+  try {
+    el.addEventListener('scroll', function (ev) { const w = ev.target; if (w && w.classList && w.classList.contains('st-wrap')) STK2.scroll = [w.scrollTop, w.scrollLeft]; }, { capture: true, passive: true });
+    const pg = document.getElementById('pg-inventario');
+    if (!pg || typeof MutationObserver === 'undefined') return;
+    new MutationObserver(function () {
+      if (pg.classList.contains('on') || _stYayMode || !_stk2On()) return;
+      setTimeout(function () { try { if (!pg.classList.contains('on') && !_stYayMode && el.querySelector('table.stbl')) { STK2.n++; el.textContent = ''; } } catch (_) {} }, 0);
+    }).observe(pg, { attributes: true, attributeFilter: ['class'] });
+  } catch (_) {}
+}
+/** Dibuja Inventario. Al abrir: primero las filas que se ven (desde donde estaba desplazada) y, en el cuadro siguiente, la tabla entera. */
+function _stk2Pintar(el, modo, t0) {
+  let parcial = false, vuelve = null;
+  if (!_stYayMode && !((window.scrollY || 0) > 0)) {
+    const w = el.querySelector('.st-wrap');
+    const sc = w ? [w.scrollTop || 0, w.scrollLeft || 0] : (STK2.scroll || [0, 0]);   // sin tabla: la soltó al salir
+    if (!w && STK2.scroll) vuelve = STK2.scroll.slice();
+    parcial = true;
+    STK2.lim = Math.max(40, Math.ceil((sc[0] + (window.innerHeight || 900)) / 20) + 10); STK2.corto = false;
+  }
+  try { renderInv(el); } finally { STK2.lim = 0; }
+  if (vuelve) { try { const w = el.querySelector('.st-wrap'); if (w) { w.scrollTop = vuelve[0]; w.scrollLeft = vuelve[1]; } } catch (_) {} }
+  _stk2Vigilar(el);
+  if (t0 != null) _stk2T(_stk2Clave(), t0);
+  if (parcial && STK2.corto) {
+    const n = STK2.n;
+    // después del cuadro ya pintado; 24 ms de aire para que salga antes la pregunta a la base (el paquete espera 8 ms)
+    requestAnimationFrame(() => setTimeout(() => {
+      try { if (n !== STK2.n || !document.body.contains(el) || typeof curPg === 'undefined' || curPg !== 'inventario' || _stYayMode) return; renderInv(el); } catch (_) {}
+    }, 24));
+  }
+}
+function _stk2Repintar(el) {
+  _insRepintar('inventario', function () { _stk2Pintar(el, 'repinta'); },
+    { sigue: function () { return typeof curPg !== 'undefined' && curPg === 'inventario' && document.body.contains(el) && !_stYayMode; } });
+}
+/** «Dato fresco» de la apertura: confirmado con la base (sin cambios) o repintado. */
+function _stk2Fresco() { const a = STK2.abre; if (!a) return; STK2.abre = null; if (performance.now() - a.t0 < 20000) _stk2T(a.k + '_fresco', a.t0); }
+async function _stk2LoadInv(el) {
+  const t0 = _stk2T0();
+  _stk2Orden(); _stk2VistasSemilla();
+  const guardo = _stk2Guardo(), ue = _insUltEscr();
+  const abrir = function (src) {
+    const viejo = Date.now() - _stDataTs >= ST_REVAL_MS && !_stRevalidando;
+    _stk2Pintar(el, src, t0);
+    if (viejo) { STK2.abre = { t0: t0, k: _stk2Clave() }; _stRevalidar(el, renderInv); }
+    else _stk2T(_stk2Clave() + '_fresco', t0);   // la copia es de hace < 45 s: es el dato
+  };
+  // a) lo que esta pestaña ya tiene (salvo que sea de antes de un guardado propio reciente)
+  if (stData && !(guardo && !(_stDataTs > ue))) { abrir('memoria'); return; }
+  if (stData && guardo) { try { INS.no.stock_guardado_reciente = (INS.no.stock_guardado_reciente || 0) + 1; } catch (_) {} }
+  // b) la copia del equipo (con dueño y versión; nunca después de un guardado propio reciente)
+  if (!guardo) {
+    const cached = _stLsGet();
+    if (cached) {
+      stData = cached; _stDataTs = _stk2EsDudosa() ? 0 : _stLsTs();
+      const v0 = JSON.stringify(stVistas || []);
+      abrir('copia');
+      cargarVistasStock().then(() => { if (JSON.stringify(stVistas || []) !== v0) _stk2Repintar(el); }).catch(() => {});
+      return;
+    }
+  }
+  // c) sin copia que sirva: el camino de siempre (esperar el dato)
+  el.innerHTML = spin('Calculando inventario...');
+  try {
+    const _pv = cargarVistasStock(); stData = await _stockResumenRapido(); _stDataTs = Date.now(); _stLsSet(stData); await _pv;
+    _stk2Pintar(el, 'red', t0); _stk2T(_stk2Clave() + '_fresco', t0);
+  } catch (e) { el.innerHTML = '<div class="empty">Error: ' + esc(e.message) + '</div>'; }
+}
+// <<< VR_STOCK02_2NOV
 async function loadInv(){
   const el=document.getElementById('inv-w');
   // Si quedó abierto Yayitas, se recalcula al entrar. Ver _yayEntrarStock.
   if(_stYayMode){ return _yayEntrarStock(el, renderInv); }
+  if(typeof _stk2On === 'function' && _stk2On()) return _stk2LoadInv(el);   // VR_STOCK02_2NOV
   if(stData){ renderInv(el); _stRevalidar(el, renderInv); return; }   // FIX 07-ago: revalida en 2º plano
   const cached=_stLsGet();
   if(cached){ stData=cached; _stDataTs=_stLsTs(); renderInv(el); cargarVistasStock().then(()=>renderInv(el)); _stRevalidar(el, renderInv); return; }
@@ -34967,7 +35104,7 @@ async function loadInv(){
 // probaba una y creia que el cambio no habia llegado. Ahora, a los 3 segundos, se
 // compara la marca del archivo del servidor con la que se esta ejecutando y, si
 // cambio, se recarga una sola vez (sessionStorage evita cualquier bucle).
-const ERP_BUILD='b2026110206';   /* VR_INSTANTE2_2NOV · Pedidos/Devoluciones/Alertas/Panel de Meta al instante + arreglo copia de Cambios (antes b2026110205) */   /* VR_INSTANTE_2NOV · pantallas al instante + stock solo lo que cambió (antes b2026110204) */   /* VR_CARGA02_2NOV · apertura con pregunta corta al servidor (antes b2026110203) */   // VR_ARRANQUE_2NOV · 2-nov noche: renovación única del pase + recarga escalonada (antes b2026110202)
+const ERP_BUILD='b2026110207';   /* VR_STOCK02_2NOV · Stock → Inventario y Vistas al instante (antes b2026110206) */   /* VR_INSTANTE2_2NOV · Pedidos/Devoluciones/Alertas/Panel de Meta al instante + arreglo copia de Cambios (antes b2026110205) */   /* VR_INSTANTE_2NOV · pantallas al instante + stock solo lo que cambió (antes b2026110204) */   /* VR_CARGA02_2NOV · apertura con pregunta corta al servidor (antes b2026110203) */   // VR_ARRANQUE_2NOV · 2-nov noche: renovación única del pase + recarga escalonada (antes b2026110202)
 setTimeout(async function(){
   try{
     if(sessionStorage.getItem('erp_build_reload')===ERP_BUILD) return;
@@ -35066,12 +35203,18 @@ _verMarcarNueva = function () {
 let _ivMaestroSet=null, _ivMaestroCargando=false;
 const _ivClave=(pr,di,co)=>[pr,di,co].map(x=>String(x||'').trim().toUpperCase()).join('|');
 function _ivCargarMaestro(){
-  if(_ivMaestroSet||_ivMaestroCargando) return;
+  if(typeof _stk2On==='function' && _stk2On() && !_ivMaestroSet && !STK2.semHecha){ STK2.semHecha=true; const _s=_stk2MaestroSemilla(); if(_s){ _ivMaestroSet=_s; STK2.sem=true; } }   // VR_STOCK02_2NOV
+  if((_ivMaestroSet && !(typeof STK2!=='undefined' && STK2.sem))||_ivMaestroCargando) return;
   _ivMaestroCargando=true;
   // 1-oct · por la puerta rapida (tabla viva -> copia -> Apps Script). Antes iba directo a Apps Script: 9,2 s.
-  (typeof _maestrosSkusRapido==='function' ? _maestrosSkusRapido() : api('catalogo.maestrosSkus')).then(ms=>{
+  (typeof _maestrosSkusRapido==='function' ? (_stk2CatPuerta() || _maestrosSkusRapido()) : api('catalogo.maestrosSkus')).then(ms=>{   // VR_STOCK02_2NOV · el mismo catálogo que ya trajo el stock (sin otro viaje)
+    if(typeof _stk2On==='function' && _stk2On() && (!Array.isArray(ms) || !ms.length)) return;   // VR_STOCK02_2NOV · catálogo vacío = no se pudo (no se oculta nada)
+    const _ant=_ivMaestroSet, _sem=(typeof STK2!=='undefined' && STK2.sem);   // VR_STOCK02_2NOV
     _ivMaestroSet=new Set((ms||[]).map(x=>_ivClave(x.producto,x.diseno,x.color)));
-    const el=document.getElementById('inv-w'); if(el&&el.offsetParent!==null) renderInv(el);
+    try{ STK2.sem=false; }catch(_){}
+    const el=document.getElementById('inv-w');
+    if(typeof _stk2On==='function' && _stk2On()){ if(el && _stk2MismoMaestro(_sem?_ant:null, _ivMaestroSet, _stFuente()||[])) return; if(el&&el.offsetParent!==null&&curPg==='inventario'){ _stk2Repintar(el); return; } }   // VR_STOCK02_2NOV · solo si cambia qué filas se ocultan
+    if(el&&el.offsetParent!==null) renderInv(el);
   }).catch(()=>{}).finally(()=>{ _ivMaestroCargando=false; });
 }
 /* 26-oct (Pablo) · CANAL y ORIGEN en Pedidos: cápsula de color semitransparente (como Courier / Estado pago), no fondo negro */
@@ -35248,6 +35391,7 @@ function _ivMoverColorDOM(key,srcC,tgtC,despues){
 }
 
 function renderInv(el){
+  try { STK2.n++; } catch (_) {}   // VR_STOCK02_2NOV · un dibujo nuevo deja sin efecto el «completar» pendiente
   // 30-jul — se pinta lo que diga _stFuente(): stData en Stock, el montón en Yayitas.
   const _fuente=_stFuente();
   if(!_fuente){
@@ -35422,7 +35566,9 @@ function renderInv(el){
   const NCOLS=4+(_YT?1:0)+NT*VIS.length;
   const STEMPTY='background:#26262c;';
   let tbody='';
+  const _stk2L = (typeof STK2 !== 'undefined' && STK2.lim) || 0; let _stk2F = 0;   // VR_STOCK02_2NOV · primer dibujo: solo lo que entra en la pantalla
   groups.forEach((g,gi)=>{
+    if(_stk2L){ if(_stk2F>=_stk2L){ STK2.corto=true; return; } _stk2F+=g.length; }   // VR_STOCK02_2NOV
     if(gi>0) tbody+=`<tr class="iv-sep"><td colspan="${NCOLS}" style="height:5px;padding:0;background:#ffffff;border:0"></td></tr>`;
     const span=g.length;
     const gkey=_stGrpKey(g);
