@@ -387,6 +387,7 @@ function nGrid(){
 }
 function nTotal(){
   try { nMatTot(); } catch (_) {}
+  try { if (NV.porLotes && (NV.lotes || []).length > 1) { nLotesUltimo(); nLotesTot(); } } catch (_) {}   /* 2-nov (Ana, 280) · lo pedido cambió: el último lote se ajusta solo */
   let tot = 0; NV.colores.forEach(c => { const s = TALLAS.reduce((a, t) => a + (NV.q[c + '|' + t] || 0), 0); tot += s; const td = [...document.querySelectorAll('td.tt')].find(x => x.dataset.c === c); if (td) td.textContent = s || ''; });
   const cU = costoDe(document.getElementById('nDis').value), T = typeof topeCalc === 'function' ? topeCalc() : null, nuevo = !NV.id;
   document.getElementById('nTot').innerHTML = 'Total: ' + tot + ' prendas' + (cU != null && tot ? ' · ≈ ' + soles(tot * cU) + ' a costo' + (T && nuevo ? ' · <b style="color:' + (T.queda - tot * cU < 0 ? 'var(--rd)' : 'var(--ok)') + '">' + (T.queda - tot * cU < 0 ? 'se pasa del tope del mes por ' + soles(tot * cU - T.queda) : 'queda ' + soles(T.queda - tot * cU) + ' del tope del mes') + '</b>' : '') : '');
@@ -424,7 +425,28 @@ function nLotesOn(on){
   if (on && !(NV.lotes || []).some(x => x && x.q)) NV.lotes = nLotesProponer();
   nLotesPintar();
 }
-function nLoteSet(i, k, v){ const x = NV.lotes[i]; x.q = x.q || {}; if (+v > 0) x.q[k] = +v; else delete x.q[k]; nLotesTot(); }
+function nLoteSet(i, k, v){ const x = NV.lotes[i]; x.q = x.q || {}; if (+v > 0) x.q[k] = +v; else delete x.q[k];
+  if (i < NV.lotes.length - 1) nLotesUltimo([k]);   /* 2-nov (Ana, lista 280) · lo que no va en este lote pasa solo al último */
+  nLotesTot(); }
+/* 2-nov (Ana, lista 280) · REPARTO AUTOMÁTICO: el ÚLTIMO lote siempre lleva lo pendiente (lo pedido − lo que ya va en los lotes anteriores),
+   color por color y talla por talla. Se recalcula al cambiar un lote anterior, quitar un color o un lote, o cambiar lo pedido. */
+function nLotesUltimo(keys){
+  const L = NV.lotes || []; if (L.length < 2) return;
+  const u = L[L.length - 1]; u.q = u.q || {};
+  (keys || nCeldas().map(([c, t]) => c + '|' + t).concat(Object.keys(u.q))).forEach(k => {
+    const ped = NV.q[k] || 0, prev = L.slice(0, -1).reduce((a, x) => a + (+(x.q || {})[k] || 0), 0), r = Math.max(0, ped - prev);
+    if (r > 0) u.q[k] = r; else delete u.q[k];
+    const inp = document.querySelector('#nLotes input[data-l="' + (L.length - 1) + '"][data-k="' + k.replace(/"/g, '\\"') + '"]'); if (inp) inp.value = r || '';
+  });
+}
+/* 2-nov (Ana, lista 280) · ✕ en un color de un lote = ese color no va en este lote (sus prendas pasan al último). */
+function nLoteQuitarColor(i, c){
+  const x = NV.lotes[i]; if (!x) return; x.q = x.q || {}; const ks = TALLAS.map(t => c + '|' + t);
+  ks.forEach(k => { delete x.q[k]; }); x.fuera = (x.fuera || []).concat([c]);
+  if (i < NV.lotes.length - 1) nLotesUltimo(ks);
+  nLotesPintar();
+}
+function nLoteQuitar(i){ NV.lotes.splice(i, 1); nLotesUltimo(); nLotesPintar(); }
 function nLotesPintar(){
   const box = document.getElementById('nLotes'); if (!box) return; const ch = document.getElementById('nLotesOn'); if (ch) ch.checked = !!NV.porLotes;
   if (!NV.porLotes){ box.innerHTML = ''; return; }
@@ -432,13 +454,16 @@ function nLotesPintar(){
   const cols = NV.colores.filter(c => TALLAS.some(t => (NV.q[c + '|' + t] || 0) > 0)), tal = TALLAS.filter(t => cols.some(c => (NV.q[c + '|' + t] || 0) > 0));
   if (!cols.length){ box.innerHTML = '<div class="mu">Primero pon las cantidades por color y talla.</div>'; return; }
   box.innerHTML = L.map((x, i) => '<table class="g lote"><tr><th>Lote ' + (i + 1) + ' · <input type="date" value="' + esc(x.fecha || '') + '" onchange="NV.lotes[' + i + '].fecha=this.value" style="width:130px"></th>'
-      + tal.map(t => '<th>' + t + '</th>').join('') + '<th>Total</th><th>' + (L.length > 1 ? '<button title="Quitar lote" onclick="NV.lotes.splice(' + i + ',1);nLotesPintar()">✕</button>' : '') + '</th></tr>'
-      + cols.map(c => '<tr><td><b>' + esc(c) + '</b></td>' + tal.map(t => { const k = c + '|' + t, ped = NV.q[k] || 0;
-          return '<td>' + (ped ? '<input type="number" min="0" max="' + ped + '" step="1" value="' + (x.q[k] || '') + '" oninput="nLoteSet(' + i + ',\'' + qs(c) + '|' + t + '\',this.value)">' : '') + '</td>'; }).join('')
-        + '<td class="lt" data-i="' + i + '" data-c="' + esc(c) + '"></td><td></td></tr>').join('')
+      + tal.map(t => '<th>' + t + '</th>').join('') + '<th>Total</th><th>' + (L.length > 1 ? '<button title="Quitar lote (sus prendas pasan al último)" onclick="nLoteQuitar(' + i + ')">✕</button>' : '') + '</th></tr>'
+      + cols.filter(c => (x.fuera || []).indexOf(c) < 0).map(c => '<tr><td><b>' + esc(c) + '</b></td>' + tal.map(t => { const k = c + '|' + t, ped = NV.q[k] || 0;
+          return '<td>' + (ped ? '<input type="number" min="0" max="' + ped + '" step="1" data-l="' + i + '" data-k="' + esc(k) + '" value="' + (x.q[k] || '') + '" oninput="nLoteSet(' + i + ',\'' + qs(c) + '|' + t + '\',this.value)">' : '') + '</td>'; }).join('')
+        + '<td class="lt" data-i="' + i + '" data-c="' + esc(c) + '"></td><td>' + (L.length > 1 ? '<button title="Este color no va en este lote" onclick="nLoteQuitarColor(' + i + ',\'' + qs(c) + '\')">✕</button>' : '') + '</td></tr>').join('')
+      + ((x.fuera || []).length ? '<tr><td colspan="' + (tal.length + 3) + '"><button onclick="NV.lotes[' + i + '].fuera=[];nLotesPintar()" title="Volver a mostrar los colores quitados de este lote">＋ ' + esc((x.fuera || []).join(', ')) + '</button></td></tr>' : '')
       + '<tr><th>Total lote</th>' + tal.map(() => '<td></td>').join('') + '<td id="nLT' + i + '"></td><td></td></tr></table>').join('')
     + '<div id="nLD" style="font-size:12px;margin:4px 0"></div>'
-    + '<button onclick="NV.lotes.push({fecha:\'\',q:{}});nLotesPintar()">＋ Lote</button> <button onclick="NV.lotes=nLotesProponer();nLotesPintar()">↺ Repartir en 2 lotes</button>';
+    + '<button onclick="NV.lotes.push({fecha:\'\',q:{}});nLotesPintar()">＋ Lote</button> <button onclick="NV.lotes=nLotesProponer();nLotesPintar()">↺ Repartir en 2 lotes</button>'
+    + ' <button onclick="exportarLotesNV()" title="Descarga un Excel con lo pedido y cada lote, para mandarlo al taller">⬇ Excel para el taller</button>'
+    + ' <span class="mu" style="font-size:12px">Lo que no pongas en un lote pasa solo al último.</span>';
   nLotesTot();
 }
 function nLotesTot(){
@@ -462,7 +487,7 @@ function lotesHtml(o, T, S){
   const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' }), ent = T.buenas + T.correccion + T.perdidas + T.yayitas;
   const entK = k => { const x = (S || {})[k]; return x ? x.buenas + x.correccion + x.perdidas + x.yayitas : 0; };
   const ac = {}; let acT = 0;
-  return '<div class="sec"><h4>Entrega por lotes</h4><table class="g"><tr><th>Lote</th><th>Fecha</th><th>Prendas</th><th>Colores / tallas</th><th>Estado</th></tr>'
+  return '<div class="sec"><h4 style="display:flex;align-items:center;gap:8px">Entrega por lotes <span class="sp"></span><button onclick="exportarLotesOrden(' + JSON.stringify(o.id).replace(/"/g, '&quot;') + ')" title="Descarga un Excel con lo pedido y cada lote, para mandarlo al taller">⬇ Excel para el taller</button></h4><table class="g"><tr><th>Lote</th><th>Fecha</th><th>Prendas</th><th>Colores / tallas</th><th>Estado</th></tr>'
     + L.map((x, i) => { let ok;
       if (x.q){ Object.keys(x.q).forEach(k => { ac[k] = (ac[k] || 0) + (+x.q[k] || 0); }); ok = Object.keys(ac).every(k => entK(k) >= ac[k]); }
       else { acT += +x.prendas || 0; ok = ent >= acT; }   /* lote viejo: solo el total */
@@ -470,6 +495,41 @@ function lotesHtml(o, T, S){
       const det = x.q ? Object.keys(x.q).filter(k => +x.q[k] > 0).map(k => k.replace('|', ' ') + ' ×' + x.q[k]).join(' · ') : (x.detalle || '');
       return '<tr><td>' + (i + 1) + '</td><td>' + esc(x.fecha || '—') + '</td><td>' + nLoteTot(x) + '</td><td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px" title="' + esc(det) + '">' + esc(det) + '</td><td>' + (ok ? '🟢 entregado' : tarde ? '🔴 atrasado' : '⚪ pendiente') + '</td></tr>'; }).join('')
     + '</table><div class="mu" style="font-size:12px">Se compara color por color y talla por talla con lo que entregó el taller (buenas + con falla): ' + ent + ' prendas hasta hoy.</div></div>';
+}
+/* 2-nov (Ana, lista 280) · EXCEL PARA EL TALLER: lo pedido (color × talla) y cada lote con su fecha, en una hoja. Usa la librería XLSX del ERP
+   (la ventana de afuera ya la tiene cargada); si no, la baja de cdnjs (misma versión 0.18.5). */
+function cargarXLSX(){
+  try { if (window.XLSX) return Promise.resolve(window.XLSX); if (window.parent && window.parent !== window && window.parent.XLSX) return Promise.resolve(window.parent.XLSX); } catch (_) {}
+  return new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    sc.onload = () => ok(window.XLSX); sc.onerror = () => no(new Error('No se pudo cargar la librería de Excel')); document.head.appendChild(sc); });
+}
+function lotesHoja(cab, ped, lotes){   /* ped = {'COLOR|TALLA': n} · lotes = [{fecha, q}] → filas para la hoja */
+  const keys = Object.keys(ped).filter(k => ped[k] > 0), cols = [...new Set(keys.map(k => k.split('|')[0]))], tal = TALLAS.filter(t => keys.some(k => k.split('|')[1] === t));
+  const bloque = (titulo, q) => { const f = [titulo, [ 'Color' ].concat(tal, ['Total'])]; let T = 0;
+    cols.forEach(c => { const v = tal.map(t => +(q[c + '|' + t] || 0)), s = v.reduce((a, b) => a + b, 0); if (s) { T += s; f.push([c].concat(v.map(n => n || ''), [s])); } });
+    f.push(['Total'].concat(tal.map(t => cols.reduce((a, c) => a + (+(q[c + '|' + t] || 0)), 0) || ''), [T])); f.push([]); return f; };
+  let A = cab.concat([[]], bloque(['LO PEDIDO'], ped));
+  const ac = {};
+  (lotes || []).forEach((x, i) => { const q = x.q || {}; Object.keys(q).forEach(k => { ac[k] = (ac[k] || 0) + (+q[k] || 0); }); A = A.concat(bloque(['LOTE ' + (i + 1), 'Fecha: ' + (x.fecha || 'por definir')], q)); });
+  const pend = {}; keys.forEach(k => { const r = ped[k] - (ac[k] || 0); if (r > 0) pend[k] = r; });
+  if (Object.keys(pend).length) A = A.concat(bloque(['PENDIENTE (sin lote)'], pend));
+  return A;
+}
+async function lotesDescargar(nombre, A){
+  try { const X = await cargarXLSX(); const ws = X.utils.aoa_to_sheet(A); ws['!cols'] = [{ wch: 22 }].concat(new Array(9).fill({ wch: 8 }));
+    const wb = X.utils.book_new(); X.utils.book_append_sheet(wb, ws, 'Lotes'); X.writeFile(wb, nombre.replace(/[^\w\-]+/g, '_') + '.xlsx'); }
+  catch (e) { aviso('No se pudo armar el Excel: ' + e.message); }
+}
+function exportarLotesOrden(id){
+  const o = D.ordenes.find(x => x.id === id); if (!o) return; const { S } = saldos(o), ped = {};
+  Object.keys(S).forEach(k => { ped[k] = S[k].pedido || 0; });
+  const L = (Array.isArray(o.lotes) ? o.lotes : []).filter(x => x && x.q);
+  lotesDescargar('Lotes_' + (o.codigo || '') + '_' + (o.diseno || ''), lotesHoja([['Orden', o.codigo || '', o.diseno || ''], ['Taller', o.taller || '—']], ped, L));
+}
+function exportarLotesNV(){
+  const dis = (document.getElementById('nDis') || {}).value || '', tal = (document.getElementById('nTaller') || {}).value || '', ped = {};
+  nCeldas().forEach(([c, t, n]) => { ped[c + '|' + t] = n; });
+  lotesDescargar('Lotes_' + dis, lotesHoja([['Producto', dis], ['Taller', tal || '—']], ped, (NV.lotes || []).filter(x => nLoteTot(x) > 0)));
 }
 function nAgregarColor(){ const c = nrm(document.getElementById('nColor').value); if (!c) return; if (NV.colores.indexOf(c) < 0) NV.colores.push(c); document.getElementById('nColor').value = ''; nGrid(); }
 async function guardarOrden(){

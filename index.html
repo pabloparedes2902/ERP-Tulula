@@ -10344,14 +10344,59 @@ function _conRender() {
   const w = document.getElementById('con-w'); if (!w) return;
   const sel = 'padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px';
   w.innerHTML = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px"><input id="con-q" placeholder="Buscar producto…" autocomplete="off" value="' + esc(CTN.q) + '" style="width:220px;' + sel + '">'
-    + '<span style="font-size:12px;color:var(--mu)">Fotos, video, textos e historia de cada producto. Lo que subes va directo a la tienda.</span></div>'
+    + _conVistaBtns()   // 2-nov (Pablo, pendiente 277) · «💲 Precios»: todos los precios de todos los productos en una tabla
+    + '<span style="font-size:12px;color:var(--mu)">' + (_conVista() === 'precios' ? 'Todos los precios de cada producto activo. Clic en un título para ordenar.' : 'Fotos, video, textos e historia de cada producto. Lo que subes va directo a la tienda.') + '</span></div>'
     + '<div id="con-form"></div><div id="con-tabla-w" style="overflow:auto;max-height:70vh;border:1px solid var(--bd2);border-radius:var(--r)"></div>';
   document.getElementById('con-q').addEventListener('input', function () { CTN.q = this.value; clearTimeout(CTN._t); CTN._t = setTimeout(_conTabla, 150); });
+  w.querySelectorAll('.con-vista').forEach(b => b.addEventListener('click', () => { CTN.vista = b.dataset.v; try { localStorage.setItem('erp_con_vista', CTN.vista); } catch (_) {} _conRender(); }));
   _conTabla();
   if (CTN.editing) _conForm(CTN.editing);
 }
+// >>> PRECIOS_TABLA_2NOV · 2-nov-2026 (Pablo, pendiente 277): las asesoras ven TODOS los precios de todos los productos en una sola tabla
+// (Lista x1/x2/x3/x6/x12 · Live · Promoción · Showroom · Colaborador), sin abrir producto por producto. Sin costos ni márgenes:
+// los datos son los de contenido_productos (la base ya filtra costos). Una columna x6/x12/x3 que ningún producto usa no se muestra.
+// Quien no edita Productos (asesoras) entra directo a esta vista; la elección queda guardada en el navegador (erp_con_vista).
+function _conVista() {
+  if (CTN.vista) return CTN.vista;
+  let v = ''; try { v = localStorage.getItem('erp_con_vista') || ''; } catch (_) {}
+  CTN.vista = (v === 'precios' || v === 'fichas') ? v : (_prodPuedeEditar() ? 'fichas' : 'precios');
+  return CTN.vista;
+}
+function _conVistaBtns() {
+  const v = _conVista();
+  return [['fichas', '🗂 Fichas'], ['precios', '💲 Precios']].map(x => '<button type="button" class="btn ' + (v === x[0] ? 'bp' : 'bg') + ' bs con-vista" data-v="' + x[0] + '" style="font-size:12px">' + x[1] + '</button>').join('');
+}
+function _conPrecioTxt(n) {   // 299 → «299» · 59.9 → «59.90» · vacío → «—»
+  if (n == null || n === '' || isNaN(Number(n)) || Number(n) <= 0) return '';
+  const x = Number(n); return Math.abs(x - Math.round(x)) < 0.005 ? String(Math.round(x)) : x.toFixed(2);
+}
+function _conPreciosHtml(rows) {
+  const cols = [];   // [{b, k, t}] solo columnas con al menos un precio
+  COS_BLOQUES.forEach(b => b.p.forEach((p, i) => {
+    if (rows.some(r => _conPrecioTxt(r.precios && r.precios[p[0]]))) cols.push({ b: b, k: p[0], t: i === 0 ? 'x1' : p[1] });
+  }));
+  const grupos = []; cols.forEach(c => { const g = grupos[grupos.length - 1]; if (g && g.b === c.b) g.n++; else grupos.push({ b: c.b, n: 1 }); });
+  cols.forEach(c => { if (c.t === 'x1' && grupos.find(g => g.b === c.b).n === 1) c.t = 'Precio'; });   // grupo de una sola columna (Colaborador)
+  const fondo = b => 'background:color-mix(in srgb,' + b.bg.replace(/,\s*\.\d+\)$/, ',1)') + ' 22%,var(--bg2))!important';
+  const h1 = '<tr><th class="tt-fija" data-no-ord></th><th data-no-ord></th>' + grupos.map(g => '<th data-no-ord colspan="' + g.n + '" style="' + fondo(g.b) + ';color:var(--tx)">' + esc(g.b.t) + '</th>').join('') + '</tr>';
+  const h2 = '<tr><th class="tt-fija">Producto</th><th>Categoría</th>' + cols.map(c => '<th style="' + fondo(c.b) + '">' + esc(c.t) + '</th>').join('') + '</tr>';
+  const body = rows.length ? rows.map(r => '<tr><td class="tt-fija" style="text-align:left!important"><b>' + esc(((r.TipoPrenda || '') + ' ' + (r.Modelo || '')).trim() || r.Diseno || '') + '</b></td>'
+      + '<td style="color:var(--mu)">' + esc(r.Categoria || '') + '</td>'
+      + cols.map(c => { const t = _conPrecioTxt(r.precios && r.precios[c.k]); return t ? '<td data-v="' + Number(r.precios[c.k]) + '">' + t + '</td>' : '<td style="color:var(--mu)">—</td>'; }).join('') + '</tr>').join('')
+    : '<tr><td colspan="' + (cols.length + 2) + '" style="padding:20px;color:var(--mu)">Sin resultados</td></tr>';
+  return '<table class="tt" id="con-precios"><thead>' + h1 + h2 + '</thead><tbody>' + body + '</tbody></table>';
+}
+// <<< PRECIOS_TABLA_2NOV
 function _conTabla() {
   const box = document.getElementById('con-tabla-w'); if (!box) return;
+  if (_conVista() === 'precios') {
+    const qp = _cosNormD(CTN.q || '');
+    const rp = CTN.rows.filter(r => !qp || _cosNormD(r.Diseno).indexOf(qp) >= 0 || _cosNormD(r.Categoria || '').indexOf(qp) >= 0)
+      .sort((a, b) => String(a.Categoria || '').localeCompare(String(b.Categoria || '')) || String(a.Diseno).localeCompare(String(b.Diseno)));
+    box.className = 'tt-w'; box.style.border = ''; box.innerHTML = _conPreciosHtml(rp);
+    return;
+  }
+  box.className = '';
   const q = _cosNormD(CTN.q || '');
   const rows = CTN.rows.filter(r => !q || _cosNormD(r.Diseno).indexOf(q) >= 0).sort((a, b) => String(a.Diseno).localeCompare(String(b.Diseno)));
   const th = t => '<th style="padding:8px 10px;text-align:left;font-size:11px;color:var(--mu);background:var(--bg3);position:sticky;top:0">' + t + '</th>';
