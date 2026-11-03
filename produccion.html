@@ -145,6 +145,7 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g.lote{margin:4px 0 8px}table
   <select id="fTaller" onchange="pintar()"><option value="">Todos los talleres</option></select>
   <span class="sp"></span><span id="msg" class="mu"></span>
   <button id="btnOrden" onclick="guardarOrden2()" style="display:none;border-color:var(--ac)">💾 Guardar orden</button>
+  <button id="btnMat" onclick="matsAbrir()" style="display:none" title="3-nov · telas y avíos con su precio: se jalan en la ficha y en la orden">📚 Materiales</button>
   <button id="btnProd" onclick="(parent && parent !== window && parent._npAbrir) ? parent._npAbrir() : abrirProd('')" title="29-oct · el producto NACE aquí: ficha en etapa Idea (después 📦 Productos le pone precios, fotos y textos)">➕ Nuevo producto</button>
   <button class="p" id="btnNueva" onclick="abrirNueva()">＋ Nueva producción</button>
 </div>
@@ -180,6 +181,11 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g.lote{margin:4px 0 8px}table
 <!-- 26-oct (Pablo) · «¿Seguro que deseas eliminar?» siempre antes de borrar -->
 <div id="mConf" class="modal" style="z-index:20" onclick="if(event.target===this)cerrar('mConf')"><div class="box" style="width:min(460px,100%);margin-top:12vh"><button class="x" title="Cerrar" onclick="cerrar('mConf')">✕</button><h2 id="cfTit"></h2><div id="cfTxt" style="margin-bottom:14px;line-height:1.5"></div><div style="display:flex;gap:8px;justify-content:flex-end;align-items:center"><span id="cfMsg" class="err"></span><button onclick="cerrar('mConf')">Cancelar</button><button id="cfOk" style="background:var(--rd);border-color:var(--rd);color:#fff;font-weight:600" onclick="confirmarOk()">Eliminar</button></div></div></div>
 
+<div id="mMat" class="modal" style="z-index:19" onclick="if(event.target===this)cerrar('mMat')"><div class="box" style="width:min(980px,100%)"><button class="x" title="Cerrar" onclick="cerrar('mMat')">✕</button>
+  <div class="ui-blo-h"><h2 class="ui-pag">📚 Materiales</h2><span class="sp"></span><input id="matBuscar" placeholder="Buscar material o proveedor" oninput="matsPintar()" style="width:220px"><select id="matVer" onchange="matsPintar()"><option value="activos">Activos</option><option value="quitados">Quitados</option><option value="todos">Todos</option></select><span id="matCont" class="mu" style="font-size:12px"></span><button class="p" onclick="matNuevo()">＋ Material</button></div>
+  <div class="mu" style="font-size:12px;margin-bottom:6px">Se guarda solo al cambiar cada casilla. En la ficha del producto y en los insumos de la orden se elige de esta lista.</div>
+  <div id="matTabla" style="overflow:auto;max-height:65vh"></div></div></div>
+<datalist id="lMatLib"></datalist>
 <div id="mProd" class="modal" style="z-index:21" onclick="if(event.target===this)cerrar('mProd')"><div class="box" style="width:min(460px,100%);margin-top:10vh"><button class="x" title="Cerrar" onclick="cerrar('mProd')">✕</button><h2>➕ Nuevo producto</h2><div class="f"><div><label>Nombre (SKU)</label><input id="pNom" placeholder="BLAZER ATENAS" oninput="prodSugerir()"></div><div><label>Categoría</label><select id="pCat" onchange="this.dataset.mano=1;prodSugerir()"><option value="">Elige…</option><option>BLUSAS Y TOPS</option><option>BLAZERS Y ABRIGOS</option><option>PANTALONES</option><option>FALDAS Y VESTIDOS</option><option>CONJUNTOS</option><option>SWIMWEAR</option><option>ROPA INTERIOR</option><option>ACCESORIOS</option></select></div><div><label>Origen</label><select id="pOri" onchange="this.dataset.mano=1"><option value="confeccion">Lo confecciona un taller</option><option value="comprado">Se compra hecho (solo costo)</option></select></div></div><div class="mu" style="font-size:12px;margin-top:8px">Nace en etapa 💡 Idea, inactivo y sin tienda. Un color nuevo de un producto que ya existe NO es producto nuevo: va en su orden de producción.</div><div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:12px"><span id="pMsg" class="err"></span><button onclick="cerrar('mProd')">Cancelar</button><button class="p" id="pOk" onclick="prodCrearFicha()">Crear ficha</button></div></div></div>
 
 <script>
@@ -198,6 +204,70 @@ const ETAPA_VIEJA = { molde:'muestra', escalado:'tela', inventario:'calidad' }; 
 const TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
 const TALLERES = ['José Luis','Dan','Pedro','Ángel','Bella'];   /* 26-oct (lista 243) · Jhon y Jefferson ya no trabajan con Tulula: fuera de Nueva producción (sus órdenes viejas quedan) */
 const TALLERES_BAJA = ['JHON','JEFFERSON'];
+/* ══ 3-nov (Pablo · F2) · 📚 BIBLIOTECA DE MATERIALES: cada tela y avío una sola vez (tipo, proveedor, unidad, precio, colores).
+   En la ficha del producto y en los insumos de la orden se JALA de aquí (se llenan tipo, unidad y precio). Solo administración (precios). ══ */
+const MAT_UNI = { confeccion:'und', tela1:'m', entretela:'m', forro:'m', elastico:'m', etiqueta:'und', botones:'und', cierre:'und', packaging:'und', otros:'und' };
+let MATS = [], MAT_ADMIN = false;
+async function matsIniciar(){
+  try { MAT_ADMIN = !!(await rpc('_prod_es_admin')); } catch (_) { MAT_ADMIN = false; }
+  const b = document.getElementById('btnMat'); if (b) b.style.display = MAT_ADMIN ? '' : 'none';
+  if (MAT_ADMIN) await matsCargar();
+}
+async function matsCargar(){
+  try { MATS = (await sb('/rest/v1/prod_materiales?select=*&order=nombre')) || []; } catch (_) { MATS = []; }
+  const dl = document.getElementById('lMatLib');
+  if (dl) dl.innerHTML = MATS.filter(m => m.activo).map(m => '<option value="' + esc(m.nombre) + '">' + esc([m.proveedor, m.unidad, S2(m.precio)].filter(Boolean).join(' · ')) + '</option>').join('');
+}
+async function matsAbrir(){ await matsCargar(); document.getElementById('matBuscar').value = ''; matsPintar(); document.getElementById('mMat').style.display = 'flex'; }
+function matsPintar(){
+  const q = nrm(document.getElementById('matBuscar').value), ver = document.getElementById('matVer').value;
+  const L = MATS.filter(m => (ver === 'todos' || (ver === 'activos') === !!m.activo) && (!q || nrm(m.nombre + ' ' + (m.proveedor || '')).indexOf(q) >= 0));
+  const opt = v => COMPS.map(c => '<option value="' + c[0] + '"' + (c[0] === v ? ' selected' : '') + '>' + c[1] + '</option>').join('');
+  const fila = (m, i) => '<tr data-id="' + (m.id || '') + '"' + (m.activo === false ? ' style="opacity:.5"' : '') + '>'
+    + '<td><input class="mN" value="' + esc(m.nombre || '') + '" placeholder="CREPÉ" style="width:180px;text-align:left"></td>'
+    + '<td><select class="mC">' + opt(m.comp || 'tela1') + '</select></td>'
+    + '<td><input class="mP" value="' + esc(m.proveedor || '') + '" placeholder="Proveedor" style="width:130px;text-align:left"></td>'
+    + '<td><input class="mU" value="' + esc(m.unidad || MAT_UNI[m.comp || 'tela1']) + '" style="width:52px"></td>'
+    + '<td><input class="mS" type="number" step="0.01" min="0" value="' + (m.precio != null ? m.precio : '') + '" style="width:72px"></td>'
+    + '<td><input class="mK" value="' + esc(m.colores || '') + '" placeholder="todos" style="width:150px;text-align:left"></td>'
+    + '<td class="mE mu" style="min-width:60px"></td>'
+    + '<td>' + (m.id ? '<button title="' + (m.activo === false ? 'Recuperar' : 'Quitar de la lista (se recupera con «Quitados»)') + '" onclick="matActivo(' + m.id + ',' + (m.activo === false) + ')">' + (m.activo === false ? '↩' : '✕') + '</button>' : '') + '</td></tr>';
+  document.getElementById('matTabla').innerHTML = '<table class="g" style="width:100%"><tr><th>Material</th><th>Tipo</th><th>Proveedor</th><th>Unidad</th><th>S/ por unidad</th><th>Colores</th><th></th><th></th></tr>'
+    + L.map(fila).join('') + '</table>' + (L.length ? '' : '<div class="vacio">Sin materiales. Agrega el primero con ＋ Material.</div>');
+  document.getElementById('matCont').textContent = MATS.filter(m => m.activo).length + ' activos';
+  document.querySelectorAll('#matTabla tr[data-id]').forEach(tr => {
+    tr.querySelector('.mC').addEventListener('change', () => { const u = tr.querySelector('.mU'); if (!u.dataset.mano) u.value = MAT_UNI[tr.querySelector('.mC').value] || 'und'; matGuardar(tr); });
+    tr.querySelector('.mU').addEventListener('input', e => { e.target.dataset.mano = 1; });
+    tr.querySelectorAll('input').forEach(i => i.addEventListener('change', () => matGuardar(tr)));
+  });
+}
+function matNuevo(){ MATS.unshift({ nombre:'', comp:'tela1', unidad:'m', precio:null, activo:true }); document.getElementById('matVer').value = 'activos'; document.getElementById('matBuscar').value = ''; matsPintar();
+  const i = document.querySelector('#matTabla tr[data-id] .mN'); if (i) i.focus(); }
+async function matGuardar(tr){
+  const e = tr.querySelector('.mE'), nom = tr.querySelector('.mN').value.trim(); if (!nom) { e.textContent = 'falta nombre'; return; }
+  e.textContent = '…';
+  try {
+    const r = await rpc('prod_material_guardar', { p_id: tr.dataset.id ? +tr.dataset.id : null, p_nombre: nom, p_comp: tr.querySelector('.mC').value, p_proveedor: tr.querySelector('.mP').value,
+      p_unidad: tr.querySelector('.mU').value, p_precio: +tr.querySelector('.mS').value || 0, p_colores: tr.querySelector('.mK').value });
+    if (!r || r.ok === false) throw new Error((r && r.error) || 'no se guardó');
+    tr.dataset.id = r.id; e.textContent = '✓'; e.style.color = 'var(--ok)';
+    await matsCargar();
+  } catch (x) { e.textContent = /prod_material_guardar|PGRST202/.test(String(x.message)) ? 'falta SQL' : x.message; e.style.color = 'var(--rd)'; }
+}
+async function matActivo(id, on){
+  if (!on) return confirmar('¿Quitar este material de la biblioteca?', 'Las fichas que ya lo usan no cambian. Se recupera desde «Quitados».', 'Sí, quitar', async () => { await matActivoYa(id, false); });
+  await matActivoYa(id, true);
+}
+async function matActivoYa(id, on){ const r = await rpc('prod_material_activo', { p_id: id, p_activo: on }); if (!r || r.ok === false) throw new Error((r && r.error) || 'no se pudo'); await matsCargar(); matsPintar(); }
+/* en los insumos de la orden: al elegir un material de la biblioteca se llenan tipo y precio */
+const MAT_TIPO = c => /^tela/.test(c) ? 'Tela' : c === 'forro' ? 'Forro' : c === 'entretela' ? 'Entretela' : c === 'botones' ? 'Botón' : c === 'elastico' ? 'Elástico' : c === 'cierre' ? 'Cierre' : 'Otro';
+function matElegir(cual, i, val, rep){
+  const m = MATS.find(x => x.activo && nrm(x.nombre) === nrm(val)); if (!m) return;
+  const A = cual === 'NV.M' ? NV.M : MT.M, x = A && A[i]; if (!x) return;
+  x.nombre = m.nombre; x.tipo = MAT_TIPO(m.comp); x.precio = +m.precio || 0; if (!(x.colores || []).length && m.colores) x.colores = insColsTxt(m.colores);
+  if (typeof window[rep] === 'function') window[rep]();
+}
+
 let D = { ordenes:[], lineas:[], movs:[], pagos:[], arch:[], ins:[], urls:{}, stock:null, prod:null, param:{ yayita_desc_pct:40 } }, NV = null, OA = null;
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const nrm = s => String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();
@@ -692,7 +762,7 @@ function insFilas(M, v, pre, n, rep, tot){   /* tabla editable común (Nueva pro
   return '<table class="g" style="width:100%"><tr><th>Tipo</th><th>Descripción / proveedor</th><th>Código color</th><th>Colores</th><th>Consumo<small>por prenda</small></th><th>S/ por unidad</th><th>Asignados<small>comprados / entregados</small></th><th>Prendas</th><th>Cantidad<small>estimada</small></th><th>Diferencia</th><th>Costo</th><th></th></tr>'
     + M.map((m, i) => { const t = insTipo(m), u = insUni(t);
       return '<tr><td><select onchange="' + v + '[' + i + '].tipo=this.value;' + pre + rep + '()">' + INS_TIPOS.map(x => '<option' + (x[0] === t ? ' selected' : '') + '>' + x[0] + '</option>').join('') + '</select></td>'
-        + '<td><input value="' + esc(m.nombre || '') + '" placeholder="' + (t === 'Tela' ? 'Crepé - Colortex' : t === 'Botón' ? 'Botón perla' : t) + '" style="width:140px" oninput="' + pre + v + '[' + i + '].nombre=this.value"></td>'   /* 28-oct (Pablo) · sin columna Tamaño: no se usa */
+        + '<td><input value="' + esc(m.nombre || '') + '" placeholder="' + (t === 'Tela' ? 'Crepé - Colortex' : t === 'Botón' ? 'Botón perla' : t) + '" list="lMatLib" style="width:140px" oninput="' + pre + v + '[' + i + '].nombre=this.value" onchange="matElegir(\'' + v + '\',' + i + ',this.value,\'' + rep + '\')"></td>'   /* 28-oct (Pablo) · sin columna Tamaño: no se usa */
         + '<td><input value="' + esc(m.codigo || '') + '" placeholder="Cód." title="Código del color en el proveedor" style="width:70px" oninput="' + pre + v + '[' + i + '].codigo=this.value"></td>'
         + '<td><input value="' + esc((m.colores || []).join(', ')) + '" placeholder="todos" title="Colores que usan este insumo, separados por coma. TODOS = todos los colores de la orden · vacío = los colores que no tienen otra fila" style="width:130px" onchange="' + pre + v + '[' + i + '].colores=insColsTxt(this.value);' + rep + '()"></td>'
         + '<td><input type="number" step="0.01" min="0" value="' + (m.consumo || '') + '" style="width:62px" oninput="' + pre + v + '[' + i + '].consumo=+this.value||0;' + tot + '()"> <small>' + u + '</small></td>'
@@ -878,7 +948,7 @@ function talleresHtml(ta){
 }
 /* ══ 29-oct (Pablo) · FICHA ÚNICA: el producto NACE aquí (etapa Idea) y 📦 Productos le completa precios, fotos y textos ══ */
 const PROD_ETAPA = { idea:'💡 Idea', muestra:'✂️ Muestra', aprobada:'🧮 Aprobada', confeccion:'🧵 En confección', fotos:'📸 Fotos y textos', venta:'🟢 A la venta', reposicion:'🔁 Reposición', descontinuada:'⛔ Descontinuada' };
-function crearProducto(nombre){ abrirProd(nombre || ''); }   // se mantiene el nombre: lo usan los botones de las órdenes
+function crearProducto(nombre){ try { if (parent && parent !== window && parent._npAbrir) { parent._npAbrir(nombre || ''); return; } } catch (_) {} abrirProd(nombre || ''); }   /* 3-nov (F1) · el mismo cuadro completo de index.html */   // se mantiene el nombre: lo usan los botones de las órdenes
 /* 30-oct · la ficha del producto pide el costo real de cada orden (misma cuenta que «Costos y pagos»: taller + tela ÷ prendas buenas) */
 window.costoRealDe = function(id){ if (!D.ordenes.length) return undefined; const o = D.ordenes.find(x => x.id === id); if (!o) return null; try { const c = cuentas(o); return { real: c.real, cu: c.cu, tela: c.tela }; } catch (_) { return null; } };
 /* 29-oct · la ficha del producto (📦 Productos › 🏭 Órdenes) abre una orden aquí */
@@ -1204,5 +1274,5 @@ window.addEventListener('message', e => { const m = e && e.data; if (m && m.tipo
   if (m && m.tipo === 'prod-recalcular') cargar();   /* 21-oct · Alertas pide la foto al día */
   if (m && m.tipo === 'erp-refrescar'){ try { e.source.postMessage({ tipo:'erp-refrescar-ok' }, '*'); } catch (_) {} cargar(); } });
 try { if (parent !== window) parent.postMessage({ tipo:'erp-tema-pedir' }, '*'); } catch (e) {}
-if (typeof process === 'undefined') cargar();
+if (typeof process === 'undefined') { cargar(); matsIniciar(); }
 </script></body></html>
