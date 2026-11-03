@@ -674,7 +674,8 @@ function abrirOrden(id){
     + M.map(m => '<tr><td>' + esc(m.fecha) + '</td><td>' + ({ buena:'✓ Buena', falla:'⚠ Con falla', corregida:'🔧 Corregida', perdida:'✕ Perdida', yayita:'🏷 Yayita' })[m.tipo] + (m.ingresado ? ' <span class="chip">en stock' + (m.lote ? ' · ' + esc(m.lote) : '') + '</span>' : '') + '</td><td>' + esc(m.color + ' · ' + m.talla) + '</td><td>' + m.cantidad + '</td><td>' + esc(m.motivo || '') + '</td>'
       + '<td>' + (m.ingresado ? '' : '<button title="Deshacer (cargado por error)" onclick="borrarMov(' + m.id + ')">✕</button>') + '</td></tr>').join('') + '</table></div>';
   /* 26-oct (Pablo) · 4 pestañas en la misma ficha: Resumen · Insumos y costo por prenda · Entregas del taller · Costo y pagos */
-  h += '</div><div class="opane" data-p="ins">' + fichaHtml(o) + _ins + insumosHtml(o) + '</div><div class="opane" data-p="cos">' + _cos + '</div>';
+  const _ih = insumosHtml(o);   /* 3-nov (F3) · la ficha completa queda plegada: la lista que se edita es una sola (arriba) */
+  h += '</div><div class="opane" data-p="ins">' + fichaHtml(o) + _ins + (_ih ? '<details style="margin-top:10px"><summary class="mu" style="cursor:pointer;font-size:12px">Ver la ficha completa del producto (confección, etiqueta, packaging…)</summary>' + _ih + '</details>' : '') + '</div><div class="opane" data-p="cos">' + _cos + '</div>';
   const _TB = [['res', 'Resumen'], ['ins', 'Insumos y costo por prenda'], ['ent', 'Entregas del taller'], ['cos', 'Costo y pagos al taller']];
   OA._tab = OA._tab || 'res';
   h = h.replace('<!--TABS-->', '<div class="otabs">' + _TB.map(t => '<button type="button" data-t="' + t[0] + '" onclick="oTab(this.dataset.t)">' + t[1] + '</button>').join('') + '</div>');
@@ -828,8 +829,43 @@ function matPintar(){
     + '<datalist id="lColO">' + colsOrden.map(c => '<option value="' + esc(c) + '">').join('') + '</datalist>'
     + (falt.length ? '<div class="err" style="font-size:12px">Colores sin tela asignada: ' + esc(falt.join(', ')) + ' (deja una fila de tela con «Colores» vacío para «los demás», o TODOS para todos los colores).</div>' : '')
     + (MT.sug && MT.de ? '<div class="mu" style="font-size:12px">Sugerido de ' + esc(MT.de) + ': revísalo y guarda.</div>' : '')
-    + '<button onclick="MT.M.push({tipo:\'Tela\',nombre:\'\',colores:[],consumo:0,precio:0});matPintar()">＋ Otro insumo</button> <span class="mu" style="font-size:12px">Una fila por tela o avío; si según el color cambia (y su precio o código), otra fila con esos colores.</span>';
+    + '<button onclick="MT.M.push({tipo:\'Tela\',nombre:\'\',colores:[],consumo:0,precio:0});matPintar()">＋ Otro insumo</button> <span class="mu" style="font-size:12px">Una fila por tela o avío; si según el color cambia (y su precio o código), otra fila con esos colores.</span>'
+    + matGuardarHtml();   /* 3-nov (Pablo · F3) · se guarda aquí mismo: en la ficha del producto (una sola lista) o solo en esta orden */
   matTot();
+}
+/* ══ 3-nov (Pablo · F3) · UNA SOLA LISTA DE MATERIALES: la de la ficha del producto. La orden la usa tal cual; si se edita aquí,
+   «📦 Guardar en la ficha» la cambia para todas las órdenes y recalcula el costo (solo administración). «Solo esta orden» = excepción
+   real de esa orden (otra tela, otro consumo). ══ */
+const TIPO_COMP = { 'Tela':'tela1', 'Forro':'forro', 'Entretela':'entretela', 'Botón':'botones', 'Elástico':'elastico', 'Cierre':'cierre', 'Hombrera':'otros', 'Otro':'otros' };
+const matFirma = L => JSON.stringify((L || []).map(m => [insTipo(m), nrm(m.nombre), +m.consumo || 0, +m.precio || 0, insTodos(m) ? 'TODOS' : insCols(m).slice().sort().join(',')]).sort());
+function matDistintaFicha(){ if (!MT || !OA) return false; const F = insDeFicha(nrm(OA.diseno)); return F.length > 0 && matFirma(insLimpio(MT.M)) !== matFirma(insLimpio(F)); }
+function matGuardarHtml(){
+  const adm = MAT_ADMIN || !!(D.prod && D.prod[nrm(OA && OA.diseno)] && D.prod[nrm(OA.diseno)].costo_unitario != null);
+  return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">'
+    + (adm ? '<button class="p" onclick="matAFicha()" title="Cambia la lista de materiales del producto (todas sus órdenes) y recalcula su costo">📦 Guardar en la ficha del producto</button>' : '')
+    + '<button onclick="matSoloOrden()" title="Excepción de esta orden: otra tela u otro consumo solo aquí">💾 Solo esta orden</button>'
+    + (matDistintaFicha() ? '<span class="chip am">Esta orden tiene valores distintos a la ficha</span>' : '')
+    + '<span id="matMsg" class="mu" style="font-size:12px"></span></div>';
+}
+async function matSoloOrden(){ const m = document.getElementById('matMsg'); m.textContent = 'Guardando…'; await guardarCostos(); const k = document.getElementById('kMsg'); if (k && k.textContent) { const m2 = document.getElementById('matMsg'); if (m2) { m2.textContent = k.textContent; m2.className = 'err'; } } }
+async function matAFicha(){
+  const d = nrm(OA.diseno), m = document.getElementById('matMsg'), M = insLimpio(MT.M);
+  if (!M.length) { m.textContent = 'La lista está vacía.'; m.className = 'err'; return; }
+  const uni = t => { const u = insUni(t); return u === 'unid.' ? 'und' : u; };
+  const items = M.map(x => ({ comp: TIPO_COMP[insTipo(x)] || 'otros', descripcion: x.nombre, cantidad: +x.consumo || 0, unidad: uni(insTipo(x)), precio: +x.precio || 0, colores: insTodos(x) ? 'TODOS' : insCols(x).join(', ') }));
+  const comps = [...new Set(items.map(x => x.comp))];
+  /* «otros» de la ficha que la orden no muestra (ej. un monto de otros) se conservan tal cual */
+  if (comps.indexOf('otros') >= 0) (D.ins || []).filter(x => x.diseno === d && x.comp === 'otros' && !items.some(y => nrm(y.descripcion) === nrm(x.descripcion)))
+    .forEach(x => items.push({ comp: 'otros', descripcion: x.descripcion, cantidad: +x.cantidad || 0, unidad: x.unidad, precio: +x.precio || 0, colores: x.colores || '' }));
+  m.className = 'mu'; m.textContent = 'Guardando en la ficha…';
+  try {
+    const r = await rpc('prod_bom_guardar', { p_diseno: d, p_items: items, p_comps: comps });
+    if (!r || r.ok === false) throw new Error((r && r.error) || 'no se guardó');
+    if (Array.isArray(OA.materiales) && OA.materiales.length) { MT.M = M; await guardarCostos(); }   /* la orden ya no necesita copia propia distinta */
+    else { await cargar(); abrirOrden(OA.id); }
+    const m2 = document.getElementById('matMsg'); if (m2) { m2.className = 'okt'; m2.textContent = '✓ Ficha actualizada' + (r.costo > 0 ? ' · costo por prenda S/ ' + (+r.antes || 0).toFixed(2) + ' → S/ ' + (+r.costo).toFixed(2) : ''); }
+    try { if (parent && parent !== window && typeof parent.loadCostos === 'function') parent.COS && (parent.COS.pend = undefined); } catch (_) {}
+  } catch (e) { m.className = 'err'; m.textContent = /prod_bom_guardar|PGRST202/.test(String(e.message)) ? 'Falta pegar el SQL de la lista única (3-nov) en Supabase.' : 'No se guardó: ' + e.message; }
 }
 function matTot(){ if (!MT) return; insTotales(document.getElementById('matBox'), MT.M, matPrendas(OA, MT.M)); }
 function costosHtml(o, T){
