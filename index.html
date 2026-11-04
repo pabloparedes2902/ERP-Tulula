@@ -6096,6 +6096,8 @@ window._npAbrir = async function (nombreIni) {
       const its = []; S.cols.forEach(c => S.tal.forEach(t => its.push({ categoria: cat, producto: pre, diseno: dis, color: c, talla: t, cantidad: 0 })));
       const rr = await _skuCrearRapido(its);
       if (rr && rr.listo) rr.listo.then(() => { try { if (typeof refrescarMaestros === 'function') refrescarMaestros(); } catch (_) {} }).catch(() => {});
+      /* 3-nov · igual que el «Crear SKU» de antes: si la base no recibió algún SKU, NO se canta verde */
+      if (rr && Array.isArray(rr._faltanBase) && rr._faltanBase.length) { $('np-ok').disabled = false; msg.style.color = 'var(--rd)'; msg.textContent = 'Se guardó, pero estos SKU no llegaron a la base: ' + rr._faltanBase.join(', ') + '. Espera un minuto y vuelve a intentar.'; return; }
       cerrar();
       toast('✓ ' + (ya ? 'Agregado a ' : 'Creado: ') + nom + ' · ' + S.cols.length + ' color(es) × ' + S.tal.length + ' talla(s) = ' + its.length + ' SKU', 'ok');
       try { COS.pend = undefined; if (typeof curPg !== 'undefined' && curPg === 'costos' && typeof loadCostos === 'function') loadCostos(true); } catch (_) {}
@@ -38431,120 +38433,7 @@ async function _confAbrirEliminados(confEl) {
   render();
 }
 
-// ── FASE C — Formulario "Crear SKU": define producto(s) nuevo(s) en Maestros (+ stock inicial opcional) ──
-let _skuCart = [];
-function _confAbrirCrearSku(confEl) {
-  _skuCart = [];
-  const _u = a => [...new Set((a||[]).filter(Boolean).map(v=>String(v).trim()))].sort();
-  const inpSt = 'width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
-  const optH = (arr) => '<option value="">— Elegir —</option>' + arr.map(v=>'<option value="'+esc(v)+'">'+esc(v)+'</option>').join('');
-  const fld = (label, id, arr) => '<div class="fg" style="flex:1;min-width:150px"><label>'+label+'</label><div style="display:flex;gap:6px">'
-    + '<select id="'+id+'" style="'+inpSt+'">'+optH(arr)+'</select>'
-    + '<button type="button" class="btn bg bs skuc-new" data-target="'+id+'" style="font-size:11px;flex-shrink:0;white-space:nowrap" title="Agregar valor nuevo">＋ Nuevo</button></div></div>';
-  const ov = document.createElement('div');
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:600;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow:auto';
-  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:760px;width:100%;padding:20px">'
-    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><span class="ct" style="margin:0;color:var(--ac)">＋ Crear SKU</span><button id="skuc-cls" class="btn bg bs" style="font-size:12px">Cerrar</button></div>'
-    + '<div class="fr">'+fld('Categoría','skuc-cat',_u(mOpts('Categoria')))+fld('Prenda','skuc-prod',_u(mOpts('Producto')))+'</div>'
-    + '<div class="fr">'+fld('Diseño','skuc-dis',_u(mOpts('Diseño')))+fld('Color','skuc-col',_u(mOpts('Color')))+'</div>'
-    + '<div class="fr">'+fld('Talla','skuc-tal',_u(mOpts('Talla')))+'<div class="fg" style="max-width:160px"><label>Cantidad (0 = solo SKU)</label><input id="skuc-cant" type="number" min="0" step="1" placeholder="0" style="'+inpSt+'"></div></div>'
-    + '<div style="display:flex;justify-content:flex-end;margin:8px 0 12px"><button id="skuc-add" class="btn bg bs" style="font-size:12px">＋ Agregar SKU</button></div>'
-    + '<div style="border:1px solid var(--bd);border-radius:var(--r);overflow:hidden;margin-bottom:14px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:var(--bg3)"><th style="padding:6px 10px;text-align:left;color:var(--mu)">SKU</th><th style="padding:6px 10px;text-align:center;color:var(--mu)">Stock</th><th style="padding:6px 10px"></th></tr></thead><tbody id="skuc-cart-body"></tbody></table></div>'
-    + '<div style="display:flex;justify-content:space-between;align-items:center"><span id="skuc-tot" style="font-size:12px;color:var(--mu)"></span><div style="display:flex;gap:8px"><button id="skuc-limpiar" class="btn bg bs" style="font-size:12px">Limpiar</button><button id="skuc-crear" class="btn bp bs" style="font-size:12px">Crear SKU</button></div></div>'
-    + '</div>';
-  document.body.appendChild(ov);
-  const _close = () => ov.remove();
-  ov.addEventListener('click', e => { if (e.target === ov) _close(); });
-  document.getElementById('skuc-cls').addEventListener('click', _close);
-
-  // ＋ Nuevo: pide un valor y lo agrega al select (en MAYÚSCULAS, como el resto de Maestros)
-  ov.querySelectorAll('.skuc-new').forEach(btn => btn.addEventListener('click', async () => {
-    const sel = document.getElementById(btn.dataset.target);
-    const v = ((await _uiTexto('Nuevo valor (se guardará en Maestros al Crear SKU):'))||'').trim().toUpperCase();
-    if (!v) return;
-    if (![...sel.options].some(o=>o.value.toUpperCase()===v)) { const o=document.createElement('option'); o.value=v; o.textContent=v; sel.appendChild(o); }
-    sel.value = v;
-  }));
-
-  const g = id => (document.getElementById(id).value||'').trim();
-  const renderCart = () => {
-    const tb = document.getElementById('skuc-cart-body');
-    if (!_skuCart.length) { tb.innerHTML = '<tr><td colspan="3" style="padding:10px;text-align:center;color:var(--mu)">Sin SKUs aún. Agrega arriba.</td></tr>'; }
-    else tb.innerHTML = _skuCart.map((it,i)=>'<tr style="border-top:1px solid var(--bd)">'
-      + '<td style="padding:6px 10px">'+esc(it._full)+'</td>'
-      + '<td style="padding:6px 10px;text-align:center">'+(it.cantidad>0?it.cantidad:'—')+'</td>'
-      + '<td style="padding:6px 10px;text-align:center"><button class="btn bg bs skuc-del" data-i="'+i+'" style="font-size:11px;color:var(--rd)">✕</button></td></tr>').join('');
-    document.getElementById('skuc-tot').textContent = _skuCart.length ? (_skuCart.length+' SKU') : '';
-    tb.querySelectorAll('.skuc-del').forEach(b=>b.addEventListener('click',()=>{ _skuCart.splice(parseInt(b.dataset.i),1); renderCart(); }));
-  };
-  renderCart();
-
-  document.getElementById('skuc-add').addEventListener('click', () => {
-    const it = { categoria:g('skuc-cat'), producto:g('skuc-prod'), diseno:g('skuc-dis'), color:g('skuc-col'), talla:g('skuc-tal'), cantidad:parseInt(document.getElementById('skuc-cant').value,10)||0 };
-    if (!it.categoria||!it.producto||!it.diseno||!it.color||!it.talla) { toast('Completa Categoría, Prenda, Diseño, Color y Talla','err'); return; }
-    it._full = [it.producto,it.diseno,it.color,it.talla].join(' ');
-    _skuCart.push(it);
-    renderCart();
-    document.getElementById('skuc-cant').value='';
-  });
-
-  // Limpiar: solo los campos; conserva los SKUs ya agregados
-  document.getElementById('skuc-limpiar').addEventListener('click', () => { ['skuc-cat','skuc-prod','skuc-dis','skuc-col','skuc-tal'].forEach(id=>document.getElementById(id).selectedIndex=0); document.getElementById('skuc-cant').value=''; });
-
-  document.getElementById('skuc-crear').addEventListener('click', async function() {
-    if (!_skuCart.length) { toast('Agrega al menos un SKU','err'); return; }
-    this.disabled = true; this.textContent = 'Creando...';
-    try {
-      const res = await _skuCrearRapido(_skuCart);
-      _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock'], ['stock.resumen','lotes.listar']);  // 05-ago
-      const _ref = async () => {
-        try { COS.pend = undefined; } catch (e) {}   // 4-oct · el producto nuevo aparece en Costos → Por costear
-        if (typeof refrescarMaestros === 'function') { try { await refrescarMaestros(); } catch(e){} }
-        confData = null; try { _confLsDel(); } catch(e) {}
-        _refrescarInv();
-      };
-      // 2-set-2026 — "el color nuevo no se agrega en Stock" (Pablo): el SKU SÍ se creaba
-      // (Maestros + Confección con cantidad 0), pero el checkbox "Ocultar sin stock"
-      // —que vive en localStorage y puede quedar marcado de una sesión anterior— lo
-      // tapaba en renderStock(): un color nuevo sin unidades aún no tiene stock>0 en
-      // NINGUNA talla, así que la fila se filtra. Si el diseño tenía otro color
-      // ("hermano") CON stock, el bloque se seguía viendo (con ese hermano) y el color
-      // nuevo parecía no haberse agregado; si era diseño 100% nuevo, el bloque entero
-      // desaparecía — cero rastro en pantalla. Al crear un SKU se apaga el filtro para
-      // garantizar que el color recién creado se vea, sea cual sea su stock inicial.
-      if (stHideNoStock) {
-        stHideNoStock = false;
-        try { _stHideSave(false); } catch(e) {}
-        toast('Se desactivó "Ocultar sin stock" para mostrarte el color nuevo', 'info');
-      }
-      if (res && res.encolado) {
-        toast('✓ '+res.items+' SKU(s) en creación — segundos'+(res.unidades?' · stock inicial '+res.unidades+' und':''), 'ok');
-        _skuCart = []; _close();
-        (res.listo || Promise.resolve()).then(_ref).catch(()=>{});
-      } else if (res && Array.isArray(res._faltanBase) && res._faltanBase.length) {
-        // 10-set-2026 — EL CARTEL VERDE QUE MENTÍA. Desde la fase 4.3 el ERP
-        // busca las prendas en la base, no en la hoja. El 10-set un SKU quedó
-        // escrito en la hoja pero NO llegó a la base: la pantalla dijo "✓ 1 SKU
-        // nuevo" y la prenda era invisible en todo el ERP. El backend ahora lo
-        // comprueba y lo avisa acá. No se cierra la ventana: los datos quedan
-        // cargados para reintentar sin volver a escribirlos.
-        toast('⚠ Se guardó en la hoja pero TODAVÍA no aparece en el buscador: '
-              + res._faltanBase.join(', ') + '. Esperá un minuto y volvé a intentar; '
-              + 'si sigue igual, avisá.', 'err');
-        this.disabled = false; this.textContent = 'Crear SKU';
-        await _ref();
-      } else {
-        const n = (res.skus||[]).length, ya = (res.yaExistian||[]).length;
-        toast('✓ '+n+' SKU nuevo(s)'+(ya?' ('+ya+' ya existían)':'')+(res.unidades?' · stock inicial '+res.unidades+' und':''), 'ok');
-        _skuCart = []; _close();
-        await _ref();
-      }
-    } catch(e) {
-      toast('Error al crear SKU: '+esc(e.message),'err');
-      this.disabled = false; this.textContent = 'Crear SKU';
-    }
-  });
-}
+// 3-nov (Pablo) · el formulario viejo «Crear SKU» se borró: los productos, colores y tallas nacen en ➕ Nuevo producto (_npAbrir). Respaldo: claude/bak3nov_f1f2/index_antes_borrar_crear_sku.html
 
 // ── CAMBIOS ────────────────────────────────────────────────
 let CAM = {
