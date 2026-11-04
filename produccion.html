@@ -312,6 +312,10 @@ const rpc = (fn, body) => sb('/rest/v1/rpc/' + fn, { method:'POST', body: JSON.s
 /* 4-nov (Pablo · velocidad) · antes: 3 lecturas + 7 EN FILA (~250 ms c/u) = 2,9 s. Ahora: UNA sola (prod_tablero) y, mientras llega,
    se pinta al instante lo último guardado en este navegador (de este mismo usuario). Si la base todavía no tiene prod_tablero, va por el camino viejo. */
 const PROD_CACHE = 'prod_tablero_v1';
+/* 4-nov (medido en vivo) · el almacén chico del navegador (localStorage) del ERP está lleno (4,9 MB): la copia (362 KB) va en IndexedDB, que tiene espacio de sobra */
+function idb(){ return new Promise((ok, no) => { try { const r = indexedDB.open('tulula_prod', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); } catch (e) { no(e); } }); }
+async function idbGet(k){ try { const db = await idb(); return await new Promise(ok => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => ok(q.result || null); q.onerror = () => ok(null); }); } catch (_) { return null; } }
+async function idbSet(k, v){ try { const db = await idb(); db.transaction('kv', 'readwrite').objectStore('kv').put(v, k); } catch (_) {} }
 function quien(){ try { return JSON.parse(atob(tok().split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).sub || ''; } catch (_) { return ''; } }
 function aplicarTablero(T){
   D.ordenes = T.ordenes || []; D.lineas = T.lineas || []; D.movs = T.movs || [];
@@ -336,13 +340,14 @@ async function cargarViejo(){
   return T;
 }
 async function cargar(){
-  if (!D._pintado){ try { const c = JSON.parse(localStorage.getItem(PROD_CACHE) || 'null'); if (c && c.T && c.u && c.u === quien()){ aplicarTablero(c.T); D._pintado = true; pintar(); } } catch (_) {} }
+  if (!D._pintado){ try { const c = await idbGet(PROD_CACHE); if (c && c.T && c.u && c.u === quien() && !D._pintado){ aplicarTablero(c.T); D._pintado = true; pintar(); } } catch (_) {} }
   try {
     let T = null, viejo = false;
     try { T = await rpc('prod_tablero'); } catch (e) { if (!/Falta instalar|404|PGRST202/.test(String(e.message))) throw e; }
     if (!T || !Array.isArray(T.ordenes)){ T = await cargarViejo(); viejo = true; }
     aplicarTablero(T); if (viejo && !D._mats){ D._mats = true; matsIniciar(); }
-    try { localStorage.setItem(PROD_CACHE, JSON.stringify({ T, u: quien(), at: Date.now() })); } catch (_) {}
+    idbSet(PROD_CACHE, { T, u: quien(), at: Date.now() });   /* sin esperar: no frena la pantalla */
+    try { localStorage.removeItem(PROD_CACHE); } catch (_) {}
   } catch (e) { if (!D._pintado) document.getElementById('tablero').innerHTML = '<div class="vacio err">' + esc(e.message) + '</div>'; else aviso(e.message); return; }
   D._pintado = true; pintar(); if (OA && document.getElementById('mOrden').style.display === 'flex' && !PED_SUCIO) abrirOrden(OA.id);
   publicarAlerta();
