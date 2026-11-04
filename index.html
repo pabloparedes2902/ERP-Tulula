@@ -16143,6 +16143,29 @@ const LIBRO_ESTADO_MAX_MIN = 30;         // marca mas vieja que esto = no confia
 let _libroCatMemo = null, _libroCatMemoTs = 0, _libroCatProm = null;   // VR_STOCK02_2NOV · + el pedido en camino
 const LIBRO_CAT_MEMO_MIN = 10;
 function _libroCatalogoOlvidar() { _libroCatMemo = null; _libroCatMemoTs = 0; }
+// 4-nov-2026 (Pablo) · Ninguna fila de Stock sin categoría: catálogo (prenda+diseño+color) →
+// misma prenda+diseño → la categoría más usada por esa prenda. Así el filtro por categoría nunca la pierde.
+function _stCompletarCategoria(libro, cat) {
+  const porSku = {}, porDis = {}, porPrenda = {};
+  const sumar = (m, k, c) => { if (!k || !c) return; (m[k] = m[k] || {})[c] = (m[k][c] || 0) + 1; };
+  (Array.isArray(cat) ? cat : []).forEach(function (sk) {
+    const p = String(sk.producto||'').trim(), d = String(sk.diseno||'').trim(), c = String(sk.color||'').trim();
+    const ca = String(sk.categoria||'').trim(); if (!ca) return;
+    porSku[p + '|' + d + '|' + c] = ca; sumar(porDis, p + '|' + d, ca); sumar(porPrenda, p, ca);
+  });
+  Object.keys(libro).forEach(function (k) {
+    const r = libro[k]; if (String(r.cat || '').trim()) { sumar(porDis, r.prenda + '|' + r.dis, r.cat); sumar(porPrenda, r.prenda, r.cat); }
+  });
+  const top = (m) => { if (!m) return ''; let b = '', n = -1; Object.keys(m).forEach(function (c) { if (m[c] > n) { n = m[c]; b = c; } }); return b; };
+  let completadas = 0;
+  Object.keys(libro).forEach(function (k) {
+    const r = libro[k]; if (String(r.cat || '').trim()) return;
+    const c = porSku[k] || top(porDis[r.prenda + '|' + r.dis]) || top(porPrenda[r.prenda]);
+    if (c) { r.cat = c; completadas++; }
+  });
+  return completadas;
+}
+
 function _libroCatalogoMemo() {
   if (_libroCatMemo && (Date.now() - _libroCatMemoTs) < LIBRO_CAT_MEMO_MIN * 60000) {
     return Promise.resolve(_libroCatMemo);
@@ -16275,6 +16298,11 @@ async function _sbLibroDirecto(forzar) {
         libro[k].tallas[tt] = { conf:0, v:0, fa:null };
       });
     } catch (_) {}
+
+    // 4-nov-2026 (Pablo) · TODA FILA CON CATEGORÍA. Un SKU que solo tiene movimientos (ventas sin confección,
+    // ej. PANTALON ATENAS AZUL RAYAS) entraba con cat:'' y desaparecía al filtrar por Pantalones. La categoría sale
+    // del catálogo; si el catálogo no la tiene, la de la misma prenda+diseño o la más usada por esa prenda.
+    try { _stCompletarCategoria(libro, await pCat); } catch (_) {}
 
     // 27-set-2026 (Pablo) · LA TALLA CON SU NOMBRE REAL. El libro guarda la columna
     // (S/M va en S, como el Drive); el catalogo sabe el nombre real. Se arma, por SKU:
