@@ -6113,7 +6113,7 @@ window._npAbrir = async function (nombreIni) {
 };
 // 21-oct · 🧵 F3 (Pablo): el producto NACE en Producción › Diseño pero se crea por la puerta de siempre (📦 Productos), una sola fuente.
 // Abre 📦 Productos con la ficha del producto (si existe) o con el formulario de producto nuevo ya prellenado con el nombre.
-window.prodAbrirProducto = async function(nombre, aviso){
+window.prodAbrirProducto = async function(nombre, aviso, tab){   /* 3-nov (P2) · tab: abre la ficha en esa pestaña (ej. 'diseno') */
   try { navegarA('costos'); } catch (_) {}
   const k = String(nombre || '').toUpperCase().replace(/\s+/g, ' ').trim();
   for (let i = 0; i < 60; i++){   // hasta 30 s a que cargue la lista de productos
@@ -6122,6 +6122,7 @@ window.prodAbrirProducto = async function(nombre, aviso){
   }
   if (typeof COS === 'undefined' || !COS.esAdmin){ try { toast('Solo un administrador puede crear o editar productos', 'warn'); } catch (_) {} return false; }
   const rec = (COS.data || []).find(x => String(x.Diseno || '').toUpperCase().replace(/\s+/g, ' ').trim() === k);
+  if (rec && tab) rec._tab = tab;
   _cosForm(rec || _cosPrellenar(k));
   try { document.getElementById('cos-form').scrollIntoView({ behavior:'smooth', block:'start' }); } catch (_) {}
   if (aviso) { try { toast(aviso, 'ok'); } catch (_) {} }
@@ -8361,10 +8362,11 @@ function _cosForm(r) {
         + '<div id="cf-catw" style="margin-top:4px;font-size:11px;color:var(--mu);display:none">Tipo nuevo: elige su categoría <select id="cf-cat" style="' + st + ';width:auto;font-size:12px;padding:3px 6px"><option value=""></option>' + (COS.cats || []).map(c => '<option value="' + esc(c) + '"' + (String(v.Categoria || '') === c ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select></div></div>'
     + '</div>'
     + '<div id="cf-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px;border-bottom:1px solid var(--bd);padding-bottom:8px">'
-      + (esNuevo ? [['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda']] : [['resumen', '📋 Resumen'], ['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda'], ['ordenes', '🏭 Órdenes']]).map(t => '<button type="button" class="btn bg bs cf-tab" data-t="' + t[0] + '" style="font-size:12px">' + t[1] + '</button>').join('')
+      + (esNuevo ? [['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda']] : [['resumen', '📋 Resumen'], ['diseno', '✏️ Diseño'], ['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda'], ['ordenes', '🏭 Órdenes']]).map(t => '<button type="button" class="btn bg bs cf-tab" data-t="' + t[0] + '" style="font-size:12px">' + t[1] + '</button>').join('')
     + '</div>'
     + (esNuevo ? '' : '<div class="cf-sec" data-sec="resumen" style="display:none">' + _cosResumenHtml(v) + '</div>'
-        + '<div class="cf-sec" data-sec="ordenes" style="display:none"><div id="cf-ord" style="font-size:13px;color:var(--mu)">Cargando órdenes…</div></div>')
+        + '<div class="cf-sec" data-sec="ordenes" style="display:none"><div id="cf-ord" style="font-size:13px;color:var(--mu)">Cargando órdenes…</div></div>'
+        + '<div class="cf-sec" data-sec="diseno" style="display:none"><div id="cf-dis" style="font-size:13px;color:var(--mu)">Cargando…</div></div>')   /* 3-nov (Pablo · P2) · el diseño vive en la ficha del producto */
     + '<div class="cf-sec' + (_cosEditaCosto() ? '' : ' cf-ro') + '" data-sec="costo" style="display:none">'
       + (_cosEditaCosto() ? '' : '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">🔒 El costo lo carga <b>🧵 Producción</b> (materiales, taller y confección). Aquí solo se ve.</div>')
       + '<div style="font-weight:600;font-size:13px;margin-bottom:6px">Costo</div>'
@@ -8428,11 +8430,58 @@ function _cosForm(r) {
     const _cfm = document.getElementById('cf-media');
     if (t === 'ficha' && !esNuevo && _cfm && !_cfm.dataset.pintado) { _cfm.dataset.pintado = '1'; _cosMediaPintar(v); _cosHistCabecera(v); }
     if (t === 'ordenes' && !esNuevo) _cosOrdenesPintar(v);
+    if (t === 'diseno' && !esNuevo) _cosDisenoPintar(v);
   };
   cont.querySelectorAll('.cf-ir').forEach(b => b.addEventListener('click', () => verTab(b.dataset.ir)));
   cont.querySelectorAll('.cf-tab').forEach(b => b.addEventListener('click', () => verTab(b.dataset.t)));
   verTab(v._tab === 'shopify' ? 'datos' : (v._tab === 'textos' ? 'ficha' : (v._tab || (esNuevo ? 'costo' : 'resumen'))));
   if (esNuevo || !v.Modelo) { try { skuEl.focus(); skuEl.setSelectionRange(skuEl.value.length, skuEl.value.length); } catch (e) {} }
+}
+
+/* ══ 3-nov (Pablo · P2 ficha única) · ✏️ DISEÑO en la ficha del producto: boceto, muestra, moldes y otros.
+   Son los MISMOS archivos que se suben desde la orden de 🧵 Producción (prod_archivos, por diseño): una sola fuente.
+   Subir/quitar: quien tiene 🧵 Producción en edición. Quitar no borra el archivo (se recupera en la Papelera). ══ */
+const COS_DIS_T = [['diseno', '✏️ Diseño', 'Boceto o referencia'], ['muestra', '👗 Muestra', 'Fotos de la muestra'], ['molde', '📐 Moldes', 'Moldes y escalado'], ['otro', '📎 Otros', 'Lo que haga falta']];
+async function _cosDisFirmar(rutas) {
+  if (!rutas.length) return {};
+  const tok = await _sbSesionAsegurar(); if (!tok) return {};
+  try { const r = await fetch(SB_URL + '/storage/v1/object/sign/produccion', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresIn: 600, paths: rutas }) });
+    const j = await r.json(), U = {}; (Array.isArray(j) ? j : []).forEach(x => { const u = x.signedURL || x.signedUrl; if (u && x.path) U[x.path] = SB_URL + '/storage/v1' + u; }); return U; } catch (_) { return {}; }
+}
+async function _cosDisenoPintar(v) {
+  const box = document.getElementById('cf-dis'); if (!box) return;
+  const d = _cinNrm(v && v.Diseno), puede = _cosEditaCosto();
+  let A = []; try { A = (await _cinSb('/rest/v1/prod_archivos?select=id,tipo,ruta,nombre,mime&diseno=eq.' + encodeURIComponent(d) + '&order=id')) || []; } catch (e) { box.innerHTML = 'No se pudieron leer los archivos: ' + esc(e.message); return; }
+  const U = await _cosDisFirmar(A.map(a => a.ruta)), img = a => /^image\//.test(a.mime || '') || /\.(jpe?g|png|webp|gif|heic)$/i.test(a.nombre || '');
+  box.innerHTML = '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Solo hace falta en productos nuevos. Son los mismos archivos que ve la orden en 🧵 Producción; al subir la muestra se avisa a Heily para las fotos.</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">'
+    + COS_DIS_T.map(([t, nom, ay]) => { const L = A.filter(a => a.tipo === t);
+      return '<div style="border:1px solid var(--bd);border-radius:10px;padding:10px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b style="font-size:13px;font-weight:600">' + nom + (L.length ? ' <span style="color:var(--gn)">✓ ' + L.length + '</span>' : '') + '</b>'
+        + (puede ? '<label style="cursor:pointer;font-size:12px;color:var(--ac);font-weight:600">＋ Subir<input type="file" multiple accept="image/*,application/pdf,.dxf,.plt,.ai,.zip" data-t="' + t + '" class="cfd-up" style="display:none"></label>' : '') + '</div>'
+        + '<div style="display:flex;flex-wrap:wrap;gap:6px">' + (L.length ? L.map(a => '<div style="position:relative">'
+          + (img(a) && U[a.ruta] ? '<a href="' + esc(U[a.ruta]) + '" target="_blank" rel="noopener"><img src="' + esc(U[a.ruta]) + '" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px;background:var(--bd)"></a>'
+                               : '<a href="' + esc(U[a.ruta] || '#') + '" target="_blank" rel="noopener" style="font-size:11px;font-weight:600">📄 ' + esc((a.nombre || 'archivo').slice(0, 22)) + '</a>')
+          + (puede ? '<button type="button" class="btn bg bs cfd-x" data-id="' + a.id + '" title="Quitar (se recupera en la Papelera)" style="position:absolute;top:-6px;right:-6px;padding:0 5px;font-size:11px">✕</button>' : '') + '</div>').join('') : '<span style="font-size:12px;color:var(--mu)">' + ay + '</span>') + '</div>'
+        + '<div class="cfd-msg" data-t="' + t + '" style="font-size:12px;color:var(--mu)"></div></div>'; }).join('') + '</div>';
+  box.querySelectorAll('.cfd-up').forEach(inp => inp.addEventListener('change', async () => {
+    const t = inp.dataset.t, msg = box.querySelector('.cfd-msg[data-t="' + t + '"]'), files = [...inp.files], slug = d.replace(/[^A-Z0-9]+/g, '-'), tok = await _sbSesionAsegurar();
+    let ok = 0;
+    for (const f of files) {
+      if (f.size > 25 * 1024 * 1024) { msg.textContent = '«' + f.name + '» pesa más de 25 MB'; continue; }
+      msg.textContent = 'Subiendo ' + (ok + 1) + ' de ' + files.length + '…';
+      const ruta = slug + '/' + t + '/' + Date.now() + '_' + f.name.replace(/[^\w.\-]+/g, '_');
+      try { const r = await fetch(SB_URL + '/storage/v1/object/produccion/' + ruta, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': f.type || 'application/octet-stream' }, body: f });
+        if (!r.ok) throw new Error('no se pudo subir (' + r.status + ')');
+        const g = await _cinSb('/rest/v1/rpc/prod_archivo_guardar', { p_diseno: d, p_tipo: t, p_ruta: ruta, p_nombre: f.name, p_mime: f.type || '' }); if (g && g.ok === false) throw new Error(g.error || 'no se guardó');
+        ok++; } catch (e) { msg.textContent = '«' + f.name + '»: ' + e.message; }
+    }
+    _cosDisenoPintar(v);
+  }));
+  box.querySelectorAll('.cfd-x').forEach(b => b.addEventListener('click', async () => {
+    if (!(await npConfirm('¿Quitar este archivo?\n\nSe recupera desde la Papelera.'))) return;
+    try { const r = await _cinSb('/rest/v1/rpc/prod_archivo_borrar', { p_arch: +b.dataset.id }); if (r && r.ok === false) throw new Error(r.error || 'no se pudo'); } catch (e) { toast('No se pudo quitar: ' + esc(e.message), 'err'); }
+    _cosDisenoPintar(v);
+  }));
 }
 
 // 3-oct · FICHA ESTRUCTURADA: lo que escribes aqui arma la sección «La prenda» de la tienda (Tela / Entalle / Corte / Detalle + Cuidados) y el subtítulo.
