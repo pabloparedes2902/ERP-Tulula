@@ -321,7 +321,7 @@ function aplicarTablero(T){
   D.ordenes = T.ordenes || []; D.lineas = T.lineas || []; D.movs = T.movs || [];
   D.ordenes.forEach(x => { if (ETAPA_VIEJA[x.etapa]) x.etapa = ETAPA_VIEJA[x.etapa]; });
   D._etapaGuardada = {}; D.ordenes.forEach(x => { D._etapaGuardada[x.id] = x.etapa; });
-  D.pagos = T.pagos || []; D.arch = T.arch || []; D.talleres = Array.isArray(T.talleres) ? T.talleres : null; D.ins = T.ins || [];
+  D.pagos = T.pagos || []; D.compras = T.compras || []; D.arch = T.arch || []; D.talleres = Array.isArray(T.talleres) ? T.talleres : null; D.ins = T.ins || [];
   D.prod = null; if (Array.isArray(T.prod) && T.prod.length){ D.prod = {}; T.prod.forEach(x => { D.prod[nrm(x.diseno)] = x; }); }
   Object.keys(T.param || {}).forEach(k => { D.param[k] = +T.param[k]; });
   D.nivel = +T.nivel || 0;
@@ -405,7 +405,8 @@ function siguiente(o, k, T){
   const lt = llegaTaller(o);
   if (o.cerrada) return '✓ Cerrada';
   if (k === 'plan') return '➡ Definir tela e insumos';
-  if (k === 'compras') return '➡ Comprar tela y entregarla al taller';
+  if (k === 'compras'){ const c = (D.compras || []).filter(x => x.orden_id === o.id).reduce((a, x) => a + (+x.monto || 0), 0);
+    return c ? '✓ Compras ' + S2(c) + ' · ➡ entregar la tela al taller' : '➡ Comprar tela y entregarla al taller'; }
   if (k === 'programa') return lt ? (lt < hoy0() ? '<span class="err">🧵 el taller debía entregar el ' + fTxt(lt) + '</span>' : '🧵 El taller entrega el ' + fTxt(lt)) : '🧵 En el taller';
   if (!D.movs.some(m => m.orden_id === o.id)) return '<span style="color:var(--am)">➡ Contar lo que llegó</span>';
   if (T.falta) return '➡ Faltan ' + T.falta + ' por entregar';
@@ -748,7 +749,7 @@ function abrirOrden(id){
     + prodChip(o) + ((!o.cerrada && !o.fecha_taller && D.nivel >= 2) ? ' <button class="p" onclick="derivarHoy()" title="Marca hoy como el día en que la tela e insumos se entregaron al taller">🚚 Derivar al taller hoy</button>' : '')
     + '<span class="sp"></span>' + (D.nivel >= 2 ? ' <button onclick="borrarOrden()" style="color:var(--rd);border-color:var(--rd)">🗑️ Eliminar</button>' : '') + '</div>'
     + '<!--TABS-->'
-    + '<div class="opane" data-p="ped"><div id="oPed"></div></div>'
+    + '<div class="opane" data-p="ped"><div id="oPed"></div>' + comprasHtml(o) + '</div>'
     + '<div class="opane" data-p="res"><div class="res"><div><b>' + T.pedido + '</b>pedidas</div><div><b class="okt">' + T.buenas + '</b>listas (al stock)</div>' + (T.sucias ? '<div><b style="color:var(--am)">' + T.sucias + '</b>por lavar</div>' : '') + '<div><b style="color:var(--am)">' + T.correccion + '</b>en corrección</div><div><b class="err">' + T.perdidas + '</b>perdidas</div><div><b>' + T.yayitas + '</b>yayitas</div><div><b>' + T.falta + '</b>faltan entregar</div></div>'
     + '<table class="g"><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '</tr>'
     + colores.map(c => '<tr><td><b>' + esc(c) + '</b></td>' + tallas.map(t => celda(c, t, s => '<td class="' + (s.correccion ? 'ag' : '') + '" title="Pedidas ' + s.pedido + ' · listas ' + s.buenas + ' · corrección ' + s.correccion + ' · perdidas ' + s.perdidas + '">' + s.buenas + '/' + s.pedido + (s.correccion ? '<small>' + s.correccion + ' en corr.</small>' : '') + '</td>')).join('') + '</tr>').join('') + '</table>'
@@ -784,6 +785,53 @@ function abrirOrden(id){
 }
 /* 4-nov · el formulario del pedido vive dentro de la orden (pestaña «Pedido»). Se guarda con 💾, que aparece solo cuando algo cambió */
 let PED_SUCIO = false;
+/* ══ 4-nov (Pablo · paso 2) · COMPRAS DE TELA E INSUMOS: se registran en la orden y pasan SOLAS a Finanzas › Egresos (categoría INSUMOS),
+   con las mismas reglas de Egresos (cuenta, quién pagó, foto del voucher salvo efectivo y caja chica). Un solo registro: no se anota dos veces. ══ */
+const CMP_SIN_FOTO = ['EFECTIVO', 'CAJA CHICA'];
+function cmpOrigenes(){ try { if (parent && parent !== window && parent._egrOrigenes) return parent._egrOrigenes(); } catch (_) {}
+  return ['BCP', 'IBK', 'BBVA', 'ANA EMPRESA', 'PABLO EMPRESA', 'ANA', 'PABLO', 'TARJETA CREDITO', 'EFECTIVO', 'CAJA CHICA']; }
+function comprasHtml(o){
+  const C = (D.compras || []).filter(c => c.orden_id === o.id), tot = C.reduce((a, c) => a + (+c.monto || 0), 0);
+  const MM = insLimpio(o.materiales || []), Q = {}; D.lineas.filter(l => l.orden_id === o.id).forEach(l => { Q[nrm(l.color)] = (Q[nrm(l.color)] || 0) + (+l.pedido || 0); });
+  let plan = null; try { if (MM.length){ const n = insPrendas(MM, Q), tl = insTela(MM, n); plan = tl; } } catch (_) {}
+  const noms = [...new Set(MM.map(m => m.nombre).filter(Boolean).concat((MATS || []).filter(m => m.activo).map(m => m.nombre)))];
+  const hoy = new Date().toLocaleDateString('en-CA', { timeZone:'America/Lima' }), pod = D.nivel >= 2 && !o.cerrada;
+  return '<div class="sec"><h4>🧾 Compras de tela e insumos <span class="mu" style="font-weight:400;font-size:12px">· pasan solas a Finanzas › Egresos (no registrarlas otra vez allí)</span></h4>'
+    + '<div class="res"><div><b>' + S2(tot) + '</b>comprado</div>' + (plan && plan.cos ? '<div><b>' + S2(plan.cos) + '</b>planificado (tela)</div><div><b>' + Math.round(plan.met).toLocaleString('es-PE') + ' m</b>tela necesaria</div>' : '') + '</div>'
+    + (C.length ? '<table class="g"><tr><th>Fecha</th><th>Qué</th><th>Cantidad</th><th>Monto</th><th>Egreso</th></tr>' + C.map(c => '<tr><td>' + esc(c.fecha) + '</td><td>' + esc(c.material + (c.proveedor ? ' · ' + c.proveedor : '')) + '</td><td>' + (c.cantidad != null ? (+c.cantidad).toLocaleString('es-PE') + ' ' + esc(c.unidad || '') : '—') + '</td><td>' + S2(c.monto) + '</td><td>' + (c.egreso_id ? '✓ #' + c.egreso_id : '—') + '</td></tr>').join('') + '</table>' : '<div class="mu" style="font-size:12px">Todavía no hay compras registradas.</div>')
+    + (pod ? '<div class="f" style="margin-top:8px"><div><label>Qué compraste</label><input id="cmMat" list="lCmMat" placeholder="COLORTEX" oninput="cmpProv()"><datalist id="lCmMat">' + noms.map(n => '<option value="' + esc(n) + '">').join('') + '</datalist></div>'
+      + '<div><label>Proveedor</label><input id="cmProv"></div><div><label>Cantidad</label><input id="cmCant" type="number" min="0" step="0.1"></div>'
+      + '<div><label>Unidad</label><select id="cmUni"><option>m</option><option>und</option><option>kg</option><option>par</option></select></div>'
+      + '<div><label>Monto S/</label><input id="cmMonto" type="number" min="0" step="0.01"></div><div><label>Fecha</label><input id="cmFecha" type="date" value="' + hoy + '" max="' + hoy + '"></div>'
+      + '<div><label>Desde qué cuenta</label><select id="cmOrig" onchange="cmpFotoReq()"><option value="">Elige…</option>' + cmpOrigenes().map(x => '<option>' + esc(x) + '</option>').join('') + '</select></div>'
+      + '<div><label>Quién pagó</label><select id="cmQuien"><option value="EMPRESA">Empresa</option><option value="ANA">Ana</option><option value="PABLO">Pablo</option></select></div>'
+      + '<div><label id="cmFotoL">Foto del voucher</label><input id="cmFoto" type="file" accept="image/*,application/pdf"></div></div>'
+      + '<button class="p" id="cmOk" onclick="cmpGuardar()">🧾 Registrar compra (va a Egresos)</button> <span id="cmMsg" class="err"></span>' : '') + '</div>';
+}
+function cmpProv(){ const m = (MATS || []).find(x => x.activo && nrm(x.nombre) === nrm((document.getElementById('cmMat') || {}).value)); if (!m) return;
+  const p = document.getElementById('cmProv'); if (p && !p.value) p.value = m.proveedor || ''; const u = document.getElementById('cmUni'); if (u && m.unidad) u.value = m.unidad; }
+function cmpFotoReq(){ const o = (document.getElementById('cmOrig') || {}).value, l = document.getElementById('cmFotoL'); if (l) l.textContent = CMP_SIN_FOTO.indexOf(o) >= 0 ? 'Foto (no hace falta)' : 'Foto del voucher'; }
+async function cmpGuardar(){
+  const v = id => (document.getElementById(id) || {}).value || '', msg = document.getElementById('cmMsg'), b = document.getElementById('cmOk'); msg.textContent = '';
+  if (!v('cmMat').trim()) { msg.textContent = 'Escribe qué compraste.'; return; }
+  if (!(+v('cmMonto') > 0)) { msg.textContent = 'Pon el monto.'; return; }
+  if (!v('cmOrig')) { msg.textContent = 'Elige desde qué cuenta se pagó.'; return; }
+  const f = (document.getElementById('cmFoto') || {}).files, file = f && f[0];
+  if (!file && CMP_SIN_FOTO.indexOf(v('cmOrig')) < 0) { msg.textContent = 'Falta la foto del voucher (solo efectivo y caja chica van sin foto).'; return; }
+  b.disabled = true; b.textContent = 'Registrando…';
+  try {
+    let ruta = '';
+    if (file){ const ext = /pdf/i.test(file.type) ? 'pdf' : /png/i.test(file.type) ? 'png' : /webp/i.test(file.type) ? 'webp' : 'jpg';
+      ruta = v('cmFecha').slice(0, 7) + '/egreso_' + Date.now() + '_' + Math.floor(Math.random() * 46656).toString(36) + '.' + ext;
+      const r = await fetch(SB + '/storage/v1/object/egresos/' + ruta, { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type': file.type || 'image/jpeg' }, body: file });
+      if (!r.ok) throw new Error('No se pudo subir la foto (' + r.status + '): ¿tienes permiso en Egresos?'); }
+    const r = await rpc('prod_compra_registrar', { p_orden: OA.id, p: { material: v('cmMat'), proveedor: v('cmProv'), cantidad: v('cmCant'), unidad: v('cmUni'), monto: v('cmMonto'),
+      fecha: v('cmFecha'), origen: v('cmOrig'), pagado_por: v('cmQuien'), foto_path: ruta } });
+    if (!r || r.ok === false) throw new Error((r && r.error) || 'no se guardó');
+    aviso(r.duplicado ? 'Esa compra ya estaba registrada (no se duplicó).' : '✓ Compra registrada y enviada a Egresos (#' + r.egreso_id + ')'); { const m = document.getElementById('msg'); if (m) m.className = 'okt'; }
+    OA._tab = 'ped'; await cargar(); abrirOrden(OA.id);
+  } catch (e) { msg.textContent = /prod_compra_registrar|PGRST202|Falta instalar/.test(String(e.message)) ? 'Falta pegar el SQL de compras (4-nov) en Supabase.' : e.message; b.disabled = false; b.textContent = '🧾 Registrar compra (va a Egresos)'; }
+}
 function pedMontar(o){
   const nb = document.querySelector('#mNueva .box'), dst = document.getElementById('oPed'); if (!nb || !dst) return;
   dst.appendChild(nb); nb.classList.add('pedPanel'); nb.classList.remove('pedCrear'); EN_ORDEN = true;
