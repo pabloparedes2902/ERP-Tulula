@@ -1063,10 +1063,14 @@ function costosHtml(o, T){
       : '<tr><td><b>Pendiente</b></td><td><b style="color:' + (c.pend > 0.01 ? 'var(--am)' : 'var(--ok)') + '">' + S2(c.pend) + '</b></td></tr>') + '</table>';
   if (c.imp) h += '<div class="mu" style="font-size:12px" title="Orden importada del Drive: los pagos hechos antes del 21-oct siguen en el Drive.">Pagos anteriores en el Drive ⓘ</div>';
   if (c.P.length) h += '<b style="font-size:14px;font-weight:600">Pagos</b><table class="g"><tr><th>Fecha</th><th>Concepto</th><th>Monto</th><th>Boleta</th><th></th></tr>'
-    + c.P.map(x => '<tr><td>' + esc(x.fecha) + '</td><td>' + esc(x.concepto) + '</td><td>' + S2(x.monto) + '</td><td>' + esc(x.boleta || '') + '</td><td><button title="Borrar (cargado por error)" onclick="borrarPago(' + x.id + ')">✕</button></td></tr>').join('') + '</table>';
+    + c.P.map(x => '<tr><td>' + esc(x.fecha) + '</td><td>' + esc(x.concepto) + '</td><td>' + S2(x.monto) + '</td><td>' + esc(x.boleta || '') + (x.egreso_id ? ' <span class="okt" title="Ya está en Finanzas › Egresos (Confección)">✓ Egreso #' + x.egreso_id + '</span>' : '') + '</td><td><button title="Corregir este pago aquí mismo" onclick="pagoEditar(' + x.id + ')">✏️</button> <button title="Borrar (cargado por error)" onclick="borrarPago(' + x.id + ')">✕</button></td></tr>').join('') + '</table>';
   h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px"><select id="pCon" onchange="pagoSug()"><option>' + (c.pagado <= 0 ? 'Adelanto ' + c.pct + '%' : 'Saldo') + '</option><option>' + (c.pagado <= 0 ? 'Saldo' : 'Adelanto ' + c.pct + '%') + '</option><option>Otro</option></select>'
     + '<input id="pMon" type="number" step="0.5" min="0" style="width:110px" value="' + (sug || '') + '" placeholder="Monto"><input id="pFec" type="date" value="' + hoy + '">'
-    + '<input id="pBol" placeholder="Boleta / medio" style="width:140px"><button class="p" onclick="guardarPago()">Registrar pago</button> <span id="pMsg" class="err"></span></div>';
+    + '<select id="pOrig" onchange="pagoFotoReq()"><option value="">Desde qué cuenta…</option>' + cmpOrigenes().map(x => '<option>' + esc(x) + '</option>').join('') + '</select>'
+    + '<select id="pQuien"><option value="EMPRESA">Pagó: Empresa</option><option value="ANA">Pagó: Ana</option><option value="PABLO">Pagó: Pablo</option></select>'
+    + '<label id="pFotoL" style="font-size:12px">Voucher <input id="pFoto" type="file" accept="image/*,application/pdf" style="width:180px"></label>'
+    + '<button class="p" id="pOk" onclick="guardarPago()">Registrar pago (va a Egresos)</button> <button id="pCancel" style="display:none" onclick="pagoCancelar()">Cancelar</button> <span id="pMsg" class="err"></span></div>'
+    + '<div class="mu" style="font-size:12px;margin-top:2px">Cada pago pasa solo a Finanzas › Egresos como Confección: no lo registres otra vez allí.</div>';
   h += '<div style="margin-top:10px"><b style="font-size:14px;font-weight:600">Descuentos al taller</b>'
     + (c.DS.length ? '<table class="g"><tr><th>Fecha</th><th>Concepto</th><th>Monto</th><th></th></tr>' + c.DS.map(x => '<tr><td>' + esc(x.fecha) + '</td><td>' + esc(x.concepto) + '</td><td>− ' + S2(x.monto) + '</td><td><button title="Borrar (cargado por error)" onclick="borrarPago(' + x.id + ')">✕</button></td></tr>').join('') + '</table>' : '')
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:4px"><input id="dCon" list="lDCon" placeholder="Concepto" style="width:190px"><datalist id="lDCon"><option value="Adelanto ya entregado"><option value="Préstamo"><option value="Prendas con falla"><option value="Tela / insumos perdidos"><option value="Otro"></datalist>'
@@ -1084,11 +1088,34 @@ async function guardarCostos(){
     if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); }
   catch (e) { msg.textContent = /prod_costos2_guardar|404/.test(e.message) ? 'Falta pegar el SQL de costos (26-oct) en Supabase.' : e.message; }
 }
+/* 4-nov (Pablo) · pago al taller por partes (adelanto 80% · saldo · otro), corregible aquí mismo con ✏️, y pasa SOLO a Egresos (Confección) */
+let PAGO_EDIT = null;
+function pagoFotoReq(){ const o = (document.getElementById('pOrig') || {}).value, l = document.getElementById('pFotoL'); if (l) l.firstChild.textContent = CMP_SIN_FOTO.indexOf(o) >= 0 ? 'Foto (no hace falta) ' : 'Voucher '; }
+function pagoEditar(id){ const x = (D.pagos || []).find(p => p.id === id); if (!x) return; PAGO_EDIT = x;
+  const set = (k, v) => { const e = document.getElementById(k); if (e) e.value = v == null ? '' : v; };
+  const sel = document.getElementById('pCon'); if (![...sel.options].some(o => o.value === x.concepto)) sel.add(new Option(x.concepto, x.concepto)); set('pCon', x.concepto);
+  set('pMon', x.monto); set('pFec', x.fecha); set('pOrig', x.origen || ''); set('pQuien', x.pagado_por || 'EMPRESA');
+  document.getElementById('pOk').textContent = '💾 Guardar cambio'; document.getElementById('pCancel').style.display = ''; document.getElementById('pMon').focus(); }
+function pagoCancelar(){ PAGO_EDIT = null; abrirOrden(OA.id); }
 async function guardarPago(){
-  const msg = document.getElementById('pMsg'); msg.textContent = '';
-  const m = +document.getElementById('pMon').value; if (!(m > 0)){ msg.textContent = 'Pon el monto.'; return; }
-  try { const r = await rpc('prod_pago_guardar', { p_id: OA.id, p_concepto: document.getElementById('pCon').value, p_monto: m, p_fecha: document.getElementById('pFec').value || null, p_boleta: document.getElementById('pBol').value });
-    if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); } catch (e) { msg.textContent = e.message; }
+  const v = id => (document.getElementById(id) || {}).value || '', msg = document.getElementById('pMsg'), b = document.getElementById('pOk'); msg.textContent = '';
+  const m = +v('pMon'); if (!(m > 0)){ msg.textContent = 'Pon el monto.'; return; }
+  const viejo = PAGO_EDIT && !PAGO_EDIT.egreso_id;   /* pago anterior al 4-nov (ya estaba en el Drive/Egresos): solo se corrige aquí */
+  if (!viejo && !v('pOrig') && !(PAGO_EDIT && PAGO_EDIT.origen)){ msg.textContent = 'Elige desde qué cuenta se pagó.'; return; }
+  const f = (document.getElementById('pFoto') || {}).files, file = f && f[0];
+  if (!PAGO_EDIT && !file && CMP_SIN_FOTO.indexOf(v('pOrig')) < 0){ msg.textContent = 'Falta la foto del voucher (solo efectivo y caja chica van sin foto).'; return; }
+  b.disabled = true;
+  try {
+    let ruta = '';
+    if (file){ const ext = /pdf/i.test(file.type) ? 'pdf' : /png/i.test(file.type) ? 'png' : /webp/i.test(file.type) ? 'webp' : 'jpg';
+      ruta = (v('pFec') || new Date().toLocaleDateString('en-CA', { timeZone:'America/Lima' })).slice(0, 7) + '/egreso_' + Date.now() + '_' + Math.floor(Math.random() * 46656).toString(36) + '.' + ext;
+      const r = await fetch(SB + '/storage/v1/object/egresos/' + ruta, { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type': file.type || 'image/jpeg' }, body: file });
+      if (!r.ok) throw new Error('No se pudo subir la foto (' + r.status + '): ¿tienes permiso en Egresos?'); }
+    const r = await rpc('prod_pago_registrar', { p_orden: OA.id, p: { id: PAGO_EDIT ? PAGO_EDIT.id : null, concepto: v('pCon'), monto: m, fecha: v('pFec'), origen: v('pOrig'), pagado_por: v('pQuien'), foto_path: ruta } });
+    if (!r || r.ok === false) throw new Error((r && r.error) || 'no se guardó');
+    aviso(r.duplicado ? 'Ese pago ya estaba registrado (no se duplicó).' : '✓ Pago ' + (PAGO_EDIT ? 'corregido' : 'registrado') + (r.egreso_id ? ' · en Egresos #' + r.egreso_id : '')); { const mm = document.getElementById('msg'); if (mm) mm.className = 'okt'; }
+    PAGO_EDIT = null; OA._tab = 'cos'; await cargar(); abrirOrden(OA.id);
+  } catch (e) { msg.textContent = /prod_pago_registrar|PGRST202|Falta instalar/.test(String(e.message)) ? 'Falta pegar el SQL de pagos (4-nov) en Supabase.' : e.message; b.disabled = false; }
 }
 async function guardarDescuento(){
   const msg = document.getElementById('dMsg'); msg.textContent = '';
@@ -1096,7 +1123,7 @@ async function guardarDescuento(){
   try { const r = await rpc('prod_descuento_guardar', { p_id: OA.id, p_concepto: con, p_monto: m, p_fecha: document.getElementById('dFec').value || null });
     if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); } catch (e) { msg.textContent = e.message; }
 }
-async function borrarPago(id){ confirmar('¿Borrar este pago?', 'Si fue un error, se recupera desde la Papelera.', 'Sí, borrar', async () => { const r = await rpc('prod_pago_borrar', { p_pago: id }); if (!r.ok) throw new Error(r.error || 'No se pudo'); await cargar(); abrirOrden(OA.id); }); }
+async function borrarPago(id){ const x = (D.pagos || []).find(p => p.id === id); confirmar('¿Borrar este pago?', 'Si fue un error, se recupera desde la Papelera.' + (x && x.egreso_id ? ' También se borra su egreso #' + x.egreso_id + ' (Confección).' : ''), 'Sí, borrar', async () => { const r = await rpc('prod_pago_borrar', { p_pago: id }); if (!r.ok) throw new Error(r.error || 'No se pudo'); await cargar(); abrirOrden(OA.id); }); }
 /* ══ 26-oct (Pablo) · ELIMINAR orden: solo con permiso de edición y siempre con «¿Seguro?». La base guarda una copia (papelera). ══ */
 let CONF_FN = null;
 function confirmar(titulo, texto, boton, fn){
