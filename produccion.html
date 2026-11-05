@@ -374,7 +374,7 @@ function saldos(o){
   M.forEach(x => { const s = S[k(x.color, x.talla)] || (S[k(x.color, x.talla)] = nuevo(x.color, x.talla)); s[x.tipo] += x.cantidad; });
   const T = { pedido:0, buenas:0, correccion:0, perdidas:0, yayitas:0, falta:0, porIngresar:0, sucias:0 };
   M.forEach(x => { if (esSucia(x)) T.sucias += x.cantidad; });
-  M.forEach(x => { if (!x.ingresado && ['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0) T.porIngresar += x.cantidad; });
+  M.forEach(x => { if (!x.ingresado && (['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0 || (x.tipo === 'falla' && x.entrega))) T.porIngresar += x.cantidad; });
   Object.values(S).forEach(s => { s.buenas = s.buena + s.corregida; s.correccion = Math.max(0, s.falla - s.corregida - s.perdida - s.yayita); s.perdidas = s.perdida; s.yayitas = s.yayita;   /* 21-oct F1b · yayita = falla sin arreglo que se vende barata */
     s.falta = Math.max(0, s.pedido - s.buenas - s.correccion - s.perdidas - s.yayitas);
     T.pedido += s.pedido; T.buenas += s.buenas; T.correccion += s.correccion; T.perdidas += s.perdidas; T.yayitas += s.yayitas; T.falta += s.falta; });
@@ -636,7 +636,8 @@ function nGrid(){
   if (!NV.colores.length){ document.getElementById('nGrid').innerHTML = '<div class="mu">Agrega al menos un color.</div>'; nTotal(); return; }
   const md = EN_ORDEN ? (NV.modo || 1) : 0, conTela = md > 0; if (conTela) telaNorm();
   const TL = conTela ? tallasVis() : TALLAS, falt = TALLAS.filter(t => TL.indexOf(t) < 0);
-  const inp = (c, k, v, cls, tipo) => '<input class="' + cls + '"' + (tipo ? ' type="number" min="0" step="0.1"' : ' list="lMatLib"') + ' value="' + esc(v == null || v === 0 ? '' : v) + '" oninput="nTelaSet(\'' + qs(c) + '\',\'' + k + '\',this.value)">';
+  const inp = (c, k, v, cls, tipo) => { if (!tipo && /^Monto cargado antes/i.test(String(v || ''))) v = '';   /* órdenes importadas del Drive: no tenían tela detallada */
+    return '<input class="' + cls + '"' + (tipo ? ' type="number" min="0" step="0.1"' : ' list="lMatLib" placeholder="' + (k === 'nombre' ? 'Tela - proveedor' : 'Cód.') + '"') + ' value="' + esc(v == null || v === 0 ? '' : v) + '" oninput="nTelaSet(\'' + qs(c) + '\',\'' + k + '\',this.value)">'; };
   document.getElementById('nGrid').innerHTML = '<div style="overflow-x:auto"><table class="g"><tr><th>Color</th>'
     + (conTela ? '<th>Tela</th><th>Código</th><th>' + (md >= 2 ? 'Metros que llegaron' : 'Metros a comprar') + '</th><th>Consumo (m)</th><th>Prendas estimadas</th>' : '')
     + TL.map(t => '<th>' + t + (conTela ? ' <button class="xt" title="Quitar la talla ' + t + '" onclick="nTallaQuitar(\'' + t + '\')">✕</button>' : '') + '</th>').join('')
@@ -862,13 +863,14 @@ function abrirOrden(id){
     + '<div class="opane" data-p="res"><div class="res"><div><b>' + T.pedido + '</b>pedidas</div><div><b class="okt">' + T.buenas + '</b>listas (al stock)</div>' + (T.sucias ? '<div><b style="color:var(--am)">' + T.sucias + '</b>por lavar</div>' : '') + '<div><b style="color:var(--am)">' + T.correccion + '</b>en corrección</div><div><b class="err">' + T.perdidas + '</b>perdidas</div><div><b>' + T.yayitas + '</b>yayitas</div><div><b>' + T.falta + '</b>faltan entregar</div></div>'
     + '<table class="g"><tr><th>Color</th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '</tr>'
     + colores.map(c => '<tr><td><b>' + esc(c) + '</b></td>' + tallas.map(t => celda(c, t, s => '<td class="' + (s.correccion ? 'ag' : '') + '" title="Pedidas ' + s.pedido + ' · listas ' + s.buenas + ' · corrección ' + s.correccion + ' · perdidas ' + s.perdidas + '">' + s.buenas + '/' + s.pedido + (s.correccion ? '<small>' + s.correccion + ' en corr.</small>' : '') + '</td>')).join('') + '</tr>').join('') + '</table>'
-    + '</div><div class="opane" data-p="res">' + lotesHtml(o, T, S);   /* 3-nov (F5) · Resumen y entregas en una sola pestaña */   /* 26-oct · entrega por lotes (por color y talla) */
-  const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && ['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0);
+    + '</div><div class="opane" data-p="res">' + lotesRecibidosHtml(o) + lotesHtml(o, T, S);   /* 3-nov (F5) · Resumen y entregas en una sola pestaña */   /* 26-oct · entrega por lotes (por color y talla) */
+  const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && (['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0 || (x.tipo === 'falla' && x.entrega)));
   const piTxt = PI.length ? '<div style="margin:6px 0;color:var(--am)">📦 ' + T.porIngresar + ' prendas ya contadas no entraron al stock <button class="p" onclick="ingresarStock({auto:true})">Pasarlas al stock ahora</button></div>' : '';
   if (!o.cerrada){
-    h += '<div class="sec"><h4>Recibir lo que entregó el taller</h4>' + piTxt
-      + gridMov('e', colores, tallas, S, [['buena','Buenas'], ['falla','Con falla (vuelven al taller)']]) + '<button class="p" onclick="guardarMov(\'e\')" title="Un clic: buenas al stock y a la web · fallas a corrección">📦 Recibir y pasar al stock</button> <span id="eMsg" class="err"></span>'
-      + '</div>';
+    h += '<div class="sec"><h4>Recibir un lote · <span style="font-weight:600">' + esc(loteSiguiente(o)) + '</span> <span class="mu" style="font-weight:400;font-size:12px">(se numera solo)</span></h4>' + piTxt
+      + loteGrid(colores, tallas, S) + '<button class="p" onclick="guardarLote()" title="Un clic: la confección real entra al stock y a la web; lo no disponible entra a Stock › No disponible (falla, para corregir)">📦 Registrar lote y pasar al stock</button> <span id="lMsg" class="err"></span></div>'
+      + (D.movs.some(m => m.entrega) ? '' : '<details class="sec"><summary class="mu" style="cursor:pointer;font-size:12px">Forma anterior de recibir (se retira al registrar el primer lote)</summary>'
+        + gridMov('e', colores, tallas, S, [['buena','Buenas'], ['falla','Con falla (vuelven al taller)']]) + '<button onclick="guardarMov(\'e\')">📦 Recibir y pasar al stock</button> <span id="eMsg" class="err"></span></details>');
   } else if (piTxt) h += '<div class="sec">' + piTxt + '</div>';
   if (!o.cerrada){
     if (T.correccion) h += '<div class="sec"><h4>Prendas en corrección (' + T.correccion + ')</h4>'
@@ -969,7 +971,16 @@ async function guardarMov(pre){
   if (movs.some(m => (m.tipo === 'perdida' || m.tipo === 'yayita') && !String(m.motivo || '').trim())){ msg.textContent = 'Escribe el motivo (yayita o pérdida).'; return; }
   const MOT = motivos().map(x => nrm(x));
   if (MOT.length && movs.some(m => m.tipo === 'yayita' && MOT.indexOf(nrm(m.motivo)) < 0)){ msg.textContent = 'Para una yayita elige el motivo de la lista (es la misma lista de Fallas).'; return; }
-  try { const r = await rpc('prod_entrega', { p_id: OA.id, p_movs: movs }); if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id);
+  const enStock = (c, t) => D.movs.find(m => m.orden_id === OA.id && m.tipo === 'falla' && m.entrega && m.ingresado && m.color === c && m.talla === t);
+  const maxAntes = D.movs.reduce((a, m) => Math.max(a, m.id), 0), o0 = OA;
+  try { const r = await rpc('prod_entrega', { p_id: OA.id, p_movs: movs }); if (!r.ok) throw new Error(r.error); await cargar();
+    /* F2 · lo corregido de un lote ya estaba en Stock › No disponible: se recupera allí (no se ingresa otra vez) */
+    const rec = D.movs.filter(m => m.orden_id === o0.id && m.id > maxAntes && m.tipo === 'corregida' && enStock(m.color, m.talla));
+    if (rec.length && parent && parent !== window && typeof parent._recuperarFalla === 'function'){
+      try { await parent._recuperarFalla({ items: rec.map(m => ({ prenda: nrm(o0.diseno + ' ' + m.color + ' ' + m.talla), cantidad: m.cantidad, lote: String((enStock(m.color, m.talla).lote || '').split(',')[0]).trim() })) });
+        const x = await rpc('prod_marcar_ingresado', { p_ids: rec.map(m => m.id), p_lote: 'recuperado' }); if (!x.ok) throw new Error(x.error); await cargar(); }
+      catch (e) { aviso('Se anotó, pero no se pudo recuperar en Stock: ' + e.message + ' · hazlo en Stock › No disponible › ↩ Recuperar'); } }
+    abrirOrden(OA.id);
     if (pre === 'e' && movs.some(m => m.tipo === 'buena')) ingresarStock({ auto: true });   /* 3-nov (Pablo · F6) · recibir = ingresar al stock en un clic */
     if (pre === 'c' && movs.some(m => m.tipo === 'corregida' || m.tipo === 'yayita')) ingresarStock({ auto: true }); }
   catch (e) { msg.textContent = e.message; }
@@ -978,14 +989,60 @@ async function etapa(e){ try { const r = await rpc('prod_etapa', { p_id: OA.id, 
 async function borrarMov(id){ confirmar('¿Borrar este movimiento?', 'Si fue un error, se recupera desde la Papelera.', 'Sí, borrar', async () => { const r = await rpc('prod_mov_borrar', { p_mov: id }); if (!r.ok) throw new Error(r.error || 'No se pudo'); await cargar(); abrirOrden(OA.id); }); }
 /* 21-oct F1b · lo bueno entra por el «＋ Ingresar stock» del ERP (una sola puerta al stock) y la orden recuerda qué ya entró */
 const esSucia = m => m.tipo === 'buena' && nrm(m.motivo) === 'SUCIA';
+/* ══ 4-nov 22:10 (Pablo · F2) · ENTREGA DE CONFECCIÓN POR LOTE, con los MISMOS números que Stock:
+   Confección total (lo que llegó) · No disponible (con falla) · Confección real = total − no disponible (no se escribe: sale sola).
+   Cada lote se numera solo con el código del taller: BEL-015 (Bella, lote 15). Las fallas entran a Stock › No disponible
+   (motivo falla, para reparar) y cuando vuelven corregidas salen de ahí con ↩ Recuperar (desde «Prendas en corrección»). ══ */
+function tallerCod(t){ const x = (D.talleres || []).find(z => nrm(z.nombre) === nrm(t)); if (x && x.codigo) return x.codigo;
+  const w = nrm(t).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z ]/g, '').trim().split(/\s+/); return !w[0] ? 'TAL' : w.length > 1 ? (w[0][0] + (w[1] + 'XX').slice(0, 2)) : (w[0] + 'XX').slice(0, 3); }
+function loteSiguiente(o){ const c = tallerCod(o.taller), n = D.movs.filter(m => m.entrega && m.entrega.indexOf(c + '-') === 0).reduce((a, m) => Math.max(a, +(m.entrega.split('-').pop()) || 0), 0);
+  return c + '-' + String(n + 1).padStart(3, '0'); }
+function loteGrid(colores, tallas, S){
+  const fila = (c, k, nom, cls) => '<tr class="' + cls + '"><td>' + (k === 'tot' ? '<b>' + esc(c) + '</b>' : '') + '</td><td class="mu" style="font-size:12px;text-align:left">' + nom + '</td>'
+    + tallas.map(t => { const s = S[c + '|' + t]; if (!s) return '<td class="mu">·</td>';
+      return k === 'real' ? '<td class="okt" data-real="' + esc(c + '|' + t) + '">0</td>' : '<td><input type="number" min="0" data-g="L" data-k="' + k + '" data-c="' + esc(c) + '" data-t="' + t + '" oninput="loteReal()"></td>'; }).join('')
+    + '<td class="tt" data-lt="' + esc(c) + '|' + k + '">0</td></tr>';
+  return '<div style="overflow-x:auto"><table class="g"><tr><th>Color</th><th></th>' + tallas.map(t => '<th>' + t + '</th>').join('') + '<th>Total</th></tr>'
+    + colores.map(c => fila(c, 'tot', 'Confección total', '') + fila(c, 'nd', 'No disponible (falla)', '') + fila(c, 'real', 'Confección real', '')).join('')
+    + '<tr><td><b>Total</b></td><td></td>' + tallas.map(() => '<td></td>').join('') + '<td id="lGran"></td></tr></table></div>';
+}
+function loteReal(){
+  const v = (c, t, k) => { const i = document.querySelector('input[data-g="L"][data-k="' + k + '"][data-c="' + CSS.escape(c) + '"][data-t="' + t + '"]'); return i ? (+i.value || 0) : 0; };
+  const tot = { tot:0, nd:0, real:0 }, porC = {};
+  document.querySelectorAll('#oCuerpo td[data-real]').forEach(td => { const [c, t] = td.dataset.real.split('|'), a = v(c, t, 'tot'), b = v(c, t, 'nd'), r = a - b;
+    td.textContent = r; td.style.color = r < 0 ? 'var(--rd)' : ''; const p = porC[c] || (porC[c] = { tot:0, nd:0, real:0 }); p.tot += a; p.nd += b; p.real += r; });
+  Object.keys(porC).forEach(c => ['tot', 'nd', 'real'].forEach(k => { const td = [...document.querySelectorAll('#oCuerpo td[data-lt]')].find(x => x.dataset.lt === c + '|' + k); if (td) td.textContent = porC[c][k]; tot[k] += porC[c][k]; }));
+  const g = document.getElementById('lGran'); if (g) g.innerHTML = tot.tot + ' llegaron · <span style="color:var(--am)">' + tot.nd + ' no disponibles</span> · <b class="okt">' + tot.real + ' reales</b>';
+}
+async function guardarLote(){
+  const msg = document.getElementById('lMsg'); msg.textContent = ''; const C = {};
+  document.querySelectorAll('input[data-g="L"]').forEach(i => { const k = i.dataset.c + '|' + i.dataset.t; C[k] = C[k] || { color:i.dataset.c, talla:i.dataset.t, tot:0, nd:0 }; C[k][i.dataset.k] = +i.value || 0; });
+  const L = Object.values(C).filter(x => x.tot || x.nd);
+  if (!L.length){ msg.textContent = 'Escribe cuántas prendas llegaron.'; return; }
+  const mal = L.find(x => x.nd > x.tot); if (mal){ msg.textContent = mal.color + ' ' + mal.talla + ': no disponibles (' + mal.nd + ') es más que lo que llegó (' + mal.tot + ').'; return; }
+  const movs = []; L.forEach(x => { if (x.tot - x.nd > 0) movs.push({ color:x.color, talla:x.talla, tipo:'buena', cantidad:x.tot - x.nd }); if (x.nd > 0) movs.push({ color:x.color, talla:x.talla, tipo:'falla', cantidad:x.nd }); });
+  try { const r = await rpc('prod_recibir_lote', { p_id: OA.id, p_movs: movs }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
+    aviso('✓ Lote ' + r.lote + ' registrado: ' + L.reduce((a, x) => a + x.tot - x.nd, 0) + ' al stock'); { const m = document.getElementById('msg'); if (m) m.className = 'okt'; }
+    await cargar(); abrirOrden(OA.id); ingresarStock({ auto: true }); }
+  catch (e) { msg.textContent = /prod_recibir_lote|PGRST202|Falta instalar/.test(String(e.message)) ? 'Falta pegar el SQL de lotes (4-nov F2) en Supabase.' : e.message; }
+}
+function lotesRecibidosHtml(o){
+  const G = {}; D.movs.filter(m => m.orden_id === o.id && m.entrega).forEach(m => { const g = G[m.entrega] || (G[m.entrega] = { lote:m.entrega, fecha:m.fecha, tot:0, nd:0, real:0, st:m.lote });
+    if (m.tipo === 'buena'){ g.tot += m.cantidad; g.real += m.cantidad; } if (m.tipo === 'falla'){ g.tot += m.cantidad; g.nd += m.cantidad; } if (m.lote) g.st = m.lote; });
+  const L = Object.values(G).sort((a, b) => a.lote.localeCompare(b.lote)); if (!L.length) return '';
+  return '<div class="sec"><h4>Lotes recibidos</h4><table class="g"><tr><th>Lote</th><th>Fecha</th><th>Confección total</th><th>No disponible</th><th>Confección real</th><th>En Stock</th></tr>'
+    + L.map(g => '<tr><td><b>' + esc(g.lote) + '</b></td><td>' + esc(g.fecha || '') + '</td><td>' + g.tot + '</td><td>' + (g.nd ? '<span style="color:var(--am)">' + g.nd + '</span>' : '0') + '</td><td class="okt"><b>' + g.real + '</b></td><td class="mu">' + (g.st ? esc(g.st) : '⏳ por pasar') + '</td></tr>').join('') + '</table></div>';
+}
+function motivoFalla(){ const L = motivos(); return L.find(x => /CONFECC/.test(nrm(x))) || L.find(x => /FALLA/.test(nrm(x))) || 'Falla de confección'; }
 function motivoLavado(){ const L = motivos(); return L.find(x => /LAVAD|TINTOR/.test(nrm(x))) || 'Tintorería / lavado'; }
 function motivos(){ try { return (parent && parent !== window && parent.prodMotivosFalla) ? parent.prodMotivosFalla() : []; } catch (e) { return []; } }
 function itemsIngreso(o){
-  const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && ['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0), G = {};
-  PI.forEach(m => { const y = m.tipo === 'yayita', su = esSucia(m), k = m.color + '|' + m.talla + '|' + (y ? 'Y|' + (m.motivo || '') : su ? 'S' : 'B');
+  const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && (['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0 || (x.tipo === 'falla' && x.entrega))), G = {};
+  PI.forEach(m => { const y = m.tipo === 'yayita', su = esSucia(m), fa = m.tipo === 'falla', k = m.color + '|' + m.talla + '|' + (y ? 'Y|' + (m.motivo || '') : su ? 'S' : fa ? 'F' : 'B');
     const g = G[k] || (G[k] = { prenda: nrm(o.diseno + ' ' + m.color + ' ' + m.talla), ficha: nrm(o.diseno), color: m.color, talla: m.talla, cantidad:0, ids:[] });
     if (y){ g.motivo = m.motivo; g.destino = 'YAYITAS'; }
-    if (su){ g.motivo = motivoLavado(); g.destino = 'VUELVE'; }   /* 4-nov (Pablo) · como una prenda prestada: sale del vendible y vuelve con ↩ Recuperar */
+    if (su){ g.motivo = motivoLavado(); g.destino = 'VUELVE'; }
+    if (fa){ g.motivo = motivoFalla(); g.destino = 'REPARAR'; }   /* F2 · No disponible: vuelve a la venta con ↩ Recuperar al corregirse */   /* 4-nov (Pablo) · como una prenda prestada: sale del vendible y vuelve con ↩ Recuperar */
     g.cantidad += m.cantidad; g.ids.push(m.id); });
   return Object.values(G);
 }
