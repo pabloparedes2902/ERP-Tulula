@@ -980,9 +980,19 @@ async function guardarMov(pre){
       try { await parent._recuperarFalla({ items: rec.map(m => ({ prenda: nrm(o0.diseno + ' ' + m.color + ' ' + m.talla), cantidad: m.cantidad, lote: String((enStock(m.color, m.talla).lote || '').split(',')[0]).trim() })) });
         const x = await rpc('prod_marcar_ingresado', { p_ids: rec.map(m => m.id), p_lote: 'recuperado' }); if (!x.ok) throw new Error(x.error); await cargar(); }
       catch (e) { aviso('Se anotó, pero no se pudo recuperar en Stock: ' + e.message + ' · hazlo en Stock › No disponible › ↩ Recuperar'); } }
+    /* F2b (4-nov) · una falla de lote que termina en YAYITA o PÉRDIDA ya está en Stock › No disponible: se le cambia el tipo allí (no se ingresa de nuevo) */
+    const cam = D.movs.filter(m => m.orden_id === o0.id && m.id > maxAntes && (m.tipo === 'yayita' || m.tipo === 'perdida') && enStock(m.color, m.talla));
+    let camFallo = false;
+    if (cam.length){
+      try { const pd = partirFicha(o0.diseno);
+        for (const m of cam){ const rr = await fetch(SB + '/rest/v1/rpc/falla_cambiar_tipo', { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type':'application/json' },
+            body: JSON.stringify({ p_prenda: pd.prenda, p_diseno: pd.diseno, p_color: m.color, p_talla: m.talla, p_de: 'CORRECCION', p_a: m.tipo === 'yayita' ? 'YAYITA' : 'PERDIDA', p_cant: m.cantidad }) });
+          if (!rr.ok){ const j = await rr.json().catch(() => ({})); throw new Error((j && (j.message || j.hint)) || ('error ' + rr.status)); } }
+        const x = await rpc('prod_marcar_ingresado', { p_ids: cam.map(m => m.id), p_lote: 'cambiado en Stock' }); if (!x.ok) throw new Error(x.error); await cargar(); }
+      catch (e) { camFallo = true; aviso('Se anotó, pero no se pudo cambiar en Stock: ' + e.message + ' · hazlo en Stock › No disponible › Cambiar tipo'); } }
     abrirOrden(OA.id);
     if (pre === 'e' && movs.some(m => m.tipo === 'buena')) ingresarStock({ auto: true });   /* 3-nov (Pablo · F6) · recibir = ingresar al stock en un clic */
-    if (pre === 'c' && movs.some(m => m.tipo === 'corregida' || m.tipo === 'yayita')) ingresarStock({ auto: true }); }
+    if (pre === 'c' && !camFallo && movs.some(m => m.tipo === 'corregida' || m.tipo === 'yayita')) ingresarStock({ auto: true }); }   /* si Stock no cambió el tipo, no se ingresa: evita contarla dos veces */
   catch (e) { msg.textContent = e.message; }
 }
 async function etapa(e){ try { const r = await rpc('prod_etapa', { p_id: OA.id, p_etapa: e }); if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); } catch (er) { aviso(er.message); } }
@@ -1033,6 +1043,9 @@ function lotesRecibidosHtml(o){
   return '<div class="sec"><h4>Lotes recibidos</h4><table class="g"><tr><th>Lote</th><th>Fecha</th><th>Confección total</th><th>No disponible</th><th>Confección real</th><th>En Stock</th></tr>'
     + L.map(g => '<tr><td><b>' + esc(g.lote) + '</b></td><td>' + esc(g.fecha || '') + '</td><td>' + g.tot + '</td><td>' + (g.nd ? '<span style="color:var(--am)">' + g.nd + '</span>' : '0') + '</td><td class="okt"><b>' + g.real + '</b></td><td class="mu">' + (g.st ? esc(g.st) : '⏳ por pasar') + '</td></tr>').join('') + '</table></div>';
 }
+/* producto y diseño como los guarda Stock: «BLAZER MIRELLA» → BLAZER + MIRELLA (el producto más largo que calce al inicio) */
+function partirFicha(f){ f = nrm(f); let P = []; try { if (parent && parent !== window && typeof parent.mOpts === 'function') P = (parent.mOpts('Producto') || []).map(x => nrm(x)).filter(Boolean).sort((a, b) => b.length - a.length); } catch (_) {}
+  const p = P.find(x => f.indexOf(x + ' ') === 0) || f.split(' ')[0]; return { prenda: p, diseno: f.slice(p.length).trim() || f }; }
 function motivoFalla(){ const L = motivos(); return L.find(x => /CONFECC/.test(nrm(x))) || L.find(x => /FALLA/.test(nrm(x))) || 'Falla de confección'; }
 function motivoLavado(){ const L = motivos(); return L.find(x => /LAVAD|TINTOR/.test(nrm(x))) || 'Tintorería / lavado'; }
 function motivos(){ try { return (parent && parent !== window && parent.prodMotivosFalla) ? parent.prodMotivosFalla() : []; } catch (e) { return []; } }
