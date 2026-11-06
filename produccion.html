@@ -156,7 +156,7 @@ table.g.lote td input{width:44px}table.lg td.gs{border-left:2px solid rgba(0,0,0
 .vcab{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:10px 0 12px}.vcab label{display:flex;flex-direction:column;font-size:11px;color:var(--mu);gap:3px}.vcab input{font-size:13px}
 button.sec2{border-radius:20px;font-size:12px;padding:6px 12px}button.sec2.on{background:var(--ac);border-color:var(--ac);color:#fff}
 .vkpi{display:flex;flex-direction:column;gap:2px;font-size:11px;padding:4px 10px;border-left:2px solid var(--bd)}.vkpi b{font-size:14px;color:var(--tx)}
-.vbar{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;overflow-x:auto;margin:12px 0;padding-bottom:4px}.vbar>*{flex:none}
+.vbar{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;overflow-x:auto;margin:12px 0;padding-bottom:4px}.vbar>*{flex:none}.vbar select.vsel{width:auto;font-size:13px;padding:6px 10px;border-radius:8px;background:var(--card);color:var(--tx);border:1px solid var(--bd);cursor:pointer}
 .vb{margin:10px 0}.vbt{font-size:13px;margin:0 0 4px;color:var(--tx)}.acc b{font-weight:600}.acc .mu{font-size:12px}.acc .fl{margin-left:auto;color:var(--mu)}.acc.on{border-color:var(--ac)}.acc.on .fl{transform:rotate(90deg)}
 .box h2{font-size:20px;font-weight:600;margin:0 30px 10px 0}.x{position:absolute;top:10px;right:10px;border:0;background:transparent;font-size:18px;color:var(--mu)}
 .f{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px 10px;margin-bottom:10px}.f label{font-size:11px;color:var(--mu);display:block;margin-bottom:2px}.f input,.f select{width:100%}
@@ -517,7 +517,7 @@ function resumenHtml(L, C){
   const pasoCol = (i, t) => ({ k:'p' + i, t, w:'9%', filtro:true, val: r => ['Atrasado', 'Hecho tarde', 'En curso', 'Por hacer', 'Hecho'].indexOf(ESTADO_TXT(r.S[i])), fv: r => ESTADO_TXT(r.S[i]), html: r => celdaPaso(r.S[i]) });
   const cols = [
     { k:'o', t:'Prenda', w:'19%', al:'l', filtro:true, tip:'Filtra por Nuevo / Reposición o por tipo de prenda', val: r => r.o.diseno, fvs: r => [r.o.tipo === 'nuevo' ? 'Nuevo' : 'Reposición', prenda(r.o)], html: r => NR(r.o) + '<b>' + esc(r.o.diseno) + '</b>' + (r.o.cerrada ? ' <span class="mu" style="font-size:11px">· cerrada</span>' : '') },
-    { k:'cd', t:'Código', w:'7%', val: r => r.o.codigo || '', html: r => '<span class="mu">' + esc(r.o.codigo || '') + '</span>' },
+    { k:'cd', t:'Código', w:'7%', val: r => codOrden(r.o), html: r => '<span class="mu" title="' + esc(r.o.codigo || '') + '">' + esc(codOrden(r.o)) + '</span>' },
     { k:'ta', t:'Taller', w:'8%', filtro:true, val: r => r.o.taller || '', html: r => esc(r.o.taller || '—') },
     { k:'pr', t:'Cantidad', w:'11%', tip:'Al stock / pedidas · clic para ordenar de mayor a menor', val: r => r.T.pedido, html: r => '<span class="barra"><i style="width:' + r.pct + '%;background:' + barraCol(r.o, r.pct, r.S) + '"></i></span>' + r.T.buenas + '/' + r.T.pedido },
     pasoCol(0, '1 · Tela'), pasoCol(1, '2 · Al taller'), pasoCol(2, '3 · Entregas del taller'), pasoCol(3, '4 · En stock'),
@@ -952,43 +952,56 @@ function vistaPintar(){
   const enStock = F => F.length ? (F.every(m => m.ingresado || m.tipo === 'perdida') ? '✓ en stock' : '⏳ por pasar al stock') : '';
   const entregasDe = i => { const G = {}; M.filter(m => lp(m) === i && m.entrega).forEach(m => { (G[m.entrega] = G[m.entrega] || []).push(m); }); return Object.keys(G).sort().map(k => [k, G[k]]); };
   const qTot = {}; L.forEach(x => Object.keys(x.q || {}).forEach(k => { qTot[k] = (qTot[k] || 0) + (+x.q[k] || 0); }));
-  /* META = la fecha en que el taller debe entregar (la del lote). Si la orden vino del Drive sin lotes con fecha, se sugiere la de su fecha de venta */
-  const P = planes(o), metaSug = P.p4 || null, metaDe = i => L[i].fecha || (L.length === 1 ? metaSug : null), meta = L.map((x, i) => metaDe(i)).filter(Boolean).sort().pop() || null;
-  const dias = +((document.getElementById('nDias') || {}).value) || talDias(o.taller) || ETAPAS.corte[2], ini = (document.getElementById('nFTal') || {}).value || null;
-  const proy = masD(ini || hoy, dias), dif = meta ? difD(proy, meta) : null;
-  const vsMeta = (real, m) => !m || !real ? '' : (difD(real, m) > 0 ? ' <span style="color:#f87171">+' + difD(real, m) + ' d</span>' : ' <span style="color:#4ade80">a tiempo</span>');
+  /* 6-nov (Pablo) · DOS fechas por lote y nada más: PROGRAMADA (cuándo debe llegar) y LLEGÓ (cuándo llegó). La confección real entra al stock ese mismo día. */
+  const P = planes(o), progDe = i => L[i].fecha || (L.length === 1 ? (P.p4 || null) : null);
+  const dias = +((document.getElementById('nDias') || {}).value) || talDias(o.taller) || ETAPAS.corte[2], ini = (document.getElementById('nFTal') || {}).value || null, proy = masD(ini || hoy, dias);
+  const fProg = i => { const f = progDe(i), sug = !L[i].fecha && f, sinEnt = !entr(M.filter(m => lp(m) === i)).length, dif = f ? difD(proy, f) : null;
+    return 'programada ' + (ed ? '<input type="date" value="' + esc(f || '') + '" onchange="vLoteFecha(' + i + ',this.value)" style="width:128px;font-size:11px;padding:1px 4px;background:transparent;color:inherit;border:1px solid ' + (f ? 'rgba(255,255,255,.25)' : '#f87171') + '">' : (fD(f) || '—'))
+      + (sug ? ' <span class="mu">(sugerida)</span>' : '') + (!f ? ' <span style="color:#f87171">ponle fecha</span>' : '')
+      + (sinEnt && f && i === L.length - 1 ? '<div>proyección ' + fD(proy) + (dif > 0 ? ' <span style="color:#f87171">llegaría ' + dif + ' d tarde</span>' : ' <span style="color:#4ade80">a tiempo</span>') + '</div>' : ''); };
+  const fLlego = (F, i) => { const r = ult(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r) return ''; const d = f ? difD(r, f) : 0; return 'llegó ' + fD(r) + (f ? (d > 0 ? ' <span style="color:#f87171">' + d + ' d tarde</span>' : ' <span style="color:#4ade80">a tiempo</span>') : ''); };
   const val = id => esc((document.getElementById(id) || {}).value || ''), dis = ed ? '' : ' disabled';
-  const fMeta = i => { const f = metaDe(i), sug = !L[i].fecha && f;
-    return 'meta ' + (ed ? '<input type="date" value="' + esc(f || '') + '" onchange="vLoteFecha(' + i + ',this.value)" title="Fecha en que el taller debe entregar este lote" style="width:130px;font-size:11px;padding:1px 4px;background:transparent;color:inherit;border:1px solid ' + (f ? 'rgba(255,255,255,.25)' : '#f87171') + '">' : (fD(f) || '—')) + (sug ? ' <span class="mu">(sugerida)</span>' : '') + (!f ? ' <span style="color:#f87171">sin meta</span>' : ''); };
   let h = '<div class="vcab">'
     + '<label>Taller <input list="lTaller" value="' + val('nTaller') + '" oninput="document.getElementById(\'nTaller\').value=this.value;vSucio()"' + dis + '></label>'
     + '<label>Inicio en el taller (tela entregada) <input type="date" value="' + val('nFTal') + '" oninput="document.getElementById(\'nFTal\').value=this.value;vSucio();vistaPintar()"' + dis + '></label>'
-    + '<label>Días del taller <input type="number" min="0" style="width:80px" value="' + val('nDias') + '" placeholder="' + dias + '" oninput="document.getElementById(\'nDias\').value=this.value;vSucio()" onchange="vistaPintar()"' + dis + '></label>'
-    + '<div class="vkpi"><span class="mu">🎯 Meta</span><b>' + (fD(meta) || '—') + '</b></div>'
-    + '<div class="vkpi"><span class="mu">Proyección' + (ini ? '' : ' (si entra hoy)') + '</span><b>' + fD(proy) + '</b></div>'
-    + (dif == null ? '' : '<div class="vkpi" style="max-width:420px"><span class="mu">Diferencia</span>' + (dif > 0 ? '<b style="color:#f87171">+' + dif + ' d tarde</b><span class="mu" style="font-size:11px">Pide al taller ' + Math.max(1, dias - dif) + ' días o un primer lote más chico</span>' : '<b style="color:#4ade80">a tiempo' + (dif < 0 ? ' (' + (-dif) + ' d de holgura)' : '') + '</b>') + '</div>')
-    + '</div>';
-  const mT = entr(M), rT = ult(mT);
+    + '<label>Días del taller <input type="number" min="0" style="width:80px" value="' + val('nDias') + '" placeholder="' + dias + '" oninput="document.getElementById(\'nDias\').value=this.value;vSucio()" onchange="vistaPintar()"' + dis + '></label></div>';
   h += vBloque(L.length > 1 ? 'Total de la orden' : 'Orden · un solo lote', cols, tal, L.length > 1 ? qTot : (L[0].q || {}), vMovsAgg(M), L.length > 1 || !ed ? 'tot' : 'lote', 0,
-    { p: L.length > 1 ? 'meta ' + (fD(meta) || '—') : fMeta(0), tot: rT ? 'real ' + fD(rT) + vsMeta(rT, meta) : '', real: enStock(M) });
+    { p: L.length > 1 ? 'programada ' + (fD(L.map((x, i) => progDe(i)).filter(Boolean).sort().pop()) || '—') : fProg(0), tot: fLlego(M, L.length > 1 ? -1 : 0), real: enStock(M) });
   const lotes = L.length > 1 ? L.map((x, i) => i) : [0];
-  lotes.forEach(i => { const Mi = M.filter(m => lp(m) === i), ri = ult(entr(Mi));
-    if (L.length > 1) h += vBloque('Lote ' + (i + 1) + (ed ? ' <button class="xt" title="Quitar este lote (sus prendas pasan al último)" onclick="vLoteQuitar(' + i + ')">✕</button>' : ''), cols, tal, L[i].q || {}, vMovsAgg(Mi), ed ? 'lote' : 'tot', i,
-      { p: fMeta(i), tot: ri ? 'real ' + fD(ri) + vsMeta(ri, metaDe(i)) : '', real: enStock(Mi) });
-    entregasDe(i).forEach(([cod, F], j) => { const rf = ult(F); h += vBloque('↳ Entrega ' + (j + 1) + ' · <b>' + esc(cod) + '</b>' + (L.length > 1 ? ' (lote ' + (i + 1) + ')' : ''), cols, tal, {}, vMovsAgg(F), 'ent', i, { tot: 'real ' + fD(rf) + vsMeta(rf, metaDe(i)), real: enStock(F) }); });
+  lotes.forEach(i => { const Mi = M.filter(m => lp(m) === i);
+    if (L.length > 1) h += vBloque('Lote ' + (i + 1), cols, tal, L[i].q || {}, vMovsAgg(Mi), ed ? 'lote' : 'tot', i, { p: fProg(i), tot: fLlego(Mi, i), real: enStock(Mi) });
+    entregasDe(i).forEach(([cod, F]) => { h += vBloque('↳ Entrega <b>' + esc(cod) + '</b>' + (L.length > 1 ? ' (lote ' + (i + 1) + ')' : ''), cols, tal, {}, vMovsAgg(F), 'ent', i, { tot: fLlego(F, i), real: enStock(F) }); });
     if (ed) h += '<div id="vNueva' + i + '" style="display:none">' + vBloque('＋ Nueva entrega · <b>' + esc(loteSiguiente(o)) + '</b>' + (L.length > 1 ? ' (lote ' + (i + 1) + ')' : ''), cols, tal, L[i].q || {}, {}, 'nueva', i, {})
-      + '<button class="p" onclick="vEntregaGuardar(' + i + ')">📦 Registrar entrega y pasar al stock</button> <button onclick="document.getElementById(\'vNueva' + i + '\').style.display=\'none\'">Cancelar</button> <span id="vMsg' + i + '" class="err"></span></div>';
+      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">Llegó el <input type="date" id="vFecha' + i + '" value="' + hoy + '" max="' + hoy + '" style="width:150px"><button class="p" onclick="vEntregaGuardar(' + i + ')">📦 Registrar entrega y pasar al stock</button> <button onclick="document.getElementById(\'vNueva' + i + '\').style.display=\'none\'">Cancelar</button> <span id="vMsg' + i + '" class="err"></span></div></div>';
   });
   const sinLote = M.filter(m => lp(m) === -1); if (sinLote.length) h += vBloque('Entregas registradas antes de dividir en lotes', cols, tal, {}, vMovsAgg(sinLote), 'ent', -1, {});
-  if (ed){ const falt = TALLAS.filter(t => tal.indexOf(t) < 0);
-    h += '<div class="vbar">' + lotes.map(i => '<button class="p" onclick="vNuevaAbrir(' + i + ')">＋ Registrar entrega' + (L.length > 1 ? ' · lote ' + (i + 1) : '') + '</button>').join('')
-      + '<button onclick="vLoteAgregar()">＋ Dividir en otro lote</button>'
-      + '<input id="vColor" placeholder="Color nuevo" style="width:120px"><button onclick="vColorAgregar()">＋ Color</button>'
-      + '<select onchange="vColorQuitar(this.value);this.value=\'\'" style="width:auto"><option value="">✕ Quitar color</option>' + cols.map(c => '<option>' + esc(c) + '</option>').join('') + '</select>'
-      + (falt.length ? '<select onchange="nTallaAgregar(this.value);vSucio();vistaPintar()" style="width:auto"><option value="">＋ Talla</option>' + falt.map(t => '<option>' + t + '</option>').join('') + '</select>' : '')
-      + '<select onchange="vTallaQuitar(this.value);this.value=\'\'" style="width:auto"><option value="">✕ Quitar talla</option>' + tal.map(t => '<option>' + t + '</option>').join('') + '</select></div>'; }
+  if (ed){ /* 6-nov (Pablo) · 4 botones: Entregas · Lotes · Colores · Tallas (cada uno agrega o quita) */
+    const P0 = piezasDe(o.diseno)[0], dispo = P0 ? [...new Set(P0.x.map(a => nrm(a[0])))].filter(c => cols.indexOf(c) < 0).sort() : [], falt = TALLAS.filter(t => tal.indexOf(t) < 0);
+    const ultE = Object.keys(M.reduce((a, m) => { if (m.entrega) a[m.entrega] = 1; return a; }, {})).sort((a, b) => (+a.split('-').pop()) - (+b.split('-').pop())).pop();
+    const sel = (titulo, ops, fn) => '<select class="vsel" onchange="' + fn + '(this.value);this.value=\'\'"><option value="">' + titulo + '</option>' + ops.map(x => '<option value="' + esc(x[0]) + '">' + esc(x[1]) + '</option>').join('') + '</select>';
+    h += '<div class="vbar">'
+      + sel('📦 Entregas', lotes.map(i => ['+' + i, '＋ Registrar entrega' + (L.length > 1 ? ' del lote ' + (i + 1) : '')]).concat(ultE ? [['-' + ultE, '↩ Deshacer la última entrega (' + ultE + ')']] : []), 'vAccEntrega')
+      + sel('🗂 Lotes', [['+', '＋ Agregar un lote']].concat(L.length > 1 ? L.map((x, i) => ['-' + i, '✕ Quitar el lote ' + (i + 1)]) : []), 'vAccLote')
+      + sel('🎨 Colores', dispo.map(c => ['+' + c, '＋ ' + c]).concat(cols.map(c => ['-' + c, '✕ Quitar ' + c])), 'vAccColor')
+      + sel('📏 Tallas', falt.map(t => ['+' + t, '＋ ' + t]).concat(tal.map(t => ['-' + t, '✕ Quitar ' + t])), 'vAccTalla') + '</div>'; }
   h += vTelaHtml(cols, ed);
   el.className = ''; el.innerHTML = h;
+}
+function vAccEntrega(v){ if (!v) return; if (v[0] === '+') return vNuevaAbrir(+v.slice(1)); vEntregaDeshacer(v.slice(1)); }
+function vAccLote(v){ if (!v) return; if (v === '+') return vLoteAgregar(); vLoteQuitar(+v.slice(1)); }
+function vAccColor(v){ if (!v) return; if (v[0] === '+'){ NV.colores.push(v.slice(1)); vSucio(); return vistaPintar(); } vColorQuitar(v.slice(1)); }
+function vAccTalla(v){ if (!v) return; if (v[0] === '+'){ nTallaAgregar(v.slice(1)); vSucio(); return vistaPintar(); } vTallaQuitar(v.slice(1)); }
+/* «Ctrl+Z» de una entrega: la saca de la orden y, si ya pasó al stock, devuelve el stock como estaba (buenas). Las fallas ya en No disponible se avisan. */
+function vEntregaDeshacer(cod){
+  const o = OA, F = D.movs.filter(m => m.orden_id === o.id && m.entrega === cod); if (!F.length) return;
+  const fallaStock = F.filter(m => m.tipo === 'falla' && m.ingresado).reduce((a, m) => a + m.cantidad, 0), tot = F.filter(m => m.tipo === 'buena' || m.tipo === 'falla').reduce((a, m) => a + m.cantidad, 0);
+  if (fallaStock){ aviso('La entrega ' + cod + ' tiene ' + fallaStock + ' prendas con falla ya en Stock › No disponible: quítalas ahí primero y vuelve a deshacer.'); return; }
+  confirmar('↩ ¿Deshacer la entrega ' + cod + '?', 'Se quitan sus ' + tot + ' prendas de esta orden' + (F.some(m => m.ingresado) ? ' y del stock' : '') + '. Queda en la Papelera.', 'Sí, deshacer', async () => {
+    const enSt = F.filter(m => m.tipo === 'buena' && m.ingresado && m.lote);
+    if (enSt.length){ if (!(parent && parent !== window && typeof parent._ajustarLote === 'function')) throw new Error('Abre Producción desde el ERP para devolver el stock');
+      const pd = partirFicha(o.diseno); for (const m of enSt) await parent._ajustarLote({ codigo: String(m.lote).split(',')[0].trim(), prenda: pd.prenda, dis: pd.diseno, col: m.color, talla: m.talla, nueva: 0 }); }
+    const r = await rpc('prod_entrega_deshacer', { p_id: o.id, p_entrega: cod }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se deshizo');
+    aviso('↩ Entrega ' + cod + ' deshecha'); await cargar(); abrirOrden(o.id); });
 }
 function vNuevaAbrir(i){ const b = document.getElementById('vNueva' + i); if (!b) return; b.style.display = ''; b.scrollIntoView({ behavior:'smooth', block:'center' }); const e = b.querySelector('input'); if (e) e.focus(); }
 function vColorQuitar(c){ if (!c) return; if (D.movs.some(m => m.orden_id === OA.id && nrm(m.color) === nrm(c))){ aviso('«' + c + '» ya tiene entregas registradas: no se puede quitar'); return; }
@@ -1027,7 +1040,8 @@ async function vEntregaGuardar(i){
   const L = Object.values(C).filter(x => x.tot || x.nd); if (!L.length){ msg.textContent = 'Escribe cuántas prendas llegaron (confección total).'; return; }
   const mal = L.find(x => x.nd > x.tot); if (mal){ msg.textContent = mal.color + ' ' + mal.talla + ': no disponibles (' + mal.nd + ') es más que lo que llegó (' + mal.tot + ').'; return; }
   const movs = []; L.forEach(x => { if (x.tot - x.nd > 0) movs.push({ color:x.color, talla:x.talla, tipo:'buena', cantidad:x.tot - x.nd }); if (x.nd > 0) movs.push({ color:x.color, talla:x.talla, tipo:'falla', cantidad:x.nd }); });
-  try { let r; try { r = await rpc('prod_recibir_lote', { p_id: OA.id, p_movs: movs, p_lote_prog: i }); } catch (e) { if (!/PGRST202|404|Falta instalar|Could not find/.test(String(e.message))) throw e; r = await rpc('prod_recibir_lote', { p_id: OA.id, p_movs: movs }); }
+  const fe = (document.getElementById('vFecha' + i) || {}).value || null;
+  try { let r; try { r = await rpc('prod_recibir_entrega', { p_id: OA.id, p_movs: movs, p_lote_prog: i, p_fecha: fe }); } catch (e) { if (!/PGRST202|404|Falta instalar|Could not find/.test(String(e.message))) throw e; r = await rpc('prod_recibir_lote', { p_id: OA.id, p_movs: movs, p_lote_prog: i }); }
     if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
     aviso('✓ Entrega ' + r.lote + ' registrada: ' + L.reduce((a, x) => a + x.tot - x.nd, 0) + ' de confección real al stock'); { const m = document.getElementById('msg'); if (m) m.className = 'okt'; }
     await cargar(); abrirOrden(OA.id); ingresarStock({ auto: true });
@@ -1052,7 +1066,7 @@ function abrirOrden(id){
   const C = CAMINO[o.tipo] || CAMINO.reposicion, ef = estadoFecha(o);
   const { S, T } = saldos(o), filas = Object.values(S), colores = [...new Set(filas.map(s => s.color))].sort(), tallas = TALLAS.filter(t => filas.some(s => s.talla === t));
   const ed = D.nivel >= 2 && !o.cerrada;
-  let h = '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-right:44px"><h2 style="margin:0">' + NR(o) + esc(o.diseno) + ' <span class="mu" style="font-weight:400">· ' + esc(o.codigo) + ' · ' + (o.tipo === 'nuevo' ? 'Nuevo' : 'Reposición') + '</span></h2>'
+  let h = '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-right:44px"><h2 style="margin:0">' + NR(o) + esc(o.diseno) + ' <span class="mu" style="font-weight:400">· ' + esc(codOrden(o)) + ' · ' + (o.tipo === 'nuevo' ? 'Nuevo' : 'Reposición') + '</span></h2>'
     + (ef.col === 'rd' ? '<span class="chip rd">' + ef.txt + '</span>' : '') + (o.cerrada ? '<span class="chip">Cerrada</span> <button onclick="etapa(\'calidad\')">↩ Reabrir</button>' : (C.every(e => estados(o)[e] === 'h') ? '<button class="p" onclick="etapa(\'cerrada\')">✓ Cerrar orden</button>' : ''))
     + '<span class="sp" style="flex:1"></span><button type="button" class="sec2" data-t="main" onclick="oTab(\'main\')">Orden</button><button type="button" class="sec2" data-t="ins" onclick="oTab(\'ins\')">Ficha</button><button type="button" class="sec2" data-t="cos" onclick="oTab(\'cos\')">Pagos al taller</button>'
     + '<button class="p" id="vOk" style="display:none" onclick="vistaGuardar()">💾 Guardar cambios</button></div>'
@@ -1187,7 +1201,9 @@ function colTx(c){ try { return (parent && parent !== window && typeof parent.st
 function colSt(c){ const b = colBg(c); return b ? ' class="cf" style="background:' + b + ';color:' + colTx(c) + '"' : ''; }
 function tallerCod(t){ const x = (D.talleres || []).find(z => nrm(z.nombre) === nrm(t)); if (x && x.codigo) return x.codigo;
   const w = nrm(t).normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z ]/g, '').trim().split(/\s+/); return !w[0] ? 'TAL' : w.length > 1 ? (w[0][0] + (w[1] + 'XX').slice(0, 2)) : (w[0] + 'XX').slice(0, 3); }
-function loteSiguiente(o){ const c = tallerCod(o.taller), n = D.movs.filter(m => m.entrega && m.entrega.indexOf(c + '-') === 0).reduce((a, m) => Math.max(a, +(m.entrega.split('-').pop()) || 0), 0);
+function codOrden(o){ return tallerCod(o.taller) + '-' + String(+(String(o.codigo || '').replace(/\D/g, '')) || o.id).padStart(3, '0'); }   /* 6-nov (Pablo) · ANG-020 = orden 20 de Ángel */
+function loteSiguiente(o){ return codOrden(o) + '-' + (new Set(D.movs.filter(m => m.orden_id === o.id && m.entrega).map(m => m.entrega)).size + 1); }
+function loteSiguienteViejo(o){ const c = tallerCod(o.taller), n = D.movs.filter(m => m.entrega && m.entrega.indexOf(c + '-') === 0).reduce((a, m) => Math.max(a, +(m.entrega.split('-').pop()) || 0), 0);
   return c + '-' + String(n + 1).padStart(3, '0'); }
 function loteGrid(colores, tallas, S){
   const G = [['falta', 'Falta llegar', '#1f2937', '#cbd5e1'], ['tot', 'Confección total', '#0f1a2e', '#60a5fa'], ['nd', 'No disponible', '#2e0f12', '#f87171'], ['real', 'Confección real', '#0a260a', '#4ade80']];
