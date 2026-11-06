@@ -156,7 +156,7 @@ table.g.lote td input{width:44px}table.lg td.gs{border-left:2px solid rgba(0,0,0
 .vcab{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:10px 0 12px}.vcab label{display:flex;flex-direction:column;font-size:11px;color:var(--mu);gap:3px}.vcab input{font-size:13px}
 button.sec2{border-radius:20px;font-size:12px;padding:6px 12px}button.sec2.on{background:var(--ac);border-color:var(--ac);color:#fff}
 .vkpi{display:flex;flex-direction:column;gap:2px;font-size:11px;padding:4px 10px;border-left:2px solid var(--bd)}.vkpi b{font-size:14px;color:var(--tx)}
-.vbar{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;overflow-x:auto;margin:12px 0;padding-bottom:4px}.vbar>*{flex:none}button.vobs{background:transparent;color:inherit;border:1px dashed currentColor;border-radius:6px;padding:1px 8px;font-weight:600;cursor:pointer;min-width:34px}.vbar select.vsel{width:auto;font-size:13px;padding:6px 10px;border-radius:8px;background:var(--card);color:var(--tx);border:1px solid var(--bd);cursor:pointer}
+.vbar{display:flex;gap:6px;align-items:center;flex-wrap:nowrap;overflow-x:auto;margin:12px 0;padding-bottom:4px}.vbar>*{flex:none}button.vobs.vieja{border:2px solid #f87171;color:#fecaca;background:#7f1d1d}td.flashc{outline:3px solid #fbbf24;outline-offset:-3px;animation:flashc .8s ease 6}@keyframes flashc{50%{background:#fbbf2455}}button.vobs{background:transparent;color:inherit;border:1px dashed currentColor;border-radius:6px;padding:1px 8px;font-weight:600;cursor:pointer;min-width:34px}.vbar select.vsel{width:auto;font-size:13px;padding:6px 10px;border-radius:8px;background:var(--card);color:var(--tx);border:1px solid var(--bd);cursor:pointer}
 .vb{margin:10px 0}.vbt{font-size:13px;margin:0 0 4px;color:var(--tx)}.acc b{font-weight:600}.acc .mu{font-size:12px}.acc .fl{margin-left:auto;color:var(--mu)}.acc.on{border-color:var(--ac)}.acc.on .fl{transform:rotate(90deg)}
 .box h2{font-size:20px;font-weight:600;margin:0 30px 10px 0}.x{position:absolute;top:10px;right:10px;border:0;background:transparent;font-size:18px;color:var(--mu)}
 .f{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px 10px;margin-bottom:10px}.f label{font-size:11px;color:var(--mu);display:block;margin-bottom:2px}.f input,.f select{width:100%}
@@ -525,8 +525,37 @@ function resumenHtml(L, C){
     { k:'pv', t:'Fecha prevista', w:'8%', tip:'Cuándo estará lista según cómo va hoy (el atraso del paso en curso empuja el final)', val: r => r.fin.prev || '9999', html: r => r.fin.prev ? (r.fin.real ? '✓ ' : '') + fT(r.fin.prev) : '—' },
     { k:'df', t:'Diferencia', w:'8%', filtro:true, val: r => r.fin.dif == null ? -999 : r.fin.dif, fv: r => r.fin.dif == null ? 'Sin fecha' : r.fin.dif > 0 ? 'Atrasada' : 'A tiempo',
       html: r => r.fin.dif == null ? '—' : r.fin.dif > 0 ? sem('rd', '+' + r.fin.dif + ' d', 'Llega ' + r.fin.dif + ' días después de lo planeado') : sem('ok', 'a tiempo') } ];
-  return tablaTV('res', cols, F, { tr: r => ' onclick="abrirOrden(' + r.o.id + ')"' + (r.o.cerrada ? ' style="opacity:.6"' : '') });
+  return obsAvisoHtml() + tablaTV('res', cols, F, { tr: r => ' onclick="abrirOrden(' + r.o.id + ')"' + (r.o.cerrada ? ' style="opacity:.6"' : '') });
 }
+/* ══ 6-nov 13h (Pablo) · OBSERVADAS CON MÁS DE 15 DÍAS EN EL TALLER: aviso arriba del Resumen (con ✕) y cada ítem lleva
+   de un clic a la CELDA exacta (orden → lote → color · talla), que queda resaltada. Antigüedad por orden de llegada:
+   lo que se corrige o pasa a yayita descuenta primero lo más viejo. ══ */
+const OBS_DIAS = 15; let OBS_CERRADO = false;
+function obsViejas(){ const out = [], hoyT = hoy0().getTime(), G = {};
+  (D.movs || []).forEach(m => { const o = (D.ordenes || []).find(x => x.id === m.orden_id); if (!o || o.cerrada) return;
+    if (m.tipo === 'falla' && m.lote === 'NO APTA DIRECTA') return; if (m.tipo === 'yayita' && m.motivo === 'NO APTA') return;
+    const i = m.lote_prog != null ? +m.lote_prog : 0, k = m.orden_id + '|' + i + '|' + m.color + '|' + m.talla, g = G[k] || (G[k] = { o, i, c:m.color, t:m.talla, F:[], R:0 });
+    if (m.tipo === 'falla') g.F.push(m); else if (['corregida', 'yayita', 'perdida'].includes(m.tipo)) g.R += m.cantidad; });
+  Object.values(G).forEach(g => { let rem = g.R, n = 0, dias = 0;
+    g.F.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.id - b.id).forEach(m => { const q = Math.max(0, m.cantidad - rem); rem = Math.max(0, rem - m.cantidad);
+      const d = Math.floor((hoyT - new Date(String(m.fecha).slice(0, 10) + 'T00:00:00').getTime()) / 86400000); if (q > 0 && d > OBS_DIAS){ n += q; dias = Math.max(dias, d); } });
+    if (n > 0) out.push({ oid:g.o.id, cod:codOrden(g.o), dis:g.o.diseno, i:g.i, c:g.c, t:g.t, n, dias }); });
+  return out.sort((a, b) => b.dias - a.dias);
+}
+function obsAvisoHtml(){ if (OBS_CERRADO) return ''; const V = obsViejas(); if (!V.length) return '';
+  const tot = V.reduce((a, x) => a + x.n, 0);
+  return '<div id="obsAviso" style="position:relative;margin:0 0 10px;padding:10px 36px 10px 12px;border:1px solid #7f1d1d;background:#2a1215;border-radius:10px;font-size:13px">'
+    + '<button onclick="OBS_CERRADO=true;this.parentNode.remove()" title="Cerrar" style="position:absolute;top:6px;right:6px;border:0;background:transparent;color:var(--mu);font-size:16px;cursor:pointer">✕</button>'
+    + '⚠ <b>' + tot + ' observada' + (tot !== 1 ? 's' : '') + '</b> llevan más de ' + OBS_DIAS + ' días en el taller. Toca una para ir a su celda:'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">' + V.slice(0, 12).map(x => '<button class="bg" style="font-size:12px" onclick="obsIr(' + x.oid + ',' + x.i + ',\'' + qs(x.c) + '\',\'' + qs(x.t) + '\')">'
+      + esc(x.cod) + ' · ' + esc(x.dis) + ' · Lote ' + (x.i + 1) + ' · ' + esc(x.c) + ' ' + esc(x.t) + ' · <b>' + x.n + '</b> · <span style="color:#f87171">' + x.dias + ' d</span></button>').join('')
+    + (V.length > 12 ? '<span class="mu" style="align-self:center">+' + (V.length - 12) + ' más</span>' : '') + '</div></div>';
+}
+function obsIr(oid, i, c, t){ abrirOrden(oid);
+  setTimeout(() => { const v = document.getElementById('oVista'); if (!v) return;
+    const el = [...v.querySelectorAll('[data-obs]')].find(e => e.dataset.obs === i + '|' + c + '|' + t); if (!el) return;
+    const td = el.closest('td') || el; td.scrollIntoView({ block:'center', inline:'center', behavior:'smooth' });
+    td.classList.add('flashc'); setTimeout(() => td.classList.remove('flashc'), 6000); }, 350); }
 /* lo que tiene que pasar para que la orden avance al siguiente paso (una línea, en simple) */
 function siguiente(o, k, T){
   const lt = llegaTaller(o);
@@ -932,7 +961,7 @@ function vMovsAgg(F){ const R = {}; F.forEach(m => { const k = m.color + '|' + m
   r.nd = r.obs + r.na; }); return R; }
 function vLoteBloque(o, i, cols, tal, prog, rec, ed, fechaHtml){
   const G = [['p', 'Programado', '#1f2937', '#cbd5e1'], ['tot', 'Confección total', '#0f1a2e', '#60a5fa'], ['obs', 'Observadas', '#3a2a0a', '#fbbf24'], ['na', 'No aptas', '#2e0f12', '#f87171'], ['real', 'Confección real', '#0a260a', '#4ade80']];
-  const n0 = v => v ? v : '·', FT = {}; G.forEach(g => { FT[g[0]] = {}; });
+  const n0 = v => v ? v : '·', FT = {}, VJ = obsViejas().filter(x => x.oid === o.id); G.forEach(g => { FT[g[0]] = {}; });
   let h = '<div class="vb"><div class="vbt"><b>Lote ' + (i + 1) + '</b>' + (ed ? ' · llegó el <input type="date" id="vFL' + i + '" value="' + iso(hoy0()) + '" max="' + iso(hoy0()) + '" style="width:130px;font-size:12px;padding:1px 4px"> <button class="p" id="vRec' + i + '" style="display:none" onclick="vLoteRecibir(' + i + ')">📦 Registrar lo que llegó</button> <span id="vMsg' + i + '" class="err"></span>' : '') + '</div>'
     + '<div style="overflow-x:auto"><table class="g lg"><tr><th rowspan="2">Color</th>'
     + G.map(g => '<th colspan="' + (tal.length + 1) + '" class="gs" style="background:' + g[2] + ';color:' + g[3] + '">' + g[1] + (fechaHtml[g[0]] ? '<div style="font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;margin-top:2px">' + fechaHtml[g[0]] + '</div>' : '') + '</th>').join('') + '</tr><tr>'
@@ -941,7 +970,8 @@ function vLoteBloque(o, i, cols, tal, prog, rec, ed, fechaHtml){
     G.forEach(g => { let tr = 0; h += tal.map((t, j) => { const k = c + '|' + t, r = rec[k] || {}, v = g[0] === 'p' ? (prog[k] || 0) : (r[g[0]] || 0); let cel;
         if (g[0] === 'p' && ed) cel = '<input type="number" min="0" placeholder="·" value="' + (v || '') + '" oninput="vProgSet(' + i + ',\'' + qs(k) + '\',this.value)">';
         else if ((g[0] === 'tot' || g[0] === 'na') && ed && (prog[k] || v)) cel = '<input type="number" min="' + v + '" placeholder="·" value="' + (v || '') + '" data-r="' + i + '" data-k="' + g[0] + '" data-c="' + esc(c) + '" data-t="' + t + '" data-v="' + v + '" oninput="vRecSucio(' + i + ')" title="Escribe el total: lo que agregues se registra como recién llegado">';
-        else if (g[0] === 'obs' && ed && v) cel = '<button class="vobs" onclick="vObsAbrir(' + i + ',\'' + qs(c) + '\',\'' + t + '\',' + v + ')" title="Corregidas o yayitas">' + v + '</button>';
+        else if (g[0] === 'obs' && v){ const vj = VJ.find(x => x.i === i && x.c === c && x.t === t);
+          cel = ed ? '<button class="vobs' + (vj ? ' vieja' : '') + '" data-obs="' + i + '|' + esc(c) + '|' + t + '" onclick="vObsAbrir(' + i + ',\'' + qs(c) + '\',\'' + t + '\',' + v + ')" title="' + (vj ? vj.n + ' llevan ' + vj.dias + ' días en el taller · ' : '') + 'Corregidas o yayitas">' + v + '</button>' : '<span data-obs="' + i + '|' + esc(c) + '|' + t + '"' + (vj ? ' style="color:#f87171;font-weight:600"' : '') + '>' + v + '</span>'; }
         else cel = n0(v);
         tr += v; FT[g[0]][t] = (FT[g[0]][t] || 0) + v; return '<td' + (j ? '' : ' class="gs"') + '>' + cel + '</td>'; }).join('');
       h += '<td><b>' + n0(tr) + '</b></td>'; }); h += '</tr>'; });
@@ -1517,6 +1547,13 @@ async function matAFicha(){
   } catch (e) { m.className = 'err'; m.textContent = /prod_bom_guardar|PGRST202/.test(String(e.message)) ? 'Falta pegar el SQL de la lista única (3-nov) en Supabase.' : 'No se guardó: ' + e.message; }
 }
 function matTot(){ if (!MT) return; insTotales(document.getElementById('matBox'), MT.M, matPrendas(OA, MT.M)); }
+function fichaCostoRO(o){ const d = nrm(o.diseno), L = (D.ins || []).filter(x => x.diseno === d), pr = D.prod && D.prod[d], tot = L.reduce((a, x) => a + (+x.cantidad || 0) * (+x.precio || 0), 0);
+  return '<div class="sec"><h4 style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">Costo por prenda <span style="font-weight:400">' + (pr && pr.costo_unitario != null ? S2(+pr.costo_unitario) : (L.length ? S2(tot) : '—')) + '</span>'
+    + '<button type="button" class="p" style="font-size:12px" data-n="' + esc(d) + '" onclick="parent.prodAbrirProducto && parent.prodAbrirProducto(this.dataset.n, null, \'costo\')">🧵 Cambiar costo y materiales en la ficha del producto</button></h4>'
+    + (L.length ? '<table class="g"><tr><th>Componente</th><th>Material</th><th>Cant. por prenda</th><th>Unidad</th><th>Precio</th><th>Subtotal</th></tr>'
+      + L.map(x => '<tr><td>' + esc(x.comp || '') + '</td><td>' + esc(x.descripcion || '') + '</td><td>' + (+x.cantidad || 0) + '</td><td>' + esc(x.unidad || '') + '</td><td>' + S2(+x.precio || 0) + '</td><td>' + S2((+x.cantidad || 0) * (+x.precio || 0)) + '</td></tr>').join('')
+      + '</table>' : '<div class="mu" style="font-size:12px">Este producto todavía no tiene su lista de materiales: cárgala en la ficha del producto.</div>') + '</div>';
+}
 function costosHtml(o, T){
   const c = cuentas(o, T), sinHist = c.imp && !c.P.length, md = matDe(o); MT = { M: md.M, sug: md.sug, de: md.de };
   const pedM = c.pagado <= 0 ? c.adelanto : Math.max(0, c.pend), sug = sinHist ? 0 : Math.round(pedM * 100) / 100;
@@ -1526,7 +1563,7 @@ function costosHtml(o, T){
     + '<div class="res"><div><b>' + S2(c.tela + otrosU * (T.pedido || 0)) + '</b>insumos</div><div><b>' + S2(c.totTaller) + '</b>taller' + (T.falta > 0 ? ' (estimado)' : '') + '</div>'
     + '<div><b>' + S2(c.tela + otrosU * (T.pedido || 0) + c.totTaller) + '</b>total de la orden</div>'
     + (c.real != null ? '<div><b>' + S2(c.real) + '</b>costo real por prenda' + (c.ideal != null && c.real - c.ideal > 0.01 ? ' <span class="chip rd">+' + S2(c.real - c.ideal) + ' por fallas</span>' : '') + '</div>' : '') + '</div>'
-    + '<!--INS--><div id="matBox"></div>'
+    + '<!--INS-->' + fichaCostoRO(o)   /* 6-nov (Pablo) · el costo y los materiales se editan SOLO en la ficha del producto (📦 Productos › 🧵 Costo); aquí se ven */
     + (otros.length && pr && pr.costo_unitario != null ? '<div class="mu" style="font-size:12px;margin-top:4px">+ Otros de la ficha: ' + S2(otrosU) + ' × ' + (T.pedido || 0) + ' = <b>' + S2(otrosU * (T.pedido || 0)) + '</b></div>' : '') + '<!--/INS-->'
     + '<h4 style="margin-top:14px">Pago al taller</h4>'
     + (() => { const sg = o.costo_unit == null ? sugTallerDe(o.diseno, o.taller) : null;   /* 3-nov (F4) · un solo lugar para el costo del taller de esta orden */
