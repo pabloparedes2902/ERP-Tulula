@@ -27276,7 +27276,7 @@ function verPed(p) {
     +'<button class="btn bp" id="medit-save">Guardar cambios</button></div>';
 
   mEl.innerHTML = h;
-  if(typeof MY_ROLE!=='undefined' && MY_ROLE==='Ventas') _lockReadonly(mEl); // Ventas: modal solo-lectura
+  if(typeof MY_ROLE!=='undefined' && MY_ROLE==='Ventas'){ _lockReadonly(mEl); _ventasAbrirAgregarPrenda(mEl, prendas); } // Ventas: modal solo-lectura + agregar prenda (7-nov)
   // 26-jul: un pedido archivado se puede mirar, no editar. Editarlo escribiría
   // en la hoja activa, donde ese pedido ya no vive.
   // El aviso NO puede depender de quien llame a verPed: se abre un pedido desde
@@ -27531,6 +27531,7 @@ function verPed(p) {
         const insertBefore = filas[filas.length - 2] || null;
         if (insertBefore) tbody.insertBefore(newRow, insertBefore);
         else tbody.appendChild(newRow);
+        if (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Ventas') newRow.querySelectorAll('.medit-pr-edit,.medit-pr-del').forEach(x => { x.style.display = 'none'; });   // 7-nov · Ventas solo agrega
         // Vincular listeners de editar/eliminar a la nueva fila
         newRow.querySelector('.medit-pr-edit').addEventListener('click', function() {
           const editForm = qId('medit-prenda-edit-form');
@@ -32846,9 +32847,18 @@ function _avisoPara(area) {
   try {
     const r = String((typeof MY_ROLE !== 'undefined' && MY_ROLE) || '').trim().toLowerCase();
     if (r === 'admin' || r === 'administrador') return true;
-    const ventas = r === 'ventas' || !!_miAsesoraERP(), logi = /^log/.test(r.normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+    const ar = _misAreas();   // 7-nov (Pablo) · varias areas por persona: suma
+    const ventas = r === 'ventas' || !!_miAsesoraERP() || ar.indexOf('ventas') >= 0, logi = /^log/.test(r.normalize('NFD').replace(/[\u0300-\u036f]/g, '')) || ar.indexOf('logistica') >= 0;
     return area === 'ventas' ? ventas : area === 'logistica' ? logi : area === 'pedidos' ? (ventas || logi) : false;
   } catch (_) { return false; }
+}
+/** 7-nov · areas de la persona (Configuracion › Usuarios), en minusculas sin tilde. Viajan en mi_sesion. */
+function _misAreas() {
+  try {
+    let a = (window._VER_COMO && window._VER_COMO.areas) || null;
+    if (!a) a = JSON.parse(localStorage.getItem('erp_areas') || '[]');
+    return (Array.isArray(a) ? a : []).map(x => String(x || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
+  } catch (_) { return []; }
 }
 function _soyAdminERP() {
   try { return MY_ROLE === 'Administrador' || MY_ROLE === 'Admin'; } catch (_) { return false; }
@@ -45898,6 +45908,51 @@ function _upAplicarRes(res){
   _cfgUsersData = res.usuarios || [];
   _cfgUsersRoles = res.roles || _cfgUsersRoles;
   _upPropias = res.plantillas || [];
+  _upCargarAreas();
+}
+// 7-nov-2026 (Pablo) · VARIAS AREAS POR PERSONA (ej. Camila = Logistica + Ventas).
+// El area decide que avisos le llegan; los permisos se SUMAN al agregar un area.
+// El rol (area principal) = la mas amplia: Administrador > Logistica > Ventas > Marketing.
+const _AREA_ORDEN = ['Administrador', 'Logistica', 'Ventas', 'Marketing'];
+let _upAreasMap = null;
+async function _upCargarAreas(){
+  try {
+    if (typeof _npRpc !== 'function') return;
+    const m = await _npRpc('erp_areas_listar', {});
+    if (!m || typeof m !== 'object') return;
+    _upAreasMap = m;
+    (_cfgUsersData || []).forEach(u => { const a = m[String(u.email || '').toLowerCase()]; if (Array.isArray(a)) u.areas = a; });
+    if (document.querySelector('#up-tbl tbody')) cfgUsersRender();
+  } catch (_) {}
+}
+function _upAreas(u){
+  const a = (Array.isArray(u && u.areas) && u.areas.length) ? u.areas.slice() : [];
+  if (u && u.rol && a.indexOf(u.rol) < 0) a.unshift(u.rol);
+  return a;
+}
+function _upPrincipal(areas){
+  for (const r of _AREA_ORDEN) if (areas.indexOf(r) >= 0) return r;
+  return areas[0] || 'Ventas';
+}
+async function _upToggleArea(email, area){
+  const u = _upUsuario(email); if (!u || u.esOwner) return;
+  const antes = _upAreas(u), tiene = antes.indexOf(area) >= 0;
+  const areas = tiene ? antes.filter(x => x !== area) : antes.concat([area]);
+  if (!areas.length) { toast('Tiene que quedar al menos un área', 'err'); return; }
+  const rol = _upPrincipal(areas);
+  try {
+    _upUltimoCambio = Date.now();
+    await _npRpc('erp_usuarios_areas_guardar', { p_email: email, p_areas: areas });
+    u.areas = areas;
+    if (rol !== u.rol) { await apiSend('config.usuarios.editar', { email: email, rol: rol }); u.rol = rol; }
+    if (!tiene) {   // agregar un area SUMA sus permisos (nunca quita lo que ya tenia)
+      const p = _permEfectiva(u), add = _permDeRol(area); let cambia = false;
+      PERM_MODULOS.forEach(m => { if ((add[m.k] || 0) > (p[m.k] || 0)) { p[m.k] = add[m.k]; cambia = true; } });
+      if (cambia) await _upGuardar([{ u: u, permisos: p }], '', true);
+    }
+    cfgUsersRender(); _upGuardarFoto();
+    _upToast('✓ ' + (u.nombre || email) + ': ' + areas.join(' + ') + (tiene ? ' · los permisos no se quitan solos: ajústalos en la tabla' : ''));
+  } catch (e) { toast('No se guardó: ' + e.message, 'err'); cfgUsersRender(); }
 }
 function _upGuardarFoto(){
   try { localStorage.setItem('erp_up_foto', JSON.stringify({usuarios:_cfgUsersData, roles:_cfgUsersRoles, plantillas:_upPropias, t:Date.now()})); } catch (e) {}
@@ -45968,6 +46023,7 @@ function _upTri(u, m){
 }
 function _upEtiqueta(u){
   if (u.esOwner) return {t:'Dueño · acceso total', c:false};
+  const _ar = _upAreas(u); if (_ar.length > 1) return {t:_ar.join(' + '), c:false};   // 7-nov · varias areas
   if (!u.permisos) return {t:u.rol || 'Sin rol', c:false};
   const base = _permDeRol(u.rol), p = _permEfectiva(u);
   const igual = PERM_MODULOS.every(m => (p[m.k]||0) === (base[m.k]||0));
@@ -46092,6 +46148,7 @@ async function _upAplicarPlantilla(email, rol){
     _upUltimoCambio = Date.now();
     if (rol !== u.rol) { await apiSend('config.usuarios.editar', {email:email, rol:rol}); u.rol = rol; }
     if (u.permisos) await _upGuardar([{u:u, permisos:null}], '', true);
+    if (Array.isArray(u.areas) && u.areas.length > 1) { try { await _npRpc('erp_usuarios_areas_guardar', { p_email: email, p_areas: [rol] }); u.areas = [rol]; } catch (_) {} }   // 7-nov · plantilla = una sola area
     cfgUsersRender(); _upGuardarFoto();
     _upToast('✓ ' + (u.nombre||email) + ' ahora usa la plantilla ' + rol, async () => {
       try { if (prevRol !== u.rol) { await apiSend('config.usuarios.editar', {email:email, rol:prevRol}); u.rol = prevRol; }
@@ -46108,10 +46165,13 @@ function _upMenu(html, el, onClick){
 }
 function _upCerrarMenu(){ const mn = document.getElementById('up-menu'); if (mn) mn.style.display = 'none'; }
 function _upMenuPlantilla(email, el){
-  _upMenu('<div class="t">Aplicar plantilla (cambia el rol)</div>' + _cfgUsersRoles.map(r => '<button data-ap="' + esc(r) + '">' + esc(r) + (_permPropia(r) ? ' <span style="color:var(--mu);font-size:11px">· propia</span>' : '') + '</button>').join('') +
+  const _uA = _upUsuario(email), _arA = _uA ? _upAreas(_uA) : [];
+  _upMenu('<div class="t">Áreas (avisos y permisos se suman)</div>' + _cfgUsersRoles.filter(r => r !== 'Administrador').map(r => '<button data-area="' + esc(r) + '">' + (_arA.indexOf(r) >= 0 ? '☑ ' : '☐ ') + esc(r) + '</button>').join('') +
+    '<div class="t" style="border-top:1px solid var(--bd);margin-top:4px">Aplicar plantilla (cambia el rol)</div>' + _cfgUsersRoles.map(r => '<button data-ap="' + esc(r) + '">' + esc(r) + (_permPropia(r) ? ' <span style="color:var(--mu);font-size:11px">· propia</span>' : '') + '</button>').join('') +
     '<div class="t" style="border-top:1px solid var(--bd);margin-top:4px">Nueva</div><button data-nueva="1">＋ Crear plantilla nueva…</button>', el, ev => {
     const b = ev.target.closest('button'); if (!b) return;
     if (b.dataset.nueva) { _upCerrarMenu(); _upEditarPlantilla(null); return; }
+    if (b.dataset.area) { _upCerrarMenu(); _upToggleArea(email, b.dataset.area); return; }
     const r = b.dataset.ap; if (!r) return; _upCerrarMenu(); _upAplicarPlantilla(email, r);
   });
 }
@@ -46143,7 +46203,7 @@ function _upEliminar(email){
 // bootApp aplica esa matriz al menu y muestra la franja para salir.
 function _upVerComo(email){
   const u = _upUsuario(email); if (!u) return;
-  try { sessionStorage.setItem('erp_ver_como', JSON.stringify({nombre:u.nombre||u.email, email:u.email, rol:u.rol, permisos:_permEfectiva(u)})); } catch (e) { toast('No se pudo activar "Ver como"', 'err'); return; }
+  try { sessionStorage.setItem('erp_ver_como', JSON.stringify({nombre:u.nombre||u.email, email:u.email, rol:u.rol, permisos:_permEfectiva(u), areas:_upAreas(u)})); } catch (e) { toast('No se pudo activar "Ver como"', 'err'); return; }
   try { localStorage.setItem('erp_last_pg', ''); } catch (e) {}
   location.reload();
 }
@@ -48143,7 +48203,7 @@ function logout(){
   try{ google.accounts.id.disableAutoSelect(); }catch(e){}
   SESSION_TOKEN=''; MY_ROLE=''; MY_EMAIL='';
   localStorage.removeItem('erp_sess'); localStorage.removeItem('erp_rol'); localStorage.removeItem('erp_email');
-  MY_PERMISOS = null; try { localStorage.removeItem('erp_permisos'); sessionStorage.removeItem('erp_ver_como'); } catch(_p){}   // 30-set
+  MY_PERMISOS = null; try { localStorage.removeItem('erp_areas'); } catch(_a){} try { localStorage.removeItem('erp_permisos'); sessionStorage.removeItem('erp_ver_como'); } catch(_p){}   // 30-set
   // FIX 07-ago — al salir se sueltan las FOTOS DE DATOS guardadas en este equipo.
   // Antes sobrevivian al cambio de usuario: quien entraba despues heredaba el
   // stock (y la duda del espejo) de la sesion anterior y veia numeros viejos.
@@ -48158,6 +48218,23 @@ function logout(){
 }
 
 // Pone un contenedor en SOLO-LECTURA (para Ventas): oculta botones de escritura y bloquea campos.
+// 7-nov-2026 (Pablo) · Ventas puede AGREGAR prendas a un pedido que aun no se despacha.
+// Solo agregar: no edita, no borra, no cambia la asesora (la nueva prenda va a la suya).
+const _VTA_SALIO = ['EN CAMINO', 'ENTREGADO', 'DEVOLUCION'];
+function _ventasPuedeAgregar(prendas){
+  const l = (prendas || []).filter(x => x && String(x.prenda || '').trim());
+  if (!l.length) return true;
+  return !l.every(x => _VTA_SALIO.indexOf(String(x.estado || '').trim().toUpperCase()) >= 0);
+}
+function _ventasAbrirAgregarPrenda(root, prendas){
+  if (!root || !_ventasPuedeAgregar(prendas)) return;
+  const b = root.querySelector('#medit-add-prenda'); if (!b) return;
+  b.style.display = '';
+  const f = root.querySelector('#medit-prenda-form'); if (!f) return;
+  f.style.display = 'none';
+  f.querySelectorAll('input,select,textarea').forEach(e => { if (e.type === 'hidden' || e.id === 'mpf-asesora') return; e.disabled = false; e.style.cursor = ''; e.style.opacity = ''; });
+  f.querySelectorAll('#mpf-save,#mpf-cancel').forEach(x => { x.style.display = ''; });
+}
 function _lockReadonly(root){
   if(!root) return;
   // Ocultar botones de escritura conocidos (eliminar/guardar/agregar/pago/courier):
@@ -48318,6 +48395,7 @@ async function _permRefrescar(rDado){
   if(window._VER_COMO || (typeof _permEsDueno === 'function' && _permEsDueno(MY_EMAIL))) return;
   try{
     var r = rDado || await api('auth.permisos', {});
+    try { if (r && Object.prototype.hasOwnProperty.call(r, 'areas')) localStorage.setItem('erp_areas', JSON.stringify(r.areas || [])); } catch(_a){}   // 7-nov · areas
     var nuevo = (r && r.permisos) || null;
     if(JSON.stringify(nuevo) === JSON.stringify(MY_PERMISOS)) return;
     MY_PERMISOS = nuevo;
