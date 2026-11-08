@@ -825,6 +825,7 @@ function pintarHome() {
     '<div id="com-hist"></div>' +
     tarjetaEquipo(R, P, qTxt, meses, d.year) +
     tarjetaRanking(R, qTxt) +
+    '<div id="com-borrador"></div>' +   // 8-nov (Pablo) · Camila en borrador, solo Pablo
     '<div id="com-logros"></div>' +   // 9-oct (Pablo): logros de las asesoras
     '<div class="ct">Asesoras · ' + esc(qTxt) + '</div>' +
     '<div class="com-grid">' +
@@ -849,6 +850,7 @@ function pintarHome() {
   // plano la vista de cada asesora para que el switch abra al instante.
   setTimeout(vcPrecache, 1500);
   try { comLogrosPintar(); } catch (e) {}
+  try { comBorradorPintar(); } catch (e) {}
   // Números frescos de la base espejo (~2 s), en silencio.
   setTimeout(sbRefrescarPanel, 300);
 }
@@ -3740,6 +3742,44 @@ window._comReset = function () {
   };
   envuelto._comHook = true;
   window._refrescarModulo = envuelto;
+/* 8-nov-2026 (Pablo) · COMISION EN BORRADOR (ComisionBorrador.gs). Solo Pablo la ve.
+   Camila no comisiona: aca se ve cuanto habria ganado este mes con las reglas de hoy.
+   No entra a la lista de vendedoras ni a la meta del equipo. */
+var _COM_BORR = null;
+function comBorradorPintar() {
+  var z = document.getElementById('com-borrador'); if (!z) return;
+  var dueno = false; try { dueno = typeof _permEsDueno === 'function' && _permEsDueno(MY_EMAIL); } catch (e) {}
+  if (!dueno || window._VER_COMO || COM.comoEmail) { z.innerHTML = ''; return; }
+  if (_COM_BORR) { z.innerHTML = _comBorrHtml(_COM_BORR); return; }
+  z.innerHTML = '<div class="card"><div class="ct">🧪 Borrador · no comisiona</div><div class="ml">Calculando…</div></div>';
+  api('comisiones.borrador', {}).then(function (d) {
+    _COM_BORR = d; var z2 = document.getElementById('com-borrador'); if (z2) z2.innerHTML = _comBorrHtml(d);
+  }).catch(function (e) {
+    var z2 = document.getElementById('com-borrador');
+    if (z2) z2.innerHTML = '<div class="card"><div class="ct">🧪 Borrador · no comisiona</div><div class="ml">No se pudo calcular: ' + esc(e && e.message || e) + '</div></div>';
+  });
+}
+function _comBorrHtml(d) {
+  if (!d || !d.borradores || !d.borradores.length) return '';
+  var MES = ['', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'setiembre', 'octubre', 'noviembre', 'diciembre'][d.mes] || '';
+  var kpi = function (l, v) { return '<div style="text-align:center;min-width:110px"><div style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">' + l + '</div><div style="font-size:22px;font-weight:600">' + v + '</div></div>'; };
+  return d.borradores.map(function (b) {
+    var nombre = b.nombre.charAt(0) + b.nombre.slice(1).toLowerCase();
+    return '<div class="card" style="border:1px dashed var(--bd)">' +
+      '<div class="ct">🧪 Borrador · ' + esc(nombre) + ' · ' + esc(MES) + ' (día ' + d.dia + ' de ' + d.dias + ')</div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:space-around;margin:8px 0 12px">' +
+        kpi('Ventas', fmt(b.ventas)) + kpi('Margen', fmt(b.margen)) + kpi('Meta', fmt(b.meta)) +
+        kpi('Cumplimiento', p2(b.cumpl)) + kpi('Habría ganado hoy', fmt(b.bono)) + kpi('Al cierre (proy.)', fmt(b.proyBono)) +
+      '</div>' +
+      barra(b.cumpl, 14, 'var(--ac)', d.tiers, true) +
+      '<div style="font-size:12px;color:var(--mu);margin-top:10px">Sueldo S/' + Math.round(b.sueldo).toLocaleString('es-PE') + ' (' + esc(b.tipo) + ') · meta = ' + d.xMeta + '× sueldo · ' +
+        (b.faltaPiso > 0 ? 'le falta ' + fmt(b.faltaPiso) + ' de margen para el piso del ' + d.gate + '%' : 'pasó el piso del ' + d.gate + '%') +
+        ' · proyección al cierre: ' + p2(b.proyCumpl) + '. No comisiona: no entra a la meta del equipo ni al pago. Solo lo ves tú.</div>' +
+    '</div>';
+  }).join('');
+}
+window.comBorradorPintar = comBorradorPintar;
+
 })();
 
 
@@ -5717,6 +5757,7 @@ window.comOficialPintar = comOficialPintar;
   };
   envuelta.__conOficial = true;
   window.loadComisiones = envuelta;
+
 })();
 
 /* ── 9-oct (Pablo) · LOGROS DE LAS ASESORAS en el Panel de Comisiones ──
@@ -5758,3 +5799,4 @@ function comLogrosPintar() {
 window.comLogrosPintar = comLogrosPintar;
 
 })();
+
