@@ -7912,6 +7912,12 @@ function _cosFichaItems(r) {
   if (sh) { if (sh.desc > 0) it[2] = true; if (it[3] !== null && sh.fotos.length) it[3] = true; if (it[4] !== null && sh.videos > 0) it[4] = true; }
   return it;
 }
+/* 8-nov-2026 (Pablo) · AVANCE DE LA FICHA en Productos: «3 de 5», no %. Lo que se llena aquí: fotos web, foto de catálogo (chatbot),
+   video (chatbot y web), descripción, y el precio (llega de Producción). */
+const COS_AV = [['Fotos web', 3], ['Foto de catálogo', 5], ['Video', 4], ['Descripción', 2], ['Precio', 1]];
+function _cosAvance(r) { const it = _cosFichaItems(r); if (COS_AV.some(x => it[x[1]] === null)) return null; const ok = COS_AV.map(x => !!it[x[1]]); return { n: ok.filter(Boolean).length, t: COS_AV.length, ok }; }
+function _cosEstGrupo(r) { const e = _cosEtapa4(r.EstadoCiclo); return (e === 'diseno' || e === 'confeccion' || e === 'fotos') ? 'bor' : e === 'descontinuada' ? 'arc' : 'act'; }
+const COS_EST = [['', 'Todos'], ['act', 'Activos'], ['bor', 'Borrador'], ['arc', 'Archivados']];
 function _cosFichaN(r) { const it = _cosFichaItems(r); return it.indexOf(null) >= 0 ? null : it.filter(Boolean).length; }
 // 4-oct · estado del producto en las DOS plataformas: ERP (fila activa) y Shopify (publicado). Verde = en las dos · amarillo = solo en una · rojo = en ninguna.
 // 22-oct (Pablo · Pantalón Paula: el ERP decía «activo» y la web no lo mostraba) · el estado de la tienda sale de la COPIA DE SHOPIFY
@@ -7927,7 +7933,7 @@ function _cosEstadoTxt(r) {
 }
 function _cosVerCelda(r) {
   const col = _cosEstadoColor(r);
-  return '<button class="btn bg bs cos-ficha" data-d="' + esc(r.Diseno) + '" title="' + esc(_cosEstadoTxt(r) + ' — abrir costos, precios, fotos, video y textos') + '" style="font-size:11px;font-weight:600;padding:3px 12px;background:transparent;border:1.5px solid ' + col + ';color:' + col + '">Ver</button> ' + _cosFichaCelda(r);
+  return '<button class="btn bg bs cos-ficha" data-d="' + esc(r.Diseno) + '" title="' + esc(_cosEstadoTxt(r) + ' — abrir costos, precios, fotos, video y textos') + '" style="font-size:11px;font-weight:600;padding:3px 12px;background:transparent;border:1.5px solid ' + col + ';color:' + col + '">Ver</button> ' + (COS.modo === 'productos' ? '' : _cosFichaCelda(r));
 }
 function _cosFichaCelda(r) {
   const it = _cosFichaItems(r), n = _cosFichaN(r);
@@ -8023,7 +8029,12 @@ const COS_REV_TXT = { bajo: ['Margen bajo (< ' + COS_MARGEN_MIN + '%)', 'Algún 
 function _cosFilas() {
   const q = COS.q.toLowerCase();
   const out = COS.data.filter(r => {
-    if (COS.etapa && _cosEtapa4(r.EstadoCiclo) !== COS.etapa) return false;   // 30-oct · catálogo por etapa (3-nov · P3: 4 grupos)
+    if (COS.modo !== 'productos' && COS.etapa && _cosEtapa4(r.EstadoCiclo) !== COS.etapa) return false;
+    if (COS.modo === 'productos') {   /* 8-nov · pestaña de estado + filtros */
+      if (COS.estTab && _cosEstGrupo(r) !== COS.estTab) return false;
+      if ((COS.etSel || []).length && COS.etSel.indexOf(_cosEtapa4(r.EstadoCiclo)) < 0) return false;
+      if (COS.incompleta) { const a = _cosAvance(r); if (a && a.n >= a.t) return false; }
+    }   // 30-oct · catálogo por etapa (3-nov · P3: 4 grupos)
     if (COS.fest === 'ACTIVO' && r.Activo === false) return false;
     if (COS.fest === 'INACTIVO' && r.Activo !== false) return false;
     if (COS.sinManga && COS.esAdmin && !_cosFaltaManga(r)) return false;   // 17-oct (Pablo) · filtro Sin manga
@@ -8047,6 +8058,12 @@ function _cosCols() {
   if (A) c.push({ t: 'Ver', stick: 1, sortf: 1, f: r => _cosVerCelda(r) });
   c.push({ t: 'SKU', cat: 1, stick: 1, f: r => '<b>' + esc(((r.TipoPrenda || '') + ' ' + (r.Modelo || '')).trim()) + '</b>'   /* 7-oct (Pablo) · el SKU entero en negrita y del mismo color */ + (A && r.Notas ? ' <span title="' + esc(r.Notas) + '" style="color:var(--mu)">🗒</span>' : '')
     + (A && _cosRevFlags(r).length ? ' <span title="' + esc(_cosRevFlags(r).map(k => COS_REV_TXT[k][0]).join(' · ')) + '" style="color:var(--rd)">⚠</span>' : '') });
+  if (MP) {   /* 8-nov (Pablo) · panel de avance: un ✓ por cada cosa lista; clic en Ver para seguir llenando */
+    c.push({ g: 'Avance de la ficha', gbg: 'rgba(139,92,246,.25)', t: 'Avance', num: 1, f: r => { const a = _cosAvance(r); if (!a) return '<span style="color:var(--mu)">…</span>';
+      return '<b style="color:' + (a.n === a.t ? 'var(--gn)' : a.n >= a.t - 2 ? '#d97706' : 'var(--rd)') + '">' + a.n + ' de ' + a.t + '</b>'; } });
+    COS_AV.forEach((x, j) => c.push({ g: 'Avance de la ficha', gbg: 'rgba(139,92,246,.25)', t: x[0], num: 1, f: r => { const a = _cosAvance(r); if (!a) return '<span style="color:var(--mu)">…</span>';
+      return a.ok[j] ? '<span style="color:var(--gn)">✓</span>' : '<span style="color:var(--rd)" title="Falta">·</span>'; } }));
+  }
   /* 8-nov (Pablo) · el costo en 3 grupos: Confección · Tela (tela, entretela y forro) · Otros insumos (todo lo demás). «Detalle» abre cada componente. */
   if (A && COS.ver.comp && !MP && !COS.ver.compDet) {
     const grupo = k => k === 'confeccion' ? 'co' : (/^tela/.test(k) || k === 'entretela' || k === 'forro') ? 'te' : 'ot';
@@ -8341,7 +8358,8 @@ function _cosRender() {
   let h = '';
   if (A && COS.aviso) h += '<div class="card" style="margin-bottom:12px;font-size:12px;color:var(--rd)">' + esc(COS.aviso) + '</div>';
   const chips = [['comp', 'Costo', A], ['compDet', 'Detalle de costo', A && COS.ver.comp], ['lista', 'Lista', 1], ['live', 'Live', 1], ['cyber', 'Promoción', 1], ['show', 'Showroom', 1], ['colab', 'Colaborador', 1]].filter(x => x[2]);
-  h += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">'
+  if (COS.modo === 'productos') h += _cosBarraProductos(A, sel);
+  else h += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px">'
     + (COS.modo === 'productos' ? '' : '<button class="btn bp" id="cos-nuevo" style="white-space:nowrap">➕ Nuevo producto</button>')   /* 8-nov (Pablo) · los productos se crean en Producción */   // 31-oct · una sola puerta
     + (A ? '<button class="btn ' + ((COS.pend || []).length ? 'bp' : 'bg') + '" id="cos-pend" style="white-space:nowrap" title="Los productos nacen en 🧵 Producción (o en Stock si se compran hechos). Aquí completas el costo, los precios y la ficha para la tienda">🆕 Por completar' + (COS.pend ? ' (' + _cosPorCompletar().length + ')' : '') + '</button>' : '')
     + '<input id="cos-q" placeholder="Buscar…" autocomplete="off" value="' + esc(COS.q) + '" style="width:150px;' + sel + '">'
@@ -8350,12 +8368,15 @@ function _cosRender() {
     + (COS.modo === 'productos' ? ''   /* 8-nov (Pablo) · nada en Productos redirige a Producción */
        : chips.map(x => '<button class="btn ' + (COS.ver[x[0]] ? 'bp' : 'bg') + ' bs cos-ver" data-v="' + x[0] + '" style="font-size:12px">' + x[1] + '</button>').join(''))
     + (A ? '<span style="flex:1"></span><button class="btn bg bs" id="cos-shopsync" title="Pregunta a Shopify cuáles productos están publicados y enlaza los que coinciden por nombre" style="font-size:12px;white-space:nowrap">🔄 Sincronizar con Shopify</button><button class="btn bg bs" id="cos-alertas" style="font-size:12px;white-space:nowrap">🔔 Alertas</button>' : '') + '</div>';
-  if (A) h += _cosEtapasHtml();   // 30-oct (ficha única · 8) · el catálogo por etapa, siempre arriba
+  if (A && COS.modo !== 'productos') h += _cosEtapasHtml();   // 30-oct (ficha única · 8) · el catálogo por etapa, siempre arriba (8-nov · en Productos va en Filtros)
   h += '<div id="cos-form"></div>';
   h += '<div id="cos-tabla" style="overflow:auto;max-height:68vh;border:1px solid var(--bd2);border-radius:var(--r)">' + _cosTablaHtml(rows) + '</div>';
   w.innerHTML = h;
   _cosAlto();
   w.querySelectorAll('.cos-etapa').forEach(b => b.addEventListener('click', () => { COS.etapa = COS.etapa === b.dataset.e ? '' : b.dataset.e; _cosRender(); }));
+  w.querySelectorAll('.cos-est').forEach(b => b.addEventListener('click', () => { COS.estTab = b.dataset.s; _cosRender(); }));   /* 8-nov · pestañas de estado */
+  { const bf = document.getElementById('cos-filt'); if (bf) bf.addEventListener('click', e => { e.stopPropagation(); _cosFiltrosAbrir(bf); });
+    const bm = document.getElementById('cos-mas'); if (bm) bm.addEventListener('click', e => { e.stopPropagation(); _cosMasAbrir(bm); }); }
   document.getElementById('cos-q').addEventListener('input', function () { COS.q = this.value; clearTimeout(COS._t); COS._t = setTimeout(_cosUpdateRows, 150); });
   const bsy = document.getElementById('cos-shopsync'); if (bsy) bsy.addEventListener('click', async () => {
     bsy.disabled = true; bsy.textContent = 'Sincronizando…';
@@ -8379,6 +8400,52 @@ function _cosRender() {
 /* 29-oct (Pablo: «cómo debe estar, no cómo está») · FICHA ÚNICA DEL PRODUCTO, una sola pantalla con pestañas fijas:
    📋 Resumen (etapa + qué falta) · 🧵 Costo (lo carga Producción) · 💲 Precios · 🛍 Tienda · 🏭 Órdenes. Cada dato tiene UN dueño:
    el costo lo edita quien tiene 🧵 Producción en edición; aquí los demás lo ven con candado. */
+/* 8-nov-2026 (Pablo: «máximo una fila de botones») · Productos: pestañas de estado (como Shopify) + buscar + Filtros ▾ + 🔔 + ⋯. */
+function _cosBarraProductos(A, sel) {
+  const n = { '': 0, act: 0, bor: 0, arc: 0 }; (COS.data || []).forEach(r => { n['']++; n[_cosEstGrupo(r)]++; });
+  const nf = (COS.etSel || []).length + (COS.incompleta ? 1 : 0) + (COS.sinManga ? 1 : 0) + (COS.fest ? 1 : 0);
+  return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+    + COS_EST.map(e => '<button type="button" class="btn bs ' + ((COS.estTab || '') === e[0] ? 'bp' : 'bg') + ' cos-est" data-s="' + e[0] + '" style="font-size:12px">' + e[1] + ' <span style="opacity:.7">' + n[e[0]] + '</span></button>').join('')
+    + '<span style="flex:1"></span><input id="cos-q" placeholder="🔍 Buscar…" autocomplete="off" value="' + esc(COS.q) + '" style="width:180px;' + sel + '">'
+    + '<button type="button" class="btn bs ' + (nf ? 'bp' : 'bg') + '" id="cos-filt" style="font-size:12px">Filtros ▾' + (nf ? ' (' + nf + ')' : '') + '</button>'
+    + (A ? '<button class="btn bg bs" id="cos-alertas" style="font-size:12px;white-space:nowrap">🔔 Alertas</button>'
+      + '<button type="button" class="btn bg bs" id="cos-mas" title="Más acciones" style="font-size:12px">⋯</button><button id="cos-shopsync" style="display:none"></button>' : '')
+    + '</div>';
+}
+function _cosFiltrosAbrir(btn) {
+  let p = document.getElementById('cos-fpop'); if (p) { p.remove(); return; }
+  const E = COS_ETAPA4.concat([['reposicion', '🔁 Reposición'], ['descontinuada', '⏸ Descontinuado']]), et = COS.etSel || [];
+  p = document.createElement('div'); p.id = 'cos-fpop';
+  p.style.cssText = 'position:fixed;z-index:90;background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;min-width:240px;box-shadow:0 8px 28px rgba(0,0,0,.5);font-size:13px';
+  p.innerHTML = '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;margin-bottom:4px">Etapa</div>'
+    + E.map(e => '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-et="' + e[0] + '"' + (et.indexOf(e[0]) >= 0 ? ' checked' : '') + '> ' + e[1] + '</label>').join('')
+    + '<div style="border-top:1px solid var(--bd);margin:8px 0"></div>'
+    + '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-f="incompleta"' + (COS.incompleta ? ' checked' : '') + '> Ficha incompleta</label>'
+    + '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-f="sinManga"' + (COS.sinManga ? ' checked' : '') + '> Sin manga</label>'
+    + '<label style="display:flex;gap:6px;align-items:center;padding:4px 0">En el ERP <select data-f="fest" style="margin-left:auto"><option value="">Todos</option><option value="ACTIVO"' + (COS.fest === 'ACTIVO' ? ' selected' : '') + '>Activos</option><option value="INACTIVO"' + (COS.fest === 'INACTIVO' ? ' selected' : '') + '>Inactivos</option></select></label>'
+    + (COS.esAdmin ? '<button type="button" class="btn bg bs" data-f="pend" style="width:100%;margin-top:6px;font-size:12px">🆕 Nuevos por completar (' + ((typeof _cosPorCompletar === 'function' && COS.pend) ? _cosPorCompletar().length : 0) + ')</button>' : '')
+    + '<div style="display:flex;justify-content:space-between;margin-top:8px"><button type="button" class="btn bg bs" data-f="limpiar" style="font-size:12px">Limpiar</button><button type="button" class="btn bg bs" data-f="x" title="Cerrar" style="font-size:12px">✕</button></div>';
+  p.addEventListener('click', e => e.stopPropagation());
+  p.addEventListener('change', e => { const t = e.target;
+    if (t.dataset.et) COS.etSel = [...p.querySelectorAll('[data-et]:checked')].map(x => x.dataset.et);
+    else if (t.dataset.f === 'fest') COS.fest = t.value; else if (t.dataset.f) COS[t.dataset.f] = t.checked;
+    _cosRender(); const b2 = document.getElementById('cos-filt'); if (b2) { p.remove(); _cosFiltrosAbrir(b2); } });
+  p.querySelector('[data-f="limpiar"]').onclick = () => { COS.etSel = []; COS.incompleta = false; COS.sinManga = false; COS.fest = ''; p.remove(); _cosRender(); };
+  p.querySelector('[data-f="x"]').onclick = () => p.remove();
+  const pb = p.querySelector('[data-f="pend"]'); if (pb) pb.onclick = () => { p.remove(); try { _cosPendAbrir(); } catch (_) {} };
+  document.body.appendChild(p); const r = btn.getBoundingClientRect();
+  p.style.top = (r.bottom + 6) + 'px'; p.style.left = Math.max(8, Math.min(r.left, innerWidth - p.offsetWidth - 8)) + 'px';
+}
+document.addEventListener('click', () => { const p = document.getElementById('cos-fpop'); if (p) p.remove(); const m = document.getElementById('cos-mpop'); if (m) m.remove(); });
+function _cosMasAbrir(btn) {
+  let p = document.getElementById('cos-mpop'); if (p) { p.remove(); return; }
+  p = document.createElement('div'); p.id = 'cos-mpop';
+  p.style.cssText = 'position:fixed;z-index:90;background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:6px;box-shadow:0 8px 28px rgba(0,0,0,.5)';
+  p.innerHTML = '<button type="button" class="btn bg bs" style="width:100%;font-size:12px;white-space:nowrap">🔄 Sincronizar con Shopify</button>';
+  p.addEventListener('click', e => e.stopPropagation());
+  p.querySelector('button').onclick = () => { p.remove(); const b = document.getElementById('cos-shopsync'); if (b) b.click(); };
+  document.body.appendChild(p); const r = btn.getBoundingClientRect(); p.style.top = (r.bottom + 6) + 'px'; p.style.left = Math.max(8, r.right - p.offsetWidth) + 'px';
+}
 function _cosEtapasHtml() {
   const E = COS_ETAPA4.concat([['reposicion', '🔁 Reposición'], ['descontinuada', '⏸ Descontinuado']]), n = {};
   (COS.data || []).forEach(r => { const e = _cosEtapa4(r.EstadoCiclo); n[e] = (n[e] || 0) + 1; });
@@ -10769,7 +10836,7 @@ async function _resRpc(fn, body) {
   if (!r.ok) { if (r.status === 401) _sbVencerTok(); const t = await r.text(); throw new Error(/Solo Administrador/.test(t) ? 'Solo Administrador' : ('La base respondió ' + r.status)); }
   return r.json();
 }
-function _resBadge(n) { const b = document.getElementById('res-badge'); if (!b) return; b.textContent = n; b.style.display = n > 0 ? '' : 'none'; }
+function _resBadge(n) { window._resN = n; const b = document.getElementById('res-badge'); if (!b) return; b.textContent = n; b.style.display = n > 0 ? '' : 'none'; }
 async function loadResenas() {
   const w = document.getElementById('res-w'); if (!w) return;
   w.innerHTML = '<div class="ld"><div class="sp"></div>Cargando reseñas...</div>';
@@ -10901,8 +10968,13 @@ function _resPintar(pend) {
   const fotosHtml = r => _resSelDe(r).map((f, i) => '<div style="display:flex;flex-direction:column;gap:4px;align-items:center">'
       + '<a href="' + esc(f.url) + '" target="_blank" rel="noopener" style="position:relative"><img src="' + esc(f.url) + '" alt="" style="width:150px;height:188px;object-fit:cover;border-radius:10px;background:var(--bg3)">'
       + (f.url !== f.orig ? '<span style="position:absolute;left:6px;top:6px;font-size:11px;background:#173B61;color:#fff;border-radius:6px;padding:1px 6px">editada</span>' : '') + '</a>'
-      + '<div style="display:flex;gap:6px;align-items:center"><button type="button" class="btn bg bs res-ed" data-i="' + i + '" style="font-size:11px">✏️ Editar</button>'
-      + '<label style="font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" class="res-pub" data-i="' + i + '"' + (f.pub ? ' checked' : '') + '> Publicar</label></div>' + iaDe(r, f.orig) + '</div>').join('');
+      + '</div>').join('');
+  /* 8-nov (Pablo) · Editar, Publicar e IA van DEBAJO de «Aprobar fotos marcadas», una línea por foto (ocupa menos alto) */
+  const fotoCtl = r => { const L = _resSelDe(r); return L.map((f, i) => '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px">'
+      + (L.length > 1 ? '<span style="color:var(--mu)">Foto ' + (i + 1) + '</span>' : '')
+      + '<button type="button" class="btn bg bs res-ed" data-i="' + i + '" style="font-size:11px">✏️ Editar</button>'
+      + '<label style="font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" class="res-pub" data-i="' + i + '"' + (f.pub ? ' checked' : '') + '> Publicar</label>'
+      + iaDe(r, f.orig).replace('max-width:150px', 'max-width:none') + '</div>').join(''); };
   // 15-oct (Pablo) · primer filtro de la IA (función resena-filtro): la revisión final es de Tulula
   function iaDe(r, u) { const x = (r.ia || []).find(z => z && z.url === u); if (!x || x.ok === null || x.ok === undefined) return '';
     return x.ok ? '<div style="font-size:11px;color:var(--gn);max-width:150px">🤖 IA: cumple</div>' : '<div style="font-size:11px;color:var(--rd);max-width:150px" title="' + esc((x.motivos || []).join(' ')) + '">🤖 IA: ' + esc((x.motivos || []).join(' ') || 'no cumple') + '</div>'; }
@@ -10916,7 +10988,7 @@ function _resPintar(pend) {
         + ((r.fotos || []).length ? '<button type="button" class="btn bp bs res-ok">✓ Aprobar fotos marcadas</button><button type="button" class="btn bg bs res-no">✗ No publicar ninguna</button>' : '')
         + '<button type="button" class="btn bg bs res-oc" style="font-size:11px">' + (r.publicar ? 'Ocultar reseña' : 'Volver a mostrar reseña') + '</button>' + estado(r) + ' ' + permiso(r)
         + (r.revisado_por ? '<span style="font-size:11px;color:var(--mu)">revisó ' + esc(r.revisado_por.split('@')[0]) + '</span>' : '')
-      + '</div>' + cupon(r) + '<div class="res-st" style="font-size:12px;margin-top:6px"></div></div></div>';
+      + '</div>' + fotoCtl(r) + cupon(r) + '<div class="res-st" style="font-size:12px;margin-top:6px"></div></div></div>';
   w.innerHTML = '<div style="padding:16px;max-width:1000px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h2 style="margin:0;font-size:20px">Reseñas por aprobar</h2>'
     + '<div style="display:flex;gap:6px">' + [['pendientes', 'Fotos por revisar (' + pend + ')'], ['todas', 'Todas']].map(t => '<button type="button" class="btn ' + (RES.ver === t[0] ? 'bp' : 'bg') + ' bs res-ver" data-v="' + t[0] + '">' + t[1] + '</button>').join('') + '</div></div>'
@@ -11157,9 +11229,8 @@ function _conTabs() {
     const cw = document.getElementById('car-w'); if (cw) cw.style.display = t === 'car' ? '' : 'none';
     const ow = document.getElementById('ord-w'); if (ow) ow.style.display = t === 'ord' ? '' : 'none';   // 14-oct · Orden de la tienda
     box.querySelectorAll('.con-ptab').forEach(b => { b.classList.toggle('bp', b.dataset.t === t); b.classList.toggle('bg', b.dataset.t !== t); }); if (t === 'res') loadResenas(); if (t === 'car') loadCarritos(); if (t === 'ord') loadOrdenTienda(); };
-  box.innerHTML = '<div style="display:flex;gap:6px;margin:0 0 12px;flex-wrap:wrap">' + [['prod', 'Productos'], ['res', '⭐ Reseñas por aprobar<span id="res-badge" style="display:none;margin-left:6px;background:var(--rd);color:#fff;border-radius:9px;padding:0 6px;font-size:11px"></span>'], ['car', '🛒 Carritos'], ['ord', '🧭 Orden de la tienda']].map(t => '<button type="button" class="btn ' + ((RES.tab || 'prod') === t[0] ? 'bp' : 'bg') + ' bs con-ptab" data-t="' + t[0] + '">' + t[1] + '</button>').join('') + '</div>';
-  box.querySelectorAll('.con-ptab').forEach(b => b.addEventListener('click', () => ver(b.dataset.t)));
-  if (RES.tab === 'res' || RES.tab === 'car' || RES.tab === 'ord') ver(RES.tab); else _resRpc('resenas_admin_lista', { p_ver: 'pendientes' }).then(d => _resBadge(d.pendientes || 0)).catch(() => {});
+  window._conVer = ver; box.innerHTML = '';   /* 8-nov (Pablo) · sin fila propia: Catálogo · Reseñas · Orden de Shopify están en la barra del título (_prodBarra) */
+  ver(RES.tab || 'prod'); if (RES.tab !== 'res') _resRpc('resenas_admin_lista', { p_ver: 'pendientes' }).then(d => _resBadge(d.pendientes || 0)).catch(() => {});   /* 8-nov · siempre muestra la sección elegida */
 }
 // <<< RESEÑAS POR APROBAR
 // >>> 6-oct-2026 · VÍA RÁPIDA DE FOTOS Y VIDEO: la base directo (rpc ficha_media_admin, solo Admin) ≈0,4 s en vez de Apps Script (6-11 s).
@@ -32375,11 +32446,11 @@ try { new MutationObserver(function (ms) { for (var i = 0; i < ms.length; i++) {
 })();
 var NAV_GRUPOS = {
   marketing: [['marketing', 'Anuncios'], ['margen', 'Margen'], ['panel', 'Resumen']],   // 27-oct (Pablo) · barra única (_mkBarra); Resumen queda oculto (ya es la fila de arriba de Anuncios)
-  costos:    [['costos', 'Productos'], ['homologaciones', 'Homologaciones'], ['multimedia', 'Multimedia']],   // 27-oct (Pablo) · nombres de prendas y fotos de producto viven en Productos
+  costos:    [['costos', 'Catálogo'], ['multimedia', 'Fotos y video']],   // 8-nov (Pablo) · barra única de Productos (_prodBarra); Homologaciones pasa a Configuración   // 27-oct (Pablo) · nombres de prendas y fotos de producto viven en Productos
   pedidos:   [['pedidos', 'Pedidos']],   // 26-oct (Pablo) · «Envíos juntos» ya no es pantalla: el aviso va en Pedidos
   cambios2:  [['cambios2', 'Cambios'], ['devoluciones', 'Devoluciones']],
   cuadre:    [['cuadre', 'Matriz'], ['egresos', 'Egresos'], ['cajachica', 'Caja chica']],   // 28-oct (Pablo) · un solo módulo de plata: Matriz (KPI · Proyección · Cuadre de caja · Bonos) + Egresos + Caja chica
-  config:    [['config', 'Configuración'], ['alertas', 'Alertas'], ['papelera', 'Papelera']]   // 29-oct (Pablo) · «Cuadre ERP vs Drive» vuelve a ser botón propio del menú (lo usan las chicas a diario)
+  config:    [['config', 'Configuración'], ['alertas', 'Alertas'], ['papelera', 'Papelera'], ['homologaciones', 'Homologaciones']]   // 29-oct (Pablo) · «Cuadre ERP vs Drive» vuelve a ser botón propio del menú (lo usan las chicas a diario)
 };
 function _grpBtn(pg){ return document.querySelector('.sb .nb[data-pg="' + pg + '"]') || document.querySelector('.nb[data-pg="' + pg + '"]'); }
 function _grpPermiso(pg){ var b = _grpBtn(pg); return !!(b && b.style.display !== 'none'); }   // el permiso lo sigue poniendo el ERP con style.display
@@ -32405,7 +32476,8 @@ function _grpPintar(pg){
   var t = document.getElementById('grp-tabs'); if (!t) return;
   var padre = _grpDe(pg);
   if (!padre || !_grpPermiso(padre)) { t.classList.remove('on'); t.innerHTML = ''; t._k = ''; return; }
-  if (padre === 'marketing') { _mkBarra(t, pg); return; }   /* 27-oct · barra única de Marketing */
+  if (padre === 'marketing') { _mkBarra(t, pg); return; }
+  if (padre === 'costos') { _prodBarra(t, pg); return; }   /* 8-nov · Productos: una sola barra */   /* 27-oct · barra única de Marketing */
   var miembros = NAV_GRUPOS[padre].filter(function (x) { return _grpPermiso(x[0]); });
   if (miembros.length < 2) { t.classList.remove('on'); t.innerHTML = ''; t._k = ''; return; }
   var k = padre + '|' + pg + '|' + miembros.length;
@@ -32504,6 +32576,27 @@ function _mkTopCanal(c){ var fw = _mkFw(); if (!fw) return; var b = fw.document.
 function _mkTopPer(v){ var fw = _mkFw(); if (!fw) return; var ps = fw.document.getElementById('mkPeriodo'); if (!ps) return; ps.value = v; try { fw.mkPeriodoCambio(); } catch (_) {} try { fw._mkHeadAplicar(); } catch (_) {} setTimeout(_mkTopPintar, 50); }
 function _mkTopMgPer(v){ var mp = document.getElementById('mg-select-periodo'); if (!mp) return; mp.value = v; try { mgCambioPeriodo(); } catch (_) {} setTimeout(_mkTopPintar, 50); }
 try { setInterval(_mkTopPintar, 400); } catch (_) {}
+/* 8-nov-2026 (Pablo: «Frankenstein», «máximo una fila») · PRODUCTOS en una sola barra junto al título:
+   Catálogo · Fotos y video · Reseñas · Orden de Shopify (· Carritos, hasta que se mude a Ventas › Oportunidades). */
+var PROD_BARRA = [['costos', 'prod', 'Catálogo'], ['multimedia', '', 'Fotos y video'], ['costos', 'res', '⭐ Reseñas'], ['costos', 'ord', 'Orden de Shopify'], ['costos', 'car', '🛒 Carritos']];
+function _prodBarra(t, pg){
+  var act = pg === 'multimedia' ? 'multimedia' : ((typeof RES !== 'undefined' && RES.tab) || 'prod');
+  var adm = typeof _esAdminCuadre === 'function' && _esAdminCuadre();
+  var L = PROD_BARRA.filter(function (x) { return x[0] === 'multimedia' ? _grpPermiso('multimedia') : (x[1] === 'prod' || adm); });
+  var k = 'prod|' + pg + '|' + act + '|' + L.length;
+  if (t._k !== k) { t._k = k;
+    t.innerHTML = L.map(function (x) { var on = x[0] === 'multimedia' ? act === 'multimedia' : (pg !== 'multimedia' && act === x[1]);
+      return '<button type="button" class="mkt-tab' + (on ? ' on' : '') + '" onclick="_prodIr(\'' + x[0] + '\',\'' + x[1] + '\')">' + x[2]
+        + (x[1] === 'res' ? '<span id="res-badge" style="' + (window._resN > 0 ? '' : 'display:none;') + 'margin-left:6px;background:var(--rd);color:#fff;border-radius:9px;padding:0 6px;font-size:11px">' + (window._resN || '') + '</span>' : '') + '</button>'; }).join(''); }
+  t.classList.add('on');
+  var bp = _grpBtn('costos'); if (bp && !bp.classList.contains('on')) { document.querySelectorAll('.sb .nb.on').forEach(function (b) { if (b !== bp) b.classList.remove('on'); }); bp.classList.add('on'); }
+}
+function _prodIr(pg, tab){
+  if (tab && typeof RES !== 'undefined') RES.tab = tab;
+  if (typeof curPg !== 'undefined' && curPg === pg && pg === 'costos' && typeof window._conVer === 'function') window._conVer(tab || 'prod');
+  else _grpIr(pg);
+  var t = document.getElementById('grp-tabs'); if (t) t._k = ''; setTimeout(function () { _grpPintar(pg); }, 0);
+}
 function _grpIr(pg){ var b = _grpBtn(pg); if (b) b.click(); else if (typeof navegarA === 'function') navegarA(pg); setTimeout(function () { _grpPintar(pg); }, 0); }
 document.addEventListener('click', function (e) { var b = e.target.closest && e.target.closest('.nb[data-pg]'); if (b) setTimeout(function () { _grpPintar(b.getAttribute('data-pg')); }, 0); });
 try { setInterval(_grpAplicar, 1000); } catch (_) {}
