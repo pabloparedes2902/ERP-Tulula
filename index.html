@@ -6151,6 +6151,7 @@ function _produccionLazy(){
   var f = document.getElementById('produccion-frame');
   if (!f) return;
   try { _prodTabs(); } catch (_) {}   // 8-nov (Pablo) · 💲 Costos y precios se mudó de Productos a Producción
+  if (typeof _prodNivConf === 'function' && _prodNivConf() < 1) return;   // 8-nov · solo «Precios»: no carga Confección
   if (f.getAttribute('src') !== 'produccion.html') f.setAttribute('src', 'produccion.html');
 }
 function _marketingLazy(){
@@ -7476,7 +7477,7 @@ async function _prodRpcBase(fn, params) {
     if (tm) clearTimeout(tm);
     if (!r.ok) {
       let m = ''; try { const e = await r.json(); m = String((e && (e.message || e.hint)) || ''); } catch (_) {}
-      if (/^(FALTAN_DATOS|YA_EXISTE):/.test(m)) return { negocio: m.replace(/^[A-Z_]+:\s*/, '') };
+      if (/^(FALTAN_DATOS|YA_EXISTE|FRENO):/.test(m)) return { negocio: m.replace(/^[A-Z_]+:\s*/, '') };   // 8-nov · + FRENO (margen mínimo de precios)
       if ((r.status === 401 || r.status === 403) && typeof _sbVencerTok === 'function') { try { _sbVencerTok(); } catch (_) {} }
       return null;
     }
@@ -7679,6 +7680,10 @@ function _cosMontosWire(scope) {
   });
 }
 function _cosYoAdmin() { return MY_ROLE === 'Administrador' || (typeof _permEsDueno === 'function' && _permEsDueno(MY_EMAIL)); }
+/* 8-nov (Pablo) · PRECIOS: columna propia en Usuarios. Edición = cambia precios en Producción › 💲 (con freno de margen y aviso a Pablo); los costos siguen solo para Administración. */
+function _cosNivPrecios() { if (_cosYoAdmin()) return 2; return MY_PERMISOS ? (Number(MY_PERMISOS.precios) || 0) : 0; }
+function _cosPuedePrecios() { return _cosNivPrecios() >= 2; }
+function _prodNivConf() { if (_cosYoAdmin()) return 2; return MY_PERMISOS ? (Number(MY_PERMISOS.produccion) || 0) : 0; }
 
 function _cosAplicar(r) {
   if (!r) { loadCostos(); return; }
@@ -8089,9 +8094,26 @@ function _cosCols() {
         const m = r.margen && r.margen[b.id]; if (!m) return '<span style="color:var(--mu)">—</span>';
         const pc = m.p * 100, col = pc >= 65 ? 'var(--gn)' : (pc >= 55 ? '#d97706' : 'var(--rd)');
         return '<span style="color:' + col + ';font-weight:600" ' + (b.id !== 'colab' && pc < COS_MARGEN_MIN ? 'title="Margen bajo (menos de ' + COS_MARGEN_MIN + '%)"' : '') + '>' + pc.toFixed(0) + '%' + (b.id !== 'colab' && pc < COS_MARGEN_MIN ? ' ⚠' : '') + '</span>'; } });
+      if (b.id === 'lista') c.push({ g: b.t, gbg: b.bg, t: 'Sugerido', num: 1, adm: 1, f: r => {   /* 8-nov (Pablo) · precio sugerido = costo con el margen típico (mediana) de su categoría, terminado en 9 */
+        const x = _cosSugerido(r); if (!x) return '<span style="color:var(--mu)">—</span>';
+        const l = +(r.precios && r.precios.lista) || 0, bajo = l > 0 && l < x.v - 5;
+        return '<span title="Margen típico de ' + esc(r.Categoria || 'su categoría') + ': ' + x.m + '% (mediana de ' + x.n + ' productos)' + (bajo ? ' · la Lista está por debajo' : '') + '" style="' + (bajo ? 'color:#d97706;font-weight:600' : 'color:var(--mu)') + '">' + x.v + (bajo ? ' ↑' : '') + '</span>'; } });
     }
   });
   return c;
+}
+
+/* 8-nov (Pablo) · margen típico por categoría (mediana del margen de Lista de los activos con costo) y precio sugerido terminado en 9 */
+let _cosSugCache = null;
+function _cosSugMed() {
+  if (_cosSugCache && _cosSugCache.d === COS.data) return _cosSugCache.m;
+  const g = {}; (COS.data || []).forEach(r => { const m = r.margen && r.margen.lista; if (r.Activo === false || !m || !(m.p > 0) || !(+r.CostoUnitario > 0)) return; (g[r.Categoria || ''] = g[r.Categoria || ''] || []).push(m.p); });
+  const m = {}; Object.keys(g).forEach(k => { const a = g[k].sort((x, y) => x - y), n = a.length; if (n >= 3) m[k] = { p: n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2, n: n }; });
+  _cosSugCache = { d: COS.data, m: m }; return m;
+}
+function _cosSugerido(r) {
+  const c = +r.CostoUnitario || 0, md = _cosSugMed()[r.Categoria || '']; if (!(c > 0) || !md || !(md.p > 0 && md.p < 0.95)) return null;
+  const x = c / (1 - md.p); return { v: Math.max(9, Math.ceil((x - 9) / 10) * 10 + 9), m: Math.round(md.p * 100), n: md.n };
 }
 
 // 2-oct · ANCHO DE COLUMNAS: se arrastra el borde derecho del encabezado (igual que Pedidos/Cambios/Devoluciones); queda guardado en este navegador
@@ -8178,7 +8200,7 @@ function _xlRelleno(to){ const G = _xlG(), R = _xlRg(); if (!R || !to) return; c
   if (to.r > R.r1) { for (let i = R.r1 + 1; i <= to.r; i++) for (let j = R.c0; j <= R.c1; j++) if (G[i] && G[i][j]) _xlSet(G[i][j], _xlVal(G[R.r0 + (i - R.r1 - 1) % h][j])); PXL.b = { r:to.r, c:R.c1 }; PXL.a = { r:R.r0, c:R.c0 }; }
   else if (to.r < R.r0) { for (let i = to.r; i < R.r0; i++) for (let j = R.c0; j <= R.c1; j++) if (G[i] && G[i][j]) _xlSet(G[i][j], _xlVal(G[R.r1 - (R.r0 - 1 - i) % h][j])); PXL.a = { r:to.r, c:R.c0 }; PXL.b = { r:R.r1, c:R.c1 }; }
   else if (to.c > R.c1) { for (let i = R.r0; i <= R.r1; i++) for (let j = R.c1 + 1; j <= to.c; j++) if (G[i] && G[i][j]) _xlSet(G[i][j], _xlVal(G[i][R.c0 + (j - R.c1 - 1) % w])); PXL.a = { r:R.r0, c:R.c0 }; PXL.b = { r:R.r1, c:to.c }; } }
-function _xlMontar(w){ if (!COS.esAdmin || COS.modo === 'productos' || !w || w.dataset.xl) { _xlPintar(); return; } w.dataset.xl = '1';
+function _xlMontar(w){ if (!(COS.esAdmin || _cosPuedePrecios()) || COS.modo === 'productos' || !w || w.dataset.xl) { _xlPintar(); return; } w.dataset.xl = '1';
   w.addEventListener('mousedown', e => { const td = e.target.closest('td.xl'); if (!td || e.target.id === 'xl-asa' || e.target.classList.contains('xl-in')) return; e.preventDefault(); if (PXL.editTd) _xlCommit();
     const p = _xlPos(td); if (!p) return; if (e.shiftKey && PXL.a) PXL.b = p; else { PXL.a = p; PXL.b = p; } PXL.drag = true; _xlPintar(); });
   w.addEventListener('mouseover', e => { const td = e.target.closest('td.xl'); if (!td) return; const p = _xlPos(td); if (!p) return;
@@ -8214,7 +8236,8 @@ async function _xlGuardar(){
   const ds = Object.keys(P), msg = document.getElementById('xl-msg'); let ok = 0; const mal = [];
   for (const d of ds){ if (msg) msg.textContent = 'Guardando ' + (ok + mal.length + 1) + ' de ' + ds.length + '…';
     const K = String(d).replace(/\s+/g, ' ').trim().toUpperCase();
-    const r = await _prodRpcBase('costos_ficha_guardar_rapido', { p_diseno: K, p_campos: { precios: P[d] } });
+    const r = COS.esAdmin ? await _prodRpcBase('costos_ficha_guardar_rapido', { p_diseno: K, p_campos: { precios: P[d] } })
+      : await _prodRpcBase('precios_guardar', { p_diseno: K, p_precios: P[d] });   // 8-nov · vendedoras: con freno de margen y aviso agrupado a Pablo
     if (r && r.ok){ ok++; Object.keys(P[d]).forEach(pk => delete PXL.ed[d + '|' + pk]);
       const f = (COS.data || []).find(x => String(x.Diseno) === d); if (f){ f.precios = Object.assign({}, f.precios || {}); Object.keys(P[d]).forEach(pk => { f.precios[pk] = P[d][pk] === '' ? null : +P[d][pk]; }); f.PrecioLista = f.precios.lista || f.PrecioLista; }
       Promise.resolve().then(() => apiSend('costos.preciosTras', { Diseno: d })).catch(() => {}); }
@@ -8250,7 +8273,7 @@ function _cosTablaHtml(rows) {
   const g2 = cols.map((c, ix) => '<th style="' + th + 'top:27px;background:var(--bg3);color:var(--mu);font-size:12px;text-align:' + (c.t === 'SKU' ? 'left' : 'center') + stickL(c, ix) + '">'
     + cab(c) + '<span class="crs" data-ck="' + esc(_cosKey(c)) + '"></span></th>').join('');
   const body = rows.length ? rows.map(r => '<tr style="border-top:1px solid var(--bd2)' + (r.Activo === false ? ';opacity:.55' : '') + '">'
-    + cols.map((c, ix) => '<td' + (c.pk && COS.esAdmin ? ' class="xl" data-pk="' + c.pk + '" data-d="' + esc(String(r.Diseno)) + '"' : '') + ' style="padding:6px 9px;white-space:nowrap;font-size:13px;overflow:hidden;text-overflow:ellipsis;text-align:' + (c.t === 'SKU' ? 'left' : 'center')
+    + cols.map((c, ix) => '<td' + (c.pk && (COS.esAdmin || (COS.modo === 'prod' && _cosPuedePrecios() && c.pk !== 'colab')) ? ' class="xl" data-pk="' + c.pk + '" data-d="' + esc(String(r.Diseno)) + '"' : '') + ' style="padding:6px 9px;white-space:nowrap;font-size:13px;overflow:hidden;text-overflow:ellipsis;text-align:' + (c.t === 'SKU' ? 'left' : 'center')
         + (c.stick ? ';position:sticky;left:' + lefts[ix] + 'px;background:var(--bg2);z-index:1' + (ix === cols.reduce((m, k, n) => k.stick ? n : m, 0) ? ';box-shadow:2px 0 4px rgba(0,0,0,.35)' : '') : '') + '">' + c.f(r) + '</td>').join('')
     + '</tr>').join('') : '<tr><td colspan="' + cols.length + '" style="padding:20px;text-align:center;color:var(--mu)">Sin resultados</td></tr>';
   return '<table style="table-layout:fixed;width:' + total + 'px;border-collapse:separate;border-spacing:0"><colgroup>'
@@ -10739,7 +10762,7 @@ function _conForm(r) {
   const precio = k => { const x = _cosN2(v.precios && v.precios[k]); return x == null ? '<span style="color:var(--mu)">—</span>' : 'S/ ' + x; };
   const edita = _prodPuedeEditar();   // ficha (textos, fotos, video): Productos o Contenido en Edición
   const editaPr = _prodPuedeEditarPrecios();   // 13-oct 14:30 (Pablo) · PRECIOS solo con «Productos» en Edición; Marketing (solo Contenido) NO cambia precios
-  const celda = k => (!editaPr || k === 'colab') ? precio(k) : '<input id="cnp-' + k + '" class="cos-monto" type="text" inputmode="decimal" autocomplete="off" value="' + (_cosN2(v.precios && v.precios[k]) || '') + '" style="width:84px;padding:5px 6px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px;text-align:center">';
+  const celda = k => true ? precio(k) :   /* 8-nov (Pablo) · en Productos los precios se ven, no se editan */ '<input id="cnp-' + k + '" class="cos-monto" type="text" inputmode="decimal" autocomplete="off" value="' + (_cosN2(v.precios && v.precios[k]) || '') + '" style="width:84px;padding:5px 6px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px;text-align:center">';
   const filaPr = b => '<tr><td style="padding:4px 8px;font-size:13px;white-space:nowrap">' + esc(b.t) + '</td>' + [0, 1, 2, 3, 4].map(n => '<td style="padding:4px 8px;text-align:center;font-size:13px">' + (b.p[n] ? celda(b.p[n][0]) : '') + '</td>').join('') + '</tr>';
   cont.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--ac);border-radius:var(--r);padding:16px;margin-bottom:16px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="font-size:20px;font-weight:600">' + esc(v.Diseno) + '</div>'
@@ -10751,8 +10774,8 @@ function _conForm(r) {
     + '<div class="con-sec" data-sec="ficha"><div id="cf-media" style="margin:0 0 6px"></div><div id="cf-histw" style="margin:0 0 14px"></div></div>'
     + '<div class="con-sec" data-sec="ficha"><details style="margin:4px 0 12px"><summary style="cursor:pointer;font-size:12px;color:var(--ac)">🔎 Google, IA y cuidados</summary><div style="margin-top:8px">' + _cosFichaHtml(v, st, campo)
       + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><button type="button" class="btn bp" id="con-tx-go">💾 Guardar y mandar a la tienda</button><span id="con-tx-st" style="font-size:12px;color:var(--mu)"></span></div></div></details></div>'
-    + '<div class="con-sec" data-sec="precios" style="display:none"><div style="font-size:12px;color:var(--mu);margin-bottom:6px">' + (editaPr ? 'Puedes cambiar los precios. El de Colaborador lo define Administración. El precio de lista se manda a la tienda al guardar.' : 'Solo lectura. Para cambiar precios pide «Productos» en Edición a Administración.') + '</div><div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th>'
-      + ['1 unidad', 'Pack 2', 'Pack 3', 'Pack 6', 'Pack 12'].map(x => '<th style="font-size:11px;color:var(--mu);text-align:right;padding:2px 8px">' + x + '</th>').join('') + '</tr>' + COS_BLOQUES.map(filaPr).join('') + '</table></div>' + (editaPr ? '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button type="button" class="btn bp" id="con-pr-go">💾 Guardar precios</button><span id="con-pr-st" style="font-size:12px;color:var(--mu)"></span></div>' : '') + '</div>'
+    + '<div class="con-sec" data-sec="precios" style="display:none"><div style="font-size:12px;color:var(--mu);margin-bottom:6px">' + (_cosPuedePrecios() ? 'Solo lectura aquí. Los precios se cambian en Producción › 💲 Precios.' : 'Solo lectura.') + '</div><div style="overflow:auto"><table style="border-collapse:collapse"><tr><th></th>'
+      + ['1 unidad', 'Pack 2', 'Pack 3', 'Pack 6', 'Pack 12'].map(x => '<th style="font-size:11px;color:var(--mu);text-align:right;padding:2px 8px">' + x + '</th>').join('') + '</tr>' + COS_BLOQUES.map(filaPr).join('') + '</table></div>' + (false ? '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button type="button" class="btn bp" id="con-pr-go">💾 Guardar precios</button><span id="con-pr-st" style="font-size:12px;color:var(--mu)"></span></div>' : '') + '</div>'
     + '</div>';
   try { cont.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
   document.getElementById('con-x').addEventListener('click', () => { CTN.editing = null; COS.editing = null; cont.innerHTML = ''; });
@@ -11173,9 +11196,10 @@ function _ordPintar() {
       + '<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap"><button type="button" class="btn bp" id="ord-g">💾 Guardar y aplicar en la tienda</button><span id="ord-st" style="font-size:13px;color:' + (/^⚠|^No /.test(OTI.msg) ? 'var(--rd)' : 'var(--gn)') + '">' + esc(OTI.msg || '') + '</span></div>'
       + '<div id="ord-lista" style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);overflow:hidden">' + OTI.orden.map(fila).join('') + '</div>';
   }
-  /* 8-nov (Pablo) · «Orden de Shopify»: arriba las 6 categorías principales (las de más productos); las demás en «Más ▾» */
-  const _top = OTI.cols.slice().sort((a, b) => (b.n || 0) - (a.n || 0)).slice(0, 6).map(c => c.handle);
-  const princ = OTI.cols.filter(c => _top.indexOf(c.handle) >= 0 || c.handle === OTI.sel), otras = OTI.cols.filter(c => princ.indexOf(c) < 0);
+  /* 8-nov (Pablo) · «Orden de Shopify»: arriba las categorías del menú de la tienda (Blazers, Blusas, Pantalones…);
+     packs, campañas y colecciones automáticas van en «Más ▾». (Medido en vivo: por cantidad salían Bisutería, Correas y Shopping Weekend.) */
+  const _noPrinc = c => /^pack|shopping|colecci|wow|todos los productos|últimas tallas|ultimas tallas/i.test(String(c.titulo || '')) || c.auto || !c.n;
+  const princ = OTI.cols.filter(c => !_noPrinc(c) || c.handle === OTI.sel), otras = OTI.cols.filter(c => princ.indexOf(c) < 0);
   w.innerHTML = '<div style="padding:16px;max-width:1000px"><h2 style="margin:0 0 4px;font-size:20px">Orden de Shopify</h2>'
     + '<div style="font-size:12px;color:var(--mu);margin-bottom:10px">Elige la categoría y cómo se ordena. Lo que guardes aquí manda: si alguien lo cambia en Shopify, el ERP lo vuelve a dejar así cada mañana. «Más vendido» = unidades de los últimos 30 días en todos los canales (WhatsApp, TikTok y web). ' + (OTI.diario ? '<span style="color:var(--gn)">● Reorden diario 5 a. m. activo</span>' : '<span style="color:#B7791F">● Reorden diario: se activa al guardar un orden</span>') + '</div>'
     + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start;margin-bottom:14px">' + princ.map(chip).join('')
@@ -11217,9 +11241,12 @@ function _cosMover(dest){
 }
 function _prodTabs(){
   const box = document.getElementById('prod-tabs'); if (!box) return;
-  if (!_cosYoAdmin()) { box.innerHTML = ''; return; }
-  const t = window._prodTab || 'conf';
-  box.innerHTML = '<div style="display:flex;gap:6px;margin:0 0 10px">' + [['conf', '🧵 Confección'], ['cp', '💲 Costos y precios']].map(x =>
+  const _T = [];
+  if (_prodNivConf() >= 1) _T.push(['conf', '🧵 Confección']);
+  if (_cosNivPrecios() >= 1) _T.push(['cp', _cosYoAdmin() ? '💲 Costos y precios' : '💲 Precios']);   // 8-nov · con «Precios» (sin Producción) solo ve esta pestaña
+  let t = window._prodTab || 'conf'; if (!_T.some(x => x[0] === t)) t = _T.length ? _T[0][0] : 'conf';
+  if (_T.length < 2 && t === 'conf') { box.innerHTML = ''; return; }   // solo Confección: como siempre, sin pestañas
+  box.innerHTML = _T.length < 2 ? '' : '<div style="display:flex;gap:6px;margin:0 0 10px">' + _T.map(x =>
     '<button class="btn bs ' + (x[0] === t ? 'bp' : 'bg') + '" data-pt="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>';
   box.querySelectorAll('[data-pt]').forEach(b => b.addEventListener('click', () => { window._prodTab = b.dataset.pt; _prodTabs(); }));
   const f = document.getElementById('produccion-frame'), cp = document.getElementById('prod-cp');
@@ -12358,7 +12385,7 @@ const PG_SOLO_MARKETING = {marketing:1, flujo:1, contenido:1, costos:1};   // 13
 // heredan el permiso de su modulo. Sin esto 'nuevo' daba 0 = bloqueado para todos con matriz.
 const PG_PADRE = {nuevo:'pedidos', nuevadev:'devoluciones', cambios:'cambios2', histcambios:'cambios2', stock:'inventario', lotes:'inventario', fallashist:'inventario', reposicion:'inventario', confeccion:'inventario', productos:'inventario'};   // 21-oct (Pablo): cajachica, cuadre y cuadredrive ya NO heredan Egresos: tienen columna propia   // 10-oct · grupo nuevo: caja chica y cuadre heredan el permiso de Egresos
 /** 13-oct (Pablo) · nivel de un módulo en la matriz; «Productos» = el mayor entre costos y contenido. */
-function _permNivPg(m){ if (!MY_PERMISOS) return 0; if (m === 'costos' || m === 'contenido') return Math.max(Number(MY_PERMISOS.costos) || 0, Number(MY_PERMISOS.contenido) || 0); return Number(MY_PERMISOS[m]) || 0; }
+function _permNivPg(m){ if (!MY_PERMISOS) return 0; if (m === 'costos' || m === 'contenido') return Math.max(Number(MY_PERMISOS.costos) || 0, Number(MY_PERMISOS.contenido) || 0); if (m === 'produccion') return Math.max(Number(MY_PERMISOS.produccion) || 0, (Number(MY_PERMISOS.precios) || 0) ? 1 : 0); return Number(MY_PERMISOS[m]) || 0; }   /* 8-nov · con «Precios» se entra a Producción solo a 💲 */
 function _esAdminCuadre(){ return (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador') || (typeof _permEsDueno === 'function' && typeof MY_EMAIL !== 'undefined' && _permEsDueno(MY_EMAIL)); }
 function _pgPermitida(pg){
   // 30-set-2026 · si hay matriz de permisos (o "Ver como"), manda la matriz.
@@ -46014,7 +46041,7 @@ async function loadConfig() {
 const PERM_GRUPOS = [
   /* 26-oct (Pablo) · mismas columnas y orden que el servidor (Permisos.gs); las que ahora son pestañas de otro módulo llevan «↳ módulo» */
   {g:'Principal', m:[['dashboard','Dashboard',1],['panel','Panel',1]]},
-  {g:'Marketing y ventas', m:[['clientes','Clientes'],['marketing','Marketing'],['flujo','Ventas'],['comisiones','Comisiones'],['costos','Productos'],['contenido','Contenido'],['homologaciones','↳Mkt Homolog.'],['multimedia','↳Mkt Multimedia'],['margen','↳Mkt Margen',1]]},
+  {g:'Marketing y ventas', m:[['clientes','Clientes'],['marketing','Marketing'],['flujo','Ventas'],['comisiones','Comisiones'],['costos','Productos'],['precios','↳Prod. Precios'],['contenido','Contenido'],['homologaciones','↳Mkt Homolog.'],['multimedia','↳Mkt Multimedia'],['margen','↳Mkt Margen',1]]},
   {g:'Logística', m:[['pedidos','Pedidos'],['inventario','Stock'],['produccion','Producción'],['cambios2','Cambios'],['devoluciones','↳Camb. Devoluc.'],['envios','↳Ped. Envíos juntos']]},
   {g:'Finanzas', m:[['egresos','Egresos'],['cajachica','↳Egr. Caja chica'],['cuadredrive','↳Cuadre ERP vs Drive'],['cuadre','Cuadre y proy.']]},
   {g:'Sistema', m:[['papelera','↳Config. Papelera'],['alertas','↳Config. Alertas'],['config','Config.']]}
@@ -46026,8 +46053,8 @@ function _permAdminLegado(){ const o = _permMatriz(0); PERM_MODULOS.forEach(m =>
 // Plantillas = lo que cada rol ve HOY (_applyRoleUI + _pgPermitida), traducido a la matriz.
 const PERM_PLANTILLAS = {
   'Administrador': _permAdminLegado(),   // 21-oct (Pablo) · lista CERRADA: un módulo nuevo NO entra solo (arranca apagado para todos menos Pablo)
-  'Logistica': _permCon({clientes:2, flujo:2, costos:1, pedidos:2, inventario:2, cambios2:2, devoluciones:2, envios:2, alertas:2}),   // 1-oct: Costos de producto = vista (precios)
-  'Ventas': _permCon({clientes:1, flujo:1, costos:1, pedidos:2, inventario:1, cambios2:2, devoluciones:2, envios:1, alertas:1}),   // 1-oct: Costos de producto = vista (precios)
+  'Logistica': _permCon({clientes:2, flujo:2, costos:1, precios:2, pedidos:2, inventario:2, cambios2:2, devoluciones:2, envios:2, alertas:2}),   // 1-oct: Costos de producto = vista (precios)
+  'Ventas': _permCon({clientes:1, flujo:1, costos:1, precios:2, pedidos:2, inventario:1, cambios2:2, devoluciones:2, envios:1, alertas:1}),   // 1-oct: Costos de producto = vista (precios)
   'Marketing': _permCon({marketing:2, flujo:2, contenido:2})   // 7-oct · + Contenido de producto (13-oct: en pantalla sale como «Productos» en Edición)
 };
 const PERM_DUENOS = ['pabloparedes2902@gmail.com'];
@@ -47622,6 +47649,7 @@ function _alPanelHtml(g) {
   h += _alEscalaHtml();   // 20-oct · 🚀 Escalamiento (Marketing)
   h += _alProdHtml();   // 21-oct · 🧵 Producción
   h += _alEsperaHtml();   // 22-oct · 📝 Volvió tu talla (lista de espera)
+  h += _alPreciosHtml();   // 8-nov · 💲 Cambios de precio (uno por persona, solo Pablo)
   return h + '</div>';
 }
 
@@ -47850,6 +47878,32 @@ function _alEsperaHtml() {
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="font-weight:600;font-size:14px">📝 Volvió tu talla</div><div style="font-size:12px;font-weight:600;color:var(--gn)">' + V.length + (V.length === 1 ? ' clienta por avisar' : ' clientas por avisar') + '</div></div>'
     + '<div style="font-size:12px;margin-top:4px"><b>Quién:</b> asesoras · ya hay stock de la talla que pidieron</div>'
     + V.slice(0, 5).map(_leFila).join('') + (V.length > 5 ? '<button class="btn bg bs" style="margin-top:8px" onclick="leAbrir()">Ver las ' + V.length + ' →</button>' : '') + '</div>';
+}
+/* 8-nov (Pablo) · 💲 CAMBIOS DE PRECIO: cuando una vendedora cambia precios, a Pablo le llega UNA tarjeta por persona con todos sus
+   cambios juntos (no un aviso por precio). «✓ Visto» la limpia. Datos: rpc precios_cambios_resumen / precios_cambios_visto (Supabase). */
+let ALP = null, ALP_T = 0;
+const _ALP_TXT = { lista: 'Lista', lista2: 'Lista x2', lista3: 'Lista x3', lista6: 'Lista x6', lista12: 'Lista x12', live: 'Live', live2: 'Live x2', live3: 'Live x3',
+  cyber: 'Promoción', cyber2: 'Promoción x2', cyber3: 'Promoción x3', show: 'Showroom', show2: 'Showroom x2', show3: 'Showroom x3', colab: 'Colaborador' };
+async function _alPreciosCargar() { ALP_T = Date.now(); const r = await _prodRpcBase('precios_cambios_resumen', {}); ALP = (r && r.ok && Array.isArray(r.ok.p)) ? r.ok.p : []; _alPreciosPintar(); }
+function _alPreciosHtml() {
+  if (!(typeof _permEsDueno === 'function' && _permEsDueno(MY_EMAIL))) return '';
+  if (ALP === null || Date.now() - ALP_T > 120000) { try { if (typeof setTimeout === 'function') setTimeout(_alPreciosCargar, 60); } catch (_) {} if (ALP === null) return '<div id="al-precios"></div>'; }
+  if (!ALP.length) return '<div id="al-precios"></div>';
+  const S = v => v == null ? 'N/A' : 'S/ ' + (+v).toFixed(2).replace(/\.00$/, '');
+  return '<div id="al-precios" style="display:contents">' + ALP.map(p => {
+    const nom = String(p.email || '').split('@')[0];
+    return '<div class="card al-area" data-area="precios" style="padding:12px;border-top:4px solid #d97706">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="font-weight:600;font-size:14px">💲 Cambios de precio · ' + esc(nom) + '</div>'
+      + '<div style="font-size:12px;font-weight:600;color:#d97706">' + p.n + (p.n === 1 ? ' cambio' : ' cambios') + ' en ' + p.prod + (p.prod === 1 ? ' producto' : ' productos') + '</div></div>'
+      + (p.items || []).map(x => '<div style="font-size:12px;margin-top:5px;display:flex;justify-content:space-between;gap:8px"><span><b>' + esc(x.d) + '</b> · ' + esc(_ALP_TXT[x.c] || x.c) + '</span><span>' + S(x.a) + ' → <b>' + S(x.n) + '</b></span></div>').join('')
+      + (p.n > (p.items || []).length ? '<div style="font-size:11px;color:var(--mu);margin-top:4px">y ' + (p.n - p.items.length) + ' más</div>' : '')
+      + '<button class="btn bg bs" style="margin-top:8px" data-alp="' + esc(p.email) + '">✓ Visto</button></div>';
+  }).join('') + '</div>';
+}
+function _alPreciosPintar() {
+  const c = document.getElementById('al-precios'); if (!c) return; const t = document.createElement('div'); t.innerHTML = _alPreciosHtml(); if (t.firstChild) c.replaceWith(t.firstChild);
+  document.querySelectorAll('[data-alp]').forEach(b => b.onclick = async () => { b.disabled = true; const r = await _prodRpcBase('precios_cambios_visto', { p_email: b.dataset.alp });
+    if (r && r.ok) { ALP = (ALP || []).filter(x => x.email !== b.dataset.alp); _alPreciosPintar(); } else { b.disabled = false; toast('No se pudo marcar como visto', 'err'); } });
 }
 function _alEsperaPintar() { const c = document.getElementById('al-espera'); if (!c) return; const t = document.createElement('div'); t.innerHTML = _alEsperaHtml(); if (t.firstChild) c.replaceWith(t.firstChild); }
 function _alProdSemLinea(g) {
