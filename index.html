@@ -12568,13 +12568,14 @@ async function _cdKardex() {
 /** 20-oct · pedidos con cambio vivo (no cancelado) → 'CAM-0198, …'. Paginado hasta página vacía. */
 async function _cdCambiosPorPedido() {
   const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión con la base');
-  const C = {}, ABIERTO = {}, NUEVAS = {}, CANC = {}, DEVS = {};
+  const C = {}, ABIERTO = {}, NUEVAS = {}, CANC = {}, DEVS = {}, LIS = {};
   for (let off = 0, v = 0; v < 50; v++, off += 1000) {
     const r = await fetch(SB_URL + '/rest/v1/cambios2?select=nro_pedido,nro_cambio,estado,prenda,rol:row_json-%3E%3ERol,rec:row_json-%3E%3EFechaRecepcionOriginal,env:row_json-%3E%3EFechaEnvioNueva&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
     if (!r.ok) throw new Error('cambios ' + r.status); const a = await r.json(); if (!a.length) break;
     a.forEach(x => { const n = String(x.nro_pedido || '').trim(), est = String(x.estado || '').toUpperCase(); if (n && est === 'CANCELADO') { const k = CANC[n] = CANC[n] || []; if (k.indexOf(x.nro_cambio) < 0) k.push(x.nro_cambio); }   // 22-oct · para avisar «el cambio del ERP está CANCELADO»
       if (!n || est === 'CANCELADO') return;
       if (x.rol === 'NUEVA') NUEVAS[n + '|' + String(x.prenda || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim()] = 1;
+      { const L = LIS[n] = LIS[n] || { nue: [], dev: [] }; (x.rol === 'NUEVA' ? L.nue : x.rol === 'DEVUELTA' ? L.dev : []).push(String(x.prenda || '')); }   // 9-nov · listas crudas para comparar con el traductor del cuadre
       if (x.rol === 'DEVUELTA') DEVS[n + '|' + String(x.prenda || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim()] = 1;   // 9-nov · para emparejar con la columna O del Drive   // 21-oct · igual que el servidor (_cthNuevasCambio_)
       { const c = C[n] = C[n] || []; if (c.indexOf(x.nro_cambio) < 0) c.push(x.nro_cambio); }   // 30-oct · esta línea había quedado DENTRO del comentario de arriba: el cuadre creía que ningún pedido tenía cambio vivo (pestaña 5 vacía, «falta registrar» de más)
       if (est.indexOf('SALDO ') !== 0 && (est === 'CLIENTE SOLICITA CAMBIO' || !x.rec || !x.env)) ABIERTO[n] = 1; });   // 21-oct: un saldo a favor no es un cambio en curso   // 20-oct · cambio sin terminar (falta recibir la original o enviar la nueva)
@@ -12583,6 +12584,7 @@ async function _cdCambiosPorPedido() {
   Object.defineProperty(C, '__nuevas', { value: NUEVAS, enumerable: false });
   Object.defineProperty(C, '__cancelados', { value: CANC, enumerable: false });
   Object.defineProperty(C, '__devueltas', { value: DEVS, enumerable: false });
+  Object.defineProperty(C, '__listas', { value: LIS, enumerable: false });
   return C;
 }
 /** Mismas reglas que la planilla: solo se lista si la TALLA está descuadrada (ventas ERP ≠ Drive en la foto).
@@ -12646,7 +12648,11 @@ function _cdArmar(M, FO, CAMS) {
   const _cuadraEnCurso = (x, ns) => { const fila = (String(x[2]).match(/fila (\d+)/) || [])[1] || ''; const fr = fila ? _fd(fila) : null; if (!fr) return false;
     const oRaw = String(fr[14] || '').trim(); if (!oRaw || /\(/.test(oRaw) || /^YAYA/i.test(oRaw)) return false;
     const nv = _nrm(x[5] || String(x[0]).split('|').join(' ')), dv = _n5(oRaw);
-    return ns.some(n => AB[n] && _NV[n + '|' + nv] && _DV5[n + '|' + dv]); };
+    if (ns.some(n => AB[n] && _NV[n + '|' + nv] && _DV5[n + '|' + dv])) return true;
+    // 9-nov (Pablo: «BERMUDAS MALVA del Drive es SHORT MALVA del ERP» · talla oficial U) · si el texto no es idéntico, se compara con el MISMO traductor del emparejador
+    const cn = (typeof window !== 'undefined' && window.cuadreLocalCanon) || null; if (!cn) return false;
+    const LS = (CAMS && CAMS.__listas) || {}, k = t => cn(t) || _n5(t), nN = k(x[5] || String(x[0]).split('|').join(' ')), nD = k(oRaw);
+    return ns.some(n => AB[n] && LS[n] && LS[n].nue.some(p => k(p) === nN) && LS[n].dev.some(p => k(p) === nD)); };
   let l5ok = 0;
   (M.soloDrive || []).forEach(x => { const ns = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(n => CAMS[n]); if (ns.length && _cuadraEnCurso(x, ns)) { l5ok++; return; } if (ns.length) l5.push({ nro: ns.join(', '), cam: CAMS[ns[0]].join(', '), prenda: x[5] || prend(x[0]), que: 'El Drive tiene esta prenda y el ERP no · ' + (x[4] || ''), mueve: mueve(x[0]), espera: esp(ns[0]) }); });
   const conCam = Object.keys(CAMS).length, conProb = new Set(l5.map(x => String(x.nro).split(/[ ,]/)[0])).size;
@@ -12682,7 +12688,7 @@ function _cdTareas() {
     if (a.indexOf(nom) >= 0 && b.indexOf(pr) >= 0 && (!fn || fn(r))) return true; } return false; };
   const C = CD.dvTxt || {};
   return [
-    { quien: 'Logística', donde: 'Drive · hoja Ing · fila de Janny Naranjo (26-oct)', que: 'PAÑUELO SEDA MORADO está sin talla: escribir «PAÑUELO SEDA MORADO C» (la hoja Stk solo cuenta la C)', ok: libre('PAÑUELO SEDA MORADO U') },
+    { quien: 'Logística', donde: 'Drive · hoja Ing · fila de Janny Naranjo (26-oct)', que: 'PAÑUELO SEDA MORADO está sin talla: escribir «PAÑUELO SEDA MORADO U» (9-nov · Pablo: la talla oficial de los pañuelos es U, no C)', ok: libre('PAÑUELO SEDA MORADO U') || filaCon('NARANJO', 'PAÑUELO SEDA MORADO U') },
     { quien: 'Logística', donde: 'Drive · hoja Ing · 3 filas «CORREA CLEOPATRA PERLA U»', que: 'Esa correa solo tiene talla C: cambiar la U por C (después Claude anula el ajuste de apertura y la talla queda igual)', ok: !(C['CORREA CLEOPATRA PERLA U'] && C['CORREA CLEOPATRA PERLA U'].n > 0) },
     { quien: 'Logística', donde: 'Drive · hoja Ing', que: 'Anotar la venta de LILIA CAMACHO · pedido 23195 (23-oct) · PANTALON MIRELLA AZUL NOCHE XL', ok: !enLista('23195', ['l1']) || filaCon('CAMACHO', 'MIRELLA AZUL NOCHE XL') },   /* 9-nov (logística, 307) · el pedido se anuló en los dos: ya no hay nada que anotar */
     { quien: 'Logística', donde: 'Drive · hoja Ing · LOLA MARGARET ALDANA', que: 'Anotar la venta del pedido 23145 (22-oct) · BLUSA TOSCANA MARRON S', ok: !enLista('23145', ['l1']) },
@@ -20675,7 +20681,7 @@ function _renderPedsDesde(rawRows, estVal, _suave) {   // 16-oct · _suave=true 
       // LOTES F3: PREVENTA es activa (prenda vendida esperando stock)
       return est === 'ENVIAR' || est === 'SEPARAR' || est === 'PREVENTA';
     });
-    if (tienePrendaActiva || _camActivoSet.has(nro) || _devActivoSet.has(nro)) {
+    if (tienePrendaActiva || _camActivoSet.has(nro)) {   /* 9-nov (Pablo) · Activos = lo que hay que ARMAR y ROTULAR: una devolución por reembolsar ya no lo deja aquí (tiene su pestaña Devoluciones) */
       _activosSet.add(nro);
     }
   });
@@ -32897,6 +32903,21 @@ async function _lgRevisar() {
       const f = c.tipo === 'RECIBIR' ? x.sol : (x.rec || x.sol); if (f && (!c.desde || String(f) > c.desde)) c.desde = String(f).slice(0, 10);
     });
     let conf = []; try { const d = await _sbCacheLeer('cuadre.logistica', 24 * 3600 * 1000); conf = (d && d.lista) || []; } catch (_) {}
+    // 9-nov (Pablo) · LISTOS Y SIN DESPACHAR: pedidos con TODAS sus prendas en ENVIAR (ninguna en PREVENTA ni SEPARAR = no falta
+    // nada) que llevan 3+ días así. Los días cuentan desde la compra o desde el último cambio del pedido (lo más reciente: una
+    // preventa a la que le acaba de llegar la prenda no avisa de golpe). Sale del aviso cuando se marca EN CAMINO o ENTREGADO.
+    let desp = [];
+    try {
+      const lim = new Date(Date.now() - 3 * 864e5).toISOString().slice(0, 10);
+      const q = await fetch(SB_URL + '/rest/v1/pedidos?select=nro_pedido,nombres,prenda,estado,fecha_pedido,ultima_modif&estado=in.(ENVIAR,PREVENTA,SEPARAR)&eliminado=is.null&fecha_pedido=lte.' + lim + '&limit=2000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+      if (q.ok) { const P = {}; (await q.json()).forEach(x => { const n = String(x.nro_pedido || '').trim(), pr = String(x.prenda || '').trim().toUpperCase(); if (!n || /^R-/i.test(n) || !pr || /^_?PAGO_?$|^CAMBIO CAM-|^ENVIO|^ENVÍO|^DELIVERY/.test(pr)) return;
+          const o = P[n] = P[n] || { tipo: 'DESPACHAR', pedido: n, nombre: x.nombres || '', prendas: [], falta: false, desde: '' };
+          if (String(x.estado).toUpperCase() !== 'ENVIAR') o.falta = true;
+          if (o.prendas.indexOf(x.prenda) < 0) o.prendas.push(x.prenda);
+          [String(x.fecha_pedido || '').slice(0, 10), String(x.ultima_modif || '').slice(0, 10)].forEach(f => { if (f && f > o.desde) o.desde = f; }); });
+        desp = Object.keys(P).map(k => P[k]).filter(o => !o.falta && o.desde && o.desde <= lim); }
+    } catch (_) {}
+    conf = conf.concat(desp);
     _LG.lista = Object.keys(C).map(k => C[k]).concat(conf.map(x => Object.assign({ desde: x.fecha }, x)))
       .map(x => { x.dias = _lgDias(x.desde); x.nivel = x.dias != null && x.dias >= 7 ? 'rojo' : 'amarillo'; return x; })
       .sort((a, b) => (b.dias || 0) - (a.dias || 0));
@@ -32914,11 +32935,12 @@ function _lgPintar() {
   const alto = el => (el && el.style.display !== 'none' && el.getAttribute('data-avx-cerrado') !== '1') ? el.offsetHeight : 0;
   b.style.cssText = 'position:fixed;left:0;right:0;top:' + (alto(camp) + alto(fe)) + 'px;z-index:99997;font-family:system-ui,sans-serif;font-size:14px;padding:8px 16px;line-height:1.5;box-shadow:0 2px 8px rgba(0,0,0,.25);' +
     (rojo ? 'background:#9a3412;color:#fff' : 'background:#e0f2fe;color:#0c2a3b');
-  const n = t => L.filter(x => x.tipo === t).length, nr = n('RECIBIR'), ne = n('ENVIAR'), nc = n('CONFIRMAR'), ns = n('SALIO');   // 21-oct · + lista 1: ¿salió esta prenda?
-  const partes = [nr ? nr + ' cambio' + (nr > 1 ? 's' : '') + ' por RECIBIR la prenda original' : '', ne ? ne + ' cambio' + (ne > 1 ? 's' : '') + ' por ENVIAR la prenda nueva' : '', nc ? nc + ' pedido' + (nc > 1 ? 's' : '') + ' por CONFIRMAR qué prenda salió' : '', ns ? ns + ' prenda' + (ns > 1 ? 's' : '') + ' del ERP que no están en el Drive' : ''].filter(Boolean);
+  const n = t => L.filter(x => x.tipo === t).length, nr = n('RECIBIR'), ne = n('ENVIAR'), nc = n('CONFIRMAR'), ns = n('SALIO'), nd = n('DESPACHAR');   // 21-oct · + lista 1: ¿salió esta prenda?
+  const partes = [nd ? nd + ' pedido' + (nd > 1 ? 's' : '') + ' con todas sus prendas y sin despachar hace 3+ días' : '', nr ? nr + ' cambio' + (nr > 1 ? 's' : '') + ' por RECIBIR la prenda original' : '', ne ? ne + ' cambio' + (ne > 1 ? 's' : '') + ' por ENVIAR la prenda nueva' : '', nc ? nc + ' pedido' + (nc > 1 ? 's' : '') + ' por CONFIRMAR qué prenda salió' : '', ns ? ns + ' prenda' + (ns > 1 ? 's' : '') + ' del ERP que no están en el Drive' : ''].filter(Boolean);
   let h = '📦 <b>Logística: ' + partes.join(' · ') + '</b> &nbsp;<button id="lg-ver" style="margin-left:6px;border:0;border-radius:8px;padding:2px 10px;font-weight:600;cursor:pointer">' + (_LG.abierto ? 'Ocultar' : 'Ver') + '</button>';
   if (_LG.abierto) {
-    const que = x => x.tipo === 'RECIBIR' ? 'Recibir la original y marcar <b>PRENDA ORIGINAL RECIBIDA</b> en Cambios'
+    const que = x => x.tipo === 'DESPACHAR' ? 'Tiene todas sus prendas: despacharlo y marcar <b>EN CAMINO</b> (o ENTREGADO) en Pedidos'
+      : x.tipo === 'RECIBIR' ? 'Recibir la original y marcar <b>PRENDA ORIGINAL RECIBIDA</b> en Cambios'
       : x.tipo === 'ENVIAR' ? 'Enviar la nueva y marcar <b>PRENDA NUEVA ENVIADA</b> en Cambios'
       : x.tipo === 'SALIO' ? 'ERP: <b>' + _feEsc(x.erp) + '</b> · ' + _feEsc(x.que) + (x.fila ? ' (fila ' + _feEsc(x.fila) + ' del Drive)' : '')
       : 'Confirmar cuál salió: ERP <b>' + _feEsc(x.erp) + '</b> / Drive <b>' + _feEsc(x.drive) + '</b>' + (x.fila ? ' (fila ' + _feEsc(x.fila) + ' del Drive)' : '');
@@ -41196,7 +41218,8 @@ function editarCambios2(nc){
     toast('Este cambio se está guardando. Espera a que termine.','info'); return;
   }
   if(String(c.Estado||'').toUpperCase()==='CANCELADO'){ toast('Cambio anulado, no editable','info'); return; }
-  function dInput(v){ if(!v) return ''; try{var d=(v instanceof Date)?v:new Date(v); if(!isNaN(d.getTime())) return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}catch(e){} var s=String(v); return /^\d{4}-\d{2}-\d{2}/.test(s)?s.slice(0,10):''; }
+  function dInput(v){ if(!v) return ''; if(typeof v==='string' && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) return v.trim();   /* 9-nov (Roxana, CAM-0286) · una fecha sola «2026-10-30» se leía como medianoche UTC = 29-oct en Lima: el formulario mostraba un día menos y cada corrección parecía no guardarse */
+    try{var d=(v instanceof Date)?v:new Date(v); if(!isNaN(d.getTime())) return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}catch(e){} var s=String(v); return /^\d{4}-\d{2}-\d{2}/.test(s)?s.slice(0,10):''; }
   var motivos=['TALLA INCORRECTA','NO LE GUSTO','PRENDA DEFECTUOSA','ERROR DEL OPERADOR','CLIENTE CAMBIO DE OPINION','OTRO'];
   var motSel='<option value="">— Elegir —</option>'+motivos.map(function(m){return '<option'+(String(c.Motivo||'').toUpperCase()===m?' selected':'')+'>'+esc(m)+'</option>';}).join('');
   var fg='display:flex;flex-direction:column;gap:4px;flex:1;min-width:130px';

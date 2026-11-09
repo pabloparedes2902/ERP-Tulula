@@ -786,6 +786,8 @@ async function __bajarDrive(desde) {
 }
 /** 20-oct · la fila del Drive tal cual (para la pantalla: columna Cambio y asesora de una fila de la lista 2). */
 window.cuadreLocalFilaDrive = function (fila) { return (__DRIVE || [])[Number(fila) - 1] || null; };
+// 9-nov · el mismo traductor de nombres del emparejador (alias BERMUDAS→SHORT, tallas U/C, typos), para que la lista 5 compare cambios igual que el resto del cuadre
+window.cuadreLocalCanon = function (t) { try { var o = libroResolverPrenda(String(t || '')); return o ? [o.p, o.d, o.c, o.t].join(' ').replace(/_/g, ' ').replace(/\s+/g, ' ').trim().toUpperCase() : ''; } catch (e) { return ''; } };
 /** Corre el emparejador del servidor en el navegador. corte = 'yyyy-mm-dd' (STOCK_CUTOFF del servidor). */
 window.cuadreLocalEmparejar = async function (corte) {
   var t0 = Date.now(), viajes = 0;
