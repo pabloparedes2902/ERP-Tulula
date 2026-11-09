@@ -3557,6 +3557,14 @@ function _fillNpOrigen(canal, current){
 // 13-oct-2026 (regla de Pablo) · un pedido de PAGINA WEB no lleva asesora: la asesora atiende WhatsApp.
 // Al elegir PAGINA WEB, Asesora queda en N/A y bloqueada. La base tambien lo frena (trigger a2_web_sin_asesora,
 // PEGAR_EN_SUPABASE_web_y_actualizar_13oct.sql), asi que ningun otro camino puede saltarselo.
+/* 8-nov-2026 (Pablo · pedido 23633) · CAUSA: «Asesora» podía quedar en «— Elegir asesora —» y la base guardaba OTROS sin avisar.
+   Ahora (1) el formulario arranca con la asesora que registra ya elegida, (2) no deja guardar sin asesora y (3) la base, si igual
+   llegara vacía, pone la asesora de quien registra (PEGAR_EN_SUPABASE_asesora_8nov.sql). */
+function _npAsesoraPorDefecto(){
+  const a = document.getElementById('np-asesora'); if (!a || a.value) return;
+  const yo = String((typeof MY_ASESORA !== 'undefined' && MY_ASESORA) || '').trim().toUpperCase(); if (!yo) return;
+  const o = [...a.options].find(x => String(x.value).trim().toUpperCase() === yo); if (o) a.value = o.value;
+}
 function _npEsWeb(){ return String((document.getElementById('np-canal') || {}).value || '').trim().toUpperCase() === 'PAGINA WEB'; }
 function _npWebSinAsesora(){
   const a = document.getElementById('np-asesora');
@@ -3599,6 +3607,7 @@ function applyMaestrosToSelects() {
     const cur = asesoraSel.value;
     asesoraSel.innerHTML = '<option value="">— Elegir asesora —</option>'
       + mOpts('Asesora', []).map(o => `<option value="${o}"${o===cur?' selected':''}>${o}</option>`).join('');
+    if (!cur) _npAsesoraPorDefecto();   // 8-nov · si nadie eligió, queda la asesora que registra
   }
   // Actualizar placeholder de todos los inputs Prenda activos
   const prendaKey = Object.keys(MAESTROS).find(k => k.toLowerCase() === 'prenda');
@@ -8097,7 +8106,7 @@ function _cosCols() {
       if (b.id === 'lista') c.push({ g: b.t, gbg: b.bg, t: 'Sugerido', num: 1, adm: 1, f: r => {   /* 8-nov (Pablo) · precio sugerido = costo con el margen típico (mediana) de su categoría, terminado en 9 */
         const x = _cosSugerido(r); if (!x) return '<span style="color:var(--mu)">—</span>';
         const l = +(r.precios && r.precios.lista) || 0, bajo = l > 0 && l < x.v - 5;
-        return '<span title="Margen típico de ' + esc(r.Categoria || 'su categoría') + ': ' + x.m + '% (mediana de ' + x.n + ' productos)' + (bajo ? ' · la Lista está por debajo' : '') + '" style="' + (bajo ? 'color:#d97706;font-weight:600' : 'color:var(--mu)') + '">' + x.v + (bajo ? ' ↑' : '') + '</span>'; } });
+        return '<span title="Margen típico de ' + esc(r.Categoria || 'su categoría') + ': ' + x.m + '% (mediana de ' + x.n + ' productos)' + (bajo ? ' · la Lista está por debajo' : '') + '" style="' + (bajo ? 'color:#d97706;font-weight:600' : 'color:var(--mu)') + '">' + x.v + (bajo ? ' ↑' : '') + '</span>' + (bajo ? ' <button type="button" class="btn bg bs cos-usug" data-d="' + esc(String(r.Diseno)) + '" data-v="' + x.v + '" title="Copiar el sugerido a la Lista (queda en amarillo hasta 💾 Guardar)" style="font-size:10px;padding:0 5px">Usar</button>' : ''); } });
     }
   });
   return c;
@@ -8105,6 +8114,10 @@ function _cosCols() {
 
 /* 8-nov (Pablo) · margen típico por categoría (mediana del margen de Lista de los activos con costo) y precio sugerido terminado en 9 */
 let _cosSugCache = null;
+/* 8-nov (Pablo · aprobado) · «Usar»: copia el sugerido a la Lista como un cambio más del Excel (amarillo hasta Guardar; Ctrl+Z lo deshace) */
+if (typeof document !== 'undefined' && document.addEventListener && !window._cosUsugBound) { window._cosUsugBound = true;
+  document.addEventListener('click', e => { const b = e.target && e.target.closest ? e.target.closest('.cos-usug') : null; if (!b) return; e.preventDefault(); e.stopPropagation();
+    try { _xlSnap(); PXL.ed[b.dataset.d + '|lista'] = (+b.dataset.v).toFixed(2); _xlPintar(); _xlBarra(); } catch (_) {} }, true); }
 function _cosSugMed() {
   if (_cosSugCache && _cosSugCache.d === COS.data) return _cosSugCache.m;
   const g = {}; (COS.data || []).forEach(r => { const m = r.margen && r.margen.lista; if (r.Activo === false || !m || !(m.p > 0) || !(+r.CostoUnitario > 0)) return; (g[r.Categoria || ''] = g[r.Categoria || ''] || []).push(m.p); });
@@ -33104,7 +33117,8 @@ function npValidar() {
   if (!(document.getElementById('np-origen').value || '').trim()) errs.push('Origen es obligatorio');
   { const _ase = String((document.getElementById('np-asesora') || {}).value || '').trim().toUpperCase();   /* 13-oct · regla de Pablo */
     const _web = String((document.getElementById('np-canal') || {}).value || '').trim().toUpperCase() === 'PAGINA WEB';
-    if (_web && _ase && _ase !== 'N/A' && _ase !== 'NA') errs.push('Un pedido de PAGINA WEB no lleva asesora (va N/A). Si lo atendiste por WhatsApp, elige el canal WHATSAPP.'); }
+    if (_web && _ase && _ase !== 'N/A' && _ase !== 'NA') errs.push('Un pedido de PAGINA WEB no lleva asesora (va N/A). Si lo atendiste por WhatsApp, elige el canal WHATSAPP.');
+    if (!_web && !_ase) errs.push('Asesora es obligatoria: elige quién atendió el pedido (si no es de ninguna asesora, elige OTROS).'); }   /* 8-nov (Pablo · 23633) */
   // Al menos una prenda con nombre
   const prendasValidas = [...document.querySelectorAll('#np-prendas .np-prenda')].filter(i => i.value.trim());
   if (!prendasValidas.length) errs.push('Debes ingresar al menos una Prenda');
@@ -33170,7 +33184,7 @@ function npLimpiar() {
   // estaba en readOnly, y sin esto el formulario nuevo nacia bloqueado)
   try { _npAplicarTipoDoc('DNI'); } catch (_) {}
   ['np-courier','np-origen','np-asesora'].forEach(id => { const e = document.getElementById(id); if (e) e.selectedIndex = 0; });
-  try { const _a = document.getElementById('np-asesora'); if (_a){ _a.disabled = false; _a.title = ''; } _npWebSinAsesora(); } catch (_) {}   /* 13-oct */
+  try { const _a = document.getElementById('np-asesora'); if (_a){ _a.disabled = false; _a.title = ''; } _npAsesoraPorDefecto(); _npWebSinAsesora(); } catch (_) {}   /* 13-oct · 8-nov: queda elegida quien registra */
   ['np-env','np-dsc'].forEach(id => { const e = document.getElementById(id); if (e) e.value = '0'; });
   document.getElementById('np-prendas').innerHTML = '';
   document.getElementById('np-pagos').innerHTML = '';
@@ -48627,6 +48641,7 @@ async function _permRefrescar(rDado){
   try{
     var r = rDado || await api('auth.permisos', {});
     try { if (r && Object.prototype.hasOwnProperty.call(r, 'areas')) localStorage.setItem('erp_areas', JSON.stringify(r.areas || [])); } catch(_a){}   // 7-nov · areas
+    try { if (r && r.asesora && String(r.asesora).toUpperCase() !== MY_ASESORA) { MY_ASESORA = String(r.asesora).toUpperCase(); localStorage.setItem('erp_asesora', MY_ASESORA); } } catch(_s){}   // 8-nov · la asesora también se corrige sola en sesiones abiertas
     var nuevo = (r && r.permisos) || null;
     if(JSON.stringify(nuevo) === JSON.stringify(MY_PERMISOS)) return;
     MY_PERMISOS = nuevo;
@@ -48783,7 +48798,7 @@ async function _sbOAuthIngreso(em) {
   let rs = null; try { rs = await _puertaRpc('mi_sesion', {}, 5000); } catch (_) { rs = null; }
   if (!rs || !rs.pong || !rs.rol) { try { _sbGuardarTok(null); } catch (_) {} return false; }   // el correo no está en el ERP
   const c = _ingresoCache(em) || {};
-  MY_EMAIL = rs.email || em; MY_ROLE = rs.rol; MY_ASESORA = c.asesora || ''; MY_PERMISOS = rs.permisos || null;
+  MY_EMAIL = rs.email || em; MY_ROLE = rs.rol; MY_ASESORA = String(rs.asesora || c.asesora || '').toUpperCase(); MY_PERMISOS = rs.permisos || null;   // 8-nov · la asesora sale de la base (mi_sesion · erp_asesoras), no solo de este equipo
   /* 3-nov · con el ingreso nativo, la asesora salía solo de lo guardado en ESTE equipo (en uno nuevo quedaba vacía y sus pagos
      no llevaban su nombre). Si falta, se pide a la base: configuración de Comisiones (rpc asesoras_equipo). */
   if (!MY_ASESORA) { (async () => { try { const L = await _puertaRpc('asesoras_equipo', {}, 4000); const x = (Array.isArray(L) ? L : []).find(y => String(y.email || '').toLowerCase() === String(MY_EMAIL || '').toLowerCase());
