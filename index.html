@@ -12568,19 +12568,21 @@ async function _cdKardex() {
 /** 20-oct · pedidos con cambio vivo (no cancelado) → 'CAM-0198, …'. Paginado hasta página vacía. */
 async function _cdCambiosPorPedido() {
   const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión con la base');
-  const C = {}, ABIERTO = {}, NUEVAS = {}, CANC = {};
+  const C = {}, ABIERTO = {}, NUEVAS = {}, CANC = {}, DEVS = {};
   for (let off = 0, v = 0; v < 50; v++, off += 1000) {
     const r = await fetch(SB_URL + '/rest/v1/cambios2?select=nro_pedido,nro_cambio,estado,prenda,rol:row_json-%3E%3ERol,rec:row_json-%3E%3EFechaRecepcionOriginal,env:row_json-%3E%3EFechaEnvioNueva&order=id.asc&limit=1000&offset=' + off, { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
     if (!r.ok) throw new Error('cambios ' + r.status); const a = await r.json(); if (!a.length) break;
     a.forEach(x => { const n = String(x.nro_pedido || '').trim(), est = String(x.estado || '').toUpperCase(); if (n && est === 'CANCELADO') { const k = CANC[n] = CANC[n] || []; if (k.indexOf(x.nro_cambio) < 0) k.push(x.nro_cambio); }   // 22-oct · para avisar «el cambio del ERP está CANCELADO»
       if (!n || est === 'CANCELADO') return;
-      if (x.rol === 'NUEVA') NUEVAS[n + '|' + String(x.prenda || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim()] = 1;   // 21-oct · igual que el servidor (_cthNuevasCambio_)
+      if (x.rol === 'NUEVA') NUEVAS[n + '|' + String(x.prenda || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim()] = 1;
+      if (x.rol === 'DEVUELTA') DEVS[n + '|' + String(x.prenda || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim()] = 1;   // 9-nov · para emparejar con la columna O del Drive   // 21-oct · igual que el servidor (_cthNuevasCambio_)
       { const c = C[n] = C[n] || []; if (c.indexOf(x.nro_cambio) < 0) c.push(x.nro_cambio); }   // 30-oct · esta línea había quedado DENTRO del comentario de arriba: el cuadre creía que ningún pedido tenía cambio vivo (pestaña 5 vacía, «falta registrar» de más)
       if (est.indexOf('SALDO ') !== 0 && (est === 'CLIENTE SOLICITA CAMBIO' || !x.rec || !x.env)) ABIERTO[n] = 1; });   // 21-oct: un saldo a favor no es un cambio en curso   // 20-oct · cambio sin terminar (falta recibir la original o enviar la nueva)
   }
   Object.defineProperty(C, '__abiertos', { value: ABIERTO, enumerable: false });
   Object.defineProperty(C, '__nuevas', { value: NUEVAS, enumerable: false });
   Object.defineProperty(C, '__cancelados', { value: CANC, enumerable: false });
+  Object.defineProperty(C, '__devueltas', { value: DEVS, enumerable: false });
   return C;
 }
 /** Mismas reglas que la planilla: solo se lista si la TALLA está descuadrada (ventas ERP ≠ Drive en la foto).
@@ -12637,7 +12639,16 @@ function _cdArmar(M, FO, CAMS) {
   const l5 = [];
   (M.soloErp || []).forEach(x => { const n = nro(x[2]); if (CAMS[n]) l5.push({ nro: n, cam: CAMS[n].join(', '), prenda: x[5] || prend(x[0]), que: 'El ERP tiene esta prenda y el Drive no' + (x[4] ? ' · ' + x[4] : ''), mueve: mueve(x[0]), espera: esp(n) }); });
   [].concat(M.otraTalla || [], M.otraPrenda || []).forEach(z => { const n = nro(z.erp[2]); if (CAMS[n]) l5.push({ nro: n, cam: CAMS[n].join(', '), prenda: (z.erp[5] || prend(z.erp[0])) + '  →  Drive: ' + (z.drive[5] || prend(z.drive[0])), que: z.causa || '', mueve: mueve(z.erp[0]), espera: esp(n) }); });
-  (M.soloDrive || []).forEach(x => { const ns = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(n => CAMS[n]); if (ns.length) l5.push({ nro: ns.join(', '), cam: CAMS[ns[0]].join(', '), prenda: x[5] || prend(x[0]), que: 'El Drive tiene esta prenda y el ERP no · ' + (x[4] || ''), mueve: mueve(x[0]), espera: esp(ns[0]) }); });
+  /* 9-nov (Pablo) · CAMBIO EN CURSO IGUAL EN LOS DOS = CUADRA. En el Drive el cambio en curso es: columna N = prenda NUEVA y
+     columna O = prenda DEVUELTA sin paréntesis (con paréntesis = ya volvió). Si el ERP tiene ese mismo cambio abierto (nueva y
+     devuelta iguales), no es diferencia: no va a la lista 5 ni «en espera». Se cuenta aparte como «cambios en curso que cuadran». */
+  const _DV5 = (CAMS && CAMS.__devueltas) || {}, _n5 = v => String(v || '').toUpperCase().replace(/[_()]/g, ' ').replace(/\s+/g, ' ').trim();
+  const _cuadraEnCurso = (x, ns) => { const fila = (String(x[2]).match(/fila (\d+)/) || [])[1] || ''; const fr = fila ? _fd(fila) : null; if (!fr) return false;
+    const oRaw = String(fr[14] || '').trim(); if (!oRaw || /\(/.test(oRaw) || /^YAYA/i.test(oRaw)) return false;
+    const nv = _nrm(x[5] || String(x[0]).split('|').join(' ')), dv = _n5(oRaw);
+    return ns.some(n => AB[n] && _NV[n + '|' + nv] && _DV5[n + '|' + dv]); };
+  let l5ok = 0;
+  (M.soloDrive || []).forEach(x => { const ns = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(n => CAMS[n]); if (ns.length && _cuadraEnCurso(x, ns)) { l5ok++; return; } if (ns.length) l5.push({ nro: ns.join(', '), cam: CAMS[ns[0]].join(', '), prenda: x[5] || prend(x[0]), que: 'El Drive tiene esta prenda y el ERP no · ' + (x[4] || ''), mueve: mueve(x[0]), espera: esp(ns[0]) }); });
   const conCam = Object.keys(CAMS).length, conProb = new Set(l5.map(x => String(x.nro).split(/[ ,]/)[0])).size;
   // 21-oct (Pablo) · 0 · STOCK POR TALLA (control maestro): toda talla con confección, no disponibles, ventas o stock distintos.
   // Si esta pestaña está en 0, el stock está 100% igual. «Lo explica» = cuánto de la diferencia de ventas cubren las listas 1, 2 y 3.
@@ -12658,7 +12669,7 @@ function _cdArmar(M, FO, CAMS) {
   const _noPrenda = /^(CAMBIO CAM-|RESERVA|PENDIENTE PRENDA|MUESTRA|FALLA|ENVIO|ENVÍO|DELIVERY|_?PAGO_?)/i, sr = M.sinResolverTop || {}, l6 = [];
   ['erp', 'drive'].forEach(lado => (sr[lado] || []).forEach(t => { if (!_noPrenda.test(String(t[0]).trim())) l6.push({ lado: lado === 'erp' ? 'ERP' : 'Drive', prenda: String(t[0]), n: Number(t[1]) || 1,
     que: /<talla>/.test(String(t[0])) ? 'El ERP no tiene este diseño en su stock (falta cargar su confección) o la línea no trae talla: mientras tanto estas ventas NO se comparan' : 'El nombre no coincide con ninguna prenda del catálogo: corregirlo o agregar la homologación' }); }));
-  return { l0, l1, l2, l3, l4, l5, l6, cambiosTotal: conCam, cambiosOk: conCam - conProb };
+  return { l0, l1, l2, l3, l4, l5, l6, l5ok, cambiosTotal: conCam, cambiosOk: conCam - conProb };
 }
 /** 30-oct-2026 (Pablo: «arma la lista del equipo dentro del ERP») · lo que falta para el 100% y depende de logística o de las asesoras.
  *  Cada tarea se comprueba SOLA con los datos de la comparación (nada de marcar «hecho» a mano): cuando se corrige, pasa a ✅. */
@@ -12673,13 +12684,13 @@ function _cdTareas() {
   return [
     { quien: 'Logística', donde: 'Drive · hoja Ing · fila de Janny Naranjo (26-oct)', que: 'PAÑUELO SEDA MORADO está sin talla: escribir «PAÑUELO SEDA MORADO C» (la hoja Stk solo cuenta la C)', ok: libre('PAÑUELO SEDA MORADO U') },
     { quien: 'Logística', donde: 'Drive · hoja Ing · 3 filas «CORREA CLEOPATRA PERLA U»', que: 'Esa correa solo tiene talla C: cambiar la U por C (después Claude anula el ajuste de apertura y la talla queda igual)', ok: !(C['CORREA CLEOPATRA PERLA U'] && C['CORREA CLEOPATRA PERLA U'].n > 0) },
-    { quien: 'Logística', donde: 'Drive · hoja Ing', que: 'Anotar la venta de LILIA CAMACHO · pedido 23195 (23-oct) · PANTALON MIRELLA AZUL NOCHE XL', ok: filaCon('CAMACHO', 'MIRELLA AZUL NOCHE XL') },
+    { quien: 'Logística', donde: 'Drive · hoja Ing', que: 'Anotar la venta de LILIA CAMACHO · pedido 23195 (23-oct) · PANTALON MIRELLA AZUL NOCHE XL', ok: !enLista('23195', ['l1']) || filaCon('CAMACHO', 'MIRELLA AZUL NOCHE XL') },   /* 9-nov (logística, 307) · el pedido se anuló en los dos: ya no hay nada que anotar */
     { quien: 'Logística', donde: 'Drive · hoja Ing · LOLA MARGARET ALDANA', que: 'Anotar la venta del pedido 23145 (22-oct) · BLUSA TOSCANA MARRON S', ok: !enLista('23145', ['l1']) },
     { quien: 'Logística', donde: 'Drive · hoja Stk · filas BODY ALBA', que: 'BODY ALBA AZUL S, NEGRO XL y NUDE S: la celda de ventas tiene sumas a mano; dejar solo la fórmula y anotar en Ing las ventas de Marketplace R-26 (Lesly Chávez) y R-17 (Sara Ayala)', ok: libre('BODY ALBA AZUL S') && libre('BODY ALBA NEGRO XL') && libre('BODY ALBA NUDE S') },
     { quien: 'Logística', donde: 'Drive · hoja Ing · JACQUELINE ALFARO (pedido 22887)', que: 'El cambio se eliminó en el ERP: en el Drive volver a poner BLUSA ALMA ROSA L y BLUSA ALMA BLANCO L en la columna N, vaciar la columna O y borrar la fila de TOP AMELIA VINO M', ok: !enLista('22887', ['l2', 'l3']) },
     { quien: 'Logística', donde: 'Drive · hoja Ing · SHEYLA (collar) y GLADYS MILAGROS RONDÁN (blusa)', que: 'Fecha mal escrita: COLLAR HERA DORADO de Sheyla dice 18-jun y BLUSA TOSCANA ROJO XL de Gladys dice 05-jul; las dos son del 18-jul', ok: !filaCon('SHEYLA', 'COLLAR HERA', r => String(r[20] || '').slice(0, 7) === '2026-06') && !filaCon('GLADYS MILAGROS', 'TOSCANA ROJO XL', r => String(r[20] || '').slice(0, 10) === '2026-07-05') },
     { quien: 'Asesora', donde: 'Cambios del ERP · pedido 22910 (BERTHA SHANETT)', que: 'Registrar el cambio: BLAZER ANTONIA AZUL M → BLAZER MIRELLA AZUL NOCHE L y PANTALON ANTONIA AZUL M → PANTALON ANTONIA AZUL L (ya está en el Drive)', ok: !enLista('22910', ['l3']) },
-    { quien: 'Asesora', donde: 'Drive fila de ANAI TATAJE (6-ago) · Pedidos del ERP', que: 'El Drive tiene CHALECO MIRELLA VERDE S vendido a Anai y el ERP no: si se vendió, registrarlo; si no, corregir el Drive', ok: libre('CHALECO MIRELLA VERDE S') },
+    { quien: 'Asesora', donde: 'Pedidos del ERP · pedido 22077 (ANAI TATAJE)', que: 'La venta está en los dos, pero el ERP tiene la fecha al revés: 08-jun en vez de 06-ago (el Drive y el pedido vecino 22078 dicen 06-ago). Corregir la Fecha del pedido a 06/08/2026', ok: libre('CHALECO MIRELLA VERDE S') },   /* 9-nov (logística, 313) · la causa real era la fecha invertida */
     { quien: 'Asesora', donde: 'Devoluciones del ERP · DEV-0018 (ANA MILAGROS BELLIDO, pedido 21251)', que: '¿Devolvió de verdad la BLUSA ALMENDRA BLANCO M? Si no, anular DEV-0018; si sí, anotarla en el Drive', ok: libre('BLUSA ALMENDRA BLANCO M') }
   ].concat((() => {   // 30-oct · además, sola: cada pedido con un CAMBIO que el Drive ya tiene y el ERP no (pestañas 2 y 3) → la asesora lo registra en Cambios
     const vistos = { '22887': 1, '22910': 1 }, out = [];
@@ -12699,8 +12710,11 @@ function _cdTareasHtml() {
   const T = _cdTareas(), pend = T.filter(t => !t.ok);
   return '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Se comprueban solas con cada comparación: al corregir el dato pasan a ✅. Faltan ' + pend.length + ' de ' + T.length + '. Además quedan los casos de las pestañas 1 a 3.</div>'
     + '<div style="overflow:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr><th style="text-align:left;padding:6px 8px">Estado</th><th style="text-align:left;padding:6px 8px">Quién</th><th style="text-align:left;padding:6px 8px">Dónde</th><th style="text-align:left;padding:6px 8px">Qué hacer</th></tr></thead><tbody>'
-    + T.map(t => '<tr' + (t.ok ? ' style="opacity:.55"' : '') + '><td style="padding:5px 8px">' + (t.ok ? '✅' : '⏳') + '</td><td style="padding:5px 8px">' + esc(t.quien) + '</td><td style="padding:5px 8px">' + esc(t.donde) + '</td><td style="padding:5px 8px">' + esc(t.que) + '</td></tr>').join('')
-    + '</tbody></table></div>';
+    + pend.map(t => '<tr><td style="padding:5px 8px">⏳</td><td style="padding:5px 8px">' + esc(t.quien) + '</td><td style="padding:5px 8px">' + esc(t.donde) + '</td><td style="padding:5px 8px">' + esc(t.que) + '</td></tr>').join('')
+    + '</tbody></table></div>'
+    /* 9-nov (logística, 308-311) · las ya resueltas confundían: van aparte, plegadas */
+    + (T.length > pend.length ? '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--mu)">✅ Resueltas (' + (T.length - pend.length) + ') — ya no hay que hacer nada</summary><div style="font-size:12px;color:var(--mu);margin-top:6px">'
+      + T.filter(t => t.ok).map(t => '<div style="padding:3px 0">✅ ' + esc(t.donde) + '</div>').join('') + '</div></details>' : '');
 }
 /** 22-oct (logística: «los cambios cancelados siguen apareciendo») · si el pedido tiene cambios CANCELADOS en el ERP, decirlo:
  *  el Drive tiene el cambio hecho y el ERP no lo tiene vigente → registrarlo de nuevo bien (o corregir el Drive si no se hizo). */
@@ -12838,7 +12852,7 @@ function _cdPintar() {
   h += L.length ? '<div style="overflow:auto"><table class="tbl" style="width:100%;font-size:12px"><thead><tr>' + cols.map(c => '<th style="text-align:left;padding:6px 8px">' + esc(c) + '</th>').join('') + '</tr></thead><tbody>'
     + L.map(x => '<tr' + (x.espera ? ' style="opacity:.6"' : '') + '>' + fila(x).map(v => '<td style="padding:5px 8px;vertical-align:top">' + v + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>'
     : '<div style="padding:24px;text-align:center;color:var(--gr);font-weight:600">✅ Nada por resolver en esta lista</div>';
-  if (CD.tab === 5 && D.cambiosTotal) h += '<div style="margin-top:8px;font-size:12px;color:var(--mu)">De ' + D.cambiosTotal + ' pedidos con cambio, ' + D.cambiosOk + ' ya coinciden con el Drive.</div>';
+  if (CD.tab === 5 && D.cambiosTotal) h += '<div style="margin-top:8px;font-size:12px;color:var(--mu)">De ' + D.cambiosTotal + ' pedidos con cambio, ' + D.cambiosOk + ' ya coinciden con el Drive.' + (D.l5ok ? ' Además, ' + D.l5ok + ' prenda' + (D.l5ok !== 1 ? 's' : '') + ' de cambios EN CURSO cuadran en los dos (Drive: nueva en la columna N y devuelta sin paréntesis en la O; ERP: el mismo cambio sin recibir la original): no son diferencia.' : '') + ' «En espera» = el pedido tiene un cambio abierto en el ERP que el Drive todavía no muestra igual: se cuadra solo cuando los dos lo cierren.</div>';
   el.innerHTML = h;
 }
 
