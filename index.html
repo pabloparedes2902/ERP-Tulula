@@ -45393,13 +45393,62 @@ function _constanciaDownloadUrl(url) {
   return m ? 'https://drive.google.com/uc?export=download&id='+m[1] : url;
 }
 
+// ── 9-nov · CONSTANCIA WEB (pedidos de Shopify). La URL que guarda el webhook es la
+// "página de estado" de Shopify: exige que la CLIENTA inicie sesión y no se deja mostrar
+// dentro del ERP (salía la hoja rota). Ahora se arma el comprobante con los datos del pago.
+// Formato nuevo (webhook 9-nov): admin.shopify.com/store/<tienda>/orders/<id>#web?n=&g=&t=&m=&c=
+const _CONST_WEB_RE = /(\/\d+\/orders\/[0-9a-f]{20,}\/authenticate|admin\.shopify\.com\/store\/[^/]+\/orders\/\d+)/i;
+function _constanciaEsWeb(url) { return _CONST_WEB_RE.test(String(url || '')); }
+function _constanciaWebDatos(it) {
+  const url = String(it.url || ''), d = {};
+  const h = url.split('#web?')[1];
+  if (h) h.split('&').forEach(kv => { const i = kv.indexOf('='); if (i > 0) { try { d[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); } catch (_) {} } });
+  const kp = String(it.pagoKey || '').split('|');
+  const ped = (typeof pAll !== 'undefined' && pAll.find(p => String(p['NroPedido']) === String(_constanciaNro))) || {};
+  const adm = url.match(/admin\.shopify\.com\/store\/[^/]+\/orders\/\d+/);
+  const email = String(ped['Email'] || '').trim();
+  d.monto = d.m || kp[0] || '';
+  d.fecha = d.t || kp[2] || '';
+  d.forma = kp[1] || 'TARJETA';
+  d.cliente = String(ped['Nombres y Apellidos'] || ped['Nombre'] || '').trim();
+  d.link = adm ? 'https://' + adm[0] : ('https://admin.shopify.com/store/tulula-ecom/orders' + (email ? '?query=' + encodeURIComponent(email) : ''));
+  return d;
+}
+function _constanciaWebHtml(d) {
+  const e = v => String(v == null ? '' : v).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const fila = (k, v) => v ? '<tr><td>' + e(k) + '</td><td>' + e(v) + '</td></tr>' : '';
+  const monto = d.monto !== '' && !isNaN(parseFloat(d.monto)) ? 'S/ ' + parseFloat(d.monto).toFixed(2) : '';
+  return '<!doctype html><html><head><meta charset="utf-8"><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600&display=swap" rel="stylesheet">'
+    + '<style>body{margin:0;font-family:Manrope,system-ui,sans-serif;background:#f4f4f2;color:#1b1b1b;display:flex;justify-content:center;padding:28px 14px}'
+    + '.c{background:#fff;border-radius:14px;padding:22px 24px;width:100%;max-width:400px;box-shadow:0 1px 4px rgba(0,0,0,.08)}'
+    + '.ok{display:inline-block;background:#e6f4ea;color:#1e7a3a;font-size:11px;font-weight:600;padding:4px 10px;border-radius:99px}'
+    + 'h1{font-size:20px;font-weight:600;margin:12px 0 2px}.m{font-size:22px;font-weight:600;margin:6px 0 14px}'
+    + '.n{font-size:12px;color:#777}table{width:100%;border-collapse:collapse;font-size:13px}td{padding:7px 0;border-top:1px solid #eee}td:first-child{color:#777}td:last-child{text-align:right;font-weight:500}'
+    + 'a{display:block;text-align:center;margin-top:16px;background:#1b1b1b;color:#fff;text-decoration:none;font-size:13px;font-weight:600;padding:10px;border-radius:10px}</style></head><body><div class="c">'
+    + '<span class="ok">✓ PAGO CONFIRMADO POR LA PASARELA</span><h1>Pago web · tulula.com.pe</h1>'
+    + '<div class="m">' + e(monto) + '</div><table>'
+    + fila('Pedido ERP', _constanciaNro ? '#' + _constanciaNro : '') + fila('Orden Shopify', d.n) + fila('Confirmación', d.c)
+    + fila('Clienta', d.cliente) + fila('Pasarela', d.g) + fila('Forma de pago', d.forma) + fila('Fecha', d.fecha)
+    + '</table><a href="' + e(d.link) + '" target="_blank" rel="noopener">Ver la orden en Shopify ↗</a>'
+    + '<p class="n">Las ventas web no traen captura: el cobro lo valida Shopify al momento de la compra.</p></div></body></html>';
+}
+
 function _showConstanciaAt(idx) {
   const items = _constanciaItems;
   if (!items.length) return;
   _constanciaIdx = Math.max(0, Math.min(idx, items.length-1));
   const it = items[_constanciaIdx];
-  document.getElementById('constancia-iframe').src = _constanciaPreviewUrl(it.url);
+  const _ifr = document.getElementById('constancia-iframe');
+  _ifr.removeAttribute('srcdoc');   // 9-nov: srcdoc manda sobre src; se limpia al cambiar de constancia
+  if (_constanciaEsWeb(it.url)) {   // 9-nov: venta web → comprobante armado (Shopify no deja mostrarse aquí)
+    const _d = _constanciaWebDatos(it);
+    _ifr.src = 'about:blank';
+    _ifr.srcdoc = _constanciaWebHtml(_d);
+    document.getElementById('constancia-download').href = _d.link;
+  } else {
+  _ifr.src = _constanciaPreviewUrl(it.url);
   document.getElementById('constancia-download').href = _constanciaDownloadUrl(it.url);
+  }
   if (_CONST_SB_RE.test(it.url)) {   // C3b: bucket privado → enlace firmado
     const _i0 = _constanciaIdx;
     document.getElementById('constancia-iframe').src = 'about:blank';
