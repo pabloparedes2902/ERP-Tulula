@@ -408,6 +408,21 @@ function _vocFrases_() {
   return _VOC_FRASES_;
 }
 
+// ── Vocabulario.gs · _VOC_TALLA_SIG_
+var _VOC_TALLA_SIG_ = /^(XS|S|M|L|XL|2XL|3XL|XXL|XXXL|U|C|G|STD|ESTANDAR|S\/M|M\/L|L\/XL|\(.*|-.*|\d.*)?$/;
+
+// ── Vocabulario.gs · _vocAplicarFrase_
+function _vocAplicarFrase_(pad, f) {
+  if (f.b.indexOf(f.a) !== 0) return pad.split(f.a).join(f.b);   // reemplazo normal
+  var out = '', i = 0, j;
+  while ((j = pad.indexOf(f.a, i)) >= 0) {
+    var resto = pad.slice(j + f.a.length), sig = (resto.split(' ')[0] || '');
+    out += pad.slice(i, j) + (_VOC_TALLA_SIG_.test(sig) ? f.b : f.a);
+    i = j + f.a.length - 1;   // el espacio final de la frase es el inicio del siguiente tramo
+  }
+  return out + pad.slice(i);
+}
+
 // ── Vocabulario.gs · vocCanon
 function vocCanon(s) {
   var t = _vocBase_(s);
@@ -416,7 +431,7 @@ function vocCanon(s) {
   if (fr.length) {
     for (var e = 0; e < fr.length; e++) { if (fr[e].ex && t === fr[e].aTxt) { t = fr[e].bTxt; break; } } // exactas: el texto completo
     var pad = ' ' + t + ' ';
-    for (var i = 0; i < fr.length; i++) { if (!fr[i].ex && pad.indexOf(fr[i].a) >= 0) pad = pad.split(fr[i].a).join(fr[i].b); }
+    for (var i = 0; i < fr.length; i++) { if (!fr[i].ex && pad.indexOf(fr[i].a) >= 0) pad = _vocAplicarFrase_(pad, fr[i]); }
     t = pad.replace(/\s+/g, ' ').trim();
   }
   // AUTOREPARACIÓN (14/07): colapsar palabras adyacentes repetidas (RAYAS RAYAS → RAYAS).
