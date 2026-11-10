@@ -12510,8 +12510,13 @@ async function _cdActualizar() {
     const corte = (m0 && m0.desde) || '2026-07-10';
     /* 30-oct (Pablo: «el cuadre está lento») · el kardex del ERP y las ventas del Drive se piden A LA VEZ que el emparejador (antes, uno tras otro: +1,8 s) */
     const pK = _cdKardex().catch(() => null);
+    /* 9-nov (Pablo · lista 4) · lo que Producción ingresó al ERP en los últimos 3 días: si el Drive todavía no lo anotó, es espera, no error */
+    const pR = (async () => { try { const tk = await _sbSesionAsegurar(); if (!tk) return {}; const d3 = new Date(Date.now() - 3 * 864e5).toISOString();
+      const r = await fetch(SB_URL + '/rest/v1/confeccion?select=prenda,diseno,color,talla,cant:row_json-%3E%3ECantidad,el:row_json-%3E%3EEliminado&tipo=in.(PRODUCCION,AJUSTE)&actualizado=gte.' + d3 + '&limit=2000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk } });
+      if (!r.ok) return {}; const R = {}; (await r.json()).forEach(z => { if (String(z.el || '').trim()) return; const k = [z.prenda, z.diseno, z.color, z.talla].map(v => String(v || '').toUpperCase().replace(/_/g, ' ').trim()).join('|'); R[k] = (R[k] || 0) + (Number(z.cant) || 0); }); return R; } catch (_) { return {}; } })();
     const pV = (async () => { try { const tk = await _sbSesionAsegurar(); return tk ? await fetch(SB_URL + '/rest/v1/rpc/cuadre_drive_ventas', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' }, body: '{}' }) : null; } catch (_) { return null; } })();
     const res = await window.cuadreLocalEmparejar(corte);
+    try { CD.confRec = await pR; } catch (_) { CD.confRec = {}; }
     // 22-oct (Pablo: «no es ajustar por ajustar, es cuadrar») · el ERP se mide con sus MOVIMIENTOS (lo mismo que muestra Inventario:
     // rpc stock_libro_movimientos), no con el libro viejo stock_saldos, que se desfasa cuando la base se corrige directo (112 tallas el 22-oct).
     const FO = Object.assign({}, (foto && foto.foto) || {}); let nK = 0;
@@ -12636,7 +12641,11 @@ function _cdArmar(M, FO, CAMS) {
   l3.forEach(x => { const cs = CAMS[x.nro]; if (!cs || !/^SIN CAMBIO/.test(String(x.que || ''))) return; const pz = String(x.prenda).split(/\s+→\s+Drive:\s*/);
     x.que = 'El pedido tiene el cambio ' + cs.join(', ') + ' en el ERP, pero su prenda nueva es ' + pz[0] + ' y el Drive dice que salió ' + (pz[1] || '').replace(/_/g, ' ') + ' → logística confirma cuál salió; si es la del Drive, la asesora corrige la prenda nueva en Cambios › ' + cs[0] + ' › Editar (si es la del ERP, logística corrige el Drive)'; });
   const l4 = Object.keys(FO).filter(k => { const x = FO[k]; if (!x || !x.e || !x.d) return false; const e = String(x.e).split(','), d = String(x.d).split(','); return e[0] !== d[0] || e[1] !== d[1]; })
-    .map(k => { const e = String(FO[k].e).split(','), d = String(FO[k].d).split(','); return { prenda: prend(k), que: 'Confección ERP ' + e[0] + ' / Drive ' + d[0] + ' · No disponibles ERP ' + e[1] + ' / Drive ' + d[1] }; });
+    .map(k => { const e = String(FO[k].e).split(','), d = String(FO[k].d).split(','), q = 'Confección ERP ' + e[0] + ' / Drive ' + d[0] + ' · No disponibles ERP ' + e[1] + ' / Drive ' + d[1];
+      /* 9-nov (Pablo) · lote ingresado al ERP en los últimos 3 días que el Drive aún no anota (ej. lote 0097 de Blazer Mirella) = EN ESPERA */
+      const dc = Number(e[0]) - Number(d[0]), rec = ((typeof CD !== 'undefined' && CD.confRec) || {})[String(k).toUpperCase().replace(/_/g, ' ')] || 0;
+      if (dc > 0 && e[1] === d[1] && rec >= dc) return { prenda: prend(k), que: q + ' · lote ingresado al ERP en los últimos 3 días: falta anotarlo en el Drive (Conf)', espera: true };
+      return { prenda: prend(k), que: q + (e[1] !== d[1] ? ' → logística: registrar en el ERP (Stock › Fallas) los no disponibles que faltan, con su motivo, o corregir el Drive' : '') }; });
   const AB = CAMS.__abiertos || {}, esp = n => String(n).split(/[ ,]+/).some(x => AB[x]);   // 20-oct · cambio en curso = en espera
   const mueve = k => { const d = dif(k); return d === null ? '¿?' : d === 0 ? 'no (la talla cuadra)' : (d > 0 ? 'sí: ERP +' + d : 'sí: ERP ' + d); };
   const l5 = [];
@@ -12713,6 +12722,9 @@ function _cdTareas() {
     [].concat(D.l3 || [], D.l2 || []).forEach(x => { const n = String(x.nro || '').split(/[ ,]+/)[0] || ('cli:' + String(x.cli || '').trim().toUpperCase()); if (n === 'cli:' || vistos[n] || x.espera) return;   /* 9-nov · sin número de pedido (Mery Pilco) también va a la lista, por la clienta */
       if (!/^CAMBIO/.test(String(x.que || ''))) return; vistos[n] = 1;
       out.push({ quien: 'Asesora', donde: 'Cambios del ERP · ' + (/^cli:/.test(n) ? 'clienta' : 'pedido ' + n) + ' (' + String(x.cli || '').trim() + ')', que: 'Registrar en Cambios el cambio que ya está en el Drive (fila ' + (x.fila || '?') + '): ' + String(x.prenda || '').replace(/\s+→\s+Drive:\s*/, ' → '), ok: false }); });
+    /* 9-nov (Pablo · lista 4) · no disponibles distintos ERP vs Drive → logística, con la talla exacta */
+    (D.l4 || []).forEach(x => { if (x.espera) return; const m = String(x.que || '').match(/No disponibles ERP (\d+) \/ Drive (\d+)/); if (!m || m[1] === m[2]) return;
+      out.push({ quien: 'Logística', donde: 'ERP › Stock › Fallas · ' + x.prenda, que: 'No disponibles: el ERP tiene ' + m[1] + ' y el Drive ' + m[2] + '. Registrar en Fallas del ERP las que faltan (con su motivo) o, si el Drive está mal, corregirlo', ok: false }); });
     return out; })(), (() => {   // 30-oct · VENTAS ESPECIALES (Yayita / Muestra) desde el 22-oct, cuando logística empezó a anotarlas «prenda - FALLA»
     const E = D.especiales || {}, out = [], nk = k => String(k || '').split('|').join(' ');
     (E.drive || []).forEach(z => { if (z.f < '2026-10-22') return;
@@ -12841,7 +12853,7 @@ function _cdPintar() {
   const hhmm = d => d ? new Date(d).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' }) : '—';
   const n = L => (L || []).filter(x => !x.espera).length, ne = L => (L || []).filter(x => x.espera).length;
   const n6 = L => (L || []).reduce((a, x) => a + (x.n || 1), 0);
-  const tabs = D ? [[0, '0 · Stock por talla (control)', (D.l0 || []).length, 0], [1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', D.l4.length, 0], [5, '5 · Cambios ERP vs Drive', n(D.l5), ne(D.l5)], [6, '6 · Prendas que no se reconocen', n6(D.l6), 0]] : [];   // 21-oct (Pablo): todas en 0 (y nada en espera) = 100% cuadrado
+  const tabs = D ? [[0, '0 · Stock por talla (control)', (D.l0 || []).length, 0], [1, '1 · En el ERP, no en el Drive', n(D.l1), ne(D.l1)], [2, '2 · En el Drive, no en el ERP', n(D.l2), ne(D.l2)], [3, '3 · En los dos, distinta prenda', D.l3.length, 0], [4, '4 · Confección y no disponibles', n(D.l4), ne(D.l4)], [5, '5 · Cambios ERP vs Drive', n(D.l5), ne(D.l5)], [6, '6 · Prendas que no se reconocen', n6(D.l6), 0]] : [];   // 21-oct (Pablo): todas en 0 (y nada en espera) = 100% cuadrado
   const total = tabs.reduce((a, t) => a + t[2], 0), esp = tabs.reduce((a, t) => a + t[3], 0);
   if (D) tabs.push([7, '7 · Pagos ERP vs Drive', CD.pagosN == null ? '·' : CD.pagosN, 0]);   /* 26-oct (Pablo) · no suma al total de prendas */
   if (D) tabs.push([8, '8 · Egresos ERP vs Drive', CD.egrN == null ? '·' : CD.egrN, 0]);
