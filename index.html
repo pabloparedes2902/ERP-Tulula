@@ -12711,7 +12711,10 @@ function _cdArmar(M, FO, CAMS) {
   // Si esta pestaña está en 0, el stock está 100% igual. «Lo explica» = cuánto de la diferencia de ventas cubren las listas 1, 2 y 3.
   const _nk = k => String(k || '').toUpperCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim(), EXP = {};
   const _sum = (k, n) => { k = _nk(k); EXP[k] = (EXP[k] || 0) + n; };
-  (M.soloErp || []).forEach(x => _sum(x[0], 1)); (M.soloDrive || []).forEach(x => _sum(x[0], -1));
+  (M.soloErp || []).forEach(x => _sum(x[0], 1));
+  /* 10-nov (Top Isabella Azul/Negro M · María Cecilia, CAM-0308) · la fila del Drive que es la prenda NUEVA de un cambio registrado (o un cambio
+     en curso que cuadra) ya está contada en el ERP por el cambio: no es diferencia, y restarla aquí tapaba la diferencia real de otra clienta */
+  (M.soloDrive || []).forEach(x => { if (_esNuevaCam(x)) return; const ns = nrosDe(x).filter(n => CAMS[n]); if (ns.length && _cuadraEnCurso(x, ns)) return; _sum(x[0], -1); });
   [].concat(M.otraTalla || [], M.otraPrenda || []).forEach(z => { if (z && z.erp && z.drive) { _sum(z.erp[0], 1); _sum(z.drive[0], -1); } });
   const _l0K0 = Object.keys(FO).filter(k => FO[k] && FO[k].e && FO[k].d && FO[k].tx);
   /* 9-nov (Pablo · lista 0) · VENTAS DEL DRIVE QUE SU PROPIA HOJA Stk NO CUENTA: la fórmula de Stk cuenta en Ing solo el texto exacto
@@ -40331,6 +40334,16 @@ async function _camRevalidarPedidoAntesDeGuardar() {
   return { ok: true };
 }
 
+/* 10-nov (CAM-0316) · nombre oficial de una prenda de cambio: homologación de Vocabulario aplicada SOLO sobre «prenda diseño color»
+   (sin la talla). Una regla que solo agrega palabras al final se aplica únicamente si el texto es EXACTAMENTE su origen. */
+function _camHomologarPrenda(txt, fr) {
+  const t = _vocBaseJs(txt); if (!t) return t;
+  const w = t.split(' '); const TL = ['XS','S','M','L','XL','2XL','3XL','U','C','G','STD'];
+  const ta = TL.includes(w[w.length - 1]) && w.length > 2 ? w.pop() : '';
+  const fr2 = (fr || []).map(x => (x && x.bTxt && x.aTxt && x.bTxt.indexOf(x.aTxt + ' ') === 0) ? Object.assign({}, x, { ex: true }) : x);
+  const b = _vocCanonCon(w.join(' '), fr2);
+  return ta ? b + ' ' + ta : b;
+}
 async function camRegistrar() {
   {
     const _rev = await _camRevalidarPedidoAntesDeGuardar();
@@ -40370,6 +40383,18 @@ async function camRegistrar() {
   if (!fpd)              { toast('La fecha de solicitud es obligatoria', 'err'); return; }
   if (!devueltas.length) { toast('Selecciona al menos una prenda a devolver', 'err'); return; }
   if (!nuevas.length)    { toast('Agrega al menos una prenda nueva', 'err'); return; }
+
+  /* 10-nov (Pablo · CAM-0316, Mery Pilco) · la prenda nueva se guarda con su NOMBRE OFICIAL. Se eligió «PANTALON ATENAS BEIGE M»
+     (color archivado) y el stock se movió en un SKU que ya no existe, mientras el Drive y el catálogo dicen BEIGE OSCURO.
+     Se aplica la homologación de Pablo (Vocabulario), con la misma regla del servidor: una regla que solo AGREGA palabras
+     (ATENAS BEIGE → ATENAS BEIGE OSCURO) vale solo si lo que sigue es la talla (así ATENAS BEIGE RAYAS no se toca). */
+  try {
+    const _frC = await _vocFrasesRapido();
+    const _homC = _camHomologarPrenda;
+    const _cambiadas = [];
+    nuevas.forEach(n => { const h = _homC(n.Prenda, _frC); if (h && h !== _vocBaseJs(n.Prenda)) { _cambiadas.push(n.Prenda + ' → ' + h); n.Prenda = h; } });
+    if (_cambiadas.length) toast('Prenda con su nombre oficial: ' + _cambiadas.join('; '), 'ok');
+  } catch (_eH) {}
 
   // 7-set-2026 — LA DIFERENCIA A FAVOR NO SE GUARDA EN SILENCIO.
   // Si la prenda nueva es más barata, hay que decir qué se hace con ese sobrante
