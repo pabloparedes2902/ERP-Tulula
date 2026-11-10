@@ -12519,10 +12519,15 @@ async function _cdActualizar() {
       const r = await fetch(SB_URL + '/rest/v1/v_movimientos_stock?select=prenda,diseno,color,talla_libro,d_ventas&ref=ilike.APERTURA*&d_ventas=neq.0&limit=2000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
       if (!r.ok) return {}; const R = {}, ac = /^(CORREA|COLLAR|ARETE|ANILLO|PULSERA|CADENA|PAÑUELO|PANUELO|COLETS)$/;
       (await r.json()).forEach(z => { const p = String(z.prenda || '').toUpperCase().trim(); const k = [p, z.diseno, z.color, ac.test(p) ? 'U' : z.talla_libro].map(v => String(v || '').toUpperCase().replace(/_/g, ' ').trim()).join('|'); R[k] = (R[k] || 0) + (Number(z.d_ventas) || 0); }); return R; } catch (_) { return {}; } })();
+    /* 9-nov (Pablo) · cambios que movieron el stock de una prenda que YA NO TIENEN (se quitó al editar o quedó cruzada) */
+    const pH = (async () => { try { const tk = await _sbSesionAsegurar(); if (!tk) return [];
+      const r = await fetch(SB_URL + '/rest/v1/rpc/cuadre_cambios_huerfanos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' }, body: '{}' });
+      if (!r.ok) return []; const a = await r.json(); return Array.isArray(a) ? a : []; } catch (_) { return []; } })();
     const pV = (async () => { try { const tk = await _sbSesionAsegurar(); return tk ? await fetch(SB_URL + '/rest/v1/rpc/cuadre_drive_ventas', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' }, body: '{}' }) : null; } catch (_) { return null; } })();
     const res = await window.cuadreLocalEmparejar(corte);
     try { CD.confRec = await pR; } catch (_) { CD.confRec = {}; }
     try { CD.aper = await pA; } catch (_) { CD.aper = {}; }
+    try { CD.huerf = await pH; } catch (_) { CD.huerf = []; }
     // 22-oct (Pablo: «no es ajustar por ajustar, es cuadrar») · el ERP se mide con sus MOVIMIENTOS (lo mismo que muestra Inventario:
     // rpc stock_libro_movimientos), no con el libro viejo stock_saldos, que se desfasa cuando la base se corrige directo (112 tallas el 22-oct).
     const FO = Object.assign({}, (foto && foto.foto) || {}); let nK = 0;
@@ -12726,6 +12731,9 @@ function _cdArmar(M, FO, CAMS) {
     /* 9-nov · candado: si contando las ventas homologadas el Drive queda con stock NEGATIVO, no es homologación: hay más ventas que prendas hechas */
     const neg = (nc.length > 0 || hA !== 0) && d[4] < 0;
     if (neg) partes.push('⚠ contando esas ventas el Drive queda en ' + d[4] + ' (más ventas que prendas hechas): logística cuenta físicamente esta talla antes de tocar nada');
+    const _hk = q => { const p = _nk(q).split('|'); if (/^(CORREA|COLLAR|ARETE|ANILLO|PULSERA|CADENA|PAÑUELO|PANUELO|COLETS)$/.test(p[0])) p[3] = 'U'; return p.join('|'); };
+    const hu = ((typeof CD !== 'undefined' && CD.huerf) || []).filter(z => _hk(String(z.k)) === _hk(k));
+    if (hu.length) partes.push('el ERP tiene movimientos de cambios que ya no tienen esta prenda: ' + hu.map(z => z.nc + ' (' + (z.n > 0 ? '+' : '') + z.n + ')').join(', ') + ' → lista 9');
     if (ap) partes.push('el ERP tiene un ajuste de apertura del 14-oct de ' + ap + ' venta' + (Math.abs(ap) > 1 ? 's' : '') + (neg ? ' (no se anula hasta el conteo físico)' : ' (se hizo para igualar un Drive que no contaba esas ventas: se anula)'));
     return { prenda: prend(k), stock: 'ERP ' + e[4] + ' / Drive ' + d[4], que: partes.join(' · '), sinExplicar: (dv !== 0 && ex !== dv) || neg, nc: nc, ap: ap, neg: neg };
   }).sort((a, b) => (b.sinExplicar - a.sinExplicar) || (a.prenda < b.prenda ? -1 : 1));
@@ -12763,6 +12771,10 @@ function _cdTareas() {
     /* 9-nov (Pablo · lista 4) · no disponibles distintos ERP vs Drive → logística, con la talla exacta */
     (D.l4 || []).forEach(x => { if (x.espera) return; const m = String(x.que || '').match(/No disponibles ERP (\d+) \/ Drive (\d+)/); if (!m || m[1] === m[2]) return;
       out.push({ quien: 'Logística', donde: 'ERP › Stock › Fallas · ' + x.prenda, que: 'No disponibles: el ERP tiene ' + m[1] + ' y el Drive ' + m[2] + '. Registrar en Fallas del ERP las que faltan (con su motivo) o, si el Drive está mal, corregirlo', ok: false }); });
+    /* 9-nov (Pablo: «que el cuadre muestre los cambios con movimientos que ya no les corresponden») · uno por cambio y prenda */
+    const _apK = new Set(Object.keys((typeof CD !== 'undefined' && CD.aper) || {}));
+    ((typeof CD !== 'undefined' && CD.huerf) || []).forEach(z => { const kk = String(z.k).toUpperCase().replace(/_/g, ' ');
+      out.push({ quien: 'Claude', donde: 'Cambios del ERP · ' + z.nc, que: 'Movió el stock de ' + kk.split('|').join(' ') + ' (' + (z.n > 0 ? '+' : '') + z.n + ' venta' + (Math.abs(z.n) > 1 ? 's' : '') + ') pero ese cambio ya no tiene esa prenda: se corrige con su causa' + (_apK.has(kk) ? ' (hoy lo tapa el ajuste de apertura del 14-oct: se corrigen juntos)' : ''), ok: false }); });
     /* 9-nov (Pablo) · las ventas del Drive con otra talla escrita (accesorios U/C/G) o con otro texto del mismo SKU ya NO son tarea: el cuadre las homologa solo (_cdActualizar y _cdArmar). */
     (D.l0 || []).forEach(x => { if (x.neg) out.push({ quien: 'Logística', donde: 'Almacén · ' + x.prenda, que: 'Contar físicamente cuántas hay: el ERP y el Drive dicen que se vendieron más de las que se hicieron (' + x.stock + ')', ok: false }); });
     return out; })(), (() => {   // 30-oct · VENTAS ESPECIALES (Yayita / Muestra) desde el 22-oct, cuando logística empezó a anotarlas «prenda - FALLA»
