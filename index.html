@@ -12516,9 +12516,9 @@ async function _cdActualizar() {
       if (!r.ok) return {}; const R = {}; (await r.json()).forEach(z => { if (String(z.el || '').trim()) return; const k = [z.prenda, z.diseno, z.color, z.talla].map(v => String(v || '').toUpperCase().replace(/_/g, ' ').trim()).join('|'); R[k] = (R[k] || 0) + (Number(z.cant) || 0); }); return R; } catch (_) { return {}; } })();
     /* 9-nov (Pablo · lista 0) · los ajustes de APERTURA del 14-oct (bajaron las ventas del ERP para igualar un Drive que no contaba todo) */
     const pA = (async () => { try { const tk = await _sbSesionAsegurar(); if (!tk) return {};
-      const r = await fetch(SB_URL + '/rest/v1/v_movimientos_stock?select=prenda,diseno,color,talla_libro,d_ventas&ref=ilike.APERTURA*&d_ventas=neq.0&limit=2000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
+      const r = await fetch(SB_URL + '/rest/v1/v_movimientos_stock?select=prenda,diseno,color,talla_libro,d_ventas&or=(ref.ilike.APERTURA*,ref.ilike.ANULA-APERTURA*)&d_ventas=neq.0&limit=2000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
       if (!r.ok) return {}; const R = {}, ac = /^(CORREA|COLLAR|ARETE|ANILLO|PULSERA|CADENA|PAÑUELO|PANUELO|COLETS)$/;
-      (await r.json()).forEach(z => { const p = String(z.prenda || '').toUpperCase().trim(); const k = [p, z.diseno, z.color, ac.test(p) ? 'U' : z.talla_libro].map(v => String(v || '').toUpperCase().replace(/_/g, ' ').trim()).join('|'); R[k] = (R[k] || 0) + (Number(z.d_ventas) || 0); }); return R; } catch (_) { return {}; } })();
+      (await r.json()).forEach(z => { const p = String(z.prenda || '').toUpperCase().trim(); const k = [p, z.diseno, z.color, ac.test(p) ? 'U' : z.talla_libro].map(v => String(v || '').toUpperCase().replace(/_/g, ' ').trim()).join('|'); R[k] = (R[k] || 0) + (Number(z.d_ventas) || 0); }); Object.keys(R).forEach(k => { if (!R[k]) delete R[k]; }); return R;   /* 10-nov · una apertura ya anulada (ANULA-APERTURA…) suma 0 y deja de mostrarse */ } catch (_) { return {}; } })();
     /* 9-nov (Pablo) · cambios que movieron el stock de una prenda que YA NO TIENEN (se quitó al editar o quedó cruzada) */
     const pH = (async () => { try { const tk = await _sbSesionAsegurar(); if (!tk) return [];
       const r = await fetch(SB_URL + '/rest/v1/rpc/cuadre_cambios_huerfanos', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' }, body: '{}' });
@@ -12612,6 +12612,13 @@ async function _cdCambiosPorPedido() {
   Object.defineProperty(C, '__cancelados', { value: CANC, enumerable: false });
   Object.defineProperty(C, '__devueltas', { value: DEVS, enumerable: false });
   Object.defineProperty(C, '__listas', { value: LIS, enumerable: false });
+  /* 10-nov (Pablo · Mery Pilco, lista 2) · una fila del Drive que es solo un CAMBIO (prenda nueva que no está en ningún pedido) no trae
+     número de pedido: el cuadre no encontraba su cambio y decía «falta registrar». Ahora busca los cambios de la MISMA clienta por nombre. */
+  const PN = {};
+  try { const nrs = Object.keys(C); for (let i = 0; i < nrs.length; i += 150) {
+      const r = await fetch(SB_URL + '/rest/v1/pedidos?select=nro_pedido,nombres&nro_pedido=in.(' + nrs.slice(i, i + 150).map(encodeURIComponent).join(',') + ')&limit=3000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+      if (!r.ok) continue; (await r.json()).forEach(p => { const k = _cdNomClave(p.nombres); if (!k) return; const v = PN[k] = PN[k] || []; if (v.indexOf(String(p.nro_pedido)) < 0) v.push(String(p.nro_pedido)); }); } } catch (_) {}
+  Object.defineProperty(C, '__porNombre', { value: PN, enumerable: false });
   return C;
 }
 /** Mismas reglas que la planilla: solo se lista si la TALLA está descuadrada (ventas ERP ≠ Drive en la foto).
@@ -12626,6 +12633,10 @@ function _cdArmar(M, FO, CAMS) {
   const nro = ref => ((String(ref).match(/pedido (\d+)/) || [])[1] || '');
   const nom = ref => String(ref).split(' · ').slice(1).join(' · ');
   const prend = k => String(k || '').split('|').join(' ').replace(/_/g, ' ');
+  /* 10-nov (Mery Pilco) · pedidos de la fila del Drive: los que trae el emparejador; si no trae ninguno, los pedidos CON CAMBIO de la misma clienta */
+  const _PN = (CAMS && CAMS.__porNombre) || {};
+  const nrosDe = x => { const v = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(Boolean); if (v.length) return v;
+    const k = _cdNomClave(nom(x[2])); return (k && _PN[k]) ? _PN[k].slice() : []; };
   // 21-oct (Pablo): «100% cuadrado» = TODAS las pestañas en 0 → ya no se esconden las líneas cuya talla cuadra (errores que se compensan: otra clienta / otro pedido)
   const _dtx = k => { const d = dif(k); return d === null ? '' : d === 0 ? ' · la talla cuadra: la venta está en otro pedido o clienta (no mueve stock, pero hay que corregirla)' : ' (talla con ' + d + ' de diferencia ERP − Drive)'; };
   // 21-oct (Pablo aprobó «pestaña 1») · qué pasó con cada prenda que el ERP tiene y el Drive no, y quién lo arregla.
@@ -12641,7 +12652,7 @@ function _cdArmar(M, FO, CAMS) {
   // 21-oct · la prenda NUEVA de un cambio registrado en el ERP figura en el Drive sin pago: el ERP ya la cuenta (Cambios) → no es diferencia (igual que el servidor)
   const _esNuevaCam = x => ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(Boolean).some(n => _NV[n + '|' + _nrm(x[5] || String(x[0]).split('|').join(' '))]);
   const l2 = (M.soloDrive || []).filter(x => !_esNuevaCam(x)).map(x => {   // 21-oct: todas (antes se escondían las de talla cuadrada)
-    const fila = (String(x[2]).match(/fila (\d+)/) || [])[1] || '', nros = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(Boolean);
+    const fila = (String(x[2]).match(/fila (\d+)/) || [])[1] || '', nros = nrosDe(x);
     const fd = fila ? _fd(fila) : null, camD = fd ? String(fd[14] || '').trim() : '', ase = fd ? String(fd[12] || '').trim() : '';
     const conCamErp = nros.filter(n => CAMS[n]), abierto = conCamErp.some(n => _AB[n]);
     let que = (x[4] || 'El Drive tiene esta prenda y el ERP no') + (dif(x[0]) === 0 ? ' · la talla cuadra: está en otro pedido o clienta' : ''), espera = x[1] >= hace2;
@@ -12691,9 +12702,9 @@ function _cdArmar(M, FO, CAMS) {
     const LS = (CAMS && CAMS.__listas) || {}, k = t => cn(t) || _n5(t), nN = k(x[5] || String(x[0]).split('|').join(' ')), nD = k(oRaw);
     return ns.some(n => AB[n] && LS[n] && LS[n].nue.some(p => k(p) === nN) && LS[n].dev.some(p => k(p) === nD)); };
   let l5ok = 0;
-  (M.soloDrive || []).forEach(x => { const ns = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(n => CAMS[n]); if (ns.length && _cuadraEnCurso(x, ns)) { l5ok++; return; } if (ns.length) l5.push({ nro: ns.join(', '), cam: CAMS[ns[0]].join(', '), prenda: x[5] || prend(x[0]), que: 'El Drive tiene esta prenda y el ERP no · ' + (x[4] || ''), mueve: mueve(x[0]), espera: esp(ns[0]) }); });
+  (M.soloDrive || []).forEach(x => { const ns = nrosDe(x).filter(n => CAMS[n]); if (ns.length && _cuadraEnCurso(x, ns)) { l5ok++; return; } if (ns.length) l5.push({ nro: ns.join(', '), cam: CAMS[ns[0]].join(', '), prenda: x[5] || prend(x[0]), que: 'El Drive tiene esta prenda y el ERP no · ' + (x[4] || ''), mueve: mueve(x[0]), espera: esp(ns[0]) }); });
   /* 9-nov (Pablo · Selena 23375) · lo que cuadra como cambio en curso tampoco va «en espera» en la lista 2 */
-  { const okF = new Set(); (M.soloDrive || []).forEach(x => { const ns = ((String(x[4]).match(/pedido ([\d, ]+)\)/) || [])[1] || '').split(/[ ,]+/).filter(n => CAMS[n]); const f = (String(x[2]).match(/fila (\d+)/) || [])[1] || ''; if (f && ns.length && _cuadraEnCurso(x, ns)) okF.add(f); });
+  { const okF = new Set(); (M.soloDrive || []).forEach(x => { const ns = nrosDe(x).filter(n => CAMS[n]); const f = (String(x[2]).match(/fila (\d+)/) || [])[1] || ''; if (f && ns.length && _cuadraEnCurso(x, ns)) okF.add(f); });
     for (let i = l2.length - 1; i >= 0; i--) if (l2[i].fila && okF.has(String(l2[i].fila))) l2.splice(i, 1); }
   const conCam = Object.keys(CAMS).length, conProb = new Set(l5.map(x => String(x.nro).split(/[ ,]/)[0])).size;
   // 21-oct (Pablo) · 0 · STOCK POR TALLA (control maestro): toda talla con confección, no disponibles, ventas o stock distintos.
@@ -12743,6 +12754,8 @@ function _cdArmar(M, FO, CAMS) {
     que: /<talla>/.test(String(t[0])) ? 'El ERP no tiene este diseño en su stock (falta cargar su confección) o la línea no trae talla: mientras tanto estas ventas NO se comparan' : 'El nombre no coincide con ninguna prenda del catálogo: corregirlo o agregar la homologación' }); }));
   return { l0, l1, l2, l3, l4, l5, l6, l5ok, cambiosTotal: conCam, cambiosOk: conCam - conProb };
 }
+/** 10-nov · nombre de clienta comparable (sin tildes, sin signos, espacios simples) */
+function _cdNomClave(t) { return String(t || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-ZÑ ]/g, ' ').replace(/\s+/g, ' ').trim(); }
 /** 30-oct-2026 (Pablo: «arma la lista del equipo dentro del ERP») · lo que falta para el 100% y depende de logística o de las asesoras.
  *  Cada tarea se comprueba SOLA con los datos de la comparación (nada de marcar «hecho» a mano): cuando se corrige, pasa a ✅. */
 function _cdTareas() {
