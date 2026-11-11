@@ -906,7 +906,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <!-- 9-nov (Pablo) · orden: Todos · Activos · Separados · Prenda pendiente · Pago pendiente · En camino · Entregados -->
           <button class="tab" data-e=""><span class="lbl">Todos</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab on" data-e="_ACTIVOS"><span class="lbl">Activos</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
-          <!-- 11-nov (Pablo) · orden: Todos · Activos · Enviar hoy · Modificados · Separados · Más (Prenda pendiente, Pago pendiente, En camino, Entregados y las de siempre) -->
+          <!-- 11-nov (Pablo) · orden: Todos · Activos · Enviar hoy · Modificados · Separados · Más (Prenda pendiente, Pago pendiente, En camino, Entregados, Enviar, Showroom). 11-nov tarde: Pablo quitó Cambio y Devoluciones (ya tienen su módulo). -->
           <button class="tab" data-e="_HOY"><span class="lbl">Enviar hoy</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e="_MODIF"><span class="lbl">Modificados</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e="SEPARAR"><span class="lbl">Separados</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
@@ -924,8 +924,6 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
               <button class="tab tab-mas" data-e="ENTREGADO" style="display:block;width:100%;text-align:left;padding:8px 12px;border-bottom:none"><span class="lbl">Entregados</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
               <button class="tab tab-mas" data-e="ENVIAR" style="display:block;width:100%;text-align:left;padding:8px 12px;border-bottom:none"><span class="lbl">Enviar</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
               <button class="tab tab-mas" data-e="_SHOWROOM" style="display:block;width:100%;text-align:left;padding:8px 12px;border-bottom:none"><span class="lbl">Showroom</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
-              <button class="tab tab-mas" data-e="CAMBIO" style="display:block;width:100%;text-align:left;padding:8px 12px;border-bottom:none"><span class="lbl">Cambio</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
-              <button class="tab tab-mas" data-e="_DEVOLUCIONES" style="display:block;width:100%;text-align:left;padding:8px 12px;border-bottom:none"><span class="lbl">Devoluciones</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
             </div>
           </span>
         </div>
@@ -20276,7 +20274,11 @@ function pGroupByPedido(rows) {
     // Etiquetas "X (+N)" cuando el pedido tiene lotes con Canal/Origen/Asesora distintos (multi-lote)
     const _ml = s => { const a=[...s].filter(Boolean); return !a.length ? '' : (a.length===1 ? a[0] : a[0]+' (+'+(a.length-1)+')'); };
     ped._canalLabel = _ml(ped._canalSet); ped._origenLabel = _ml(ped._origenSet); ped._asesoraLabel = _ml(ped._asesoraSet);
-    if (ped._umMax) ped['UltimaModif'] = ped._umMax; // última modificación del pedido (para columna + orden)
+    // 11-nov-2026 (Pablo) · «Última modif.» muestra SOLO el último cambio que genera acción (nombre, DNI, teléfono, dirección,
+    // distrito, provincia, región, prenda, estado, courier, fecha de envío, pago completado). Vacía si nunca hubo uno.
+    // La fecha interna de cada fila (la que usa la sincronización) NO se toca. Si la lista aún no cargó, se ve la de siempre.
+    { const _ma = (typeof _modAccionDe === 'function') ? _modAccionDe(ped['NroPedido']) : null;
+      if (_ma !== null) ped['UltimaModif'] = _ma; else if (ped._umMax) ped['UltimaModif'] = ped._umMax; }
     // #3 — Descontar devoluciones YA reembolsadas (con FechaReembolso) del Subtotal y Pagado.
     // El monto reembolsado salió del pedido, así que ya no debe contar como vendido ni pagado.
     const _nroPedR = String(ped['NroPedido']||'').trim();
@@ -25271,6 +25273,7 @@ const MOD_IMPLICA = { 'Nombres y Apellidos':'Nuevo rótulo', 'DNI':'Nuevo rótul
 function _modHdr(tok){ return { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }; }
 async function _modCargar(forzar){
   try {
+    try { _modAccionCargar(forzar); } catch(_){}
     if (!forzar && Date.now() - _modUlt < 20000) return;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return;
     const tok = await _sbSesionAsegurar(); if (!tok) return;
@@ -25279,6 +25282,28 @@ async function _modCargar(forzar){
     if (!r.ok) return;
     const a = await r.json(); _modPend = Array.isArray(a) ? a : [];
     _modRefrescar();
+  } catch(_){}
+}
+// «ÚLTIMA MODIF.» DE ACCIÓN (11-nov-2026): fecha del último cambio que genera acción, por pedido. Viene de la base
+// (pedido_modif_accion_desde) y se pide solo lo nuevo desde la última vez; la copia vive en este equipo.
+var _modAcc = null, _modAccUlt = '', _modAccT = 0;   // _modAcc null = todavía no se pudo leer (se muestra la fecha de siempre)
+function _modAccionDe(nro){ if (!_modAcc) return null; return _modAcc[String(nro == null ? '' : nro).trim()] || ''; }
+async function _modAccionCargar(forzar){
+  try {
+    if (!forzar && Date.now() - _modAccT < 60000) return;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return;
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    _modAccT = Date.now();
+    if (!_modAcc) { try { const g = JSON.parse(localStorage.getItem('tul_modacc_v1') || 'null'); if (g && g.m && typeof g.u === 'string') { _modAcc = g.m; _modAccUlt = g.u; } } catch(_){} }
+    const eraNulo = !_modAcc;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_modif_accion_desde', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_desde: _modAccUlt || null }) });
+    if (!r.ok) { if (eraNulo) _modAcc = null; return; }
+    const a = await r.json(); if (!Array.isArray(a)) return;
+    const m = _modAcc || {}; let cambio = eraNulo;
+    a.forEach(x => { const n = String(x.nro_pedido || '').trim(); if (!n || !x.cuando) return; if (m[n] !== x.cuando) { m[n] = x.cuando; cambio = true; } if (x.cuando > _modAccUlt) _modAccUlt = x.cuando; });
+    _modAcc = m;
+    if (a.length || eraNulo) { try { localStorage.setItem('tul_modacc_v1', JSON.stringify({ m: m, u: _modAccUlt })); } catch(_){} }
+    if (cambio) { const pg = document.getElementById('pg-pedidos'); if (pg && pg.offsetParent !== null && typeof _renderPedsDesde === 'function' && Array.isArray(pRaw) && pRaw.length) _renderPedsDesde(pRaw, pEst, true); }
   } catch(_){}
 }
 // Si la lista de cambios varió, se repinta suave: así las pestañas «Enviar hoy» y «Modificados» y sus números quedan al día.
@@ -25372,7 +25397,8 @@ async function _modPagoCompleto(nro, antes){
   try {
     const tok = await _sbSesionAsegurar(); if (!tok) return;
     const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_cambio_pago_completo', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_nro: String(nro), p_antes: String(antes || '') }) });
-    if (r.ok) _modCargar(true);
+    try { await fetch(SB_URL + '/rest/v1/rpc/pedido_modif_accion_pago', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_nro: String(nro) }) }); } catch(_){}
+    if (r.ok) _modCargar(true); else _modAccionCargar(true);
   } catch(_){}
 }
 function _modDecorar(){
@@ -32809,7 +32835,7 @@ try { window.addEventListener('load', () => { _cuadreActualizarDesdeEnlace(); })
 // arriba a la derecha; al cerrarlo queda oculto hasta recargar la página (regla CSS con !important, así el
 // código que lo vuelve a pintar no lo reabre). La barra de «clientas esperando» ya tenía su ✕ propia.
 var AVISOS_CON_X = ['fe-barra', 'al-barra-roja', 'logros-aviso', 'upd-banner', 'f1-aviso', 'masivo-franja', 'salud-sync-banner',
-  'ver-como-franja', 'espia-badge', 'paint-mode-badge', 'np-save-indicator', 'cam-save-indicator', 'c2-edit-indicator', 'dev-save-indicator', 'lg-barra', 'sf-barra'];
+  'ver-como-franja', 'espia-badge', 'paint-mode-badge', 'np-save-indicator', 'cam-save-indicator', 'c2-edit-indicator', 'dev-save-indicator', 'lg-barra', 'ac-barra', 'sf-barra'];
 function _avxHash(el){ let t = ''; el.childNodes.forEach(c => { if (!(c.classList && c.classList.contains('avx-x'))) t += c.textContent || ''; });
   t = t.replace(/\s+/g, ' ').trim(); let h = 0; for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0; return String(h); }
 function _avxCerrados(){ try { return JSON.parse(sessionStorage.getItem('avx_cerrados') || '{}') || {}; } catch (_) { return {}; } }
@@ -33324,6 +33350,64 @@ function _lgPintar() {
   b.querySelectorAll('button[data-lg]').forEach(bt => bt.onclick = () => { _LG.abierto = false; _lgPintar(); try { _abrirPedidoDesdeBusqueda(bt.getAttribute('data-lg')); } catch (e) { toast('No se pudo abrir el pedido', 'err'); } });
 }
 try { window.addEventListener('load', () => { setTimeout(_lgRevisar, 10000); setInterval(_lgRevisar, 15 * 60 * 1000); setInterval(() => { if (_LG.lista.length) _lgPintar(); }, 30000); }); } catch (_) {}
+
+// ═══ 11-nov (Pablo) · AVISO A LA ASESORA: PEDIDO DE ANUNCIOS SIN SU CONVERSACIÓN ═══
+// Pedido WhatsApp con origen ADS cuyo celular no aparece en ninguna conversación que llegó por un anuncio
+// (la base lo busca cada 15 min). Casi siempre la clienta escribió desde OTRO número o con usuario de WhatsApp.
+// La asesora escribe el número con el que le escribió → la base busca el clic del anuncio (ads_conv_telefono)
+// y el pedido deja de salir en «Sin anuncio identificado» de Marketing. Cada asesora ve lo suyo; el admin, todo.
+// Datos: public.ads_sin_conversacion() (PEGAR_EN_SUPABASE_ads_sin_conversacion_11nov.sql).
+var _AC = { lista: [], abierto: false };
+function _acOcultos(){ try { return JSON.parse(localStorage.getItem('ac_ocultos') || '{}') || {}; } catch (_) { return {}; } }
+async function _acRevisar() {
+  try {
+    if (!_avisoPara('ventas')) return;
+    const r = await _puertaRpc('ads_sin_conversacion', {}, 5000);
+    if (!Array.isArray(r)) return;
+    const yo = _miAsesoraERP(), adm = _soyAdminERP(), oc = _acOcultos();
+    _AC.lista = r.filter(x => (adm || (yo && x.as === yo)) && !(oc[x.n] && Date.now() - oc[x.n] < 7 * 864e5));
+    _AC.admin = adm;
+    _acPintar();
+  } catch (_) {}
+}
+function _acPintar() {
+  let b = document.getElementById('ac-barra');
+  const L = _AC.lista;
+  if (!L.length) { if (b) b.style.display = 'none'; return; }
+  if (!b) { b = document.createElement('div'); b.id = 'ac-barra'; document.body.appendChild(b); }
+  if (b.getAttribute('data-avx-cerrado') === '1') return;
+  const alto = id => { const el = document.getElementById(id); return (el && el.style.display !== 'none' && el.getAttribute('data-avx-cerrado') !== '1') ? el.offsetHeight : 0; };
+  b.style.cssText = 'position:fixed;left:0;right:0;top:' + (alto('campana-espera-barra') + alto('fe-barra') + alto('lg-barra')) + 'px;z-index:99996;font-family:var(--ui-f,system-ui),sans-serif;font-size:13px;padding:8px 40px 8px 16px;line-height:1.5;box-shadow:0 2px 8px rgba(0,0,0,.25);background:#ede9fe;color:#2e1065';
+  const n = L.length;
+  let h = '📣 <b>' + (_AC.admin ? n + ' pedido' + (n > 1 ? 's' : '') + ' de anuncios sin su conversación de WhatsApp' : 'Tienes ' + n + ' pedido' + (n > 1 ? 's' : '') + ' de anuncios sin su conversación: dinos con qué número te escribió la clienta')
+    + '</b> &nbsp;<button id="ac-ver" style="margin-left:6px;border:0;border-radius:8px;padding:2px 10px;font-weight:600;cursor:pointer">' + (_AC.abierto ? 'Ocultar' : 'Ver') + '</button>';
+  if (_AC.abierto) {
+    h += '<div style="margin-top:8px;max-height:45vh;overflow:auto;background:rgba(255,255,255,.97);color:#111;border-radius:8px;padding:6px 8px">'
+      + '<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="text-align:left;color:#555"><th>Fecha</th><th>Pedido</th>' + (_AC.admin ? '<th>Asesora</th>' : '') + '<th>Clienta</th><th>Celular del pedido</th><th>WhatsApp con el que escribió</th><th></th></tr>'
+      + L.map((x, i) => '<tr style="border-top:1px solid #eee"><td>' + _feEsc(String(x.f).slice(5)) + '</td>'
+        + '<td><a href="#" data-acp="' + _feEsc(x.n) + '">' + _feEsc(x.n) + '</a></td>' + (_AC.admin ? '<td>' + _feEsc(x.as) + '</td>' : '')
+        + '<td>' + _feEsc(x.cl) + '</td><td>' + _feEsc(x.cel || '—') + '</td>'
+        + '<td><input data-act="' + i + '" inputmode="numeric" maxlength="12" placeholder="9 dígitos" style="width:110px;padding:2px 6px;border:1px solid #ccc;border-radius:6px"> '
+        + '<button data-acb="' + i + '" style="border:0;border-radius:8px;padding:3px 10px;background:#6d28d9;color:#fff;cursor:pointer">Buscar anuncio</button></td>'
+        + '<td><button data-acx="' + i + '" title="Escribió con usuario (sin número) o no lo sé: ocultar 7 días" style="border:0;border-radius:8px;padding:3px 8px;cursor:pointer">No lo sé</button></td></tr>').join('')
+      + '</table><div style="color:#666;font-size:12px;margin-top:6px">El celular del pedido no aparece en ninguna conversación que llegó por anuncio. Escribe el número con el que te escribió por WhatsApp.</div></div>';
+  }
+  b.innerHTML = h;
+  document.getElementById('ac-ver').onclick = () => { _AC.abierto = !_AC.abierto; _acPintar(); };
+  b.querySelectorAll('a[data-acp]').forEach(a => a.onclick = ev => { ev.preventDefault(); _AC.abierto = false; _acPintar(); try { _abrirPedidoDesdeBusqueda(a.getAttribute('data-acp')); } catch (e) { toast('No se pudo abrir el pedido', 'err'); } });
+  b.querySelectorAll('button[data-acx]').forEach(bt => bt.onclick = () => { const x = L[Number(bt.getAttribute('data-acx'))]; const oc = _acOcultos(); oc[x.n] = Date.now(); try { localStorage.setItem('ac_ocultos', JSON.stringify(oc)); } catch (_) {} _AC.lista = _AC.lista.filter(y => y !== x); _acPintar(); });
+  b.querySelectorAll('button[data-acb]').forEach(bt => bt.onclick = async () => {
+    const i = Number(bt.getAttribute('data-acb')), x = L[i], inp = b.querySelector('input[data-act="' + i + '"]');
+    const tel = String(inp && inp.value || '').replace(/\D/g, '').slice(-9);
+    if (!/^9\d{8}$/.test(tel)) { toast('Escribe el número de 9 dígitos (empieza con 9)', 'err'); return; }
+    bt.disabled = true; bt.textContent = 'Buscando…';
+    const r = await _puertaRpc('ads_conv_telefono', { p_numero: x.n, p_tel: tel }, 8000);
+    bt.disabled = false; bt.textContent = 'Buscar anuncio';
+    if (r && r.ok) { toast('✓ Pedido ' + x.n + ': vino por «' + r.anuncio + '»', 'ok'); _AC.lista = _AC.lista.filter(y => y !== x); _acPintar(); }
+    else toast((r && r.msg) || 'No se pudo buscar: intenta de nuevo', 'err');
+  });
+}
+try { window.addEventListener('load', () => { setTimeout(_acRevisar, 12000); setInterval(() => { if (!(typeof document !== 'undefined' && document.hidden)) _acRevisar(); }, 15 * 60 * 1000); setInterval(() => { if (_AC.lista.length && !_AC.abierto) _acPintar(); }, 30000);   /* abierta no se repinta: borraría el número que se está escribiendo */ }); } catch (_) {}
 
 // ═══ 21-oct (Pablo) · SALDO A FAVOR EN CAMBIOS ═══
 // La clienta devolvió la prenda y todavía no elige otra. El cambio pasa a «SALDO A FAVOR» (base: cambio_pasar_a_saldo):

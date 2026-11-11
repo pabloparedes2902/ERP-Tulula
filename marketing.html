@@ -832,7 +832,7 @@ html .card,html .pl-card,html .pl-box,html .pl-ses,html .inv-k,html .inv-b{borde
   .mkcr-aviso{background:rgba(245,158,11,.12);border:1.5px solid rgba(245,158,11,.55);color:var(--txt);border-radius:10px;padding:8px 12px;font-size:12px;margin-bottom:10px}
   .mkcr-aviso .btn{padding:3px 9px;font-size:11px;margin-left:6px}
   .mkcr-espera{color:#f59e0b;font-weight:600}
-  .mkcr-canal{font-weight:600;padding:0 6px;border-radius:8px;font-size:11px}.mkcr-canal.wa{color:#16a34a;background:rgba(22,163,74,.12)}.mkcr-canal.web{color:#7aa83a;background:rgba(149,191,71,.15)}.mkcr-canal.ambos{color:#6366f1;background:rgba(99,102,241,.12)}.mkcr-canal.sin{color:#f59e0b;background:rgba(245,158,11,.12)}   /* 20-oct · canal del creativo */
+  .mkcr-canal{font-weight:600;padding:0 6px;border-radius:8px;font-size:11px}.mkcr-canal.wa{color:#16a34a;background:rgba(22,163,74,.12)}.mkcr-canal.web{color:#7aa83a;background:rgba(149,191,71,.15)}.mkcr-canal.ambos{color:#6366f1;background:rgba(99,102,241,.12)}.mkcr-canal.sin{color:#f59e0b;background:rgba(245,158,11,.12)}.mkcruce{font-size:11px;font-weight:600;color:#16a34a;margin-left:4px}   /* 20-oct · canal del creativo */
   /* 15-oct 18:10 · Nomenclatura: receta arriba, fusionar */
   #mkConfig .qfreceta{margin:4px 4px 12px}
   .mkl-t td.a select{background:var(--card);border:1.5px solid var(--bd);color:var(--txt);border-radius:8px;padding:4px 6px;font-size:12px;max-width:170px}
@@ -1762,11 +1762,26 @@ function _mkVentaCanal(f){
   if (MKCANAL === 'web') return { pedidos:f.web_pagados,      pagados:f.web_pagados,      ingreso:f.ingreso_web_pagado };
   return { pedidos:f.pedidos, pagados:f.pagados, ingreso:f.ingreso };
 }
+/* 11-nov-2026 · VENTA CRUZADA (aprobado por Pablo): un anuncio de la campana web que
+   termina en venta por WhatsApp (o al reves) cuenta en la fila de SU anuncio, en la vista
+   de su canal, con la marca «+N WA» / «+N web». Asi su ROAS es real. En la vista del otro
+   canal esa venta va a la fila «Vendidas aqui por anuncios de otro canal», no a «sin anuncio». */
+function _mkVentaOtroCanal(f){
+  if (!f || (MKCANAL !== 'wa' && MKCANAL !== 'web')) return { pedidos:0, pagados:0, ingreso:0 };
+  if (MKCANAL === 'wa') return { pedidos:+f.web_pagados||0, pagados:+f.web_pagados||0, ingreso:+f.ingreso_web_pagado||0 };
+  return { pedidos:+f.whatsapp_pagados||0, pagados:+f.whatsapp_pagados||0, ingreso:+f.ingreso_whatsapp_pagado||0 };
+}
 function mkAplicarVentas(){
   if (!MKV || !MK || !MK.filas) return;
   MK.filas.forEach(r => {
     const id = String(r.ad_id || '');
-    const a = _mkVentaCanal(MKV.porAd[id]), p = _mkVentaCanal(MKVP && MKVP.porAd[id]);
+    const a = Object.assign({}, _mkVentaCanal(MKV.porAd[id])), p = Object.assign({}, _mkVentaCanal(MKVP && MKVP.porAd[id]));
+    r._cruce = { act: 0, prev: 0 };
+    if (MKCANAL === mkCanalDe(r)){   /* 11-nov · venta cruzada: suma la del otro canal a SU anuncio */
+      const xa = _mkVentaOtroCanal(MKV.porAd[id]), xp = _mkVentaOtroCanal(MKVP && MKVP.porAd[id]);
+      ['pedidos','pagados','ingreso'].forEach(k => { a[k] = (+a[k]||0) + xa[k]; p[k] = (+p[k]||0) + xp[k]; });
+      r._cruce = { act: xa.pedidos, prev: xp.pedidos, ing: xa.ingreso };
+    }
     if (r.act){  r.act.pedidos  = a.pedidos; r.act.pagados  = a.pagados; r.act.ingreso  = a.ingreso; }
     if (r.prev){ r.prev.pedidos = p.pedidos; r.prev.pagados = p.pagados; r.prev.ingreso = p.ingreso; }
     /* 5-oct-2026 · costo de prendas del ERP (ver _mkCostoPeriodo) */
@@ -1825,11 +1840,14 @@ function _mkVenAttr(tipo, ids, nombre, enColumna){
 }
 function _mkVenLista(reg){
   const base = _mkVenCanal();
+  const _todas = new Set(((MK && MK.filas) || []).map(r => String(r.ad_id || '')).filter(Boolean));   /* 11-nov */
+  if (reg.tipo === 'cru') return base.filter(x => x.a && !MK_VEN_TODOS.has(String(x.a)) && _todas.has(String(x.a)));
+  if (reg.tipo === 'ads' && MKCANAL !== 'all'){ const s = new Set(reg.ids.map(String)); return (MKDET || []).filter(x => x.a && s.has(String(x.a)) && (x.c === MKCANAL || MK_VEN_TODOS.has(String(x.a)))); }
   if (reg.tipo === 'ads'){ const s = new Set(reg.ids.map(String)); return base.filter(x => x.a && s.has(String(x.a))); }
-  if (reg.tipo === 'sin') return base.filter(x => !x.a || !MK_VEN_TODOS.has(String(x.a)));   /* 11-nov · fuera de TODOS, no de lo visible */
+  if (reg.tipo === 'sin') return base.filter(x => !x.a || !_todas.has(String(x.a)));   /* 11-nov · sin anuncio de verdad: su anuncio no esta en NINGUN canal */
   if (reg.tipo === 'tot'){
     const filtro = mkFiltroActivoEn('__cam') || mkFiltroActivoEn('__con');
-    return base.filter(x => (x.a && MK_VEN_VIS.has(String(x.a))) || (!filtro && !(x.a && MK_VEN_TODOS.has(String(x.a)))));   /* 11-nov · visibles + sin anuncio real */
+    return (MKDET || []).filter(x => (MKCANAL === 'all' || x.c === MKCANAL || (x.a && MK_VEN_TODOS.has(String(x.a)))) && ((x.a && MK_VEN_VIS.has(String(x.a))) || (!filtro && (MKCANAL === 'all' || x.c === MKCANAL) && !(x.a && MK_VEN_TODOS.has(String(x.a))))));   /* 11-nov · visibles (con sus ventas cruzadas) + cruzadas recibidas + sin anuncio */
   }
   return [];
 }
@@ -2086,19 +2104,30 @@ function mkResiduoVentas(lado, rows){
   Object.keys(src.porAd).forEach(k => suma(src.porAd[k]));
   if (src.sinId) suma(src.sinId);
   let vp = 0, vg = 0, vi = 0;
-  _mkFilasCanal().forEach(r => { const o = r[lado] || {}; vp += +o.pedidos || 0; vg += +o.pagados || 0; vi += +o.ingreso || 0; });   /* 11-nov · todos, no solo los visibles */
+  _mkFilasCanal().forEach(r => { const o = _mkVentaCanal(src.porAd[String(r.ad_id || '')]); vp += +o.pedidos || 0; vg += +o.pagados || 0; vi += +o.ingreso || 0; });   /* 11-nov · todos los del canal, solo sus ventas PROPIAS del canal */
+  /* 11-nov · de eso, lo que vino de anuncios de OTRO canal (venta cruzada) */
+  let cp = 0, cg = 0, ci = 0;
+  if (MKCANAL === 'wa' || MKCANAL === 'web'){
+    const propios = new Set(_mkFilasCanal().map(r => String(r.ad_id || '')));
+    ((MK && MK.filas) || []).forEach(r => { const id = String(r.ad_id || ''); if (!id || propios.has(id) || r._nuevo) return;
+      const o = _mkVentaCanal(src.porAd[id]); cp += +o.pedidos || 0; cg += +o.pagados || 0; ci += +o.ingreso || 0; propios.add(id); });
+  }
   const s = mkSinId(lado) || {};
   const res = { pedidos: Math.max(0, tp - vp), pagados: Math.max(0, tg - vg),
                 ingreso: Math.max(0, ti - vi), web: s.web || 0, whatsapp: s.whatsapp || 0 };
+  res.cruce = { pedidos: Math.min(cp, res.pedidos), pagados: Math.min(cg, res.pagados), ingreso: Math.min(Math.round(ci*100)/100, res.ingreso) };
+  res.sin = { pedidos: res.pedidos - res.cruce.pedidos, pagados: res.pagados - res.cruce.pagados, ingreso: Math.round((res.ingreso - res.cruce.ingreso)*100)/100 };
   return res.pedidos > 0 || res.ingreso > 0 ? res : null;
 }
 
 /* La fila fantasma, justo encima del TOTAL. Sin gasto y sin ROAS a proposito:
    poner 0 daria un ROAS infinito y ensuciaria los promedios. */
 function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
-  const s = MK_RESV;
+  const R = MK_RESV;
+  const s = (R && R.sin) ? (R.sin.pedidos > 0 || R.sin.ingreso > 0 ? R.sin : null) : R;   /* 11-nov · solo lo de verdad sin anuncio */
   const e = MK_RES;
-  if (!s && !e) return '';
+  const cruce = _mkFilaCruce(R && R.cruce, cols, aCam, aCon, aCre, aEst, L1, L2, L3, L4);
+  if (!s && !e) return cruce;
   const detalle = [];
   if (s && s.web) detalle.push(s.web + ' de Pagina Web');
   if (s && s.whatsapp) detalle.push(s.whatsapp + ' de WhatsApp');
@@ -2119,6 +2148,24 @@ function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
         if (e && (c === 'conversaciones' || c === 'frias' || c === 'tibias' || c === 'calientes'))
           return '<td>' + mkNum(e[c]) + '</td>';
         if (e && c === 'personas') return '<td>' + mkNum(e.personas) + '</td>';
+        return '<td>—</td>';
+      }).join('')
+    + '</tr>' + cruce;
+}
+function _mkFilaCruce(c, cols, aCam, aCon, aCre, aEst, L1, L2, L3, L4){
+  if (!c || !(c.pedidos > 0)) return '';
+  const otro = MKCANAL === 'wa' ? 'Pagina web' : 'WhatsApp';
+  const tip = '<b>Vendidas aqui por anuncios de ' + otro + '</b><br>La clienta vio un anuncio de ' + otro + ' y compro por este canal.<br>Su anuncio SI esta identificado: la venta suma a ese anuncio en la vista de ' + otro + ' (marca «+N»).<br><b>Cuentan en el TOTAL</b>: son ventas reales de este canal.';
+  return '<tr class="mksinid mkcruzada">'
+    + '<td class="fijo" style="width:' + aCam + 'px;left:' + L1 + 'px">—</td>'
+    + '<td class="fijo" style="width:' + aCon + 'px;left:' + L2 + 'px"></td>'
+    + '<td class="fijo" style="width:' + aCre + 'px;left:' + L3 + 'px;cursor:help" onmouseenter="mkTipIn(event, ' + JSON.stringify(tip).replace(/"/g, '&quot;') + ')" onmouseleave="mkTipOut()">&#8618;&#65039; De anuncios de ' + otro + '</td>'
+    + '<td class="fijo borde" style="width:' + aEst + 'px;left:' + L4 + 'px"></td>'
+    + '<td></td>'
+    + cols.map(k => {
+        if (k === 'pedidos') return '<td' + (MKDET ? _mkVenAttr('cru', [], 'De anuncios de ' + otro, { pedidos: c.pedidos, ingreso: c.ingreso }) : '') + '>' + mkNum(c.pedidos) + '</td>';
+        if (k === 'pagados') return '<td>' + mkNum(c.pagados) + '</td>';
+        if (k === 'ingreso') return '<td>' + (c.ingreso ? mkSol(c.ingreso) : '—') + '</td>';
         return '<td>—</td>';
       }).join('')
     + '</tr>';
@@ -4047,12 +4094,18 @@ function mkPintar(){
       if ((c === 'hook_rate' || c === 'hold_rate' || c === 'retencion') && mkEsEstatico(r)){ val = null; cuerpo = MK_NA; }
       if (c === 'hold_rate' && val !== null && MK_PAR.hold_rate) cuerpo = '<span class="mkpill ' + (val >= MK_PAR.hold_rate.v ? 'b' : val >= MK_PAR.hold_rate.a ? 'm' : 'r') + '">' + val.toFixed(1) + '%</span>';
       if (c === 'roas' && val !== null) cuerpo = '<span class="mkpill ' + (val >= MK_PAR.roas.v ? 'b' : val >= MK_PAR.roas.a ? 'm' : 'r') + '">' + val.toFixed(2) + 'x</span>';   /* 6-oct: umbrales de Parámetros */
+      /* 11-nov (Pablo) · ROAS con y sin la venta cruzada: el grande incluye lo vendido por el otro canal; debajo, solo el canal propio */
+      if (c === 'roas' && val !== null && !r._grupo && r._cruce && r._cruce.ing > 0 && mkN(r.act.gasto) > 0){
+        const solo = (mkN(r.act.ingreso) - r._cruce.ing) / mkN(r.act.gasto), otro = MKCANAL === 'web' ? 'WA' : 'web';
+        cuerpo += '<div class="mkcruce" title="ROAS contando solo las ventas de ' + (MKCANAL === 'web' ? 'Página web' : 'WhatsApp') + ' (sin las ' + r._cruce.act + ' cerradas por ' + otro + ')">sin ' + otro + ' ' + solo.toFixed(2) + 'x</div>';
+      }
       if (c === 'hook_rate' && val !== null){ const P = MK_PAR.hook_rate || { v: 30, a: 15 }; cuerpo = '<span class="mkpill ' + (val >= P.v ? 'b' : val >= P.a ? 'm' : 'r') + '">' + val.toFixed(1) + '%</span>'; }
       /* 15-oct 23:20 (Pablo) · el CTR del ENLACE (el que lleva a WhatsApp o a la web) con su semáforo de ⚙️ Parámetros */
       if (c === 'ctr' && val !== null && MK_PAR.ctr) cuerpo = '<span class="mkpill ' + (val >= MK_PAR.ctr.v ? 'b' : val >= MK_PAR.ctr.a ? 'm' : 'r') + '">' + val.toFixed(2) + '%</span>';
       if (c === 'ganancia' && val !== null) cuerpo = '<span class="mkpill ' + (val >= MK_PAR.ganancia.v ? 'b' : val >= MK_PAR.ganancia.a ? 'm' : 'r') + '">' + mkSol(val) + '</span>';
       if (c === 'pedidos' && MKDET){   /* 13-oct · pasar el mouse = detalle de cada venta */
         const _ids = r._grupo ? (r._ads || []) : [String(r.ad_id || '')];
+        if (!r._grupo && r._cruce && r._cruce.act > 0) cuerpo += ' <span class="mkcruce" title="' + r._cruce.act + ' venta(s) de este anuncio cerradas por ' + (MKCANAL === 'web' ? 'WhatsApp' : 'Pagina web') + '">+' + r._cruce.act + ' ' + (MKCANAL === 'web' ? 'WA' : 'web') + '</span>';   /* 11-nov · venta cruzada */
         return '<td' + _mkVenAttr('ads', _ids, (r._grupo ? (r._nivelGrupo === 'campana' ? r.campana : r.conjunto) : r.anuncio) || 'Ventas', { pedidos: mkN(r.act.pedidos) || 0, ingreso: mkN(r.act.ingreso) || 0 }).replace('class="mkvcel"', 'class="mkvcel ' + (mkFam(c) || '').trim() + '"') + '>' + cuerpo + '</td>';
       }
       return '<td' + (mkFam(c) ? ' class="' + mkFam(c).trim() + '"' : '') + '>' + cuerpo + '</td>';
