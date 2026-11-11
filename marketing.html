@@ -1642,7 +1642,7 @@ const URL_MARKETING = 'https://n8n-production-4e716.up.railway.app/webhook/marke
 const URL_VENTAS = 'https://n8n-production-4e716.up.railway.app/webhook/ventas-periodo';
 let MKV = null;    /* ventas del periodo que se esta viendo */
 let MKVP = null;   /* ventas del periodo anterior, para las flechitas */
-const MK_SINID_H = '<b>Sin anuncio identificado</b><br>Ventas que el equipo marco como ADS en el ERP pero a las que no se les pudo saber de que anuncio vinieron.<br>No tienen gasto ni ROAS propio porque no se sabe a que creativo cargarselos.<br><b>Cuentan en el TOTAL</b>: son ventas reales.';
+const MK_SINID_H = '<b>Sin anuncio identificado</b><br>Ventas marcadas como ADS cuyo anuncio no se pudo saber, o cuyo anuncio no tuvo gasto en este periodo.<br>Los filtros (Estado, busqueda, columnas) NO mandan ventas aqui: si ocultas un anuncio, sus ventas se ocultan con el.<br>No tienen gasto ni ROAS propio porque no se sabe a que creativo cargarselos.<br><b>Cuentan en el TOTAL</b>: son ventas reales.';
 
 function _mkDiaMenos(fecha, dias){
   const t = new Date(fecha + 'T12:00:00Z');
@@ -1826,10 +1826,10 @@ function _mkVenAttr(tipo, ids, nombre, enColumna){
 function _mkVenLista(reg){
   const base = _mkVenCanal();
   if (reg.tipo === 'ads'){ const s = new Set(reg.ids.map(String)); return base.filter(x => x.a && s.has(String(x.a))); }
-  if (reg.tipo === 'sin') return base.filter(x => !x.a || !MK_VEN_VIS.has(String(x.a)));
+  if (reg.tipo === 'sin') return base.filter(x => !x.a || !MK_VEN_TODOS.has(String(x.a)));   /* 11-nov · fuera de TODOS, no de lo visible */
   if (reg.tipo === 'tot'){
     const filtro = mkFiltroActivoEn('__cam') || mkFiltroActivoEn('__con');
-    return base.filter(x => (x.a && MK_VEN_VIS.has(String(x.a))) || !filtro);
+    return base.filter(x => (x.a && MK_VEN_VIS.has(String(x.a))) || (!filtro && !(x.a && MK_VEN_TODOS.has(String(x.a)))));   /* 11-nov · visibles + sin anuncio real */
   }
   return [];
 }
@@ -2043,11 +2043,18 @@ function mkResiduo(lado, rows){
   if (mkFiltroActivoEn('__cam') || mkFiltroActivoEn('__con')) return null;
   const K = ['conversaciones','frias','tibias','calientes','personas'];
   const vis = {}; K.forEach(k => vis[k] = 0);
-  (rows || []).forEach(r => { const o = r[lado] || {}; K.forEach(k => vis[k] += Number(o[k]) || 0); });
+  _mkFilasCanal().forEach(r => { const o = r[lado] || {}; K.forEach(k => vis[k] += Number(o[k]) || 0); });   /* 11-nov · todos, no solo los visibles */
   const res = {}; let algo = false;
   K.forEach(k => { res[k] = Math.max(0, (src.tot[k] || 0) - vis[k]); if (res[k] > 0) algo = true; });
   return algo ? res : null;
 }
+
+/* 11-nov-2026 · TODOS los anuncios del canal, sin mirar filtros de Estado, busqueda
+   ni columnas. La fila «Sin anuncio identificado» se mide contra ESTO, no contra lo
+   que se ve: antes, con Estado=ACTIVO, las ventas de anuncios apagados caian ahi
+   (17 de 22 en noviembre) aunque su anuncio SI estaba identificado. */
+function _mkFilasCanal(){ return ((MK && MK.filas) || []).filter(r => !r._nuevo && (MKCANAL === 'all' || mkCanalDe(r) === MKCANAL)); }
+let MK_VEN_TODOS = new Set();          /* ad_id de todos los anuncios del canal (fila sin anuncio = fuera de aqui) */
 
 /* Las ventas sin anuncio identificado que le tocan al canal que estas viendo.
    No aparece si filtraste una campana o un conjunto: no pertenece a ninguno. */
@@ -2079,7 +2086,7 @@ function mkResiduoVentas(lado, rows){
   Object.keys(src.porAd).forEach(k => suma(src.porAd[k]));
   if (src.sinId) suma(src.sinId);
   let vp = 0, vg = 0, vi = 0;
-  (rows || []).forEach(r => { const o = r[lado] || {}; vp += +o.pedidos || 0; vg += +o.pagados || 0; vi += +o.ingreso || 0; });
+  _mkFilasCanal().forEach(r => { const o = r[lado] || {}; vp += +o.pedidos || 0; vg += +o.pagados || 0; vi += +o.ingreso || 0; });   /* 11-nov · todos, no solo los visibles */
   const s = mkSinId(lado) || {};
   const res = { pedidos: Math.max(0, tp - vp), pagados: Math.max(0, tg - vg),
                 ingreso: Math.max(0, ti - vi), web: s.web || 0, whatsapp: s.whatsapp || 0 };
@@ -3827,6 +3834,7 @@ function mkPintar(){
   MK_VEN_REG = [];
   MK_VEN_VIS = new Set();
   rows.forEach(r => (r._grupo ? (r._ads || []) : [String(r.ad_id || '')]).forEach(id => { if (id) MK_VEN_VIS.add(id); }));
+  MK_VEN_TODOS = new Set(_mkFilasCanal().map(r => String(r.ad_id || '')).filter(Boolean));   /* 11-nov */
   (function(){
     const d = (a, b) => (b ? a / b : null);
     [['act', A], ['prev', P]].forEach(function(par){
