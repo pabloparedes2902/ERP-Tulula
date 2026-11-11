@@ -25236,8 +25236,161 @@ function _pedsTombsGet(){
 function _pedsTombAdd(nro){ try { const o = _pedsTombsGet(); o[String(nro).trim()] = Date.now(); localStorage.setItem('erp_peds_tombs', JSON.stringify(o)); } catch(_){} }
 function _pedsTombDel(nro){ try { const o = _pedsTombsGet(); delete o[String(nro).trim()]; localStorage.setItem('erp_peds_tombs', JSON.stringify(o)); } catch(_){} }
 const _pedsEditLocal = {};
-function _pedsEditLocalMark(nro){ try { if (nro) _pedsEditLocal[String(nro).trim()] = Date.now(); } catch(_){} }
+function _pedsEditLocalMark(nro){ try { if (nro) { _pedsEditLocal[String(nro).trim()] = Date.now(); if (typeof _modFirmar === 'function') _modFirmar(nro); } } catch(_){} }
 function _pedsEditLocalReciente(nro){ const t = _pedsEditLocal[String(nro).trim()]; return !!t && (Date.now() - t < 6*60*1000); }
+
+// ══════════════════════════════════════════════════════════
+// MODIFICADOS (11-nov-2026, Pablo) — reemplaza la hoja «Pendientes» del Drive.
+// La base anota cada cambio de un pedido YA PINTADO (trigger zz_pedido_cambios_tg):
+// qué campo, antes, ahora, quién y cuándo. Acá: la celda cambiada sale con borde
+// amarillo; clic → qué cambió + «Atendido»; y el botón «Modificados» filtra la pestaña.
+// Si el SQL aún no está pegado, la lectura falla en silencio y no se pinta nada.
+// ══════════════════════════════════════════════════════════
+var _modPend = [], _modSoloOn = false, _modOrdenPrev = null, _modT = null, _modUlt = 0;
+const MOD_IMPLICA = { 'Nombres y Apellidos':'Nuevo rótulo', 'DNI':'Nuevo rótulo', 'Celular':'Nuevo rótulo', 'Direccion':'Nuevo rótulo',
+  'Distrito':'Nuevo rótulo', 'Provincia':'Nuevo rótulo', 'Region':'Nuevo rótulo', 'Prenda':'Rearmar o volver a separar el pedido',
+  'Courier':'Reprogramar el courier y nuevo rótulo', 'Fecha Envio':'Enviar en la nueva fecha', 'Estado':'Revisar el nuevo estado' };
+function _modHdr(tok){ return { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }; }
+async function _modCargar(forzar){
+  try {
+    if (!forzar && Date.now() - _modUlt < 20000) return;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return;
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    _modUlt = Date.now();
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_cambios_pendientes', { method: 'POST', headers: _modHdr(tok), body: '{}' });
+    if (!r.ok) return;
+    const a = await r.json(); _modPend = Array.isArray(a) ? a : [];
+    _modDecorar();
+  } catch(_){}
+}
+function _modNrosEnPestana(){
+  const s = new Set();
+  _modPend.forEach(c => { const n = String(c.nro_pedido||'').trim(); if (n && (!window._pTabNros || window._pTabNros.has(n))) s.add(n); });
+  return [...s];
+}
+function _modBarra(){
+  const tabs = document.getElementById('ped-tabs'); if (!tabs || !tabs.parentElement) return;
+  let b = document.getElementById('ped-mod-bar');
+  if (!b) {
+    b = document.createElement('div'); b.id = 'ped-mod-bar'; b.style.cssText = 'display:none;align-items:center;gap:8px;margin:0 0 8px';
+    b.innerHTML = '<button type="button" id="ped-mod-btn" class="btn bg bs" onclick="_modSolo()" title="Pedidos ya pintados que cambiaron después. El más antiguo arriba."></button>';
+    tabs.parentElement.insertAdjacentElement('afterend', b);
+    const st = document.createElement('style');
+    st.textContent = '#pg-pedidos td.mod-cel{box-shadow:inset 0 0 0 2px var(--am) !important;cursor:pointer}#ped-mod-btn.mod-on{border-color:var(--am);color:var(--am)}';
+    document.head.appendChild(st);
+  }
+  if (_modSoloOn && !(pFlt && pFlt['NroPedido'] && pFlt['NroPedido']._mod)) { _modSoloOn = false; _modOrdenPrev = null; }
+  const t = (typeof _pedTabActiva === 'function') ? _pedTabActiva() : '';
+  const d = (t === '_ACTIVOS' || t === 'SEPARAR') ? 'flex' : 'none';
+  if (b.style.display !== d) b.style.display = d;
+  const btn = document.getElementById('ped-mod-btn'); if (!btn) return;
+  const txt = (_modSoloOn ? '✕ Ver todos · ' : '') + 'Modificados ' + _modNrosEnPestana().length;
+  if (btn.textContent !== txt) btn.textContent = txt;
+  if (btn.classList.contains('mod-on') !== _modSoloOn) btn.classList.toggle('mod-on', _modSoloOn);
+}
+function _modDecorar(){
+  try {
+    const pg = document.getElementById('pg-pedidos'); if (!pg) return;
+    _modBarra();
+    pg.querySelectorAll('td.mod-cel').forEach(td => { td.classList.remove('mod-cel'); td.removeAttribute('data-mod'); });
+    if (!_modPend.length) return;
+    const th0 = pg.querySelector('th[data-k="NroPedido"]'); const tabla = th0 && th0.closest('table'); if (!tabla) return;
+    const idx = {}; [...th0.parentElement.children].forEach((th, i) => { const k = th.getAttribute('data-k'); if (k) idx[k] = i; });
+    const porNro = {}; _modPend.forEach(c => { const n = String(c.nro_pedido||'').trim(); (porNro[n] = porNro[n] || []).push(c); });
+    Object.keys(porNro).forEach(n => {
+      const trs = [...tabla.querySelectorAll('tbody tr[data-nro="' + n.replace(/["\\]/g, '') + '"]')]; if (!trs.length) return;
+      porNro[n].forEach(c => {
+        const i = idx[c.campo]; if (i == null) return;
+        let tr = trs[0];
+        if (c.campo === 'Prenda' || c.campo === 'Estado') {
+          const ip = idx['Prenda'], ref = String((c.campo === 'Prenda' ? c.ahora : c.prenda_fila) || '').trim().toUpperCase();
+          const m = (ref && ip != null) ? trs.find(x => x.children[ip] && String(x.children[ip].textContent||'').toUpperCase().indexOf(ref) >= 0) : null;
+          if (m) tr = m;
+        }
+        const td = tr.children[i]; if (!td) return;
+        td.classList.add('mod-cel'); td.setAttribute('data-mod', ((td.getAttribute('data-mod') || '') + ' ' + c.id).trim());
+      });
+    });
+  } catch(_){}
+}
+function _modSolo(){
+  try {
+    if (_modSoloOn) {
+      _modSoloOn = false;
+      if (pFlt && pFlt['NroPedido'] && pFlt['NroPedido']._mod) delete pFlt['NroPedido'];
+      if (_modOrdenPrev) { pSC = _modOrdenPrev[0]; pSA = _modOrdenPrev[1]; _modOrdenPrev = null; }
+      pAply(); return;
+    }
+    const nros = _modNrosEnPestana();
+    if (!nros.length) { toast('No hay pedidos modificados en esta pestaña', 'info'); return; }
+    _modOrdenPrev = [pSC, pSA]; pSC = 'UltimaModif'; pSA = true;   // el más antiguo arriba
+    pFlt['NroPedido'] = { lib: false, val: new Set(nros), _mod: true }; _modSoloOn = true;
+    pAply();
+  } catch(e) { try { _errLog('modSolo', e); } catch(_){} }
+}
+function _modPopCerrar(){ const d = document.getElementById('mod-pop'); if (d) d.remove(); }
+function _modPop(td){
+  _modPopCerrar();
+  const ids = String(td.getAttribute('data-mod') || '').split(' ').filter(Boolean);
+  const cs = _modPend.filter(c => ids.indexOf(String(c.id)) >= 0); if (!cs.length) return;
+  const r = td.getBoundingClientRect();
+  const d = document.createElement('div'); d.id = 'mod-pop';
+  d.style.cssText = 'position:fixed;z-index:9000;left:' + Math.max(8, Math.min(r.left, window.innerWidth - 340)) + 'px;top:' + Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 240))
+    + 'px;width:320px;background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r);box-shadow:0 8px 26px rgba(0,0,0,.45);padding:12px 14px;font-size:13px;color:var(--tx);font-family:inherit';
+  let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:14px;font-weight:600">Cambio por atender</span>'
+    + '<button type="button" onclick="_modPopCerrar()" title="Cerrar" style="background:none;border:none;color:var(--mu);cursor:pointer;font-size:16px;padding:0 4px">✕</button></div>';
+  cs.forEach(c => {
+    const col = PCOLS.find(x => x.k === c.campo); let cu = '';
+    try { cu = new Date(c.cuando).toLocaleString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch(_){}
+    const q = String(c.quien || '').split('@')[0] || 'sin identificar';
+    h += '<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">' + esc(col ? col.l : c.campo) + '</div>'
+      + '<div><span style="color:var(--mu)">Antes:</span> ' + esc(String(c.antes || '—')) + '</div>'
+      + '<div><span style="color:var(--mu)">Ahora:</span> ' + esc(String(c.ahora || '—')) + '</div>'
+      + '<div style="font-size:12px;color:var(--mu)">' + esc(q) + ' · ' + esc(cu) + '</div>'
+      + '<div style="font-size:12px;color:var(--am)">' + esc(MOD_IMPLICA[c.campo] || 'Revisar el pedido') + '</div></div>';
+  });
+  h += '<button type="button" class="btn bp bs" onclick="_modAtender([' + cs.map(c => parseInt(c.id, 10)).filter(x => !isNaN(x)).join(',') + '])">Atendido</button>';
+  d.innerHTML = h; document.body.appendChild(d);
+}
+async function _modAtender(ids){
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) { toast('Sin sesión. Vuelve a entrar al ERP.', 'err'); return; }
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_cambio_atender', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_ids: ids }) });
+    if (!r.ok) { toast('No se pudo marcar como atendido. Intenta de nuevo.', 'err'); return; }
+    _modPend = _modPend.filter(c => ids.indexOf(parseInt(c.id, 10)) < 0);
+    _modPopCerrar();
+    if (_modSoloOn) {
+      const nros = _modNrosEnPestana();
+      if (nros.length && pFlt['NroPedido'] && pFlt['NroPedido']._mod) { pFlt['NroPedido'].val = new Set(nros); pAply(); } else { _modSolo(); }
+    } else { _modDecorar(); }
+    toast('Atendido', 'ok');
+  } catch(e) { try { _errLog('modAtender', e); } catch(_){} }
+}
+function _modFirmar(nro){
+  const n = String(nro || '').trim(); if (!n) return;
+  [4000, 20000, 45000].forEach(ms => setTimeout(async () => {
+    try {
+      const tok = await _sbSesionAsegurar(); if (!tok) return;
+      await fetch(SB_URL + '/rest/v1/rpc/pedido_cambio_firmar', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_nro: n }) });
+      _modCargar(true);
+    } catch(_){}
+  }, ms));
+}
+function _modArrancar(){
+  try {
+    const pg = document.getElementById('pg-pedidos'); if (!pg || window._modObs) return;
+    window._modObs = new MutationObserver(() => { clearTimeout(_modT); _modT = setTimeout(() => { _modDecorar(); _modCargar(); }, 120); });
+    window._modObs.observe(pg, { childList: true, subtree: true });
+    document.addEventListener('click', e => {
+      const t = e.target; if (!t || !t.closest) return;
+      const td = t.closest('td.mod-cel'); if (td) { _modPop(td); return; }
+      if (!t.closest('#mod-pop')) _modPopCerrar();
+    }, true);
+    setInterval(() => { try { if (pg.offsetParent !== null) _modCargar(); } catch(_){} }, 60000);
+  } catch(_){}
+}
+setTimeout(_modArrancar, 1500);
+
 
 // Recarga desde el servidor las filas de pedidos puntuales y las funde a pRaw.
 // Usado tras crear/editar/cancelar un CAMBIO y al RESTAURAR de papelera (F1 23-jul):
