@@ -23041,6 +23041,7 @@ function renderPT(el, rows, total, hayMas) {
         + 'Filtra y hacelo por tandas.');
       return;
     }
+    if (campo === 'Estado' && typeof _modFrenoEnvio === 'function' && !_modFrenoEnvio(nros, valor)) return;   // freno de envío (11-nov)
     if (!(await _masivoConfirmar(nros.length, campo, valor))) return;
 
     const btn  = document.getElementById('bulk-apply');
@@ -24652,6 +24653,10 @@ async function _celdaGuardar(nro, col, valor, esDeshacer){
     return f ? String(f[col]==null?'':f[col]) : '';
   })();
   if (String(previo) === String(valor)) return;   // no cambió: no molestar al servidor
+  if (!esDeshacer && def.campo === 'Estado' && typeof _modFrenoEnvio === 'function' && !_modFrenoEnvio([nro], valor)) {   // freno de envío (11-nov)
+    try { _renderPedsDesde(pRaw, pEst, true); } catch(_) {}
+    return;
+  }
 
   // Validación de formato (celular, DNI). No se guarda nada que no cumpla.
   if (!esDeshacer && def.valida) {
@@ -25287,6 +25292,20 @@ function _modRefrescar(){
     }
     _modDecorar();
   } catch(_) { try { _modDecorar(); } catch(__){} }
+}
+// FRENO DE ENVÍO (11-nov-2026, Pablo): antes de marcar «En camino» un pedido con un cambio sin atender, avisa y
+// deja seguir solo si la persona confirma. Si algo falla, deja pasar (nunca traba el guardado).
+function _modFrenoEnvio(nros, est){
+  try {
+    if (String(est == null ? '' : est).trim().toUpperCase() !== 'EN CAMINO') return true;
+    const set = new Set((Array.isArray(nros) ? nros : [nros]).map(n => String(n).trim()));
+    const pend = (Array.isArray(_modPend) ? _modPend : []).filter(c => set.has(String(c.nro_pedido).trim()));
+    if (!pend.length) return true;
+    const lin = pend.slice(0, 6).map(c => '• #' + c.nro_pedido + ' · ' + (c.campo || '') + ': ' + (c.antes || '(vacío)') + ' → ' + (c.ahora || '(vacío)'));
+    if (pend.length > 6) lin.push('… y ' + (pend.length - 6) + ' más');
+    return window.confirm('Hay ' + (pend.length === 1 ? 'un cambio' : pend.length + ' cambios') + ' sin atender:\n\n' + lin.join('\n')
+      + '\n\n¿Marcar «En camino» de todas formas?\n(Aceptar = sí, ya lo revisé · Cancelar = no, primero lo reviso)');
+  } catch(_) { return true; }
 }
 function _modPedidoDeFilas(filas){
   if (!Array.isArray(filas) || !filas.length) return null;
@@ -28389,6 +28408,7 @@ function verPed(p) {
       const envioV = tr.querySelector('.mdf-envio').value;
       const estado = tr.querySelector('.mdf-estado').value;
       if (!courier) { toast('Elige el courier', 'err'); return; }
+      if (typeof _modFrenoEnvio === 'function' && !_modFrenoEnvio([nro], estado)) return;   // freno de envío (11-nov)
       this.disabled = true; this.textContent = 'Despachando...';
       try {
         const body = { NroPedido: nro, lote: lk, Estado: estado, Courier: courier, FechaEnvio: fecha };
@@ -28530,6 +28550,7 @@ function verPed(p) {
       else if (_epSelVal === '') { body.EstadoPagoManual = ''; }                               // volver a automático
       else { body.EstadoPagoManual = _epSelVal + '|' + (parseFloat(totalPagado)||0); }         // nuevo manual + foto del pagado
     }
+    if (body.Estado != null && typeof _modFrenoEnvio === 'function' && !_modFrenoEnvio([nro], body.Estado)) return;   // freno de envío (11-nov)
     // 1. Actualizar cache local de inmediato
     const fMap = {
       NombreApellido:'Nombres y Apellidos', Celular:'Celular', DNI:'DNI',
@@ -29221,6 +29242,7 @@ async function _guardarPedidoModal(nro, body) {
 }
 async function cambiarEst(nro, est) {
   if(typeof MY_ROLE!=='undefined' && MY_ROLE==='Ventas'){ try{toast('Sin permiso para cambiar el estado','err');}catch(e){} return; }
+  if (typeof _modFrenoEnvio === 'function' && !_modFrenoEnvio([nro], est)) return;   // freno de envío (11-nov)
   // #8 Optimistic UI: aplicar AL INSTANTE, cerrar modal, sync en background con rollback.
   const nroStr = String(nro).trim();
   // Snapshot del estado previo por fila (para revertir)
