@@ -25246,10 +25246,10 @@ function _pedsEditLocalReciente(nro){ const t = _pedsEditLocal[String(nro).trim(
 // amarillo; clic → qué cambió + «Atendido»; y el botón «Modificados» filtra la pestaña.
 // Si el SQL aún no está pegado, la lectura falla en silencio y no se pinta nada.
 // ══════════════════════════════════════════════════════════
-var _modPend = [], _modSoloOn = false, _modOrdenPrev = null, _modT = null, _modUlt = 0;
+var _modPend = [], _modSoloOn = '', _modOrdenPrev = null, _modT = null, _modUlt = 0, _modHoyNros = [], _modEpPrev = {};   // _modSoloOn: '' | 'mod' | 'hoy'
 const MOD_IMPLICA = { 'Nombres y Apellidos':'Nuevo rótulo', 'DNI':'Nuevo rótulo', 'Celular':'Nuevo rótulo', 'Direccion':'Nuevo rótulo',
   'Distrito':'Nuevo rótulo', 'Provincia':'Nuevo rótulo', 'Region':'Nuevo rótulo', 'Prenda':'Rearmar o volver a separar el pedido',
-  'Courier':'Reprogramar el courier y nuevo rótulo', 'Fecha Envio':'Enviar en la nueva fecha', 'Estado':'Revisar el nuevo estado' };
+  'Courier':'Reprogramar el courier y nuevo rótulo', 'Fecha Envio':'Enviar en la nueva fecha', 'Estado':'Revisar el nuevo estado', 'Estado Pago':'Pago completo: ya puede salir' };
 function _modHdr(tok){ return { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }; }
 async function _modCargar(forzar){
   try {
@@ -25268,30 +25268,85 @@ function _modNrosEnPestana(){
   _modPend.forEach(c => { const n = String(c.nro_pedido||'').trim(); if (n && (!window._pTabNros || window._pTabNros.has(n))) s.add(n); });
   return [...s];
 }
+// ENVIAR HOY (regla de Pablo, 11-nov): estado ENVIAR, pago completo, todas sus prendas por enviar
+// pintadas (verde o celeste), datos de la clienta completos, sin cambio por atender y sin fecha futura.
+function _modEsHoy(p, modSet, hoyIso){
+  const n = String(p['NroPedido']||'').trim(); if (!n || modSet.has(n)) return false;
+  const pr = Array.isArray(p._prendas) ? p._prendas : []; if (!pr.length) return false;
+  const est = x => String(x.estado||'').trim().toUpperCase();
+  if (pr.some(x => est(x) === 'PREVENTA' || est(x) === 'SEPARAR')) return false;
+  const env = pr.filter(x => est(x) === 'ENVIAR'); if (!env.length) return false;
+  if (!env.every(x => { const c = String(x.colorPrenda||'').toUpperCase(); return c === 'GREEN' || c === 'BLUE'; })) return false;
+  if (!/(^|\s)COMPLETO$/.test(String(epValorFor(p)||'').trim().toUpperCase())) return false;
+  const fe = String(p['Fecha Envio']||'').slice(0, 10); if (fe && fe > hoyIso) return false;
+  const v = k => String(p[k]||'').trim(); const cou = v('Courier').toUpperCase();
+  if (!v('Nombres y Apellidos') || !v('DNI') || !v('Celular') || !cou || cou === 'N/A') return false;
+  if (cou !== 'RECOJO' && (!v('Direccion') || !v('Distrito'))) return false;
+  return true;
+}
+function _modHoyCalcular(){
+  try {
+    if (!Array.isArray(pAll)) return;
+    if (Object.keys(pFlt||{}).length) return;   // con un filtro puesto pAll no es toda la pestaña: se conserva la última cuenta
+    const modSet = new Set(_modPend.map(c => String(c.nro_pedido||'').trim()));
+    let hoy = ''; try { hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' }); } catch(_) { hoy = new Date().toISOString().slice(0, 10); }
+    _modHoyNros = pAll.filter(p => _modEsHoy(p, modSet, hoy)).map(p => String(p['NroPedido']).trim());
+  } catch(_){}
+}
 function _modBarra(){
   const tabs = document.getElementById('ped-tabs'); if (!tabs || !tabs.parentElement) return;
   let b = document.getElementById('ped-mod-bar');
   if (!b) {
     b = document.createElement('div'); b.id = 'ped-mod-bar'; b.style.cssText = 'display:none;align-items:center;gap:8px;margin:0 0 8px';
-    b.innerHTML = '<button type="button" id="ped-mod-btn" class="btn bg bs" onclick="_modSolo()" title="Pedidos ya pintados que cambiaron después. El más antiguo arriba."></button>';
+    b.innerHTML = '<button type="button" id="ped-hoy-btn" class="btn bg bs" onclick="_modSolo(\'hoy\')" title="Estado Enviar, pago completo, prendas pintadas, datos completos y sin cambio por atender."></button>'
+      + '<button type="button" id="ped-mod-btn" class="btn bg bs" onclick="_modSolo(\'mod\')" title="Pedidos ya pintados que cambiaron después. El más antiguo arriba."></button>';
     tabs.parentElement.insertAdjacentElement('afterend', b);
     const st = document.createElement('style');
-    st.textContent = '#pg-pedidos td.mod-cel{box-shadow:inset 0 0 0 2px var(--am) !important;cursor:pointer}#ped-mod-btn.mod-on{border-color:var(--am);color:var(--am)}';
+    st.textContent = '#pg-pedidos td.mod-cel{box-shadow:inset 0 0 0 2px var(--am) !important;cursor:pointer}#ped-mod-btn.mod-on,#ped-hoy-btn.mod-on{border-color:var(--am);color:var(--am)}';
     document.head.appendChild(st);
   }
-  if (_modSoloOn && !(pFlt && pFlt['NroPedido'] && pFlt['NroPedido']._mod)) { _modSoloOn = false; _modOrdenPrev = null; }
+  if (_modSoloOn && !(pFlt && pFlt['NroPedido'] && pFlt['NroPedido']._mod)) { _modSoloOn = ''; _modOrdenPrev = null; }
   const t = (typeof _pedTabActiva === 'function') ? _pedTabActiva() : '';
   const d = (t === '_ACTIVOS' || t === 'SEPARAR') ? 'flex' : 'none';
   if (b.style.display !== d) b.style.display = d;
-  const btn = document.getElementById('ped-mod-btn'); if (!btn) return;
-  const txt = (_modSoloOn ? '✕ Ver todos · ' : '') + 'Modificados ' + _modNrosEnPestana().length;
-  if (btn.textContent !== txt) btn.textContent = txt;
-  if (btn.classList.contains('mod-on') !== _modSoloOn) btn.classList.toggle('mod-on', _modSoloOn);
+  if (t === '_ACTIVOS') _modHoyCalcular();
+  const pone = (id, clave, txt, ver) => {
+    const btn = document.getElementById(id); if (!btn) return;
+    const dd = ver ? '' : 'none'; if (btn.style.display !== dd) btn.style.display = dd;
+    const tx = (_modSoloOn === clave ? '✕ Ver todos · ' : '') + txt;
+    if (btn.textContent !== tx) btn.textContent = tx;
+    if (btn.classList.contains('mod-on') !== (_modSoloOn === clave)) btn.classList.toggle('mod-on', _modSoloOn === clave);
+  };
+  pone('ped-hoy-btn', 'hoy', 'Enviar hoy ' + _modHoyNros.length, t === '_ACTIVOS');
+  pone('ped-mod-btn', 'mod', 'Modificados ' + _modNrosEnPestana().length, true);
+}
+// PAGO COMPLETADO: lo anota el navegador de quien registró el pago (la base no recalcula el estado de pago).
+function _modVigilarPago(){
+  try {
+    if (!Array.isArray(pAll) || pAll.length > 600) return;
+    pAll.forEach(p => {
+      const n = String(p['NroPedido']||'').trim(); if (!n) return;
+      const ahora = String(epValorFor(p)||'').trim().toUpperCase(), antes = _modEpPrev[n]; _modEpPrev[n] = ahora;
+      if (!antes || antes === ahora) return;
+      const lleno = x => /(^|\s)COMPLETO$/.test(x);
+      if (!lleno(ahora) || lleno(antes)) return;
+      if (!(Array.isArray(p._prendas) && p._prendas.some(x => x.colorPrenda))) return;
+      if (typeof _pedsEditLocalReciente !== 'function' || !_pedsEditLocalReciente(n)) return;
+      _modPagoCompleto(n, antes);
+    });
+  } catch(_){}
+}
+async function _modPagoCompleto(nro, antes){
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_cambio_pago_completo', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_nro: String(nro), p_antes: String(antes || '') }) });
+    if (r.ok) _modCargar(true);
+  } catch(_){}
 }
 function _modDecorar(){
   try {
     const pg = document.getElementById('pg-pedidos'); if (!pg) return;
-    _modBarra();
+    _modBarra(); _modVigilarPago();
     pg.querySelectorAll('td.mod-cel').forEach(td => { td.classList.remove('mod-cel'); td.removeAttribute('data-mod'); });
     if (!_modPend.length) return;
     const th0 = pg.querySelector('th[data-k="NroPedido"]'); const tabla = th0 && th0.closest('table'); if (!tabla) return;
@@ -25313,18 +25368,20 @@ function _modDecorar(){
     });
   } catch(_){}
 }
-function _modSolo(){
+function _modSolo(cual){
   try {
-    if (_modSoloOn) {
-      _modSoloOn = false;
+    const k = (cual === 'hoy') ? 'hoy' : 'mod';
+    const apagar = () => {
+      _modSoloOn = '';
       if (pFlt && pFlt['NroPedido'] && pFlt['NroPedido']._mod) delete pFlt['NroPedido'];
       if (_modOrdenPrev) { pSC = _modOrdenPrev[0]; pSA = _modOrdenPrev[1]; _modOrdenPrev = null; }
-      pAply(); return;
-    }
-    const nros = _modNrosEnPestana();
-    if (!nros.length) { toast('No hay pedidos modificados en esta pestaña', 'info'); return; }
-    _modOrdenPrev = [pSC, pSA]; pSC = 'UltimaModif'; pSA = true;   // el más antiguo arriba
-    pFlt['NroPedido'] = { lib: false, val: new Set(nros), _mod: true }; _modSoloOn = true;
+    };
+    if (_modSoloOn === k) { apagar(); pAply(); return; }
+    const nros = (k === 'hoy') ? _modHoyNros.slice() : _modNrosEnPestana();
+    if (!nros.length) { toast(k === 'hoy' ? 'No hay pedidos listos para enviar hoy' : 'No hay pedidos modificados en esta pestaña', 'info'); return; }
+    if (_modSoloOn) apagar();
+    if (k === 'mod') { _modOrdenPrev = [pSC, pSA]; pSC = 'UltimaModif'; pSA = true; }   // el más antiguo arriba
+    pFlt['NroPedido'] = { lib: false, val: new Set(nros), _mod: true }; _modSoloOn = k;
     pAply();
   } catch(e) { try { _errLog('modSolo', e); } catch(_){} }
 }
@@ -25347,8 +25404,11 @@ function _modPop(td){
       + '<div><span style="color:var(--mu)">Antes:</span> ' + esc(String(c.antes || '—')) + '</div>'
       + '<div><span style="color:var(--mu)">Ahora:</span> ' + esc(String(c.ahora || '—')) + '</div>'
       + '<div style="font-size:12px;color:var(--mu)">' + esc(q) + ' · ' + esc(cu) + '</div>'
-      + '<div style="font-size:12px;color:var(--am)">' + esc(MOD_IMPLICA[c.campo] || 'Revisar el pedido') + '</div></div>';
+      + '<div style="font-size:12px;color:var(--am)">' + esc(MOD_IMPLICA[c.campo] || 'Revisar el pedido') + '</div>'
+      + (c.nota ? '<div style="font-size:12px"><span style="color:var(--mu)">Nota:</span> ' + esc(String(c.nota)) + '</div>' : '') + '</div>';
   });
+  h += '<div style="display:flex;gap:6px;margin-bottom:10px"><input id="mod-nota" maxlength="300" placeholder="Nota para logística (opcional)" value="' + esc(String(cs[0].nota || '')) + '" style="flex:1;min-width:0;padding:4px 8px;background:var(--bg3);border:1px solid var(--bd);border-radius:4px;color:var(--tx);font-size:12px;font-family:inherit">'
+    + '<button type="button" class="btn bg bs" onclick="_modNota(' + parseInt(cs[0].id, 10) + ')">Guardar nota</button></div>';
   h += '<button type="button" class="btn bp bs" onclick="_modAtender([' + cs.map(c => parseInt(c.id, 10)).filter(x => !isNaN(x)).join(',') + '])">Atendido</button>';
   d.innerHTML = h; document.body.appendChild(d);
 }
@@ -25359,12 +25419,22 @@ async function _modAtender(ids){
     if (!r.ok) { toast('No se pudo marcar como atendido. Intenta de nuevo.', 'err'); return; }
     _modPend = _modPend.filter(c => ids.indexOf(parseInt(c.id, 10)) < 0);
     _modPopCerrar();
-    if (_modSoloOn) {
+    if (_modSoloOn === 'mod') {
       const nros = _modNrosEnPestana();
-      if (nros.length && pFlt['NroPedido'] && pFlt['NroPedido']._mod) { pFlt['NroPedido'].val = new Set(nros); pAply(); } else { _modSolo(); }
+      if (nros.length && pFlt['NroPedido'] && pFlt['NroPedido']._mod) { pFlt['NroPedido'].val = new Set(nros); pAply(); } else { _modSolo('mod'); }
     } else { _modDecorar(); }
     toast('Atendido', 'ok');
   } catch(e) { try { _errLog('modAtender', e); } catch(_){} }
+}
+async function _modNota(id){
+  try {
+    const inp = document.getElementById('mod-nota'); const txt = inp ? String(inp.value || '').trim() : '';
+    const tok = await _sbSesionAsegurar(); if (!tok) { toast('Sin sesión. Vuelve a entrar al ERP.', 'err'); return; }
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_cambio_nota', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_id: id, p_nota: txt }) });
+    if (!r.ok) { toast('No se pudo guardar la nota. Intenta de nuevo.', 'err'); return; }
+    const c = _modPend.find(x => parseInt(x.id, 10) === id); if (c) c.nota = txt;
+    toast('Nota guardada', 'ok');
+  } catch(e) { try { _errLog('modNota', e); } catch(_){} }
 }
 function _modFirmar(nro){
   const n = String(nro || '').trim(); if (!n) return;
@@ -25389,6 +25459,8 @@ function _modArrancar(){
     setInterval(() => { try { if (pg.offsetParent !== null) _modCargar(); } catch(_){} }, 60000);
   } catch(_){}
 }
+// Un pago guardado directo en la base también cuenta como edición local (para firmar y para «pago completo»).
+(function(){ try { const _orig = _sbRpcPago; _sbRpcPago = async function(fn, params){ const r = await _orig.apply(this, arguments); try { if (r && params && params.p_nro) _pedsEditLocalMark(params.p_nro); } catch(_){} return r; }; } catch(_){} })();
 setTimeout(_modArrancar, 1500);
 
 
