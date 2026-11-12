@@ -7740,7 +7740,7 @@ function _cfDeBase(x) {   // = _cosDeBase_
     CostoUnitario: _cfNum(x.costo_unitario), CostoPaqueteria: _cfNum(x.costo_paqueteria), PrecioLista: _cfNum(x.precio_lista), Notas: _cfTxt(x.notas),
     Activo: x.activo !== false, UltimaActualizacion: _cfFecha(x.actualizado), Quien: _cfTxt(x.actualizado_por), comp: comp, precios: pre, pctAs: _cfNumN(x.pct_as),
     ShopifyId: _cfTxt(x.shopify_id), NombreShopify: _cfTxt(x.nombre_shopify), ShopifyEstado: _cfTxt(x.shopify_estado), Descripcion: _cfTxt(x.descripcion),
-    Cuidados: _cfTxt(x.cuidados),
+    Cuidados: _cfTxt(x.cuidados), Piezas: _cfTxt(x.piezas),   // 12-nov (Pablo) · piezas del conjunto
     ProductoId: x.producto_id == null ? null : Number(x.producto_id), EstadoCiclo: _cfTxt(x.estado_ciclo) || 'venta', TipoOrigen: _cfTxt(x.tipo_origen) || 'confeccion', NacidoEn: _cfTxt(x.nacido_en) || 'migrado',
     Orden: (x.orden === null || x.orden === undefined) ? null : Number(x.orden) };
 }
@@ -8646,7 +8646,7 @@ function _cosForm(r) {
         + '<div style="display:flex;align-items:center;gap:10px;flex:1 1 280px"><label for="cf-nshop" style="font-size:11px;color:var(--mu);text-transform:uppercase;white-space:nowrap">Nombre en Shopify</label>'   // 9-oct (Pablo) · arriba, al costado del SKU, con sugerencia editable
         + '<input id="cf-nshop" autocomplete="off" value="' + esc(v.NombreShopify || _cosNombreSug(skuIni)) + '" data-ini="' + esc(v.NombreShopify || _cosNombreSug(skuIni)) + '" style="' + st + ';flex:1;min-width:0"></div></div>'   // 9-oct (Pablo) · SKU y Nombre en Shopify lado a lado
         + '<datalist id="cf-sku-l">' + (COS.tipos || []).map(t => '<option value="' + esc(t) + ' "></option>').join('') + '</datalist>'
-        + '<div id="cf-skuchips"></div><div id="cf-clima" style="margin-top:6px"></div>'
+        + '<div id="cf-skuchips"></div><div id="cf-piezas"></div><div id="cf-clima" style="margin-top:6px"></div>'
         + '<div id="cf-catw" style="margin-top:4px;font-size:11px;color:var(--mu);display:none">Tipo nuevo: elige su categoría <select id="cf-cat" style="' + st + ';width:auto;font-size:12px;padding:3px 6px"><option value=""></option>' + (COS.cats || []).map(c => '<option value="' + esc(c) + '"' + (String(v.Categoria || '') === c ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select></div></div>'
     + '</div>'
     + '<div id="cf-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px;border-bottom:1px solid var(--bd);padding-bottom:8px">'
@@ -8842,6 +8842,55 @@ function _cosSkuChips() {
   const cw = document.getElementById('cf-catw'); if (cw) cw.style.display = (x.nuevo && !x.cat && x.tipo) ? '' : 'none';
   const chip = t => '<span style="display:inline-block;font-size:11px;background:var(--bg3);border:1px solid var(--bd);border-radius:10px;padding:2px 8px;color:var(--mu);margin:2px 4px 0 0">' + t + '</span>';
   box.innerHTML = (x.tipo && x.nuevo) ? chip('Tipo nuevo: <b>' + esc(x.tipo) + '</b>') : '';   // 6-oct (Pablo) · fuera las cápsulas «Tipo / Modelo»: solo se avisa si el tipo es nuevo
+  try { _cosPiezasPintar(x); } catch (_) {}
+}
+/* 12-nov (Pablo) · PIEZAS DEL CONJUNTO. Un conjunto se vende como uno, pero en el almacén son 2 prendas con stock aparte: aquí se anotan
+   (Tula las lee de costos_erp.piezas para mirar el stock correcto). Vienen prellenadas: la prenda del nombre + el pantalón del mismo modelo
+   (Madonna → Pantalón Atenas). Se corrigen a mano; al guardar se exige que existan en Productos. */
+function _cosPiezasDefecto(sku) {
+  const t = String(sku || '').replace(/\s+/g, ' ').trim().toUpperCase();
+  const c = _cfConjCortoParse(t); if (c) return _cfConjPiezasDe(c[0], c[1]);
+  const m = /^CONJUNTO\s+.+?\((.+\+.+)\)\s*$/.exec(t); return m ? m[1].split('+').map(x => x.trim()).filter(Boolean) : ['', ''];
+}
+function _cosPiezasPintar(x) {
+  const box = document.getElementById('cf-piezas'); if (!box) return;
+  const esConj = String((x && x.tipo) || '').toUpperCase() === 'CONJUNTO';
+  if (!esConj) { box.innerHTML = ''; box.dataset.on = ''; return; }
+  const v = COS.editing || {}, sku = (document.getElementById('cf-sku') || {}).value || '';
+  const i1 = document.getElementById('cf-pz1'), i2 = document.getElementById('cf-pz2');
+  if (i1 && i2) { if (!box.dataset.tocado && !v.Piezas) { const d = _cosPiezasDefecto(sku); i1.value = d[0] || ''; i2.value = d[1] || ''; } return; }
+  const pz = v.Piezas ? String(v.Piezas).split('+').map(s => s.trim()) : _cosPiezasDefecto(sku);
+  const ops = [...new Set((COS.data || []).filter(r => String(r.TipoPrenda || '').toUpperCase() !== 'CONJUNTO').map(r => r.Diseno))].sort();
+  const st = 'padding:6px 8px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:13px;flex:1;min-width:150px';
+  box.dataset.on = '1';
+  box.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px">'
+    + '<label for="cf-pz1" style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase;white-space:nowrap" title="Las prendas que salen del almacén cuando se vende este conjunto. Tula mira el stock de cada una.">Piezas</label>'
+    + '<input id="cf-pz1" list="cf-pz-l" autocomplete="off" placeholder="Ej. Blazer Madonna" value="' + esc(pz[0] || '') + '" style="' + st + '">'
+    + '<span style="font-weight:600">+</span>'
+    + '<input id="cf-pz2" list="cf-pz-l" autocomplete="off" placeholder="Ej. Pantalón Atenas" value="' + esc(pz[1] || '') + '" style="' + st + '">'
+    + '<datalist id="cf-pz-l">' + ops.map(o => '<option value="' + esc(o) + '"></option>').join('') + '</datalist></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-top:4px">' + (v.Piezas ? 'Tula revisa el stock de estas dos prendas.' : 'Prellenado con la regla de siempre: revisa y corrige si este conjunto lleva otro pantalón.') + '</div>';
+  ['cf-pz1', 'cf-pz2'].forEach(id => document.getElementById(id).addEventListener('input', () => { box.dataset.tocado = '1'; }));
+}
+/** Lee y valida las piezas del formulario. Devuelve 'A + B' con el nombre exacto de Productos, o lanza con el motivo. */
+function _cosPiezasLeer() {
+  const g = id => String((document.getElementById(id) || {}).value || '').replace(/\s+/g, ' ').trim();
+  const pz = [g('cf-pz1'), g('cf-pz2')];
+  if (!pz[0] || !pz[1]) throw new Error('Escribe las 2 piezas del conjunto (ej. Blazer Madonna + Pantalón Atenas)');
+  return pz.map(p => {
+    const f = (COS.data || []).find(r => _cosNormD(r.Diseno) === _cosNormD(p));
+    if (!f) throw new Error('La pieza «' + p + '» no está en Productos: elígela de la lista');
+    if (String(f.TipoPrenda || '').toUpperCase() === 'CONJUNTO') throw new Error('«' + p + '» es otro conjunto: elige la prenda suelta');
+    return String(f.Diseno).toUpperCase();
+  }).join(' + ');
+}
+/** Guarda las piezas directo en la base (rpc cos_piezas_guardar). Nunca frena la pantalla: si falla, aviso rojo con ✕. */
+function _cosPiezasGuardarBase(nom, piezas) {
+  if (!nom || !piezas || typeof _npRpc !== 'function') return;
+  _npRpc('cos_piezas_guardar', { p_diseno: nom, p_piezas: piezas }).then(r => {
+    const f = (COS.data || []).find(x => _cosNormD(x.Diseno) === _cosNormD(nom)); if (f && r && r.piezas) f.Piezas = r.piezas;
+  }).catch(e => { const m = '✗ «' + nom + '» · las piezas del conjunto NO se guardaron: ' + String((e && e.message) || e).slice(0, 160) + '. Ábrelo y guarda otra vez.';
+    try { if (typeof _pubAviso === 'function') _pubAviso('cospz-' + Date.now(), m, 'err'); else toast(esc(m), 'err'); } catch (_) {} });
 }
 // 4-oct · medidor de ficha (arriba de la ficha): lo que ya está listo y lo que falta
 function _cosMeter(v) {
@@ -10257,6 +10306,8 @@ async function _cosGuardar(original, v) {
   // un conjunto sin componentes conserva su costo (suma de piezas): no se mandan componentes vacíos
   if (algunComp || tipo.toUpperCase() !== 'CONJUNTO') body.comp = comp;
   const act = document.getElementById('cf-activo'); if (act) body.Activo = !!act.checked;
+  let _piezas = '';   // 12-nov (Pablo) · un conjunto no se guarda sin sus 2 piezas
+  if (String(tipo).toUpperCase() === 'CONJUNTO') { try { _piezas = _cosPiezasLeer(); } catch (e) { toast(esc(e.message), 'err'); return; } body.Piezas = _piezas; }
   const btn = document.getElementById('cf-save');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
   _cosInsGuardar((tipo + ' ' + mod).trim()).catch(e => toast('No se guardó el detalle de insumos: ' + esc(e.message || e), 'err'));   // 21-oct · va junto con los costos
@@ -10278,6 +10329,7 @@ async function _cosGuardar(original, v) {
       toast('✓ Guardado: ' + esc(_nomG) + ' · aplicando costos y tienda…', 'ok');
     });
     if (r === undefined) r = await apiSend('costos.guardar', body);
+    if (_piezas) _cosPiezasGuardarBase((r && r.guardado) || _nomG, _piezas);   // 12-nov · después del guardado (la fila ya existe)
     if (!_cerrado) COS.editing = null;
     _cosAplicar(r && r.rows ? r : null); _cosRender();
     if (r && r.rows) { try { localStorage.setItem(COS_SWR_KEY, JSON.stringify({ t: Date.now(), admin: true, r: r })); } catch (_) {} }
@@ -22973,7 +23025,7 @@ function renderPT(el, rows, total, hayMas) {
         let prendas = (ped._prendas||[]).filter(pr => pr.prenda && !_esPago(pr.prenda) && !_linCam(pr.prenda)).map(pr => ({ prenda: String(pr.prenda).trim() }));
         const _cams = (Array.isArray(_c2List) ? _c2List : []).filter(c => ['PRENDA NUEVA ENVIADA', 'CANCELADO'].indexOf(_nz(c.Estado)) < 0
           && [].concat(c.pedidos || [], (c.nuevas || []).map(n => n.NroPedido), (c.devueltas || []).map(n => n.NroPedido)).some(x => String(x || '').trim() === nro));
-        if (_cams.length && ['EN CAMINO', 'ENTREGADO', 'DEVOLUCION'].indexOf(_nz(ped['Estado'])) < 0) {
+        if (_cams.length && !_pedYaDespachado(nro, ped['Estado'], _cams)) {
           const _de = v => !v.NroPedido || String(v.NroPedido).trim() === nro, _dev = [], _nue = [];
           _cams.forEach(c => { (c.devueltas || []).filter(_de).forEach(d => _dev.push(_nz(d.Prenda)));
             (c.nuevas || []).filter(_de).forEach(n => { if (/^PENDIENTE\b/i.test(String(n.Prenda || '').trim()) || !String(n.Prenda || '').trim()) return; for (let i = 0, q = Math.max(1, parseInt(n.Cant, 10) || 1); i < q; i++) _nue.push(String(n.Prenda).trim()); }); });
@@ -25292,6 +25344,7 @@ function _modHdr(tok){ return { apikey: SB_ANON, Authorization: 'Bearer ' + tok,
 async function _modCargar(forzar){
   try {
     try { _modAccionCargar(forzar); } catch(_){}
+    try { _despCargar(forzar); } catch(_){}
     if (!forzar && Date.now() - _modUlt < 20000) return;
     if (typeof SB_URL === 'undefined' || !SB_ANON) return;
     const tok = await _sbSesionAsegurar(); if (!tok) return;
@@ -25309,6 +25362,29 @@ function _modAccionDe(nro){ if (!_modAcc) return null; const c = _modAcc[String(
 // Los filtros de columna leen las FILAS, no el pedido: para «Última modif.» deben usar la misma fecha de acción que se ve en la celda
 // (11-nov: filtrar 11/11/2026 traía todos los pedidos creados hoy, porque miraba la fecha interna de la fila).
 function _pfVal(r, col){ if (col === 'UltimaModif' && r) { const a = _modAccionDe(r['NroPedido']); if (a !== null) return a; } return r ? r[col] : ''; }
+/* 12-nov-2026 (Pablo) · PRIMER DESPACHO: la base anota la primera vez que un pedido pasó a En camino / Entregado / Devolución
+   (tabla pedido_primer_despacho). Así un pedido ya entregado que alguien devuelve a «Enviar» por un cambio NO vuelve a sacar sus prendas viejas en las hojas. */
+var _despYa = null, _despT = 0;
+async function _despCargar(forzar){
+  try {
+    if (!forzar && Date.now() - _despT < 60000) return;
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return;
+    const nros = [...new Set([].concat.apply([], (Array.isArray(_c2List) ? _c2List : []).filter(c => ['PRENDA NUEVA ENVIADA', 'CANCELADO'].indexOf(String(c.Estado || '').trim().toUpperCase()) < 0)
+      .map(c => [].concat(c.pedidos || [], (c.nuevas || []).map(n => n.NroPedido), (c.devueltas || []).map(n => n.NroPedido)))).map(x => String(x || '').trim()).filter(Boolean))];
+    if (!nros.length) { _despYa = _despYa || {}; return; }
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    _despT = Date.now();
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_despachados', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_nros: nros }) });
+    if (!r.ok) return;
+    const a = await r.json(); if (!Array.isArray(a)) return;
+    const m = {}; a.forEach(x => { const n = String(x.nro_pedido || '').trim(); if (n) m[n] = x.cuando || 1; }); _despYa = m;
+  } catch(_){}
+}
+function _pedYaDespachado(nro, est, cams){
+  if (['EN CAMINO', 'ENTREGADO', 'DEVOLUCION'].indexOf(String(est || '').trim().toUpperCase()) >= 0) return true;
+  if (_despYa && _despYa[String(nro || '').trim()]) return true;
+  return (cams || []).some(c => c && (c.RecibidoOriginal === true || String(c.RecibidoOriginal).toLowerCase() === 'true' || String(c.Estado || '').trim().toUpperCase() === 'PRENDA ORIGINAL RECIBIDA'));
+}
 async function _modAccionCargar(forzar){
   try {
     if (!forzar && Date.now() - _modAccT < 60000) return;
@@ -26584,6 +26660,7 @@ function _excelPrendasASeparar(grupos) {
     });
     peds.forEach(pn => { if (!camAbiertoPorPed[pn]) camAbiertoPorPed[pn] = { cams: new Set([nc]), prendas: [], precio: 0 }; else camAbiertoPorPed[pn].cams.add(nc); });
     (Array.isArray(c.devueltas) ? c.devueltas : []).forEach(d => { const pn = String(d.NroPedido || peds[0] || '').trim(), ca = camAbiertoPorPed[pn]; if (ca && String(d.Prenda || '').trim()) (ca.dev = ca.dev || []).push(_nzS(d.Prenda)); });
+    peds.forEach(pn => { const ca = camAbiertoPorPed[pn]; if (ca) (ca.objs = ca.objs || []).push(c); });
   });
   out.forEach((c, nro) => {
     const ca = camAbiertoPorPed[nro];
@@ -26591,7 +26668,7 @@ function _excelPrendasASeparar(grupos) {
       const _defs = ca.prendas.filter(x => !/^PENDIENTE\b/i.test(x));
       /* 12-nov-2026 (Pablo) · pedido que AÚN NO se despachó (caso 23544 / CAM-0320): el paquete lleva sus demás prendas + la nueva; solo la devuelta no va. Igual que la hoja de separación. */
       const _estP = _nzS((c.filas[0] || {})['Estado']);
-      if (_estP && !_DESP.has(_estP)) {
+      if (_estP && !_DESP.has(_estP) && !(typeof _pedYaDespachado === 'function' && _pedYaDespachado(nro, _estP, ca.objs))) {
         const _dv = (ca.dev || []).slice(), _l = [], _pz = []; let _ok = true;
         c.filas.forEach(f => { const pr = String(f['Prenda'] || '').trim(); if (!pr || (typeof _esPago === 'function' && _esPago(pr)) || esLineaCambio(pr)) return;
           const i = _dv.indexOf(_nzS(pr)); if (i >= 0) { _dv.splice(i, 1); return; } _l.push(pr); _pz.push(parseFloat(f['Precio']) || 0); });
