@@ -909,7 +909,6 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <!-- 11-nov (Pablo) · Todos · Activos · Enviar hoy · Modificados · Separados · Más. Fuera: Cambio, Devoluciones y Enviar. -->
           <button class="tab" data-e="_HOY"><span class="lbl">Enviar hoy</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e="_MODIF"><span class="lbl">Modificados</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
-          <button class="tab" data-e="SEPARAR"><span class="lbl">Separados</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <!-- 21-ago-2026 — MENÚ "Más". Las once pestañas empujaban el botón
                "Nuevo pedido" fuera de la pantalla. Las cuatro de uso esporádico
                (Enviar, Showroom, Cambio, Devoluciones) viven acá dentro: NO se
@@ -20853,7 +20852,7 @@ function _renderPedsDesde(rawRows, estVal, _suave) {   // 16-oct · _suave=true 
       if (!pr || _esPago(pr)) return false;   // ignorar filas de pago
       const est = String(r['Estado']||'').trim().toUpperCase();
       // LOTES F3: PREVENTA es activa (prenda vendida esperando stock)
-      return est === 'ENVIAR' || est === 'PREVENTA';   /* 9-nov (Pablo) · SEPARAR sale de Activos: vive en «Separados» (se aparta, no se arma ni se rotula) */
+      return est === 'ENVIAR' || est === 'PREVENTA' || est === 'SEPARAR';   /* 12-nov (Pablo, lista 331) · SEPARAR vuelve a Activos y la pestaña «Separados» desaparece (el 9-nov se había sacado) */
     });
     if (tienePrendaActiva || _camActivoSet.has(nro)) {   /* 9-nov (Pablo) · Activos = lo que hay que ARMAR y ROTULAR: una devolución por reembolsar ya no lo deja aquí (tiene su pestaña Devoluciones) */
       _activosSet.add(nro);
@@ -25451,6 +25450,23 @@ function _modRefrescar(){
 }
 // FRENO DE ENVÍO (11-nov-2026, Pablo): antes de marcar «En camino» un pedido con un cambio sin atender, avisa y
 // deja seguir solo si la persona confirma. Si algo falla, deja pasar (nunca traba el guardado).
+/* 12-nov-2026 (Pablo, lista 330) · en Modificados un cambio de prenda se lee por la PRENDA, no por el código: la fila «CAMBIO CAM-0320 (saldo a favor)» se
+   muestra como «TOP AMELIA VINO L (CAM-0320)», y la prenda nueva que reemplazó a otra lleva su cambio entre paréntesis. */
+function _modCambioDe(c){
+  try {
+    const ah = String((c && c.ahora) || '').trim(), nro = String((c && c.nro_pedido) || '').trim(), U = t => String(t || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    if (!c || c.campo !== 'Prenda' || !ah) return null;
+    const L = Array.isArray(_c2List) ? _c2List : [], de = n => !n.NroPedido || String(n.NroPedido).trim() === nro;
+    const m = ah.match(/^CAMBIO\s+(CAM-\d+)/i);
+    if (m) { const cam = L.find(x => U(x.NroCambio) === U(m[1]));
+      const nu = cam ? (cam.nuevas || []).filter(de).map(n => String(n.Prenda || '').trim()).filter(p => p && !/^PENDIENTE\b/i.test(p)) : [];
+      return { cam: m[1].toUpperCase(), prendas: nu, linea: true }; }
+    if (/^\(/.test(ah)) return null;
+    const cam = L.find(x => ['PRENDA NUEVA ENVIADA', 'CANCELADO'].indexOf(U(x.Estado)) < 0 && (x.nuevas || []).some(n => de(n) && U(n.Prenda) === U(ah)) && [].concat(x.pedidos || [], (x.nuevas || []).map(n => n.NroPedido)).some(p => String(p || '').trim() === nro));
+    return cam ? { cam: U(cam.NroCambio), prendas: [ah], linea: false } : null;
+  } catch(_) { return null; }
+}
+function _modCambioAhora(c){ const d = _modCambioDe(c); return d ? ((d.prendas.length ? d.prendas.join(' + ') : 'prenda nueva por definir') + ' (' + d.cam + ')') : String((c && c.ahora) || ''); }
 /* 12-nov-2026 (Pablo) · mismo aviso del formulario de cambio, desde la tabla de Pedidos: si devuelven a «Enviar» un pedido con cambio abierto que YA salió. Solo avisa. */
 function _despAvisoTabla(nros, est){
   try {
@@ -25471,7 +25487,7 @@ function _modFrenoEnvio(nros, est){
     const set = new Set((Array.isArray(nros) ? nros : [nros]).map(n => String(n).trim()));
     const pend = (Array.isArray(_modPend) ? _modPend : []).filter(c => set.has(String(c.nro_pedido).trim()));
     if (!pend.length) return true;
-    const lin = pend.slice(0, 6).map(c => '• #' + c.nro_pedido + ' · ' + (c.campo || '') + ': ' + (c.antes || '(vacío)') + ' → ' + (c.ahora || '(vacío)'));
+    const lin = pend.slice(0, 6).map(c => '• #' + c.nro_pedido + ' · ' + (c.campo || '') + ': ' + (c.antes || '(vacío)') + ' → ' + ((typeof _modCambioAhora === 'function' ? _modCambioAhora(c) : c.ahora) || '(vacío)'));
     if (pend.length > 6) lin.push('… y ' + (pend.length - 6) + ' más');
     return window.confirm('Hay ' + (pend.length === 1 ? 'un cambio' : pend.length + ' cambios') + ' sin atender:\n\n' + lin.join('\n')
       + '\n\n¿Marcar «En camino» de todas formas?\n(Aceptar = sí, ya lo revisé · Cancelar = no, primero lo reviso)');
@@ -25561,7 +25577,7 @@ function _modDecorar(){
         const i = idx[c.campo]; if (i == null) return;
         let tr = trs[0];
         if (c.campo === 'Prenda' || c.campo === 'Estado') {
-          const ip = idx['Prenda'], ref = String((c.campo === 'Prenda' ? c.ahora : c.prenda_fila) || '').trim().toUpperCase();
+          const _dc = _modCambioDe(c), ip = idx['Prenda'], ref = String((c.campo === 'Prenda' ? ((_dc && _dc.prendas[0]) || c.ahora) : c.prenda_fila) || '').trim().toUpperCase();   /* 330 · la celda amarilla va en la prenda nueva del cambio */
           const m = (ref && ip != null) ? trs.find(x => x.children[ip] && String(x.children[ip].textContent||'').toUpperCase().indexOf(ref) >= 0) : null;
           if (m) tr = m;
         }
@@ -25582,13 +25598,15 @@ function _modPop(td){
     + 'px;width:320px;background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r);box-shadow:0 8px 26px rgba(0,0,0,.45);padding:12px 14px;font-size:13px;color:var(--tx);font-family:inherit';
   let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:14px;font-weight:600">Cambio por atender</span>'
     + '<button type="button" onclick="_modPopCerrar()" title="Cerrar" style="background:none;border:none;color:var(--mu);cursor:pointer;font-size:16px;padding:0 4px">✕</button></div>';
+  const _vistoC = {};
   cs.forEach(c => {
+    { const _k = c.campo + '|' + _modCambioAhora(c); if (_modCambioDe(c) && _vistoC[_k]) return; _vistoC[_k] = 1; }   /* 330 · saldo y diferencia del mismo cambio = una sola línea */
     const col = PCOLS.find(x => x.k === c.campo); let cu = '';
     try { cu = new Date(c.cuando).toLocaleString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch(_){}
     const q = String(c.quien || '').split('@')[0] || 'sin identificar';
     h += '<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">' + esc(col ? col.l : c.campo) + '</div>'
       + '<div><span style="color:var(--mu)">Antes:</span> ' + esc(String(c.antes || '—')) + '</div>'
-      + '<div><span style="color:var(--mu)">Ahora:</span> ' + esc(String(c.ahora || '—')) + '</div>'
+      + '<div><span style="color:var(--mu)">Ahora:</span> ' + esc(String(_modCambioAhora(c) || '—')) + '</div>'
       + '<div style="font-size:12px;color:var(--mu)">' + esc(q) + ' · ' + esc(cu) + '</div>'
       + '<div style="font-size:12px;color:var(--am)">' + esc(MOD_IMPLICA[c.campo] || 'Revisar el pedido') + '</div>'
       + (c.nota ? '<div style="font-size:12px"><span style="color:var(--mu)">Nota:</span> ' + esc(String(c.nota)) + '</div>' : '') + '</div>';
