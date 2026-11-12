@@ -37804,7 +37804,8 @@ async function loadFallasHist(){
   el.innerHTML = spin('Cargando historial de fallas...');
   try {
     fallasHistData = (await _slFallasListarBase()) || await apiSend('fallas.listar', {});   // 31-oct ola 2: base primero (8,6 s → <1 s)
-    renderFallasHist(el);
+    window._fhMarco = false; renderFallasHist(el);
+    _fhDriveCargar().then(() => { try { renderFallasHist(el); } catch(_){} });
   } catch(e) { el.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 /* 12-nov-2026 (lista 325) · la base guarda la fecha de la falla como MES/DÍA/AÑO («11/12/2026» = 12-nov; medido: 78 de 78 sin ambigüedad) o completa («2026-07-11T05:00…»).
@@ -37833,83 +37834,114 @@ function _fhEstadoTxt(r, recuperado, dias) {
   if (dias !== null) { if (dias >= 30) color = '#ef4444'; else if (dias >= 7) color = '#f59e0b'; }
   return '<span style="color:'+color+'">en el montón'+(dias !== null ? ' · '+dias+' día'+(dias !== 1 ? 's' : '') : '')+'</span>';
 }
-function renderFallasHist(el){
-  el = el || document.getElementById('fallashist-w');
-  if (!fallasHistData) { el.innerHTML = '<div class="empty">Sin datos</div>'; return; }
-  // Igual que en Recuperar/Yayitas: Eliminado=SI es una falla que se deshizo (fallasDeshacer)
-  // — no cuenta como historial vivo, se saltea.
-  const vivas = fallasHistData.filter(r => String(r['Eliminado']||'').trim().toUpperCase() !== 'SI');
-  const q = (window._fhQ||'').toLowerCase();
-  let rows = vivas;
-  if (q) {
-    rows = rows.filter(r => {
-      const h = [r['Prenda'],r['Diseno'],r['Color'],r['Talla'],r['Motivo'],r['Destino'],r['Referencia']].map(x=>String(x||'')).join(' ').toLowerCase();
-      return h.includes(q);
-    });
-  }
-  if (!rows.length) { el.innerHTML = _bcInv() + '<div class="empty">'+(q?'Sin resultados para esa búsqueda.':'Aún no hay fallas registradas.')+'</div>'; return; }
-
-  // Agrupar por Fecha (día) — más reciente arriba. Dentro de cada día, más reciente primero.
-  const porFecha = new Map();
-  rows.forEach(r => { const f = r['Fecha'] ? _fhFechaTxt(r['Fecha']) : '(sin fecha)'; if (!porFecha.has(f)) porFecha.set(f, []); porFecha.get(f).push(r); });   /* 325 · el día se muestra DÍA/MES/AÑO y agrupa igual venga como venga */
-  const _fechaOrden = f => { const m = String(f).match(/^(\d{2})\/(\d{2})\/(\d{4})$/); return m ? (m[3]+m[2]+m[1]) : '00000000'; };
-  const fechas = [...porFecha.keys()].sort((a,b) => _fechaOrden(b).localeCompare(_fechaOrden(a)));
-
-  const totU = rows.reduce((s,r) => s + (parseInt(r['Cantidad'],10)||0), 0);
-  let ctrl = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">'
-    + '<input id="fh-q" type="text" placeholder="Buscar por prenda, motivo, destino o quién la ingresó..." autocomplete="off" value="'+esc(window._fhQ||'')+'" style="flex:1;min-width:220px;padding:7px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px;outline:none">'
-    + '<span style="font-size:12px;color:var(--mu)">'+rows.length+' falla'+(rows.length!==1?'s':'')+' · '+totU+' und</span></div>';
-
-  const _destTxt = d => (typeof _falDestinoTxt === 'function') ? _falDestinoTxt(d) : (d||'—');
-  let cards = '';
-  fechas.forEach(f => {
-    const grupo = porFecha.get(f);
-    const uF = grupo.reduce((s,r) => s + (parseInt(r['Cantidad'],10)||0), 0);
-    const key = 'd'+f.replace(/\W/g,'');
-    const abierto = window._fhOpen && window._fhOpen[key];
-    const diasGrupo = _fhDiasDesde(f.replace(/^(\d{2})\/(\d{2})\/(\d{4})$/, '$3-$2-$1'));
-    const pendientes = grupo.filter(r => String(r['Recuperado']||'').trim().toUpperCase()!=='SI' && !_fhEsTerminal(r['Destino']));
-    let badgeDias = '';
-    if (pendientes.length && diasGrupo !== null) {
-      let bc = 'var(--mu)';
-      if (diasGrupo >= 30) bc = '#ef4444'; else if (diasGrupo >= 7) bc = '#f59e0b';
-      badgeDias = '<span style="font-size:11px;color:'+bc+';white-space:nowrap">'+pendientes.length+' en el montón · '+diasGrupo+' día'+(diasGrupo!==1?'s':'')+'</span>';
-    }
-    let detalle = '';
-    if (abierto) {
-      detalle = '<div style="padding:2px 14px 12px;border-top:1px solid var(--bd)">'
-        + '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--mu)">'
-        + '<th style="text-align:left;padding:6px 8px">Prenda</th><th style="text-align:center;padding:6px 8px">Cant.</th>'
-        + '<th style="text-align:left;padding:6px 8px">Motivo</th><th style="text-align:left;padding:6px 8px">Destino</th>'
-        + '<th style="text-align:left;padding:6px 8px">Ingresó</th><th style="text-align:center;padding:6px 8px">Estado</th></tr></thead><tbody>'
-        + grupo.map(r => {
-            const recuperado = String(r['Recuperado']||'').trim().toUpperCase()==='SI';
-            const quien = String(r['Referencia']||'').split('@')[0];
-            return '<tr style="border-top:1px solid var(--bd)">'
-              + '<td style="padding:6px 8px">'+esc([r['Prenda'],r['Diseno'],r['Color'],r['Talla']].filter(Boolean).join(' '))+'</td>'
-              + '<td style="padding:6px 8px;text-align:center;font-weight:600">'+(parseInt(r['Cantidad'],10)||0)+'</td>'
-              + '<td style="padding:6px 8px">'+esc(r['Motivo']||'—')+'</td>'
-              + '<td style="padding:6px 8px">'+esc(_destTxt(r['Destino']))+'</td>'
-              + '<td style="padding:6px 8px;color:var(--mu)">'+esc(quien||'—')+'</td>'
-              + '<td style="padding:6px 8px;text-align:center">'+_fhEstadoTxt(r, recuperado, diasGrupo)+'</td>'
-              + '</tr>';
-          }).join('')
-        + '</tbody></table></div>';
-    }
-    cards += '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r2);margin-bottom:10px;overflow:hidden">'
-      + '<div class="fh-hd" data-k="'+esc(key)+'" style="display:flex;align-items:center;gap:12px;padding:12px 14px;cursor:pointer;flex-wrap:wrap">'
-      + '<div style="flex:1;min-width:160px"><div style="font-weight:600;font-size:13px">'+esc(f)+'</div>'
-      + '<div style="font-size:12px;color:var(--mu);margin-top:2px">'+grupo.length+' falla'+(grupo.length!==1?'s':'')+'</div></div>'
-      + badgeDias
-      + '<span style="font-weight:600;font-size:13px;white-space:nowrap">'+uF+' und</span>'
-      + '<span style="color:var(--mu)">'+(abierto?'▲':'▼')+'</span>'
-      + '</div>'+detalle+'</div>';
+/* 12-nov-2026 (Pablo) · HISTORIAL DE FALLAS como TABLA (antes: tarjetas plegadas por día; al buscar algo que no existía se borraba hasta el buscador).
+   · Tabla estándar tt: una fila por falla, ordenar por columna, buscar (sin tildes, varias palabras), filtrar por fecha y por estado.
+   · Marcar filas y «↩ Recuperar al stock»: el mismo camino de siempre (_recuperarFalla), ahora desde un solo lugar.
+   · «Del Drive»: unidades que el cuadre del 27-set pasó a No disponible SIN ficha individual (ref CUADRE-ND). Se ven para que el número cuadre con Stock;
+     todavía no se pueden recuperar desde aquí (no tienen ficha en el montón). */
+var _fhDrive = null, _fhSel = {}, _fhOrd = { k: 'f', asc: false };
+async function _fhDriveCargar(){
+  try {
+    const a = await _sbTablaLeer('v_movimientos_stock?select=prenda,diseno,color,talla_libro,d_fallas&ref=ilike.CUADRE-ND*&d_fallas=neq.0', 'erp');
+    if (!Array.isArray(a)) return;
+    const m = {}; a.forEach(x => { const k = [x.prenda, x.diseno, x.color, x.talla_libro].map(v => String(v || '').trim().toUpperCase()).join('|'); m[k] = (m[k] || 0) + (+x.d_fallas || 0); });
+    _fhDrive = Object.keys(m).filter(k => m[k] > 0).map(k => { const p = k.split('|'); return { _drive: 1, FallaID: 'DRIVE|' + k, Prenda: p[0], Diseno: p[1], Color: p[2], Talla: p[3], Cantidad: String(m[k]), Fecha: '2026-09-27', Motivo: 'Del Drive (cuadre 27-set)', Destino: '', Referencia: '' }; });
+  } catch(_){}
+}
+function _fhNorm(t){ return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+function _fhFilas(){
+  const viv = (fallasHistData || []).filter(r => String(r['Eliminado']||'').trim().toUpperCase() !== 'SI');
+  return viv.concat(_fhDrive || []).map((r, i) => {   /* las fichas antiguas no traen FallaID: se les da una llave por posición para poder marcarlas */
+    const rec = String(r['Recuperado']||'').trim().toUpperCase() === 'SI', term = _fhEsTerminal(r['Destino']);
+    const full = [r['Prenda'], r['Diseno'], r['Color'], r['Talla']].map(x => String(x || '').trim()).filter(Boolean).join(' ');
+    return { r: r, id: String(r['FallaID'] || '') || ('F#' + i), f: _fhFechaClave(r['Fecha']), full: full, cant: parseInt(r['Cantidad'], 10) || 0, mot: String(r['Motivo'] || ''), dst: String(r['Destino'] || ''),
+      quien: String(r['Referencia'] || '').split('@')[0], est: r._drive ? 'drive' : rec ? 'rec' : term ? 'term' : 'monton', lote: String(r['Lote'] || '') };
   });
-
-  el.innerHTML = _bcInv() + ctrl + cards;
-  const qi = document.getElementById('fh-q');
-  if (qi) { qi.addEventListener('input', function(){ window._fhQ = this.value.trim(); renderFallasHist(el); }); if (q) { qi.focus(); qi.setSelectionRange(qi.value.length, qi.value.length); } }
-  el.querySelectorAll('.fh-hd').forEach(h => h.addEventListener('click', function(){ const k = this.getAttribute('data-k'); window._fhOpen = window._fhOpen || {}; window._fhOpen[k] = !window._fhOpen[k]; renderFallasHist(el); }));
+}
+function _fhFiltradas(){
+  const q = _fhNorm(window._fhQ || '').split(' ').filter(Boolean), de = String(window._fhDesde || '').replace(/-/g, ''), ha = String(window._fhHasta || '').replace(/-/g, ''), e = window._fhEst || 'porrec';
+  const rows = _fhFilas().filter(x => {
+    if (e === 'porrec' && x.est !== 'monton' && x.est !== 'drive') return false;
+    if (e === 'monton' && x.est !== 'monton') return false;
+    if (e === 'drive' && x.est !== 'drive') return false;
+    if (e === 'rec' && x.est !== 'rec') return false;
+    if (de && (!x.f || x.f < de)) return false;
+    if (ha && (!x.f || x.f > ha)) return false;
+    if (q.length) { const h = _fhNorm([x.full, x.mot, _falDestinoTxtSeg(x.dst), x.quien].join(' ')); if (!q.every(w => h.indexOf(w) >= 0)) return false; }
+    return true;
+  });
+  const k = _fhOrd.k, s = _fhOrd.asc ? 1 : -1;
+  rows.sort((a, b) => { const va = k === 'cant' ? a.cant : String(a[k] || ''), vb = k === 'cant' ? b.cant : String(b[k] || ''); return (va < vb ? -1 : va > vb ? 1 : 0) * s || (a.full < b.full ? -1 : 1); });
+  return rows;
+}
+function _falDestinoTxtSeg(d){ try { return (typeof _falDestinoTxt === 'function') ? _falDestinoTxt(d) : (d || ''); } catch(_) { return d || ''; } }
+function _fhEstTxt(x){
+  if (x.est === 'rec') return '<span style="color:#22c55e">↺ recuperada</span>';
+  if (x.est === 'drive') return '<span style="color:var(--mu)" title="Vino del cuadre con el Drive del 27-set: está en No disponible pero no tiene ficha en el montón">del Drive · sin ficha</span>';
+  if (x.est === 'term') return '<span style="color:var(--mu)">' + esc(_falDestinoTxtSeg(x.dst)) + '</span>';
+  const d = x.f ? _fhDiasDesde(x.f.slice(0, 4) + '-' + x.f.slice(4, 6) + '-' + x.f.slice(6, 8)) : null;
+  return '<span style="color:' + (d !== null && d >= 30 ? '#ef4444' : d !== null && d >= 7 ? '#f59e0b' : 'var(--tx)') + '">en el montón' + (d !== null ? ' · ' + d + ' d' : '') + '</span>';
+}
+function renderFallasHist(el){
+  el = el || document.getElementById('fallashist-w'); if (!el) return;
+  if (!fallasHistData) { el.innerHTML = _bcInv() + '<div class="empty">Sin datos</div>'; return; }
+  const inp = 'padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font:13px var(--ui-f)';
+  if (!window._fhMarco || !document.getElementById('fh-tb')) {   /* el marco (buscador y filtros) se arma UNA vez: escribir ya no lo borra ni le quita el cursor */
+    const E = [['porrec', 'Por recuperar'], ['monton', 'En el montón'], ['drive', 'Del Drive'], ['rec', 'Recuperadas'], ['todas', 'Todas']];
+    const C = [['f', 'Fecha'], ['full', 'Prenda'], ['cant', 'Cant.'], ['mot', 'Motivo'], ['dst', 'Destino'], ['quien', 'Ingresó'], ['est', 'Estado']];
+    el.innerHTML = _bcInv()
+      + '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">'
+      + '<input id="fh-q" type="text" autocomplete="off" placeholder="Buscar prenda, motivo, destino o quién…" value="' + esc(window._fhQ || '') + '" style="flex:1;min-width:220px;' + inp + '">'
+      + '<input id="fh-de" type="date" title="Desde" value="' + esc(window._fhDesde || '') + '" style="' + inp + '"><input id="fh-ha" type="date" title="Hasta" value="' + esc(window._fhHasta || '') + '" style="' + inp + '">'
+      + '<select id="fh-es" style="' + inp + '">' + E.map(x => '<option value="' + x[0] + '"' + ((window._fhEst || 'porrec') === x[0] ? ' selected' : '') + '>' + x[1] + '</option>').join('') + '</select>'
+      + '<button id="fh-lim" class="btn bg bs" style="font-size:12px">Limpiar</button>'
+      + '<span id="fh-cnt" style="font-size:12px;color:var(--mu)"></span>'
+      + '<button id="fh-rec" class="btn bp bs" style="margin-left:auto" disabled>↩ Recuperar al stock</button></div>'
+      + '<div class="tt-w" style="max-height:calc(100vh - 230px);overflow:auto"><table class="tt" style="width:100%"><thead><tr><th style="width:34px"><input type="checkbox" id="fh-all" title="Marcar todo lo que se puede recuperar"></th>'
+      + C.map(c => '<th data-fh="' + c[0] + '" style="cursor:pointer">' + c[1] + '</th>').join('') + '</tr></thead><tbody id="fh-tb"></tbody></table></div>';
+    window._fhMarco = true;
+    const re = () => renderFallasHist(el);
+    document.getElementById('fh-q').addEventListener('input', function(){ window._fhQ = this.value; re(); });
+    document.getElementById('fh-de').addEventListener('change', function(){ window._fhDesde = this.value; re(); });
+    document.getElementById('fh-ha').addEventListener('change', function(){ window._fhHasta = this.value; re(); });
+    document.getElementById('fh-es').addEventListener('change', function(){ window._fhEst = this.value; re(); });
+    document.getElementById('fh-lim').addEventListener('click', function(){ window._fhQ = ''; window._fhDesde = ''; window._fhHasta = ''; window._fhEst = 'porrec'; _fhSel = {}; window._fhMarco = false; re(); });
+    el.querySelectorAll('th[data-fh]').forEach(th => th.addEventListener('click', function(){ const k = this.getAttribute('data-fh'); _fhOrd = { k: k, asc: _fhOrd.k === k ? !_fhOrd.asc : true }; re(); }));
+    document.getElementById('fh-all').addEventListener('change', function(){ const on = this.checked; _fhFiltradas().forEach(x => { if (x.est === 'monton' && x.id) { if (on) _fhSel[x.id] = 1; else delete _fhSel[x.id]; } }); re(); });
+    document.getElementById('fh-tb').addEventListener('change', function(ev){ const c = ev.target; if (!c || !c.getAttribute || !c.getAttribute('data-fhid')) return; const id = c.getAttribute('data-fhid'); if (c.checked) _fhSel[id] = 1; else delete _fhSel[id]; _fhPie(); });
+    document.getElementById('fh-rec').addEventListener('click', _fhRecuperar);
+  }
+  const rows = _fhFiltradas(), TOPE = 600;
+  const tb = document.getElementById('fh-tb');
+  tb.innerHTML = rows.length ? rows.slice(0, TOPE).map(x => '<tr>'
+      + '<td>' + (x.est === 'monton' && x.id ? '<input type="checkbox" data-fhid="' + esc(x.id) + '"' + (_fhSel[x.id] ? ' checked' : '') + '>' : '') + '</td>'
+      + '<td>' + (x.f ? x.f.slice(6, 8) + '/' + x.f.slice(4, 6) + '/' + x.f.slice(0, 4) : '—') + '</td>'
+      + '<td style="text-align:left">' + esc(x.full) + '</td><td style="font-weight:600">' + x.cant + '</td>'
+      + '<td style="text-align:left">' + esc(x.mot || '—') + '</td><td style="text-align:left">' + esc(_falDestinoTxtSeg(x.dst) || '—') + '</td>'
+      + '<td style="color:var(--mu)">' + esc(x.quien || '—') + '</td><td>' + _fhEstTxt(x) + '</td></tr>').join('')
+    + (rows.length > TOPE ? '<tr><td colspan="8" style="padding:10px;color:var(--mu)">Se muestran ' + TOPE + ' de ' + rows.length + '. Usa el buscador o las fechas para ver el resto.</td></tr>' : '')
+    : '<tr><td colspan="8" style="padding:22px;color:var(--mu)">Nada coincide con el filtro. Cambia la búsqueda o aprieta «Limpiar».</td></tr>';
+  window._fhVista = rows; _fhPie();
+}
+function _fhPie(){
+  const rows = window._fhVista || [], und = rows.reduce((s, x) => s + x.cant, 0), c = document.getElementById('fh-cnt'), b = document.getElementById('fh-rec');
+  if (c) c.textContent = rows.length + ' fila' + (rows.length !== 1 ? 's' : '') + ' · ' + und + ' und';
+  const sel = _fhFilas().filter(x => x.est === 'monton' && _fhSel[x.id]), us = sel.reduce((s, x) => s + x.cant, 0);
+  if (b) { b.disabled = !sel.length; b.textContent = sel.length ? '↩ Recuperar al stock (' + us + ' und)' : '↩ Recuperar al stock'; }
+}
+async function _fhRecuperar(){
+  const sel = _fhFilas().filter(x => x.est === 'monton' && _fhSel[x.id]); if (!sel.length) return;
+  const m = {}; sel.forEach(x => { const k = x.full.toUpperCase() + '||' + x.lote; (m[k] = m[k] || { prenda: x.full.toUpperCase(), cantidad: 0, lote: x.lote }).cantidad += x.cant; });
+  const items = Object.keys(m).map(k => m[k]), und = items.reduce((s, i) => s + i.cantidad, 0), b = document.getElementById('fh-rec');
+  if (b) { b.disabled = true; b.textContent = 'Recuperando…'; }
+  try {
+    await _recuperarFalla({ items: items });
+    try { _stockEscrito(['stock.resumen', 'confeccion.listar', 'catalogo.stock', 'fallas.resumen'], ['stock.resumen']); } catch(_){}
+    toast('✓ Recuperado: ' + und + ' und vuelven al stock', 'ok');
+    sel.forEach(x => { x.r['Recuperado'] = 'SI'; });
+    _fhSel = {}; renderFallasHist();
+    try { if (typeof loadFallasHist === 'function') setTimeout(loadFallasHist, 1500); } catch(_){}   /* relee de la base: la verdad de qué fichas quedaron recuperadas la tiene la base */
+  } catch (e) { toast('No se pudo recuperar: ' + esc(e && e.message || e), 'err'); _fhPie(); }
 }
 
 // Breadcrumb para volver a Stock (Inventario) desde las sub-vistas (Reposición, Lotes, Catálogo).
@@ -46466,8 +46498,11 @@ function imprimirRotulo(nro) {
   const feRaw     = ped['Fecha Envio'];
   let fechaEnvio  = '—';
   if (feRaw) {
-    const fd = feRaw instanceof Date ? feRaw : new Date(feRaw);
-    if (!isNaN(fd)) fechaEnvio = fd.getDate().toString().padStart(2,'0')+'/'+(fd.getMonth()+1).toString().padStart(2,'0')+'/'+fd.getFullYear();
+    /* 12-nov-2026 (lista 324) · mismo arreglo que los rótulos en lote: «2026-11-13» se leía con la hora de Londres y salía el día anterior (hoy). Se toma el día escrito. */
+    const mF = (feRaw instanceof Date) ? null : String(feRaw).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (mF) fechaEnvio = mF[3] + '/' + mF[2] + '/' + mF[1];
+    else { const fd = feRaw instanceof Date ? feRaw : new Date(feRaw);
+      if (!isNaN(fd)) fechaEnvio = fd.getDate().toString().padStart(2,'0')+'/'+(fd.getMonth()+1).toString().padStart(2,'0')+'/'+fd.getFullYear(); }
   }
 
   const html = `<!DOCTYPE html>
@@ -47160,11 +47195,50 @@ async function _upGuardar(cambios, msg, silencioso){
     return false;
   }
 }
-function _upSetCelda(email, k, v){
+/* 12-nov-2026 (Pablo) · PASO ÚNICO: al darle «Comisiones» a una asesora que está en borrador, el ERP pide sueldo y fecha de inicio y la pasa a comisionar
+   (comActivarAsesora, ComisionesAdmin.gs). «Solo darle acceso» = ve la pantalla pero sigue en borrador. La ✕ no cambia nada. */
+async function _upComPreguntar(email, v){
+  const u = _upUsuario(email), em = String(email || '').toLowerCase(), nombre = _upAses[em];
+  let cfg = null; try { cfg = await _comCfgBase(); } catch(_){}
+  const yaCom = cfg && cfg.vendedoras && Object.keys(cfg.vendedoras).some(e => String(e).toLowerCase() === em);
+  if (!u || !nombre || !cfg || yaCom) return _upSetCelda(email, 'comisiones', v, true);
+  const old = document.getElementById('up-com-ov'); if (old) old.remove();
+  const hoy = (typeof hoyLima === 'function' ? hoyLima() : new Date().toISOString().slice(0, 10)), ini = String(hoy).slice(0, 8) + '01';
+  const inp = 'width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font:13px var(--ui-f)';
+  const ov = document.createElement('div'); ov.id = 'up-com-ov';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:24px';
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:380px;width:100%;padding:16px;font:13px var(--ui-f);color:var(--tx)">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span style="font-size:14px;font-weight:600">Activar comisiones de ' + esc(nombre.charAt(0) + nombre.slice(1).toLowerCase()) + '</span><button id="up-com-x" class="btn bg bs" style="font-size:12px">✕</button></div>'
+    + '<label style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">Sueldo base (S/)</label><input id="up-com-b" type="number" min="1" step="1" style="' + inp + ';margin:4px 0 10px">'
+    + '<label style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">Comisiona desde</label><input id="up-com-d" type="date" value="' + ini + '" style="' + inp + ';margin:4px 0 10px">'
+    + '<div id="up-com-m" style="font-size:12px;color:var(--mu);min-height:16px;margin-bottom:10px">Hoy está en borrador: no comisiona.</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button id="up-com-s" class="btn bg bs">Solo darle acceso</button><button id="up-com-ok" class="btn bp bs">Activar comisiones</button></div></div>';
+  document.body.appendChild(ov);
+  const cerrar = () => ov.remove(), msg = t => { const z = document.getElementById('up-com-m'); if (z) { z.style.color = 'var(--rd)'; z.textContent = t; } };
+  document.getElementById('up-com-x').onclick = cerrar;
+  document.getElementById('up-com-s').onclick = () => { cerrar(); _upSetCelda(email, 'comisiones', v, true); };
+  document.getElementById('up-com-ok').onclick = async () => {
+    const base = Number(document.getElementById('up-com-b').value) || 0, desde = String(document.getElementById('up-com-d').value || '').trim();
+    if (!(base > 0)) return msg('Escribe el sueldo base.');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde)) return msg('Elige la fecha desde la que comisiona.');
+    const bt = document.getElementById('up-com-ok'); bt.disabled = true; bt.textContent = 'Activando…';
+    try {
+      if (typeof window.comActivarAsesora !== 'function') { try { _comLazy(true); } catch(_){} for (let i = 0; i < 40 && typeof window.comActivarAsesora !== 'function'; i++) await new Promise(z => setTimeout(z, 250)); }   /* el módulo Comisiones se descarga al primer uso */
+      if (typeof window.comActivarAsesora !== 'function') throw new Error('no cargó el módulo de Comisiones; vuelve a intentar');
+      const r = await window.comActivarAsesora({ email: em, nombre: nombre, base: base, desde: desde });
+      if (!(r && r.ok)) throw new Error((r && r.error) || 'el servidor no confirmó');
+      cerrar(); _upSetCelda(email, 'comisiones', v, true);
+      _upToast('✓ ' + nombre + ' ya comisiona desde el ' + desde.slice(8, 10) + '/' + desde.slice(5, 7) + '/' + desde.slice(0, 4) + ' y salió del borrador');
+    } catch (e) { bt.disabled = false; bt.textContent = 'Activar comisiones'; msg('No se pudo: ' + (e && e.message || e)); }
+  };
+  try { document.getElementById('up-com-b').focus(); } catch(_){}
+}
+function _upSetCelda(email, k, v, _sinPreguntar){
   const u = _upUsuario(email); if (!u || u.esOwner || !u.activo) return;
   const m = PERM_MODULOS.find(x => x.k === k), max = m.solo1 ? 1 : 2;
   v = Math.max(0, Math.min(max, v));
   const p = _permEfectiva(u); if ((p[k]||0) === v) return;
+  if (k === 'comisiones' && !_sinPreguntar && v > 0 && !(p[k] > 0) && _upAses[String(email || '').toLowerCase()]) { _upComPreguntar(email, v); return; }
   p[k] = v;
   _upGuardar([{u:u, permisos:p}], (u.nombre || u.email) + ' · ' + m.n + ': ' + PERM_LBL[v]);
   const b = document.querySelector('.up-wrap .up-tri[data-e="' + CSS.escape(email) + '"][data-m="' + k + '"]'); if (b) b.focus();

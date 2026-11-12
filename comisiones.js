@@ -3788,6 +3788,8 @@ function _comBorrHtml(d) {
   }).join('');
 }
 window.comBorradorPintar = comBorradorPintar;
+/* 12-nov-2026 (Pablo) · paso único: Configuración › Usuarios activa las comisiones de una asesora en borrador por la misma puerta de Comisiones */
+window.comActivarAsesora = function (args) { _COM_BORR = null; return comApiApps('activarAsesora', args); };
 
 })();
 
