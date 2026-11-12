@@ -48475,14 +48475,64 @@ function leAbrir() {
 }
 /* 8-nov-2026 (Pablo) · VENTAS › OPORTUNIDADES (entre Embudo y Entrenamiento): lista de espera «Volvió tu talla» + carritos abandonados.
    La pestaña vive en flujo.html; el contenido lo pinta el ERP encima del panel (debajo de sus botones) con las mismas pantallas de siempre. */
-/* 8-nov (Pablo: aprobado) · arriba las que YA tienen su talla de vuelta (venta casi segura); abajo las que siguen esperando */
+/* 12-nov-2026 (Pablo, encargo del proyecto Agente IA) · Oportunidades: dos botones con contador a la izquierda (a la altura de ＋ Anotar):
+   «Lista de espera (N)» y «Carritos abandonados (N)»; cada uno despliega su lista. «Contactar» abre el chat de la clienta en Chatwoot
+   (búsqueda por su celular) y deja anotado quién la tomó; «No va a llegar» la saca de la lista. Carritos: solo los que tienen celular.
+   Base: lista_espera_tomar / lista_espera_tomadas / carritos_contactables / carritos_tomar (PEGAR_EN_SUPABASE_oportunidades_contactar_12nov.sql). */
+const OP = { ver: '', car: null, tom: {}, conv: {} };   /* 12-nov (Pablo: aprobado) · conv = celular(9) → conversación de Chatwoot, para abrir el chat directo */
+const OP_CW_BUSCAR = 'https://chatwoot-production-5c5c.up.railway.app/app/accounts/1/search?q=';
+function _opCel9(t) { const d = String(t || '').replace(/\D/g, ''); return d.slice(-9); }
+function _opQuien(e) { const n = String(e || '').split('@')[0]; return n ? n.charAt(0).toUpperCase() + n.slice(1) : ''; }
+function _opHace(t) { const m = Math.max(0, Math.round((Date.now() - new Date(t).getTime()) / 6e4)); return m < 60 ? 'hace ' + m + ' min' : m < 1440 ? 'hace ' + Math.round(m / 60) + ' h' : 'hace ' + Math.round(m / 1440) + ' d'; }
+function _opTomadaHtml(por, en) { return por ? '<span class="ui-chip" style="font-size:11px;font-weight:600;color:var(--gn)">👩 ' + esc(_opQuien(por)) + ' · ' + esc(_opHace(en)) + '</span>' : ''; }
+function _opChatUrl(tel) { const c = OP.conv[_opCel9(tel)]; return c ? AL_CHATWOOT + encodeURIComponent(c) : OP_CW_BUSCAR + _opCel9(tel); }   /* directo al chat; si no hay, la búsqueda por celular */
+function _opBtnContactar(tipo, id, tel) { return '<a class="btn bs" style="background:#16a34a;color:#fff;text-decoration:none;font-size:12px" target="_blank" rel="noopener" href="' + esc(_opChatUrl(tel)) + '" onclick="_opTomar(\'' + tipo + '\',\'' + esc(String(id)) + '\')">💬 Contactar</a>'; }
+function _opLeLista() { return (LE.L || []).filter(x => x.estado === 'espera').sort((a, b) => ((+b.stock > 0) - (+a.stock > 0)) || (new Date(b.creado) - new Date(a.creado))); }
+function _opLeFila(x) {
+  const ok = +x.stock > 0, dias = Math.max(0, Math.round((Date.now() - new Date(x.creado).getTime()) / 864e5)), t = OP.tom[x.id] || {};
+  return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;margin-top:6px;border-radius:8px;background:var(--bg2,rgba(0,0,0,.06));border-left:3px solid ' + (ok ? 'var(--gn)' : '#d97706') + '">'
+    + '<div style="flex:1;min-width:200px;font-size:13px"><b>' + esc(x.nombre || x.telefono) + '</b> · ' + esc(x.producto) + (x.color ? ' ' + esc(x.color) : '') + ' <b>' + esc(x.talla) + '</b>'
+    + '<div style="font-size:12px;color:var(--mu)">' + (ok ? '✅ Volvió: hay ' + x.stock + ' en stock' : '⏳ Esperando hace ' + dias + (dias === 1 ? ' día' : ' días')) + ' · ' + esc(_opCel9(x.telefono)) + (x.nota ? ' · ' + esc(x.nota) : '') + '</div></div>'
+    + _opTomadaHtml(t.por, t.en) + _opBtnContactar('le', x.id, x.telefono)
+    + '<button class="btn bg bs" style="font-size:12px" onclick="leMarcar(' + Number(x.id) + ',\'cancelada\')">No va a llegar</button></div>';
+}
 function _leOpHtml(){
   if (!LE.L) return '<div style="font-size:12px;color:var(--mu)">Cargando…</div>';
-  const ya = LE.L.filter(x => x.estado === 'espera' && +x.stock > 0), resto = LE.L.filter(x => !(x.estado === 'espera' && +x.stock > 0));
-  return '<div style="font-size:13px;font-weight:600;color:var(--gn);margin:4px 0">✅ Ya volvió su talla (' + ya.length + ')</div>'
-    + (ya.length ? ya.map(_leFila).join('') : '<div style="font-size:12px;color:var(--mu)">Ninguna todavía: aparecen aquí apenas entra el stock.</div>')
-    + '<div style="font-size:13px;font-weight:600;margin:14px 0 4px">⏳ Siguen esperando (' + resto.filter(x => x.estado === 'espera').length + ')</div>'
-    + (resto.length ? resto.map(_leFila).join('') : '<div style="font-size:12px;color:var(--mu)">Nadie en espera.</div>');
+  const L = _opLeLista(); _opContadores();
+  return L.length ? L.map(_opLeFila).join('') : '<div style="font-size:12px;color:var(--mu)">Nadie en espera.</div>';
+}
+function _opCarHtml() {
+  if (!OP.car) return '<div style="font-size:12px;color:var(--mu)">Cargando…</div>';
+  if (!OP.car.length) return '<div style="font-size:12px;color:var(--mu)">Ningún carrito con celular en los últimos 30 días.</div>';
+  const sol = n => 'S/ ' + Math.round(Number(n || 0)).toLocaleString('es-PE');
+  return OP.car.map(r => '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;margin-top:6px;border-radius:8px;background:var(--bg2,rgba(0,0,0,.06));border-left:3px solid ' + (r.tomado_por ? 'var(--mu)' : '#d97706') + '">'
+    + '<div style="flex:1;min-width:200px;font-size:13px"><b>' + esc(r.nombre || '—') + '</b> · ' + esc(r.prendas || '') + ' · <b>' + sol(r.total) + '</b>'
+    + '<div style="font-size:12px;color:var(--mu)">🛒 ' + esc(_opHace(r.creado)) + ' · ' + esc(_opCel9(r.celular)) + '</div></div>'
+    + _opTomadaHtml(r.tomado_por, r.tomado_en) + _opBtnContactar('car', r.id, r.celular) + '</div>').join('');
+}
+function _opContadores() {
+  const a = document.getElementById('op-n-le'), b = document.getElementById('op-n-car');
+  if (a) a.textContent = LE.L ? _opLeLista().length : '…';
+  if (b) b.textContent = OP.car ? OP.car.length : '…';
+}
+async function _opCargar() {
+  try { const T = await _leRpc('lista_espera_tomadas'); OP.tom = {}; (Array.isArray(T) ? T : []).forEach(t => { OP.tom[t.id] = t; }); } catch (_) {}
+  try { const C = await _leRpc('carritos_contactables'); OP.car = Array.isArray(C) ? C : []; } catch (_) { if (!OP.car) OP.car = []; }
+  try { const tels = (LE.L || []).filter(x => x.estado === 'espera').map(x => x.telefono).concat((OP.car || []).map(r => r.celular)).filter(Boolean);
+    if (tels.length) { const M = await _leRpc('chat_conv_por_tel', { p_tels: tels }); if (M && typeof M === 'object' && !Array.isArray(M)) OP.conv = M; } } catch (_) {}   /* sin la función: queda la búsqueda */
+  const c = document.getElementById('op-car'); if (c) c.innerHTML = _opCarHtml();
+  const m = document.getElementById('le-op'); if (m && LE.L) m.innerHTML = _leOpHtml();
+  _opContadores();
+}
+function _opVer(k) {
+  OP.ver = OP.ver === k ? '' : k;
+  ['le', 'car'].forEach(z => { const d = document.getElementById('op-' + z + '-w'), bt = document.getElementById('op-b-' + z);
+    if (d) d.style.display = OP.ver === z ? '' : 'none'; if (bt) bt.className = 'btn bs ' + (OP.ver === z ? 'bp' : 'bg'); });
+}
+async function _opTomar(tipo, id) {
+  try { const r = await _leRpc(tipo === 'le' ? 'lista_espera_tomar' : 'carritos_tomar', { p_id: tipo === 'le' ? Number(id) : String(id) });
+    if (!r || !r.ok) throw new Error((r && r.error) || 'no se anotó'); } catch (e) { toast('No se anotó quién la tomó: ' + esc(e.message), 'err'); }
+  _opCargar();
 }
 function _oportMostrar(on){
   const pg = document.getElementById('pg-flujo'), f = document.getElementById('flujo-frame'); if (!pg || !f) return;
@@ -48491,13 +48541,15 @@ function _oportMostrar(on){
   if (!on) { if (w) w.style.display = 'none'; return; }
   if (!w) { w = document.createElement('div'); w.id = 'oport-w'; pg.style.position = 'relative'; pg.appendChild(w); window.addEventListener('resize', () => { if (w.style.display === 'block') _oportPos(); }); }
   if (cw && w.contains(cw)) { cw.style.display = 'none'; document.body.appendChild(cw); }
-  const adm = typeof _esAdminCuadre === 'function' && _esAdminCuadre();
-  w.innerHTML = '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><b style="font-size:14px">📝 Lista de espera</b><span style="font-size:12px;color:var(--mu)">Pidieron una talla agotada · cuando vuelve el stock, se les escribe</span><span style="flex:1"></span><button class="btn bp bs" onclick="leAbrir()">＋ Anotar</button></div>'
-    + '<div id="le-op">' + _leOpHtml() + '</div>'
-    + (adm ? '<div style="display:flex;align-items:center;gap:10px;margin:20px 0 6px"><b style="font-size:14px">🛒 Carritos abandonados</b><span style="font-size:12px;color:var(--mu)">Llegaron a pagar en la web y no terminaron</span></div><div id="oport-car"></div>' : '');
-  w.style.display = 'block'; _oportPos();
-  if (adm && cw) { document.getElementById('oport-car').appendChild(cw); cw.style.display = ''; try { loadCarritos(); } catch (_) {} }
-  leCargar();
+  const adm = typeof _esAdminCuadre === 'function' && _esAdminCuadre(), bt = (k, t) => '<button type="button" id="op-b-' + k + '" class="btn bs ' + (OP.ver === k ? 'bp' : 'bg') + '" onclick="_opVer(\'' + k + '\')">' + t + ' (<span id="op-n-' + k + '">…</span>)</button>';
+  w.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' + bt('le', '📝 Lista de espera') + bt('car', '🛒 Carritos abandonados') + '<span style="flex:1"></span><button class="btn bp bs" onclick="leAbrir()">＋ Anotar</button></div>'
+    + '<div id="op-le-w" style="display:' + (OP.ver === 'le' ? '' : 'none') + '"><div id="le-op">' + _leOpHtml() + '</div></div>'
+    + '<div id="op-car-w" style="display:' + (OP.ver === 'car' ? '' : 'none') + '"><div id="op-car">' + _opCarHtml() + '</div>'
+    + (adm ? '<details id="op-car-est" style="margin-top:14px"><summary style="cursor:pointer;font-size:12px;color:var(--mu)">Estadísticas de carritos (solo admin)</summary><div id="oport-car"></div></details>' : '') + '</div>';
+  w.style.display = 'block'; _oportPos(); _opContadores();
+  const est = document.getElementById('op-car-est');
+  if (adm && cw && est) est.addEventListener('toggle', () => { if (est.open && !est.contains(cw)) { document.getElementById('oport-car').appendChild(cw); cw.style.display = ''; try { loadCarritos(); } catch (_) {} } });
+  Promise.resolve(leCargar()).then(_opCargar, _opCargar);   /* primero la lista de espera: sus celulares van al buscador de chats */
 }
 function _oportPos(){
   const f = document.getElementById('flujo-frame'), w = document.getElementById('oport-w'); if (!f || !w) return;
@@ -49678,7 +49730,7 @@ startAuth();
   // ================= CONFIG =================
   var MODO = (typeof MY_ROLE!=='undefined' && MY_ROLE==='Administrador') ? 'jefe' : 'asesora'; // rol real del ERP
   var URL_CAMPANA = 'https://n8n-production-4e716.up.railway.app/webhook/campana-espera';
-  var POLL_MS = 5 * 60 * 1000;   // revisar cada 5 minutos
+  var POLL_MS = 60 * 1000;   // 12-nov (Pablo): revisar cada 1 minuto (antes 5); solo con la pestaña a la vista
   var BEEP_MS = 60 * 1000;       // repetir tono cada 1 minuto mientras haya espera
   // ==========================================
 
@@ -49785,19 +49837,24 @@ startAuth();
       document.title = estado.tituloOriginal;
       return;
     }
+    /* 12-nov (Pablo): cada aviso con su motivo («pase de Tula sin tomar» / «clienta sin respuesta») y botón al chat; las urgentes primero */
     var partesLinks = estado.esperando.slice(0, 5).map(function (e) {
-      return '<a href="' + e.url + '" target="_blank" style="color:#fff;font-weight:600;text-decoration:underline;">' +
-        e.nombre + ' (' + e.minutos + ' min' + (e.asignada ? ', ' + e.asignada.split(' ')[0] : '') + ')</a>';
+      var nom = String(e.nombre || '').replace(/[&<>"']/g, ''), url = String(e.url || '').replace(/"/g, '');
+      return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">' + (e.prioridad === 'urgente' ? '\uD83D\uDD34 ' : '\uD83D\uDFE1 ') +
+        '<b>' + nom + '</b> \u00B7 ' + e.minutos + ' min' + (e.asignada ? ' \u00B7 ' + String(e.asignada).split(' ')[0] : ' \u00B7 sin asesora') +
+        (e.motivo ? ' <span style="background:rgba(0,0,0,.22);border-radius:10px;padding:1px 8px;font-size:12px">' + String(e.motivo).replace(/[&<>"']/g, '') + '</span>' : '') +
+        ' <a href="' + url + '" target="_blank" rel="noopener" style="background:#fff;color:#c0392b;border-radius:6px;padding:2px 10px;font-weight:600;text-decoration:none;font-size:12px">\uD83D\uDCAC Abrir chat</a></div>';
     });
+    if (n > 5) partesLinks.push('<div style="margin-top:4px;font-size:12px">y ' + (n - 5) + ' m\u00E1s</div>');
     if (MODO === 'jefe') {
-      var max = estado.esperando[0].minutos;
+      var max = Math.max.apply(null, estado.esperando.map(function (e) { return +e.minutos || 0; }));
       badge.innerHTML = '\uD83D\uDD14 ' + n + ' clienta(s) esperando \u00B7 m\u00E1x ' + max + ' min ' + (estado.detalle ? '\u25B2' : '\u25BC') + campanaGloboX();
       badge.style.display = 'block';
       campanaConectarGloboX();
       badge.style.cursor = 'pointer';
       badge.title = 'Clic para ver qui\u00E9nes son';
       if (estado.detalle) {
-        barra.innerHTML = campanaBotonX() + '\uD83D\uDD14 <b>' + n + ' CLIENTA' + (n > 1 ? 'S' : '') + ' ESPERANDO</b> &nbsp;\u2192&nbsp; ' + partesLinks.join(' &nbsp;\u00B7&nbsp; ');
+        barra.innerHTML = campanaBotonX() + '\uD83D\uDD14 <b>' + n + ' CLIENTA' + (n > 1 ? 'S' : '') + ' ESPERANDO</b>' + partesLinks.join('');
         barra.style.display = 'block';
         campanaConectarX();
       } else {
@@ -49823,7 +49880,7 @@ startAuth();
     }
     try { localStorage.removeItem('campanaCerradas'); } catch (e) {}
     badge.style.display = 'none';
-    barra.innerHTML = campanaBotonX() + '🔔 <b>' + n + ' CLIENTA' + (n > 1 ? 'S' : '') + ' ESPERANDO RESPUESTA</b> &nbsp;→&nbsp; ' + partes.join(' &nbsp;·&nbsp; ');
+    barra.innerHTML = campanaBotonX() + '🔔 <b>' + n + ' CLIENTA' + (n > 1 ? 'S' : '') + ' ESPERANDO RESPUESTA</b>' + partes.join('');
     barra.style.display = 'block';
     campanaConectarX();
     if (!estado.beepTimer) { beep(); estado.beepTimer = setInterval(beep, BEEP_MS); }
@@ -49837,11 +49894,16 @@ startAuth();
   }
 
   function revisar() {
+    if (document.hidden) return;   /* 12-nov: con la pestaña escondida no se pregunta (cada 1 min x cada pantalla abierta pesa en n8n) */
+    if (typeof _avisoPara === 'function' && !_avisoPara('ventas')) return;
     fetch(URL_CAMPANA).then(function (r) { return r.json(); }).then(function (d) {
-      estado.esperando = (d && d.esperando) || [];
+      var L = ((d && d.esperando) || []).slice();
+      L.sort(function (a, b) { return ((b.prioridad === 'urgente') - (a.prioridad === 'urgente')) || ((+b.minutos || 0) - (+a.minutos || 0)); });
+      estado.esperando = L;
       pintar();
     }).catch(function () { /* sin red: no cambiar nada */ });
   }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) revisar(); });
 
   // el navegador exige una interacción antes de permitir audio: la primera vez que hagan clic en cualquier lado, queda habilitado
   document.addEventListener('click', function once() { try { beep && (audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)()); } catch(e){}; document.removeEventListener('click', once); }, { once: true });
