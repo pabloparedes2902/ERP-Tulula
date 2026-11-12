@@ -1339,6 +1339,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
             <label>Estado del pedido</label>
             <select id="cam-estado-pedido" style="width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px"></select>
           </div>
+          <div id="cam-estado-aviso" style="display:none;align-self:flex-end;font:500 12px var(--ui-f);color:#fbbf24;padding:0 0 9px 4px"></div>
         </div>
 
         <div class="fr1 fg" style="margin-top:12px">
@@ -25385,6 +25386,26 @@ function _pedYaDespachado(nro, est, cams){
   if (_despYa && _despYa[String(nro || '').trim()]) return true;
   return (cams || []).some(c => c && (c.RecibidoOriginal === true || String(c.RecibidoOriginal).toLowerCase() === 'true' || String(c.Estado || '').trim().toUpperCase() === 'PRENDA ORIGINAL RECIBIDA'));
 }
+/* 12-nov-2026 (Pablo) · AVISO en el formulario de cambio: si eligen pasar a «Enviar» (u otro estado sin despachar) un pedido que YA salió,
+   se dice en una línea al lado del estado. Avisa y deja seguir. Caso medido: 6 pedidos En camino → Enviar en una mañana (23544, 23566…). */
+var _camAvisoSeq = 0;
+async function _camAvisoDespacho(){
+  const sel = document.getElementById('cam-estado-pedido'), av = document.getElementById('cam-estado-aviso'); if (!sel || !av) return;
+  const seq = ++_camAvisoSeq, v = String(sel.value || '').trim().toUpperCase(), poner = ya => { av.textContent = ya.length ? '⚠ ' + (ya.length === 1 ? 'El pedido ' + ya[0] + ' ya se despachó' : 'Los pedidos ' + ya.join(', ') + ' ya se despacharon') + ': solo se enviará la prenda nueva.' : ''; av.style.display = ya.length ? '' : 'none'; };
+  const nros = [...new Set([...document.querySelectorAll('.cam-pdev-chk:checked')].map(c => String(c.dataset.pedido || '').trim()).filter(Boolean))];
+  if (!v || ['EN CAMINO', 'ENTREGADO', 'DEVOLUCION'].indexOf(v) >= 0 || !nros.length) { poner([]); return; }
+  const est = n => { const p = (typeof pAll !== 'undefined' && Array.isArray(pAll)) ? pAll.find(x => String(x['NroPedido']) === n) : null; return p ? p['Estado'] : ''; };
+  poner(nros.filter(n => _pedYaDespachado(n, est(n), [])));
+  try {
+    if (typeof SB_URL === 'undefined' || !SB_ANON) return;
+    const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_despachados', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_nros: nros }) });
+    if (!r.ok) return; const a = await r.json(); if (!Array.isArray(a) || seq !== _camAvisoSeq) return;
+    _despYa = _despYa || {}; a.forEach(x => { const n = String(x.nro_pedido || '').trim(); if (n) _despYa[n] = x.cuando || 1; });
+    poner(nros.filter(n => _pedYaDespachado(n, est(n), [])));
+  } catch(_){}
+}
+document.addEventListener('change', e => { const t = e.target; if (t && (t.id === 'cam-estado-pedido' || (t.classList && t.classList.contains('cam-pdev-chk')))) { try { _camAvisoDespacho(); } catch(_){} } });
 async function _modAccionCargar(forzar){
   try {
     if (!forzar && Date.now() - _modAccT < 60000) return;
@@ -39569,6 +39590,7 @@ function _camPopulateSelects() {
     const o0 = document.createElement('option'); o0.value = ''; o0.textContent = '— No cambiar (recomendado) —'; if (!prev) o0.selected = true; estPed.appendChild(o0);
     mOpts('Estado')
       .forEach(v => { const o = document.createElement('option'); o.textContent = v; o.value = v; if (v === prev) o.selected = true; estPed.appendChild(o); });
+    try { _camAvisoDespacho(); } catch(_){}
   }
   // Courier devolución (mismo set)
   const courierDev = document.getElementById('cam-courier-dev');
