@@ -3752,7 +3752,12 @@ function comBorradorPintar() {
   if (!dueno || window._VER_COMO || COM.comoEmail) { z.innerHTML = ''; return; }
   if (_COM_BORR) { z.innerHTML = _comBorrHtml(_COM_BORR); return; }
   z.innerHTML = '<div class="card"><div class="ct">🧪 Borrador · no comisiona</div><div class="ml">Calculando…</div></div>';
-  api('comisiones.borrador', {}).then(function (d) {
+  /* 12-nov-2026 (Pablo) · las asesoras prendidas en Usuarios que aún no comisionan entran solas al borrador */
+  var _asesTxt = Promise.resolve('');
+  try { _asesTxt = _sbSesionAsegurar().then(function (tok) { return fetch(SB_URL + '/rest/v1/erp_asesoras?select=email,nombre', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } }); })
+    .then(function (r) { return r.ok ? r.json() : []; }).then(function (a) { return (Array.isArray(a) ? a : []).map(function (x) { return String(x.nombre || '').toUpperCase() + '|' + String(x.email || '').toLowerCase(); }).join(','); })
+    .catch(function () { return ''; }); } catch (e) {}
+  _asesTxt.then(function (txt) { return api('comisiones.borrador', { asesoras: txt }); }).then(function (d) {
     _COM_BORR = d; var z2 = document.getElementById('com-borrador'); if (z2) z2.innerHTML = _comBorrHtml(d);
   }).catch(function (e) {
     var z2 = document.getElementById('com-borrador');
@@ -3765,6 +3770,10 @@ function _comBorrHtml(d) {
   var kpi = function (l, v) { return '<div style="text-align:center;min-width:110px"><div style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">' + l + '</div><div style="font-size:22px;font-weight:600">' + v + '</div></div>'; };
   return d.borradores.map(function (b) {
     var nombre = b.nombre.charAt(0) + b.nombre.slice(1).toLowerCase();
+    if (b.sinSueldo) return '<div class="card" style="border:1px dashed var(--bd)">' +
+      '<div class="ct">🧪 Borrador · ' + esc(nombre) + ' · ' + esc(MES) + ' (día ' + d.dia + ' de ' + d.dias + ')</div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:space-around;margin:8px 0 12px">' + kpi('Ventas', fmt(b.ventas)) + kpi('Margen', fmt(b.margen)) + '</div>' +
+      '<div style="font-size:12px;color:var(--mu)">No comisiona: no entra a la meta del equipo ni al pago. Sin sueldo cargado no hay meta ni bono. Empieza a comisionar cuando la agregues en Comisiones › Asesoras. Solo lo ves tú.</div></div>';
     return '<div class="card" style="border:1px dashed var(--bd)">' +
       '<div class="ct">🧪 Borrador · ' + esc(nombre) + ' · ' + esc(MES) + ' (día ' + d.dia + ' de ' + d.dias + ')</div>' +
       '<div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:space-around;margin:8px 0 12px">' +
