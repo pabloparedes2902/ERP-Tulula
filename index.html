@@ -22965,7 +22965,25 @@ function renderPT(el, rows, total, hayMas) {
         if (!ped) return;
         const nombre  = String(ped['Nombres y Apellidos']||'').trim();
         const courier = String(ped['Courier']||'').trim();
-        const prendas = (ped._prendas||[]).filter(pr => pr.prenda && !_esPago(pr.prenda));
+        /* 12-nov-2026 (Pablo) · la línea «CAMBIO CAM-x (saldo a favor / diferencia)» es plata, no una prenda: nunca va a la hoja.
+           Pedido con un cambio abierto → sale la PRENDA NUEVA con su nombre y 🔁 delante, y la devuelta no sale.
+           · pedido que aún NO se despachó: sus demás prendas siguen en la hoja (van en el mismo paquete);
+           · pedido ya despachado: solo la prenda nueva (misma regla del Excel de Pedidos, 17-oct). */
+        const _linCam = t => /^CAMBIO\s+CAM-/i.test(String(t || '').trim()), _nz = t => String(t || '').trim().toUpperCase().replace(/\s+/g, ' ');
+        let prendas = (ped._prendas||[]).filter(pr => pr.prenda && !_esPago(pr.prenda) && !_linCam(pr.prenda)).map(pr => ({ prenda: String(pr.prenda).trim() }));
+        const _cams = (Array.isArray(_c2List) ? _c2List : []).filter(c => ['PRENDA NUEVA ENVIADA', 'CANCELADO'].indexOf(_nz(c.Estado)) < 0
+          && [].concat(c.pedidos || [], (c.nuevas || []).map(n => n.NroPedido), (c.devueltas || []).map(n => n.NroPedido)).some(x => String(x || '').trim() === nro));
+        if (_cams.length && ['EN CAMINO', 'ENTREGADO', 'DEVOLUCION'].indexOf(_nz(ped['Estado'])) < 0) {
+          const _de = v => !v.NroPedido || String(v.NroPedido).trim() === nro, _dev = [], _nue = [];
+          _cams.forEach(c => { (c.devueltas || []).filter(_de).forEach(d => _dev.push(_nz(d.Prenda)));
+            (c.nuevas || []).filter(_de).forEach(n => { if (/^PENDIENTE\b/i.test(String(n.Prenda || '').trim()) || !String(n.Prenda || '').trim()) return; for (let i = 0, q = Math.max(1, parseInt(n.Cant, 10) || 1); i < q; i++) _nue.push(String(n.Prenda).trim()); }); });
+          prendas = prendas.filter(pr => { const i = _dev.indexOf(_nz(pr.prenda)); if (i < 0) return true; _dev.splice(i, 1); return false; });
+          _nue.forEach(t => { const f = prendas.find(pr => !pr._cam && _nz(pr.prenda) === _nz(t)); if (f) f._cam = 1; else prendas.push({ prenda: t, _cam: 1 }); });
+          prendas = prendas.map(pr => ({ prenda: (pr._cam ? '🔁 ' : '') + pr.prenda }));
+        } else if (_cams.length || (ped._prendas||[]).some(pr => _linCam(pr.prenda))) {
+          let _sp = null; try { _sp = _excelPrendasASeparar([ped]).get(nro) || null; } catch (_) {}
+          if (_sp && _sp.prendas && _sp.prendas.length) prendas = _sp.prendas.map(t => ({ prenda: (/^—/.test(t) ? '' : '🔁 ') + t }));
+        }
         grupos.push({ nombre, courier, prendas: prendas.length ? prendas : [{prenda:'—'}] });
       });
       if (!grupos.length) { toast('No hay prendas para exportar', 'err'); return; }
