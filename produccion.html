@@ -131,6 +131,7 @@ table.ta tr.fil th{position:static;padding:2px 3px}/* 8-nov (Pablo) · una sola 
 /* 26-oct (Pablo) · ficha y nueva producción del ancho de la pantalla; una línea por fila; números centrados */
 #mNueva .box{width:min(980px,100%);max-width:none}#mNueva.modal{padding:10px}
 /* 4-nov (Pablo · rediseño 4 pasos) · la orden se abre en un PANEL LATERAL sobre el tablero, todo editable ahí mismo */
+td.xs{outline:2px solid #60a5fa;outline-offset:-2px;background:rgba(96,165,250,.2)!important}
 .vsem{font-size:12px;font-weight:600;padding:2px 8px;border-radius:10px;margin-right:4px}.vsem.ok{background:#0a260a;color:#4ade80}.vsem.am{background:#3a2a0a;color:#fbbf24}.vsem.rd{background:#2e0f12;color:#f87171}.vsem.gy{background:#1f2937;color:#cbd5e1}.vexc{color:#f87171;font-weight:600;font-size:11px;margin-left:3px}.vlbar{display:inline-flex;gap:6px;flex-wrap:wrap;margin-left:10px;vertical-align:middle}#mOrden.modal{padding:0;justify-content:flex-end;align-items:stretch;background:rgba(0,0,0,.35)}#mOrden .box{width:100%;max-width:none;height:100vh;margin:0;border-radius:0;overflow:auto;padding:16px 24px 70px}   /* 4-nov 21:30 (Pablo) · la orden ocupa TODO el ancho del contenido (el menú del ERP queda fuera) */
 .tablero.p4{display:grid;grid-template-columns:repeat(4,minmax(220px,1fr));overflow-x:auto}.tablero.p4 .col{flex:none}
 .card .sig{font-size:12px;margin-top:3px;color:var(--tx)}.pasos{display:flex;gap:4px;flex-wrap:wrap;margin:6px 0 10px}
@@ -1035,10 +1036,9 @@ function vLoteBloque(o, i, cols, tal, prog, rec, ed, fechaHtml, barra){
     + G.map(g => tal.map((t, j) => '<th' + (j ? '' : ' class="gs"') + ' style="color:' + g[3] + '">' + t + '</th>').join('') + '<th style="color:' + g[3] + '">Total</th>').join('') + '</tr>';
   cols.forEach(c => { h += '<tr' + colSt(c) + '><td><b>' + esc(c) + '</b></td>';
     G.forEach(g => { let tr = 0; h += tal.map((t, j) => { const k = c + '|' + t, r = rec[k] || {}, v = g[0] === 'p' ? (prog[k] || 0) : (r[g[0]] || 0); let cel;
-        /* 10-nov (Pablo, 303) · llegó MÁS de lo programado en este lote → el programado muestra «−N» en rojo (eso se descuenta del último lote) */
-        const exc = g[0] === 'p' ? Math.max(0, (r.tot || 0) - v) : 0, excH = exc ? '<span class="vexc" title="Llegaron ' + exc + ' más de lo programado en este lote: se descuentan del último lote">−' + exc + '</span>' : '';
-        if (g[0] === 'p' && progEd) cel = '<input type="number" min="0" placeholder="·" value="' + (v || '') + '" oninput="vProgSet(' + i + ',\'' + qs(k) + '\',this.value)">' + excH;
-        else if (g[0] === 'p' && exc) cel = (v ? v + ' ' : '') + excH;
+        /* 12-nov-2026 (Pablo, 321) · se quitó el «−N» rojo que salía junto al programado cuando llegaba de más: confundía (parecía un total negativo).
+           Lo que llegó de más se sigue viendo en el semáforo del lote («+N de más») y en el aviso amarillo, y se sigue descontando del último lote. */
+        if (g[0] === 'p' && progEd) cel = '<input type="number" min="0" placeholder="·" value="' + (v || '') + '" oninput="vProgSet(' + i + ',\'' + qs(k) + '\',this.value)">';
         else if ((g[0] === 'tot' || g[0] === 'na') && ed && (prog[k] || v)) cel = '<input type="number" min="0" placeholder="·" value="' + (v || '') + '" data-r="' + i + '" data-k="' + g[0] + '" data-c="' + esc(c) + '" data-t="' + t + '" data-v="' + v + '" oninput="vRecSucio(' + i + ')" title="Escribe el total: si sube, se registra lo recién llegado; si baja (contaron de más), se corrige la entrega y el stock">';
         else if (g[0] === 'obs' && !v && ed && prog[k]) cel = '<input type="number" min="0" placeholder="·" data-r="' + i + '" data-k="obs" data-c="' + esc(c) + '" data-t="' + t + '" data-v="0" oninput="vRecSucio(' + i + ')" title="Las que llegaron con falla (van al taller a corregir)">';
         else if (g[0] === 'obs' && v){ const vj = VJ.find(x => x.i === i && x.c === c && x.t === t);
@@ -2233,4 +2233,37 @@ window.addEventListener('message', e => { const m = e && e.data; if (m && m.tipo
   if (m && m.tipo === 'erp-refrescar'){ try { e.source.postMessage({ tipo:'erp-refrescar-ok' }, '*'); } catch (_) {} cargar(); } });
 try { if (parent !== window) parent.postMessage({ tipo:'erp-tema-pedir' }, '*'); } catch (e) {}
 if (typeof process === 'undefined') { cargar(); }   /* 4-nov · matsIniciar ya viene en prod_tablero (solo si la base no lo tiene, va aparte) */
+
+/* 12-nov-2026 (Pablo) · COPIAR Y PEGAR EN LAS TABLAS DE LA ORDEN (total y cada lote), como en Excel:
+   arrastra (o Shift + clic) sobre varias casillas de un mismo bloque → ⌘C / Ctrl+C; haz clic en la primera casilla de destino → ⌘V / Ctrl+V.
+   Sirve entre Programado, Confección total, Observadas, No aptas y entre lotes. Solo se llenan las casillas que se pueden escribir;
+   las columnas y la fila «Total» no se tocan: se siguen calculando solas. Nada se guarda al pegar: se guarda con el botón de siempre. */
+(function(){
+  let A = null, B = null, arr = false;
+  const anchoG = t => { const th = t && t.rows[0] ? [].find.call(t.rows[0].cells, c => c.colSpan > 1) : null; return th ? th.colSpan : 0; };
+  const pos = td => { if (!td || !td.closest) return null; const t = td.closest('table.lg'), tr = td.parentElement, w = anchoG(t); if (!t || !w || !tr || tr.classList.contains('tot') || tr.rowIndex < 2 || td.tagName !== 'TD') return null;
+    const ci = td.cellIndex, j = (ci - 1) % w; if (ci < 1 || j === w - 1) return null; return { t: t, r: tr.rowIndex, ci: ci, g: Math.floor((ci - 1) / w), w: w }; };
+  const valor = td => { const i = td.querySelector('input'); return i ? String(i.value || '') : String(td.textContent || '').replace(/[^\d]/g, ''); };
+  const rango = () => { if (!A || !B || !document.contains(A) || !document.contains(B)) return null; const a = pos(A), b = pos(B); if (!a || !b || a.t !== b.t) return null;
+    const c0 = 1 + a.g * a.w, c1 = c0 + a.w - 2, bc = Math.min(c1, Math.max(c0, b.ci));
+    return { t: a.t, r0: Math.min(a.r, b.r), r1: Math.max(a.r, b.r), c0: Math.min(a.ci, bc), c1: Math.max(a.ci, bc) }; };
+  const celdas = R => { const o = []; for (let r = R.r0; r <= R.r1; r++){ const tr = R.t.rows[r]; if (!tr || tr.classList.contains('tot')) continue; const f = []; for (let c = R.c0; c <= R.c1; c++) if (tr.cells[c]) f.push(tr.cells[c]); if (f.length) o.push(f); } return o; };
+  const pintarSel = () => { document.querySelectorAll('td.xs').forEach(x => x.classList.remove('xs')); const R = rango(); if (!R) return; const C = celdas(R); if (C.length * (C[0] || []).length < 2) return; C.forEach(f => f.forEach(td => td.classList.add('xs'))); };
+  window._xlTsv = () => { const R = rango(); if (!R) return null; const C = celdas(R); if (C.length * (C[0] || []).length < 2) return null; return C.map(f => f.map(valor).join('\t')).join('\n'); };
+  window._xlPegar = (td0, txt) => { const p = pos(td0); if (!p) return null; const F = String(txt || '').replace(/\r/g, '').replace(/\n+$/, '').split('\n').map(l => l.split('\t')); if (F.length === 1 && F[0].length === 1) return null;
+    const cMax = 1 + p.g * p.w + p.w - 2; let n = 0, no = 0;
+    F.forEach((f, dr) => { const tr = p.t.rows[p.r + dr]; if (!tr || tr.classList.contains('tot')) { no += f.length; return; }
+      f.forEach((x, dc) => { const c = p.ci + dc, td = c <= cMax ? tr.cells[c] : null, inp = td ? td.querySelector('input[type="number"]:not([disabled])') : null; if (!inp) { no++; return; }
+        const d = String(x).replace(',', '.').match(/\d+(\.\d+)?/), v = d ? String(Math.round(+d[0]) || 0) : ''; if (String(inp.value) !== v) { inp.value = v; inp.dispatchEvent(new Event('input', { bubbles: true })); } n++; }); });
+    return { n: n, no: no }; };
+  document.addEventListener('mousedown', e => { const td = e.target.closest ? e.target.closest('td') : null; if (!pos(td)) { if (A) { A = B = null; pintarSel(); } return; }
+    if (e.shiftKey && A && document.contains(A)) { B = td; e.preventDefault(); } else { A = B = td; arr = true; if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON') e.preventDefault(); } pintarSel(); });
+  document.addEventListener('mouseover', e => { if (!arr) return; const td = e.target.closest ? e.target.closest('td') : null; if (pos(td) && td !== B) { B = td; pintarSel(); } });
+  document.addEventListener('mouseup', () => { arr = false; });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && A) { A = B = null; pintarSel(); } });
+  document.addEventListener('copy', e => { const t = window._xlTsv(); if (t == null) return; e.clipboardData.setData('text/plain', t); e.preventDefault(); try { aviso('Copiadas ' + t.split(/[\t\n]/).length + ' casillas. Haz clic en la primera casilla de destino y pega (⌘V o Ctrl+V).'); } catch (_) {} });
+  document.addEventListener('paste', e => { const td = (e.target.closest && pos(e.target.closest('td'))) ? e.target.closest('td') : (A && document.contains(A) ? A : null); if (!td) return;
+    const r = window._xlPegar(td, (e.clipboardData || window.clipboardData).getData('text')); if (!r) return; e.preventDefault(); A = B = null; pintarSel();
+    try { aviso(r.n ? ('Pegadas ' + r.n + ' casillas' + (r.no ? ' · ' + r.no + ' no se pueden escribir y quedaron igual' : '') + '. Revisa y guarda con el botón de siempre.') : 'Esas casillas no se pueden escribir (por ejemplo, el programado ya enviado al taller).'); } catch (_) {} });
+})();
 </script></body></html>
