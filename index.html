@@ -7753,6 +7753,10 @@ function _cfPiezas(modelo) {   // = _cosPiezas_
   if (m[1].indexOf('+') < 0) { var corto = _cfConjCortoParse('CONJUNTO ' + String(modelo)); return corto ? _cfConjPiezasDe(corto[0], corto[1]).map(_cfClave) : []; }
   return m[1].split('+').map(_cfClave).filter(function (x) { return !!x; });
 }
+function _cfPiezasFila(r) {   // = _cosPiezasFila_ · 12-nov: las piezas anotadas mandan; si no hay, la regla por nombre
+  var pz = String((r && r.Piezas) || '').split('+').map(_cfClave).filter(function (x) { return !!x; });
+  return pz.length >= 2 ? pz : _cfPiezas(r && r.Modelo);
+}
 function _cfCompletar(filas) {   // = _cosCompletar_
   var porClave = {};
   (filas || []).forEach(function (r) { porClave[_cfClave(r.Diseno)] = r; });
@@ -7761,7 +7765,7 @@ function _cfCompletar(filas) {   // = _cosCompletar_
   (filas || []).forEach(function (r) {
     if (r.calculado) return;
     if (_cfClave(r.TipoPrenda) !== 'CONJUNTO') return;
-    var piezas = _cfPiezas(r.Modelo);
+    var piezas = _cfPiezasFila(r);
     if (piezas.length < 2) return;
     var tot = 0, ok = true;
     piezas.forEach(function (p) { var f = porClave[p]; if (!f || !(f.CostoUnitario > 0)) ok = false; else tot += f.CostoUnitario; });
@@ -18442,11 +18446,15 @@ async function _stockNoDispRapido(p) {
       }
     } catch (e) {}
 
-    const motivos = {}, destinos = {};
+    const motivos = {}, destinos = {}, tallas = {}, _prenND = String(p.prenda || '').trim().toUpperCase();
     filas.forEach(r => {
       if (String(r['Eliminado'] || '').trim().toUpperCase() === 'SI') return;
       if (String(r['Diseno'] || '').trim().toUpperCase() !== dis) return;
       if (String(r['Color'] || '').trim().toUpperCase() !== col) return;
+      /* 12-nov-2026 (lista 326) · el cuadro decía «BLAZER ANTONIA BEIGE: 4» pero sumaba también el PANTALON ANTONIA BEIGE y una falla ya recuperada.
+         Ahora cuenta solo ESA prenda y solo lo que sigue fuera del stock; y dice cuántas hay por talla (es lo que se puede recuperar). */
+      if (_prenND && String(r['Prenda'] || '').trim().toUpperCase() !== _prenND) return;
+      if (String(r['Recuperado'] || '').trim().toUpperCase() === 'SI') return;
       if (cutDayMs) {
         const fd = Date.parse(r['Fecha'] || '') || 0;
         if (fd && fd < cutDayMs) return;
@@ -18457,8 +18465,10 @@ async function _stockNoDispRapido(p) {
       // 30-jul: el DESTINO es lo que dice si esa unidad se puede vender como Yayita.
       const dst = String(r['Destino'] || '').trim().toUpperCase() || '(sin decidir)';
       destinos[dst] = (destinos[dst] || 0) + cant;
+      const _tl = String(r['Talla'] || '').trim().toUpperCase() || '—'; tallas[_tl] = (tallas[_tl] || 0) + cant;
     });
-    return { motivos, destinos };
+    const _rND = (() => { return { motivos, destinos }; })(); _rND.tallas = tallas;   /* 326 · + cuántas por talla */
+    return _rND;
   } catch (e) { try { _errLog('sb.noDisp', e); } catch (_) {} return porApps(); }
 }
 
@@ -22932,8 +22942,11 @@ function renderPT(el, rows, total, hayMas) {
           const feRaw    = ped['Fecha Envio'];
           let fechaEnvio = '—';
           if (feRaw) {
-            const fd = feRaw instanceof Date ? feRaw : new Date(feRaw);
-            if (!isNaN(fd)) fechaEnvio = fd.getDate().toString().padStart(2,'0')+'/'+(fd.getMonth()+1).toString().padStart(2,'0')+'/'+fd.getFullYear();
+            /* 12-nov-2026 (lista 324) · «2026-11-13» se leía como medianoche de Londres = 12-nov 7 p. m. en Lima: el rótulo salía con el día anterior (hoy). Se toma el día tal como está escrito. */
+            const mF = (feRaw instanceof Date) ? null : String(feRaw).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (mF) fechaEnvio = mF[3] + '/' + mF[2] + '/' + mF[1];
+            else { const fd = feRaw instanceof Date ? feRaw : new Date(feRaw);
+              if (!isNaN(fd)) fechaEnvio = fd.getDate().toString().padStart(2,'0')+'/'+(fd.getMonth()+1).toString().padStart(2,'0')+'/'+fd.getFullYear(); }
           }
           return `<div class="rotulo">
             <div class="logo">T U L U L A</div>
@@ -25438,7 +25451,21 @@ function _modRefrescar(){
 }
 // FRENO DE ENVÍO (11-nov-2026, Pablo): antes de marcar «En camino» un pedido con un cambio sin atender, avisa y
 // deja seguir solo si la persona confirma. Si algo falla, deja pasar (nunca traba el guardado).
+/* 12-nov-2026 (Pablo) · mismo aviso del formulario de cambio, desde la tabla de Pedidos: si devuelven a «Enviar» un pedido con cambio abierto que YA salió. Solo avisa. */
+function _despAvisoTabla(nros, est){
+  try {
+    const v = String(est == null ? '' : est).trim().toUpperCase(); if (!v || ['EN CAMINO', 'ENTREGADO', 'DEVOLUCION'].indexOf(v) >= 0) return;
+    const ab = (Array.isArray(_c2List) ? _c2List : []).filter(c => ['PRENDA NUEVA ENVIADA', 'CANCELADO'].indexOf(String(c.Estado || '').trim().toUpperCase()) < 0);
+    const ya = [...new Set((Array.isArray(nros) ? nros : [nros]).map(n => String(n).trim()).filter(Boolean))].filter(n => {
+      const cams = ab.filter(c => [].concat(c.pedidos || [], (c.nuevas || []).map(x => x.NroPedido), (c.devueltas || []).map(x => x.NroPedido)).some(x => String(x || '').trim() === n));
+      if (!cams.length) return false;
+      const p = (typeof pAll !== 'undefined' && Array.isArray(pAll)) ? pAll.find(x => String(x['NroPedido']) === n) : null;
+      return _pedYaDespachado(n, p ? p['Estado'] : '', cams); });
+    if (ya.length) toast('⚠ ' + (ya.length === 1 ? 'El pedido ' + ya[0] + ' ya se despachó' : 'Los pedidos ' + ya.slice(0, 6).join(', ') + ' ya se despacharon') + ': en la hoja de separación solo saldrá la prenda nueva del cambio.', 'warn');
+  } catch(_){}
+}
 function _modFrenoEnvio(nros, est){
+  try { _despAvisoTabla(nros, est); } catch(_){}
   try {
     if (String(est == null ? '' : est).trim().toUpperCase() !== 'EN CAMINO') return true;
     const set = new Set((Array.isArray(nros) ? nros : [nros]).map(n => String(n).trim()));
@@ -37457,7 +37484,7 @@ async function _invNoDispDetalle(pren, dis, col){
     ov.innerHTML='<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:380px;width:100%;padding:18px">'
       +'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-weight:600;color:#f87171">No disponible</span><button id="nd-x" class="btn bg bs" style="font-size:12px">✕</button></div>'
       +'<div style="font-size:13px;font-weight:600;margin-bottom:2px">'+esc(pren+' '+dis+' '+col)+'</div>'
-      +'<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Total: <b style="color:var(--tx)">'+tot+'</b> unidad(es)</div>'
+      +'<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Total: <b style="color:var(--tx)">'+tot+'</b> unidad(es)'+((r && r.tallas && Object.keys(r.tallas).length) ? ' · por talla: <b style="color:var(--tx)">'+esc(Object.keys(r.tallas).map(k=>k+' '+r.tallas[k]).join(' · '))+'</b>' : '')+'</div>'
       /* 20-set · ndui */
       +'<div style="font-size:11px;color:var(--mu);margin:-4px 0 8px">Estas unidades SIGUEN contadas en «Conf. Total»: Total = disponibles + no disponibles.</div>'
       +'<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--mu);margin:4px 0 2px">Por qué salieron</div>'
@@ -37762,10 +37789,19 @@ async function loadFallasHist(){
     renderFallasHist(el);
   } catch(e) { el.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
+/* 12-nov-2026 (lista 325) · la base guarda la fecha de la falla como MES/DÍA/AÑO («11/12/2026» = 12-nov; medido: 78 de 78 sin ambigüedad) o completa («2026-07-11T05:00…»).
+   El historial la leía como DÍA/MES: lo de noviembre quedaba debajo de octubre y parecía que no se registraba. Devuelve 'AAAAMMDD' o ''. */
+function _fhFechaClave(f) {
+  var s = String(f || '').trim(), m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) { var a = +m[1], b = +m[2]; if (a > 12 && b <= 12) { var t = a; a = b; b = t; } return m[3] + ('0' + a).slice(-2) + ('0' + b).slice(-2); }
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) { var d = new Date(s.length > 10 ? s : s + 'T00:00:00-05:00'); if (!isNaN(d)) { try { return _diaLimaISO(d).replace(/-/g, ''); } catch (_) {} } return s.slice(0, 10).replace(/-/g, ''); }
+  return '';
+}
+function _fhFechaTxt(f) { var k = _fhFechaClave(f); return k ? k.slice(6, 8) + '/' + k.slice(4, 6) + '/' + k.slice(0, 4) : String(f || ''); }
 function _fhDiasDesde(fechaStr) {
-  var m = String(fechaStr || '').match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!m) return null;
-  var f = new Date(parseInt(m[3], 10), parseInt(m[2], 10) - 1, parseInt(m[1], 10));
+  var k = _fhFechaClave(fechaStr);
+  if (!k) return null;
+  var f = new Date(parseInt(k.slice(0, 4), 10), parseInt(k.slice(4, 6), 10) - 1, parseInt(k.slice(6, 8), 10));
   var hoy = new Date();
   f.setHours(0, 0, 0, 0); hoy.setHours(0, 0, 0, 0);
   var dias = Math.round((hoy - f) / 86400000);
@@ -37797,7 +37833,7 @@ function renderFallasHist(el){
 
   // Agrupar por Fecha (día) — más reciente arriba. Dentro de cada día, más reciente primero.
   const porFecha = new Map();
-  rows.forEach(r => { const f = String(r['Fecha']||'(sin fecha)'); if (!porFecha.has(f)) porFecha.set(f, []); porFecha.get(f).push(r); });
+  rows.forEach(r => { const f = r['Fecha'] ? _fhFechaTxt(r['Fecha']) : '(sin fecha)'; if (!porFecha.has(f)) porFecha.set(f, []); porFecha.get(f).push(r); });   /* 325 · el día se muestra DÍA/MES/AÑO y agrupa igual venga como venga */
   const _fechaOrden = f => { const m = String(f).match(/^(\d{2})\/(\d{2})\/(\d{4})$/); return m ? (m[3]+m[2]+m[1]) : '00000000'; };
   const fechas = [...porFecha.keys()].sort((a,b) => _fechaOrden(b).localeCompare(_fechaOrden(a)));
 
@@ -37813,7 +37849,7 @@ function renderFallasHist(el){
     const uF = grupo.reduce((s,r) => s + (parseInt(r['Cantidad'],10)||0), 0);
     const key = 'd'+f.replace(/\W/g,'');
     const abierto = window._fhOpen && window._fhOpen[key];
-    const diasGrupo = _fhDiasDesde(f);
+    const diasGrupo = _fhDiasDesde(f.replace(/^(\d{2})\/(\d{2})\/(\d{4})$/, '$3-$2-$1'));
     const pendientes = grupo.filter(r => String(r['Recuperado']||'').trim().toUpperCase()!=='SI' && !_fhEsTerminal(r['Destino']));
     let badgeDias = '';
     if (pendientes.length && diasGrupo !== null) {
@@ -46848,6 +46884,35 @@ function _permDeRol(rol){ return Object.assign(_permMatriz(0), PERM_PLANTILLAS[r
 function _permEfectiva(u){ return u.esOwner ? _permMatriz(2) : Object.assign(_permDeRol(u.rol), u.permisos || {}); }   // 13-oct 14:30 · Productos y Contenido son columnas separadas (Productos Edición = precios + ficha; Contenido Edición = solo ficha)
 
 let _cfgUsersData = [];
+/* 12-nov-2026 (Pablo) · SWITCH «Asesora» por usuaria: al prenderlo queda en public.erp_asesoras (correo → nombre: la base la reconoce al crear pedidos y pagos)
+   y en la lista «Asesoras» de Maestros (los desplegables de todo el ERP). Al apagarlo sale de los dos. Sus pedidos anteriores no cambian. */
+let _upAses = {}, _upAsesBusy = {};
+async function _upAsesCargar(){
+  try { const tok = await _sbSesionAsegurar(); if (!tok) return;
+    const r = await fetch(SB_URL + '/rest/v1/erp_asesoras?select=email,nombre', { headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok } });
+    if (!r.ok) return; const a = await r.json(); if (!Array.isArray(a)) return;
+    const m = {}; a.forEach(x => { if (x && x.email) m[String(x.email).toLowerCase()] = String(x.nombre || '').toUpperCase(); }); _upAses = m;
+  } catch(_){}
+}
+function _upAsesNombre(u){ return String((u && u.nombre) || '').trim().split(/\s+/)[0].normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase(); }
+function _upAsesBtn(u){ const em = String(u.email || '').toLowerCase(), n = _upAses[em];
+  return '<button class="up-act' + (n ? ' on' : '') + '" data-ases="' + esc(u.email) + '" title="' + (n ? 'Asesora ' + esc(n) + ' — clic para quitarla de la lista' : 'Clic: aparece como asesora ' + esc(_upAsesNombre(u) || '') + ' en todo el ERP') + '" aria-label="Asesora"></button>'; }
+async function _upToggleAsesora(email){
+  const u = _upUsuario(email), em = String(email || '').toLowerCase(); if (!u || _upAsesBusy[em]) return;
+  const era = _upAses[em] || '', on = !era, nombre = on ? _upAsesNombre(u) : era;
+  if (on && !nombre) { toast('Ponle nombre a la usuaria antes de marcarla como asesora.', 'err'); return; }
+  _upAsesBusy[em] = 1;
+  try {
+    const d = await _npRpc('erp_asesora_poner', { p_email: em, p_nombre: nombre, p_on: on });
+    if (!(d && d.ok)) { toast('No se pudo: ' + ((d && d.error) || 'la base no respondió'), 'err'); return; }
+    if (on) _upAses[em] = String(d.nombre || nombre).toUpperCase(); else delete _upAses[em];
+    cfgUsersRender();
+    _upToast(on ? '✓ ' + nombre + ' ya es asesora: aparece en las listas de todo el ERP' : nombre + ' ya no aparece en la lista de asesoras');
+    try { await apiSend(on ? 'config.listas.agregar' : 'config.listas.quitar', { Lista: 'Asesora', Valor: nombre }); } catch (e) { if (!/ya est[aá] en la lista|no est[aá]/i.test(String(e && e.message))) toast('La base ya la guardó, pero la lista de los desplegables no se actualizó: ' + (e && e.message), 'warn'); }
+    try { await refrescarMaestros(); } catch(_){}   /* trae la lista recién editada: los desplegables la muestran sin recargar */
+  } catch (e) { toast('No se pudo: ' + (e && e.message), 'err'); }
+  finally { delete _upAsesBusy[em]; }
+}
 let _cfgUsersRoles = ['Administrador','Logistica','Ventas','Marketing'];
 let _upFiltro = 'all', _upQ = '', _upUndo = null, _upToastT = null, _upWired = false;
 
@@ -46954,6 +47019,7 @@ async function loadCfgUsuarios() {
   let foto = null; try { foto = JSON.parse(localStorage.getItem('erp_up_foto') || 'null'); } catch (e) {}
   if (foto && foto.usuarios) { _upAplicarRes(foto); cfgUsersRender(); }
   else tbody.innerHTML = '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="text-align:center;padding:20px;color:var(--mu)"><div class="sp" style="display:inline-block;margin-right:8px"></div>Cargando...</td></tr>';
+  try { _upAsesCargar().then(() => { try { cfgUsersRender(); } catch(_){} }); } catch(_){}
   try {
     if (await _upTraerDelServidor()) cfgUsersRender();
   } catch (e) {
@@ -47019,16 +47085,17 @@ function cfgUsersRender(){
   if (leg && !leg.innerHTML) leg.innerHTML = [0,1,2].map(v => '<span><i class="up-tri" data-v="' + v + '" style="transform:scale(.8)"><i class="k">' + _UP_EYE + _UP_PEN + '</i></i>' + ['Sin acceso','Vista','Edición'][v] + '</span>').join('');
   // tabla (escritorio)
   let g = '<tr class="up-grp"><th class="up-stk"></th>', mh = '<tr class="up-mods"><th class="up-stk">Activo · Usuario</th>';
-  PERM_GRUPOS.forEach(G => { g += '<th class="up-gs" colspan="' + G.m.length + '">' + G.g + '</th>'; });
-  PERM_MODULOS.forEach(m => { mh += '<th class="' + (m.first ? 'up-gs' : '') + '" data-col="' + m.k + '" title="Clic: aplicar a todos los activos">' + m.n + '</th>'; });
+  const _gA = PERM_GRUPOS.find(G => G.g === 'Marketing y ventas'), _kA = _gA ? _gA.m[_gA.m.length - 1][0] : '';   /* la columna «Asesora» cierra el grupo Marketing y ventas */
+  PERM_GRUPOS.forEach(G => { g += '<th class="up-gs" colspan="' + (G.m.length + (G === _gA ? 1 : 0)) + '">' + G.g + '</th>'; });
+  PERM_MODULOS.forEach(m => { mh += '<th class="' + (m.first ? 'up-gs' : '') + '" data-col="' + m.k + '" title="Clic: aplicar a todos los activos">' + m.n + '</th>'; if (m.k === _kA) mh += '<th title="Prendido = aparece en la lista de asesoras de todo el ERP">Asesora</th>'; });
   document.querySelector('#up-tbl thead').innerHTML = g + '<th class="up-end"></th></tr>' + mh + '<th class="up-end">Eliminar</th></tr>';
   let h = '';
   lista.forEach(u => {
     h += '<tr class="' + (u.activo ? '' : 'up-off') + '"><td class="up-stk">' + _upQuien(u) + '</td>';
-    PERM_MODULOS.forEach(m => { h += '<td class="' + (m.first ? 'up-gs' : '') + '">' + _upTri(u, m) + '</td>'; });
+    PERM_MODULOS.forEach(m => { h += '<td class="' + (m.first ? 'up-gs' : '') + '">' + _upTri(u, m) + '</td>'; if (m.k === _kA) h += '<td>' + _upAsesBtn(u) + '</td>'; });
     h += '<td class="up-end"><button class="up-ic del" data-del="' + esc(u.email) + '"' + (u.esOwner ? ' disabled' : '') + ' title="Eliminar usuario">' + _UP_TRASH + '</button></td></tr>';
   });
-  document.querySelector('#up-tbl tbody').innerHTML = h || '<tr><td colspan="' + (PERM_MODULOS.length + 2) + '" style="padding:24px;color:var(--mu)">Nadie coincide con el filtro.</td></tr>';
+  document.querySelector('#up-tbl tbody').innerHTML = h || '<tr><td colspan="' + (PERM_MODULOS.length + 3) + '" style="padding:24px;color:var(--mu)">Nadie coincide con el filtro.</td></tr>';
   // tarjetas (celular)
   let c = '';
   lista.forEach(u => {
@@ -47037,6 +47104,7 @@ function cfgUsersRender(){
     PERM_GRUPOS.forEach(G => {
       c += '<h5>' + G.g + '</h5>';
       G.m.forEach(mm => { const m = PERM_MODULOS.find(x => x.k === mm[0]); c += '<div class="up-crow"><span>' + m.n + '</span>' + _upTri(u, m) + '</div>'; });
+      if (G === _gA) c += '<div class="up-crow"><span>Asesora</span>' + _upAsesBtn(u) + '</div>';
     });
     c += '</div></div>';
   });
@@ -47172,6 +47240,7 @@ function _upWire(){
       if (z > max) z = 0;
       return _upSetCelda(t.dataset.e, t.dataset.m, z);
     }
+    const as = e.target.closest('[data-ases]'); if (as && !as.disabled) return _upToggleAsesora(as.dataset.ases);
     const a = e.target.closest('[data-act]'); if (a && !a.disabled) return _upToggleActivo(a.dataset.act);
     const d = e.target.closest('[data-del]'); if (d && !d.disabled) return _upEliminar(d.dataset.del);
     const vc = e.target.closest('[data-ver]'); if (vc) return _upVerComo(vc.dataset.ver);
