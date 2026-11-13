@@ -386,7 +386,7 @@ async function cargar(){
     idbSet(PROD_CACHE, { T, u: quien(), at: Date.now() });   /* sin esperar: no frena la pantalla */
     try { localStorage.removeItem(PROD_CACHE); } catch (_) {}
   } catch (e) { if (!D._pintado) document.getElementById('tablero').innerHTML = '<div class="vacio err">' + esc(e.message) + '</div>'; else aviso(e.message); return; }
-  D._pintado = true; pintar(); if (OA && document.getElementById('mOrden').style.display === 'flex' && !PED_SUCIO) abrirOrden(OA.id);
+  D._pintado = true; pintar(); if (OA && document.getElementById('mOrden').style.display === 'flex' && !PED_SUCIO && !vLoteSucio()) abrirOrden(OA.id);
   publicarAlerta();
 }
 /* ── saldos de una orden por color × talla: pedidas · listas (buenas + corregidas) · en corrección · perdidas · faltan entregar ── */
@@ -621,6 +621,23 @@ function obsIr(oid, i, c, t){ abrirOrden(oid);
     const el = [...v.querySelectorAll('[data-obs]')].find(e => e.dataset.obs === i + '|' + c + '|' + t); if (!el) return;
     const td = el.closest('td') || el; td.scrollIntoView({ block:'center', inline:'center', behavior:'smooth' });
     td.classList.add('flashc'); setTimeout(() => td.classList.remove('flashc'), 6000); }, 350); }
+/* 13-nov (Pablo) · UNA sola cuenta de «¿ya entró al stock?»: la usan el letrero de Confección real, el sello de cada lote y la tarjeta del tablero.
+   falta = contadas que aún NO entraron al stock · dentro = ya en el stock · corr = observadas que siguen en corrección (no cuentan como pendientes de ingresar). */
+function stockDe(F){
+  const s = f => (F || []).filter(f).reduce((a, m) => a + m.cantidad, 0);
+  return { falta: s(m => !m.ingresado && (['buena', 'corregida', 'yayita'].indexOf(m.tipo) >= 0 || (m.tipo === 'falla' && m.entrega))),
+           dentro: s(m => m.ingresado && ['buena', 'corregida', 'yayita'].indexOf(m.tipo) >= 0),
+           corr: s(m => !m.ingresado && m.tipo === 'falla' && !m.entrega) };
+}
+/* sello grande del estado de ingreso (opción A): se entiende sin leer números */
+function selloStock(F, conBoton){
+  const x = stockDe(F);
+  if (!x.falta && !x.dentro) return '<span class="vsem gy" title="Todavía no se registró nada de este lote">⚪ Aún no llega</span>';
+  if (x.falta) return '<span class="vsem am" title="Ya se contaron, pero todavía no están en el stock para vender">🟠 Falta ingresar al stock · ' + x.falta + '</span>'
+    + (conBoton ? ' <button class="p" onclick="ingresarStock({auto:true})" title="Las pasa al stock ahora">📦 Pasar al stock</button>' : '');
+  return '<span class="vsem ok" title="Ya están en el stock y se pueden vender">🟢 Ingresado al stock · ' + x.dentro + '</span>'
+    + (x.corr ? ' <span class="vsem am" title="Observadas que siguen en arreglo: entran cuando vuelvan corregidas">🪡 ' + x.corr + ' en corrección</span>' : '');
+}
 /* lo que tiene que pasar para que la orden avance al siguiente paso (una línea, en simple) */
 function siguiente(o, k, T){
   const lt = llegaTaller(o);
@@ -641,6 +658,7 @@ function tarjeta(o, k){
   return '<div class="card ' + ef.col + '" onclick="abrirOrden(' + o.id + ')"><b>' + NR(o) + esc(o.diseno) + '</b>'
     + '<div class="l">' + esc(o.codigo || '') + ' · ' + esc(o.taller || 'sin taller') + ' · venta ' + fv + (ef.col === 'rd' ? ' <span class="chip rd">' + ef.txt + '</span>' : '') + '</div>'
     + '<div class="l">' + T.buenas + ' de ' + T.pedido + ' listas = ' + pct + '%</div>'
+    + (D.movs.some(m => m.orden_id === o.id) ? '<div class="l" style="margin-top:3px">' + selloStock(D.movs.filter(m => m.orden_id === o.id), false) + '</div>' : '')   /* 13-nov (Pablo · opción C): sin abrir la orden se ve si ya entró al stock */
     + '<div class="sig">' + siguiente(o, k, T) + '</div>' + frenos(o, T) + '</div>';
 }
 function frenos(o, T){
@@ -984,7 +1002,10 @@ async function guardarOrden(){
     if (kk.length){ const k = D.prod[n0] ? n0 : kk.find(x => nrm(x) === n0);
       if (!k) { msg.textContent = '«' + n0 + '» no está en la lista de productos. Elígelo de la lista o créalo primero con «➕ Nuevo producto».'; return; }
       if (elD.value !== k) elD.value = k; } }
-  if (!lineas.length) { msg.textContent = 'Pon al menos una cantidad.'; return; }
+  /* 13-nov (Pablo, 333) · los cortes por talla se definen DESPUÉS (con los materiales comprados): para crear la producción basta el producto y sus colores.
+     Los colores sin cantidad se guardan en 0 para que la orden los recuerde; se completan luego en «Programado». */
+  if (!NV.colores.length) { msg.textContent = 'Elige al menos un color.'; return; }
+  { const tv = (typeof tallasVis === 'function' ? tallasVis() : TALLAS); NV.colores.forEach(c => { if (!lineas.some(l => l.color === c)) tv.forEach(t => lineas.push({ color:c, talla:t, pedido:0 })); }); }
   if (!document.getElementById('nFecha').value) { msg.textContent = 'Falta la fecha para venta.'; return; }   /* 24-oct · sin fecha no se sabe si se atrasa */
   /* 10-nov (Pablo) · los lotes pueden sumar más o menos que lo programado (el taller entrega más o menos): ya no bloquea, se avisa en la orden */
   b.disabled = true;
@@ -1045,9 +1066,12 @@ function vLoteBloque(o, i, cols, tal, prog, rec, ed, fechaHtml, barra){ const co
   const nL = (NV.lotes || []).length, progEd = ed && nL > 1;   /* 10-nov (Pablo) · con varios lotes todos se editan (también el último); un solo lote = lo programado (se escribe en el total) */
   /* 12-nov-2026 (Pablo) · BORDE de la confección total, solo en el ÚLTIMO lote: verde = llegó lo programado · rojo = falta · amarillo = sobra */
   const esUlt = i === Math.max(0, nL - 1);   /* 12-nov 10:30 (Pablo) · casilla vacía = sin borde · si el SKU ya llegó completo en toda la orden: verde en los lotes donde llegó y en el último, que queda bloqueado */
-  let h = '<div class="vb vlote"><div class="vbt"><b>Lote ' + (i + 1) + '</b>' + (ed ? ' · llegó el <input type="date" id="vFL' + i + '" value="' + iso(hoy0()) + '" max="' + iso(hoy0()) + '" style="width:130px;font-size:12px;padding:1px 4px"> <button class="p" id="vRec' + i + '" onclick="vLoteRecibir(' + i + ')" title="Guarda lo que escribiste en este lote: confección total, observadas y no aptas. Recién ahí se actualiza el stock.">💾 Guardar lo que llegó</button> <span id="vMsg' + i + '" class="err"></span>' : '') + (barra ? ' <span class="vlbar">' + barra + '</span>' : '') + '</div>'
+  /* 13-nov (Pablo, 336) · la FECHA EN QUE LLEGÓ el lote se escribe en el encabezado de Confección total (antes era un campo suelto arriba, con la fecha de hoy).
+     Arranca con la fecha ya guardada del lote (o hoy si aún no llegó nada) y, si ya hay entregas, cambiarla CORRIGE la fecha guardada. */
+  const fhL = k => (k === 'tot' && ed) ? 'llegó el <input type="date" id="vFL' + i + '" value="' + ((fechaHtml.totISO && !fechaHtml.totHoy) ? fechaHtml.totISO : iso(hoy0())) + '" max="' + iso(hoy0()) + '" data-g="' + (fechaHtml.totISO || '') + '" onchange="vLoteFecha(' + i + ',this)" title="Fecha real en que llegó este lote" style="width:126px;font-size:11px;padding:1px 4px"> ' + ((fechaHtml.totISO && fechaHtml.totHoy) ? '<span class="mu" title="El lote aún no está completo: la fecha de arriba es para lo que llegue ahora. Si cambias la fecha sin escribir cantidades, se corrige la ya guardada.">última entrega ' + fechaHtml.totISO.split('-').reverse().slice(0, 2).join('/') + '</span> ' : '') + (fechaHtml.totD || '') : fechaHtml[k];
+  let h = '<div class="vb vlote"><div class="vbt"><b>Lote ' + (i + 1) + '</b>' + (ed ? ' <button class="p" id="vRec' + i + '" onclick="vLoteRecibir(' + i + ')" title="Guarda lo que escribiste en este lote: confección total, observadas y no aptas. Recién ahí se actualiza el stock.">💾 Guardar lo que llegó</button> <span id="vMsg' + i + '" class="err"></span>' : '') + (barra ? ' <span class="vlbar">' + barra + '</span>' : '') + '</div>'
     + '<div style="overflow-x:auto"><table class="g lg"><tr><th rowspan="2">Color</th>'
-    + G.map(g => '<th colspan="' + (tal.length + 1) + '" class="gs" style="background:' + g[2] + ';color:' + g[3] + '">' + g[1] + (fechaHtml[g[0]] ? '<div style="font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;margin-top:2px">' + fechaHtml[g[0]] + '</div>' : '') + '</th>').join('') + '</tr><tr>'
+    + G.map(g => '<th colspan="' + (tal.length + 1) + '" class="gs" style="background:' + g[2] + ';color:' + g[3] + '">' + g[1] + (fhL(g[0]) ? '<div style="font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;margin-top:2px">' + fhL(g[0]) + '</div>' : '') + '</th>').join('') + '</tr><tr>'
     + G.map(g => tal.map((t, j) => '<th' + (j ? '' : ' class="gs"') + ' style="color:' + g[3] + '">' + t + '</th>').join('') + '<th style="color:' + g[3] + '">Total</th>').join('') + '</tr>';
   cols.forEach(c => { h += '<tr' + colSt(c) + '><td><b>' + esc(c) + '</b></td>';
     G.forEach(g => { let tr = 0; h += tal.map((t, j) => { const k = c + '|' + t, r = rec[k] || {}, v = g[0] === 'p' ? (prog[k] || 0) : (r[g[0]] || 0); let cel;
@@ -1084,6 +1108,18 @@ function vRecCalc(i){ const v = document.getElementById('oVista'); if (!v) retur
   v.querySelectorAll('td[data-rlt^="' + i + '|"]').forEach(td => { td.innerHTML = '<b>' + n0(RT[td.dataset.rlt.slice(String(i).length + 1)] || 0) + '</b>'; });
   v.querySelectorAll('td[data-rlc^="' + i + '|"]').forEach(td => { td.innerHTML = '<b>' + n0(CT[td.dataset.rlc.slice(String(i).length + 1)] || 0) + '</b>'; });
   const g = v.querySelector('td[data-rlg="' + i + '"]'); if (g) g.innerHTML = '<b>' + n0(GT) + '</b>'; }
+/* 13-nov (Pablo, 335) · ¿hay algo escrito en algún lote sin guardar? Mientras lo haya, la pantalla NO se repinta sola (al elegir la fecha se borraba todo lo escrito). */
+function vLoteSucio(){ try { return [...document.querySelectorAll('#oVista input[data-r]')].some(e => (+e.value || 0) !== (+e.dataset.v || 0)); } catch (_) { return false; } }
+/* 13-nov (Pablo, 336) · corregir la fecha de llegada de un lote que ya tiene entregas guardadas */
+function vLoteFecha(i, el){
+  const g = el.dataset.g || '', v = el.value || '';
+  if (!g || !v || v === g) return;   /* lote sin entregas: la fecha se usa al guardar */
+  if (vLoteSucio()) return;          /* hay cantidades nuevas escritas: esta fecha es para ESA entrega, se guarda con «💾 Guardar lo que llegó» */
+  confirmar('¿Corregir la fecha de llegada?', 'Lote ' + (i + 1) + ': pasa de ' + g.split('-').reverse().join('/') + ' a ' + v.split('-').reverse().join('/') + '. Solo cambia la fecha; no mueve stock.', 'Sí, corregir', async () => {
+    const r = await rpc('prod_lote_fecha', { p_id: OA.id, p_lote_prog: i, p_fecha: v }); if (!r || !r.ok) throw new Error((r && r.error) || 'No se pudo');
+    el.dataset.g = v; el.value = v; aviso('✓ Fecha de llegada corregida'); if (!vLoteSucio()){ await cargar(); abrirOrden(OA.id); } });
+  el.value = g;   /* hasta que confirme, el campo sigue mostrando la fecha guardada */
+}
 async function vLoteRecibir(i){
   const msg = document.getElementById('vMsg' + i); msg.textContent = ''; const C = {};
   document.querySelectorAll('#oVista input[data-r="' + i + '"]').forEach(e => { const k = e.dataset.c + '|' + e.dataset.t; C[k] = C[k] || { color:e.dataset.c, talla:e.dataset.t, tot:0, obs:0, na:0 }; C[k][e.dataset.k] = (+e.value || 0) - (+e.dataset.v || 0); });
@@ -1179,10 +1215,7 @@ function vistaPintar(){
      (TOP VALENTINA BEL-009: 216 en stock + 3 en corrección decía «por pasar al stock»). Ahora dice con números qué pasó:
      ✅ N ya en el stock · ⏳ N falta pasar al stock · 🪡 N en corrección. */
   const enStock = F => { if (!F.length) return '';
-    const s = (f) => F.filter(f).reduce((a, m) => a + m.cantidad, 0);
-    const falta = s(m => !m.ingresado && (['buena', 'corregida', 'yayita'].indexOf(m.tipo) >= 0 || (m.tipo === 'falla' && m.entrega)));
-    const dentro = s(m => m.ingresado && ['buena', 'corregida', 'yayita'].indexOf(m.tipo) >= 0);
-    const corr = s(m => !m.ingresado && m.tipo === 'falla' && !m.entrega);
+    const { falta, dentro, corr } = stockDe(F);
     const P = [];
     if (falta) P.push('<span style="color:#fbbf24">⏳ ' + falta + ' falta pasar al stock</span>');
     if (dentro) P.push('✅ ' + dentro + ' ya en el stock');
@@ -1197,6 +1230,7 @@ function vistaPintar(){
     return 'programada ' + (ed ? '<input type="date" value="' + esc(f || '') + '" onchange="vLoteFecha(' + i + ',this.value)" style="width:128px;font-size:11px;padding:1px 4px;background:transparent;color:inherit;border:1px solid ' + (f ? 'rgba(255,255,255,.25)' : '#f87171') + '">' : (fD(f) || '—'))
       + (sug ? ' <span class="mu">(sugerida)</span>' : '') + (!f ? ' <span style="color:#f87171">ponle fecha</span>' : '')
       + (sinEnt && f && i === L.length - 1 ? '<div>proyección ' + fD(proy) + (dif > 0 ? ' <span style="color:#f87171">llegaría ' + dif + ' d tarde</span>' : ' <span style="color:#4ade80">a tiempo</span>') + '</div>' : ''); };
+  const fTarde = (F, i) => { const r = ult(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r || !f) return ''; const d = difD(r, f); return d > 0 ? '<span style="color:#f87171">' + d + ' d tarde</span>' : '<span style="color:#4ade80">a tiempo</span>'; };
   const fLlego = (F, i) => { const r = ult(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r) return ''; const d = f ? difD(r, f) : 0; return 'llegó ' + fD(r) + (f ? (d > 0 ? ' <span style="color:#f87171">' + d + ' d tarde</span>' : ' <span style="color:#4ade80">a tiempo</span>') : ''); };
   const val = id => esc((document.getElementById(id) || {}).value || ''), dis = ed ? '' : ' disabled';
   let h = '<div class="vcab">'
@@ -1231,10 +1265,10 @@ function vistaPintar(){
     const lle = pT - falta, extra = Math.max(0, rT - lle), pcl = pT ? Math.round(lle / pT * 100) : 0;
     const sema = !pT ? '' : '<span class="vsem ' + (!falta ? 'ok' : tarde ? 'rd' : rT ? 'am' : 'gy') + '" title="De lo programado en este lote llegaron ' + lle + ' de ' + pT + (extra ? '; además llegaron ' + extra + ' que no estaban programadas aquí' : '') + '">'
       + (!falta ? '🟢 completo · ' + lle + ' de ' + pT : (tarde ? '🔴 ' : rT ? '🟡 ' : '⚪ ') + lle + ' de ' + pT + ' = ' + pcl + '% · faltan ' + falta + (tarde ? ' · ' + tarde + ' d tarde' : fi ? ' · vence ' + fD(fi) : '')) + (extra ? ' · +' + extra + ' de más' : '') + '</span>';
-    const barra = sema + (!ed ? '' : (falta ? ' <button onclick="vLoteTodo(' + i + ')" title="Llena la confección total con lo programado; corriges solo lo que no llegó igual y aprietas «💾 Guardar lo que llegó»">✓ Llegó todo lo programado</button> ' : ' ') + selB('🎨 Colores', cI.filter(c => !Mi.some(m => m.color === c)).map(c => ['-' + c, '✕ ' + c + ' no va en este lote']).concat(cols.filter(c => cI.indexOf(c) < 0).map(c => ['+' + c, '＋ ' + c])), 'vLoteColor.bind(null,' + i + ')')
+    const barra = selloStock(Mi, ed) + ' ' + sema + (!ed ? '' : (falta ? ' <button onclick="vLoteTodo(' + i + ')" title="Llena la confección total con lo programado; corriges solo lo que no llegó igual y aprietas «💾 Guardar lo que llegó»">✓ Llegó todo lo programado</button> ' : ' ') + selB('🎨 Colores', cI.filter(c => !Mi.some(m => m.color === c)).map(c => ['-' + c, '✕ ' + c + ' no va en este lote']).concat(cols.filter(c => cI.indexOf(c) < 0).map(c => ['+' + c, '＋ ' + c])), 'vLoteColor.bind(null,' + i + ')')
       /* 12-nov-2026 (Pablo) · sin filtro de tallas por lote: todas se muestran siempre */
       + (ultL ? ' ' + selB('↩ Deshacer', [['-' + ultL, '↩ Deshacer el último registro de este lote (' + ultL + ')']], 'vAccEntrega') : ''));
-    h += vLoteBloque(o, i, cI, tI, qL, vMovsAgg(Mi), ed, { p: fProg(i), tot: fLlego(Mi, i), real: enStock(Mi) }, barra); });
+    h += vLoteBloque(o, i, cI, tI, qL, vMovsAgg(Mi), ed, { p: fProg(i), tot: fLlego(Mi, i), real: enStock(Mi), totISO: String(ult(entr(Mi)) || '').slice(0, 10), totD: fTarde(Mi, i), totHoy: falta > 0 }, barra); });
   { /* 10-nov (Pablo) · los lotes pueden sumar más o menos que lo programado: eso NO cambia lo programado, solo se avisa */
     const dif = []; cols.forEach(c => tal.forEach(t => { const k = c + '|' + t, p = NV.q[k] || 0, s = L.reduce((a, y) => a + (+(y.q || {})[k] || 0), 0); if (p !== s) dif.push(c + ' ' + t + ': lotes ' + s + ' / programado ' + p); }));
     const tp = Object.values(NV.q).reduce((a, v) => a + (+v || 0), 0), tl = L.reduce((a, y) => a + nLoteTot(y), 0);
