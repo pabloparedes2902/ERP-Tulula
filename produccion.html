@@ -1126,9 +1126,14 @@ function vLoteFecha(i, el){
     el.dataset.g = v; el.value = v; aviso('✓ Fecha de llegada corregida'); if (!vLoteSucio()){ await cargar(); abrirOrden(OA.id); } });
   el.value = g;   /* hasta que confirme, el campo sigue mostrando la fecha guardada */
 }
-async function vLoteRecibir(i){
-  const msg = document.getElementById('vMsg' + i); msg.textContent = ''; const C = {};
-  document.querySelectorAll('#oVista input[data-r="' + i + '"]').forEach(e => { const k = e.dataset.c + '|' + e.dataset.t; C[k] = C[k] || { color:e.dataset.c, talla:e.dataset.t, tot:0, obs:0, na:0 }; C[k][e.dataset.k] = (+e.value || 0) - (+e.dataset.v || 0); });
+async function vLoteRecibir(i, W){
+  const msg = document.getElementById('vMsg' + i) || { textContent:'' }; msg.textContent = ''; const C = {};
+  /* 13-nov 17h (Pablo) · se guarda el VALOR FINAL de cada casilla (W). Si hubo que deshacer no aptas primero, se vuelve a entrar con W y se termina de guardar lo demás. */
+  if (!W){ W = {}; document.querySelectorAll('#oVista input[data-r="' + i + '"]').forEach(e => { const k = e.dataset.c + '|' + e.dataset.t; C[k] = C[k] || { color:e.dataset.c, talla:e.dataset.t, tot:0, obs:0, na:0 }; C[k][e.dataset.k] = (+e.value || 0) - (+e.dataset.v || 0);
+      W[k] = W[k] || { color:e.dataset.c, talla:e.dataset.t }; W[k][e.dataset.k] = +e.value || 0; }); }
+  else { const A = vMovsAgg(D.movs.filter(m => m.orden_id === OA.id && (m.lote_prog != null ? +m.lote_prog : 0) === i));
+    Object.keys(W).forEach(k => { const w = W[k], a = A[k] || {}; C[k] = { color:w.color, talla:w.talla, tot:0, obs:0, na:0 }; ['tot', 'obs', 'na'].forEach(f => { if (w[f] != null) C[k][f] = w[f] - (a[f] || 0); }); if (C[k].na < 0) C[k].na = 0; });
+    if (!Object.values(C).some(x => x.tot || x.obs || x.na)) return; }
   const L = Object.values(C).filter(x => x.tot || x.obs || x.na);
   if (!L.length){ msg.textContent = 'No hay cambios.'; return; }
   /* 10-nov (Pablo, 303) · BAJAR una confección total ya registrada (contaron 11, eran 10) se puede escribir directo: se corrige la entrega y el stock.
@@ -1136,7 +1141,7 @@ async function vLoteRecibir(i){
   if ([...document.querySelectorAll('#oVista input[data-r="' + i + '"]')].some(e => +e.value < 0)){ msg.textContent = 'No se aceptan números negativos: lo mínimo es 0.'; return; }
   /* 13-nov tarde (Pablo, 334) · BAJAR No aptas se escribe directo, igual que la confección total: se deshacen esas yayitas (en la orden y en Stock). */
   const naB = L.filter(x => x.na < 0);
-  if (naB.length){ if (L.some(x => x.tot || x.obs || x.na > 0)){ msg.textContent = 'Guarda primero solo la corrección de No aptas (' + naB.map(x => x.color + ' ' + x.talla).join(', ') + '); después anota lo demás.'; return; } return naQuitar(i, naB, msg); }
+  if (naB.length) return naQuitar(i, naB, msg, L.some(x => x.tot || x.obs || x.na > 0) ? W : null);
   const mal = L.find(x => x.obs < 0 || (x.tot < 0 && (x.obs || x.na))); if (mal){ msg.textContent = mal.color + ' ' + mal.talla + ': baja primero solo la Confección total y guarda; después anota observadas o no aptas.'; return; }
   const baj = L.filter(x => x.tot < 0);
   if (baj.length){ try { for (const x of baj) await vBajarTotal(i, x.color, x.talla, -x.tot); } catch (e) { msg.textContent = e.message; return; }
@@ -1296,13 +1301,17 @@ function vAccTalla(v){ if (!v) return; if (v[0] === '+'){ nTallaAgregar(v.slice(
 /* «Ctrl+Z» de una entrega: la saca de la orden y, si ya pasó al stock, devuelve el stock como estaba (buenas). Las fallas ya en No disponible se avisan. */
 function vEntregaDeshacer(cod){
   const o = OA, F = D.movs.filter(m => m.orden_id === o.id && m.entrega === cod); if (!F.length) return;
-  { /* 13-nov tarde (Pablo, 334) · si observadas de esta entrega ya se pasaron a corregidas o yayitas, primero se deshace eso: si no, quedaban «observadas −3» */
-    const lp = m => m.lote_prog != null ? +m.lote_prog : 0, S = {}; D.movs.filter(m => m.orden_id === o.id && m.entrega !== cod).forEach(m => { const k = lp(m) + '|' + m.color + ' ' + m.talla;
-      if (m.tipo === 'falla') S[k] = (S[k] || 0) + m.cantidad; else if (['corregida', 'yayita', 'perdida'].indexOf(m.tipo) >= 0) S[k] = (S[k] || 0) - m.cantidad; });
-    const hu = F.filter(m => m.tipo === 'falla' && S[lp(m) + '|' + m.color + ' ' + m.talla] < 0).map(m => m.color + ' ' + m.talla);
-    if (hu.length){ aviso('No se puede deshacer todavía: observadas de ' + [...new Set(hu)].join(', ') + ' ya se pasaron a corregidas o yayitas. Deshaz primero eso (Historial › ↩ Deshacer) y vuelve a intentar.'); return; } }
+  /* 13-nov 17h (Pablo) · «↩ Deshacer» de un lote hace TODO en un paso: si observadas de esta entrega ya pasaron a yayitas, primero se deshacen esas (más nuevas primero)
+     y después se deshace la entrega. Si ya hay corregidas (están a la venta), se avisa: esas se deshacen aparte en el Historial. Así nunca queda «observadas −3». */
+  const previas = []; { const lp = m => m.lote_prog != null ? +m.lote_prog : 0, S = {}, kd = m => lp(m) + '|' + m.color + '|' + m.talla, R = ['corregida', 'yayita', 'perdida'];
+    D.movs.filter(m => m.orden_id === o.id && m.entrega !== cod).forEach(m => { if (m.tipo === 'falla') S[kd(m)] = (S[kd(m)] || 0) + m.cantidad; else if (R.indexOf(m.tipo) >= 0) S[kd(m)] = (S[kd(m)] || 0) - m.cantidad; });
+    const duro = [];
+    [...new Set(F.filter(m => m.tipo === 'falla' && S[kd(m)] < 0).map(kd))].forEach(k => { let def = -S[k];
+      D.movs.filter(m => m.orden_id === o.id && m.entrega !== cod && R.indexOf(m.tipo) >= 0 && kd(m) === k).sort((a, b) => b.id - a.id).forEach(m => { if (def <= 0) return; if (m.tipo !== 'yayita') duro.push(m.color + ' ' + m.talla); else previas.push(m); def -= m.cantidad; }); });
+    if (duro.length){ aviso('No se puede deshacer todavía: ' + [...new Set(duro)].join(', ') + ' ya tiene prendas corregidas (están a la venta). Deshaz primero esas en Historial › ↩ Deshacer y vuelve a intentar.'); return; } }
   const fallaStock = F.filter(m => m.tipo === 'falla' && m.ingresado).reduce((a, m) => a + m.cantidad, 0), tot = F.filter(m => m.tipo === 'buena' || m.tipo === 'falla').reduce((a, m) => a + m.cantidad, 0);
-  confirmar('↩ ¿Deshacer la entrega ' + cod + '?', 'Se quitan sus ' + tot + ' prendas de esta orden' + (F.some(m => m.ingresado) ? ' y del stock' + (fallaStock ? ' (también las ' + fallaStock + ' de No disponible)' : '') : '') + '. Queda en la Papelera.', 'Sí, deshacer', async () => {
+  confirmar('↩ ¿Deshacer la entrega ' + cod + '?', 'Se quitan sus ' + tot + ' prendas de esta orden' + (F.some(m => m.ingresado) ? ' y del stock' + (fallaStock ? ' (también las ' + fallaStock + ' de No disponible)' : '') : '') + '. Queda en la Papelera.' + (previas.length ? ' Antes se deshacen sus yayitas: ' + previas.map(m => m.cantidad + ' ' + m.color + ' ' + m.talla).join(', ') + '.' : ''), 'Sí, deshacer', async () => {
+    for (const m of previas) await yayDeshacerUno(m);
     const fal = F.filter(m => m.tipo === 'falla' && m.ingresado);   /* 6-nov (Pablo) · las fallas también se deshacen: salen de Stock › No disponible */
     if (fal.length){ const G = {}; fal.forEach(m => { const k = nrm(o.diseno + ' ' + m.color + ' ' + m.talla); G[k] = (G[k] || 0) + m.cantidad; });
       const rf = await rpc('falla_anular', { p_items: Object.keys(G).map(k => ({ prenda: k, cantidad: G[k] })), p_request: 'anul-' + cod }); if (!rf || !rf.ok) throw new Error((rf && rf.error) || 'no se pudieron deshacer las fallas'); }
@@ -1420,7 +1429,7 @@ function abrirOrden(id){
   const M = D.movs.filter(x => x.orden_id === o.id).slice().reverse();
   if (M.length) h += '<details class="sec"><summary style="cursor:pointer;font-weight:600">Historial (' + M.length + ' movimientos)</summary><table class="g"><tr><th>Fecha</th><th>Qué</th><th>Color · talla</th><th>Cant.</th><th>Lote</th><th></th></tr>'
     + M.map(m => '<tr><td>' + esc(m.fecha) + '</td><td>' + ({ buena:'✓ Buena', falla:'⚠ Con falla', corregida:'🔧 Corregida', perdida:'✕ Perdida', yayita:'🏷 Yayita' })[m.tipo] + '</td><td>' + esc(m.color + ' ' + m.talla) + '</td><td>' + m.cantidad + '</td><td>' + esc(m.entrega || '') + '</td>'
-      + '<td>' + (m.ingresado ? '<span class="chip">en stock</span>' + (obsDeshacible(m) && ed ? ' <button title="Deshacer estas yayitas (en la orden y en Stock)" onclick="obsDeshacer(' + m.id + ')">↩ Deshacer</button>' : '') : '<button title="Deshacer (cargado por error)" onclick="borrarMov(' + m.id + ')">✕</button>') + '</td></tr>').join('') + '</table></details>';
+      + '<td>' + (m.ingresado ? '<span class="chip">en stock</span>' + (obsDeshacible(m) && ed ? ' <button title="Deshacer (en la orden y en Stock)" onclick="obsDeshacer(' + m.id + ')">↩ Deshacer</button>' : '') : '<button title="Deshacer (cargado por error)" onclick="borrarMov(' + m.id + ')">✕</button>') + '</td></tr>').join('') + '</table></details>';
   if (MAT_ADMIN) h += '<div style="margin-top:24px;padding-top:10px;border-top:1px solid var(--bd);text-align:right"><button onclick="borrarOrden()" style="color:var(--rd);border-color:var(--rd)" title="Solo administración">🗑️ Eliminar orden</button></div>';   /* 5-nov (Pablo) · lejos de la ✕ y solo administración */
   h += '<div id="oPed" style="display:none"></div></div>';
   const _ch = costosHtml(o, T), _i0 = _ch.indexOf('<!--INS-->'), _i1 = _ch.indexOf('<!--/INS-->'), _ins = _ch.slice(_i0 + 10, _i1), _cos = _ch.slice(0, _i0) + _ch.slice(_i1 + 11), _ih = insumosHtml(o);
@@ -1535,32 +1544,42 @@ async function etapa(e){ try { const r = await rpc('prod_etapa', { p_id: OA.id, 
    · vino de una OBSERVADA (lote «cambiado en Stock»): en Stock vuelve de Yayitas a «en corrección» y en la orden vuelve a observadas;
    · entró DIRECTO como no apta: sale de Stock › Yayitas (falla_anular, solo filas Yayitas) y sale de la orden;
    · todavía no entró al stock: solo sale de la orden. Stock no deja mover una yayita ya vendida. */
-function obsDeshacible(m){ return !!m && m.tipo === 'yayita'; }
-function yayModo(m){ return !m.ingresado ? 'solo' : (String(m.lote || '') === 'cambiado en Stock' ? 'obs' : 'directa'); }
+function obsDeshacible(m){ return !!m && (m.tipo === 'yayita' || m.tipo === 'corregida'); }
+/* 13-nov 17h (Pablo) · también se deshace una CORREGIDA: en Stock sale de la venta y vuelve a No disponible (en corrección); en la orden vuelve a observada. */
+function yayModo(m){ return !m.ingresado ? 'solo' : m.tipo === 'corregida' ? 'rec' : (String(m.lote || '') === 'cambiado en Stock' ? 'obs' : 'directa'); }
 async function yayDeshacerUno(m){
   const o = OA, pd = partirFicha(o.diseno), modo = yayModo(m);
   const cambiar = async (de, a) => { const rr = await fetch(SB + '/rest/v1/rpc/falla_cambiar_tipo', { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type':'application/json' },
       body: JSON.stringify({ p_prenda: pd.prenda, p_diseno: pd.diseno, p_color: m.color, p_talla: m.talla, p_de: de, p_a: a, p_cant: m.cantidad }) });
     if (!rr.ok){ const j = await rr.json().catch(() => ({})); throw new Error((j && (j.message || j.hint)) || ('error ' + rr.status)); } };
   if (modo === 'obs') await cambiar('YAYITA', 'CORRECCION');
+  if (modo === 'rec'){ const rr = await fetch(SB + '/rest/v1/rpc/falla_ingresar', { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type':'application/json' },
+      body: JSON.stringify({ p_items: [{ prenda: nrm(o.diseno + ' ' + m.color + ' ' + m.talla), cantidad: m.cantidad, motivo: motivoFalla(), destino: 'REPARAR', lote: '', nueva: false }], p_request: 'desh-corr-' + m.id }) });
+    const j = await rr.json().catch(() => ({})); if (!rr.ok || !(j && j.ok)) throw new Error((j && (j.message || j.error || j.hint)) || 'Stock no pudo devolverlas a No disponible (¿ya se vendieron?)'); }
   if (modo === 'directa'){ const rf = await rpc('falla_anular', { p_items: [{ prenda: nrm(o.diseno + ' ' + m.color + ' ' + m.talla), cantidad: m.cantidad, destino: 'YAYITAS' }], p_request: 'desh-yay-' + m.id });
     if (!rf || !rf.ok) throw new Error((rf && rf.error) || 'Stock no pudo quitar esas yayitas'); }
   try { const r = await rpc('prod_obs_deshacer', { p_mov: m.id }); if (!r || !r.ok) throw new Error((r && r.error) || 'No se pudo borrar el movimiento'); }
   catch (e) { if (modo === 'obs'){ try { await cambiar('CORRECCION', 'YAYITA'); } catch (_) { throw new Error(e.message + ' · OJO: Stock ya las devolvió a corrección; avisa para revisarlo.'); } } throw e; }
 }
 function yayTexto(m){ const q = m.cantidad + ' ' + m.color + ' ' + m.talla, md = yayModo(m);
+  if (md === 'rec') return q + ' vuelven a «observadas» en esta orden y, en Stock, salen de la venta y vuelven a No disponible (en corrección).';
   return md === 'obs' ? q + ' vuelven a «observadas» en esta orden y, en Stock, dejan de ser Yayitas (quedan en corrección).' : md === 'directa' ? q + ' salen de esta orden y de Stock › Yayitas, como si no se hubieran anotado.' : q + ' salen de esta orden (todavía no habían entrado al stock).'; }
 function obsDeshacer(id){
   const m = D.movs.find(x => x.id === id), o = OA; if (!m || !o || !obsDeshacible(m)) return;
-  confirmar('↩ ¿Deshacer estas yayitas?', yayTexto(m), 'Sí, deshacer', async () => { await yayDeshacerUno(m); aviso('↩ Deshecho: ' + m.cantidad + ' ' + m.color + ' ' + m.talla); await cargar(); abrirOrden(o.id); });
+  confirmar(m.tipo === 'corregida' ? '↩ ¿Deshacer estas corregidas?' : '↩ ¿Deshacer estas yayitas?', yayTexto(m), 'Sí, deshacer', async () => { await yayDeshacerUno(m); aviso('↩ Deshecho: ' + m.cantidad + ' ' + m.color + ' ' + m.talla); await cargar(); abrirOrden(o.id); });
 }
 /* bajar «No aptas» escribiendo el número correcto en la tabla del lote: se deshacen registros completos, del más nuevo al más viejo */
-function naQuitar(i, lista, msg){
+function naQuitar(i, lista, msg, W){
   const o = OA, lp = m => m.lote_prog != null ? +m.lote_prog : 0, plan = [];
   for (const x of lista){ let falta = -x.na; const F = D.movs.filter(m => m.orden_id === o.id && lp(m) === i && m.tipo === 'yayita' && m.color === x.color && m.talla === x.talla).sort((a, b) => b.id - a.id);
     for (const m of F){ if (!falta) break; if (m.cantidad > falta) break; plan.push(m); falta -= m.cantidad; }
     if (falta){ const ops = []; let ac = 0; F.forEach(m => { ac += m.cantidad; ops.push(ac); }); msg.textContent = x.color + ' ' + x.talla + ': las no aptas se quitan por registro completo. Puedes bajar ' + (ops.length ? ops.join(' o ') : '0') + '.'; return; } }
-  confirmar('↩ ¿Quitar estas no aptas?', plan.map(yayTexto).join(' '), 'Sí, quitar', async () => { for (const m of plan) await yayDeshacerUno(m); aviso('↩ No aptas corregidas'); await cargar(); abrirOrden(o.id); });
+  confirmar('↩ ¿Quitar estas no aptas?', plan.map(yayTexto).join(' '), 'Sí, quitar', async () => { for (const m of plan) await yayDeshacerUno(m); aviso('↩ No aptas corregidas'); await cargar(); abrirOrden(o.id);
+    if (W){ /* las no aptas quitadas del todo ya no cuentan en la confección total, salvo las que se re-anotan como observadas en el mismo guardado */
+      lista.forEach(x => { const w = W[x.color + '|' + x.talla]; if (!w || w.tot == null || x.tot) return;
+        const fuera = plan.filter(m => m.color === x.color && m.talla === x.talla && yayModo(m) !== 'obs').reduce((a, m) => a + m.cantidad, 0);
+        w.tot = Math.max(0, w.tot - Math.max(0, fuera - Math.max(0, x.obs))); });
+      await vLoteRecibir(i, W); } });
 }
 async function borrarMov(id){ confirmar('¿Borrar este movimiento?', 'Si fue un error, se recupera desde la Papelera.', 'Sí, borrar', async () => { const r = await rpc('prod_mov_borrar', { p_mov: id }); if (!r.ok) throw new Error(r.error || 'No se pudo'); await cargar(); abrirOrden(OA.id); }); }
 /* 21-oct F1b · lo bueno entra por el «＋ Ingresar stock» del ERP (una sola puerta al stock) y la orden recuerda qué ya entró */
