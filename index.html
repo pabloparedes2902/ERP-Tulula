@@ -18895,7 +18895,7 @@ async function _recuperarFalla(body) {
     const d = await _sbRpcAjuste('falla_recuperar', {
       p_items: items.map(it => ({ prenda: String(it.prenda || ''),
                                   cantidad: parseInt(it.cantidad, 10) || 0,
-                                  lote: String(it.lote || '') })),
+                                  lote: String(it.lote || '') })).map((o, i) => (items[i] && items[i].sku) ? Object.assign(o, { sku: items[i].sku }) : o),   /* 13-nov: con la prenda-talla, la base pone de tope el No disponible del libro */
       p_request: req });
     // 31-oct · D7: desde el 30-oct la base ya rechaza lo que no está en el montón (la causa de los 3 rechazos de la hoja en 30 días):
     // se confirma al instante y la hoja lo escribe por detrás; si igual la rechaza, aviso rojo y se repinta lo real (_inmEnFondo).
@@ -37808,8 +37808,8 @@ async function loadFallasHist(){
   el.innerHTML = spin('Cargando historial de fallas...');
   try {
     fallasHistData = (await _slFallasListarBase()) || await apiSend('fallas.listar', {});   // 31-oct ola 2: base primero (8,6 s → <1 s)
+    await _fhDriveCargar();   /* 13-nov: primero el libro; la tabla se pinta UNA vez y ya cuadrada con Stock */
     window._fhMarco = false; renderFallasHist(el);
-    _fhDriveCargar().then(() => { try { renderFallasHist(el); } catch(_){} });
   } catch(e) { el.innerHTML = '<div class="empty">Error: '+esc(e.message)+'</div>'; }
 }
 /* 12-nov-2026 (lista 325) · la base guarda la fecha de la falla como MES/DÍA/AÑO («11/12/2026» = 12-nov; medido: 78 de 78 sin ambigüedad) o completa («2026-07-11T05:00…»).
@@ -37844,23 +37844,42 @@ function _fhEstadoTxt(r, recuperado, dias) {
    · «Del Drive»: unidades que el cuadre del 27-set pasó a No disponible SIN ficha individual (ref CUADRE-ND). Se ven para que el número cuadre con Stock;
      todavía no se pueden recuperar desde aquí (no tienen ficha en el montón). */
 var _fhDrive = null, _fhSel = {}, _fhOrd = { k: 'f', asc: false };
+/* 13-nov-2026 (Pablo: «eran 4, recuperé 2, deben quedar 2») · EL LIBRO MANDA.
+   Lo que esta pantalla ofrece recuperar de cada prenda-talla suma SIEMPRE lo mismo que el «No disponible» de Stock (_stockResumenRapido):
+   · fichas del montón, descontando las que una recuperación ya nombró (Referencia de la fila RECUPERACION) y recortando las más viejas si aún sobran;
+   · una fila «sin ficha» (Drive / falla antigua) con lo que falta para llegar al número del libro.
+   Antes dependía de que alguien marcara la ficha como recuperada, y esa marca no llegaba. */
+var _fhRef = null, _fhND = null, _fhSku = {};
+function _fhPendFichas(){
+  const U = v => String(v == null ? '' : v).trim().toUpperCase();
+  const out = new Map(), porSku = {};
+  (fallasHistData || []).forEach(r => { if (U(r['Eliminado']) === 'SI') return;
+    const rv = U(r['Recuperado']), fid = String(r['FallaID'] || '').trim(), parc = /^\d+$/.test(rv) ? parseInt(rv, 10) : 0;
+    const ya = Math.max(parc, (_fhRef && fid && _fhRef[fid]) || 0);
+    out.set(r, rv === 'SI' ? 0 : Math.max((parseInt(r['Cantidad'], 10) || 0) - ya, 0));
+    const k = _fhCatClave(r['Prenda'], r['Diseno'], r['Color'], r['Talla']); (porSku[k] = porSku[k] || []).push(r); });
+  if (_fhND) Object.keys(porSku).forEach(k => { let exc = porSku[k].reduce((a, r) => a + out.get(r), 0) - (_fhND[k] || 0); if (exc <= 0) return;
+    const fk = r => _fhFechaClave(r['Fecha']) || '';
+    porSku[k].slice().sort((x, y) => (_fhEsTerminal(x['Destino']) ? 1 : 0) - (_fhEsTerminal(y['Destino']) ? 1 : 0) || (fk(x) < fk(y) ? -1 : fk(x) > fk(y) ? 1 : 0))
+      .forEach(r => { if (exc <= 0) return; const q = Math.min(out.get(r), exc); out.set(r, out.get(r) - q); exc -= q; }); });
+  return { out: out, porSku: porSku };
+}
 async function _fhDriveCargar(){
-  /* 12-nov · saldo recuperable «del Drive» = filas FALLA del cuadre (Origen CUADRE_ND) − recuperaciones sin enlace: la misma cuenta que hace el servidor (_ndRespaldoViejo_, NoDispFix.gs).
-     _ok = el nombre completo existe en el catálogo (sin eso el servidor no la puede recuperar). */
   try {
     const U = v => String(v == null ? '' : v).trim().toUpperCase().replace(/\s+/g, ' ');
-    const [cf, rc, cat] = await Promise.all([ _sbTablaLeer('confeccion?select=row_json&row_json-%3E%3EOrigen=eq.CUADRE_ND'), _sbTablaLeer('confeccion?select=row_json&row_json-%3E%3ETipo=eq.RECUPERACION'), _maestrosSkusRapido() ]);
-    if (!Array.isArray(cf)) return;
-    const m = {};
-    cf.forEach(x => { const o = x && x.row_json; if (!o || U(o.Eliminado) === 'SI' || U(o.Tipo) !== 'FALLA' || U(o.Lote)) return; const k = [o.Prenda, o.Diseno, o.Color, o.Talla].map(U).join('|'); (m[k] = m[k] || { n: 0, o: o }).n += parseInt(o.Cantidad, 10) || 0; });
-    (rc || []).forEach(x => { const o = x && x.row_json; if (!o || U(o.Eliminado) === 'SI' || U(o.Lote)) return; const k = [o.Prenda, o.Diseno, o.Color, o.Talla].map(U).join('|');
-      const v = (parseInt(o.Cantidad, 10) || 0) - String(o.Referencia || '').split(',').filter(z => z.trim()).length;   /* lo que NO salió de fichas salió del Drive */
-      if (m[k] && v > 0) m[k].n -= v; });
-    /* 12-nov · el nombre que se manda es el DEL CATÁLOGO, buscado por prenda+diseño+color+talla con la misma tabla de tallas del servidor (U→M, S/M→S…): así los accesorios de talla única también se recuperan */
+    const [cf, rc, cat, st] = await Promise.all([ _sbTablaLeer('confeccion?select=row_json&row_json-%3E%3EOrigen=eq.CUADRE_ND'), _sbTablaLeer('confeccion?select=row_json&row_json-%3E%3ETipo=eq.RECUPERACION'), _maestrosSkusRapido(), _stockResumenRapido() ]);
+    const ref = {}; (rc || []).forEach(x => { const o = x && x.row_json; if (!o || U(o.Eliminado) === 'SI') return; String(o.Referencia || '').split(',').map(z => z.trim()).filter(Boolean).forEach(f => { ref[f] = (ref[f] || 0) + 1; }); });
+    _fhRef = ref;
+    /* el nombre que se manda es el DEL CATÁLOGO, buscado por prenda+diseño+color+talla con la tabla de tallas del servidor (U→M, S/M→S…); así «TOFEE»/«TOFFEE» y la talla única casan solos */
     const enCat = {}; (Array.isArray(cat) ? cat : []).forEach(y => { if (!y || !y.prenda) return; const k = _fhCatClave(y.producto, y.diseno, y.color, y.talla); if (!enCat[k]) enCat[k] = String(y.prenda).trim(); });
-    _fhDrive = Object.keys(m).filter(k => m[k].n > 0).map(k => { const o = m[k].o, p = k.split('|');
-      const _cn = enCat[_fhCatClave(p[0], p[1], p[2], p[3])] || '';
-      return { _drive: 1, _ok: !!_cn, _cat: _cn, FallaID: 'DRIVE|' + k, Prenda: p[0], Diseno: p[1], Color: p[2], Talla: p[3], Cantidad: String(m[k].n), Fecha: '2026-09-27', Motivo: 'Del Drive (cuadre 27-set)', Destino: '', Referencia: '', Lote: '' }; });
+    const cu = {}; (cf || []).forEach(x => { const o = x && x.row_json; if (o) cu[_fhCatClave(o.Prenda, o.Diseno, o.Color, o.Talla)] = 1; });
+    if (!Array.isArray(st) || !st.length) { _fhND = null; _fhDrive = []; return; }
+    const nd = {}, sku = {};
+    st.forEach(x => { const f = (x && x.fallas) || {}; Object.keys(f).forEach(t => { const n = +f[t] || 0; if (n <= 0) return; const k = _fhCatClave(x.prenda, x.diseno, x.color, t); nd[k] = (nd[k] || 0) + n; sku[k] = { p: U(x.prenda), d: U(x.diseno), c: U(x.color), t: U(t) }; }); });
+    _fhND = nd; _fhSku = sku;
+    const P = _fhPendFichas();
+    _fhDrive = Object.keys(nd).map(k => { const rem = nd[k] - (P.porSku[k] || []).reduce((a, r) => a + P.out.get(r), 0); if (rem <= 0) return null; const q = sku[k], cn = enCat[k] || '';
+      return { _drive: 1, _ok: !!cn, _cat: cn, _k: k, FallaID: 'DRIVE|' + k, Prenda: q.p, Diseno: q.d, Color: q.c, Talla: q.t, Cantidad: String(rem), Fecha: cu[k] ? '2026-09-27' : '', Motivo: cu[k] ? 'Del Drive (cuadre 27-set)' : 'Sin ficha (falla antigua)', Destino: '', Referencia: '', Lote: '' }; }).filter(Boolean);
   } catch(_){}
 }
 function _fhCatClave(prod, dis, col, tal){ const U = v => String(v == null ? '' : v).trim().toUpperCase().replace(/\s+/g, ' '); const TM = { 'S/M':'S','M/L':'M','L/XL':'L','C':'M','G':'XL','STD':'M','ESTANDAR':'M','U':'M','XXL':'2XL','XXXL':'3XL' }; const t = U(tal); return [U(prod), U(dis), U(col), TM[t] || t].join('|'); }
@@ -37878,14 +37897,17 @@ function _fhParecida(q){
 }
 function _fhNorm(t){ return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim(); }
 function _fhFilas(){
-  const viv = (fallasHistData || []).filter(r => String(r['Eliminado']||'').trim().toUpperCase() !== 'SI');
-  return viv.concat(_fhDrive || []).map((r, i) => {   /* las fichas antiguas no traen FallaID: se les da una llave por posición para poder marcarlas */
-    const rec = String(r['Recuperado']||'').trim().toUpperCase() === 'SI', term = _fhEsTerminal(r['Destino']);
-    const ya = /^\d+$/.test(String(r['Recuperado']||'').trim()) ? parseInt(r['Recuperado'], 10) : 0;   /* ficha de varias unidades recuperada en parte: quedan las que faltan */
+  const P = _fhPendFichas(), filas = [];
+  let i = 0;
+  P.out.forEach((pend, r) => {   /* las fichas antiguas no traen FallaID: se les da una llave por posición para poder marcarlas */
+    const total = parseInt(r['Cantidad'], 10) || 0, rec = String(r['Recuperado']||'').trim().toUpperCase() === 'SI' || (total > 0 && pend === 0), term = _fhEsTerminal(r['Destino']);
     const full = [r['Prenda'], r['Diseno'], r['Color'], r['Talla']].map(x => String(x || '').trim()).filter(Boolean).join(' ');
-    return { r: r, id: String(r['FallaID'] || '') || ('F#' + i), f: _fhFechaClave(r['Fecha']), full: full, cant: Math.max((parseInt(r['Cantidad'], 10) || 0) - (rec ? 0 : ya), 0), ok: r._drive ? !!r._ok : true, mot: String(r['Motivo'] || ''), dst: String(r['Destino'] || ''),
-      quien: String(r['Referencia'] || '').split('@')[0], est: r._drive ? 'drive' : rec ? 'rec' : term ? 'term' : 'monton', lote: String(r['Lote'] || '') };
-  });
+    filas.push({ r: r, id: String(r['FallaID'] || '') || ('F#' + i), f: _fhFechaClave(r['Fecha']), full: full, cant: rec ? total : pend, ok: true, mot: String(r['Motivo'] || ''), dst: String(r['Destino'] || ''),
+      quien: String(r['Referencia'] || '').split('@')[0], est: rec ? 'rec' : term ? 'term' : 'monton', lote: String(r['Lote'] || ''), k: _fhCatClave(r['Prenda'], r['Diseno'], r['Color'], r['Talla']) });
+    i++; });
+  (_fhDrive || []).forEach(r => { const full = [r['Prenda'], r['Diseno'], r['Color'], r['Talla']].map(x => String(x || '').trim()).filter(Boolean).join(' ');
+    filas.push({ r: r, id: String(r['FallaID'] || ''), f: _fhFechaClave(r['Fecha']), full: full, cant: parseInt(r['Cantidad'], 10) || 0, ok: !!r._ok, mot: String(r['Motivo'] || ''), dst: '', quien: '', est: 'drive', lote: '', k: r._k || _fhCatClave(r['Prenda'], r['Diseno'], r['Color'], r['Talla']) }); });
+  return filas;
 }
 function _fhFiltradas(){
   const q = _fhNorm(window._fhQ || '').split(' ').filter(Boolean), de = String(window._fhDesde || '').replace(/-/g, ''), ha = String(window._fhHasta || '').replace(/-/g, ''), e = window._fhEst || 'porrec';
@@ -37907,7 +37929,7 @@ function _fhFiltradas(){
 function _falDestinoTxtSeg(d){ try { return (typeof _falDestinoTxt === 'function') ? _falDestinoTxt(d) : (d || ''); } catch(_) { return d || ''; } }
 function _fhEstTxt(x){
   if (x.est === 'rec') return '<span style="color:#22c55e">↺ recuperada</span>';
-  if (x.est === 'drive') return x.ok ? '<span style="color:var(--tx)" title="Vino del cuadre con el Drive del 27-set">del Drive</span>' : '<span style="color:var(--mu)" title="Su nombre no coincide con el catálogo: todavía no se puede recuperar desde aquí">del Drive · nombre fuera del catálogo</span>';
+  if (x.est === 'drive') return x.ok ? '<span style="color:var(--tx)" title="Está en No disponible sin ficha individual">' + (x.f ? 'del Drive' : 'sin ficha') + '</span>' : '<span style="color:var(--mu)" title="Su nombre no coincide con el catálogo: todavía no se puede recuperar desde aquí">del Drive · nombre fuera del catálogo</span>';
   if (x.est === 'term') return '<span style="color:var(--mu)">' + esc(_falDestinoTxtSeg(x.dst)) + '</span>';
   const d = x.f ? _fhDiasDesde(x.f.slice(0, 4) + '-' + x.f.slice(4, 6) + '-' + x.f.slice(6, 8)) : null;
   return '<span style="color:' + (d !== null && d >= 30 ? '#ef4444' : d !== null && d >= 7 ? '#f59e0b' : 'var(--tx)') + '">en el montón' + (d !== null ? ' · ' + d + ' d' : '') + '</span>';
@@ -37966,14 +37988,14 @@ function _fhPie(){
 }
 async function _fhRecuperar(){
   const sel = _fhFilas().filter(x => _fhPuede(x) && _fhSel[x.id]); if (!sel.length) return;
-  const m = {}; sel.forEach(x => { const pn = String((x.r && x.r._cat) || x.full).toUpperCase(), k = pn + '||' + x.lote; (m[k] = m[k] || { prenda: pn, cantidad: 0, lote: x.lote }).cantidad += _fhUnd(x); });
+  const m = {}; sel.forEach(x => { const pn = String((x.r && x.r._cat) || x.full).toUpperCase(), k = pn + '||' + x.lote; (m[k] = m[k] || Object.assign({ prenda: pn, cantidad: 0, lote: x.lote }, _fhSku[x.k] ? { sku: _fhSku[x.k] } : {})).cantidad += _fhUnd(x); });
   const items = Object.keys(m).map(k => m[k]), und = items.reduce((s, i) => s + i.cantidad, 0), b = document.getElementById('fh-rec');
   if (b) { b.disabled = true; b.textContent = 'Recuperando…'; }
   try {
     await _recuperarFalla({ items: items });
     try { _stockEscrito(['stock.resumen', 'confeccion.listar', 'catalogo.stock', 'fallas.resumen'], ['stock.resumen']); } catch(_){}
     toast('✓ Recuperado: ' + und + ' und vuelven al stock', 'ok');
-    sel.forEach(x => { if (x.est === 'drive') x.r['Cantidad'] = String(x.cant - _fhUnd(x)); else x.r['Recuperado'] = 'SI'; });
+    sel.forEach(x => { const u = _fhUnd(x); if (_fhND && _fhND[x.k]) _fhND[x.k] = Math.max(_fhND[x.k] - u, 0); if (x.est === 'drive') x.r['Cantidad'] = String(x.cant - u); else x.r['Recuperado'] = 'SI'; });
     _fhSel = {}; renderFallasHist();
     try { if (typeof loadFallasHist === 'function') setTimeout(loadFallasHist, 2500); } catch(_){}   /* relee de la base: la verdad de qué fichas quedaron recuperadas la tiene la base */
   } catch (e) { toast('No se pudo recuperar: ' + esc(e && e.message || e), 'err'); _fhPie(); }
