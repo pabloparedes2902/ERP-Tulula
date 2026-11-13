@@ -549,6 +549,8 @@ function resumenHtml(L, C){
     { k:'ta', t:'Taller', w:'8%', filtro:true, val: r => r.o.taller || '', html: r => esc(r.o.taller || '—') },
     { k:'pr', t:'Cantidad', w:'11%', tip:'Al stock / pedidas · clic para ordenar de mayor a menor', val: r => r.T.pedido, html: r => '<span class="barra"><i style="width:' + r.pct + '%;background:' + barraCol(r.o, r.pct, r.S) + '"></i></span>' + r.T.buenas + '/' + r.T.pedido },
     pasoCol(0, '1 · Tela'), pasoCol(1, '2 · Al taller'), pasoCol(2, '3 · Entregas del taller'), pasoCol(3, '4 · En stock'),
+    { k:'st', t:'Ingreso al stock', w:'12%', filtro:true, tip:'¿Lo que ya llegó está en el stock para vender?', val: r => { const x = stockDe(D.movs.filter(m => m.orden_id === r.o.id)); return x.falta ? 0 : x.dentro ? 2 : 1; },
+      fv: r => { const x = stockDe(D.movs.filter(m => m.orden_id === r.o.id)); return x.falta ? 'Falta ingresar' : x.dentro ? 'Ingresado' : 'Aún no llega'; }, html: r => selloStock(D.movs.filter(m => m.orden_id === r.o.id), false) },   /* 13-nov (Pablo · opción C) */
     { k:'ob', t:'Fecha objetivo', w:'9%', tip:'Cuándo debe estar lista para la venta: revisada, en stock y (si es nueva) con fotos', val: r => r.fin.obj || '9999', html: r => r.fin.obj ? '<b>' + fT(r.fin.obj) + '</b>' : '—' },
     { k:'pv', t:'Fecha prevista', w:'8%', tip:'Cuándo estará lista según cómo va hoy (el atraso del paso en curso empuja el final)', val: r => r.fin.prev || '9999', html: r => r.fin.prev ? (r.fin.real ? '✓ ' : '') + fT(r.fin.prev) : '—' },
     { k:'df', t:'Diferencia', w:'8%', filtro:true, val: r => r.fin.dif == null ? -999 : r.fin.dif, fv: r => r.fin.dif == null ? 'Sin fecha' : r.fin.dif > 0 ? 'Atrasada' : 'A tiempo',
@@ -1404,7 +1406,7 @@ function abrirOrden(id){
   const M = D.movs.filter(x => x.orden_id === o.id).slice().reverse();
   if (M.length) h += '<details class="sec"><summary style="cursor:pointer;font-weight:600">Historial (' + M.length + ' movimientos)</summary><table class="g"><tr><th>Fecha</th><th>Qué</th><th>Color · talla</th><th>Cant.</th><th>Lote</th><th></th></tr>'
     + M.map(m => '<tr><td>' + esc(m.fecha) + '</td><td>' + ({ buena:'✓ Buena', falla:'⚠ Con falla', corregida:'🔧 Corregida', perdida:'✕ Perdida', yayita:'🏷 Yayita' })[m.tipo] + '</td><td>' + esc(m.color + ' ' + m.talla) + '</td><td>' + m.cantidad + '</td><td>' + esc(m.entrega || '') + '</td>'
-      + '<td>' + (m.ingresado ? '<span class="chip">en stock</span>' : '<button title="Deshacer (cargado por error)" onclick="borrarMov(' + m.id + ')">✕</button>') + '</td></tr>').join('') + '</table></details>';
+      + '<td>' + (m.ingresado ? '<span class="chip">en stock</span>' + (obsDeshacible(m) && ed ? ' <button title="Deshacer: vuelven a «observadas» y en Stock dejan de ser Yayitas" onclick="obsDeshacer(' + m.id + ')">↩ Deshacer</button>' : '') : '<button title="Deshacer (cargado por error)" onclick="borrarMov(' + m.id + ')">✕</button>') + '</td></tr>').join('') + '</table></details>';
   if (MAT_ADMIN) h += '<div style="margin-top:24px;padding-top:10px;border-top:1px solid var(--bd);text-align:right"><button onclick="borrarOrden()" style="color:var(--rd);border-color:var(--rd)" title="Solo administración">🗑️ Eliminar orden</button></div>';   /* 5-nov (Pablo) · lejos de la ✕ y solo administración */
   h += '<div id="oPed" style="display:none"></div></div>';
   const _ch = costosHtml(o, T), _i0 = _ch.indexOf('<!--INS-->'), _i1 = _ch.indexOf('<!--/INS-->'), _ins = _ch.slice(_i0 + 10, _i1), _cos = _ch.slice(0, _i0) + _ch.slice(_i1 + 11), _ih = insumosHtml(o);
@@ -1515,6 +1517,22 @@ async function guardarMov(pre, dados, loteProg){
   catch (e) { if (dados) { aviso(e.message); return; } msg.textContent = e.message; }
 }
 async function etapa(e){ try { const r = await rpc('prod_etapa', { p_id: OA.id, p_etapa: e }); if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); } catch (er) { aviso(er.message); } }
+/* 13-nov (Pablo, 334) · DESHACER una observada que se pasó a YAYITA por error, aunque ya esté cambiada en Stock.
+   Dos pasos, en este orden: (1) Stock devuelve esas unidades de «Yayitas» a «en corrección» (falla_cambiar_tipo, que no deja mover lo ya vendido);
+   (2) se borra el movimiento de la orden y las prendas vuelven a «observadas». Si el paso 2 falla, el paso 1 se revierte. No cambia ningún total. */
+function obsDeshacible(m){ return !!m && m.tipo === 'yayita' && m.ingresado && String(m.lote || '') === 'cambiado en Stock' && m.motivo !== 'NO APTA'; }
+function obsDeshacer(id){
+  const m = D.movs.find(x => x.id === id), o = OA; if (!m || !o || !obsDeshacible(m)) return;
+  confirmar('↩ ¿Deshacer estas yayitas?', m.cantidad + ' ' + m.color + ' ' + m.talla + ' vuelven a «observadas» en esta orden y, en Stock, dejan de ser Yayitas (quedan en corrección). No cambia el total ni el stock para vender.', 'Sí, deshacer', async () => {
+    const pd = partirFicha(o.diseno);
+    const cambiar = async (de, a) => { const rr = await fetch(SB + '/rest/v1/rpc/falla_cambiar_tipo', { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type':'application/json' },
+        body: JSON.stringify({ p_prenda: pd.prenda, p_diseno: pd.diseno, p_color: m.color, p_talla: m.talla, p_de: de, p_a: a, p_cant: m.cantidad }) });
+      if (!rr.ok){ const j = await rr.json().catch(() => ({})); throw new Error((j && (j.message || j.hint)) || ('error ' + rr.status)); } };
+    await cambiar('YAYITA', 'CORRECCION');
+    try { const r = await rpc('prod_obs_deshacer', { p_mov: id }); if (!r || !r.ok) throw new Error((r && r.error) || 'No se pudo borrar el movimiento'); }
+    catch (e) { try { await cambiar('CORRECCION', 'YAYITA'); } catch (_) { throw new Error(e.message + ' · OJO: Stock ya las devolvió a corrección; avisa para revisarlo.'); } throw e; }
+    aviso('↩ Deshecho: ' + m.cantidad + ' ' + m.color + ' ' + m.talla + ' vuelven a observadas'); await cargar(); abrirOrden(o.id); });
+}
 async function borrarMov(id){ confirmar('¿Borrar este movimiento?', 'Si fue un error, se recupera desde la Papelera.', 'Sí, borrar', async () => { const r = await rpc('prod_mov_borrar', { p_mov: id }); if (!r.ok) throw new Error(r.error || 'No se pudo'); await cargar(); abrirOrden(OA.id); }); }
 /* 21-oct F1b · lo bueno entra por el «＋ Ingresar stock» del ERP (una sola puerta al stock) y la orden recuerda qué ya entró */
 const esSucia = m => m.tipo === 'buena' && nrm(m.motivo) === 'SUCIA';
