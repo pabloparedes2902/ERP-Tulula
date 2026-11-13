@@ -10,7 +10,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20261113-082412';
+const SW_VERSION = 'tulula-20261113-085140';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 // VR_CARGA02_2NOV · interruptor: false = vuelve el network-first de siempre (baja el index.html entero en cada apertura).
