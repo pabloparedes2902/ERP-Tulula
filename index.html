@@ -4288,6 +4288,12 @@ async function _puertaIntentar(action, body, porApps) {
   finally { try { _cronCerrar(_c, ok); } catch (_) {} }
 }
 // <<< PUERTA ÚNICA
+/* ══ 14-nov-2026 (Pablo: «todo por la vía rápida, sin excepción») · LAS LECTURAS YA NO CAEN A APPS SCRIPT ══
+   Medido el 13-nov (erp_lentos): 170 lecturas cayeron al servidor lento porque la base tardó un instante (pedidos.cambiosDesde 46, cuadre.faltanErp 42,
+   pedidos.listar 36, cambios2.listar 11), esperaron 10-62 s cada una y la cuenta llegó al 95% de su cuota. Además la hoja está congelada: Apps Script
+   contesta LEYENDO LA MISMA BASE, así que el respaldo no agregaba nada. Ahora: se reintenta contra la base y, si no contesta, la pantalla se queda con
+   lo que ya tenía y vuelve a probar en la siguiente vuelta. REVERSA: VR_SIN_APPS_LECTURAS = false y publicar. */
+const VR_SIN_APPS_LECTURAS = true;
 async function api(action, params) {
   // GET: los valores viajan como texto en la dirección → la llave se arma con texto (igual que la ve Apps Script)
   const _pk = {}; if (params) Object.keys(params).forEach(k => { if (params[k] !== undefined) _pk[k] = String(params[k]); });
@@ -5280,7 +5286,12 @@ async function _pedListarPagina(params){
     if (SB_LISTAR_REINTENTO && !SB_APAGADO) {
       await _sbEsperar(1200);
       try { const d2 = await _sbListarDirecto(params.offset||0, params.limit||1000, null, _wantCount); if (d2 && d2.rows) return d2; } catch(e){}
-      try { _errLog('peds.listar.directoFallo', new Error('la base no contestó 2 veces → Apps Script (offset ' + (params.offset||0) + ')')); } catch(_){}
+      try { _errLog('peds.listar.directoFallo', new Error('la base no contestó 2 veces (offset ' + (params.offset||0) + ')')); } catch(_){}
+      if (typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) {   /* tercer intento, más largo; si tampoco, error claro (la pantalla conserva lo que ya mostraba) en vez de 60 s en Apps Script */
+        await _sbEsperar(3000);
+        try { const d3 = await _sbListarDirecto(params.offset||0, params.limit||1000, null, _wantCount); if (d3 && d3.rows) return d3; } catch(e){}
+        throw new Error('La base tardó en responder. Tus pedidos siguen en pantalla; vuelve a intentar en unos segundos.');
+      }
     }
   }
   return api('pedidos.listar', params);
@@ -16001,6 +16012,12 @@ function _c2HistMapDe(filas) {
 async function _c2ListarRapido() {
   const filas = await _sbFilasEspejo('cambios2');
   if (filas) return _c2Agrupar(filas);
+  if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO) {
+    await _sbEsperar(1500);
+    const f2 = await _sbFilasEspejo('cambios2');
+    if (f2) return _c2Agrupar(f2);
+    throw new Error('La base tardó en responder la lista de cambios. Vuelve a intentar en unos segundos.');
+  }
   return api('cambios2.listar', {});
 }
 /** 1-nov-2026 · REGLA ÚNICA: ¿este cambio sigue vivo? Anulado (CANCELADO) = no existe para pedidos, envíos ni cuadre; solo queda en
@@ -21742,7 +21759,7 @@ async function _pollPedsOnce() {
         sb = await _sbPedidosCambiosDesde();
       }
       if (sb) {
-        baseOk = true;
+        baseOk = true; window._pollSinBase = 0;
         if (sb.refetch) { _recargaSilenciosa(); return; }
         // v2: los borrados llegan por acá. Antes iba `[]` fijo y había que
         // esperar a la vuelta de Apps Script para que un pedido eliminado
@@ -21783,6 +21800,12 @@ async function _pollPedsOnce() {
       }
     }
 
+    /* 14-nov · la base no contestó esta vuelta: NO se va a Apps Script (también lee la base). Se reintenta en la próxima vuelta; a la tercera seguida se avisa. */
+    if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO && !baseOk) {
+      window._pollSinBase = (window._pollSinBase || 0) + 1;
+      if (window._pollSinBase >= 3) { try { _saludBanner('La base está tardando en responder. Lo que ves puede tener unos minutos; se actualiza solo apenas vuelva.', false, true); } catch (_) {} }
+      return;
+    }
     const params = Object.assign({ desde: pLastSyncTs }, _pedsScopeParams());
     delete params.limit; delete params.offset;
     const res = await api('pedidos.cambiosDesde', params);
@@ -33389,6 +33412,7 @@ async function _feRevisar() {
     if (!r || typeof r !== 'object' || !Array.isArray(r.lista)) {   // VR_APPS0_2NOV · un tropiezo de la base (o el pase llegando): 1 reintento
       try { await new Promise(z => setTimeout(z, 2500)); if (typeof _puertaRpc === 'function') r = await _puertaRpc('cuadre_faltan_erp', {}, 6000); } catch (_) { r = null; }
     }
+    if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && (!r || typeof r !== 'object' || !Array.isArray(r.lista))) return;   /* 14-nov · sin base: se queda la lista anterior; se revisa de nuevo en la próxima vuelta (ayer: 42 viajes de 39 s a Apps Script) */
     if (!r || typeof r !== 'object' || !Array.isArray(r.lista)) r = await apiSend('cuadre.faltanErp', {});   // respaldo: puerta / Apps Script
     try { _FE.hechas = JSON.parse(localStorage.getItem('fe_hechas') || '{}') || {}; } catch (_) { _FE.hechas = {}; }
     _FE.lista = ((r && r.lista) || []).filter(x => !(_FE.hechas[_feClave(x)] && Date.now() - _FE.hechas[_feClave(x)] < 3 * 3600 * 1000));   // la que abrió para registrar se esconde 3 h (hasta la próxima revisión)
