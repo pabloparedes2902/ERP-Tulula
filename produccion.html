@@ -636,7 +636,7 @@ function selloStock(F, conBoton){
   const x = stockDe(F);
   if (!x.falta && !x.dentro) return '<span class="vsem gy" title="Todavía no se registró nada de este lote">⚪ Aún no llega</span>';
   if (x.falta) return '<span class="vsem am" title="Ya se contaron, pero todavía no están en el stock para vender">🟠 Falta ingresar al stock · ' + x.falta + '</span>'
-    + (conBoton ? ' <button class="p" onclick="ingresarStock({auto:true})" title="Las pasa al stock ahora">📦 Pasar al stock</button>' : '');
+    + (conBoton ? ' <button class="p" onclick="ingresarStock({auto:true,todo:true})" title="Las pasa al stock ahora">📦 Pasar al stock</button>' : '');
   return '<span class="vsem ok" title="Ya están en el stock y se pueden vender">🟢 Ingresado al stock · ' + x.dentro + '</span>'
     + (x.corr ? ' <span class="vsem am" title="Observadas que siguen en arreglo: entran cuando vuelvan corregidas">🪡 ' + x.corr + ' en corrección</span>' : '');
 }
@@ -1422,7 +1422,7 @@ function abrirOrden(id){
     + '<button class="p" id="vOk" style="display:none" onclick="vistaGuardar()">💾 Guardar cambios</button></div>'
     + '<div class="opane" data-p="main"><div id="oVista" class="mu" style="padding:12px 0">Cargando…</div>';
   const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && (['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0 || (x.tipo === 'falla' && x.entrega)));
-  if (PI.length) h += '<div style="margin:6px 0;color:var(--am)">📦 ' + T.porIngresar + ' prendas ya contadas no entraron al stock <button class="p" onclick="ingresarStock({auto:true})">Pasarlas al stock ahora</button> <span id="iMsg" class="mu"></span></div>';
+  if (PI.length) h += '<div style="margin:6px 0;color:var(--am)">📦 ' + T.porIngresar + ' prendas ya contadas no entraron al stock <button class="p" onclick="ingresarStock({auto:true,todo:true})">Pasarlas al stock ahora</button> <span id="iMsg" class="mu"></span></div>';
   if (ed && T.correccion) h += '<details class="sec"><summary style="cursor:pointer;font-weight:600">Prendas en corrección (' + T.correccion + ')</summary>'
       + gridMov('c', colores, tallas, S, [['corregida','Corregidas'], ['yayita','Yayitas'], ['perdida','Perdidas']], s => s.correccion > 0)
       + '<input id="cMotivo" list="lMot" placeholder="Motivo (yayita o pérdida)" style="width:260px"><datalist id="lMot">' + motivos().map(m => '<option value="' + esc(m) + '">').join('') + '</datalist> <button class="p" onclick="guardarMov(\'c\')">Guardar</button> <span id="cMsg" class="err"></span></details>';
@@ -1516,7 +1516,7 @@ async function guardarMov(pre, dados, loteProg){
   const MOT = motivos().map(x => nrm(x));
   if (!dados && MOT.length && movs.some(m => m.tipo === 'yayita' && MOT.indexOf(nrm(m.motivo)) < 0)) return fail('Para una yayita elige el motivo de la lista (es la misma lista de Fallas).');
   const enStock = (c, t) => D.movs.find(m => m.orden_id === OA.id && m.tipo === 'falla' && m.entrega && m.ingresado && m.lote !== 'NO APTA DIRECTA' && m.color === c && m.talla === t && (loteProg == null || m.lote_prog == null || +m.lote_prog === +loteProg));
-  const maxAntes = D.movs.reduce((a, m) => Math.max(a, m.id), 0), o0 = OA;
+  const maxAntes = D.movs.reduce((a, m) => Math.max(a, m.id), 0), o0 = OA;   ING_DESDE = maxAntes;   /* 339 · lo que se cree en este guardado sí entra solo al stock */
   try { const r = loteProg != null ? await rpc('prod_resolver_obs', { p_id: OA.id, p_movs: movs, p_lote_prog: loteProg }) : await rpc('prod_entrega', { p_id: OA.id, p_movs: movs }); if (!r.ok) throw new Error(r.error); await cargar();
     /* F2 · lo corregido de un lote ya estaba en Stock › No disponible: se recupera allí (no se ingresa otra vez) */
     const rec = D.movs.filter(m => m.orden_id === o0.id && m.id > maxAntes && m.tipo === 'corregida' && enStock(m.color, m.talla));
@@ -1679,8 +1679,14 @@ function pvQuitar(){ pvOp({ op:'quitar' }); }
 function motivoFalla(){ const L = motivos(); return L.find(x => /CONFECC/.test(nrm(x))) || L.find(x => /FALLA/.test(nrm(x))) || 'Falla de confección'; }
 function motivoLavado(){ const L = motivos(); return L.find(x => /LAVAD|TINTOR/.test(nrm(x))) || 'Tintorería / lavado'; }
 function motivos(){ try { return (parent && parent !== window && parent.prodMotivosFalla) ? parent.prodMotivosFalla() : []; } catch (e) { return []; } }
-function itemsIngreso(o){
-  const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && (['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0 || (x.tipo === 'falla' && x.entrega))), G = {};
+/* 13-nov 22h (Pablo, 339) · el ingreso AUTOMÁTICO (el que corre solo después de guardar) lleva al stock SOLO lo recién registrado en el ERP:
+   lo que tiene entrega, lo corregido / yayita, o lo creado en ese guardado (opts.desde). Las buenas viejas sin entrega (órdenes importadas del Drive,
+   que ya estaban en el stock) NO entran solas: en TOP AMELIA pasar 3 observadas a yayitas volvió a ingresar las 200 de la orden.
+   El botón «📦 Pasar al stock» (opts.todo) sigue llevando todo lo pendiente, porque ahí lo decide la persona. */
+var ING_DESDE = null;
+function itemsIngreso(o, opts){
+  const soloNuevo = !!(opts && opts.auto && !opts.todo), nuevo = x => !soloNuevo || !!x.entrega || x.tipo === 'corregida' || x.tipo === 'yayita' || (ING_DESDE != null && x.id > ING_DESDE);
+  const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && nuevo(x) && (['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0 || (x.tipo === 'falla' && x.entrega))), G = {};
   PI.forEach(m => { const y = m.tipo === 'yayita', su = esSucia(m), fa = m.tipo === 'falla', k = m.color + '|' + m.talla + '|' + (y ? 'Y|' + (m.motivo || '') : su ? 'S' : fa ? 'F' : 'B');
     const g = G[k] || (G[k] = { prenda: nrm(o.diseno + ' ' + m.color + ' ' + m.talla), ficha: nrm(o.diseno), color: m.color, talla: m.talla, cantidad:0, ids:[] });
     if (y){ g.motivo = m.motivo; g.destino = 'YAYITAS'; }
@@ -1691,7 +1697,7 @@ function itemsIngreso(o){
 }
 function ingresarStock(opts){
   const msg = document.getElementById('iMsg') || { textContent:'' }, o = OA; msg.textContent = '';   /* 8-nov · faltaba #iMsg: el botón morado no hacía nada */
-  const G = itemsIngreso(o), ids = G.reduce((a, g) => a.concat(g.ids), []);
+  const G = itemsIngreso(o, opts), ids = G.reduce((a, g) => a.concat(g.ids), []);
   if (!G.length) return;
   if (!(parent && parent !== window && parent.prodIngresarStock)){ msg.textContent = 'Abre Producción desde el ERP para ingresar al stock.'; return; }
   const pf = (D.prod && D.prod[nrm(o.diseno)]) || {};
