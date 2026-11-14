@@ -1695,10 +1695,59 @@ function itemsIngreso(o, opts){
     g.cantidad += m.cantidad; g.ids.push(m.id); });
   return Object.values(G);
 }
+/* ══ 14-nov-2026 (Pablo, 340 · PANTALON CATALINA DAN-014) · ANTES de pasar al stock se mira si Stock YA TIENE esas prendas ══
+   El 13-nov se anotó en la orden la confección total de dos lotes (222 prendas) que ya habían entrado a Stock a mano (lotes 0095 y 0101):
+   la orden no lo sabía y las ingresó otra vez. Ahora, si Stock tiene lotes de PRODUCCIÓN de este producto que ninguna orden reconoce como suyos
+   (desde que la orden existe) y cubren al menos la mitad de lo que se va a ingresar, se PREGUNTA: «son las mismas» (se marcan como ya ingresadas,
+   sin mover stock) o «son otras» (se ingresan). Si Stock no contesta, se sigue como siempre. */
+function _stkFechaISO(f){ f = String(f || ''); const m = f.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? m[3] + '-' + ('0' + m[1]).slice(-2) + '-' + ('0' + m[2]).slice(-2) : f.slice(0, 10); }
+function stockYaTieneCalc(o, G, filas, movs, ignorar){
+  const propios = {}; (movs || []).forEach(m => String(m.lote || '').split(',').forEach(c => { c = c.trim(); if (c) propios[c] = 1; }));
+  const desde = String(o.fecha_taller || o.creado || '').slice(0, 10), L = {};
+  (filas || []).forEach(f => { const j = f.row_json || {}, cod = String(j.Lote || '').trim(); if (!cod || propios[cod] || (ignorar || {})[cod]) return;
+    const fe = _stkFechaISO(j.Fecha); if (desde && fe && fe < desde) return;
+    const n = parseInt(String(j.Cantidad || '').replace(/[^0-9-]/g, ''), 10) || 0, k = nrm(f.color) + '|' + nrm(f.talla), l = L[cod] || (L[cod] = { cod, fecha: fe, n: 0, sku: {} });
+    l.n += n; l.sku[k] = (l.sku[k] || 0) + n; if (fe && fe < l.fecha) l.fecha = fe; });
+  const lotes = Object.values(L).filter(l => l.n > 0); if (!lotes.length) return null;
+  const B = (G || []).filter(g => !g.destino), tot = B.reduce((a, g) => a + g.cantidad, 0); if (!tot) return null;
+  const hay = k => lotes.reduce((a, l) => a + Math.max(0, l.sku[k] || 0), 0);
+  const ya = B.reduce((a, g) => a + Math.min(g.cantidad, hay(nrm(g.color) + '|' + nrm(g.talla))), 0);
+  if (ya * 2 < tot) return null;
+  return { lotes: lotes.sort((a, b) => String(a.fecha).localeCompare(String(b.fecha))), ya, tot, ids: B.reduce((a, g) => a.concat(g.ids), []) };
+}
+async function stockYaTiene(o, G){
+  try { const pd = partirFicha(o.diseno), e = encodeURIComponent;
+    const r = await fetch(SB + '/rest/v1/confeccion?prenda=eq.' + e(pd.prenda) + '&diseno=eq.' + e(pd.diseno) + '&tipo=in.(PRODUCCION,AJUSTE)&select=color,talla,row_json&limit=3000', { headers: { apikey: ANON, Authorization: 'Bearer ' + tok() } });
+    if (!r.ok) return null;
+    let ign = {}; try { ign = JSON.parse(localStorage.getItem('prod_stk_otras_' + o.id) || '{}') || {}; } catch (_) {}
+    return stockYaTieneCalc(o, G, await r.json(), D.movs, ign);
+  } catch (_) { return null; }
+}
+function stockYaTieneAbrir(o, info, opts){
+  const viejo = document.getElementById('stkYaDlg'); if (viejo) viejo.remove();
+  const d = document.createElement('div'); d.id = 'stkYaDlg'; d.className = 'modal'; d.style.display = 'flex';
+  const fe = f => String(f || '').slice(0, 10).split('-').reverse().slice(0, 2).join('/');
+  d.innerHTML = '<div class="box" style="max-width:460px"><button class="x" onclick="this.closest(\'.modal\').remove()">✕</button><h3 style="margin:0 0 8px">Stock ya tiene estas prendas</h3>'
+    + '<div style="font-size:13px;margin-bottom:10px">De las <b>' + info.tot + '</b> que acabas de anotar, <b>' + info.ya + '</b> ya están en Stock, ingresadas a mano:</div>'
+    + '<div class="mu" style="font-size:12px;margin-bottom:12px">' + info.lotes.map(l => 'Lote ' + esc(l.cod) + ' · ' + fe(l.fecha) + ' · ' + l.n + ' prendas').join('<br>') + '</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap"><button id="stkYaOtras">Son otras: ingresar ' + info.tot + '</button><button class="p" id="stkYaMismas">Son las mismas: no ingresar de nuevo</button></div></div>';
+  document.body.appendChild(d);
+  document.getElementById('stkYaMismas').onclick = async () => { d.remove();
+    try { const x = await rpc('prod_marcar_ingresado', { p_ids: info.ids, p_lote: info.lotes.map(l => l.cod).join(', ') }); if (!x || !x.ok) throw new Error((x && x.error) || 'no se marcó');
+      aviso('✓ Anotado: esas ' + info.tot + ' ya estaban en Stock; no se ingresaron otra vez'); await cargar(); abrirOrden(o.id); ingresarStock(Object.assign({}, opts || {}, { _revisado: true })); }
+    catch (e) { aviso('No se pudo anotar: ' + e.message); } };
+  document.getElementById('stkYaOtras').onclick = () => { d.remove();
+    try { const ign = JSON.parse(localStorage.getItem('prod_stk_otras_' + o.id) || '{}') || {}; info.lotes.forEach(l => { ign[l.cod] = 1; }); localStorage.setItem('prod_stk_otras_' + o.id, JSON.stringify(ign)); } catch (_) {}
+    ingresarStock(Object.assign({}, opts || {}, { _revisado: true })); };
+}
 function ingresarStock(opts){
   const msg = document.getElementById('iMsg') || { textContent:'' }, o = OA; msg.textContent = '';   /* 8-nov · faltaba #iMsg: el botón morado no hacía nada */
   const G = itemsIngreso(o, opts), ids = G.reduce((a, g) => a.concat(g.ids), []);
   if (!G.length) return;
+  if (!(opts && opts._revisado) && G.some(g => !g.destino)) {   /* 340 · primero se pregunta a Stock si ya las tiene */
+    stockYaTiene(o, G).then(info => { if (info) stockYaTieneAbrir(o, info, opts); else ingresarStock(Object.assign({}, opts || {}, { _revisado: true })); });
+    return;
+  }
   if (!(parent && parent !== window && parent.prodIngresarStock)){ msg.textContent = 'Abre Producción desde el ERP para ingresar al stock.'; return; }
   const pf = (D.prod && D.prod[nrm(o.diseno)]) || {};
   const r = parent.prodIngresarStock(G.map(g => ({ prenda:g.prenda, cantidad:g.cantidad, motivo:g.motivo || '', destino:g.destino || '', ficha:g.ficha, color:g.color, talla:g.talla, categoria: pf.categoria || '' })), async res => {

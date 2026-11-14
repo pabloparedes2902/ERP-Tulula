@@ -36238,6 +36238,28 @@ function _refrescarInv(){
 
 // Vista por defecto: mostrar Conf. Real · Ventas · Stock. Total y Fallas se ocultan hasta expandir.
 let invShowAll=(function(){ try{ return localStorage.getItem('erp_inv_showall_v2')==='1'; }catch(e){ return false; } })();
+/* 14-nov-2026 (Pablo) · el botón viejo de dos vistas (total y fallas) pasa a ser «Columnas» (igual que en Producción): cada quien marca qué GRUPOS quiere ver.
+   Se recuerda por navegador. Arranca con lo que tenía (todo, o Confección real · Ventas · Stock). Siempre queda al menos un grupo. */
+const IV_GRUPOS = ['Confección total', 'No disponible', 'Confección real', 'Ventas', 'Stock'];
+let invCols=(function(){ try{ const a=JSON.parse(localStorage.getItem('erp_inv_cols_v1')||'null'); if(Array.isArray(a)){ const b=a.map(Number).filter(i=>i>=0&&i<=4); if(b.length) return b; } }catch(e){} return invShowAll?[0,1,2,3,4]:[2,3,4]; })();
+function _ivColsVis(){ return IV_GRUPOS.map((_,i)=>i).filter(i=>invCols.indexOf(i)>=0); }
+function _ivColsCerrar(){ const p=document.getElementById('iv-cols-pop'); if(p) p.remove(); document.removeEventListener('mousedown',_ivColsFuera,true); }
+function _ivColsFuera(e){ const p=document.getElementById('iv-cols-pop'); if(p && !p.contains(e.target) && !(e.target.closest && e.target.closest('#iv-cols'))) _ivColsCerrar(); }
+function _ivColsAbrir(el){
+  if(document.getElementById('iv-cols-pop')){ _ivColsCerrar(); return; }
+  const b=document.getElementById('iv-cols'); if(!b) return; const r=b.getBoundingClientRect();
+  const p=document.createElement('div'); p.id='iv-cols-pop';
+  p.style.cssText='position:fixed;z-index:9000;top:'+(r.bottom+6)+'px;left:'+Math.max(8,Math.min(r.left,window.innerWidth-240))+'px;min-width:220px;background:var(--bg2,#17181c);border:1px solid var(--bd,#2a2c33);border-radius:10px;padding:14px 16px;box-shadow:0 12px 32px rgba(0,0,0,.45);font-family:var(--ui-f);font-size:13px';
+  p.innerHTML='<div style="font-size:11px;font-weight:500;letter-spacing:.5px;text-transform:uppercase;opacity:.6;margin-bottom:8px">Columnas</div>'
+    + IV_GRUPOS.map((g,i)=>'<label style="display:flex;align-items:center;gap:10px;padding:5px 0;cursor:pointer"><input type="checkbox" data-ivc="'+i+'"'+(invCols.indexOf(i)>=0?' checked':'')+'> '+g+'</label>').join('');
+  document.body.appendChild(p);
+  p.addEventListener('change',e=>{ const i=+e.target.getAttribute('data-ivc'); if(isNaN(i)) return;
+    let n=invCols.filter(x=>x!==i); if(e.target.checked) n.push(i);
+    if(!n.length){ e.target.checked=true; try{ toast('Deja al menos un grupo de columnas','err'); }catch(_){} return; }
+    invCols=n.sort((a,b)=>a-b); try{ localStorage.setItem('erp_inv_cols_v1',JSON.stringify(invCols)); }catch(_){}
+    renderInv(el); });
+  setTimeout(()=>document.addEventListener('mousedown',_ivColsFuera,true),0);
+}
 // >>> VR_STOCK02_2NOV · STOCK → INVENTARIO Y VISTAS AL INSTANTE (2-nov-2026, ola 24, referente Amazon/Zara)
 // Antes (medido, base simulada a 300 ms, 2.436 tallas): volver a Inventario 447 ms, Vista ★ 538 ms, tras un movimiento de
 // otra persona 640-710 ms («Calculando inventario…»); tras recargar la Vista ★ no volvía nunca (se olvidaba).
@@ -36760,7 +36782,7 @@ function renderInv(el){
   // estado de orden (stOrden), así que tienen que ofrecer lo mismo.
   ctrl+='<button id="iv-ordenar" class="btn bg bs" style="font-size:11px;flex-shrink:0" title="Crear/editar un orden manual arrastrando diseños">↕ Ordenar</button>';
   ctrl+='<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mu);cursor:pointer;white-space:nowrap"><input id="iv-hide" type="checkbox"'+(stHideNoStock?' checked':'')+' style="accent-color:var(--ac);width:14px;height:14px;cursor:pointer"> Ocultar sin stock</label>';
-  if(!_stYayMode) ctrl+='<button id="iv-cols" class="btn bg bs" style="font-size:11px;flex-shrink:0" title="Mostrar/ocultar Conf. Total y Fallas">'+(invShowAll?'▾ Total/Fallas':'▸ Total/Fallas')+'</button>';
+  if(!_stYayMode) ctrl+='<button id="iv-cols" class="btn bg bs" style="font-size:11px;flex-shrink:0" title="Elige qué grupos de columnas ver">Columnas ▾</button>';
   if(stFiltroTxt||stCatActiva) ctrl+='<button id="iv-clr" class="btn bg bs" style="font-size:11px;flex-shrink:0">✕ Limpiar</button>';
   ctrl+='</div>';
 
@@ -36817,7 +36839,7 @@ function renderInv(el){
     {lbl:'Stock',       hbg:'#261a0a', hc:'#fbbf24', tc:'#fcd34d'},
   ];
   // Bloques visibles: por defecto Real·Ventas·Stock (2,3,4). Expandido: los 5.
-  const VIS = _stYayMode ? [0,3,4] : (invShowAll ? [0,1,2,3,4] : [2,3,4]);   /* 30-oct (Pablo) · Yayitas: solo Confección · Ventas · Stock */
+  const VIS = _stYayMode ? [0,3,4] : _ivColsVis();   /* 30-oct (Pablo) · Yayitas: solo Confección · Ventas · Stock */
   if (_stYayMode) IVBLK[0] = Object.assign({}, IVBLK[0], { lbl: 'Confección' });
   const _YT = !!_stYayMode;   /* 30-oct · columna Tipo a la derecha de Color */
 
@@ -37024,7 +37046,7 @@ function renderInv(el){
   const hideChk=document.getElementById('iv-hide');
   if(hideChk) hideChk.addEventListener('change',function(){ stHideNoStock=this.checked; _stHideSave(this.checked); renderInv(el); });
   const colsBtn=document.getElementById('iv-cols');
-  if(colsBtn) colsBtn.addEventListener('click',()=>{ invShowAll=!invShowAll; try{localStorage.setItem('erp_inv_showall_v2',invShowAll?'1':'0');}catch(e){} renderInv(el); });
+  if(colsBtn) colsBtn.addEventListener('click',()=>_ivColsAbrir(el));
   el.querySelectorAll('.iv-color-edit').forEach(c=>c.addEventListener('click',(e)=>{
     if(e.target.closest('.st-drag-handle')) return; // el grip no abre el editor de color
     if(c.dataset.ivArrastrado){ delete c.dataset.ivArrastrado; return; } // fue un arrastre, no un click
