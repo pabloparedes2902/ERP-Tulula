@@ -20524,11 +20524,15 @@ function pExpandFlat(grouped) {
             /* 14-nov-2026 (Pablo, lista 330) · en la pestaña MODIFICADOS, un pedido que YA SALIÓ una vez y tiene un cambio muestra SOLO las prendas del cambio
                (las que almacén tiene que mover). Antes, al volver el pedido a «Enviar», sus otras prendas —ya entregadas— se veían como pendientes
                y salía el pedido entero. Si el pedido nunca salió, sus prendas pendientes de verdad se siguen viendo. */
-            const _soloCam = (typeof pEst !== 'undefined' && pEst === '_MODIF') && (function(){ try { return typeof _pedYaDespachado === 'function' && !!_pedYaDespachado(_nroPed, '', _cambs); } catch(_) { return false; } })();
+            /* 14-nov 09:45 (Pablo) · la regla vale en TODAS las pestañas de trabajo (Activos, Enviar hoy, Modificados, Cambio…): que no se despache dos veces lo ya entregado.
+               Excepción (12-nov, caso 23544): una prenda AGREGADA al pedido después del cambio (fila posterior a la línea «CAMBIO CAM-x») sí se envía → se muestra. */
+            const _idP = x => +((x && (x._prendaFilaId != null ? x._prendaFilaId : x._sbId)) || 0);
+            const _ancC = (ped._prendas || []).filter(x => /^CAMBIO\s+CAM-/i.test(String((x && x.prenda) || '').trim())).reduce((m, x) => Math.max(m, _idP(x)), 0);
+            const _soloCam = _pestTrabajo && (function(){ try { return typeof _pedYaDespachado === 'function' && !!_pedYaDespachado(_nroPed, '', _cambs); } catch(_) { return false; } })();
             _filtradas.length = 0;
             prendas.forEach(p => {
               if (/^CAMBIO\s+CAM-/i.test(String((p && p.prenda) || '').trim())) return;   // «CAMBIO CAM-x (diferencia/envío)» no es prenda: no se muestra (Pablo, 18-oct)
-              const k = _nCA(p.prenda), q = _cupo.get(k) || 0; if (q > 0) { _cupo.set(k, q - 1); _filtradas.push(p); } else if (_pendiente(p) && !_soloCam) _filtradas.push(p); });
+              const k = _nCA(p.prenda), q = _cupo.get(k) || 0; if (q > 0) { _cupo.set(k, q - 1); _filtradas.push(p); } else if (_pendiente(p) && (!_soloCam || (_ancC > 0 && _idP(p) > _ancC))) _filtradas.push(p); });
           }
           const _esLinCam = p => /^CAMBIO\s+CAM-/i.test(String((p && p.prenda) || '').trim());   // «CAMBIO CAM-x (diferencia/envío)»: no es prenda
           const _nOc = prendas.filter(p => !_esLinCam(p)).length - _filtradas.filter(p => !_esLinCam(p)).length;
@@ -20543,6 +20547,15 @@ function pExpandFlat(grouped) {
           // S/254, y se leia como un descuadre. Tres turnos se fueron en eso.
           // Con algo pendiente, el filtro sigue igual que siempre.
           if (_filtradas.length && prendas.some(_pendiente)) prendas = _filtradas;
+          /* 14-nov-2026 (Pablo) · misma regla del 330 en la pestaña DEVOLUCIONES: solo las prendas que se devuelven (por unidades); el resto ya se entregó y queda detrás de «+N entregadas». */
+          if (typeof pEst !== 'undefined' && pEst === '_DEVOLUCIONES' && _devs.length) {
+            const _cupoD = new Map();
+            _devs.forEach(d => { if (String(d['FechaReembolso'] || '').trim() || String(d['Estado'] || '').trim().toUpperCase() === 'CANCELADO') return;
+              String(d['PrendaDevuelta'] || '').split('|').map(_normP).filter(Boolean).forEach(k => _cupoD.set(k, (_cupoD.get(k) || 0) + 1)); });
+            const _base = (ped._prendas && ped._prendas.length ? ped._prendas : prendas).filter(p => !_esLinCam(p));
+            const _soloD = _base.filter(p => { const k = _normP(p && p.prenda), q = _cupoD.get(k) || 0; if (q > 0) { _cupoD.set(k, q - 1); return true; } return false; });
+            if (_soloD.length && _soloD.length < _base.length) { if (_verTodas.has(_nroPed)) _ocultasCam = -(_base.length - _soloD.length); else { _ocultasCam = _base.length - _soloD.length; prendas = _soloD; } }
+          }
         } else {
           // Fallback: si histCamData no está cargada, usar el campo Cambio individual
           const _hayCambioPed = prendas.some(p => String(p.cambio||'').trim());
@@ -23079,17 +23092,24 @@ function renderPT(el, rows, total, hayMas) {
         grupos.push({ nombre, courier, prendas: prendas.length ? prendas : [{prenda:'—'}] });
       });
       if (!grupos.length) { toast('No hay prendas para exportar', 'err'); return; }
+      /* 14-nov-2026 (Pablo) · ordenado por courier: cada color sale en un solo bloque; dentro del courier se respeta el orden elegido. Sin courier, al final. */
+      grupos.forEach((g, i) => { g._i = i; });
+      grupos.sort((a, b) => { const x = String(a.courier || '').trim().toUpperCase() || '\uffff', y = String(b.courier || '').trim().toUpperCase() || '\uffff'; return x < y ? -1 : x > y ? 1 : a._i - b._i; });
 
       // ── Generar HTML table con estilos inline ────────────────
       // Excel abre archivos .xls con HTML y preserva: bold, fill, borders, rowspan
-      const st = {
+      let st = {
         tbl:  'border-collapse:collapse;font-family:Calibri,Arial;font-size:11pt;width:100%',
         th:   'background:#D9D9D9;font-weight:600;border:1px solid #AAAAAA;padding:5px 10px;text-align:center;vertical-align:middle;white-space:nowrap',
         tdC:  'border:1px solid #AAAAAA;padding:5px 10px;text-align:center;vertical-align:middle;white-space:nowrap',
         tdL:  'border:1px solid #AAAAAA;padding:5px 10px;text-align:left;vertical-align:middle',
       };
       let rows = '';
+      /* 14-nov-2026 (Pablo) · cada pedido sale con el color de su courier (el mismo de la grilla, aclarado para que se lea e imprima). */
+      const _xlsBg = c => { const h = (typeof _COURIER_COL !== 'undefined' && _COURIER_COL[String(c || '').trim().toUpperCase()]) || ''; if (!/^#[0-9a-f]{6}$/i.test(h)) return '';
+        return ';background:#' + [1, 3, 5].map(i => Math.round(parseInt(h.substr(i, 2), 16) * 0.45 + 255 * 0.55).toString(16).padStart(2, '0')).join(''); };
       grupos.forEach(g => {
+        const _bg = _xlsBg(g.courier), st0 = st; st = { tbl: st0.tbl, th: st0.th, tdC: st0.tdC.replace(/;background:#[0-9a-f]{6}/i, '') + _bg, tdL: st0.tdL.replace(/;background:#[0-9a-f]{6}/i, '') + _bg };
         const rs = g.prendas.length;
         g.prendas.forEach((pr, pi) => {
           rows += '<tr>';
