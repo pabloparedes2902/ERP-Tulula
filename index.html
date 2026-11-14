@@ -291,6 +291,11 @@ body.paint-mode-on td[data-paint-prenda]:hover{outline:2px solid #39ff14;outline
 #ped-w table.pt td[data-cli-color="BLUE"]{font-weight:600}
 #ped-w table.pt td[data-pp-color="BLUE"] span{color:inherit !important}
 #ped-w table.pt tr:hover td[data-pp-color="BLUE"],#ped-w table.pt tr:hover td[data-cli-color="BLUE"]{background:#38e0ff !important}
+/* 14-nov-2026 (Pablo) · ROTULO ADELANTADO: falta una prenda (roja, en lavado) pero el rótulo ya se hizo → el nombre conserva su color y lleva BORDE celeste;
+   las prendas listas se ven verdes con borde celeste. Cuando la roja vuelve y se pinta verde, todo pasa a celeste solo. */
+#ped-w table.pt td[data-cli-rot="1"]{box-shadow:inset 0 0 0 2px #00d4ff !important}
+#ped-w table.pt td[data-pp-color="BLUE"][data-pp-adel="1"],#ped-w table.pt tr:hover td[data-pp-color="BLUE"][data-pp-adel="1"],html.light #ped-w table.pt td[data-pp-color="BLUE"][data-pp-adel="1"],html.light #ped-w table.pt tr:hover td[data-pp-color="BLUE"][data-pp-adel="1"]{background:#173404 !important;color:#C0DD97 !important;box-shadow:inset 0 0 0 2px #00d4ff !important}
+body.paint-mode-on td[data-paint-cli][data-cli-color="RED"]{cursor:pointer !important}
 body.paint-mode-on td[data-paint-cli][data-cli-color="GREEN"],body.paint-mode-on td[data-paint-cli][data-cli-color="BLUE"]{cursor:pointer !important;outline:1px dashed rgba(0,180,255,.55);outline-offset:-2px}
 html.light #ped-w table.pt td[data-pp-color="BLUE"],html.light #ped-w table.pt td[data-cli-color="BLUE"]{background:#00d4ff!important;color:#00202b!important}
 html.light #ped-w table.pt tr:hover td[data-pp-color="BLUE"],html.light #ped-w table.pt tr:hover td[data-cli-color="BLUE"]{background:#38e0ff!important}
@@ -23108,7 +23113,12 @@ function renderPT(el, rows, total, hayMas) {
       /* 14-nov-2026 (Pablo) · cada pedido sale con el color de su courier (el mismo de la grilla, aclarado para que se lea e imprima). */
       const _xlsBg = c => { const h = (typeof _COURIER_COL !== 'undefined' && _COURIER_COL[String(c || '').trim().toUpperCase()]) || ''; if (!/^#[0-9a-f]{6}$/i.test(h)) return '';
         return ';background:#' + [1, 3, 5].map(i => Math.round(parseInt(h.substr(i, 2), 16) * 0.45 + 255 * 0.55).toString(16).padStart(2, '0')).join(''); };
+      const _nCour = {}; grupos.forEach(g => { const k = String(g.courier || '').trim().toUpperCase() || 'SIN COURIER'; _nCour[k] = (_nCour[k] || 0) + 1; });
+      let _courAnt = null;
       grupos.forEach(g => {
+        /* 14-nov-2026 (Pablo) · fila de título por courier con su conteo */
+        { const k = String(g.courier || '').trim().toUpperCase() || 'SIN COURIER'; if (k !== _courAnt) { _courAnt = k;
+            rows += '<tr><td colspan="4" style="border:1px solid #AAAAAA;padding:6px 10px;text-align:left;font-weight:600;font-size:12pt' + _xlsBg(g.courier) + '">' + k + ' · ' + _nCour[k] + (_nCour[k] === 1 ? ' pedido' : ' pedidos') + '</td></tr>'; } }
         const _bg = _xlsBg(g.courier), st0 = st; st = { tbl: st0.tbl, th: st0.th, tdC: st0.tdC.replace(/;background:#[0-9a-f]{6}/i, '') + _bg, tdL: st0.tdL.replace(/;background:#[0-9a-f]{6}/i, '') + _bg };
         const rs = g.prendas.length;
         g.prendas.forEach((pr, pi) => {
@@ -23501,18 +23511,19 @@ function _cliColorRebuild() {
     if (!pr || _esPago(pr) || /^CAMBIO\s+CAM-/i.test(pr)) continue;   // las filas de pago no son prendas · 13-nov (Pablo, 338): tampoco la línea «CAMBIO CAM-x (diferencia / saldo a favor)»: no se puede pintar y trababa el rótulo celeste
     const c = String(r['ColorPrenda'] || '').trim().toUpperCase();
     let a = acc[nro];
-    if (!a) a = acc[nro] = { n: 0, red: false, todasVerdes: true, todasAzules: true };
+    if (!a) a = acc[nro] = { n: 0, red: false, todasVerdes: true, todasAzules: true, azul: false };
     a.n++;
     if (c === 'RED') a.red = true;
     if (c !== 'GREEN' && c !== 'BLUE') a.todasVerdes = false;   // 14-oct · celeste (rotulo listo) sigue siendo "lista"
-    if (c !== 'BLUE') a.todasAzules = false;
+    if (c !== 'BLUE') a.todasAzules = false; else a.azul = true;
   }
-  const m = Object.create(null);
+  const m = Object.create(null), ad = Object.create(null);
   for (const nro in acc) {
     const a = acc[nro];
     m[nro] = a.red ? 'RED' : (!(a.n > 0) ? '' : (a.todasAzules ? 'BLUE' : (a.todasVerdes ? 'GREEN' : '')));   // regla en _cliColorDe (14-oct)
+    if (a.azul && !a.todasAzules) ad[nro] = 1;   // 14-nov · rótulo adelantado
   }
-  window._cliColorMap = m;
+  window._cliColorMap = m; window._rotAdelMap = ad;
   window._cliColorLen = arr.length;
   window._cliColorTs  = Date.now();
   return m;
@@ -23546,7 +23557,7 @@ function _cliColorRecalcNro(nro) {
   if (!n) return '';
   const m = window._cliColorMap || _cliColorRebuild();
   const arr = (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) ? pRaw : [];
-  let cnt = 0, red = false, todasVerdes = true, todasAzules = true;
+  let cnt = 0, red = false, todasVerdes = true, todasAzules = true, azul = false;
   for (let i = 0; i < arr.length; i++) {
     const r = arr[i];
     if (!r || String(r['NroPedido'] || '').trim() !== n) continue;
@@ -23556,8 +23567,9 @@ function _cliColorRecalcNro(nro) {
     cnt++;
     if (c === 'RED') red = true;
     if (c !== 'GREEN' && c !== 'BLUE') todasVerdes = false;
-    if (c !== 'BLUE') todasAzules = false;
+    if (c !== 'BLUE') todasAzules = false; else azul = true;
   }
+  try { const ad = window._rotAdelMap || (window._rotAdelMap = Object.create(null)); if (azul && !todasAzules) ad[n] = 1; else delete ad[n]; } catch (_) {}
   const val = red ? 'RED' : (!(cnt > 0) ? '' : (todasAzules ? 'BLUE' : (todasVerdes ? 'GREEN' : '')));   // regla en _cliColorDe (14-oct)
   m[n] = val;
   window._cliColorTs = Date.now();   // este pedido quedó exacto: no forzar rebuild inmediato
@@ -23573,6 +23585,14 @@ function _cliColorDe(n, red, todasVerdes, todasAzules) {
   return todasVerdes ? 'GREEN' : '';
 }
 function _cliColorAttrOk(c) { return c === 'GREEN' || c === 'RED' || c === 'BLUE'; }
+/* 14-nov-2026 (Pablo) · rótulo adelantado: el pedido tiene prendas celestes pero NO todas (falta la que está en lavado). */
+function _rotAdel(nro) { try { if (!window._rotAdelMap) _cliColorMapaVigente(); return !!(window._rotAdelMap && window._rotAdelMap[String(nro || '').trim()]); } catch (_) { return false; } }
+function _rotAdelPintar(nro) {
+  try { const n = String(nro || '').trim().replace(/"/g, ''), on = _rotAdel(n);
+    document.querySelectorAll('td[data-paint-prenda][data-pp-nro="' + n + '"]').forEach(td => { if (on) td.setAttribute('data-pp-adel', '1'); else td.removeAttribute('data-pp-adel'); });
+    document.querySelectorAll('td[data-paint-cli="' + n + '"]').forEach(td => { if (on) td.setAttribute('data-cli-rot', '1'); else td.removeAttribute('data-cli-rot'); });
+  } catch (_) {}
+}
 
 // Fuerza la reconstrucción en el próximo uso (por si algún flujo nuevo toca pRaw).
 function _cliColorInvalidar() { window._cliColorMap = null; }
@@ -24012,7 +24032,7 @@ function mkTBody(rows) {
         const _paintAttrs = v
           ? ' data-paint-prenda="1" data-pp-nro="'+esc(String(p['NroPedido']||''))+'" data-pp-prenda="'+esc(String(v||''))+'" data-pp-occ="'+(parseInt(p['_prendaOcc'])||0)+'"'
             + (p['_prendaFilaId'] != null ? ' data-pp-fila="'+esc(String(p['_prendaFilaId']))+'"' : '')   // FASE 2
-            + ' data-pp-color="'+esc(_cp)+'"'
+            + ' data-pp-color="'+esc(_cp)+'"' + (_cp === 'BLUE' && _rotAdel(p['NroPedido']) ? ' data-pp-adel="1"' : '')
           : '';
         const _styleAttr2 = ' style="text-align:center;' + _txtColor + '"';
         // 18-oct · «+N entregadas»: prendas ya entregadas de un pedido con cambio abierto (clic = verlas / esconderlas)
@@ -24029,7 +24049,7 @@ function mkTBody(rows) {
         const _styleC = ' style="' + _stkLeft + '"';
         // FIX color-igual: el nombre usa data-cli-color con LAS MISMAS reglas CSS
         // que la prenda (mismo hex en normal y en hover) → color idéntico garantizado.
-        const _cliAttr = (_cliColorAttrOk(cc) ? ' data-cli-color="'+cc+'"' : '') + ' data-paint-cli="'+esc(String(nro||''))+'"';
+        const _cliAttr = (_cliColorAttrOk(cc) ? ' data-cli-color="'+cc+'"' : '') + (_rotAdel(nro) ? ' data-cli-rot="1"' : '') + ' data-paint-cli="'+esc(String(nro||''))+'"';
         // 12-ago — HISTORIAL EN ACTIVOS: chip "N ant." si la clienta tiene
         // pedidos anteriores (clic = mostrar/ocultar el panel; son solo de confirmación).
         let _histChip = '';
@@ -24248,6 +24268,7 @@ async function _paintPrendaCell(td) {
         else cliTd.removeAttribute('data-cli-color');
       });
     }
+    _rotAdelPintar(nro);
   }
 
   // Persistir al backend (no bloqueante para UX)
@@ -24263,6 +24284,8 @@ async function _paintPrendaCell(td) {
     const _directoOK = await _sbRpcColorPintar(nro, prenda, occ, next, filaId);
     if (_directoOK) {
       try { if (typeof _pedsEditLocalMark === 'function') _pedsEditLocalMark(nro); } catch(_) {}
+      /* 14-nov-2026 (Pablo) · la prenda que faltaba (lavado) volvió y se pintó VERDE, y el resto ya tenía rótulo (celeste) → todo el pedido pasa a celeste solo. */
+      try { if (next === 'GREEN' && _rotAdel(nro) && _cliColorRecalcNro(nro) === 'GREEN') { const _d = await _sbRpcRotulo(nro); if (_d && String(_d.color || '').toUpperCase() === 'BLUE') { _rotuloAplicarLocal(nro, 'BLUE'); toast('🏷️ Rótulo listo · pedido ' + nro + ' (ya llegó la prenda que faltaba)', 'ok'); } } } catch (_) {}
     } else {
       // 1-oct-2026 · listado 177 ("lo coloreo y a los 3 dias ya no esta"). Este respaldo
       // escribia la HOJA Pedidos, congelada desde el 19-set: no daba error, el color se
@@ -24310,7 +24333,7 @@ async function _sbRpcRotulo(nro) {
   });
   if (!r.ok) {
     let t = ''; try { t = String(await r.text()); } catch (_) {}
-    window._rotuloUltimoError = /NO_LISTO/.test(t) ? 'el pedido ya no está todo en verde (alguien cambió una prenda)'
+    window._rotuloUltimoError = /NO_LISTO/.test(t) ? 'las prendas del pedido ya no están todas listas (alguien cambió una prenda)'
       : /SIN_PERMISO/.test(t) ? 'tu usuario no tiene permiso' : ('la base respondió ' + r.status);
     if (r.status === 401) { try { _sbVencerTok(); } catch (_) {} }
     return null;
@@ -24321,19 +24344,21 @@ async function _sbRpcRotulo(nro) {
 function _rotuloAplicarLocal(nro, color) {
   const n = String(nro).trim();
   const esPr = (pr) => { pr = String(pr || '').trim(); return pr && !_esPago(pr.toUpperCase()) && !/^CAMBIO\s+CAM-/i.test(pr); };
-  if (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) pRaw.forEach(r => { if (r && String(r['NroPedido']).trim() === n && esPr(r['Prenda'])) r['ColorPrenda'] = color; });
-  if (typeof pFlat !== 'undefined' && Array.isArray(pFlat)) pFlat.forEach(r => { if (r && String(r['NroPedido']).trim() === n && esPr(r['Prenda'])) r['ColorPrenda'] = color; });
+  const noRoja = c => String(c || '').trim().toUpperCase() !== 'RED';   // 14-nov · rótulo adelantado: la prenda roja (en lavado) no se toca
+  if (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) pRaw.forEach(r => { if (r && String(r['NroPedido']).trim() === n && esPr(r['Prenda']) && noRoja(r['ColorPrenda'])) r['ColorPrenda'] = color; });
+  if (typeof pFlat !== 'undefined' && Array.isArray(pFlat)) pFlat.forEach(r => { if (r && String(r['NroPedido']).trim() === n && esPr(r['Prenda']) && noRoja(r['ColorPrenda'])) r['ColorPrenda'] = color; });
   if (typeof pAll !== 'undefined' && Array.isArray(pAll)) pAll.forEach(p => {
     if (!p || String(p['NroPedido']).trim() !== n) return;
-    if (Array.isArray(p._prendas)) { p._prendas.forEach(pr => { if (esPr(pr.prenda)) pr.colorPrenda = color; }); if (p._prendas[0]) p['ColorPrenda'] = p._prendas[0].colorPrenda || ''; }
-    else if (esPr(p['Prenda'])) p['ColorPrenda'] = color;
+    if (Array.isArray(p._prendas)) { p._prendas.forEach(pr => { if (esPr(pr.prenda) && noRoja(pr.colorPrenda)) pr.colorPrenda = color; }); if (p._prendas[0]) p['ColorPrenda'] = p._prendas[0].colorPrenda || ''; }
+    else if (esPr(p['Prenda']) && noRoja(p['ColorPrenda'])) p['ColorPrenda'] = color;
   });
   const cli = _cliColorRecalcNro(n);
-  document.querySelectorAll('td[data-paint-prenda][data-pp-nro="' + n.replace(/"/g, '') + '"]').forEach(td => td.setAttribute('data-pp-color', color));
+  document.querySelectorAll('td[data-paint-prenda][data-pp-nro="' + n.replace(/"/g, '') + '"]').forEach(td => { if (noRoja(td.getAttribute('data-pp-color'))) td.setAttribute('data-pp-color', color); });
   document.querySelectorAll('td[data-paint-cli="' + n.replace(/"/g, '') + '"]').forEach(td => {
     td.style.background = ''; td.style.color = '';
     if (_cliColorAttrOk(cli)) td.setAttribute('data-cli-color', cli); else td.removeAttribute('data-cli-color');
   });
+  _rotAdelPintar(n);
   return cli;
 }
 async function _paintRotulo(td) {
@@ -24341,10 +24366,15 @@ async function _paintRotulo(td) {
   const nro = String(td.getAttribute('data-paint-cli') || '').trim();
   if (!nro) return;
   const cur = _cliColorRecalcNro(nro);
-  if (cur !== 'GREEN' && cur !== 'BLUE') { toast('El rótulo solo se marca cuando el nombre está en VERDE (todas las prendas listas).', 'err'); return; }
+  /* 14-nov-2026 (Pablo) · rótulo adelantado: con una prenda en rojo (lavado) igual se puede marcar el rótulo si TODAS las demás están listas (verdes o celestes). */
+  const _est = (function(){ let lista = 0, azul = 0, otra = 0; (typeof pRaw !== 'undefined' && Array.isArray(pRaw) ? pRaw : []).forEach(r => { if (!r || String(r['NroPedido']).trim() !== nro) return;
+    const pr = String(r['Prenda'] || '').trim(); if (!pr || _esPago(pr.toUpperCase()) || /^CAMBIO\s+CAM-/i.test(pr)) return; const c = String(r['ColorPrenda'] || '').trim().toUpperCase();
+    if (c === 'RED') return; if (c === 'BLUE') { lista++; azul++; } else if (c === 'GREEN') lista++; else otra++; }); return { lista, azul, otra }; })();
+  const _adel = cur === 'RED';
+  if (_adel ? (!_est.lista || _est.otra > 0) : (cur !== 'GREEN' && cur !== 'BLUE')) { toast(_adel ? 'Para adelantar el rótulo, las demás prendas deben estar en VERDE (solo puede faltar la que está en rojo).' : 'El rótulo solo se marca cuando el nombre está en VERDE (todas las prendas listas).', 'err'); return; }
   if (td.dataset.rotuloOcupado === '1') return;
   td.dataset.rotuloOcupado = '1';
-  const next = cur === 'BLUE' ? 'GREEN' : 'BLUE';
+  const next = _adel ? (_est.azul === _est.lista ? 'GREEN' : 'BLUE') : (cur === 'BLUE' ? 'GREEN' : 'BLUE');
   // foto para deshacer si la base no lo guarda
   const antes = [];
   if (typeof pRaw !== 'undefined' && Array.isArray(pRaw)) pRaw.forEach(r => { if (r && String(r['NroPedido']).trim() === nro) antes.push([r, r['ColorPrenda']]); });
@@ -24357,10 +24387,10 @@ async function _paintRotulo(td) {
     if (real !== next) _rotuloAplicarLocal(nro, real);
     try { if (typeof _pedsEditLocalMark === 'function') _pedsEditLocalMark(nro); } catch (_) {}
     try { if (typeof lsSetPeds === 'function' && typeof pRaw !== 'undefined') lsSetPeds(pRaw, (typeof pLastSyncTs !== 'undefined' && pLastSyncTs) ? pLastSyncTs : Date.now()); } catch (_) {}
-    toast(real === 'BLUE' ? '🏷️ Rótulo listo · pedido ' + nro : 'Pedido ' + nro + ' vuelve a verde', 'ok');
+    toast(real === 'BLUE' ? (_adel ? '🏷️ Rótulo adelantado · pedido ' + nro + ' (falta la prenda en rojo)' : '🏷️ Rótulo listo · pedido ' + nro) : 'Pedido ' + nro + (_adel ? ': rótulo quitado' : ' vuelve a verde'), 'ok');
   } catch (err) {
     antes.forEach(x => { x[0]['ColorPrenda'] = x[1]; });
-    try { _rotuloAplicarLocal(nro, cur); } catch (_) {}
+    try { _rotuloAplicarLocal(nro, next === 'BLUE' ? 'GREEN' : 'BLUE'); } catch (_) {}
     antes.forEach(x => { x[0]['ColorPrenda'] = x[1]; });
     _cliColorRecalcNro(nro);
     toast('No se marcó el rótulo: ' + err.message, 'err');
