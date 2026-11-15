@@ -1703,12 +1703,14 @@ async function mkCargarVentas(desde, hasta){
   const _costoProm = Promise.all([ _mkCostoPeriodo(desde, hasta), _mkCostoPeriodo(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
   const _det = (typeof _mkDetalleVentas === 'function') ? _mkDetalleVentas : (() => Promise.resolve(null));   /* 13-oct */
   const _detProm = Promise.all([ _det(desde, hasta), _det(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
+  const _apProm = (typeof _mkAnuncioProducto === 'function') ? _mkAnuncioProducto() : Promise.resolve(null);   /* 14-nov · anuncio no identificado por producto */
   [MKV, MKVP] = await Promise.all([
     leer(desde, hasta),
     leer(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1))
   ]);
   /* 13-oct · detalle de cada venta + ingreso SOLO prendas (regla de Pablo: el envío no suma) */
   [MKDET, MKDETP] = await _detProm;
+  { const ap = await _apProm; if (ap) MK_AP = ap; }
   if (typeof _mkIngresoPrendas === 'function'){ _mkIngresoPrendas(MKV, MKDET); _mkIngresoPrendas(MKVP, MKDETP); }
   [MKC, MKCP] = await _costoProm;
 }
@@ -1838,13 +1840,47 @@ function _mkVenAttr(tipo, ids, nombre, enColumna){
   const i = MK_VEN_REG.push({ tipo: tipo, ids: ids || [], nombre: nombre || '', col: enColumna || null }) - 1;
   return ' class="mkvcel" onmouseenter="mkVenIn(event,' + i + ')" onmouseleave="mkVenOut()" onclick="mkVenFijar(event,' + i + ')"';
 }
+/* ══ 14-nov-2026 · ANUNCIO NO IDENTIFICADO, POR PRODUCTO (aprobado por Pablo) ══════════════
+   La clienta llegó con el mensaje que deja el anuncio («Quiero más información de la Blusa Catalina»),
+   pero WhatsApp no dijo CUÁL anuncio y ese día corrían varios del mismo producto. Sin adivinar
+   (regla de Pablo 14-nov), esas ventas salen de «Sin anuncio identificado» y van a una fila propia
+   por producto. Solo en la vista WhatsApp. El TOTAL no cambia.
+   Fuente: public.mk_anuncio_producto() → [{n, prod}] (erp.chat_origen, resultado «anuncio-producto:N»). */
+let MK_AP = {};   /* Nº de pedido → producto del mensaje del anuncio */
+async function _mkAnuncioProducto(){
+  try {
+    const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+    if (!tok) return null;
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_anuncio_producto', { method: 'POST',
+      headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) return null;
+    const a = await r.json(), m = {};
+    (Array.isArray(a) ? a : []).forEach(x => { if (x && x.n && x.prod) m[String(x.n).trim()] = String(x.prod).trim(); });
+    return m;
+  } catch (e) { return null; }
+}
+function _mkApNombre(p){ return String(p || '').toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase()); }
+/* las ventas «sin anuncio» del canal WhatsApp que sí traen el producto del anuncio, agrupadas por producto */
+function _mkApGrupos(){
+  if (MKCANAL !== 'wa' || !MKDET || typeof MK_AP === 'undefined' || !MK_AP) return [];
+  const g = {};
+  _mkVenLista({ tipo: 'sin0' }).forEach(x => { const p = MK_AP[String(x.n || '').trim()]; if (!p) return;
+    const e = g[p] || (g[p] = { prod: p, pedidos: 0, ingreso: 0 }); e.pedidos++; e.ingreso += +x.m || 0; });
+  return Object.keys(g).map(k => g[k]).map(e => (e.ingreso = Math.round(e.ingreso * 100) / 100, e)).sort((a, b) => b.pedidos - a.pedidos || (a.prod < b.prod ? -1 : 1));
+}
 function _mkVenLista(reg){
   const base = _mkVenCanal();
   const _todas = new Set(((MK && MK.filas) || []).map(r => String(r.ad_id || '')).filter(Boolean));   /* 11-nov */
   if (reg.tipo === 'cru') return base.filter(x => x.a && !MK_VEN_TODOS.has(String(x.a)) && _todas.has(String(x.a)));
   if (reg.tipo === 'ads' && MKCANAL !== 'all'){ const s = new Set(reg.ids.map(String)); return (MKDET || []).filter(x => x.a && s.has(String(x.a)) && (x.c === MKCANAL || MK_VEN_TODOS.has(String(x.a)))); }
   if (reg.tipo === 'ads'){ const s = new Set(reg.ids.map(String)); return base.filter(x => x.a && s.has(String(x.a))); }
-  if (reg.tipo === 'sin') return base.filter(x => !x.a || !_todas.has(String(x.a)));   /* 11-nov · sin anuncio de verdad: su anuncio no esta en NINGUN canal */
+  if (reg.tipo === 'sin0' || reg.tipo === 'sin' || reg.tipo === 'ap'){
+    const sin = base.filter(x => !x.a || !_todas.has(String(x.a)));   /* 11-nov · sin anuncio de verdad: su anuncio no esta en NINGUN canal */
+    const ap = (MKCANAL === 'wa' && typeof MK_AP !== 'undefined' && MK_AP) ? MK_AP : {};   /* 14-nov · las de «anuncio no identificado» van a la fila de su producto */
+    if (reg.tipo === 'sin0') return sin;
+    if (reg.tipo === 'ap') return sin.filter(x => ap[String(x.n || '').trim()] === reg.ids[0]);
+    return sin.filter(x => !ap[String(x.n || '').trim()]);
+  }
   if (reg.tipo === 'tot'){
     const filtro = mkFiltroActivoEn('__cam') || mkFiltroActivoEn('__con');
     return (MKDET || []).filter(x => (MKCANAL === 'all' || x.c === MKCANAL || (x.a && MK_VEN_TODOS.has(String(x.a)))) && ((x.a && MK_VEN_VIS.has(String(x.a))) || (!filtro && (MKCANAL === 'all' || x.c === MKCANAL) && !(x.a && MK_VEN_TODOS.has(String(x.a))))));   /* 11-nov · visibles (con sus ventas cruzadas) + cruzadas recibidas + sin anuncio */
@@ -2124,10 +2160,20 @@ function mkResiduoVentas(lado, rows){
    poner 0 daria un ROAS infinito y ensuciaria los promedios. */
 function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
   const R = MK_RESV;
-  const s = (R && R.sin) ? (R.sin.pedidos > 0 || R.sin.ingreso > 0 ? R.sin : null) : R;   /* 11-nov · solo lo de verdad sin anuncio */
+  let s = (R && R.sin) ? (R.sin.pedidos > 0 || R.sin.ingreso > 0 ? R.sin : null) : R;   /* 11-nov · solo lo de verdad sin anuncio */
   const e = MK_RES;
   const cruce = _mkFilaCruce(R && R.cruce, cols, aCam, aCon, aCre, aEst, L1, L2, L3, L4);
-  if (!s && !e) return cruce;
+  /* 14-nov · lo que vino con el mensaje de un anuncio (sin saber cuál) sale de aquí y va a la fila de su producto */
+  const grupos = s ? _mkApGrupos() : [];
+  let filasAp = '';
+  if (grupos.length){
+    const gp = grupos.reduce((t, g) => t + g.pedidos, 0), gi = grupos.reduce((t, g) => t + g.ingreso, 0);
+    s = Object.assign({}, s, { pedidos: Math.max(0, (+s.pedidos || 0) - gp), pagados: Math.max(0, (+s.pagados || 0) - gp),
+                               ingreso: Math.max(0, Math.round(((+s.ingreso || 0) - gi) * 100) / 100), whatsapp: Math.max(0, (+s.whatsapp || 0) - gp) });
+    if (!(s.pedidos > 0) && !(s.ingreso > 0)) s = null;
+    filasAp = grupos.map(g => _mkFilaAp(g, cols, aCam, aCon, aCre, aEst, L1, L2, L3, L4)).join('');
+  }
+  if (!s && !e) return filasAp + cruce;
   const detalle = [];
   if (s && s.web) detalle.push(s.web + ' de Pagina Web');
   if (s && s.whatsapp) detalle.push(s.whatsapp + ' de WhatsApp');
@@ -2150,7 +2196,24 @@ function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
         if (e && c === 'personas') return '<td>' + mkNum(e.personas) + '</td>';
         return '<td>—</td>';
       }).join('')
-    + '</tr>' + cruce;
+    + '</tr>' + filasAp + cruce;
+}
+function _mkFilaAp(g, cols, aCam, aCon, aCre, aEst, L1, L2, L3, L4){
+  const nom = _mkApNombre(g.prod);
+  const tip = '<b>' + _mkVenEsc(nom) + ' · anuncio no identificado</b><br>La clienta llegó con el mensaje que deja el anuncio de ' + _mkVenEsc(nom) + ', pero WhatsApp no dijo CUÁL anuncio y ese día corrían varios de ese producto.<br>No se reparte entre esos anuncios para no adivinar: por eso no tiene gasto ni ROAS propio.<br><b>Cuentan en el TOTAL</b>: son ventas reales.';
+  return '<tr class="mksinid mkap">'
+    + '<td class="fijo" style="width:' + aCam + 'px;left:' + L1 + 'px">—</td>'
+    + '<td class="fijo" style="width:' + aCon + 'px;left:' + L2 + 'px"></td>'
+    + '<td class="fijo" style="width:' + aCre + 'px;left:' + L3 + 'px;cursor:help" onmouseenter="mkTipIn(event, ' + JSON.stringify(tip).replace(/"/g, '&quot;') + ')" onmouseleave="mkTipOut()">&#128993; ' + _mkVenEsc(nom) + ' · anuncio no identificado</td>'
+    + '<td class="fijo borde" style="width:' + aEst + 'px;left:' + L4 + 'px"></td>'
+    + '<td></td>'
+    + cols.map(k => {
+        if (k === 'pedidos') return '<td' + (MKDET ? _mkVenAttr('ap', [g.prod], nom + ' · anuncio no identificado', { pedidos: g.pedidos, ingreso: g.ingreso }) : '') + '>' + mkNum(g.pedidos) + '</td>';
+        if (k === 'pagados') return '<td>' + mkNum(g.pedidos) + '</td>';
+        if (k === 'ingreso') return '<td>' + (g.ingreso ? mkSol(g.ingreso) : '—') + '</td>';
+        return '<td>—</td>';
+      }).join('')
+    + '</tr>';
 }
 function _mkFilaCruce(c, cols, aCam, aCon, aCre, aEst, L1, L2, L3, L4){
   if (!c || !(c.pedidos > 0)) return '';
@@ -2955,7 +3018,7 @@ function _mkSnapGuardar(k){
     .sort((a, b) => b.t - a.t).slice(1).forEach(o => localStorage.removeItem(o.x)); } catch (_) {}
   try {
     localStorage.setItem(k, JSON.stringify({ v: MK_SNAP_V, ts: Date.now(),
-      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP, MKDET: MKDET }));
+      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP, MKDET: MKDET, MK_AP: MK_AP }));
   } catch (e) { /* sin espacio o sin permiso: no pasa nada */ }
 }
 function _mkSnapUsar(k){
@@ -2963,7 +3026,7 @@ function _mkSnapUsar(k){
     const o = JSON.parse(localStorage.getItem(k) || 'null');
     if (!o || o.v !== MK_SNAP_V || !o.MK || !Array.isArray(o.MK.filas)) return 0;
     MK = o.MK; MKV = o.MKV; MKVP = o.MKVP; MKC = o.MKC || null; MKCP = o.MKCP || null; MKE = o.MKE; MKEP = o.MKEP; MKTXT = o.MKTXT || {};
-    MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD; MKDET = o.MKDET || null;
+    MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD; MKDET = o.MKDET || null; if (o.MK_AP) MK_AP = o.MK_AP;
     mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar(); if (MKSUB === 'reglas') rgPintar(); if (MKSUB === 'escala' && typeof escPintar === 'function') escPintar();
