@@ -336,6 +336,7 @@ html .card,html .pl-card,html .pl-box,html .pl-ses,html .inv-k,html .inv-b{borde
      definio en :root: siempre caia en el color de respaldo (#f7f7f8, gris claro
      fijo), por eso se veia resaltada distinto al resto en los dos temas. Ahora
      usa var(--panel), el mismo fondo que ya tiene la fila TOTAL de al lado. */
+  table.mk tfoot tr.mksinid .mkap-n{ font-size:12px; color:var(--txt2); font-weight:400; }
   table.mk tfoot tr.mksinid td{ background:var(--panel); color:var(--txt2);
     font-weight:500; border-top:1px dashed var(--bd); }
   table.mk tfoot tr.mksinid .acc.rev{ background:transparent; color:var(--txt2);
@@ -1710,7 +1711,7 @@ async function mkCargarVentas(desde, hasta){
   ]);
   /* 13-oct · detalle de cada venta + ingreso SOLO prendas (regla de Pablo: el envío no suma) */
   [MKDET, MKDETP] = await _detProm;
-  { const ap = await _apProm; if (ap) MK_AP = ap; }
+  { const ap = await _apProm; if (ap) MK_AP = ap; }   /* MK_APN lo llena _mkAnuncioProducto */
   if (typeof _mkIngresoPrendas === 'function'){ _mkIngresoPrendas(MKV, MKDET); _mkIngresoPrendas(MKVP, MKDETP); }
   [MKC, MKCP] = await _costoProm;
 }
@@ -1847,6 +1848,7 @@ function _mkVenAttr(tipo, ids, nombre, enColumna){
    por producto. Solo en la vista WhatsApp. El TOTAL no cambia.
    Fuente: public.mk_anuncio_producto() → [{n, prod}] (erp.chat_origen, resultado «anuncio-producto:N»). */
 let MK_AP = {};   /* Nº de pedido → producto del mensaje del anuncio */
+let MK_APN = {};  /* 14-nov · Nº de pedido → cuántos anuncios de ese producto corrían ese día (aprobado por Pablo) */
 async function _mkAnuncioProducto(){
   try {
     const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
@@ -1855,7 +1857,9 @@ async function _mkAnuncioProducto(){
       headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: '{}' });
     if (!r.ok) return null;
     const a = await r.json(), m = {};
-    (Array.isArray(a) ? a : []).forEach(x => { if (x && x.n && x.prod) m[String(x.n).trim()] = String(x.prod).trim(); });
+    const c = {};
+    (Array.isArray(a) ? a : []).forEach(x => { if (x && x.n && x.prod) { m[String(x.n).trim()] = String(x.prod).trim(); if (+x.cand > 0) c[String(x.n).trim()] = +x.cand; } });
+    MK_APN = c;
     return m;
   } catch (e) { return null; }
 }
@@ -1865,7 +1869,8 @@ function _mkApGrupos(){
   if (MKCANAL !== 'wa' || !MKDET || typeof MK_AP === 'undefined' || !MK_AP) return [];
   const g = {};
   _mkVenLista({ tipo: 'sin0' }).forEach(x => { const p = MK_AP[String(x.n || '').trim()]; if (!p) return;
-    const e = g[p] || (g[p] = { prod: p, pedidos: 0, ingreso: 0 }); e.pedidos++; e.ingreso += +x.m || 0; });
+    const e = g[p] || (g[p] = { prod: p, pedidos: 0, ingreso: 0, cand: [] }); e.pedidos++; e.ingreso += +x.m || 0;
+    const k = (typeof MK_APN !== 'undefined' && MK_APN) ? +MK_APN[String(x.n || '').trim()] : 0; if (k > 0 && e.cand.indexOf(k) < 0) e.cand.push(k); });
   return Object.keys(g).map(k => g[k]).map(e => (e.ingreso = Math.round(e.ingreso * 100) / 100, e)).sort((a, b) => b.pedidos - a.pedidos || (a.prod < b.prod ? -1 : 1));
 }
 function _mkVenLista(reg){
@@ -2200,11 +2205,13 @@ function mkFilaSinId(cols, aCam, aCon, aCre, aEst, aAcc, L1, L2, L3, L4, L5){
 }
 function _mkFilaAp(g, cols, aCam, aCon, aCre, aEst, L1, L2, L3, L4){
   const nom = _mkApNombre(g.prod);
-  const tip = '<b>' + _mkVenEsc(nom) + ' · anuncio no identificado</b><br>La clienta llegó con el mensaje que deja el anuncio de ' + _mkVenEsc(nom) + ', pero WhatsApp no dijo CUÁL anuncio y ese día corrían varios de ese producto.<br>No se reparte entre esos anuncios para no adivinar: por eso no tiene gasto ni ROAS propio.<br><b>Cuentan en el TOTAL</b>: son ventas reales.';
+  const cs = (g.cand || []).slice().sort((a, b) => a - b);
+  const nAds = cs.length ? (cs[0] === cs[cs.length - 1] ? String(cs[0]) : cs[0] + '–' + cs[cs.length - 1]) : '';   /* 14-nov · cuántos anuncios corrían ese día */
+  const tip = '<b>' + _mkVenEsc(nom) + ' · anuncio no identificado</b><br>La clienta llegó con el mensaje que deja el anuncio de ' + _mkVenEsc(nom) + ', pero WhatsApp no dijo CUÁL anuncio y ese día corrían ' + (nAds ? '<b>' + nAds + ' anuncios</b>' : 'varios') + ' de ese producto.<br>No se reparte entre esos anuncios para no adivinar: por eso no tiene gasto ni ROAS propio.<br><b>Cuentan en el TOTAL</b>: son ventas reales.';
   return '<tr class="mksinid mkap">'
     + '<td class="fijo" style="width:' + aCam + 'px;left:' + L1 + 'px">—</td>'
     + '<td class="fijo" style="width:' + aCon + 'px;left:' + L2 + 'px"></td>'
-    + '<td class="fijo" style="width:' + aCre + 'px;left:' + L3 + 'px;cursor:help" onmouseenter="mkTipIn(event, ' + JSON.stringify(tip).replace(/"/g, '&quot;') + ')" onmouseleave="mkTipOut()">&#128993; ' + _mkVenEsc(nom) + ' · anuncio no identificado</td>'
+    + '<td class="fijo" style="width:' + aCre + 'px;left:' + L3 + 'px;cursor:help" onmouseenter="mkTipIn(event, ' + JSON.stringify(tip).replace(/"/g, '&quot;') + ')" onmouseleave="mkTipOut()">&#128993; ' + _mkVenEsc(nom) + ' · anuncio no identificado' + (nAds ? ' <span class="mkap-n">(' + nAds + ' anuncios ese día)</span>' : '') + '</td>'
     + '<td class="fijo borde" style="width:' + aEst + 'px;left:' + L4 + 'px"></td>'
     + '<td></td>'
     + cols.map(k => {
@@ -3018,7 +3025,7 @@ function _mkSnapGuardar(k){
     .sort((a, b) => b.t - a.t).slice(1).forEach(o => localStorage.removeItem(o.x)); } catch (_) {}
   try {
     localStorage.setItem(k, JSON.stringify({ v: MK_SNAP_V, ts: Date.now(),
-      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP, MKDET: MKDET, MK_AP: MK_AP }));
+      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP, MKDET: MKDET, MK_AP: MK_AP, MK_APN: MK_APN }));
   } catch (e) { /* sin espacio o sin permiso: no pasa nada */ }
 }
 function _mkSnapUsar(k){
@@ -3026,7 +3033,7 @@ function _mkSnapUsar(k){
     const o = JSON.parse(localStorage.getItem(k) || 'null');
     if (!o || o.v !== MK_SNAP_V || !o.MK || !Array.isArray(o.MK.filas)) return 0;
     MK = o.MK; MKV = o.MKV; MKVP = o.MKVP; MKC = o.MKC || null; MKCP = o.MKCP || null; MKE = o.MKE; MKEP = o.MKEP; MKTXT = o.MKTXT || {};
-    MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD; MKDET = o.MKDET || null; if (o.MK_AP) MK_AP = o.MK_AP;
+    MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD; MKDET = o.MKDET || null; if (o.MK_AP) MK_AP = o.MK_AP; if (o.MK_APN) MK_APN = o.MK_APN;
     mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
     mkPintarCols(); mkPintar();
     if (MKSUB === 'quefunciona') qfPintar(); if (MKSUB === 'reglas') rgPintar(); if (MKSUB === 'escala' && typeof escPintar === 'function') escPintar();

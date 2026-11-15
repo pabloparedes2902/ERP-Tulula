@@ -3845,10 +3845,12 @@ let _lentosVolcando = false;
 // «sin sesion» en la base (esa puerta no tiene la columna).
 // REVERSA: LENTOS_VOLCADO_DIRECTO = false y publicar.
 const LENTOS_VOLCADO_DIRECTO = true;
-const _LENTOS_LOTE_DIRECTO   = 50;
+const _LENTOS_LOTE_DIRECTO   = 25;   // 14-nov · eran 50 a la vez: 50 conexiones de golpe en plena ráfaga
 async function _lentosVolcarDirecto(tok, lote) {
   if (SB_APAGADO) return false;   // simulacro de reversa: nada a la base
-  const rs = await Promise.all(lote.map(function (x) {
+  /* 14-nov-2026 · de a UNO (antes Promise.all = todos a la vez): una sola conexión ocupada por pestaña */
+  const rs = [];
+  for (const x of lote) rs.push(await (function (x) {
     return fetch(SB_URL + '/rest/v1/rpc/erp_lento_registrar', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: SB_ANON, Authorization: 'Bearer ' + tok },
@@ -3856,7 +3858,7 @@ async function _lentosVolcarDirecto(tok, lote) {
         p_proceso: String(x.proceso || '').slice(0, 200), p_ms: x.ms || 0, p_ok: !!x.ok,
         p_cortada: !!x.cortada, p_ocurrio: new Date(x.ts || Date.now()).toISOString() })
     }).then(function (r) { return r.ok; }).catch(function () { return false; });
-  }));
+  })(x));
   return rs.every(Boolean);
 }
 async function _lentosVolcarPendientes(forzar, tok) {
@@ -3892,6 +3894,11 @@ let _lentoTokCache = null, _lentoTokCacheTs = 0;
 async function _lentoCentralizar(reg) {
   try {
     if (typeof SB_URL === 'undefined' || !SB_ANON) { _lentoGuardarPendiente(reg); return; }
+    /* 14-nov-2026 (Pablo: «qué satura el sistema») · medido 13-nov 10:15-11:45: erp_lento_registrar fue el pedido Nº 1 a la base
+       (1.433 en 90 min) y justo en la ráfaga, cuando todo ya iba lento, cada anotación ocupaba una conexión más. Ahora cada pestaña
+       manda como mucho 6 por minuto; el resto va a la cola local y sale en el volcado de 5 min, de a uno. */
+    { const _ah = Date.now(), _r = (_lentoCentralizar._r = (_lentoCentralizar._r || []).filter(function (t) { return _ah - t < 60000; }));
+      if (_r.length >= 6) { _lentoGuardarPendiente(reg); return; } _r.push(_ah); }
     // Reusa el token de sesión Supabase que ya existe para todo lo demás
     // (libro directo, espejo, etc.) — no abre una sesión nueva para esto.
     const tok = await _sbSesionAsegurar();
@@ -36649,7 +36656,7 @@ if (location.protocol === 'https:') {
 // >>> VR_ARRANQUE_2NOV · después de publicar, las pestañas del equipo NO se recargan todas en el mismo segundo: cada una
 // espera al azar 0-60 s antes de empezar a mirar si puede recargarse, y sigue exigiendo lo mismo de siempre (sin ventana
 // abierta, nada a medio escribir, oculta o quieta 2 min). El aviso con ✕ y su botón «Recargar» (al instante) no cambian.
-const VER_JITTER_MS = 60000;
+const VER_JITTER_MS = 5 * 60 * 1000;   // 14-nov (Pablo: «qué satura el sistema») · eran 60 s: el 13-nov, con 3 publicaciones en 34 min, las 9 pestañas recargaban en el mismo minuto y cada una pedía ~25 lecturas → la base hizo cola hasta 135 s. Ahora se reparten en 5 min.
 const _verMarcarNuevaYa = _verMarcarNueva;
 _verMarcarNueva = function () {
   if (typeof VR_ARRANQUE !== 'undefined' && !VR_ARRANQUE) return _verMarcarNuevaYa();
