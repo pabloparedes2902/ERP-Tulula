@@ -38094,7 +38094,28 @@ function renderLotes(el){
 }
 
 // Corregir la cantidad de un SKU dentro de un lote (opción libro contable: publica un ajuste).
-function _loteAjustarPrompt(codigo, prenda, dis, col, talla, actual){
+/* 16-nov-2026 (Pablo, 338) · «Corregir lote» en Stock: los lotes que vienen de Producción se corrigen SOLO en Producción
+   (una sola puerta, nunca se descuadran); los demás piden MOTIVO y quedan anotados (erp.lote_ajustes_log). Sin la base no se corrige. */
+async function _ajustarLoteMotivo(body){
+  const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('Sin sesión con la base: recarga el ERP e intenta de nuevo.');
+  const req = 'lam-' + Date.now() + '-' + Math.random().toString(36).slice(2, 10);
+  const r = await fetch(SB_URL + '/rest/v1/rpc/lote_ajustar_con_motivo', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_codigo: String(body.codigo || ''), p_prenda: String(body.prenda || ''), p_dis: String(body.dis || ''), p_col: String(body.col || ''),
+      p_talla: String(body.talla || ''), p_nueva: parseInt(body.nueva, 10), p_request: req, p_motivo: String(body.motivo || ''), p_nota: String(body.nota || '') }) });
+  if (!r.ok) { let m = ''; try { const e = await r.json(); m = String((e && (e.message || e.hint)) || ''); } catch (_) {} throw new Error(m || ('No se pudo corregir (HTTP ' + r.status + ')')); }
+  const d = await r.json(); if (!(d && d.ok)) throw new Error('No se pudo corregir el lote.');
+  if (D6_STOCK_EN_FONDO) { _inmEnFondo(req, 'lote ' + body.codigo + ' a ' + body.nueva); return { ok: true, nueva: parseInt(body.nueva, 10), diff: d.diff }; }
+  await _inmAplicarYa(req); return { ok: true, nueva: parseInt(body.nueva, 10), diff: d.diff };
+}
+async function _loteAjustarPrompt(codigo, prenda, dis, col, talla, actual){
+  let _op = null; try { _op = await _puertaRpc('lote_de_produccion', { p_codigo: codigo }, 5000); } catch (_) {}
+  if (_op && typeof _op === 'string') {
+    const ov0 = document.createElement('div');
+    ov0.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:24px';
+    ov0.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r2);max-width:380px;width:100%;padding:18px"><div style="display:flex;justify-content:space-between"><b>Lote ' + esc(codigo) + '</b><button id="la-x0" class="btn bg bs" title="Cerrar">✕</button></div>'
+      + '<div style="font-size:13px;margin:10px 0">Este lote viene de <b>Producción (' + esc(_op) + ')</b>. Para que Stock y Producción no se descuadren, se corrige solo en <b>Producción</b>: abre la orden y corrige la entrega.</div></div>';
+    document.body.appendChild(ov0); const c0 = () => ov0.remove(); ov0.addEventListener('click', e => { if (e.target === ov0) c0(); }); document.getElementById('la-x0').addEventListener('click', c0); return;
+  }
   const inpSt='width:100%;padding:8px 11px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-size:14px';
   const ov=document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:900;display:flex;align-items:center;justify-content:center;padding:24px';
@@ -38102,7 +38123,9 @@ function _loteAjustarPrompt(codigo, prenda, dis, col, talla, actual){
     +'<div style="font-weight:600;margin-bottom:4px">Corregir lote '+esc(codigo)+'</div>'
     +'<div style="font-size:12px;color:var(--mu);margin-bottom:12px">'+esc(prenda+' '+dis+' '+col+' '+talla)+' · actual: <b style="color:var(--tx)">'+actual+'</b></div>'
     +'<label style="font-size:12px;color:var(--mu)">Cantidad correcta</label>'
-    +'<input id="la-cant" type="number" min="0" step="1" value="'+actual+'" style="'+inpSt+';margin:4px 0 14px">'
+    +'<input id="la-cant" type="number" min="0" step="1" value="'+actual+'" style="'+inpSt+';margin:4px 0 10px">'
+    +'<label style="font-size:12px;color:var(--mu)">Motivo</label><select id="la-mot" style="'+inpSt+';margin:4px 0 10px"><option value="">— elige —</option><option>Conteo físico</option><option>Error al ingresar</option><option>Se movió a otro lote</option><option>Otro</option></select>'
+    +'<input id="la-nota" maxlength="200" placeholder="Nota (opcional)" style="'+inpSt+';margin:0 0 14px">'
     +'<div style="display:flex;gap:8px;justify-content:flex-end"><button id="la-x" class="btn bg bs" style="font-size:12px">Cancelar</button><button id="la-ok" class="btn bp bs" style="font-size:12px">Guardar</button></div>'
     +'</div>';
   document.body.appendChild(ov);
@@ -38112,10 +38135,12 @@ function _loteAjustarPrompt(codigo, prenda, dis, col, talla, actual){
   document.getElementById('la-ok').addEventListener('click',async function(){
     const nueva=parseInt(inp.value,10);
     if(isNaN(nueva)||nueva<0){ toast('Cantidad inválida','err'); return; }
+    const motivo=(document.getElementById('la-mot')||{}).value||'', nota=(document.getElementById('la-nota')||{}).value||'';
+    if(!motivo){ toast('Elige el motivo de la corrección','err'); return; }
     this.disabled=true; this.textContent='Guardando...';
-    try{ const r=await _ajustarLote({codigo,prenda,dis,col,talla,nueva});
+    try{ const r=await _ajustarLoteMotivo({codigo,prenda,dis,col,talla,nueva,motivo,nota});
       _stockEscrito(['stock.resumen','lotes.listar','confeccion.listar','catalogo.stock'], ['stock.resumen','lotes.listar']);  // 05-ago
-      toast('✓ Ajustado a '+r.nueva+' ('+(r.diff>=0?'+':'')+r.diff+')','ok');
+      toast('✓ Ajustado a '+r.nueva+(r.diff!=null?' ('+(r.diff>=0?'+':'')+r.diff+')':''),'ok');
       close(); try{ stData=null; _stLsDel(); }catch(e){} loadLotes();
     }catch(e){ toast('Error: '+esc(e.message),'err'); this.disabled=false; this.textContent='Guardar'; }
   });
