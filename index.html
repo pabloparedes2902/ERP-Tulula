@@ -23149,12 +23149,13 @@ function renderPT(el, rows, total, hayMas) {
           let _sp = null; try { _sp = _excelPrendasASeparar([ped]).get(nro) || null; } catch (_) {}
           if (_sp && _sp.prendas && _sp.prendas.length) prendas = _sp.prendas.map(t => ({ prenda: (/^—/.test(t) ? '' : '🔁 ') + t }));
         }
-        grupos.push({ nombre, courier, prendas: prendas.length ? prendas : [{prenda:'—'}] });
+        grupos.push({ nro, nombre, courier, prendas: prendas.length ? prendas : [{prenda:'—'}] });
       });
       if (!grupos.length) { toast('No hay prendas para exportar', 'err'); return; }
-      /* 14-nov-2026 (Pablo) · ordenado por courier: cada color sale en un solo bloque; dentro del courier se respeta el orden elegido. Sin courier, al final. */
+      /* 16-nov-2026 (Pablo, 333) · YA NO se agrupa por courier: sale en el orden en que los pedidos subieron al ERP (Nº de pedido de menor a mayor).
+         Cada pedido conserva el color de su courier. */
       grupos.forEach((g, i) => { g._i = i; });
-      grupos.sort((a, b) => { const x = String(a.courier || '').trim().toUpperCase() || '\uffff', y = String(b.courier || '').trim().toUpperCase() || '\uffff'; return x < y ? -1 : x > y ? 1 : a._i - b._i; });
+      grupos.sort((a, b) => ((parseInt(a.nro, 10) || 0) - (parseInt(b.nro, 10) || 0)) || (a._i - b._i));
 
       // ── Generar HTML table con estilos inline ────────────────
       // Excel abre archivos .xls con HTML y preserva: bold, fill, borders, rowspan
@@ -23171,8 +23172,8 @@ function renderPT(el, rows, total, hayMas) {
       const _nCour = {}; grupos.forEach(g => { const k = String(g.courier || '').trim().toUpperCase() || 'SIN COURIER'; _nCour[k] = (_nCour[k] || 0) + 1; });
       let _courAnt = null;
       grupos.forEach(g => {
-        /* 14-nov-2026 (Pablo) · fila de título por courier con su conteo */
-        { const k = String(g.courier || '').trim().toUpperCase() || 'SIN COURIER'; if (k !== _courAnt) { _courAnt = k;
+        /* 14-nov-2026 · fila de título por courier · 16-nov (333): apagada, ya no se agrupa por courier */
+        if (false) { const k = String(g.courier || '').trim().toUpperCase() || 'SIN COURIER'; if (k !== _courAnt) { _courAnt = k;
             rows += '<tr><td colspan="4" style="border:1px solid #AAAAAA;padding:6px 10px;text-align:left;font-weight:600;font-size:12pt' + _xlsBg(g.courier) + '">' + k + ' · ' + _nCour[k] + (_nCour[k] === 1 ? ' pedido' : ' pedidos') + '</td></tr>'; } }
         const _bg = _xlsBg(g.courier), st0 = st; st = { tbl: st0.tbl, th: st0.th, tdC: st0.tdC.replace(/;background:#[0-9a-f]{6}/i, '') + _bg, tdL: st0.tdL.replace(/;background:#[0-9a-f]{6}/i, '') + _bg };
         const rs = g.prendas.length;
@@ -25764,9 +25765,10 @@ function _modDecorar(){
   try {
     const pg = document.getElementById('pg-pedidos'); if (!pg) return;
     _modEstilo(); _modVigilarPago();
-    pg.querySelectorAll('td.mod-cel').forEach(td => { td.classList.remove('mod-cel'); td.removeAttribute('data-mod'); });
-    if (!_modPend.length) return;
+    pg.querySelectorAll('td.mod-cel').forEach(td => { td.classList.remove('mod-cel'); td.removeAttribute('data-mod'); td.removeAttribute('data-modc'); });
     const th0 = pg.querySelector('th[data-k="NroPedido"]'); const tabla = th0 && th0.closest('table'); if (!tabla) return;
+    try { _modDecorarAbiertos(tabla, th0); } catch(_){}   /* 16-nov (335) · cambio o devolución abierta: también se marca la prenda */
+    if (!_modPend.length) return;
     const idx = {}; [...th0.parentElement.children].forEach((th, i) => { const k = th.getAttribute('data-k'); if (k) idx[k] = i; });
     const porNro = {}; _modPend.forEach(c => { const n = String(c.nro_pedido||'').trim(); (porNro[n] = porNro[n] || []).push(c); });
     Object.keys(porNro).forEach(n => {
@@ -25786,10 +25788,68 @@ function _modDecorar(){
   } catch(_){}
 }
 function _modPopCerrar(){ const d = document.getElementById('mod-pop'); if (d) d.remove(); }
+/* 16-nov-2026 (Pablo, 335) · Un pedido entra a «Modificados» también por un CAMBIO o una DEVOLUCIÓN abierta (sin fila en pedido_cambios).
+   Antes no se marcaba ninguna celda: ahora se marca la prenda que se devuelve / la nueva, y al tocarla se explica qué falta.
+   Sale de Modificados sola cuando el cambio pasa a «Prenda nueva enviada» o «Cancelado» (o la devolución se reembolsa). */
+const MOD_COLOR_TXT = { GREEN: ['#173404', '#C0DD97', 'verde · estaba en stock'], BLUE: ['#00d4ff', '#00202b', 'celeste · ya rotulada'], RED: ['#501313', '#F09595', 'rojo · no había stock'],
+  YELLOW_LAVADO: ['#f2c200', '#1f1a00', 'amarillo · en lavado'], YELLOW_PLANCHADO: ['#f2c200', '#1f1a00', 'amarillo · en planchado'], YELLOW_BUSCANDO: ['#f2c200', '#1f1a00', 'amarillo · buscando'] };
+/* 16-nov (336) · la prenda anterior se muestra con el color que tenía (guardado al cambiar; si no, el que tiene hoy esa fila del pedido) */
+function _modColorPrenda(nro, prenda, guardado){
+  let c = String(guardado || '').trim().toUpperCase();
+  if (!c) { try { const p = (pAll || []).find(x => String(x.NroPedido).trim() === String(nro).trim()); const U = t => String(t || '').trim().toUpperCase().replace(/\s+/g, ' ');
+    const f = p && Array.isArray(p._prendas) ? p._prendas.find(x => U(x.prenda) === U(prenda)) : null; c = f ? String(f.colorPrenda || '').trim().toUpperCase() : ''; } catch(_){} }
+  return MOD_COLOR_TXT[c] ? c : '';
+}
+function _modPrendaHtml(nro, prenda, guardado){
+  const c = _modColorPrenda(nro, prenda, guardado), m = MOD_COLOR_TXT[c];
+  if (!m) return esc(String(prenda || '—')) + ' <span style="font-size:11px;color:var(--mu)">(sin pintar)</span>';
+  return '<span style="background:' + m[0] + ';color:' + m[1] + ';padding:1px 6px;border-radius:4px">' + esc(String(prenda || '—')) + '</span> <span style="font-size:11px;color:var(--mu)">' + m[2] + '</span>';
+}
+function _modAbiertosDe(n){
+  const U = t => String(t || '').trim().toUpperCase().replace(/\s+/g, ' '), out = [];
+  try { (Array.isArray(_c2List) ? _c2List : []).forEach(c => { if (['PRENDA NUEVA ENVIADA', 'CANCELADO'].indexOf(U(c.Estado)) >= 0) return;
+    const de = x => !x.NroPedido || String(x.NroPedido).trim() === n;
+    if (![].concat(c.pedidos || [], (c.nuevas || []).map(x => x.NroPedido), (c.devueltas || []).map(x => x.NroPedido)).some(x => String(x || '').trim() === n)) return;
+    out.push({ tipo: 'cam', id: U(c.NroCambio), estado: String(c.Estado || ''), devuelve: (c.devueltas || []).filter(de).map(x => String(x.Prenda || '').trim()).filter(Boolean),
+      recibe: (c.nuevas || []).filter(de).map(x => String(x.Prenda || '').trim()).filter(Boolean) }); }); } catch(_){}
+  try { (Array.isArray(histDevData) ? histDevData : []).forEach(d => { if (String(d['FechaReembolso'] || '').trim() || U(d['Estado']) === 'CANCELADO') return;
+    if (String(d['NroPedido'] || '').trim() !== n) return; out.push({ tipo: 'dev', id: 'DEV', estado: String(d['Estado'] || ''), devuelve: [String(d['Prenda'] || '').trim()].filter(Boolean), recibe: [] }); }); } catch(_){}
+  return out;
+}
+function _modDecorarAbiertos(tabla, th0){
+  const idx = {}; [...th0.parentElement.children].forEach((th, i) => { const k = th.getAttribute('data-k'); if (k) idx[k] = i; });
+  const ip = idx['Prenda']; if (ip == null) return;
+  const U = t => String(t || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  _modNrosAbiertos().forEach(n => {
+    const trs = [...tabla.querySelectorAll('tbody tr[data-nro="' + n.replace(/["\\]/g, '') + '"]')]; if (!trs.length) return;
+    const A = _modAbiertosDe(n); if (!A.length) return;
+    const nombres = []; A.forEach(a => nombres.push.apply(nombres, a.devuelve.concat(a.recibe).map(U).filter(x => x.length > 3 && !/^PENDIENTE\b/.test(x))));
+    let marcadas = 0;
+    trs.forEach(tr => { const td = tr.children[ip]; if (!td) return; const tx = U(td.textContent);
+      if (nombres.some(x => tx.indexOf(x) >= 0)) { td.classList.add('mod-cel'); td.setAttribute('data-modc', n); marcadas++; } });
+    if (!marcadas) { const td = trs[0].children[ip]; if (td) { td.classList.add('mod-cel'); td.setAttribute('data-modc', n); } }
+  });
+}
+function _modPopAbierto(td){
+  const n = String(td.getAttribute('data-modc') || ''), A = _modAbiertosDe(n); if (!A.length) return;
+  const r = td.getBoundingClientRect();
+  const d = document.createElement('div'); d.id = 'mod-pop';
+  d.style.cssText = 'position:fixed;z-index:9000;left:' + Math.max(8, Math.min(r.left, window.innerWidth - 340)) + 'px;top:' + Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 240))
+    + 'px;width:320px;background:var(--bg2);border:1px solid var(--bd2);border-radius:var(--r);box-shadow:0 8px 26px rgba(0,0,0,.45);padding:12px 14px;font-size:13px;color:var(--tx);font-family:inherit';
+  let h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:14px;font-weight:600">' + (A[0].tipo === 'dev' ? 'Devolución abierta' : 'Cambio abierto') + '</span>'
+    + '<button type="button" onclick="_modPopCerrar()" title="Cerrar" style="background:none;border:none;color:var(--mu);cursor:pointer;font-size:16px;padding:0 4px">✕</button></div>';
+  A.forEach(a => {
+    h += '<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">' + esc(a.tipo === 'dev' ? 'Devolución' : a.id) + ' · ' + esc(a.estado || '—') + '</div>'
+      + (a.devuelve.length ? '<div><span style="color:var(--mu)">Devuelve:</span> ' + a.devuelve.map(p => _modPrendaHtml(n, p, '')).join(', ') + '</div>' : '')
+      + (a.recibe.length ? '<div><span style="color:var(--mu)">Recibe:</span> ' + a.recibe.map(p => esc(p)).join(', ') + '</div>' : '') + '</div>';
+  });
+  h += '<div style="font-size:12px;color:var(--am)">' + (A[0].tipo === 'dev' ? 'Sale de Modificados cuando se reembolsa.' : 'Sale de Modificados cuando el cambio pasa a «Prenda nueva enviada» o se cancela (en Cambios).') + '</div>';
+  d.innerHTML = h; document.body.appendChild(d);
+}
 function _modPop(td){
   _modPopCerrar();
   const ids = String(td.getAttribute('data-mod') || '').split(' ').filter(Boolean);
-  const cs = _modPend.filter(c => ids.indexOf(String(c.id)) >= 0); if (!cs.length) return;
+  const cs = _modPend.filter(c => ids.indexOf(String(c.id)) >= 0); if (!cs.length) { if (td.getAttribute('data-modc')) _modPopAbierto(td); return; }
   const r = td.getBoundingClientRect();
   const d = document.createElement('div'); d.id = 'mod-pop';
   d.style.cssText = 'position:fixed;z-index:9000;left:' + Math.max(8, Math.min(r.left, window.innerWidth - 340)) + 'px;top:' + Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 240))
@@ -25803,7 +25863,7 @@ function _modPop(td){
     try { cu = new Date(c.cuando).toLocaleString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch(_){}
     const q = String(c.quien || '').split('@')[0] || 'sin identificar';
     h += '<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">' + esc(col ? col.l : c.campo) + '</div>'
-      + '<div><span style="color:var(--mu)">Antes:</span> ' + esc(String(c.antes || '—')) + '</div>'
+      + '<div><span style="color:var(--mu)">Antes:</span> ' + (c.campo === 'Prenda' ? _modPrendaHtml(c.nro_pedido, c.antes, c.antes_color) : esc(String(c.antes || '—'))) + '</div>'   /* 16-nov (336) · con su color */
       + '<div><span style="color:var(--mu)">Ahora:</span> ' + esc(String(_modCambioAhora(c) || '—')) + '</div>'
       + '<div style="font-size:12px;color:var(--mu)">' + esc(q) + ' · ' + esc(cu) + '</div>'
       + '<div style="font-size:12px;color:var(--am)">' + esc(MOD_IMPLICA[c.campo] || 'Revisar el pedido') + '</div>'
