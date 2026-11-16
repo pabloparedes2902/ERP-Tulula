@@ -1194,7 +1194,9 @@ async function vBajarTotal(i, color, talla, menos){
   for (const m of F){ if (!rest) break; const q = Math.min(rest, m.cantidad);
     if (m.ingresado && cod(m)){ if (!(parent && parent !== window && typeof parent._ajustarLote === 'function')) throw new Error('Abre Producción desde el ERP para corregir el stock');
       const enLote = D.movs.filter(z => z.orden_id === o.id && z.tipo === 'buena' && z.ingresado && z.color === color && z.talla === talla && cod(z) === cod(m)).reduce((a, z) => a + z.cantidad, 0);
-      await parent._ajustarLote({ codigo: cod(m), prenda: pd.prenda, dis: pd.diseno, col: color, talla: talla, nueva: Math.max(0, enLote - q) }); }
+      /* 16-nov (339) · se RESTA q del lote en la base (antes: «cantidad correcta» = buenas de Producción − q, que borraba lo entrado por otro lado) */
+      if (typeof parent._restarLote !== 'function') throw new Error('Recarga el ERP (Cmd+Shift+R) para corregir el stock');
+      await parent._restarLote({ codigo: cod(m), prenda: pd.prenda, dis: pd.diseno, col: color, talla: talla, menos: q }); }
     const r = await rpc('prod_mov_bajar', { p_id: o.id, p_mov: m.id, p_nueva: m.cantidad - q });
     if (!r || !r.ok) throw new Error(/PGRST202|Could not find/.test(String(r && r.error)) ? 'Falta pegar el SQL de «bajar una cantidad» (10-nov) en Supabase.' : ((r && r.error) || 'no se pudo corregir'));
     m.cantidad -= q; rest -= q; }
@@ -1340,7 +1342,9 @@ function vEntregaDeshacer(cod){
       const rf = await rpc('falla_anular', { p_items: Object.keys(G).map(k => ({ prenda: k, cantidad: G[k] })), p_request: 'anul-' + cod }); if (!rf || !rf.ok) throw new Error((rf && rf.error) || 'no se pudieron deshacer las fallas'); }
     const enSt = F.filter(m => m.tipo === 'buena' && m.ingresado && m.lote);
     if (enSt.length){ if (!(parent && parent !== window && typeof parent._ajustarLote === 'function')) throw new Error('Abre Producción desde el ERP para devolver el stock');
-      const pd = partirFicha(o.diseno); for (const m of enSt) await parent._ajustarLote({ codigo: String(m.lote).split(',')[0].trim(), prenda: pd.prenda, dis: pd.diseno, col: m.color, talla: m.talla, nueva: 0 }); }
+      if (typeof parent._restarLote !== 'function') throw new Error('Recarga el ERP (Cmd+Shift+R) para devolver el stock');
+      /* 16-nov (339) · se restan SOLO las prendas de esta entrega (antes se ponía el lote entero en 0) */
+      const pd = partirFicha(o.diseno); for (const m of enSt) await parent._restarLote({ codigo: String(m.lote).split(',')[0].trim(), prenda: pd.prenda, dis: pd.diseno, col: m.color, talla: m.talla, menos: m.cantidad }); }
     const r = await rpc('prod_entrega_deshacer', { p_id: o.id, p_entrega: cod }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se deshizo');
     aviso('↩ Entrega ' + cod + ' deshecha'); await cargar(); abrirOrden(o.id); });
 }
