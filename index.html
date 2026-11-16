@@ -37566,6 +37566,28 @@ function _ivTotMut(pren, dis, col, tal, m){
 
 // Copia global de la vía rápida de producción (la de _confAbrirIngresarStock vive
 // encerrada en ese formulario). Mismo contrato: null → el que llama va por Apps Script.
+/* 16-nov (Pablo · una sola puerta) · los productos que tienen orden en 🧵 Producción entran SOLO por Producción.
+   Devuelve las líneas con cantidad > 0 cuyo producto tiene orden (las de 0 = preventa, no suman stock). */
+async function _lotesConOrden(items) {
+  const L = await _cinSb('/rest/v1/prod_ordenes?select=codigo,diseno');
+  const ops = (Array.isArray(L) ? L : []).map(o => ({ c: o.codigo, d: _cinNrm(o.diseno) })).filter(o => o.d);
+  const out = [];
+  (items || []).forEach(it => { if (!(Number(it.cantidad) > 0)) return;
+    const f = _cinNrm(it._full || it.prenda) + ' ';
+    const hit = ops.filter(o => f.indexOf(o.d + ' ') === 0).map(o => o.c);
+    if (hit.length) out.push({ prenda: it._full || it.prenda, ops: [...new Set(hit)].sort().reverse() }); });
+  return out;
+}
+function _lotesConOrdenAviso(bloq) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center';
+  ov.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r2);padding:16px;max-width:460px;font-family:var(--ui-f)">'
+    + '<div style="display:flex;justify-content:space-between;gap:12px"><div style="font-size:14px;font-weight:600">Esto se ingresa desde Producción</div><button class="btn bg bs" data-x>✕</button></div>'
+    + '<div style="font-size:13px;margin:10px 0">' + bloq.map(b => esc(b.prenda) + ' → <b>' + esc(b.ops[0]) + '</b>').join('<br>') + '</div>'
+    + '<div style="font-size:12px;color:var(--mu)">Ábrelo en 🧵 Producción › la orden › «Recibir». Así Stock y Producción no se descuadran.</div></div>';
+  ov.addEventListener('click', e => { if (e.target === ov || e.target.hasAttribute('data-x')) ov.remove(); });
+  document.body.appendChild(ov);
+}
 async function _ivCrearLoteRapido(items) {
   const _c = _cronAbrir('stock.crear.base');
   try {
@@ -37694,10 +37716,12 @@ function _ivTotAbrir(pren, dis, col, tal, invEl){
     // ── ➕ PRODUCCIÓN ─────────────────────────────────────────────────────
     if(acc==='prod'){
       const items=[{prenda:full,cantidad:n}];
+      try{ const bq=await _lotesConOrden(items); if(bq.length){ cerrar(); _lotesConOrdenAviso(bq); return; } }
+      catch(e){ toast('No pude revisar si tiene orden en Producción: '+esc((e&&e.message)||e),'err'); return; }
       _ivTotMut(pren,dis,col,tal,{total:n,conf:n,stock:n}); repintar(); cerrar();
       try{
         let res=await _ivCrearLoteRapido(items); const viaBase=!!res;
-        if(!res) res=await apiSend('stock.crearLote',{items:items});
+        if(!res) throw new Error('La base no respondió. Vuelve a intentar en un minuto.');   /* 16-nov · tercera puerta (Apps Script stock.crearLote) cerrada */
         // 9-set-2026 — LA CELDA TAMPOCO MIENTE MÁS. Acá vivía el mismo agujero que
         // en Movimiento de stock: se pintaba la celda, se cerraba, y el empujón
         // salía con .catch(()=>{}). Si la hoja rechazaba (diseño nuevo fuera de
@@ -39211,6 +39235,10 @@ function _confAbrirIngresarStock(confEl) {
 
   document.getElementById('stk-crear').addEventListener('click', async function() {
     if (!_stkCart.length) { toast('Agrega al menos un SKU','err'); return; }
+    if (!_prodPrefill) {   // 16-nov · si el carrito NO lo abrió Producción, lo que tiene orden se ingresa allá
+      try { const bq = await _lotesConOrden(_stkCart); if (bq.length) { _lotesConOrdenAviso(bq); return; } }
+      catch (e) { toast('No pude revisar si tiene orden en Producción: ' + esc((e && e.message) || e), 'err'); return; }
+    }
     this.disabled = true; this.textContent = 'Registrando...';
     // Cada línea por su camino. `nueva:true` le dice al backend que NO escriba la baja
     // de Confección: esta prenda nunca estuvo en el stock vendible, así que restarla lo
@@ -39242,7 +39270,7 @@ function _confAbrirIngresarStock(confEl) {
       if (buenas.length) {
         res = await _stockCrearRapido(buenas);              // la base: décimas de segundo…
         if (res) viaBase = true;
-        else res = await apiSend('stock.crearLote', { items: buenas });   // …o Apps Script, como siempre
+        else throw new Error('La base no respondió. Vuelve a intentar en un minuto.');   // 16-nov · tercera puerta (Apps Script) cerrada
       }
       // 05-ago — la pantalla no puede volver a mostrar la copia de ANTES de este
       // ingreso: el stock y los lotes quedan en duda y el espejo se pone al día ya.
