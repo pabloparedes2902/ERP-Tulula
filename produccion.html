@@ -815,7 +815,30 @@ function nTallaQuitar(t){ const n = NV.colores.reduce((a, c) => a + (NV.q[c + '|
   const ok = () => { NV.colores.forEach(c => { delete NV.q[c + '|' + t]; (NV.lotes || []).forEach(x => { if (x.q) delete x.q[c + '|' + t]; }); }); NV.tallas = tallasVis().filter(x => x !== t); nGrid(); if (EN_ORDEN && typeof vistaPintar === 'function') vistaPintar(); PED_SUCIO = true; const b = document.getElementById('nOk'); if (b && EN_ORDEN) b.style.display = ''; };
   if (n) confirmar('¿Quitar la talla ' + t + '?', 'Se borran sus ' + n + ' prendas de esta orden.', 'Sí, quitar', async () => ok()); else ok(); }
 function nTallaAgregar(t){ if (!t) return; NV.tallas = TALLAS.filter(x => tallasVis().indexOf(x) >= 0 || x === t); nGrid(); }
-function nTelaSet(c, k, v){ const m = telaDe(c); if (!m) return; m[k] = (k === 'nombre' || k === 'codigo') ? String(v || '') : (+v || 0); NV.Mmano = 1; nEstPintar(c); }
+function nTelaSet(c, k, v){ const m = telaDe(c); if (!m) return; m[k] = (k === 'nombre' || k === 'codigo') ? String(v || '') : (+v || 0); NV.Mmano = 1; if (k === 'asignados' || k === 'consumo') nCorteDesdeTela(c); nEstPintar(c); }
+/* 15-nov (Pablo, 333) · CORTES DESDE LA TELA: al anotar los metros que llegaron, los cortes por talla de ese color se llenan solos
+   (metros ÷ consumo) repartidos en la misma proporción por talla que se programó. Editables: si se toca una talla, ese color ya no se llena solo.
+   Sin nada programado en ese color, usa la proporción de los otros colores de la orden; sin nada, partes iguales. */
+function nCorteRepartir(total, pesos){
+  const s = pesos.reduce((a, x) => a + x, 0), w = s > 0 ? pesos : pesos.map(() => 1), S = s > 0 ? s : w.length;
+  const base = w.map(x => Math.floor(total * x / S)); let rest = total - base.reduce((a, x) => a + x, 0);
+  const ord = w.map((x, i) => [total * x / S - base[i], i]).sort((a, b) => b[0] - a[0]);
+  for (let k = 0; rest > 0 && k < ord.length; k++, rest--) base[ord[k][1]]++;
+  return base;
+}
+function nCorteDesdeTela(c){
+  if ((NV.modo || 1) < 2) return; const m = telaDe(c); if (!m) return;
+  const met = +m.asignados, est = +m.consumo > 0 && met > 0 ? Math.floor(met / m.consumo) : 0; if (!est) return;
+  NV.corteMano = NV.corteMano || {}; if (NV.corteMano[c]) return;
+  NV.curva0 = NV.curva0 || {}; const TL = tallasVis();
+  if (!NV.curva0[c]){ let p = TL.map(t => +NV.q[c + '|' + t] || 0);
+    if (!p.some(x => x > 0)) p = TL.map(t => NV.colores.reduce((a, x) => a + (x !== c ? (+NV.q[x + '|' + t] || 0) : 0), 0));
+    NV.curva0[c] = p; }
+  const r = nCorteRepartir(est, NV.curva0[c]), I = [...document.querySelectorAll('#nGrid input')];
+  TL.forEach((t, i) => { if (r[i] > 0) NV.q[c + '|' + t] = r[i]; else delete NV.q[c + '|' + t];
+    const el = I.find(x => (x.getAttribute('oninput') || '').indexOf("NV.q['" + qs(c) + '|' + t + "']") === 0); if (el) el.value = r[i] || ''; });
+  if (typeof nTotal === 'function') nTotal();
+}
 function nEstPintar(c){ const m = telaDe(c), td = [...document.querySelectorAll('#nGrid td.est')].find(x => x.dataset.c === c); if (!m || !td) return;
   const met = (NV.modo >= 2 && +m.asignados) ? +m.asignados : +m.m_plan, est = +m.consumo > 0 && met > 0 ? Math.floor(met / m.consumo) : 0, tot = prendasColor(c);
   td.innerHTML = est ? est + (tot > est ? ' <span class="chip am" title="Con esa tela no alcanzan: faltan ≈' + Math.ceil((tot - est) * m.consumo) + ' m">−' + (tot - est) + '</span>' : '') : '<span class="mu">—</span>'; }
@@ -836,7 +859,7 @@ function nGrid(){
         + (conTela ? '<td>' + inp(c, 'nombre', m.nombre, 'tx') + '</td><td>' + inp(c, 'codigo', m.codigo, 'cd') + '</td>'
           + (conMet ? '<td>' + inp(c, md >= 2 ? 'asignados' : 'm_plan', md >= 2 ? m.asignados : m.m_plan, 'mt', 1).replace('<input ', sug ? '<input placeholder="≈' + sug + '" title="Sugerido: ' + prendasColor(c) + ' prendas × ' + m.consumo + ' m" ' : '<input ')
             + (md >= 2 && +m.m_plan ? '<small>plan ' + m.m_plan + ' m</small>' : '') + '</td><td>' + inp(c, 'consumo', m.consumo, 'mt', 1) + '</td><td class="est" data-c="' + esc(c) + '"></td>' : '') : '')
-        + TL.map(t => '<td><input type="number" min="0" placeholder="·" value="' + (NV.q[c + '|' + t] || '') + '" oninput="NV.q[\'' + qs(c) + '|' + t + '\']=+this.value||0;nTotal();nEstPintar(\'' + qs(c) + '\')">' + info(c, t) + '</td>').join('')
+        + TL.map(t => '<td><input type="number" min="0" placeholder="·" value="' + (NV.q[c + '|' + t] || '') + '" oninput="NV.q[\'' + qs(c) + '|' + t + '\']=+this.value||0;(NV.corteMano=NV.corteMano||{})[\'' + qs(c) + '\']=1;nTotal();nEstPintar(\'' + qs(c) + '\')">' + info(c, t) + '</td>').join('')
         + '<td class="tt" data-c="' + esc(c) + '"></td><td><button title="Quitar color" onclick="NV.colores=NV.colores.filter(x=>x!==\'' + qs(c) + '\');nGrid()">✕</button></td></tr>'; }).join('')
     + '<tr class="tot"><td><b>Total</b></td>' + (conTela ? '<td></td><td></td>' + (conMet ? '<td></td><td></td><td></td>' : '') : '') + TL.map(t => '<td data-tt="' + t + '"><b></b></td>').join('') + '<td id="nGranTot"><b></b></td><td></td></tr>'
     + '</table></div>'
