@@ -199,7 +199,7 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g.lote{margin:4px 0 8px}table
   <button class="x" title="Cerrar" onclick="cerrar('mNueva')">✕</button><h2 id="nTit">＋ Nueva producción</h2>
   <div class="f">
     <div><label>Producto</label><input id="nDis" list="lDis" placeholder="BLAZER MIRELLA" oninput="nProducto();nFechaSug()"><datalist id="lDis"></datalist></div>
-    <div id="nTipoW" style="display:none"><label>Tipo</label><select id="nTipo" onchange="nFechaSug()"><option value="reposicion">Reposición</option><option value="nuevo">Nuevo</option></select></div>
+    <div id="nTipoW" style="display:none"><label>Tipo</label><select id="nTipo" onchange="nFechaSug()"><option value="reposicion">Reposición</option><option value="nuevo">Nuevo</option><option value="compra">Compra</option></select></div>
     <div><label>Taller</label><input id="nTaller" list="lTaller" oninput="nCostoSug();nFechaSug()"><datalist id="lTaller"></datalist></div>
     <input id="nTela" type="hidden">   <!-- 26-oct (lista 255) · la tela va en «Insumos»; se conserva oculto lo que tenían las órdenes viejas -->
     <div style="display:none"><input id="nFecha" type="date"></div>   <!-- 4-nov (Pablo) · la fecha para venta es AUTOMÁTICA: no se escribe -->
@@ -245,6 +245,7 @@ const PASO_VISTA = { plan:'p1', compras:'p2', programa:'p3', recepcion:'res' };
 /* paso de una orden, SOLO con sus datos (regla: nada se marca a mano): 4 si el taller ya entregó algo (o venía en entrega/calidad del Drive);
    3 si la tela ya se entregó al taller; 2 si ya tiene su tela e insumos planificados; 1 si recién se creó */
 function paso(o){ const et = (D._etapaGuardada || {})[o.id] || o.etapa;
+  if (o.tipo === 'compra') return 'recepcion';   /* 16-nov · la compra va directo a «4 · Entrega»: se recibe y entra al stock */
   if (o.cerrada || D.movs.some(m => m.orden_id === o.id) || et === 'entrega' || et === 'calidad') return 'recepcion';
   if (o.fecha_taller || et === 'corte') return 'programa';   /* venía «en confección» del Drive: ya está en el taller */
   if (insLimpio(o.materiales || []).length) return 'compras'; return 'plan'; }
@@ -255,7 +256,8 @@ const CAP_SEMANA = { BELLA:200 }; const capTaller = t => CAP_SEMANA[nrm(t)] || 1
    Diseño y muestra van antes, en el producto (📦 Productos › ✏️ Diseño); fotos y «a la venta», después, también en el producto.
    Al cerrar una orden de producto nuevo, el producto pasa solo a 📸 Fotos (la base: _ficha_ciclo_desde_orden). */
 const CAMINO = { nuevo:['tela','corte','entrega','calidad'],
-                 reposicion:['tela','corte','entrega','calidad'] };
+                 reposicion:['tela','corte','entrega','calidad'],
+                 compra:['entrega','calidad'] };   /* 16-nov (Pablo · una sola puerta) · lo que se COMPRA hecho (accesorios…): sin tela ni taller, solo Recibir */
 const DIAS_FOTOS_NUEVO = 3;   /* la fecha para venta de un producto nuevo deja 3 días de fotos después de Calidad (Heily) */
 const ETAPA_VIEJA = { molde:'tela', escalado:'tela', inventario:'calidad', diseno:'tela', muestra:'tela', fotos:'calidad', venta:'calidad' };   /* órdenes guardadas con las etapas de antes */
 const TALLAS = ['XS','S','M','L','XL','2XL','3XL'];
@@ -544,7 +546,7 @@ function resumenHtml(L, C){
   const fT = d => d ? fTxt(new Date(d + 'T00:00:00')) : '—', prenda = o => nrm(o.diseno).split(' ')[0];
   const pasoCol = (i, t) => ({ k:'p' + i, t, w:'9%', filtro:true, val: r => ['Atrasado', 'Hecho tarde', 'En curso', 'Por hacer', 'Hecho'].indexOf(ESTADO_TXT(r.S[i])), fv: r => ESTADO_TXT(r.S[i]), html: r => celdaPaso(r.S[i]) });
   const cols = [
-    { k:'o', t:'Prenda', w:'19%', al:'l', filtro:true, tip:'Filtra por Nuevo / Reposición o por tipo de prenda', val: r => r.o.diseno, fvs: r => [r.o.tipo === 'nuevo' ? 'Nuevo' : 'Reposición', prenda(r.o)], html: r => NR(r.o) + '<b>' + esc(r.o.diseno) + '</b>' + (r.o.cerrada ? ' <span class="mu" style="font-size:11px">· cerrada</span>' : '') },
+    { k:'o', t:'Prenda', w:'19%', al:'l', filtro:true, tip:'Filtra por Nuevo / Reposición o por tipo de prenda', val: r => r.o.diseno, fvs: r => [({ nuevo:'Nuevo', compra:'Compra' })[r.o.tipo] || 'Reposición', prenda(r.o)], html: r => NR(r.o) + '<b>' + esc(r.o.diseno) + '</b>' + (r.o.cerrada ? ' <span class="mu" style="font-size:11px">· cerrada</span>' : '') },
     { k:'cd', t:'Código', w:'7%', val: r => codOrden(r.o), html: r => '<span class="mu" title="' + esc(r.o.codigo || '') + '">' + esc(codOrden(r.o)) + '</span>' },
     { k:'ta', t:'Taller', w:'8%', filtro:true, val: r => r.o.taller || '', html: r => esc(r.o.taller || '—') },
     { k:'pr', t:'Cantidad', w:'11%', tip:'Al stock / pedidas · clic para ordenar de mayor a menor', val: r => r.T.pedido, html: r => '<span class="barra"><i style="width:' + r.pct + '%;background:' + barraCol(r.o, r.pct, r.S) + '"></i></span>' + r.T.buenas + '/' + r.T.pedido },
@@ -771,7 +773,8 @@ function piezasDe(dis){ const k = nrm(dis); return (D.stock || []).filter(x => n
 function nCostoSug(){ const nC = document.getElementById('nCosto'); if (!nC || NV.id) return;
   const s = sugTallerDe(document.getElementById('nDis').value, document.getElementById('nTaller').value); nC.value = s ? s.v : ''; nC.title = s ? s.de : ''; }
 /* 3-nov (Pablo · F5) · Reposición si la prenda ya tuvo stock u órdenes; si no, Nuevo (pasa por diseño y muestra) */
-function nTipoAuto(nom){ const k = nrm(nom); return (piezasDe(k).length || D.ordenes.some(o => nrm(o.diseno) === k && o.id !== NV.id)) ? 'reposicion' : 'nuevo'; }
+function nTipoAuto(nom){ const k = nrm(nom); if (D.prod && D.prod[k] && D.prod[k].tipo_origen === 'comprado') return 'compra';   /* 16-nov · producto que se compra hecho → orden de Compra */
+  return (piezasDe(k).length || D.ordenes.some(o => nrm(o.diseno) === k && o.id !== NV.id)) ? 'reposicion' : 'nuevo'; }
 /* colores de la prenda (los que ya tiene en Stock): se eligen de la lista; uno nuevo se avisa */
 function nColoresProducto(nom){ const P = piezasDe(nom); return [...new Set([].concat(...P.map(p => (p.x || []).map(a => String(a[0])))))].sort(); }
 function nProducto(mantener){
@@ -781,7 +784,7 @@ function nProducto(mantener){
   nCostoSug();   /* 3-nov (F4) · el costo del taller se sugiere por taller (última vez) o con la ficha */
   if (!NV.id && nom){ const t = nTipoAuto(nom), sel = document.getElementById('nTipo'); if (sel.value !== t){ sel.value = t; nFechaSug(); } }   /* 3-nov (F5) · Nuevo / Reposición lo decide el ERP */
   document.getElementById('lColP').innerHTML = nColoresProducto(nom).map(c => '<option value="' + esc(c) + '">').join('');
-  ay.innerHTML = (nom ? '<span class="chip">' + (document.getElementById('nTipo').value === 'nuevo' ? 'Nuevo' : 'Reposición') + '</span> ' : '') + esc(P.length ? 'Debajo de cada casilla: hay hoy · vendidas en 90 días.' : 'Producto nuevo (todavía sin stock): agrega sus colores.')
+  ay.innerHTML = (nom ? '<span class="chip">' + ({ nuevo:'Nuevo', compra:'🛍 Compra' }[document.getElementById('nTipo').value] || 'Reposición') + '</span> ' : '') + esc(P.length ? 'Debajo de cada casilla: hay hoy · vendidas en 90 días.' : 'Producto nuevo (todavía sin stock): agrega sus colores.')
     + (nom && D.prod && !D.prod[nom] ? ' <span class="chip am">Sin ficha</span> <button type="button" onclick="crearProducto(nrm(document.getElementById(\'nDis\').value))">➕ Crear ficha aquí</button>' : '');
   nGrid();
 }
@@ -1777,7 +1780,7 @@ function ingresarStock(opts){
   }
   if (!(parent && parent !== window && parent.prodIngresarStock)){ msg.textContent = 'Abre Producción desde el ERP para ingresar al stock.'; return; }
   const pf = (D.prod && D.prod[nrm(o.diseno)]) || {};
-  const r = parent.prodIngresarStock(G.map(g => ({ prenda:g.prenda, cantidad:g.cantidad, motivo:g.motivo || '', destino:g.destino || '', ficha:g.ficha, color:g.color, talla:g.talla, categoria: pf.categoria || '' })), async res => {
+  const r = parent.prodIngresarStock(G.map(g => ({ prenda:g.prenda, cantidad:g.cantidad, motivo:g.motivo || '', destino:g.destino || '', ficha:g.ficha, color:g.color, talla:g.talla, categoria: pf.categoria || '', op: o.codigo || '' })), async res => {   /* 16-nov · op: la base exige la orden */
     try { const x = await rpc('prod_marcar_ingresado', { p_ids: ids, p_lote: (res.lotes || []).join(', ') }); if (!x.ok) throw new Error(x.error); }
     catch (e) { aviso('Entró al stock, pero la orden no lo marcó: ' + e.message); }
     await cargar(); abrirOrden(o.id);
@@ -2284,7 +2287,7 @@ function necesita(o, T){
 /* ══ 21-oct (Pablo) · ESTADO DE CADA ETAPA: ⚪ falta · 🟡 en proceso · 🟢 hecha. Se cambia tocando el punto (o la etapa en la orden).
    Las etapas pueden avanzar sin esperar a las anteriores (fotos con la muestra mientras se confecciona).
    Si la orden nunca se tocó así, se deduce de la etapa actual: antes = hecha, la actual = en proceso, después = falta. ══ */
-const NR = o => '<span title="' + (o.tipo === 'nuevo' ? 'Nueva' : 'Reposición') + '" style="font-weight:600;color:' + (o.tipo === 'nuevo' ? 'var(--ac)' : 'var(--am)') + '">' + (o.tipo === 'nuevo' ? 'N' : 'R') + '-</span> ';
+const NR = o => '<span title="' + ({ nuevo:'Nueva', compra:'Compra' }[o.tipo] || 'Reposición') + '" style="font-weight:600;color:' + (o.tipo === 'nuevo' ? 'var(--ac)' : o.tipo === 'compra' ? 'var(--gn)' : 'var(--am)') + '">' + ({ nuevo:'N', compra:'C' }[o.tipo] || 'R') + '-</span> ';
 function estadosMano(o){
   const C = CAMINO[o.tipo] || CAMINO.reposicion, et = (D._etapaGuardada && D._etapaGuardada[o.id]) || o.etapa, i = C.indexOf(et), X = (o.estados && typeof o.estados === 'object') ? o.estados : {}, R = {};
   C.forEach((e, j) => { const v = X[e] || X[ETAPA_INV[e]]; R[e] = v ? v : (o.cerrada || j < i ? 'h' : j === i ? 'p' : 'f'); });
