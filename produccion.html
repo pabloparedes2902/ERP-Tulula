@@ -1273,7 +1273,7 @@ function vistaPintar(){
   const fProg = i => { const f = progDe(i), sug = !L[i].fecha && f, sinEnt = !entr(M.filter(m => lp(m) === i)).length, dif = f ? difD(proy, f) : null;
     return 'programada ' + (ed ? '<input type="date" value="' + esc(f || '') + '" onchange="vLoteFecha(' + i + ',this.value)" style="width:128px;font-size:11px;padding:1px 4px;background:transparent;color:inherit;border:1px solid ' + (f ? 'rgba(255,255,255,.25)' : '#f87171') + '">' : (fD(f) || '—'))
       + (sug ? ' <span class="mu">(sugerida)</span>' : '') + (!f ? ' <span style="color:#f87171">ponle fecha</span>' : '')
-      + (sinEnt && f && i === L.length - 1 ? '<div>proyección ' + fD(proy) + (dif > 0 ? ' <span style="color:#f87171">llegaría ' + dif + ' d tarde</span>' : ' <span style="color:#4ade80">a tiempo</span>') + '</div>' : ''); };
+      + (sinEnt && f && i === L.length - 1 ? '<div>proyección ' + fD(proy) + (dif > 0 ? ' <span style="color:#4ade80" title="Programaste este lote ' + dif + ' días antes de lo que el ERP estima con los días del taller (346). Solo se marca «tarde» si pasa la fecha programada y no llegó.">adelantado ' + dif + ' d</span>' : ' <span style="color:#4ade80">a tiempo</span>') + '</div>' : ''); };
   const fTarde = (F, i) => { const r = ult(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r || !f) return ''; const d = difD(r, f); return d > 0 ? '<span style="color:#f87171">' + d + ' d tarde</span>' : '<span style="color:#4ade80">a tiempo</span>'; };
   const fLlego = (F, i) => { const r = ult(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r) return ''; const d = f ? difD(r, f) : 0; return 'llegó ' + fD(r) + (f ? (d > 0 ? ' <span style="color:#f87171">' + d + ' d tarde</span>' : ' <span style="color:#4ade80">a tiempo</span>') : ''); };
   const val = id => esc((document.getElementById(id) || {}).value || ''), dis = ed ? '' : ' disabled';
@@ -1447,7 +1447,7 @@ function abrirOrden(id){
   const { S, T } = saldos(o), filas = Object.values(S), colores = [...new Set(filas.map(s => s.color))].sort(), tallas = TALLAS.filter(t => filas.some(s => s.talla === t));
   const ed = D.nivel >= 2 && !o.cerrada;
   let h = '<div class="ohead" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding-right:44px"><h2 style="margin:0">' + NR(o) + esc(o.diseno) + ' <span class="mu" style="font-weight:400">· ' + esc(codOrden(o)) + ' · ' + (o.tipo === 'nuevo' ? 'Nuevo' : 'Reposición') + '</span></h2>'
-    + (ef.col === 'rd' ? '<span class="chip rd">' + ef.txt + '</span>' : '') + (o.cerrada ? '<span class="chip">Cerrada</span> <button onclick="etapa(\'calidad\')">↩ Reabrir</button>' : (C.every(e => estados(o)[e] === 'h') ? '<button class="p" onclick="etapa(\'cerrada\')">✓ Cerrar orden</button>' : ''))
+    + (ef.col === 'rd' ? '<span class="chip rd">' + ef.txt + '</span>' : '') + (o.cerrada ? '<span class="chip">Cerrada</span> <button onclick="etapa(\'calidad\')">↩ Reabrir</button>' : (C.every(e => estados(o)[e] === 'h') ? '<button class="p" onclick="etapa(\'cerrada\')">✓ Cerrar orden</button>' : (D.movs.some(m => m.orden_id === o.id && (m.tipo === 'buena' || m.tipo === 'falla')) ? '<button class="p" onclick="cerrarOrdenPreguntar()" title="Ya llegó la confección: cierra la orden aunque falte algo de lo programado">✓ Cerrar orden</button>' : '')))
     + '<span class="sp" style="flex:1"></span><button type="button" class="sec2" data-t="main" onclick="oTab(\'main\')">Orden</button><button type="button" class="sec2" data-t="ins" onclick="oTab(\'ins\')">Ficha</button><button type="button" class="sec2" data-t="cos" onclick="oTab(\'cos\')">Pagos al taller</button>'
     + '<button class="p" id="vOk" style="display:none" onclick="vistaGuardar()">💾 Guardar cambios</button></div>'
     + '<div class="opane" data-p="main"><div id="oVista" class="mu" style="padding:12px 0">Cargando…</div>';
@@ -1568,6 +1568,19 @@ async function guardarMov(pre, dados, loteProg){
     if (pre === 'e' && movs.some(m => m.tipo === 'buena')) ingresarStock({ auto: true });   /* 3-nov (Pablo · F6) · recibir = ingresar al stock en un clic */
     if (pre === 'c' && !camFallo && movs.some(m => m.tipo === 'corregida' || m.tipo === 'yayita')) ingresarStock({ auto: true }); }   /* si Stock no cambió el tipo, no se ingresa: evita contarla dos veces */
   catch (e) { if (dados) { aviso(e.message); return; } msg.textContent = e.message; }
+}
+/* 17-nov (Pablo, 343) · con la confección ya recibida, «Cerrar orden» aparece siempre. Si falta algo de lo programado o hay
+   prendas sin pasar al stock / en corrección, se dice CUÁNTO y DÓNDE antes de cerrar (como el «cierre técnico» de SAP: se cierra
+   con diferencia y queda escrita). */
+function cerrarOrdenPreguntar(){
+  const o = OA; if (!o) return; const { S, T } = saldos(o);
+  const fal = Object.values(S).filter(s => s.falta > 0).map(s => s.color + ' ' + s.talla + ': ' + s.falta);
+  const L = [];
+  if (fal.length) L.push('Faltan <b>' + T.falta + '</b> de lo programado (' + esc(fal.slice(0, 8).join(' · ')) + (fal.length > 8 ? '…' : '') + ').');
+  if (T.porIngresar) L.push('<b>' + T.porIngresar + '</b> prendas ya contadas no pasaron al stock.');
+  if (T.correccion) L.push('<b>' + T.correccion + '</b> prendas siguen en corrección.');
+  if (!L.length) return etapa('cerrada');
+  confirmar('✓ ¿Cerrar ' + esc(o.codigo) + '?', L.join('<br>') + '<br><span class="mu" style="font-size:12px">Se cierra igual y la diferencia queda anotada en la orden. Se puede reabrir.</span>', 'Sí, cerrar', async () => { await etapa('cerrada'); });
 }
 async function etapa(e){ try { const r = await rpc('prod_etapa', { p_id: OA.id, p_etapa: e }); if (!r.ok) throw new Error(r.error); await cargar(); abrirOrden(OA.id); } catch (er) { aviso(er.message); } }
 /* 13-nov tarde (Pablo, 334) · DESHACER una YAYITA / NO APTA, siempre en dos pasos: primero Stock, después la orden. Tres casos:
@@ -2448,6 +2461,17 @@ async function borrarArchivo(id){
     await cargar(); abrirOrden(OA.id); });
 }
 function aviso(t){ const m = document.getElementById('msg'); m.textContent = t; m.className = 'err'; setTimeout(() => { m.textContent = ''; m.className = 'mu'; }, 6000); }
+/* 17-nov (Pablo, 340) · el botón «Atrás» del navegador ya no saca del ERP: primero cierra la ventana abierta y, si no hay,
+   vuelve a la vista principal (Resumen · Todos los talleres). Lo llama el ERP (index.html) al apretar Atrás. */
+window._erpAtras = function () {
+  try {
+    const abiertas = [...document.querySelectorAll('.modal')].filter(m => m.style.display === 'flex' || m.style.display === 'block');
+    if (abiertas.length) { const m = abiertas[abiertas.length - 1]; if (m.id) cerrar(m.id); else m.style.display = 'none'; return true; }
+    const v = document.getElementById('fVer'), t = document.getElementById('fTaller');
+    if ((v && v.value !== 'resumen') || (t && t.value)) { if (v) v.value = 'resumen'; if (t) t.value = ''; pintar(); return true; }
+  } catch (_) {}
+  return false;
+};
 function cerrar(id){ if (id === 'mNueva' && EN_ORDEN) return;
   if (id === 'mOrden'){ if (PED_SUCIO) return confirmar('¿Cerrar sin guardar?', 'Cambiaste el pedido y no lo guardaste.', 'Sí, cerrar', async () => { PED_SUCIO = false; vBarra(false); cerrar('mOrden'); }); pedDevolver(); vBarra(false); } document.getElementById(id).style.display = 'none'; }
 document.addEventListener('keydown', e => { if (e.key === 'Escape'){ if (document.getElementById('mConf').style.display === 'flex'){ cerrar('mConf'); return; } cerrar('mNueva'); cerrar('mOrden'); } });
