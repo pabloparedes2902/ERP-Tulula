@@ -356,6 +356,10 @@ function idb(){ return new Promise((ok, no) => { try { const r = indexedDB.open(
 async function idbGet(k){ try { const db = await idb(); return await new Promise(ok => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => ok(q.result || null); q.onerror = () => ok(null); }); } catch (_) { return null; } }
 async function idbSet(k, v){ try { const db = await idb(); db.transaction('kv', 'readwrite').objectStore('kv').put(v, k); } catch (_) {} }
 function quien(){ try { return JSON.parse(atob(tok().split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).sub || ''; } catch (_) { return ''; } }
+/* 17-nov (Pablo) · PROGRAMAR (cortes, colores, tallas, lotes, fechas) = nivel 3: Ana y la asistente de producción.
+   Nivel 2 (logística: Estefany, Yori) registra lo que llega: confección total, no disponible, ingresos. */
+const progOK = () => D.prog !== false;   /* el nivel 2 ya lo exige «ed»; esto solo separa programar de registrar */   /* D.prog llega de _prod_programa(); sin la función (antes del SQL) = como antes */
+function progAviso(){ try { aviso('Lo programado lo cambia solo Ana o la asistente de producción.'); } catch (_) {} }
 function aplicarTablero(T){
   D.ordenes = T.ordenes || []; D.lineas = T.lineas || []; D.movs = T.movs || [];
   D.ordenes.forEach(x => { if (ETAPA_VIEJA[x.etapa]) x.etapa = ETAPA_VIEJA[x.etapa]; });
@@ -364,6 +368,7 @@ function aplicarTablero(T){
   D.prod = null; if (Array.isArray(T.prod) && T.prod.length){ D.prod = {}; T.prod.forEach(x => { D.prod[nrm(x.diseno)] = x; }); }
   Object.keys(T.param || {}).forEach(k => { D.param[k] = +T.param[k]; });
   D.nivel = +T.nivel || 0;
+  D.prog = (T.prog === false) ? false : true;   /* 17-nov · logística registra, no programa */
   if (T.admin != null){ MAT_ADMIN = !!T.admin; { const oc = document.getElementById('fVerCos'); if (oc) oc.hidden = !MAT_ADMIN; } MATS = T.materiales || []; const b = document.getElementById('btnMat'); if (b) b.style.display = MAT_ADMIN ? '' : 'none';
     const dl = document.getElementById('lMatLib'); if (dl) dl.innerHTML = MATS.filter(m => m.activo).map(m => '<option value="' + esc(m.nombre) + '">' + esc([m.proveedor, m.unidad, S2(m.precio)].filter(Boolean).join(' · ')) + '</option>').join(''); }
   D.ordenes.forEach(x => { if (!x.cerrada) x.etapa = etapaActual(x); });
@@ -374,7 +379,7 @@ async function cargarViejo(){
   const opc = async (k, f) => { try { T[k] = await f(); } catch (_) {} };
   await Promise.all([ opc('pagos', () => sb('/rest/v1/prod_pagos?select=*&order=fecha')), opc('arch', () => sb('/rest/v1/prod_archivos?select=*&order=id')),
     opc('talleres', () => sb('/rest/v1/prod_talleres?select=nombre,activo,notas&order=nombre')), opc('ins', () => sb('/rest/v1/prod_insumos?select=*&order=orden')),
-    opc('prod', () => rpc('prod_productos')), opc('nivel', () => rpc('_prod_nivel')),
+    opc('prod', () => rpc('prod_productos')), opc('nivel', () => rpc('_prod_nivel')), opc('prog', () => rpc('_prod_programa')),
     opc('param', async () => { const P = {}; (await sb('/rest/v1/prod_param?select=clave,valor')).forEach(x => { P[x.clave] = x.valor; }); return P; }) ]);
   return T;
 }
@@ -1096,7 +1101,7 @@ var _vComp = {};   /* SKU que ya llegó completo en toda la orden (lo llena la v
 function vLoteBloque(o, i, cols, tal, prog, rec, ed, fechaHtml, barra){ const comp = _vComp || {};
   const G = [['p', 'Programado', '#1f2937', '#cbd5e1'], ['tot', 'Confección total', '#0f1a2e', '#60a5fa'], ['obs', 'Observadas', '#3a2a0a', '#fbbf24'], ['na', 'No aptas', '#2e0f12', '#f87171'], ['real', 'Llegó bueno', '#0a260a', '#4ade80']];
   const n0 = v => v ? v : '·', FT = {}, VJ = obsViejas().filter(x => x.oid === o.id); G.forEach(g => { FT[g[0]] = {}; });
-  const nL = (NV.lotes || []).length, progEd = ed && nL > 1;   /* 10-nov (Pablo) · con varios lotes todos se editan (también el último); un solo lote = lo programado (se escribe en el total) */
+  const nL = (NV.lotes || []).length, progEd = ed && (typeof progOK !== 'function' || progOK()) && nL > 1;   /* 10-nov (Pablo) · con varios lotes todos se editan (también el último); un solo lote = lo programado (se escribe en el total) */
   /* 12-nov-2026 (Pablo) · BORDE de la confección total, solo en el ÚLTIMO lote: verde = llegó lo programado · rojo = falta · amarillo = sobra */
   const esUlt = i === Math.max(0, nL - 1);   /* 12-nov 10:30 (Pablo) · casilla vacía = sin borde · si el SKU ya llegó completo en toda la orden: verde en los lotes donde llegó y en el último, que queda bloqueado */
   /* 13-nov (Pablo, 336) · la FECHA EN QUE LLEGÓ el lote se escribe en el encabezado de Confección total (antes era un campo suelto arriba, con la fecha de hoy).
@@ -1273,7 +1278,7 @@ function vistaPintar(){
   const P = planes(o), progDe = i => (/^\d{4}-\d{2}-\d{2}/.test(String(L[i].fecha || '')) ? L[i].fecha : null) || (L.length === 1 ? (P.p4 || null) : null);   /* 13-nov (337b) · una fecha dañada cuenta como «sin fecha», nunca «Invalid Date» */
   const dias = +((document.getElementById('nDias') || {}).value) || talDias(o.taller) || ETAPAS.corte[2], ini = (document.getElementById('nFTal') || {}).value || null, proy = masD(ini || hoy, dias);
   const fProg = i => { const f = progDe(i), sug = !L[i].fecha && f, sinEnt = !entr(M.filter(m => lp(m) === i)).length, dif = f ? difD(proy, f) : null;
-    return 'programada ' + (ed ? '<input type="date" value="' + esc(f || '') + '" onchange="vLoteFecha(' + i + ',this.value)" style="width:128px;font-size:11px;padding:1px 4px;background:transparent;color:inherit;border:1px solid ' + (f ? 'rgba(255,255,255,.25)' : '#f87171') + '">' : (fD(f) || '—'))
+    return 'programada ' + (ed && (typeof progOK !== 'function' || progOK()) ? '<input type="date" value="' + esc(f || '') + '" onchange="vLoteFecha(' + i + ',this.value)" style="width:128px;font-size:11px;padding:1px 4px;background:transparent;color:inherit;border:1px solid ' + (f ? 'rgba(255,255,255,.25)' : '#f87171') + '">' : (fD(f) || '—'))
       + (sug ? ' <span class="mu">(sugerida)</span>' : '') + (!f ? ' <span style="color:#f87171">ponle fecha</span>' : '')
       + (sinEnt && f && i === L.length - 1 ? '<div>proyección ' + fD(proy) + ' <span class="mu" title="Fecha de entrega al taller + días del taller. El veredicto (a tiempo, en riesgo, atrasado) va en la línea del lote.">(estimada)</span>' + '</div>' : ''); };
   const fTarde = (F, i) => { const r = ult(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r || !f) return ''; const d = difD(r, f); return d > 0 ? '<span style="color:#f87171">' + d + ' d tarde</span>' : '<span style="color:#4ade80">a tiempo</span>'; };
@@ -1285,10 +1290,10 @@ function vistaPintar(){
     + '<label>Días del taller <input type="number" min="0" style="width:80px" value="' + val('nDias') + '" placeholder="' + dias + '" oninput="document.getElementById(\'nDias\').value=this.value;vSucio()" onchange="vistaPintar()"' + dis + '></label></div>';
   /* 10-nov (Pablo) · cada tabla con su propio filtro de colores y tallas. TOTAL = lo PROGRAMADO (cortes): se edita antes de derivar al taller
      o, ya derivado, solo para corregir los cortes según el metraje que llegó del proveedor (✏️). Lo que se cambia acá baja a los lotes. */
-  const progEd = ed && (!o.fecha_taller || NV.corrProg);
+  const edP = ed && (typeof progOK !== 'function' || progOK()), progEd = edP && (!o.fecha_taller || NV.corrProg);
   const P0b = piezasDe(o.diseno)[0], dispoC = P0b ? [...new Set(P0b.x.map(a => nrm(a[0])))].filter(c => cols.indexOf(c) < 0).sort() : [], faltT = TALLAS.filter(t => tal.indexOf(t) < 0);
   const selB = (titulo, ops, fn) => '<select class="vsel" onchange="' + fn + '(this.value);this.value=\'\'"><option value="">' + titulo + '</option>' + ops.map(x => '<option value="' + esc(x[0]) + '">' + esc(x[1]) + '</option>').join('') + '</select>';
-  const barTot = !ed ? '' : (progEd
+  const barTot = !edP ? (ed ? ' · <span class="mu" title="Lo programado lo cambia Ana o la asistente de producción">🔒 Programado</span>' : '') : (progEd
       ? ' · ' + selB('🎨 Colores', dispoC.map(c => ['+' + c, '＋ ' + c]).concat(cols.map(c => ['-' + c, '✕ Quitar ' + c])), 'vAccColor') + ' ' + selB('📏 Tallas', faltT.map(t => ['+' + t, '＋ ' + t]).concat(tal.map(t => ['-' + t, '✕ Quitar ' + t])), 'vAccTalla')
         + (o.fecha_taller ? ' <span class="chip am">✏️ corrigiendo cortes por metraje</span> <button onclick="NV.corrProg=false;vistaPintar()">Listo</button>' : '')
       : ' · <span class="mu" title="Ya se derivó al taller: lo programado queda fijo">🔒 Programado fijo</span> <button onclick="vCorrProg()" title="Solo si el metraje que llegó del proveedor obliga a cambiar los cortes">✏️ Corregir cortes (metraje)</button>')
@@ -1318,7 +1323,7 @@ function vistaPintar(){
          : (tarde ? '🔴 ' : (rT || riesgo) ? '🟡 ' : '⚪ ') + lle + ' de ' + pT + ' = ' + pcl + '% · faltan ' + falta
            + (tarde ? ' · atrasado ' + tarde + ' d (programada ' + fD(fi) + ')' : riesgo ? ' · en riesgo: se estima ' + fD(proy) + ', ' + riesgo + ' d después de lo programado (' + fD(fi) + ')' : fi ? ' · vence ' + fD(fi) : ''))
       + (extra ? ' · +' + extra + ' de más' : '') + '</span>';
-    const barra = selloStock(Mi, ed) + ' ' + sema + (!ed ? '' : (falta ? ' <button onclick="vLoteTodo(' + i + ')" title="Llena la confección total con lo programado; corriges solo lo que no llegó igual y aprietas «💾 Guardar lo que llegó»">✓ Llegó todo lo programado</button> ' : ' ') + selB('🎨 Colores', cI.filter(c => !Mi.some(m => m.color === c)).map(c => ['-' + c, '✕ ' + c + ' no va en este lote']).concat(cols.filter(c => cI.indexOf(c) < 0).map(c => ['+' + c, '＋ ' + c])), 'vLoteColor.bind(null,' + i + ')')
+    const barra = selloStock(Mi, ed) + ' ' + sema + (!ed ? '' : (falta ? ' <button onclick="vLoteTodo(' + i + ')" title="Llena la confección total con lo programado; corriges solo lo que no llegó igual y aprietas «💾 Guardar lo que llegó»">✓ Llegó todo lo programado</button> ' : ' ') + ((typeof progOK === 'function' && !progOK()) ? '' : selB('🎨 Colores', cI.filter(c => !Mi.some(m => m.color === c)).map(c => ['-' + c, '✕ ' + c + ' no va en este lote']).concat(cols.filter(c => cI.indexOf(c) < 0).map(c => ['+' + c, '＋ ' + c])), 'vLoteColor.bind(null,' + i + ')'))
       /* 12-nov-2026 (Pablo) · sin filtro de tallas por lote: todas se muestran siempre */
       + (ultL ? ' ' + selB('↩ Deshacer', [['-' + ultL, '↩ Deshacer el último registro de este lote (' + ultL + ')']], 'vAccEntrega') : ''));
     h += vLoteBloque(o, i, cI, tI, qL, vMovsAgg(Mi), ed, { p: fProg(i), tot: fLlego(Mi, i), real: enStock(Mi), totISO: String(ult(entr(Mi)) || '').slice(0, 10), totD: fTarde(Mi, i), totHoy: falta > 0 }, barra); });
@@ -1352,9 +1357,9 @@ async function vStkHoyPintar(o, RA){
     + (mas.length ? ' · <span style="color:#60a5fa" title="Stock tiene más: una falla recuperada o una prenda que entró antes de esta orden. Doble clic en Stock muestra de dónde vino.">más en Stock: ' + esc(mas.join(' · ')) + '</span>' : '');
 }
 function vAccEntrega(v){ if (!v) return; if (v[0] === '+') return vNuevaAbrir(+v.slice(1)); vEntregaDeshacer(v.slice(1)); }
-function vAccLote(v){ if (!v) return; if (v === '+') return vLoteAgregar(); vLoteQuitar(+v.slice(1)); }
-function vAccColor(v){ if (!v) return; if (v[0] === '+'){ NV.colores.push(v.slice(1)); vSucio(); return vistaPintar(); } vColorQuitar(v.slice(1)); }
-function vAccTalla(v){ if (!v) return; if (v[0] === '+'){ nTallaAgregar(v.slice(1)); vSucio(); return vistaPintar(); } vTallaQuitar(v.slice(1)); }
+function vAccLote(v){ if (typeof progOK === 'function' && !progOK()) return progAviso(); if (!v) return; if (v === '+') return vLoteAgregar(); vLoteQuitar(+v.slice(1)); }
+function vAccColor(v){ if (typeof progOK === 'function' && !progOK()) return progAviso(); if (!v) return; if (v[0] === '+'){ NV.colores.push(v.slice(1)); vSucio(); return vistaPintar(); } vColorQuitar(v.slice(1)); }
+function vAccTalla(v){ if (typeof progOK === 'function' && !progOK()) return progAviso(); if (!v) return; if (v[0] === '+'){ nTallaAgregar(v.slice(1)); vSucio(); return vistaPintar(); } vTallaQuitar(v.slice(1)); }
 /* «Ctrl+Z» de una entrega: la saca de la orden y, si ya pasó al stock, devuelve el stock como estaba (buenas). Las fallas ya en No disponible se avisan. */
 function vEntregaDeshacer(cod){
   const o = OA, F = D.movs.filter(m => m.orden_id === o.id && m.entrega === cod); if (!F.length) return;
@@ -1391,7 +1396,7 @@ function vTelaHtml(cols, ed){   /* tela por color: plegada; es lo previo a progr
     + cols.map(c => { const m = telaDe(c) || {}, met = +m.asignados || +m.m_plan, est = +m.consumo > 0 && met > 0 ? Math.floor(met / m.consumo) : 0;
       return '<tr' + colSt(c) + '><td><b>' + esc(c) + '</b></td><td>' + inp(c, 'nombre', m.nombre, '160px') + '</td><td>' + inp(c, 'codigo', m.codigo, '70px') + '</td><td>' + inp(c, 'm_plan', m.m_plan, '70px', 1) + '</td><td>' + inp(c, 'asignados', m.asignados, '70px', 1) + '</td><td>' + inp(c, 'consumo', m.consumo, '60px', 1) + '</td><td><b>' + (est || '·') + '</b></td></tr>'; }).join('') + '</table></details>';
 }
-function vProgSet(i, k, val){ const L = NV.lotes, x = L[i]; x.q = x.q || {}; const v = Math.max(0, Math.round(+val || 0));
+function vProgSet(i, k, val){ if (typeof progOK === 'function' && !progOK()) return progAviso(); const L = NV.lotes, x = L[i]; x.q = x.q || {}; const v = Math.max(0, Math.round(+val || 0));
   /* 10-nov (Pablo) · un lote NUNCA cambia lo programado. Si escribes en un lote que no es el último, el último lleva lo que falta
      (programado − los otros); el último también se puede editar a mano (3 o más lotes, o si el taller entrega más o menos). */
   if (v > 0) x.q[k] = v; else delete x.q[k];
@@ -1399,14 +1404,14 @@ function vProgSet(i, k, val){ const L = NV.lotes, x = L[i]; x.q = x.q || {}; con
   vSucio(); clearTimeout(vProgSet._t);
   vProgSet._t = setTimeout(() => { const a = document.activeElement, I = [...document.querySelectorAll('#oVista input')], idx = I.indexOf(a); vistaPintar(); if (idx >= 0){ const b = document.querySelectorAll('#oVista input')[idx]; if (b) b.focus(); } }, 700); }
 /* 10-nov (Pablo) · lo programado se escribe en la tabla del total; baja a los lotes: un lote = igual; varios = el último lleva lo que falta */
-function vProgTotSet(k, val){ const v = Math.max(0, Math.round(+val || 0)); if (v > 0) NV.q[k] = v; else delete NV.q[k];
+function vProgTotSet(k, val){ if (typeof progOK === 'function' && !progOK()) return progAviso(); const v = Math.max(0, Math.round(+val || 0)); if (v > 0) NV.q[k] = v; else delete NV.q[k];
   const L = NV.lotes || []; if (L.length === 1){ L[0].q = L[0].q || {}; if (v > 0) L[0].q[k] = v; else delete L[0].q[k]; } else nLotesUltimo([k]);
   vSucio(); clearTimeout(vProgSet._t);
   vProgSet._t = setTimeout(() => { const a = document.activeElement, I = [...document.querySelectorAll('#oVista input')], idx = I.indexOf(a); vistaPintar(); if (idx >= 0){ const b = document.querySelectorAll('#oVista input')[idx]; if (b) b.focus(); } }, 700); }
 /* 10-nov (Pablo) · ya derivado al taller, lo programado solo se corrige por el metraje que llegó del proveedor */
-function vCorrProg(){ confirmar('¿Corregir los cortes programados?', 'Úsalo solo si el metraje que llegó del proveedor obliga a cambiar los cortes. Los lotes se ajustan solos; lo que ya llegó no se toca.', 'Sí, corregir', async () => { NV.corrProg = true; vistaPintar(); }); }
+function vCorrProg(){ if (typeof progOK === 'function' && !progOK()) return progAviso(); confirmar('¿Corregir los cortes programados?', 'Úsalo solo si el metraje que llegó del proveedor obliga a cambiar los cortes. Los lotes se ajustan solos; lo que ya llegó no se toca.', 'Sí, corregir', async () => { NV.corrProg = true; vistaPintar(); }); }
 /* 10-nov (Pablo) · filtro de cada lote: un color o talla que «no va en este lote» pasa al último lote (no cambia lo programado) */
-function vLoteColor(i, v){ if (!v) return; const L = NV.lotes, x = L[i]; if (!x) return; const c = v.slice(1); x.fuera = x.fuera || [];
+function vLoteColor(i, v){ if (typeof progOK === 'function' && !progOK()) return progAviso(); if (!v) return; const L = NV.lotes, x = L[i]; if (!x) return; const c = v.slice(1); x.fuera = x.fuera || [];
   if (v[0] === '-'){ if (x.fuera.indexOf(c) < 0) x.fuera.push(c); const ks = TALLAS.map(t => c + '|' + t); x.q = x.q || {}; ks.forEach(k => { delete x.q[k]; }); if (i < L.length - 1) nLotesUltimo(ks); }
   else { x.fuera = x.fuera.filter(y => y !== c); x.mas = (x.mas || []).concat([c]); }
   vSucio(); vistaPintar(); }
@@ -1429,9 +1434,9 @@ async function vLotesGuardarSolo(){ try {
   const LL = (NV.lotes || []).filter(x => nLoteTot(x) > 0).map(x => ({ fecha: x.fecha || null, q: Object.fromEntries(Object.entries(x.q || {}).filter(e => +e[1] > 0).map(e => [e[0], +e[1]])), prendas: nLoteTot(x) }));
   const r = await rpc('prod_lotes_guardar', { p_id: OA.id, p_lotes: LL }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
   const o = D.ordenes.find(z => z.id === OA.id); if (o) o.lotes = LL.map(x => Object.assign({}, x, { q: Object.assign({}, x.q) })); } catch (e) { aviso('Lotes: ' + e.message); } }
-function vLoteFecha(i, f){ NV.lotes[i].fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(f || '')) ? f : null; vSucio(); vistaPintar(); }   /* solo acepta una fecha de verdad */
-function vLoteAgregar(){ NV.lotes.push({ fecha:'', q:{} }); nLotesUltimo(); vSucio(); vistaPintar(); }
-function vLoteQuitar(i){ nLoteQuitar(i); vSucio(); vistaPintar(); }
+function vLoteFecha(i, f){ if (typeof progOK === 'function' && !progOK()) return progAviso(); NV.lotes[i].fecha = /^\d{4}-\d{2}-\d{2}$/.test(String(f || '')) ? f : null; vSucio(); vistaPintar(); }   /* solo acepta una fecha de verdad */
+function vLoteAgregar(){ if (typeof progOK === 'function' && !progOK()) return progAviso(); NV.lotes.push({ fecha:'', q:{} }); nLotesUltimo(); vSucio(); vistaPintar(); }
+function vLoteQuitar(i){ if (typeof progOK === 'function' && !progOK()) return progAviso(); nLoteQuitar(i); vSucio(); vistaPintar(); }
 function vColorAgregar(){ const c = nrm((document.getElementById('vColor') || {}).value); if (!c || NV.colores.indexOf(c) >= 0) return; NV.colores.push(c); vSucio(); vistaPintar(); }
 function vTallaQuitar(t){ if (!t) return; nTallaQuitar(t); vSucio(); }
 function vNuevaReal(i){
