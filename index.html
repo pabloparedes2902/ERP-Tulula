@@ -4992,7 +4992,9 @@ function _tessCargar(){ if (window.Tesseract) return Promise.resolve(window.Tess
 function _constLeer(txt){
   const t = String(txt || '').replace(/\s+/g, ' ');
   const marca = /yape|plin|bcp|interbank|bbva|scotiabank|banco|transferencia|operaci[oó]n|yapeaste|pagaste|enviaste|constancia/i.test(t);
-  const mm = /S\/\.?\s*([0-9]{1,5}(?:[.,][0-9]{3})*(?:[.,][0-9]{1,2})?)/i.exec(t);
+  let mm = /S\/\.?\s*([0-9]{1,5}(?:[.,][0-9]{3})*(?:[.,][0-9]{1,2})?)/i.exec(t), leve = false;
+  /* 17-nov · el lector a veces lee la barra de «S/» como «1» o «l» (Yape de Pablo: «S 1119» = S/ 119): solo después de «Yapeaste/Plineaste» y marcado para revisar */
+  if (!mm && /yapeaste|plineaste|pagaste/i.test(t)) { const m2 = /(?:yapeaste|plineaste|pagaste)[\s\S]{0,40}?\bS\s*[1lI|]\s?([0-9]{1,5}(?:[.,][0-9]{1,2})?)\b/i.exec(t); if (m2) { mm = m2; leve = true; } }
   let monto = null; if (mm){ let v = mm[1]; if (/,\d{1,2}$/.test(v)) v = v.replace(/\./g, '').replace(',', '.'); else v = v.replace(/,/g, ''); monto = parseFloat(v); }
   const op = (/operaci[oó]n[^0-9]{0,14}([0-9]{5,})/i.exec(t) || [])[1] || '';
   const ban = (/(yape|plin|bcp|interbank|bbva|scotiabank)/i.exec(t) || [])[1] || '';
@@ -5000,7 +5002,15 @@ function _constLeer(txt){
   let fecha = ''; const f1 = /(\d{1,2})\s*(?:de\s*)?(ene|feb|mar|abr|may|jun|jul|ago|set|sep|oct|nov|dic)[a-z.]*\s*(?:de\s*)?(\d{4})/i.exec(t), f2 = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
   if (f1) fecha = f1[3] + '-' + String(meses[f1[2].toLowerCase()]).padStart(2, '0') + '-' + f1[1].padStart(2, '0');
   else if (f2) fecha = f2[3] + '-' + f2[2].padStart(2, '0') + '-' + f2[1].padStart(2, '0');
-  return { es: marca && monto > 0, monto, op, ban: ban.toUpperCase(), fecha, duda: marca && !(monto > 0) };
+  return { es: marca && monto > 0, monto, op, ban: ban.toUpperCase(), fecha, duda: marca && !(monto > 0), leve };
+}
+/* 17-nov · 2ª pasada del lector: la mitad de arriba de la captura en blanco y negro (el monto de Yape/Plin va en letra grande sobre morado) */
+async function _constPasada2(T, blob){
+  try { const bm = await createImageBitmap(blob), W = bm.width, H = Math.round(bm.height * 0.5), c = document.createElement('canvas'); c.width = W; c.height = H;
+    const g = c.getContext('2d'); g.drawImage(bm, 0, 0, W, H, 0, 0, W, H); const d = g.getImageData(0, 0, W, H);
+    for (let i = 0; i < d.data.length; i += 4){ const v = 255 - (0.3 * d.data[i] + 0.59 * d.data[i + 1] + 0.11 * d.data[i + 2]) > 140 ? 255 : 0; d.data[i] = d.data[i + 1] = d.data[i + 2] = v; }
+    g.putImageData(d, 0, 0); const b2 = await new Promise(r => c.toBlob(r, 'image/png')); const o = await T.recognize(b2, 'spa'); return (o && o.data && o.data.text) || '';
+  } catch (_) { return ''; }
 }
 async function _chatConstancias(mEl, tel, opc){   /* 17-nov · opc = { box, usar(blob, x, a), boton } para reusarlo desde la alerta «pago que nadie registró» */
   const box = (opc && opc.box) || mEl.querySelector('#pago-f-chat'); if (!box) return;
@@ -5025,10 +5035,12 @@ async function _chatConstancias(mEl, tel, opc){   /* 17-nov · opc = { box, usar
         const d = new Date(a.fecha * 1000).toLocaleString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
         row.innerHTML = '<img src="' + u + '" style="width:44px;height:44px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="window.open(this.src)"><span style="flex:1" class="mu">' + d + ' · leyendo…</span>';
         let x = { es: false, duda: true };
-        if (T && /^image\//.test(blob.type)) { const o = await T.recognize(blob, 'spa'); x = _constLeer(o && o.data && o.data.text); }
+        if (/webp/.test(blob.type) && blob.size < 60000) { row.querySelector('span').textContent = d + ' · sticker'; row.style.opacity = '.45'; continue; }   /* 17-nov · los stickers de WhatsApp no son constancias */
+        if (T && /^image\//.test(blob.type)) { try { const o = await T.recognize(blob, 'spa'); x = _constLeer(o && o.data && o.data.text);
+          if (!x.es) { const t2 = await _constPasada2(T, blob); if (t2) { const y = _constLeer((o && o.data && o.data.text || '') + ' ' + t2); if (y.es || (y.monto > 0)) x = y; } } } catch (eR) { x = { es: false, duda: true }; } }
         const rep = x.op && vistos[x.op]; if (x.op) vistos[x.op] = 1;
         const sp = row.querySelector('span'), boton = (txt, cls) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn ' + cls + ' bs'; b.style.fontSize = '11px'; b.textContent = txt; b.onclick = () => (opc && opc.usar) ? opc.usar(blob, x, a) : _chatConstUsar(mEl, blob, x, a); row.appendChild(b); };
-        if (x.es && !rep) { sp.className = ''; sp.innerHTML = '✅ <b>S/ ' + x.monto.toFixed(2) + '</b>' + (x.ban ? ' · ' + esc(x.ban) : '') + (x.op ? ' · op ' + esc(x.op) : '') + ' · ' + d; boton((opc && opc.boton) || 'Usar', 'bp'); L.insertBefore(row, L.firstChild); }
+        if (x.es && !rep) { sp.className = ''; sp.innerHTML = (x.leve ? '⚠ ' : '✅ ') + '<b>S/ ' + x.monto.toFixed(2) + '</b>' + (x.leve ? ' <span style="color:#fbbf24">(revisa el monto)</span>' : '') + (x.ban ? ' · ' + esc(x.ban) : '') + (x.op ? ' · op ' + esc(x.op) : '') + ' · ' + d; boton((opc && opc.boton) || 'Usar', 'bp'); L.insertBefore(row, L.firstChild); }
         else if (rep) { sp.textContent = d + ' · repetida (misma operación ' + x.op + ')'; row.style.opacity = '.55'; }
         else if (x.duda) { sp.textContent = d + ' · no la pude leer bien: ábrela y decide'; boton('Usar igual', 'bg'); }
         else { sp.textContent = d + ' · no es pago'; row.style.opacity = '.55'; }
@@ -6279,6 +6291,7 @@ window._npAbrir = async function (nombreIni) {
 // 21-oct · 🧵 F3 (Pablo): el producto NACE en Producción › Diseño pero se crea por la puerta de siempre (📦 Productos), una sola fuente.
 // Abre 📦 Productos con la ficha del producto (si existe) o con el formulario de producto nuevo ya prellenado con el nombre.
 window.prodAbrirProducto = async function(nombre, aviso, tab){   /* 3-nov (P2) · tab: abre la ficha en esa pestaña (ej. 'diseno') */
+  try { if (typeof curPg !== 'undefined' && curPg === 'produccion') window._prodVolverTab = window._prodTab || 'conf'; } catch (_) {}   /* 17-nov (Pablo) · la ficha recuerda de dónde vino */
   try { navegarA('costos'); } catch (_) {}
   const k = String(nombre || '').toUpperCase().replace(/\s+/g, ' ').trim();
   for (let i = 0; i < 60; i++){   // hasta 30 s a que cargue la lista de productos
@@ -6293,6 +6306,19 @@ window.prodAbrirProducto = async function(nombre, aviso, tab){   /* 3-nov (P2) �
   if (aviso) { try { toast(aviso, 'ok'); } catch (_) {} }
   return true;
 };
+/* 17-nov (Pablo) · «← Volver a Producción»: al cerrar la ficha (✕ o Volver) se regresa a la pestaña de Producción de donde se abrió.
+   Entrar a Producción desde el menú abre siempre 🧵 Confección (antes recordaba «Costos y precios» y se sentía raro). */
+function _prodVolverCerrar(){
+  const t = window._prodVolverTab; try { _prodVolverSync(); } catch (_) {}
+  if (t && typeof curPg !== 'undefined' && curPg !== 'produccion') { window._prodTabSig = t; window._prodVolverTab = null; try { navegarA('produccion'); } catch (_) {} }
+}
+function _prodVolverSync(){
+  const box = document.getElementById('prod-tabs'); if (!box) return; const v = document.getElementById('pt-volver'); if (v) v.remove();
+  const abierta = typeof COS !== 'undefined' && COS.modo === 'prod' && COS.editing != null && (document.getElementById('cos-form') || {}).innerHTML;
+  const fila = box.firstElementChild; if (!abierta || !fila) return;
+  const b = document.createElement('button'); b.id = 'pt-volver'; b.className = 'btn bp bs'; b.style.marginLeft = 'auto'; b.textContent = '← Volver a Producción'; b.title = 'Cierra la ficha (igual que ✕)';
+  b.onclick = () => { const x = document.getElementById('cf-x'); if (x) x.click(); }; fila.appendChild(b);
+}
 function _produccionLazy(){
   var f = document.getElementById('produccion-frame');
   if (!f) return;
@@ -6896,6 +6922,8 @@ window.addEventListener('popstate', function (e) {
 function loadPg(pg) {
   try { INS.abre = { pg: pg, t: performance.now() }; } catch (_) {}   // VR_INSTANTE_2NOV
   try { _histPush(pg); } catch (_) {}   // 17-nov (340) · Atrás no saca del ERP
+  { const _pgPrev = window._pgUlt; window._pgUlt = pg;   /* 17-nov (Pablo) · entrar a Producción desde otro módulo abre 🧵 Confección; refrescar no cambia la pestaña */
+    if (pg === 'produccion' && (_pgPrev !== 'produccion' || window._prodTabSig)) { window._prodTab = window._prodTabSig || 'conf'; window._prodTabSig = null; } }
   window._modoContenido = (pg === 'contenido') || (pg === 'costos' && !_cosYoAdmin());   // 13-oct (Pablo) · PRODUCTOS: quien no es Admin ve la vista SIN costos (rutas contenido.*)
   // P5 — si salimos del módulo Pedidos, detener el polling. Cada loadPeds lo reanuda.
   if (pg !== 'pedidos') {
@@ -8205,7 +8233,9 @@ function _cosFilas() {
     if (COS.modo !== 'productos' && COS.modo !== 'prod' && COS.etapa && _cosEtapa4(r.EstadoCiclo) !== COS.etapa) return false;
     if (COS.modo === 'productos' || COS.modo === 'prod') {   /* 8-nov · pestaña de estado + filtros */
       if (COS.estTab && _cosEstGrupo(r) !== COS.estTab) return false;
-      if ((COS.etSel || []).length && COS.etSel.indexOf(_cosEtapa4(r.EstadoCiclo)) < 0) return false;
+      if (COS.modo === 'productos' && (COS.etSel || []).length && COS.etSel.indexOf(_cosEtapa4(r.EstadoCiclo)) < 0) return false;   /* 17-nov (Pablo) · la Etapa filtra solo en 📦 Productos */
+      if (COS.modo === 'prod' && COS.cpSinCosto && Number(r.CostoUnitario) > 0) return false;
+      if (COS.modo === 'prod' && COS.cpSinPrecio && Number(r.PrecioLista) > 0) return false;
       if (COS.modo === 'productos' && COS.incompleta) { const a = _cosAvance(r); if (a && a.n >= a.t) return false; }
     }   // 30-oct · catálogo por etapa (3-nov · P3: 4 grupos)
     if (COS.fest === 'ACTIVO' && r.Activo === false) return false;
@@ -8635,7 +8665,7 @@ function _cosRender() {
 function _cosBarraProductos(A, sel, chips) {
   const PR = COS.modo === 'prod';   /* 8-nov · en 💲 Costos y precios: + Columnas ▾ (Costo, Detalle, Lista, Live, Promoción, Showroom, Colaborador) */
   const n = { '': 0, act: 0, bor: 0, arc: 0 }; (COS.data || []).forEach(r => { n['']++; n[_cosEstGrupo(r)]++; });
-  const nf = (COS.etSel || []).length + (!PR && COS.incompleta ? 1 : 0) + (!PR && COS.sinManga ? 1 : 0) + (COS.fest ? 1 : 0);
+  const nf = (PR ? (COS.cpSinCosto ? 1 : 0) + (COS.cpSinPrecio ? 1 : 0) : (COS.etSel || []).length) + (!PR && COS.incompleta ? 1 : 0) + (!PR && COS.sinManga ? 1 : 0) + (COS.fest ? 1 : 0);
   return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
     + COS_EST.map(e => '<button type="button" class="btn bs ' + ((COS.estTab || '') === e[0] ? 'bp' : 'bg') + ' cos-est" data-s="' + e[0] + '" style="font-size:12px">' + e[1] + ' <span style="opacity:.7">' + n[e[0]] + '</span></button>').join('')
     + '<span style="flex:1"></span><input id="cos-q" placeholder="🔍 Buscar…" autocomplete="off" value="' + esc(COS.q) + '" style="width:180px;' + sel + '">'
@@ -8650,8 +8680,12 @@ function _cosFiltrosAbrir(btn) {
   const E = COS_ETAPA4.concat([['reposicion', '🔁 Reposición'], ['descontinuada', '⏸ Descontinuado']]), et = COS.etSel || [];
   p = document.createElement('div'); p.id = 'cos-fpop';
   p.style.cssText = 'position:fixed;z-index:90;background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;min-width:240px;box-shadow:0 8px 28px rgba(0,0,0,.5);font-size:13px';
-  p.innerHTML = '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;margin-bottom:4px">Etapa</div>'
-    + E.map(e => '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-et="' + e[0] + '"' + (et.indexOf(e[0]) >= 0 ? ' checked' : '') + '> ' + e[1] + '</label>').join('')
+  /* 17-nov (Pablo) · en 💲 Costos y precios la Etapa (fotos, a la venta…) no aplica: se filtra por lo que falta de costo o precio */
+  p.innerHTML = (COS.modo === 'prod'
+      ? '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-f="cpSinCosto"' + (COS.cpSinCosto ? ' checked' : '') + '> Sin costo</label>'
+        + '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-f="cpSinPrecio"' + (COS.cpSinPrecio ? ' checked' : '') + '> Sin precio de lista</label>'
+      : '<div style="font-size:11px;color:var(--mu);text-transform:uppercase;margin-bottom:4px">Etapa</div>'
+    + E.map(e => '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-et="' + e[0] + '"' + (et.indexOf(e[0]) >= 0 ? ' checked' : '') + '> ' + e[1] + '</label>').join(''))
     + '<div style="border-top:1px solid var(--bd);margin:8px 0"></div>'
     + (COS.modo === 'prod' ? '' : '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-f="incompleta"' + (COS.incompleta ? ' checked' : '') + '> Ficha incompleta</label>'
     + '<label style="display:flex;gap:6px;align-items:center;padding:2px 0;cursor:pointer"><input type="checkbox" data-f="sinManga"' + (COS.sinManga ? ' checked' : '') + '> Sin manga</label>')
@@ -8663,7 +8697,7 @@ function _cosFiltrosAbrir(btn) {
     if (t.dataset.et) COS.etSel = [...p.querySelectorAll('[data-et]:checked')].map(x => x.dataset.et);
     else if (t.dataset.f === 'fest') COS.fest = t.value; else if (t.dataset.f) COS[t.dataset.f] = t.checked;
     _cosRender(); const b2 = document.getElementById('cos-filt'); if (b2) { p.remove(); _cosFiltrosAbrir(b2); } });
-  p.querySelector('[data-f="limpiar"]').onclick = () => { COS.etSel = []; COS.incompleta = false; COS.sinManga = false; COS.fest = ''; p.remove(); _cosRender(); };
+  p.querySelector('[data-f="limpiar"]').onclick = () => { COS.etSel = []; COS.incompleta = false; COS.sinManga = false; COS.fest = ''; COS.cpSinCosto = false; COS.cpSinPrecio = false; p.remove(); _cosRender(); };
   p.querySelector('[data-f="x"]').onclick = () => p.remove();
   const pb = p.querySelector('[data-f="pend"]'); if (pb) pb.onclick = () => { p.remove(); try { _cosPendAbrir(); } catch (_) {} };
   document.body.appendChild(p); const r = btn.getBoundingClientRect();
@@ -8784,7 +8818,7 @@ function _cosForm(r) {
   const bl = id => COS_BLOQUES.find(b => b.id === id);
   cont.innerHTML = '<div style="background:var(--bg2);border:1px solid var(--ac);border-radius:var(--r);padding:16px;margin-bottom:16px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div style="font-size:12px;color:var(--mu)">' + (esNuevo ? 'Producto nuevo' : 'Modificado: ' + esc(v.UltimaActualizacion || '—') + (v.Quien ? ' · ' + esc(v.Quien) : '')) + '</div>'
-      + '<div style="display:flex;gap:6px">' + (esNuevo ? '' : '<button type="button" class="btn bg bs" id="cf-hist">🕘 Historial</button><button type="button" class="btn bs" id="cf-del" style="background:transparent;border:1px solid var(--rd);color:var(--rd)">🗑 Eliminar</button>') + '<button type="button" class="btn bg bs" id="cf-x">✕ Cerrar</button></div></div>'
+      + '<div style="display:flex;gap:6px">' + (esNuevo ? '' : '<button type="button" class="btn bg bs" id="cf-hist">🕘 Historial</button><button type="button" class="btn bs" id="cf-del" style="background:transparent;border:1px solid var(--rd);color:var(--rd)">🗑 Eliminar</button>') + (window._prodVolverTab ? '<button type="button" class="btn bp bs" id="cf-volver" title="Cierra la ficha y vuelve a Producción">← Volver a Producción</button>' : '') + '<button type="button" class="btn bg bs" id="cf-x">✕ Cerrar</button></div></div>'
     + '<div id="cf-hist-w"></div>' + (esNuevo ? '' : _cosCicloBarra(v))
     + '<div style="display:flex;gap:10px 22px;align-items:center;flex-wrap:wrap;margin-bottom:12px">'   // 6-oct (Pablo) · los semáforos van a la derecha de las cápsulas ERP / Shopify
       + (esNuevo ? '' : '<div id="cf-estados" style="display:flex;flex-direction:column;gap:6px"></div>')
@@ -8842,8 +8876,10 @@ function _cosForm(r) {
   const tipo0 = _cosSkuParse(skuIni).tipo;
   const alSku = () => { if (!catEl.dataset.touched && _cosSkuParse(skuEl.value).tipo !== tipo0) delete catEl.dataset.manual; _cosSkuChips(); };
   skuEl.addEventListener('input', alSku); skuEl.addEventListener('change', alSku);
-  document.getElementById('cf-cancel').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; });
-  document.getElementById('cf-x').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; });
+  document.getElementById('cf-cancel').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; _prodVolverCerrar(); });
+  document.getElementById('cf-x').addEventListener('click', () => { COS.editing = null; cont.innerHTML = ''; _prodVolverCerrar(); });
+  try { _prodVolverSync(); } catch (_) {}
+  { const bv = document.getElementById('cf-volver'); if (bv) bv.addEventListener('click', () => document.getElementById('cf-x').click()); }
   const bcp = document.getElementById('cf-copiar-cp'); if (bcp) bcp.addEventListener('change', function () { if (this.value) _cosPendCopiar(this.value); });
   try { _cosEstadosPintar(v); } catch (_) {}
   try { if (!esConj && !_cosYoAdmin()) cont.querySelectorAll('input[id^="cc-"]').forEach(i => { i.readOnly = true; i.style.opacity = '.65'; i.title = 'Se calcula con la lista de materiales'; }); _cosInsPintar(v); } catch (_) {}
@@ -11510,6 +11546,7 @@ function _prodTabs(){
   box.innerHTML = _T.length < 2 ? '' : '<div style="display:flex;gap:6px;margin:0 0 10px">' + _T.map(x =>
     '<button class="btn bs ' + (x[0] === t ? 'bp' : 'bg') + '" data-pt="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>';
   box.querySelectorAll('[data-pt]').forEach(b => b.addEventListener('click', () => { window._prodTab = b.dataset.pt; _prodTabs(); }));
+  try { _prodVolverSync(); } catch (_) {}
   const f = document.getElementById('produccion-frame'), cp = document.getElementById('prod-cp');
   if (f) { f.style.display = t === 'conf' ? '' : 'none'; f.style.height = 'calc(100vh - 140px)'; }
   if (cp) cp.style.display = t === 'cp' ? '' : 'none';
@@ -38507,9 +38544,9 @@ function renderReposicion(){
   const TD='padding:8px 10px;text-align:center';
   let h='<div style="overflow:auto;border:1px solid var(--bd2);border-radius:var(--r)"><table style="width:100%;border-collapse:collapse;font-size:13px">'
     +'<thead><tr style="background:var(--bg3)">'
-    +['','Producto','Diseño','Color','Stock','Vendidas ('+repoData.dias+'d)','u/día','Cobertura','Producir','¿Por qué? · ¿Para cuándo?'].map(t=>'<th style="'+TH+'">'+t+'</th>').join('')
+    +['','Producto','Diseño','Color','Stock','Vendidas ('+repoData.dias+'d)','u/día','Cobertura','Producir','¿Por qué? · ¿Para cuándo?',''].map(t=>'<th style="'+TH+'">'+t+'</th>').join('')
     +'</tr></thead><tbody>';
-  if(!rows.length) h+='<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--mu)">Sin resultados</td></tr>';
+  if(!rows.length) h+='<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--mu)">Sin resultados</td></tr>';
   rows.forEach(x=>{
     h+='<tr style="border-top:1px solid var(--bd2)">'
       +'<td style="'+TD+'"><span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:'+dot(x.semaforo)+'" title="'+lbl(x.semaforo)+'"></span></td>'
@@ -38522,6 +38559,7 @@ function renderReposicion(){
       +'<td style="'+TD+'">'+(x.cobertura===null?'∞':(x.cobertura+' d'))+'</td>'
       +'<td style="'+TD+';font-weight:600'+(x.sugerir>0?';color:var(--ac)':';color:var(--mu)')+'">'+(x.sugerir>0?('+'+x.sugerir):'—')+'</td>'
       +'<td style="padding:8px 10px;text-align:left;max-width:340px">'+esc(x.motivo||'')+' <b style="color:'+dot(x.semaforo)+';white-space:nowrap">🎯 '+esc(x.paraCuando||'')+'</b></td>'
+      +'<td style="'+TD+'">'+(x.sugerir>0?'<button class="btn bg bs repo-orden" data-p="'+esc(x.prenda)+'" data-d="'+esc(x.dis)+'" style="font-size:11px;white-space:nowrap" title="Abre Nueva producción con los colores que hay que reponer de este diseño">🧵 Crear orden</button>':'')+'</td>'
       +'</tr>';
   });
   h+='</tbody></table></div>';
@@ -38530,6 +38568,21 @@ function renderReposicion(){
   const ds=document.getElementById('repo-dias'); if(ds) ds.addEventListener('change',function(){ repoDias=parseInt(this.value,10)||30; loadReposicion(); });
   const qi=document.getElementById('repo-q'); if(qi){ qi.addEventListener('input',function(){ window._repoQ=this.value; renderReposicion(); }); if(window._repoQ){ qi.focus(); qi.setSelectionRange(qi.value.length,qi.value.length); } }
   el.querySelectorAll('.repo-sem').forEach(b=>b.addEventListener('click',()=>{ window._repoSem=b.dataset.s; renderReposicion(); }));
+  el.querySelectorAll('.repo-orden').forEach(b=>b.addEventListener('click',()=>_repoCrearOrden(b.dataset.p,b.dataset.d)));
+}
+/* 17-nov (Pablo · mejora 2) · REPOSICIÓN → ORDEN, como los referentes: el plan de reposición dispara la orden. Abre 🧵 Producción › Nueva producción
+   con el diseño, tipo Reposición y los colores que hay que reponer; lo sugerido por color va en las notas. Las tallas las reparte Ana (nada se guarda solo). */
+function _repoCrearOrden(prenda, dis){
+  const L=((repoData&&repoData.items)||[]).filter(x=>x.prenda===prenda&&x.dis===dis&&x.sugerir>0).sort((a,b)=>b.sugerir-a.sugerir);
+  if(!L.length) return;
+  const P={ diseno:(prenda+' '+dis).replace(/\s+/g,' ').trim(), colores:L.map(x=>String(x.col||'').toUpperCase().trim()).filter(Boolean), q:{},
+    origen:'Reposición: '+L.map(x=>x.col+' +'+x.sugerir).join(', ') };
+  try{ localStorage.setItem('prod_prefill_v1', JSON.stringify(P)); }catch(_){}
+  navegarA('produccion');
+  let n=0; const t=setInterval(()=>{ n++; const f=document.getElementById('produccion-frame'); let ok=false;
+    try{ ok=!!(f&&f.contentWindow&&f.contentWindow.nuevaDesdeEscala); }catch(_){}
+    if(ok){ clearInterval(t); try{ f.contentWindow.postMessage({tipo:'prod-prefill',P:P},'*'); }catch(_){} }
+    else if(n>60){ clearInterval(t); toast('Abre 🧵 Producción › Nueva producción: quedó guardado el pedido de reposición','warn'); } },500);
 }
 
 // ── ORDEN MANUAL DE STOCK — modal para arrastrar diseños y guardar la vista con nombre ──────
