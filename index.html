@@ -4981,6 +4981,70 @@ const SB_APAGADO = false;
 // espejo de 30 minutos. Apagarlo devuelve al espejo, que sigue funcionando igual.
 const SB_CAT_VIVO = true;
 
+/* 17-nov-2026 (Pablo, 341 B) · 💬 Traer constancias del chat: el ERP pide al servidor (función chat-constancias) las imágenes que la
+   clienta mandó por Chatwoot, las lee en el navegador (lector de texto gratis) y separa las constancias (Yape, Plin, transferencias)
+   de lo demás (capturas del TikTok, fotos de prendas). La asesora elige y guarda: nunca se guarda solo. */
+const CHAT_FN = 'chat-constancias';
+let _tessP = null;
+function _tessCargar(){ if (window.Tesseract) return Promise.resolve(window.Tesseract); if (_tessP) return _tessP;
+  _tessP = new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.onload = () => ok(window.Tesseract); s.onerror = () => { _tessP = null; no(new Error('No cargó el lector')); }; document.head.appendChild(s); }); return _tessP; }
+function _constLeer(txt){
+  const t = String(txt || '').replace(/\s+/g, ' ');
+  const marca = /yape|plin|bcp|interbank|bbva|scotiabank|banco|transferencia|operaci[oó]n|yapeaste|pagaste|enviaste|constancia/i.test(t);
+  const mm = /S\/\.?\s*([0-9]{1,5}(?:[.,][0-9]{3})*(?:[.,][0-9]{1,2})?)/i.exec(t);
+  let monto = null; if (mm){ let v = mm[1]; if (/,\d{1,2}$/.test(v)) v = v.replace(/\./g, '').replace(',', '.'); else v = v.replace(/,/g, ''); monto = parseFloat(v); }
+  const op = (/operaci[oó]n[^0-9]{0,14}([0-9]{5,})/i.exec(t) || [])[1] || '';
+  const ban = (/(yape|plin|bcp|interbank|bbva|scotiabank)/i.exec(t) || [])[1] || '';
+  const meses = { ene:1, feb:2, mar:3, abr:4, may:5, jun:6, jul:7, ago:8, set:9, sep:9, oct:10, nov:11, dic:12 };
+  let fecha = ''; const f1 = /(\d{1,2})\s*(?:de\s*)?(ene|feb|mar|abr|may|jun|jul|ago|set|sep|oct|nov|dic)[a-z.]*\s*(?:de\s*)?(\d{4})/i.exec(t), f2 = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
+  if (f1) fecha = f1[3] + '-' + String(meses[f1[2].toLowerCase()]).padStart(2, '0') + '-' + f1[1].padStart(2, '0');
+  else if (f2) fecha = f2[3] + '-' + f2[2].padStart(2, '0') + '-' + f2[1].padStart(2, '0');
+  return { es: marca && monto > 0, monto, op, ban: ban.toUpperCase(), fecha, duda: marca && !(monto > 0) };
+}
+async function _chatConstancias(mEl, tel){
+  const box = mEl.querySelector('#pago-f-chat'); if (!box) return;
+  box.style.display = 'block'; box.innerHTML = '<span class="mu" style="font-size:12px">Buscando en el chat…</span>';
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión');
+    const H = { Authorization: 'Bearer ' + tok, apikey: SB_ANON };
+    const r = await fetch(SB_URL + '/functions/v1/' + CHAT_FN, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, H), body: JSON.stringify({ tel: tel, dias: 20 }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) throw new Error(j.error || ('error ' + r.status));
+    const A = j.adjuntos || [];
+    if (!A.length) { box.innerHTML = '<span class="mu" style="font-size:12px">' + (j.contactos ? 'La clienta no mandó imágenes en los últimos 20 días.' : 'No encontré su chat con el celular ' + esc(tel) + '.') + '</span>'; return; }
+    box.innerHTML = '<div class="mu" style="font-size:12px;margin-bottom:6px">' + A.length + ' imagen(es) del chat · las constancias salen arriba</div><div id="pfc-l" style="display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto"></div>';
+    const L = box.querySelector('#pfc-l'), vistos = {};
+    let T = null; try { T = await _tessCargar(); } catch (_) {}
+    for (const a of A) {
+      const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;align-items:center;font-size:12px;border:1px solid var(--bd);border-radius:6px;padding:4px'; L.appendChild(row);
+      try {
+        const ri = await fetch(SB_URL + '/functions/v1/' + CHAT_FN + '?img=' + encodeURIComponent(a.url), { headers: H });
+        if (!ri.ok) throw new Error('imagen ' + ri.status);
+        const blob = await ri.blob(), u = URL.createObjectURL(blob);
+        const d = new Date(a.fecha * 1000).toLocaleString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+        row.innerHTML = '<img src="' + u + '" style="width:44px;height:44px;object-fit:cover;border-radius:4px;cursor:zoom-in" onclick="window.open(this.src)"><span style="flex:1" class="mu">' + d + ' · leyendo…</span>';
+        let x = { es: false, duda: true };
+        if (T && /^image\//.test(blob.type)) { const o = await T.recognize(blob, 'spa'); x = _constLeer(o && o.data && o.data.text); }
+        const rep = x.op && vistos[x.op]; if (x.op) vistos[x.op] = 1;
+        const sp = row.querySelector('span'), boton = (txt, cls) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'btn ' + cls + ' bs'; b.style.fontSize = '11px'; b.textContent = txt; b.onclick = () => _chatConstUsar(mEl, blob, x, a); row.appendChild(b); };
+        if (x.es && !rep) { sp.className = ''; sp.innerHTML = '✅ <b>S/ ' + x.monto.toFixed(2) + '</b>' + (x.ban ? ' · ' + esc(x.ban) : '') + (x.op ? ' · op ' + esc(x.op) : '') + ' · ' + d; boton('Usar', 'bp'); L.insertBefore(row, L.firstChild); }
+        else if (rep) { sp.textContent = d + ' · repetida (misma operación ' + x.op + ')'; row.style.opacity = '.55'; }
+        else if (x.duda) { sp.textContent = d + ' · no la pude leer bien: ábrela y decide'; boton('Usar igual', 'bg'); }
+        else { sp.textContent = d + ' · no es pago'; row.style.opacity = '.55'; }
+      } catch (e) { row.innerHTML = '<span class="mu">No se pudo traer una imagen (' + esc(e.message) + ')</span>'; }
+    }
+  } catch (e) { box.innerHTML = '<span style="color:var(--rd);font-size:12px">No se pudo leer el chat: ' + esc(e.message) + '</span>'; }
+}
+function _chatConstUsar(mEl, blob, x, a){
+  const q = id => mEl.querySelector('#' + id);
+  if (x.monto > 0 && q('pago-f-monto')) q('pago-f-monto').value = x.monto.toFixed(2);
+  if (x.fecha && q('pago-f-fecha') && x.fecha <= hoyLima()) q('pago-f-fecha').value = x.fecha;
+  const ext = (String(blob.type).split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+  const f = new File([blob], 'constancia-chat-' + (x.op || a.id) + '.' + ext, { type: blob.type || 'image/jpeg' });
+  try { const dt = new DataTransfer(); dt.items.add(f); const inp = q('pago-f-const-file'); inp.files = dt.files; inp.dispatchEvent(new Event('change')); } catch (_) {}
+  toast('Constancia del chat lista: revisa monto, forma de pago y guarda', 'ok');
+}
 async function _sbSesionAsegurar(){
   if (SB_APAGADO) return null;   // simulacro: sin token, todo se va por Apps Script
   const v = await _sbTokenVigente();
@@ -28405,6 +28469,7 @@ function verPed(p) {
     +'<input type="file" id="pago-f-const-file" accept="image/*,application/pdf" style="display:none">'
     +'<button type="button" id="pago-f-const-clear" style="display:none;background:none;border:none;color:var(--rd);cursor:pointer;font-size:13px;padding:0">✕</button>'
     +'</div></div></div>'
+    +'<div style="margin:-4px 0 10px"><button type="button" class="btn bg bs" id="pago-f-chat-btn" style="font-size:11px" title="Trae las imágenes que la clienta mandó por el chat y separa las constancias">💬 Traer constancias del chat</button><div id="pago-f-chat" style="display:none;margin-top:6px"></div></div>'   /* 17-nov (Pablo, 341 B) */
     +'<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">'
     +'<button class="btn bg bs" id="pago-f-cancel">Cancelar</button>'
     +'<button class="btn bg bs" id="pago-f-delete" style="color:var(--rd);display:none">🗑 Eliminar pago</button>'
@@ -29500,6 +29565,7 @@ async function _guardarPedidoModal(nro, body) {
   qId('pago-f-const-clear').addEventListener('click', function(e) {
     e.stopPropagation(); _resetConstanciaField();
   });
+  try { qId('pago-f-chat-btn').addEventListener('click', () => _chatConstancias(mEl, String((p && p['Celular']) || '').trim())); } catch (_) {}   /* 17-nov (Pablo, 341 B) */
 
   // Guardar pago (nuevo o edición)
   qId('pago-f-save').addEventListener('click', async function() {
