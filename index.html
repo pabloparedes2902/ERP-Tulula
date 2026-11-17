@@ -3879,6 +3879,7 @@ async function _lentosVolcarPendientes(forzar, tok) {
       }
       return;   // con pase NUNCA se va a Apps Script; lo que fallo queda para la proxima
     }
+    if (typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) return;   /* 17-nov · sin pase, la telemetría espera al pase (no gasta cuota de Apps Script) */
     const lote = l.slice(0, _LENTOS_LOTE);
     const r = await apiPost('lentos.volcar', { items: lote });
     if (r && r.ok) {
@@ -4331,6 +4332,12 @@ async function _puertaIntentar(action, body, porApps) {
    contesta LEYENDO LA MISMA BASE, así que el respaldo no agregaba nada. Ahora: se reintenta contra la base y, si no contesta, la pantalla se queda con
    lo que ya tenía y vuelve a probar en la siguiente vuelta. REVERSA: VR_SIN_APPS_LECTURAS = false y publicar. */
 const VR_SIN_APPS_LECTURAS = true;
+/* 17-nov (Pablo: «todo por la vía rápida») · el último recurso de las pantallas que leen la copia del espejo ya no es Apps Script
+   (que además lee la MISMA base): primero la copia aunque tenga horas (hasta 7 días); el espejo la renueva solo. */
+async function _espejoAunqueViejo(clave) {
+  if (!(typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS)) return null;
+  try { const d = await _sbCacheLeer(clave, 7 * 24 * 3600 * 1000); return d == null ? null : d; } catch (_) { return null; }
+}
 async function api(action, params) {
   // GET: los valores viajan como texto en la dirección → la llave se arma con texto (igual que la ve Apps Script)
   const _pk = {}; if (params) Object.keys(params).forEach(k => { if (params[k] !== undefined) _pk[k] = String(params[k]); });
@@ -16093,11 +16100,20 @@ function _camVivo(c) { try { return String((c && (c['Estado'] || c.estado)) || '
 async function _c2HistMapRapido() {
   const filas = await _sbFilasEspejo('cambios2');
   if (filas) return _c2HistMapDe(filas);
+  if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO) {   /* 17-nov · como la lista de cambios: reintento a la base */
+    await _sbEsperar(1500); const f2 = await _sbFilasEspejo('cambios2'); if (f2) return _c2HistMapDe(f2);
+    throw new Error('La base tardó en responder el historial de cambios. Vuelve a intentar en unos segundos.');
+  }
   return api('cambios2.histmap', {});
 }
 async function _devListarRapido() {
   const filas = await _sbFilasEspejo('devoluciones');
-  if (filas) return filas.slice().sort((a, b) => new Date(_c2Fecha(b.FechaSolicitud) || 0) - new Date(_c2Fecha(a.FechaSolicitud) || 0));
+  const _ord = f => f.slice().sort((a, b) => new Date(_c2Fecha(b.FechaSolicitud) || 0) - new Date(_c2Fecha(a.FechaSolicitud) || 0));
+  if (filas) return _ord(filas);
+  if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO) {   /* 17-nov · reintento a la base */
+    await _sbEsperar(1500); const f2 = await _sbFilasEspejo('devoluciones'); if (f2) return _ord(f2);
+    throw new Error('La base tardó en responder la lista de devoluciones. Vuelve a intentar en unos segundos.');
+  }
   return api('devoluciones.listar', {});
 }
 
@@ -17056,6 +17072,7 @@ async function _productosListarRapido() {
   try { const b = await _listaDeLaBase('productos_listar_calc', function (x) { return Array.isArray(x) && x.length > 0; }); if (b) return b; } catch (_) {}
   const d = await _sbCacheLeer('productos.listar');
   if (Array.isArray(d) && d.length) return d;
+  { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('productos.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
   return api('productos.listar', { force: '1' });
 }
 // ══ FASE 4.3 (10-set-2026) · EL CATÁLOGO SALE DE LA TABLA VIVA ═══════════════
@@ -17103,6 +17120,7 @@ async function _maestrosSkusRapido() {
   if (Array.isArray(v) && v.length) return v;
   const d = await _sbCacheLeer('catalogo.maestrosSkus');   // el espejo: hasta 30 min
   if (Array.isArray(d) && d.length) return d;
+  { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('catalogo.maestrosSkus'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
   return api('catalogo.maestrosSkus', {});        // Apps Script: el último recurso
 }
 // 1-oct · F2 bloque A2 · LECTURA DIRECTA DE LA BASE (lotes y fallas). Tablas/vistas chicas que el
@@ -17332,7 +17350,7 @@ async function _cambiosListarRapido() {
   const _pNuevo = _c2ListarRapido().then(x => x, e => { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} return null; });
   let viejo = null;
   try { viejo = await _cambiosViejosDeLaBase(); } catch (_) { viejo = null; }
-  if (!viejo) { const d = await _sbCacheLeer('cambios.listar'); viejo = (Array.isArray(d) && d.length) ? d : await api('cambios.listar', {}); }
+  if (!viejo) { const d = await _sbCacheLeer('cambios.listar'); viejo = (Array.isArray(d) && d.length) ? d : (((typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('cambios.listar') : null) || await api('cambios.listar', {})); }   /* 17-nov */
   let nuevo = [];
   try { const _x = await _pNuevo; nuevo = _x ? _c2ComoFilasHist_(_x) : []; } catch (e) { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} }
   return (Array.isArray(viejo) ? viejo : []).concat(nuevo);
@@ -17353,12 +17371,14 @@ async function _coloresListarRapido() {
   try { const b = await _listaDeLaBase('colores_listar_calc', _esMapaLleno); if (b) return b; } catch (_) {}
   const d = await _sbCacheLeer('colores.listar');
   if (d && Object.keys(d).length) return d;
+  { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('colores.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
   return api('colores.listar', {});
 }
 async function _maestrosListarRapido() {
   try { const b = await _listaDeLaBase('maestros_listar_calc', function (d) { return _esMapaLleno(d) && Object.keys(d).some(function (k) { return Array.isArray(d[k]) && d[k].length; }); }); if (b) return b; } catch (_) {}
   const d = await _sbCacheLeer('maestros.listar');
   if (d && Object.keys(d).length) return d;
+  { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('maestros.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
   return api('maestros.listar', {});
 }
 
@@ -17453,6 +17473,7 @@ async function _confeccionListarRapido() {
   // con cambios la rehace una sola vez para todos (candado). Si esa función no está, sigue como antes.
   try { const v = await _listaDeLaBase('confeccion_listar_vivo', function (x) { return Array.isArray(x) && x.length > 0; }); if (v) return v; } catch (_) {}
   try { const b = await _listaDeLaBase('confeccion_listar_calc', function (x) { return Array.isArray(x) && x.length > 0; }); if (b) return b; } catch (_) {}
+  { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('confeccion.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
   return api('confeccion.listar', {});
 }
 async function _alertasListarRapido(soloEspejo) {
@@ -17472,6 +17493,7 @@ async function _alertasListarRapido(soloEspejo) {
     if (v) { if (window._sbSaltarEspejo && !soloEspejo) _alertasRehacerFondo(v); return v; }
   } catch (_) {}
   if (soloEspejo) throw new Error('espejo no disponible (pestaña oculta)');
+  { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('alertas.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
   return api('alertas.listar');
 }
 // 31-oct · 🔄 en Alertas: lo de Apps Script llega por detrás y repinta solo si cambió algo y sigues en Alertas.
@@ -17595,6 +17617,7 @@ async function _vistasStockRapido() {
   try { const b = await _listaDeLaBase('vistas_stock_listar_calc', Array.isArray); if (b) return b; } catch (_) {}   // 1-oct · F2 bloque A
   const d = await _sbCacheLeer('vistas.stock.listar');
   if (Array.isArray(d)) return d;
+  { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('vistas.stock.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
   return api('vistas.stock.listar');
 }
 
@@ -49969,6 +49992,7 @@ async function _authChequeo(){
     }
   } catch(_){}
   try { var u = parseInt(localStorage.getItem('erp_auth_chk') || '0', 10) || 0; if (Date.now() - u < AUTH_CHK_MIN * 60000) return null; } catch(_){}
+  if (typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) return null;   /* 17-nov · la base no contestó: la sesión sigue y se revisa en la próxima vuelta (Apps Script lee la misma base) */
   try {
     var r = await apiSend('auth.ping', {});
     try { localStorage.setItem('erp_auth_chk', String(Date.now())); } catch(_){}
