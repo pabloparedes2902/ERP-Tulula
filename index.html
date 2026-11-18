@@ -8263,6 +8263,8 @@ function _cosCols() {
   if (A) c.push({ t: 'Ver', stick: 1, sortf: 1, f: r => _cosVerCelda(r) });
   c.push({ t: 'SKU', cat: 1, stick: 1, f: r => '<b>' + esc(((r.TipoPrenda || '') + ' ' + (r.Modelo || '')).trim()) + '</b>'   /* 7-oct (Pablo) · el SKU entero en negrita y del mismo color */ + (A && r.Notas ? ' <span title="' + esc(r.Notas) + '" style="color:var(--mu)">🗒</span>' : '')
     + (A && _cosRevFlags(r).length ? ' <span title="' + esc(_cosRevFlags(r).map(k => COS_REV_TXT[k][0]).join(' · ')) + '" style="color:var(--rd)">⚠</span>' : '') });
+  if (A && COS.modo === 'prod') c.push({ t: 'Materiales', an: 118, f: r => String(r.TipoPrenda || '').toUpperCase() === 'CONJUNTO' || r.calculado === 'piezas' ? '<span style="color:var(--mu);font-size:12px" title="El costo es la suma de sus piezas">Σ piezas</span>'
+    : '<button type="button" class="btn bg bs cos-mat" data-d="' + esc(String(r.Diseno)) + '" style="font-size:11px;padding:3px 8px" title="Lista de materiales: el costo sale de aquí">🧾 Materiales</button>' });   /* 17-nov (Pablo) · el costo se carga SOLO con la lista de materiales */
   if (MP && COS.fv) {   /* 17-nov (Pablo) · 📸 Fotos y video = la MISMA lista del Catálogo (mismo orden y filtros), con estas columnas */
     const G = 'Fotos y video', bg = 'rgba(56,189,248,.25)', E = r => (MCT && MCT.res) ? _mctEstado(r, MCT.res) : null, ld = '<span style="color:var(--mu)">…</span>';
     const ck = ok => ok ? '<span style="color:var(--gn);font-weight:600">✓</span>' : '<span style="color:var(--rd)">○</span>';
@@ -8389,7 +8391,7 @@ function _cosColLinea(bg){ return String(bg || '').replace(/,\s*\.?\d*\.?\d+\)\s
    Bloqueado: conjuntos (su costo = suma de sus piezas), Costo unitario (suma), márgenes y sugerido (fórmulas). */
 const _XL_GRUPO = k => k === 'confeccion' ? 'co' : (/^tela/.test(k) || k === 'entretela' || k === 'forro') ? 'te' : 'ot';
 const _XL_PRINC = { co: 'confeccion', te: 'tela1', ot: 'otros' };
-function _xlCostoEditable(r){ return !!(r && r.calculado !== 'piezas' && String(r.TipoPrenda || '').toUpperCase() !== 'CONJUNTO' && COS.esAdmin); }
+function _xlCostoEditable(r){ return false; }   /* 17-nov (Pablo) · el costo se carga SOLO con 🧾 Materiales; antes: prenda normal y admin (9-nov) */
 function _xlCostoSuma(r, g){ if (!r) return null; const c = r.comp || {};
   if (!_XL_PRINC[g]) { const v = c[g]; return (v == null || v === '') ? null : +v || 0; }
   let s = 0, hay = false; (COS.comps || []).forEach(k => { if (_XL_GRUPO(k.k) !== g) return; const v = c[k.k]; if (v != null && v !== '') { hay = true; s += +v || 0; } }); return hay ? s : null; }
@@ -8558,6 +8560,7 @@ function _cosBindRowBtns(scope) {
   scope.querySelectorAll('.cos-ficha').forEach(b => b.addEventListener('click', () => { const r = COS.data.find(x => String(x.Diseno) === b.dataset.d); if (r) _cosForm(Object.assign({}, r, { _tab: COS.fv ? 'ficha' : 'datos' })); }));
   { const tb = scope.querySelector && scope.querySelector('#cos-tabla tbody, tbody'); if (tb && !tb._filaClic) { tb._filaClic = 1;   /* 17-nov (Pablo) · clic en la fila abre la ficha (en Lista y Fotos y video) */
     tb.addEventListener('click', e => { if (COS.modo !== 'productos' || (e.target.closest && e.target.closest('button,input,select,a,label,.xl'))) return; const tr = e.target.closest && e.target.closest('tr'), b = tr && tr.querySelector('.cos-ficha'); if (b) b.click(); }); } }
+  scope.querySelectorAll('.cos-mat').forEach(b => b.addEventListener('click', () => { const r = COS.data.find(x => String(x.Diseno) === b.dataset.d); if (r) _cosForm(Object.assign({}, r, { _tab: 'costo', _editCosto: true })); }));   /* 17-nov · 🧾 Materiales */
   scope.querySelectorAll('.cos-off').forEach(b => b.addEventListener('click', () => _cosDesactivar(b.dataset.d, b.dataset.a === '1')));
   scope.querySelectorAll('.cos-act').forEach(b => b.addEventListener('change', async () => { await _cosDesactivar(b.dataset.d, b.checked); _cosRender(); }));
   scope.querySelectorAll('.cos-sortf').forEach(b => b.addEventListener('click', () => { COS.sortF = !COS.sortF ? 'asc' : (COS.sortF === 'asc' ? 'desc' : ''); _cosUpdateRows(); }));
@@ -8670,6 +8673,7 @@ function _cosRender() {
   _cosBindRowBtns(w);
   if (COS.esAdmin && !MCT.cargado) _cosFichaCargar();
   if (COS.editing) _cosForm(COS.editing);
+  if (window._abrirMat && COS.modo === 'prod' && (COS.data || []).length) { const rm = COS.data.find(x => x.Diseno === window._abrirMat); window._abrirMat = ''; if (rm) _cosForm(Object.assign({}, rm, { _tab: 'costo', _editCosto: true })); }   /* 17-nov · 🧾 Editar materiales desde la ficha */
 }
 
 // ── Formulario (solo Administrador) ──
@@ -8854,13 +8858,14 @@ function _cosForm(r) {
         + '<div id="cf-catw" style="margin-top:4px;font-size:11px;color:var(--mu);display:none">Tipo nuevo: elige su categoría <select id="cf-cat" style="' + st + ';width:auto;font-size:12px;padding:3px 6px"><option value=""></option>' + (COS.cats || []).map(c => '<option value="' + esc(c) + '"' + (String(v.Categoria || '') === c ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select></div></div>'
     + '</div>'
     + '<div id="cf-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px;border-bottom:1px solid var(--bd);padding-bottom:8px">'
-      + (esNuevo ? [['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda']] : [['resumen', '📋 Resumen'], ['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda'], ['ordenes', '🏭 Producción']]   /* 3-nov (Pablo) · «Órdenes» pasa a llamarse «Producción» */).map(t => '<button type="button" class="btn bg bs cf-tab" data-t="' + t[0] + '" style="font-size:12px">' + t[1] + '</button>').join('')
+      + (v._editCosto ? [['costo', '🧾 Materiales y costo']] : esNuevo ? [['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda']] : [['resumen', '📋 Resumen'], ['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda'], ['ordenes', '🏭 Producción']]   /* 3-nov (Pablo) · «Órdenes» pasa a llamarse «Producción» */).map(t => '<button type="button" class="btn bg bs cf-tab" data-t="' + t[0] + '" style="font-size:12px">' + t[1] + '</button>').join('')
     + '</div>'
     + (esNuevo ? '' : '<div class="cf-sec" data-sec="resumen" style="display:none">' + _cosResumenHtml(v) + '</div>'
         + '<div class="cf-sec" data-sec="ordenes" style="display:none"><div id="cf-ord" style="font-size:13px;color:var(--mu)">Cargando órdenes…</div></div>'
         + '<div class="cf-sec" data-sec="diseno" style="display:none"><div id="cf-dis" style="font-size:13px;color:var(--mu)">Cargando…</div></div>')   /* 3-nov (Pablo · P2) · el diseño vive en la ficha del producto */
-    + '<div class="cf-sec' + (_cosEditaCosto() ? '' : ' cf-ro') + '" data-sec="costo" style="display:none">'   /* 9-nov (Pablo) · desde 📦 Productos la ficha muestra costo y precios sin editar */
-      + (_cosEditaCosto() ? '' : '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">🔒 El costo se carga en <b>🧵 Producción</b> (materiales, taller y confección). Aquí solo se ve.</div>')
+    + '<div class="cf-sec' + (_cosEditaCosto() && (esNuevo || v._editCosto) ? '' : ' cf-ro') + '" data-sec="costo" style="display:none">'   /* 17-nov (Pablo) · el costo vive en UN lugar: la lista de materiales, que se abre desde 💲 Costos y precios › 🧾 Materiales. La ficha solo lo muestra. */
+      + (_cosEditaCosto() && (esNuevo || v._editCosto) ? '' : '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--mu);margin-bottom:8px">🔒 El costo se arma con la lista de materiales y se edita en 💲 Costos y precios › 🧾 Materiales.'
+        + (_cosEditaCosto() ? '<button type="button" class="btn bp bs" id="cf-ir-mat" style="font-size:12px;pointer-events:auto;opacity:1">🧾 Editar materiales</button>' : '') + '</div>')
       + '<div style="font-weight:600;font-size:13px;margin-bottom:6px">Costo</div>'
       + (esConj ? _cosConjCostoHtml(v) : '<div style="display:grid;grid-template-columns:repeat(' + principales.length + ',minmax(0,1fr));gap:6px">' + principales.map(k => '<div class="fg" style="margin:0;min-width:0"><label style="font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block" title="' + esc(k.t) + '">' + esc(k.t) + '</label>' + num('cc-' + k.k, comp[k.k]).replace('style="' + st + ';text-align:right"', 'style="' + st + ';text-align:right;padding:6px 4px;font-size:12px;min-width:0"') + '</div>').join('') + '</div>'
       + (otros.length ? '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--ac)">＋ Otros componentes (' + otros.map(k => esc(k.t)).join(', ') + ')</summary><div style="' + grid + ';margin-top:6px">' + otros.map(k => campo(esc(k.t), num('cc-' + k.k, comp[k.k]))).join('') + '</div></details>' : '')
@@ -8901,6 +8906,8 @@ function _cosForm(r) {
   /* 17-nov (Pablo) · ficha más corta: «Nombre en Shopify» y «Clima» son de la tienda → van arriba de 🛍 Tienda (los campos son los mismos, se mudan) */
   try { const tf = cont.querySelector('.cf-sec[data-sec="ficha"]'), ns = document.getElementById('cf-nshop'), cl = document.getElementById('cf-clima');
     if (tf && ns && ns.parentElement) { const box = document.createElement('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:12px'; ns.parentElement.style.flex = 'none'; box.appendChild(ns.parentElement); if (cl) box.appendChild(cl); tf.insertBefore(box, tf.firstChild); } } catch (_) {}
+  try { if (!esConj) cont.querySelectorAll('input[id^="cc-"]').forEach(i => { i.readOnly = true; i.style.opacity = '.8'; i.title = 'Suma de la lista de materiales'; }); } catch (_) {}   /* 17-nov (Pablo) · nadie escribe el total a mano: sale de los materiales */
+  { const bm = document.getElementById('cf-ir-mat'); if (bm) bm.addEventListener('click', () => { window._abrirMat = String(v.Diseno || ''); COS.editing = null; cont.innerHTML = ''; _prodIr('costos', 'cp'); if (COS.modo === 'prod') _cosRender(); }); }
   { const bv = document.getElementById('cf-volver'); if (bv) bv.addEventListener('click', () => document.getElementById('cf-x').click()); }
   const bcp = document.getElementById('cf-copiar-cp'); if (bcp) bcp.addEventListener('change', function () { if (this.value) _cosPendCopiar(this.value); });
   try { _cosEstadosPintar(v); } catch (_) {}
