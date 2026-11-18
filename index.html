@@ -6086,7 +6086,14 @@ async function _cosInsPintar(v) {
   if (!CIN.lib) { try { CIN.lib = (await _cinSb('/rest/v1/prod_materiales?select=id,nombre,comp,proveedor,unidad,precio,colores&activo=eq.true&order=nombre')) || []; } catch (_) { CIN.lib = []; } }   /* 3-nov · F2 biblioteca de materiales */
   if (CIN.ok && !CIN.L.length && Number(v && v.CostoUnitario) > 0 && !(v && v._dup)) CIN.ok = false;   /* 29-oct · costo viejo sin lista todavía: se respeta tal cual (nunca se pone en cero) */   /* 29-oct · si no se pudo leer la lista, NO se recalcula nada (no pisa el costo con ceros) */
   if (!document.getElementById('cf-ins')) return;
-  _cosInsRender(); _cosInsAplicar(false);
+  let _cinDe = '';
+  if (CIN.ok && !CIN.L.length && !(Number(v && v.CostoUnitario) > 0) && v && (v._editCosto || !v.Diseno) && v.TipoPrenda) {   /* 17-nov (Pablo) · lista vacía: se copia la de la prenda anterior del mismo tipo */
+    const cand = (COS.data || []).filter(r => r.TipoPrenda === v.TipoPrenda && r.Diseno !== v.Diseno && String(r.TipoPrenda || '').toUpperCase() !== 'CONJUNTO').sort((a, b) => String(b.Alta || b.Creado || '').localeCompare(String(a.Alta || a.Creado || ''))).slice(0, 10);
+    for (const r of cand) { try { const L = (await _cinSb('/rest/v1/prod_insumos?select=comp,descripcion,cantidad,unidad,precio,colores&order=orden&diseno=eq.' + encodeURIComponent(_cinNrm(r.Diseno)))) || []; if (L.length) { CIN.L = L.map(x => Object.assign({}, x, { colores: '' })); CIN.dirty = true; _cinDe = r.Diseno; break; } } catch (_) {} }
+  }
+  if (!document.getElementById('cf-ins')) return;
+  _cosInsRender(); _cosInsAplicar(!!_cinDe);
+  if (_cinDe) { const bx = document.getElementById('cf-ins'); if (bx) bx.insertAdjacentHTML('afterbegin', '<div style="font-size:12px;padding:6px 10px;border:1px dashed var(--yl,#c9a227);border-radius:var(--r);margin-bottom:6px">✨ Lista copiada de «' + esc(_cinDe) + '» (la prenda anterior del mismo tipo): ajusta cantidades y precios, y guarda.</div>'); }
 }
 function _cosInsRender() {
   const box = document.getElementById('cf-ins'); if (!box) return;
@@ -8815,6 +8822,8 @@ window.prodIrOrden = async function(id) {
   const f = document.getElementById('produccion-frame'); if (!f || !id) return;
   for (let i = 0; i < 60; i++) { try { if (f.contentWindow && f.contentWindow.irOrden) { await f.contentWindow.irOrden(id); return; } } catch (_) {} await new Promise(r => setTimeout(r, 500)); }
 };
+(function(){ try { if (document.getElementById('cf-vista-css')) return; const st = document.createElement('style'); st.id = 'cf-vista-css';   /* 17-nov (Pablo) · ficha nueva: Producto y Tienda */
+  st.textContent = '#cos-form[data-vista="producto"] .fsec-t{display:none!important}#cos-form[data-vista="tienda"] .fsec-p{display:none!important}'; document.head.appendChild(st); } catch (_) {} })();
 (function(){ try { if (document.getElementById('cos-fila-css')) return; const st = document.createElement('style'); st.id = 'cos-fila-css';   /* 17-nov (Pablo) · fila iluminada y línea fina entre filas, como en Pedidos */
   st.textContent = '#cos-tabla tbody td,#con-tabla tbody td{border-bottom:1px solid var(--bd2)}#cos-tabla tbody tr:hover td,#con-tabla tbody tr:hover td{background:#33333a !important}html.light #cos-tabla tbody tr:hover td,html.light #con-tabla tbody tr:hover td{background:#ececf1 !important}'; document.head.appendChild(st); } catch (_) {} })();
 (function(){ try { if (document.getElementById('cf-ro-css')) return; const st = document.createElement('style'); st.id = 'cf-ro-css';
@@ -8857,8 +8866,9 @@ function _cosForm(r) {
         + '<div id="cf-skuchips"></div><div id="cf-piezas"></div><div id="cf-clima" style="margin-top:6px"></div>'
         + '<div id="cf-catw" style="margin-top:4px;font-size:11px;color:var(--mu);display:none">Tipo nuevo: elige su categoría <select id="cf-cat" style="' + st + ';width:auto;font-size:12px;padding:3px 6px"><option value=""></option>' + (COS.cats || []).map(c => '<option value="' + esc(c) + '"' + (String(v.Categoria || '') === c ? ' selected' : '') + '>' + esc(c) + '</option>').join('') + '</select></div></div>'
     + '</div>'
+    + (esNuevo || v._editCosto ? '' : _cfCabecera(v))
     + '<div id="cf-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 12px;border-bottom:1px solid var(--bd);padding-bottom:8px">'
-      + (v._editCosto ? [['costo', '🧾 Materiales y costo']] : esNuevo ? [['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda']] : [['resumen', '📋 Resumen'], ['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda'], ['ordenes', '🏭 Producción']]   /* 3-nov (Pablo) · «Órdenes» pasa a llamarse «Producción» */).map(t => '<button type="button" class="btn bg bs cf-tab" data-t="' + t[0] + '" style="font-size:12px">' + t[1] + '</button>').join('')
+      + (v._editCosto ? [['costo', '🧾 Materiales y costo']] : esNuevo ? [['costo', '🧵 Costo'], ['datos', '💲 Precios'], ['ficha', '🛍 Tienda']] : [['producto', '👗 Producto'], ['ficha', '🛍 Tienda'], ['cyp', '💲 Costo y precio']]   /* 17-nov (Pablo aprobó) · ficha nueva: cabecera + 3 pestañas; Resumen pasa a la cabecera y Producción a un botón */   /* 3-nov (Pablo) · «Órdenes» pasa a llamarse «Producción» */).map(t => '<button type="button" class="btn bg bs cf-tab" data-t="' + t[0] + '" style="font-size:12px">' + t[1] + '</button>').join('')
     + '</div>'
     + (esNuevo ? '' : '<div class="cf-sec" data-sec="resumen" style="display:none">' + _cosResumenHtml(v) + '</div>'
         + '<div class="cf-sec" data-sec="ordenes" style="display:none"><div id="cf-ord" style="font-size:13px;color:var(--mu)">Cargando órdenes…</div></div>'
@@ -8880,9 +8890,9 @@ function _cosForm(r) {
     + '</div>'
     + '<div class="cf-sec" data-sec="ficha" style="display:none">'
       + (esNuevo ? _cosPendInfo(v) : '')
-      + (esNuevo ? '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">📷 Primero toca «Guardar costos». Después abres este mismo producto y aquí aparecen las fotos por color, la foto de catálogo y el video.</div>' : '<div id="cf-media" style="margin:0 0 6px"></div><div id="cf-histw" style="margin:0 0 14px"></div>')
+      + (esNuevo ? '<div style="font-size:12px;color:var(--mu);margin-bottom:12px">📷 Primero toca «Guardar costos». Después abres este mismo producto y aquí aparecen las fotos por color, la foto de catálogo y el video.</div>' : '<div id="cf-media" class="fsec-t" style="margin:0 0 6px"></div><div id="cf-histw" style="margin:0 0 14px"></div>')
     + '</div>'
-    + '<div class="cf-sec" data-sec="ficha" style="display:none"><details style="margin:4px 0 12px"><summary style="cursor:pointer;font-size:12px;color:var(--ac)">🔎 Google, IA y cuidados</summary><div style="margin-top:8px">'
+    + '<div class="cf-sec fsec-p" data-sec="ficha" style="display:none"><details style="margin:4px 0 12px"><summary style="cursor:pointer;font-size:12px;color:var(--ac)">🔎 Google, IA y cuidados</summary><div style="margin-top:8px">'
       + _cosFichaHtml(v, st, campo)
       + '<div hidden>'   // 9-oct (Pablo) · fuera «Más campos»; se guardan tal cual estaban
         + '<input id="ff-diseno" value="' + esc(pf.diseno || '') + '"><input id="cf-notas" value="' + esc(v.Notas || '') + '"><textarea id="ff-otras">' + esc(pf.otras.join('\n')) + '</textarea>'
@@ -8905,7 +8915,7 @@ function _cosForm(r) {
   try { _prodVolverSync(); } catch (_) {}
   /* 17-nov (Pablo) · ficha más corta: «Nombre en Shopify» y «Clima» son de la tienda → van arriba de 🛍 Tienda (los campos son los mismos, se mudan) */
   try { const tf = cont.querySelector('.cf-sec[data-sec="ficha"]'), ns = document.getElementById('cf-nshop'), cl = document.getElementById('cf-clima');
-    if (tf && ns && ns.parentElement) { const box = document.createElement('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:12px'; ns.parentElement.style.flex = 'none'; box.appendChild(ns.parentElement); if (cl) box.appendChild(cl); tf.insertBefore(box, tf.firstChild); } } catch (_) {}
+    if (tf && ns && ns.parentElement) { const box = document.createElement('div'); box.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-bottom:12px'; ns.parentElement.style.flex = 'none'; ns.parentElement.classList.add('fsec-t'); box.appendChild(ns.parentElement); if (cl) { cl.classList.add('fsec-p'); box.appendChild(cl); } tf.insertBefore(box, tf.firstChild); } } catch (_) {}
   try { if (!esConj) cont.querySelectorAll('input[id^="cc-"]').forEach(i => { i.readOnly = true; i.style.opacity = '.8'; i.title = 'Suma de la lista de materiales'; }); } catch (_) {}   /* 17-nov (Pablo) · nadie escribe el total a mano: sale de los materiales */
   { const bm = document.getElementById('cf-ir-mat'); if (bm) bm.addEventListener('click', () => { window._abrirMat = String(v.Diseno || ''); COS.editing = null; cont.innerHTML = ''; _prodIr('costos', 'cp'); if (COS.modo === 'prod') _cosRender(); }); }
   { const bv = document.getElementById('cf-volver'); if (bv) bv.addEventListener('click', () => document.getElementById('cf-x').click()); }
@@ -8918,7 +8928,8 @@ function _cosForm(r) {
   { const fb = () => document.getElementById('cfw-box'); const marca = e => { if (e.target && e.target.closest && e.target.closest('#cfw-box')) CFW._sucio = true; };
     cont.addEventListener('input', marca, true); cont.addEventListener('change', marca, true); cont.addEventListener('click', e => { if (e.target.closest && e.target.closest('#cfw-box .cfw-chip,#cfw-box .cfw-pick')) CFW._sucio = true; }, true);
     CFW._sucio = false;
-    document.getElementById('cf-save').addEventListener('click', () => { if (CFW._sucio && fb() && CFW.f && !esNuevo) { CFW._sucio = false; try { _cosFichaWebGuardar(); } catch (_) {} } _cosGuardar(esNuevo ? '' : v.Diseno, v); }); }   /* 17-nov (Pablo) · un solo Guardar */
+    document.getElementById('cf-save').addEventListener('click', () => { try { _cfwLeer(); _cosFichaSugerir(); } catch (_) {}   /* 17-nov · Google se llena solo con La prenda */
+      if (CFW._sucio && fb() && CFW.f && !esNuevo) { CFW._sucio = false; try { _cosFichaWebGuardar(); } catch (_) {} } _cosGuardar(esNuevo ? '' : v.Diseno, v); }); }   /* 17-nov (Pablo) · un solo Guardar */
   _cosSkuChips();
   if (v.Categoria) catEl.dataset.manual = '1';
   prev();
@@ -8928,10 +8939,12 @@ function _cosForm(r) {
   _cosShopPintar(v);
   if (!esNuevo) _cftCargar();   // 6-oct · lo que ya está en Shopify (usa la copia si es de hace menos de 10 min)
   if (!esNuevo && !v._mm) _cosMmLeer(v).then(() => { _cosMeter(v); if (v._deCopia) _cosMmRefrescar(v); }).catch(() => {});
-  const verTab = t => {
-    cont.querySelectorAll('.cf-sec').forEach(x => { x.style.display = x.dataset.sec === t ? '' : 'none'; });
-    cont.querySelectorAll('.cf-tab').forEach(x => { x.classList.toggle('bp', x.dataset.t === t); x.classList.toggle('bg', x.dataset.t !== t); });
-    COS.tab = t;
+  const verTab = t0 => {
+    const t = t0 === 'producto' ? 'ficha' : t0;   /* 17-nov · Producto y Tienda comparten la sección; se reparte con data-vista */
+    cont.dataset.vista = t0 === 'producto' ? 'producto' : 'tienda';
+    cont.querySelectorAll('.cf-sec').forEach(x => { x.style.display = (x.dataset.sec === t || (t0 === 'cyp' && (x.dataset.sec === 'costo' || x.dataset.sec === 'datos'))) ? '' : 'none'; });
+    cont.querySelectorAll('.cf-tab').forEach(x => { x.classList.toggle('bp', x.dataset.t === t0); x.classList.toggle('bg', x.dataset.t !== t0); });
+    COS.tab = t0;
     /* 6-oct-2026 (Pablo: CONJUNTO PATRICK, «Fotos y video» en blanco) · la marca de "ya pintado" iba en el
        producto (v._panelOk) y el formulario se vuelve a armar (refresco de Costos): el panel NUEVO quedaba vacío
        para siempre. Ahora la marca va en el propio panel: cada panel nuevo se pinta. */
@@ -8942,7 +8955,8 @@ function _cosForm(r) {
   };
   cont.querySelectorAll('.cf-ir').forEach(b => b.addEventListener('click', () => verTab(b.dataset.ir)));
   cont.querySelectorAll('.cf-tab').forEach(b => b.addEventListener('click', () => verTab(b.dataset.t)));
-  verTab(v._tab === 'shopify' ? 'datos' : (v._tab === 'textos' ? 'ficha' : (v._tab || (esNuevo ? 'costo' : 'resumen'))));
+  verTab(v._editCosto ? 'costo' : esNuevo ? (v._tab || 'costo') : ({ shopify: 'cyp', datos: 'cyp', costo: 'cyp', textos: 'ficha', resumen: 'producto' })[v._tab] || v._tab || 'producto');   /* 17-nov · ficha nueva abre en 👗 Producto */
+  { const bo = document.getElementById('cf-ir-ord'); if (bo) bo.addEventListener('click', () => verTab('ordenes')); }
   if (esNuevo || !v.Modelo) { try { skuEl.focus(); skuEl.setSelectionRange(skuEl.value.length, skuEl.value.length); } catch (e) {} }
 }
 
@@ -9651,6 +9665,49 @@ async function _cfwFrescasLeer(v) {
   else _cfwFrescaAviso('');
   return true;
 }
+/* 17-nov (Pablo · ficha nueva, Fase 1) · la PRENDA ANTERIOR del mismo tipo = la de fecha de alta más nueva que ya tiene ficha en la tienda */
+function _cfwPrendaAnterior(tipo) {
+  const alta = t => { const r = (COS.data || []).find(x => String(x.NombreShopify || '').toLowerCase() === String(t || '').toLowerCase() || _cosNombreSug(((x.TipoPrenda || '') + ' ' + (x.Modelo || '')).trim()).toLowerCase() === String(t || '').toLowerCase()); return r ? String(r.Alta || r.Creado || '') : ''; };
+  const L = Object.keys(CFT.por || {}).map(k => CFT.por[k]).filter(p => p && p.ficha && p.ficha.prenda && !p.ficha.prenda.borrador && p.ficha.prenda.tipo === tipo && p.titulo !== CFW.titulo);
+  L.sort((a, b) => alta(b.titulo).localeCompare(alta(a.titulo)));
+  return L[0] || null;
+}
+function _cfwCopiarDe(F, f) {   /* copia atributos, beneficios (sin fotos: son de cada producto) y frase; queda como borrador para revisar */
+  F.prenda.v = Object.assign({}, (f.prenda && f.prenda.v) || {});
+  if (Array.isArray(f.beneficios)) F.beneficios = F.beneficios.map((b, i) => { const o = f.beneficios[i] || {}; return Object.assign({}, b, { titulo: b.titulo || o.titulo || '', texto: b.texto || o.texto || '' }); });
+  if (!F.frase_gigante && f.frase_gigante) F.frase_gigante = f.frase_gigante;
+  F.prenda.borrador = true;
+}
+/* 17-nov (Pablo · Fase 2) · la IA mira la FOTO DE CATÁLOGO y propone las opciones de «La prenda» (solo entre las opciones de la plantilla).
+   Costo: Haiku ≈ US$0,002 por lectura. Nunca guarda sola: queda como borrador para revisar. */
+async function _cfwIA(aMano) {
+  const st = document.getElementById('cfw-ia-st'), F = CFW.f, T = F && _cfwPlant()[F.prenda.tipo]; if (!T || !CFW.v) return;
+  const mm = (CFW.v._mm) || ((COS.editing || {})._mm) || [], cat = mm.find(r => r.Canal === 'BOT' && r.Tipo !== 'VIDEO' && r.Activo !== false);
+  if (!cat) { if (aMano && st) { st.style.color = 'var(--rd)'; st.textContent = 'Primero sube la foto de catálogo.'; } else CFW._iaAuto = ''; return; }   /* sin foto todavía: se reintenta al volver a pintar */
+  const campos = []; T.campos.forEach(c => c.piezas.forEach(p => { if (p.t === 'op') campos.push({ key: c.id + '_' + p.id, nombre: c.k + (p.k ? ' · ' + p.k : ''), op: p.op }); }));
+  if (_cfwLlevaManga() && !_cfwMangaFija()) campos.push({ key: '__manga', nombre: 'Manga', op: CFW_MANGAS });
+  if (st) { st.style.color = 'var(--mu)'; st.textContent = 'La IA está mirando la foto… (unos 10 s)'; }
+  try {
+    const r = await apiSend('costos.fichaWeb', { accion: 'prendaIA', Diseno: CFW.v.Diseno, url: cat.Url, campos: campos });
+    const el = (r && r.elegido) || {}; _cfwLeer(); let n = 0;
+    campos.forEach(c => { const x = el[c.key]; if (!x) return; const val = [].concat(x).filter(v => c.op.indexOf(v) >= 0); if (!val.length) return;
+      if (c.key === '__manga') { if (CFW.manga !== val[0]) { CFW.manga = val[0]; CFW.mangaToc = true; n++; } return; }
+      const antes = JSON.stringify([].concat(F.prenda.v[c.key] || [])); F.prenda.v[c.key] = val; if (antes !== JSON.stringify(val)) n++; });
+    F.prenda.borrador = true; CFW._sucio = true; CFW._iaTxt = n ? 'la IA corrigió ' + n + ' según la foto' : 'la IA confirmó lo sugerido';
+    _cosFichaWebPintar();
+  } catch (e) { const s2 = document.getElementById('cfw-ia-st'); if (s2) { s2.style.color = 'var(--rd)'; s2.textContent = String(e.message || e); } }
+}
+/* 17-nov (Pablo) · CABECERA fija de la ficha: lo esencial siempre a la vista (Resumen ya no es pestaña) */
+function _cfCabecera(v) {
+  const pre = v.precios || {}, pl = Number(pre.lista) > 0 ? Number(pre.lista) : Number(v.PrecioLista) || 0, cu = Number(v.CostoUnitario) || 0;
+  const mg = pl > 0 && cu > 0 ? Math.round((pl - cu) / pl * 100) : null;
+  const falta = [cu > 0 ? '' : 'costo', pl > 0 ? '' : 'precio', String(v.Descripcion || '').trim() ? '' : 'descripción', v.ShopifyId ? '' : 'Shopify'].filter(Boolean);
+  const k = (et, val, col) => '<div style="display:flex;flex-direction:column;align-items:center;min-width:84px"><span style="font-size:11px;font-weight:500;color:var(--mu);text-transform:uppercase">' + et + '</span><span style="font-size:15px;font-weight:600' + (col ? ';color:' + col : '') + '">' + val + '</span></div>';
+  return '<div id="cf-cab" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;padding:8px 12px;margin:4px 0 6px;border:1px solid var(--bd);border-radius:var(--r);background:var(--bg3)">'
+    + k('Lista', pl > 0 ? 'S/ ' + pl.toFixed(2) : '—') + k('Costo', cu > 0 ? 'S/ ' + cu.toFixed(2) : '—') + k('Margen', mg == null ? '—' : mg + '%', mg == null ? '' : mg >= 65 ? 'var(--gn)' : mg >= 55 ? '#d97706' : 'var(--rd)')
+    + '<span style="flex:1;font-size:12px;color:' + (falta.length ? 'var(--am)' : 'var(--gn)') + '">' + (falta.length ? 'Para vender le falta: ' + esc(falta.join(', ')) : '✅ Listo para vender') + '</span>'
+    + '<button type="button" class="btn bg bs" id="cf-ir-ord" style="font-size:12px">🏭 Producción</button></div>';
+}
 function _cfwLeer() {      // lo escrito en pantalla → CFW.f (antes de redibujar o guardar, para no perder texto)
   const box = document.getElementById('cfw-box'); if (!box || !CFW.f) return;
   box.querySelectorAll('[data-cfw]').forEach(el => { const [s, i, k] = el.dataset.cfw.split('|'); if (CFW.f[s] && CFW.f[s][+i]) CFW.f[s][+i][k] = el.value; });
@@ -9860,6 +9917,7 @@ function _cosFichaWebPintar(estado) {
   if (!F.prenda.tipo && !F.prenda._visto) F.prenda.tipo = _cfwTipoDe(CFW.v); F.prenda._visto = 1;
   const T = PL[F.prenda.tipo];
   if (T) T.campos.forEach(c => c.piezas.forEach(p => { const key = c.id + '_' + p.id; if (p.t === 'texto' && p.sug && F.prenda.v[key] === undefined) F.prenda.v[key] = p.sug; }));   // texto sugerido, editable
+  if (CFW.nueva && T && CFW.v && CFW._autoVisto !== CFW.v.Diseno) { CFW._autoVisto = CFW.v.Diseno; try { const o = _cfwPrendaAnterior(F.prenda.tipo); if (o) { _cfwCopiarDe(F, o.ficha); CFW._autoDe = o.titulo; CFW._sucio = true; } } catch (_) {} }   /* 17-nov (Pablo · Fase 1) */
   const [hechos, total] = _cfwFaltan(F);
   const copias = !T ? [] : Object.keys(CFT.por || {}).map(k => ({ k: k, p: CFT.por[k] })).filter(x => x.p && x.p.ficha && x.p.ficha.prenda && x.p.ficha.prenda.tipo === F.prenda.tipo && x.p.titulo !== CFW.titulo);
   const lbl = 'font-size:11px;color:var(--mu)';
@@ -9869,7 +9927,8 @@ function _cosFichaWebPintar(estado) {
     const sel = [].concat(val || []), extra = sel.filter(x => p.op.indexOf(x) < 0);
     return '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' + (p.k ? '<span style="' + lbl + ';min-width:130px">' + esc(p.k) + '</span>' : '') + p.op.concat(extra).map(x => chip(key, x, sel.indexOf(x) >= 0)).join('') + '</div>'; };
   const prenda = tit('👗 La prenda', '')
-    + (F.prenda.borrador ? '<div style="font-size:12px;padding:6px 10px;border-radius:var(--r);background:var(--bg3);border:1px dashed var(--yl,#c9a227);margin:4px 0">✍️ Prellenado por Claude: revisa y guarda.</div>' : '')
+    + (F.prenda.borrador ? '<div style="font-size:12px;padding:6px 10px;border-radius:var(--r);background:var(--bg3);border:1px dashed var(--yl,#c9a227);margin:4px 0">' + (CFW._autoDe ? '✨ Sugerido de «' + esc(CFW._autoDe) + '» (la prenda anterior del mismo tipo)' + (CFW._iaTxt ? ' · ' + esc(CFW._iaTxt) : '') : '✍️ Prellenado por Claude') + ': revisa y guarda.</div>' : '')
+    + (T ? '<div style="margin:4px 0"><button type="button" class="btn bg bs" id="cfw-ia" style="font-size:12px" title="La IA mira la foto de catálogo y propone manga, corte, elasticidad y grosor (US$0,002 por lectura)">🤖 Sugerir con la foto</button> <span id="cfw-ia-st" style="font-size:12px;color:var(--mu)"></span></div>' : '')
     + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-top:6px"><label style="' + lbl + '">Tipo de prenda<select data-cfp="tipo" style="' + st + ';margin-top:3px"><option value="">—</option>'
       + Object.keys(PL).map(k => '<option value="' + esc(k) + '"' + (k === F.prenda.tipo ? ' selected' : '') + '>' + esc(PL[k].nombre) + '</option>').join('') + '</select></label>'
     + (copias.length ? '<label style="' + lbl + '">Copiar de otro producto<select data-cfcopia="1" style="' + st + ';margin-top:3px"><option value="">—</option>' + copias.map(x => '<option value="' + esc(x.k) + '">' + esc(x.p.titulo) + '</option>').join('') + '</select></label>' : '') + '</div>'
@@ -9892,15 +9951,16 @@ function _cosFichaWebPintar(estado) {
         + '<button type="button" class="btn bg bs cfw-vista" data-n="0" style="font-size:12px"' + (CFW.vista != null && CFW.vista !== 'v3' ? ' disabled' : '') + '>Volver a la de siempre</button><span id="cfw-vista-st" style="color:var(--mu)"></span></div>'
       : '<div style="font-size:11px;color:var(--mu);margin-top:6px">Este tipo de prenda todavía no tiene plantilla.</div>');
   box.innerHTML = '<div style="border:1px solid var(--bd);border-radius:var(--r);padding:10px 12px;margin:6px 0 10px">'
-    + (CFW.nueva ? '<div style="font-size:12px;color:var(--mu)">Todavía sin ficha cargada</div>' : '')   // 13-oct (Pablo) · sin «Tienda: …» (ya estás en su ficha)
-    + prenda
+    + '<div class="fsec-p">' + (CFW.nueva && !CFW._autoDe ? '<div style="font-size:12px;color:var(--mu)">Todavía sin ficha cargada</div>' : '')   // 13-oct (Pablo) · sin «Tienda: …» (ya estás en su ficha)
+    + (estado ? '<div style="font-size:12px;color:var(--gn);margin:4px 0">' + estado + '</div>' : '')
+    + prenda + '</div><div class="fsec-t">'   /* 17-nov (Pablo) · ficha nueva: «La prenda» va en 👗 Producto; lo demás en 🛍 Tienda */
     + tit('✨ Así se siente', '')
     + F.beneficios.map((b, i) => '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px">' + foto('beneficios', i, b.foto)
         + '<div style="flex:1;min-width:0;display:grid;gap:6px">' + inp('beneficios', i, 'titulo', b.titulo, 'Beneficio ' + (i + 1) + ' (ej. Faja interna)', 40) + inp('beneficios', i, 'texto', b.texto, 'Una frase corta que lo explique', 140) + '</div></div>' + elegir('beneficios', i)).join('')
     + '<label style="display:block;font-size:11px;color:var(--mu);margin:8px 0 0">Frase gigante<input data-cfx="frase_gigante" value="' + esc(F.frase_gigante || '') + '" maxlength="28" autocomplete="off" placeholder="Escribe la frase (ej.: cintura definida)" style="' + st + ';margin-top:3px;text-transform:uppercase"></label>'
     + tit('📏 Modelo', '') + _cfwModeloHtml(F, st)
     + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button type="button" class="btn bp bs" id="cfw-guardar" style="display:none">💾 Guardar en la tienda</button>'   /* 17-nov (Pablo) · un solo botón: «Guardar cambios» */
-    + '<span id="cfw-st" style="font-size:12px;color:var(--mu)">' + (estado || '') + '</span></div></div>';
+    + '<span id="cfw-st" style="font-size:12px;color:var(--mu)">' + (estado || '') + '</span></div></div></div>';
   box.querySelectorAll('.cfw-foto').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); _cfwLeer(); const k = b.dataset.s + b.dataset.i; CFW.abierto = CFW.abierto === k ? '' : k; _cosFichaWebPintar(); }));
   // 13-oct 19:00 (Pablo) · «Así se siente»: arrastra una foto de las fotos por color y suéltala en el recuadro del beneficio
   box.querySelectorAll('.cfw-foto').forEach(b => {
@@ -9920,6 +9980,8 @@ function _cosFichaWebPintar(estado) {
   box.querySelectorAll('select[data-cfp]').forEach(el => el.addEventListener('change', () => { _cfwLeer(); _cosFichaWebPintar(); }));
   { const sm = box.querySelector('select[data-cfmanga]'); if (sm) sm.addEventListener('change', () => { _cfwLeer(); CFW.manga = sm.value; CFW.mangaToc = true; _cosFichaWebPintar(); }); }   // 16-oct · Manga   // 8-oct · al cambiar el tipo cambian los campos
   box.querySelectorAll('.cfw-chip').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); _cfwLeer(); const k = b.dataset.cfo, x = b.dataset.val, l = [].concat(CFW.f.prenda.v[k] || []), i = l.indexOf(x); CFW.abre = k.split('_')[0]; if (i >= 0) l.splice(i, 1); else l.push(x); CFW.f.prenda.v[k] = l; _cosFichaWebPintar(); }));   // 8-oct · una o más opciones
+  { const bi = document.getElementById('cfw-ia'); if (bi) bi.addEventListener('click', ev => { ev.preventDefault(); _cfwIA(true); }); }
+  if (CFW.nueva && CFW.v && CFW._iaAuto !== CFW.v.Diseno && T) { CFW._iaAuto = CFW.v.Diseno; setTimeout(() => _cfwIA(false), 600); }   /* 17-nov (Pablo · Fase 2) · una lectura automática por producto nuevo */
   const cp = box.querySelector('[data-cfcopia]'); if (cp) cp.addEventListener('change', () => { const o = CFT.por && CFT.por[cp.value]; if (!o || !o.ficha || !o.ficha.prenda) return; _cfwLeer(); CFW.f.prenda.v = Object.assign({}, o.ficha.prenda.v || {}); _cosFichaWebPintar('Copiado de ' + esc(o.titulo) + '. Revisa y guarda.'); });
   const op = document.getElementById('cfw-op'); if (op) op.addEventListener('click', ev => { ev.preventDefault(); _cfwLeer(); CFW.editOp = !CFW.editOp; _cosFichaWebPintar(); });
   const opg = document.getElementById('cfw-op-g'); if (opg) opg.addEventListener('click', async ev => {
@@ -10160,7 +10222,7 @@ function _cosMediaShopPintar(v) {
 // 6-oct · «Historia en la tienda» en su propio lugar (antes vivía dentro del panel de fotos y se borraba cada vez que este se refrescaba)
 function _cosHistCabecera(v) {
   const w = document.getElementById('cf-histw'); if (!w) return;
-  w.innerHTML = '<div style="font-size:13px;font-weight:600;margin-top:10px">🛍️ Lo que ve la clienta <button type="button" class="btn bg bs" id="cfw-abrir" style="font-size:11px" title="Volver a leer de la tienda">↻</button></div><div id="cfw-packs"></div><div id="cfw-box"></div><div id="cfw-tablaw"></div><div id="cfw-colw"></div>';   // 15-oct (Pablo) · enlaces por pack   // 10-oct · + tabla de medidas · 13-oct 19:00 (Pablo) + categorías
+  w.innerHTML = '<div class="fsec-t" style="font-size:13px;font-weight:600;margin-top:10px">🛍️ Lo que ve la clienta <button type="button" class="btn bg bs" id="cfw-abrir" style="font-size:11px" title="Volver a leer de la tienda">↻</button></div><div id="cfw-packs" class="fsec-t"></div><div id="cfw-box"></div><div id="cfw-tablaw" class="fsec-p"></div><div id="cfw-colw" class="fsec-t"></div>';   // 15-oct (Pablo) · enlaces por pack   // 10-oct · + tabla de medidas · 13-oct 19:00 (Pablo) + categorías
   document.getElementById('cfw-abrir').addEventListener('click', ev => { ev.preventDefault(); _cosFichaWebAbrir(v); });   // 5-oct · historia de la tienda (FichaWeb.gs)
   _cosFichaWebAbrir(v);   // 8-oct · pestaña Tienda: se abre sola, sin «Editar»
   try { _cfwTablaAbrir(v); } catch (_) {}
