@@ -25902,6 +25902,8 @@ async function _modCargar(forzar){
     const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_cambios_pendientes', { method: 'POST', headers: _modHdr(tok), body: '{}' });
     if (!r.ok) return;
     const a = await r.json(); _modPend = Array.isArray(a) ? a : [];
+    try { const r2 = await fetch(SB_URL + '/rest/v1/rpc/mod_abiertos_atendidos_lista', { method: 'POST', headers: _modHdr(tok), body: '{}' });   /* 18-nov (344) */
+      if (r2.ok) { const b = await r2.json(); _modAbAt = new Set((Array.isArray(b) ? b : []).map(x => String(x && x.clave != null ? x.clave : x))); } } catch(_){}
     _modRefrescar();
   } catch(_){}
 }
@@ -26052,12 +26054,16 @@ function _modHoySetDe(porNro, activosSet){
 }
 /* 14-nov-2026 (Pablo, CAM-0329) · TODO cambio abierto y TODA devolución en proceso está en Modificados hasta que se cierre
    (cambio: prenda nueva enviada o anulado · devolución: reembolsada o anulada), tenga o no un aviso pendiente. */
-function _modNrosAbiertos(){
-  const s = new Set();
+/* 18-nov-2026 (Pablo, 344) · un cambio o devolución abierta se puede marcar «Atendido» desde Modificados: sale de la lista para todo el equipo
+   (public.mod_abiertos_atendidos, por cambio y pedido). En Cambios sigue su curso normal. */
+var _modAbAt = new Set();
+function _modClaveAb(tipo, id, nro, prenda){ const U = t => String(t || '').trim().toUpperCase().replace(/\s+/g, ' '); return tipo === 'dev' ? 'DEV|' + String(nro).trim() + '|' + U(prenda) : U(id) + '|' + String(nro).trim(); }
+function _modNrosAbiertos(){   /* 344 · los marcados «Atendido» (_modAbAt) no entran */
+  const s = new Set(), U = t => String(t || '').trim().toUpperCase().replace(/\s+/g, ' '), at = k => { try { return _modAbAt.has(k); } catch(_) { return false; } };
   try { (Array.isArray(_c2List) ? _c2List : []).forEach(c => { if (['PRENDA NUEVA ENVIADA', 'CANCELADO'].indexOf(String(c.Estado || '').trim().toUpperCase()) >= 0) return;
-    [].concat(c.pedidos || [], (c.nuevas || []).map(n => n.NroPedido), (c.devueltas || []).map(n => n.NroPedido)).forEach(x => { const k = String(x || '').trim(); if (k) s.add(k); }); }); } catch(_){}
+    [].concat(c.pedidos || [], (c.nuevas || []).map(n => n.NroPedido), (c.devueltas || []).map(n => n.NroPedido)).forEach(x => { const k = String(x || '').trim(); if (k && !at(U(c.NroCambio) + '|' + k)) s.add(k); }); }); } catch(_){}
   try { (Array.isArray(histDevData) ? histDevData : []).forEach(d => { if (String(d['FechaReembolso'] || '').trim() || String(d['Estado'] || '').trim().toUpperCase() === 'CANCELADO') return;
-    const k = String(d['NroPedido'] || '').trim(); if (k) s.add(k); }); } catch(_){}
+    const k = String(d['NroPedido'] || '').trim(); if (k && !at('DEV|' + k + '|' + U(d['Prenda']))) s.add(k); }); } catch(_){}
   return s;
 }
 function _modModSetDe(porNro){
@@ -26162,10 +26168,11 @@ function _modAbiertosDe(n){
   try { (Array.isArray(_c2List) ? _c2List : []).forEach(c => { if (['PRENDA NUEVA ENVIADA', 'CANCELADO'].indexOf(U(c.Estado)) >= 0) return;
     const de = x => !x.NroPedido || String(x.NroPedido).trim() === n;
     if (![].concat(c.pedidos || [], (c.nuevas || []).map(x => x.NroPedido), (c.devueltas || []).map(x => x.NroPedido)).some(x => String(x || '').trim() === n)) return;
+    try { if (_modAbAt.has(U(c.NroCambio) + '|' + n)) return; } catch(_){}   /* 344 · ya atendido */
     out.push({ tipo: 'cam', id: U(c.NroCambio), estado: String(c.Estado || ''), devuelve: (c.devueltas || []).filter(de).map(x => String(x.Prenda || '').trim()).filter(Boolean),
       recibe: (c.nuevas || []).filter(de).map(x => String(x.Prenda || '').trim()).filter(Boolean) }); }); } catch(_){}
   try { (Array.isArray(histDevData) ? histDevData : []).forEach(d => { if (String(d['FechaReembolso'] || '').trim() || U(d['Estado']) === 'CANCELADO') return;
-    if (String(d['NroPedido'] || '').trim() !== n) return; out.push({ tipo: 'dev', id: 'DEV', estado: String(d['Estado'] || ''), devuelve: [String(d['Prenda'] || '').trim()].filter(Boolean), recibe: [] }); }); } catch(_){}
+    if (String(d['NroPedido'] || '').trim() !== n) return; try { if (_modAbAt.has('DEV|' + n + '|' + U(d['Prenda']))) return; } catch(_){} out.push({ tipo: 'dev', id: 'DEV', estado: String(d['Estado'] || ''), devuelve: [String(d['Prenda'] || '').trim()].filter(Boolean), recibe: [] }); }); } catch(_){}
   return out;
 }
 function _modDecorarAbiertos(tabla, th0){
@@ -26195,7 +26202,9 @@ function _modPopAbierto(td){
       + (a.devuelve.length ? '<div><span style="color:var(--mu)">Devuelve:</span> ' + a.devuelve.map(p => _modPrendaHtml(n, p, '')).join(', ') + '</div>' : '')
       + (a.recibe.length ? '<div><span style="color:var(--mu)">Recibe:</span> ' + a.recibe.map(p => esc(p)).join(', ') + '</div>' : '') + '</div>';
   });
-  h += '<div style="font-size:12px;color:var(--am)">' + (A[0].tipo === 'dev' ? 'Sale de Modificados cuando se reembolsa.' : 'Sale de Modificados cuando el cambio pasa a «Prenda nueva enviada» o se cancela (en Cambios).') + '</div>';
+  h += '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">' + (A[0].tipo === 'dev' ? 'Sale sola al reembolsarse.' : 'Sale sola con «Prenda nueva enviada» o al cancelarse.') + '</div>';
+  window._modAbPend = { nro: n, claves: A.map(a => _modClaveAb(a.tipo, a.id, n, a.devuelve[0] || '')) };
+  h += '<button type="button" class="btn bp bs" onclick="_modAtenderAbierto()">Atendido</button>';   /* 18-nov (344) */
   d.innerHTML = h; document.body.appendChild(d);
 }
 function _modPop(td){
@@ -26236,6 +26245,16 @@ async function _modAtender(ids){
     _modRefrescar();
     toast('Atendido', 'ok');
   } catch(e) { try { _errLog('modAtender', e); } catch(_){} }
+}
+async function _modAtenderAbierto(){
+  const P = window._modAbPend; if (!P || !P.claves.length) return;
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) { toast('Sin sesión. Vuelve a entrar al ERP.', 'err'); return; }
+    const r = await fetch(SB_URL + '/rest/v1/rpc/mod_abierto_atender', { method: 'POST', headers: _modHdr(tok), body: JSON.stringify({ p_claves: P.claves, p_nro: P.nro }) });
+    if (!r.ok) { toast('No se pudo marcar como atendido. Intenta de nuevo.', 'err'); return; }
+    P.claves.forEach(k => _modAbAt.add(k));
+    _modPopCerrar(); _modRefrescar(); toast('Atendido', 'ok');
+  } catch(e) { try { _errLog('modAtenderAbierto', e); } catch(_){} }
 }
 async function _modNota(id){
   try {
