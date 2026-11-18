@@ -729,6 +729,18 @@ function nFechaSug(){
   if (ay) ay.textContent = NV.fechaMano && el.value !== iso ? 'Sugerida: ' + fTxt(d) + ' (hoy + ' + n + ' días)' : 'Hoy + ' + n + ' días: ' + (NV.fuente || 'días del camino') + ' (se puede cambiar)';
 }
 /* 24-oct · pedido nuevo lleno desde 🚀 Escalamiento (el cálculo propone, Ana revisa y guarda) */
+/* 18-nov (Pablo) · «🧵 Crear orden» desde Reposición: las tallas en rojo (stock 0 o menos, con confección) llevan lo sugerido del color,
+   repartido según lo que vendió cada talla (curva de tallas por ventas, como los referentes). Mínimo 1 por talla agotada. */
+function repoTallasRojas(F, sug){
+  const q = {}, por = {};
+  (Array.isArray(F) ? F : []).forEach(x => { const c = String(x.color || '').toUpperCase().trim(), t = String(x.talla || '').toUpperCase().trim(), conf = +x.conf || 0, ven = +x.ventas || 0;
+    if (!(c in sug) || conf <= 0 || conf - ven > 0) return; (por[c] = por[c] || []).push({ t, ven }); });
+  Object.keys(por).forEach(c => { const L = por[c], tot = L.reduce((a, x) => a + x.ven, 0), n = sug[c] || 0; if (!n) return;
+    const ex = L.map(x => n * (tot ? x.ven / tot : 1 / L.length)), b = ex.map(Math.floor); let r = n - b.reduce((a, v) => a + v, 0);   /* reparto exacto: la suma da justo lo sugerido */
+    ex.map((v, i) => [v - b[i], i]).sort((a, z) => z[0] - a[0]).forEach(([, i]) => { if (r > 0) { b[i]++; r--; } });
+    L.forEach((x, i) => { q[c + '|' + x.t] = Math.max(1, b[i]); }); });
+  return q;
+}
 async function nuevaDesdeEscala(Px){
   let P = Px; if (!P){ try { P = JSON.parse(localStorage.getItem('prod_prefill_v1') || 'null'); } catch (_) {} }
   try { localStorage.removeItem('prod_prefill_v1'); } catch (_) {}
@@ -736,8 +748,9 @@ async function nuevaDesdeEscala(Px){
   await abrirNueva(null);
   document.getElementById('nDis').value = P.diseno; document.getElementById('nTipo').value = 'reposicion';
   NV.colores = (P.colores || []).slice(); NV.q = Object.assign({}, P.q || {}); { const ob = document.getElementById('nObj'); if (ob && P.objetivo) ob.value = P.objetivo; }   /* 5-nov · Escalamiento manda la fecha objetivo */
+  if (P.rojas && P.sug) { try { const pd = partirFicha(P.diseno), F = await rpc('prod_stock_hoy', { p_prenda: pd.prenda, p_diseno: pd.diseno }); Object.assign(NV.q, repoTallasRojas(F, P.sug)); } catch (_) {} }
   nProducto(true); nFechaSug();
-  const n = document.getElementById('nNotas'); if (n && !n.value) n.value = 'Cantidades sugeridas por ' + (P.origen || 'Escalamiento') + ' (revisar antes de guardar).';
+  const n = document.getElementById('nNotas'); if (n && !n.value) n.value = 'Cantidades sugeridas por ' + (P.origen || 'Escalamiento') + (P.rojas ? ', repartidas en las tallas agotadas según lo que vendió cada una' : '') + ' (revisar antes de guardar).';
   return true;
 }
 /* 25-oct (Pablo: OK tope de compra del mes, sugerido y editable por Ana) · OPEN-TO-BUY como los referentes:
@@ -1415,7 +1428,8 @@ async function vProyPintar(o, M){
   R.filas.forEach(r => { pend[r.k] = r.lotes.reduce((a, v) => a + v, 0); });
   F.forEach(x => { const k = nrm(x.color) + '|' + nrm(x.talla); nom[nrm(x.color)] = nom[nrm(x.color)] || x.color; const v = V[k] || (V[k] = { conf:0, ven:0 }); v.conf += +x.conf || 0; v.ven += +x.ventas || 0; });
   Object.keys(pend).forEach(k => { (V[k] || (V[k] = { conf:0, ven:0 })).conf += pend[k]; const c = k.split('|')[0]; nom[c] = nom[c] || c; });
-  const ks = Object.keys(V); if (!ks.length){ box.textContent = 'Sin datos de stock todavía.'; return; }
+  const rep = new Set(Object.keys(pend).filter(k => (NV.q && Object.keys(NV.q).some(kk => { const [c, t] = kk.split('|'); return nrm(c) + '|' + nrm(t) === k && +NV.q[kk] > 0; }))).map(k => k.split('|')[0]));   /* 18-nov (Pablo) · solo los colores que se reponen */
+  const ks = Object.keys(V).filter(k => rep.has(k.split('|')[0])); if (!ks.length){ box.textContent = 'Sin colores a reponer todavía.'; return; }
   const cols = [...new Set(ks.map(k => k.split('|')[0]))], tal = TALLAS.filter(t => ks.some(k => k.split('|')[1] === nrm(t)));
   const G = [{ n: 'Confección real', bg: '#1f2937', fg: '#cbd5e1', f: v => v.conf }, { n: 'Ventas', bg: '#2a1a0a', fg: '#fbbf24', f: v => v.ven }, { n: 'Stock', bg: '#0a260a', fg: '#4ade80', f: v => v.conf - v.ven }];
   const n0 = v => v ? v : '·';
