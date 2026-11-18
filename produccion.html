@@ -1302,7 +1302,7 @@ function vistaPintar(){
   const excN = vLotesExceso(M, lp);
   h += vBloque('Total de la orden <span class="mu" style="font-weight:400">· espejo de Stock</span>' + barTot, cols, tal, NV.q, vMovsAgg(M), progEd ? 'prog' : 'tot', 0,
     { p: 'programada ' + (fD(L.map((x, i) => progDe(i)).filter(Boolean).sort().pop()) || '—'), tot: fLlego(M, L.length > 1 ? -1 : 0), real: enStock(M) });
-  h += '<div id="vStkHoy" class="mu" style="font-size:12px;margin:2px 0 10px"></div>';
+  h += '<div id="vStkHoy" class="mu" style="font-size:12px;margin:2px 0 10px"></div><div id="vDoble"></div>';
   if (o && o.tipo === 'reposicion') h += '<details id="vProy" open style="margin:0 0 12px"><summary class="vbt" style="cursor:pointer">📊 Cómo queda el stock con lo programado</summary><div id="vProyB" class="mu" style="font-size:12px;padding:6px 0">Calculando…</div></details>';   /* 17-nov (Pablo) · solo reposiciones: stock de hoy + lo que falta llegar de cada lote = stock final */   /* 17-nov (Pablo, propuesta 1) · «Llegó bueno» vs lo que Stock tiene hoy */
   const lotes = L.map((x, i) => i);
   if (excN.length) h += '<div style="margin:6px 0;color:#fbbf24;font-size:12px">⚠ Llegaron de más en un lote y se descontaron del último: ' + esc(excN.join(' · ')) + (ed ? ' <span class="mu">(se guardó solo)</span>' : '') + '</div>';
@@ -1338,11 +1338,44 @@ function vistaPintar(){
   h += vTelaHtml(cols, ed);
   el.className = ''; el.innerHTML = h;
   try { vStkHoyPintar(o, vMovsAgg(M)); } catch (_) {}
+  try { vDoblePintar(o, M); } catch (_) {}   /* 18-nov (Pablo) · freno: falla contada 2 veces */
   try { vProyPintar(o, M); } catch (_) {}
 }
 /* 17-nov (Pablo, propuesta 1) · Producción muestra «Llegó bueno» (lo bueno al recibir). Stock muestra lo disponible HOY: si después
    marcaron prendas como No disponible en Stock, aquí se dice cuántas y dónde, para que nadie vea un descuadre que no existe.
    Solo cuando la prenda tiene UNA sola orden (si hay varias, Stock suma todas y la comparación no sirve). */
+/* 18-nov-2026 (Pablo aprobó) · FRENO CONTRA LA FALLA CONTADA DOS VECES. Pasó 3 veces (Victoria M, Chaleco Atenas Plomo Rayas 2XL, Pantalón Atenas Beige Rayas M):
+   la prenda con falla se ingresó a mano en Stock como BUENA (en el lote) y además Producción la pasó como falla → Stock la contaba 2 veces.
+   Regla: por color y talla, si los lotes de ESTA orden en Stock tienen más buenas que las que la orden dice que llegaron buenas, y la orden
+   tiene fallas en esa celda, la diferencia (hasta el número de fallas) está contada dos veces. Se avisa y se corrige con un clic (resta del lote). */
+function vDobleCalc(M, filas){
+  const propios = {}; (M || []).forEach(m => String(m.lote || '').split(',').forEach(c => { c = c.trim(); if (/^\d{4}-\d{6}$/.test(c)) propios[c] = 1; }));
+  const stk = {}, lotDe = {}, bue = {}, fal = {};
+  (filas || []).forEach(f => { const j = f.row_json || {}, cod = String(j.Lote || '').trim(); if (!propios[cod] || String(j.Eliminado || '') === 'SI') return;
+    const k = nrm(f.color) + '|' + nrm(f.talla), n = parseInt(String(j.Cantidad == null ? '1' : j.Cantidad).replace(/[^0-9-]/g, ''), 10) || 0; stk[k] = (stk[k] || 0) + n; if (n > 0) lotDe[k] = cod; });
+  (M || []).forEach(m => { const k = nrm(m.color) + '|' + nrm(m.talla); if (m.tipo === 'buena' && m.ingresado) bue[k] = (bue[k] || 0) + (+m.cantidad || 0); if (m.tipo === 'falla' && m.entrega) fal[k] = (fal[k] || 0) + (+m.cantidad || 0); });
+  return Object.keys(stk).map(k => ({ k, lote: lotDe[k], n: Math.min((stk[k] || 0) - (bue[k] || 0), fal[k] || 0) })).filter(x => x.n > 0 && x.lote);
+}
+async function vDoblePintar(o, M){
+  const box = document.getElementById('vDoble'); if (!box || !o) return; box.innerHTML = '';
+  if (!(M || []).some(m => m.tipo === 'falla' && m.entrega)) return;
+  const pd = partirFicha(o.diseno), e = encodeURIComponent; let filas;
+  try { const r = await fetch(SB + '/rest/v1/confeccion?prenda=eq.' + e(pd.prenda) + '&diseno=eq.' + e(pd.diseno) + '&tipo=in.(PRODUCCION,AJUSTE)&select=color,talla,row_json&limit=5000', { headers: { apikey: ANON, Authorization: 'Bearer ' + tok() } }); if (!r.ok) return; filas = await r.json(); } catch (_) { return; }
+  if (OA !== o) return;
+  const D2 = vDobleCalc(M, filas); if (!D2.length) return;
+  const ed = D.nivel >= 2; window._vDoble = { o, D2 };
+  box.innerHTML = '<div style="margin:0 0 10px;padding:8px 12px;border:1px solid #f87171;border-radius:8px;background:rgba(248,113,113,.08);font-size:13px">'
+    + '⚠ <b>Contada 2 veces en Stock:</b> ' + esc(D2.map(x => x.k.replace('|', ' ') + ' +' + x.n).join(' · '))
+    + ' <span class="mu">— entró como buena en el lote y también como falla.</span>'
+    + (ed ? ' <button class="p" onclick="vDobleCorregir()" style="margin-left:6px">Corregir en Stock (−' + D2.reduce((a, x) => a + x.n, 0) + ')</button>' : '') + '</div>';
+}
+async function vDobleCorregir(){
+  const X = window._vDoble; if (!X || !X.D2 || !X.D2.length) return; const o = X.o, pd = partirFicha(o.diseno);
+  if (!(parent && parent !== window && typeof parent._restarLote === 'function')) { aviso('Abre Producción desde el ERP para corregir el stock'); return; }
+  confirmar('¿Corregir el stock?', 'Se restan del lote ' + X.D2.map(x => x.k.replace('|', ' ') + ' −' + x.n).join(', ') + ': esas prendas ya figuran como falla (No disponible). La falla no se toca.', 'Sí, corregir', async () => {
+    for (const x of X.D2) { const [c, t] = x.k.split('|'); await parent._restarLote({ codigo: x.lote, prenda: pd.prenda, dis: pd.diseno, col: c, talla: t, menos: x.n }); }
+    aviso('✓ Stock corregido: ya no se cuenta dos veces'); await cargar(); abrirOrden(o.id); });
+}
 async function vStkHoyPintar(o, RA){
   const box = document.getElementById('vStkHoy'); if (!box || !o) return;
   if ((D.ordenes || []).filter(x => nrm(x.diseno) === nrm(o.diseno)).length !== 1) return;
@@ -1632,7 +1665,7 @@ function pedDevolver(){
 /* 18-nov (Pablo) · Prendas en corrección en UNA sola tabla hacia la derecha, con los mismos anchos que «Total de la orden»:
    Corregidas (bajo Programado) · Yayitas (bajo Confección total) · Perdidas (bajo No disponible) · Total (bajo Confección real) */
 function gridCorr(colores, tallas, S){
-  const tal = tallasVis().filter(t => tallas.indexOf(t) >= 0).length ? tallasVis() : tallas;
+  const tal = TALLAS.filter(t => tallas.indexOf(t) >= 0);   /* 18-nov · sin tallasVis(): al abrir la orden NV todavía no existe (la orden no abría) */
   const G = [['corregida', 'Corregidas', '#1f2937', '#cbd5e1'], ['yayita', 'Yayitas', '#0f1a2e', '#60a5fa'], ['perdida', 'Perdidas', '#2e0f12', '#f87171'], ['tot', 'Total', '#0a260a', '#4ade80']];
   let h = '<div style="overflow-x:auto;margin-top:6px"><table class="g lg" id="cGrid"><tr><th rowspan="2">Color</th>' + G.map(g => '<th colspan="' + (tal.length + 1) + '" class="gs" style="background:' + g[2] + ';color:' + g[3] + '">' + g[1] + '</th>').join('') + '</tr><tr>'
     + G.map(g => tal.map((t, j) => '<th' + (j ? '' : ' class="gs"') + ' style="color:' + g[3] + '">' + t + '</th>').join('') + '<th style="color:' + g[3] + '">Total</th>').join('') + '</tr>';
