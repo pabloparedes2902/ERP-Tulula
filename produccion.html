@@ -1041,6 +1041,14 @@ function exportarLotesNV(){
 }
 function nAgregarColor(){ const c = nrm(document.getElementById('nColor').value); if (!c) return;
   { const pc = nColoresProducto(document.getElementById('nDis').value); if (pc.length && pc.indexOf(c) < 0) { const m = document.getElementById('nMsg'); m.textContent = c + ' es un color nuevo para esta prenda: se crea en Stock al ingresar las prendas.'; m.className = 'mu'; } } if (NV.colores.indexOf(c) < 0) NV.colores.push(c); document.getElementById('nColor').value = ''; nGrid(); }
+function tallasRojasSinCantidad(F, colores, q){   /* 18-nov · solo colores que ya llevan alguna cantidad (los cortes por talla pueden definirse después) */
+  const con = new Set((colores || []).filter(c => Object.keys(q || {}).some(k => k.split('|')[0] === c && +q[k] > 0)).map(c => String(c).toUpperCase().trim())), out = [];
+  (Array.isArray(F) ? F : []).forEach(x => { const c = String(x.color || '').toUpperCase().trim(), t = String(x.talla || '').toUpperCase().trim();
+    if (!con.has(c) || !(+x.conf > 0) || (+x.conf || 0) - (+x.ventas || 0) > 0) return;
+    const ya = Object.keys(q || {}).some(k => { const [a, b] = k.split('|'); return String(a).toUpperCase().trim() === c && String(b).toUpperCase().trim() === t && +q[k] > 0; });
+    if (!ya) out.push(c + ' ' + t); });
+  return out;
+}
 async function guardarOrden(){
   const b = document.getElementById('nOk'), msg = document.getElementById('nMsg'); msg.textContent = '';
   const lineas = []; NV.colores.forEach(c => TALLAS.forEach(t => { const n = NV.q[c + '|' + t] || 0; if (n > 0) lineas.push({ color:c, talla:t, pedido:n }); }));
@@ -1055,6 +1063,12 @@ async function guardarOrden(){
   if (!NV.colores.length) { msg.textContent = 'Elige al menos un color.'; return; }
   { const tv = (typeof tallasVis === 'function' ? tallasVis() : TALLAS); NV.colores.forEach(c => { if (!lineas.some(l => l.color === c)) tv.forEach(t => lineas.push({ color:c, talla:t, pedido:0 })); }); }
   if (!document.getElementById('nFecha').value) { msg.textContent = 'Falta la fecha para venta.'; return; }   /* 24-oct · sin fecha no se sabe si se atrasa */
+  /* 18-nov (Pablo) · aviso: en una reposición, un color con cantidades que deja sin nada una talla AGOTADA (en rojo) */
+  if (document.getElementById('nTipo').value === 'reposicion' && !NV._rojasOk){
+    let F = []; try { const pd = partirFicha(document.getElementById('nDis').value); F = await rpc('prod_stock_hoy', { p_prenda: pd.prenda, p_diseno: pd.diseno }); } catch (_) {}
+    const falta = tallasRojasSinCantidad(F, NV.colores, NV.q);
+    if (falta.length){ confirmar('⚠ Hay tallas agotadas sin cantidad', 'Estas tallas están en 0 en Stock y no llevan nada en la orden: ' + falta.join(' · ') + '. ¿Guardar igual?', 'Guardar igual', async () => { NV._rojasOk = true; try { await guardarOrden(); } finally { NV._rojasOk = false; } }); return; }
+  }
   /* 10-nov (Pablo) · los lotes pueden sumar más o menos que lo programado (el taller entrega más o menos): ya no bloquea, se avisa en la orden */
   b.disabled = true;
   try {
@@ -1269,6 +1283,22 @@ function vBloque(titulo, cols, tal, prog, rec, modo, i, fechas){
       + '<td' + (nv && g[0] !== 'p' ? ' data-nf="' + i + '|' + g[0] + '|T"' : '') + '><b>' + n0(Object.values(FT[g[0]]).reduce((a, x) => a + x, 0)) + '</b></td>').join('') + '</tr></table></div></div>';
   return h;
 }
+/* 18-nov (Pablo) · «¿por qué Perla no cuadra?»: Stock resta de la Confección real las fallas que logística encuentra DESPUÉS en el almacén
+   (Origen MANUAL). La orden no las veía. Ahora la orden las trae: las de su diseño, color y talla, desde que llegó su primera entrega
+   (y hasta que llegó la de la orden siguiente del mismo diseño), sin pasar de lo bueno que entregó. */
+async function vAlmCargar(o){
+  const M = D.movs.filter(m => m.orden_id === o.id && m.tipo === 'buena' && m.fecha), ini = M.map(m => m.fecha).sort()[0]; if (!ini) { NV._alm = {}; return; }
+  const pd = partirFicha(o.diseno), sig = D.ordenes.filter(x => x.id !== o.id && nrm(x.diseno) === nrm(o.diseno)).map(x => D.movs.filter(m => m.orden_id === x.id && m.tipo === 'buena' && m.fecha).map(m => m.fecha).sort()[0]).filter(f => f && f > ini).sort()[0] || '9999';
+  const e = encodeURIComponent; let F = [];
+  try { const r = await fetch(SB + '/rest/v1/fallas?prenda=eq.' + e(pd.prenda) + '&diseno=eq.' + e(pd.diseno) + '&select=color,row_json&limit=3000', { headers: { apikey: ANON, Authorization: 'Bearer ' + tok() } }); if (!r.ok) return; F = await r.json(); } catch (_) { return; }
+  const A = {}; (F || []).forEach(x => { const j = x.row_json || {}; if (String(j.Origen || '').toUpperCase() !== 'MANUAL' || String(j.Tipo || 'FALLA').toUpperCase() !== 'FALLA' || j.Eliminado || j.AnuladoEn || j.Recuperado) return;
+    const m = String(j.Fecha || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/), f = m ? m[3] + '-' + m[1].padStart(2, '0') + '-' + m[2].padStart(2, '0') : String(j.Fecha || '').slice(0, 10);
+    if (!(f >= ini && f < sig)) return; const k = String(j.Color || x.color || '').toUpperCase().trim() + '|' + String(j.Talla || '').toUpperCase().trim(); A[k] = (A[k] || 0) + (+j.Cantidad || 0); });
+  if (OA !== o) return; NV._alm = A; vistaPintar();
+}
+function vAlmAplicar(R, A){ let n = 0; if (!A) return 0;
+  Object.keys(R).forEach(k => { const c = k.split('|'), kk = String(c[0]).toUpperCase().trim() + '|' + String(c[1]).toUpperCase().trim(), a = Math.min(A[kk] || 0, R[k].real); if (a > 0){ R[k].real -= a; R[k].nd += a; R[k].alm = a; n += a; } });
+  return n; }
 function vistaPintar(){
   const el = document.getElementById('oVista'), o = OA; if (!el || !o || !NV) return;
   const L = NV.lotes && NV.lotes.length ? NV.lotes : (NV.lotes = [{ fecha:'', q:{} }]); if (L.length === 1 && !Object.keys(L[0].q || {}).length) nLotesUltimo();
@@ -1313,8 +1343,10 @@ function vistaPintar(){
       : ' · <span class="mu" title="Ya se derivó al taller: lo programado queda fijo">🔒 Programado fijo</span> <button onclick="vCorrProg()" title="Solo si el metraje que llegó del proveedor obliga a cambiar los cortes">✏️ Corregir cortes (metraje)</button>')
     + ' ' + selB('🗂 Lotes', [['+', '＋ Agregar un lote']].concat(L.length > 1 ? L.map((x, i) => ['-' + i, '✕ Quitar el lote ' + (i + 1)]) : []), 'vAccLote');   /* 10-nov (Pablo) · Lotes es de toda la orden: va arriba, junto a Colores y Tallas */
   const excN = vLotesExceso(M, lp);
-  h += vBloque('Total de la orden <span class="mu" style="font-weight:400">· espejo de Stock</span>' + barTot, cols, tal, NV.q, vMovsAgg(M), progEd ? 'prog' : 'tot', 0,
-    { p: 'programada ' + (fD(L.map((x, i) => progDe(i)).filter(Boolean).sort().pop()) || '—'), tot: fLlego(M, L.length > 1 ? -1 : 0), real: enStock(M) });
+  if (NV._almPara !== o.id){ NV._almPara = o.id; NV._alm = null; vAlmCargar(o); }
+  const recT = vMovsAgg(M), almN = vAlmAplicar(recT, NV._alm);   /* 18-nov (Pablo) · espejo EXACTO de Stock: las fallas que logística encontró después en el almacén también salen de la Confección real */
+  h += vBloque('Total de la orden <span class="mu" style="font-weight:400">· espejo de Stock</span>' + barTot, cols, tal, NV.q, recT, progEd ? 'prog' : 'tot', 0,
+    { p: 'programada ' + (fD(L.map((x, i) => progDe(i)).filter(Boolean).sort().pop()) || '—'), tot: fLlego(M, L.length > 1 ? -1 : 0), nd: almN ? '<span title="Prendas buenas de esta orden que logística encontró con falla después, en el almacén">incluye ' + almN + ' halladas en almacén</span>' : '', real: enStock(M) });
   h += '<div id="vStkHoy" class="mu" style="font-size:12px;margin:2px 0 10px"></div><div id="vDoble"></div>';
   if (o && o.tipo === 'reposicion') h += '<details id="vProy" open style="margin:0 0 12px"><summary class="vbt" style="cursor:pointer">📊 Cómo quedaría Stock con esta orden</summary><div id="vProyB" class="mu" style="font-size:12px;padding:6px 0">Calculando…</div></details>';   /* 17-nov (Pablo) · solo reposiciones: stock de hoy + lo que falta llegar de cada lote = stock final */   /* 17-nov (Pablo, propuesta 1) · «Llegó bueno» vs lo que Stock tiene hoy */
   const lotes = L.map((x, i) => i);
@@ -1350,7 +1382,7 @@ function vistaPintar(){
   /* 10-nov (Pablo) · ya no hay barra abajo: Lotes va arriba (en el total) y ↩ Deshacer en la línea de cada lote */
   h += vTelaHtml(cols, ed);
   el.className = ''; el.innerHTML = h;
-  try { vStkHoyPintar(o, vMovsAgg(M)); } catch (_) {}
+  try { vStkHoyPintar(o, recT); } catch (_) {}
   try { vDoblePintar(o, M); } catch (_) {}   /* 18-nov (Pablo) · freno: falla contada 2 veces */
   try { vProyPintar(o, M); } catch (_) {}
 }
