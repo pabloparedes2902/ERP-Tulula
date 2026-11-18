@@ -1303,7 +1303,7 @@ function vistaPintar(){
   h += vBloque('Total de la orden <span class="mu" style="font-weight:400">· espejo de Stock</span>' + barTot, cols, tal, NV.q, vMovsAgg(M), progEd ? 'prog' : 'tot', 0,
     { p: 'programada ' + (fD(L.map((x, i) => progDe(i)).filter(Boolean).sort().pop()) || '—'), tot: fLlego(M, L.length > 1 ? -1 : 0), real: enStock(M) });
   h += '<div id="vStkHoy" class="mu" style="font-size:12px;margin:2px 0 10px"></div><div id="vDoble"></div>';
-  if (o && o.tipo === 'reposicion') h += '<details id="vProy" open style="margin:0 0 12px"><summary class="vbt" style="cursor:pointer">📊 Cómo queda el stock con lo programado</summary><div id="vProyB" class="mu" style="font-size:12px;padding:6px 0">Calculando…</div></details>';   /* 17-nov (Pablo) · solo reposiciones: stock de hoy + lo que falta llegar de cada lote = stock final */   /* 17-nov (Pablo, propuesta 1) · «Llegó bueno» vs lo que Stock tiene hoy */
+  if (o && o.tipo === 'reposicion') h += '<details id="vProy" open style="margin:0 0 12px"><summary class="vbt" style="cursor:pointer">📊 Cómo quedaría Stock con esta orden</summary><div id="vProyB" class="mu" style="font-size:12px;padding:6px 0">Calculando…</div></details>';   /* 17-nov (Pablo) · solo reposiciones: stock de hoy + lo que falta llegar de cada lote = stock final */   /* 17-nov (Pablo, propuesta 1) · «Llegó bueno» vs lo que Stock tiene hoy */
   const lotes = L.map((x, i) => i);
   if (excN.length) h += '<div style="margin:6px 0;color:#fbbf24;font-size:12px">⚠ Llegaron de más en un lote y se descontaron del último: ' + esc(excN.join(' · ')) + (ed ? ' <span class="mu">(se guardó solo)</span>' : '') + '</div>';
   const RA = vMovsAgg(M), comp = _vComp = {}; Object.keys(NV.q || {}).forEach(k => { const pq = +NV.q[k] || 0; if (pq > 0 && ((RA[k] || {}).tot || 0) === pq) comp[k] = 1; });
@@ -1409,48 +1409,22 @@ async function vProyPintar(o, M){
   const box = document.getElementById('vProyB'); if (!box || !o || o.tipo !== 'reposicion' || !NV) return;
   const pd = partirFicha(o.diseno); let F; try { F = await rpc('prod_stock_hoy', { p_prenda: pd.prenda, p_diseno: pd.diseno }); } catch (_) { box.textContent = 'No se pudo leer el stock de hoy.'; return; }
   if (!Array.isArray(F) || OA !== o) return;
-  /* 17-nov · «Hoy» = lo que se puede vender HOY (Confección real − vendidas), no la Confección real acumulada */
   if (F.length && !('ventas' in F[0])) { box.textContent = 'Falta un paso en la base para ver el stock de hoy (SQL del 17-nov).'; return; }
-  const hoy = {}; F.forEach(x => { hoy[nrm(x.color) + '|' + nrm(x.talla)] = Math.max(0, (+x.conf || 0) - (+x.ventas || 0)); });
-  const R = vProyCalc(NV.q, NV.lotes, M, hoy); if (!R.filas.length){ box.textContent = 'Sin programado todavía.'; return; }
-  const fe = f => /^\d{4}-\d{2}-\d{2}$/.test(String(f || '')) ? f.slice(8, 10) + '/' + f.slice(5, 7) : 'sin fecha';
-  /* 18-nov (Pablo) · mismo formato que «Total de la orden»: un bloque por grupo (Hoy · cada lote · Final), filas por color con su color, columnas por talla */
-  const cols = [...new Set(R.filas.map(r => r.k.split('|')[0]))], tal = TALLAS.filter(t => R.filas.some(r => r.k.split('|')[1] === t)), V = {}; R.filas.forEach(r => { V[r.k] = r; });
-  const G = [{ n: 'Stock hoy', s: 'disponible', bg: '#0f1a2e', fg: '#60a5fa', f: r => r.hoy }].concat(R.L.map((x, i) => ({ n: '+ Lote ' + (i + 1), s: 'llega ' + fe(x.fecha), bg: '#1f2937', fg: '#cbd5e1', f: r => r.lotes[i] })))
-    .concat([{ n: 'Stock final', s: 'si no se vendiera nada', bg: '#0a260a', fg: '#4ade80', f: r => r.fin }]);
+  /* 18-nov (Pablo) · simulación de Stock: solo Confección real · Ventas · Stock, con lo que falta llegar de esta orden sumado a Confección real */
+  const R = vProyCalc(NV.q, NV.lotes, M, {}), pend = {}, V = {}, nom = {};
+  R.filas.forEach(r => { pend[r.k] = r.lotes.reduce((a, v) => a + v, 0); });
+  F.forEach(x => { const k = nrm(x.color) + '|' + nrm(x.talla); nom[nrm(x.color)] = nom[nrm(x.color)] || x.color; const v = V[k] || (V[k] = { conf:0, ven:0 }); v.conf += +x.conf || 0; v.ven += +x.ventas || 0; });
+  Object.keys(pend).forEach(k => { (V[k] || (V[k] = { conf:0, ven:0 })).conf += pend[k]; const c = k.split('|')[0]; nom[c] = nom[c] || c; });
+  const ks = Object.keys(V); if (!ks.length){ box.textContent = 'Sin datos de stock todavía.'; return; }
+  const cols = [...new Set(ks.map(k => k.split('|')[0]))], tal = TALLAS.filter(t => ks.some(k => k.split('|')[1] === nrm(t)));
+  const G = [{ n: 'Confección real', bg: '#1f2937', fg: '#cbd5e1', f: v => v.conf }, { n: 'Ventas', bg: '#2a1a0a', fg: '#fbbf24', f: v => v.ven }, { n: 'Stock', bg: '#0a260a', fg: '#4ade80', f: v => v.conf - v.ven }];
   const n0 = v => v ? v : '·';
-  let hb = '<div style="overflow-x:auto"><table class="g lg"><tr><th rowspan="2">Color</th>' + G.map(g => '<th colspan="' + (tal.length + 1) + '" class="gs" style="background:' + g.bg + ';color:' + g.fg + '">' + g.n + '<div style="font-weight:400;font-size:11px;text-transform:none;letter-spacing:0;margin-top:2px">' + g.s + '</div></th>').join('') + '</tr><tr>'
+  let hb = '<div style="overflow-x:auto"><table class="g lg"><tr><th rowspan="2">Color</th>' + G.map(g => '<th colspan="' + (tal.length + 1) + '" class="gs" style="background:' + g.bg + ';color:' + g.fg + '">' + g.n + '</th>').join('') + '</tr><tr>'
     + G.map(g => tal.map((t, j) => '<th' + (j ? '' : ' class="gs"') + ' style="color:' + g.fg + '">' + t + '</th>').join('') + '<th style="color:' + g.fg + '">Total</th>').join('') + '</tr>';
   const FT = G.map(() => ({}));
-  cols.forEach(c => { hb += '<tr' + colSt(c) + '><td><b>' + esc(c) + '</b></td>' + G.map((g, gi) => { let tr = 0; return tal.map((t, j) => { const r = V[c + '|' + t], v = r ? (g.f(r) || 0) : 0; tr += v; FT[gi][t] = (FT[gi][t] || 0) + v; return '<td' + (j ? '' : ' class="gs"') + '>' + n0(v) + '</td>'; }).join('') + '<td><b>' + n0(tr) + '</b></td>'; }).join('') + '</tr>'; });
+  cols.forEach(c => { hb += '<tr' + colSt(nom[c]) + '><td><b>' + esc(nom[c]) + '</b></td>' + G.map((g, gi) => { let tr = 0; return tal.map((t, j) => { const r = V[c + '|' + nrm(t)], v = r ? (g.f(r) || 0) : 0; tr += v; FT[gi][t] = (FT[gi][t] || 0) + v; return '<td' + (j ? '' : ' class="gs"') + '>' + n0(v) + '</td>'; }).join('') + '<td><b>' + n0(tr) + '</b></td>'; }).join('') + '</tr>'; });
   hb += '<tr class="tot"><td><b>Total</b></td>' + G.map((g, gi) => tal.map((t, j) => '<td' + (j ? '' : ' class="gs"') + '><b>' + n0(FT[gi][t] || 0) + '</b></td>').join('') + '<td><b>' + n0(Object.values(FT[gi]).reduce((a, x) => a + x, 0)) + '</b></td>').join('') + '</tr></table></div>';
-  box.innerHTML = hb + '<div class="mu" style="font-size:12px;margin-top:4px">Stock hoy = Confección real − vendidas. Cada lote suma solo lo que falta llegar.</div><div id="vProyV" style="margin-top:10px"></div>';
-  try { vProyVentas(o, R); } catch (_) {}
-}
-/* 17-nov (Pablo) · CON VENTAS ESTIMADAS (como SAP/NetSuite: stock proyectado = hoy − demanda + llegadas). Por color, con la velocidad
-   de 📈 Reposición (u/día de los últimos 30 días): cuánto queda al llegar cada lote y si se agota antes. Lotes sin fecha no se pueden proyectar. */
-function vProyColor(hoy, vel, lotes, hoyIso){
-  const dd = (a, b) => Math.round((new Date(b + 'T12:00:00') - new Date(a + 'T12:00:00')) / 864e5);
-  let run = hoy, prev = hoyIso, agota = null; const al = [];
-  lotes.forEach(x => { if (!x.fecha){ al.push(null); run += x.n; return; } const d = Math.max(0, dd(prev, x.fecha)), v = vel * d;
-    if (!agota && vel > 0 && run - v <= 0) { const k = Math.floor(run / vel); const f = new Date(new Date(prev + 'T12:00:00').getTime() + k * 864e5); agota = { fecha: f.toISOString().slice(0, 10), antes: x.fecha }; }
-    run = Math.max(0, run - v); al.push(Math.round(run)); run += x.n; if (x.fecha > prev) prev = x.fecha; });   /* un lote con fecha pasada no hace retroceder el reloj */
-  return { al, fin: Math.round(run), agota };
-}
-async function vProyVentas(o, R){
-  const box = document.getElementById('vProyV'); if (!box || !(parent && parent !== window && typeof parent._reposicionRapido === 'function')) return;
-  let rp; try { rp = await parent._reposicionRapido(30); } catch (_) { return; } if (!rp || OA !== o) return;
-  const pd = partirFicha(o.diseno), it = (rp.items || []).filter(x => nrm(x.prenda) === nrm(pd.prenda) && nrm(x.dis) === nrm(pd.diseno));
-  const vel = {}; it.forEach(x => vel[nrm(x.col)] = +x.velocidad || 0);
-  const hoyIso = new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 10), C = {};
-  R.filas.forEach(r => { const c = r.k.split('|')[0], g = C[c] || (C[c] = { hoy:0, l:R.L.map(() => 0) }); g.hoy += r.hoy; r.lotes.forEach((v, i) => g.l[i] += v); });
-  const fe = f => f ? f.slice(8, 10) + '/' + f.slice(5, 7) : 'sin fecha';
-  const filas = Object.keys(C).map(c => { const v = vel[c] || 0, P = vProyColor(C[c].hoy, v, R.L.map((x, i) => ({ fecha: /^\d{4}-\d{2}-\d{2}$/.test(String(x.fecha || '')) ? x.fecha : null, n: C[c].l[i] })), hoyIso); return { c, v, hoy: C[c].hoy, P }; });
-  box.innerHTML = '<div class="mu" style="font-size:12px;margin-bottom:4px">Con ventas estimadas (ritmo de los últimos 30 días)</div><table class="ta" style="font-size:12px"><thead><tr><th style="text-align:left">Color</th><th style="text-align:right">u/día</th><th style="text-align:right">Hoy</th>'
-    + R.L.map((x, i) => '<th style="text-align:right" title="Lo que queda justo antes de que llegue el lote">Al llegar lote ' + (i + 1) + ' · ' + fe(x.fecha) + '</th>').join('') + '<th style="text-align:right">Después del último</th><th style="text-align:left"></th></tr></thead><tbody>'
-    + filas.map(f => '<tr' + colSt(f.c) + '><td class="n" style="text-align:left"><b>' + esc(f.c) + '</b></td><td style="text-align:right">' + (f.v ? f.v.toFixed(1) : '·') + '</td><td style="text-align:right">' + f.hoy + '</td>'
-      + f.P.al.map(v => '<td style="text-align:right' + (v === 0 ? ';color:#f87171;font-weight:600' : '') + '">' + (v == null ? '·' : v) + '</td>').join('') + '<td style="text-align:right;font-weight:600">' + f.P.fin + '</td>'
-      + '<td style="text-align:left">' + (f.P.agota ? '<span style="color:#f87171">⚠ se agota ~' + fe(f.P.agota.fecha) + ' (antes del lote del ' + fe(f.P.agota.antes) + ')</span>' : '') + '</td></tr>').join('') + '</tbody></table>';
+  box.innerHTML = hb;
 }
 function vAccEntrega(v){ if (!v) return; if (v[0] === '+') return vNuevaAbrir(+v.slice(1)); vEntregaDeshacer(v.slice(1)); }
 function vAccLote(v){ if (typeof progOK === 'function' && !progOK()) return progAviso(); if (!v) return; if (v === '+') return vLoteAgregar(); vLoteQuitar(+v.slice(1)); }
