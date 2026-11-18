@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pedido Tulula</title>
+<style>
+  :root { --bg:#f7f7f8; --card:#ffffff; --tx:#1f2330; --mu:#6b7280; --bd:#e2e4ea; --ac:#7c3aed; --warn:#b45309; --warnbg:#fff7e6; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#16171c; --card:#1f2128; --tx:#eceef4; --mu:#9aa1b2; --bd:#2f323c; --ac:#a78bfa; --warn:#fbbf24; --warnbg:#3a2c0c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--tx); font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  .top { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; flex:1; min-width:140px; }
+  button { font:inherit; border:1px solid var(--bd); background:var(--card); color:var(--tx); border-radius:8px; padding:7px 12px; cursor:pointer; }
+  button.p { background:var(--ac); border-color:var(--ac); color:#fff; font-weight:600; }
+  #estado { color:var(--mu); font-size:13px; margin-bottom:10px; }
+  #avisos { background:var(--warnbg); color:var(--warn); border-radius:8px; padding:8px 12px; margin-bottom:12px; font-size:13px; display:none; }
+  #avisos div { margin:3px 0; }
+  details { background:var(--card); border:1px solid var(--bd); border-radius:10px; margin-bottom:10px; overflow:hidden; }
+  summary { cursor:pointer; padding:11px 14px; font-weight:600; display:flex; align-items:center; gap:8px; }
+  summary small { font-weight:400; color:var(--mu); }
+  .caja { padding:0 14px 14px; }
+  pre { margin:0 0 10px; padding:10px 12px; background:var(--bg); border:1px solid var(--bd); border-radius:8px; white-space:pre-wrap; word-break:break-word; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; max-height:340px; overflow:auto; }
+  .pie { color:var(--mu); font-size:12px; margin-top:12px; }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>📋 Pedido para el ERP</h1>
+  <button id="btn-act">Actualizar</button>
+</div>
+<div id="estado">Abre una conversación para armar el pedido.</div>
+<div id="avisos"></div>
+<details id="d-nuevo" open>
+  <summary>Pedido nuevo <small id="s-nuevo"></small></summary>
+  <div class="caja"><pre id="t-nuevo"></pre><button class="p" data-copia="t-nuevo">Copiar pedido nuevo</button></div>
+</details>
+<details id="d-agrega">
+  <summary>Agrega pedido <small id="s-agrega"></small></summary>
+  <div class="caja"><pre id="t-agrega"></pre><button class="p" data-copia="t-agrega">Copiar agrega pedido</button></div>
+</details>
+<div class="pie">Se arma con los mensajes que están cargados en el chat. Si falta algo, sube en la conversación hasta verlo y toca Actualizar. En el ERP: Pedidos → Nuevo pedido → Pegar pedido. El pago se registra aparte, con su constancia.</div>
+
+<script>
+var WEBHOOK = 'https://n8n-production-4e716.up.railway.app/webhook/tulula-pedido';
+var CTX = null, LISTAS = null, LISTAS_CONV = '';
+
+function S(v) { return String(v == null ? '' : v); }
+function nz(v) { return S(v).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[*_~]/g, ' ').replace(/\s+/g, ' ').trim(); }
+
+// Arma los dos bloques. No inventa: prendas, origen, asesora y courier solo si existen en las listas del ERP.
+function armarPedido(msgs, L, ctx) {
+  var skus = L.skus || [], ubi = L.ubi || [], conj = L.conj || [];
+  var idx = {}, DSset = {}, CJ = {};
+  skus.forEach(function (r) { var p = nz(r[1] + ' ' + r[2]); DSset[p] = 1; idx[p + '|' + nz(r[3]) + '|' + nz(r[4])] = r[0]; });
+  conj.forEach(function (c) { var k = 'CONJUNTO ' + nz(c.b); (CJ[k] = CJ[k] || []).push((c.c || []).map(nz)); DSset[k] = 1; });
+  var PL = {};
+  (L.pl || []).forEach(function (r) { var v = parseFloat(r[1]); if (v > 0) PL[nz(r[0])] = v; });
+  // Reparte el precio del conjunto entre sus piezas en proporcion al precio de lista de cada una (regla de Pablo, 18-nov)
+  function repartir(total, piezas) {
+    var ls = piezas.map(function (z) { return PL[z] || 0; });
+    var sum = ls.reduce(function (a, b) { return a + b; }, 0);
+    if (!(total > 0) || !sum || ls.some(function (x) { return !x; })) return null;
+    var out = [], acc = 0;
+    ls.forEach(function (x, i) { var v = i === ls.length - 1 ? Math.round((total - acc) * 100) / 100 : Math.round(total * x / sum); acc += v; out.push(v); });
+    return out;
+  }
+  var DS = Object.keys(DSset).sort(function (a, b) { return b.length - a.length; });
+  var tmap = { XXL: '2XL', XXXL: '3XL', '26': 'XS', '28': 'S', '30': 'M', '32': 'L', '34': 'XL', '36': '2XL', '38': '3XL' };
+  var tel9 = S(ctx.tel).replace(/\D/g, '').slice(-9);
+
+  function leerResumen(txt) {
+    var Ls = S(txt).split(/\n+/).map(nz).filter(Boolean);
+    var items = [], envio = null, total = null, courier = '', rest = [];
+    Ls.forEach(function (l) {
+      var m;
+      if ((m = l.match(/^TOTAL[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)/))) { total = +m[1]; return; }
+      if (/^ENVIO/.test(l)) {
+        if (/GRATIS/.test(l)) envio = 0; else if (/DESTINO/.test(l)) envio = 'destino'; else if ((m = l.match(/([0-9]{1,2})(?![0-9])/))) envio = +m[1];
+        if (/SHALOM/.test(l)) courier = 'SHALOM'; else if (/OLVA/.test(l)) courier = 'OLVA'; else if (/RECOJO/.test(l)) courier = 'RECOJO';
+        return;
+      }
+      if (/RESUMEN|AGREGA PEDIDO|ADELANT|PAGO |RESTAN|^OK|^LISTO|^SI /.test(l) && !DS.some(function (d) { return l.indexOf(d) >= 0; })) return;
+      var d = DS.find(function (d) { return l.indexOf(d) === 0 || l.indexOf(' ' + d + ' ') >= 0 || l.indexOf(d + ' ') === 0; });
+      if (!d) { if (/[A-Z]{4,}/.test(l)) rest.push(l); return; }
+      var r = l.slice(l.indexOf(d) + d.length).trim(), precio = null;
+      if ((m = r.match(/(?:S\/\s*)?([0-9]{2,4}(?:\.[0-9]+)?)\s*$/)) && !/^(26|28|30|32|34|36|38)$/.test(m[1])) { precio = +m[1]; r = r.slice(0, m.index).trim(); }
+      var pack = ''; if ((m = r.match(/\b([23])\s*X\s*$/))) { pack = m[1] + 'x'; r = r.slice(0, m.index).trim(); }
+      var talla = '';
+      if ((m = r.match(/\b(XS|S|M|L|XL|XXL|2XL|3XL|26|28|30|32|34|36|38)\b(?!.*\b(XS|S|M|L|XL|XXL|2XL|3XL)\b)/))) {
+        talla = m[1]; r = (r.slice(0, m.index) + ' ' + r.slice(m.index + m[1].length)).replace(/\bTALLA\b/, '');
+      }
+      r = r.replace(/[-:()|,.=]/g, ' ').replace(/\bS\/?\s*$/, '').replace(/\s+/g, ' ').trim();
+      items.push({ prenda: d, color: r, talla: talla, precio: precio, pack: pack, linea: l });
+    });
+    return { items: items, envio: envio, total: total, courier: courier, rest: rest };
+  }
+  function aSku(p, color, talla) {
+    var c = nz(color);
+    var tl = talla ? [talla, tmap[talla]].filter(Boolean) : ['U'];
+    var cs = [c, c.replace(/A$/, 'O'), c.replace(/^ROSADO$/, 'ROSA'), c.replace(/^ROSA$/, 'ROSADO')];
+    for (var i = 0; i < tl.length; i++) for (var j = 0; j < cs.length; j++) { var k = p + '|' + cs[j] + '|' + tl[i]; if (idx[k]) return idx[k]; }
+    return '';
+  }
+
+  // 1) Resumen de la asesora: el ultimo mensaje enviado (no nota privada) con prendas y RESUMEN o TOTAL
+  var res = null, resTxt = '';
+  for (var i = msgs.length - 1; i >= 0; i--) {
+    var m = msgs[i];
+    if (m.message_type !== 1 || m.private || !m.content) continue;
+    var up = nz(m.content);
+    if (!/RESUMEN|TOTAL|AGREGA PEDIDO/.test(up)) continue;
+    var rr = leerResumen(m.content);
+    if (rr.items.length) { res = rr; resTxt = up; break; }
+  }
+  var avisos = [], lineas = [], okN = 0, revN = 0;
+  if (!res) avisos.push('No encontré un resumen de pedido de la asesora en los mensajes cargados: las prendas se eligen a mano.');
+  else {
+    res.items.forEach(function (it) {
+      var pr = it.precio == null ? '' : String(it.precio);
+      if (CJ[it.prenda]) {
+        var vars = CJ[it.prenda], col = it.color;
+        if (vars.length > 1) {
+          // mismo conjunto con dos armados (ej. Mirella con blazer o con chaleco): manda la palabra que escribio la asesora
+          var dic = vars.filter(function (v) { return v.some(function (z) { var w = z.split(' ')[0]; return w !== 'PANTALON' && (' ' + it.linea + ' ').indexOf(' ' + w + ' ') >= 0; }); });
+          if (dic.length === 1) vars = dic;
+        }
+        if (vars.length !== 1) { lineas.push('⚠ REVISAR: ' + it.linea); revN++; avisos.push(it.prenda + ' tiene ' + vars.length + ' armados (' + vars.map(function (v) { return v[0].split(' ')[0].toLowerCase(); }).join(' o ') + '): el resumen no dice cuál.'); return; }
+        var pzs = vars[0];
+        pzs.forEach(function (z) { col = (' ' + col + ' ').replace(' ' + z.split(' ')[0] + ' ', ' ').replace(/ (CON|Y|MAS|\+) /g, ' ').replace(/\s+/g, ' ').trim(); });
+        var piezas = pzs.map(function (pz) { return aSku(pz, col, it.talla); });
+        if (piezas.length && piezas.every(Boolean)) {
+          var rp = repartir(it.precio, pzs);
+          piezas.forEach(function (n, i) { lineas.push(n + ' | ' + (rp ? rp[i] : '')); okN++; });
+          if (rp) avisos.push(it.prenda + ' S/' + pr + ' repartido entre sus ' + piezas.length + ' piezas según el precio de lista de cada una.');
+          else avisos.push(it.prenda + (pr ? ' (S/' + pr + ')' : '') + ': va en sus ' + piezas.length + ' piezas; falta repartir el precio entre ellas.');
+        } else { lineas.push('⚠ REVISAR: ' + it.linea); revN++; }
+        return;
+      }
+      var n = aSku(it.prenda, it.color, it.talla);
+      if (n) { lineas.push(n + ' | ' + pr); okN++; if (!pr) avisos.push('Falta el precio de ' + n + '.'); }
+      else { lineas.push('⚠ REVISAR: ' + it.linea); revN++; }
+    });
+    res.rest.forEach(function (l) { if (/BLAZER|PANTALON|BLUSA|TOP|FALDA|VESTIDO|CHALECO|BODY|CONJUNTO|ABRIGO|CASACA|SHORT|GABARDINA|CORREA/.test(l)) { lineas.push('⚠ REVISAR: ' + l); revN++; } });
+    if (revN) avisos.push(revN + ' prenda(s) no calzan exacto con la lista del ERP: elígelas a mano.');
+  }
+
+  // 2) Datos de la clienta: solo lo que ella escribio con etiqueta (Nombre:, DNI:, Direccion:...)
+  var LAB = [
+    ['nombre', /^(NOMBRES? Y APELLIDOS?|APELLIDOS? Y NOMBRES?|NOMBRE COMPLETO|NOMBRES?)\b/],
+    ['doc', /^(DNI|D\.N\.I\.?|DOCUMENTO|C\.?E\.?|CARNE DE EXTRANJERIA|RUC)\b/],
+    ['cel', /^(NUMERO DE CELULAR|CELULAR|TELEFONO|CEL)\b/],
+    ['dir', /^(DIRECCION|DOMICILIO)\b/],
+    ['dist', /^DISTRITO\b/],
+    ['prov', /^PROVINCIA\b/],
+    ['reg', /^(REGION|DEPARTAMENTO)\b/],
+    ['ref', /^(REFERENCIAS?|REF)\b/],
+    ['mail', /^(CORREO( ELECTRONICO)?|EMAIL|E-MAIL|MAIL)\b/],
+    ['cumple', /^(FECHA( DE)? NACIMIENTO|FECHA DE CUMPLEANOS|CUMPLEANOS|NACIMIENTO)\b/]
+  ];
+  var D = {};
+  msgs.forEach(function (m) {
+    if (m.message_type !== 0 || !m.content) return;
+    var got = {};
+    S(m.content).split(/\n+/).forEach(function (raw) {
+      var o = raw.replace(/^[\s\-*•·>_]+/, '').replace(/[*_]/g, '').trim();
+      if (!o) return;
+      var u = nz(o);
+      for (var k = 0; k < LAB.length; k++) {
+        var mm = u.match(LAB[k][1]);
+        if (!mm) continue;
+        var v = '', ci = o.indexOf(':');
+        if (ci >= 0) v = o.slice(ci + 1).trim();
+        else v = o.split(/\s+/).slice(mm[0].split(' ').length).join(' ').trim();
+        if (v && !got[LAB[k][0]]) got[LAB[k][0]] = v;
+        break;
+      }
+    });
+    if (Object.keys(got).length >= 2) Object.keys(got).forEach(function (k) { D[k] = got[k]; });
+  });
+  if (!Object.keys(D).length) avisos.push('La clienta no escribió sus datos con etiquetas (Nombre:, DNI:...) en los mensajes cargados: se llenan a mano.');
+  var docTxt = '';
+  if (D.doc) { var dg = D.doc.replace(/\D/g, ''); if (dg.length === 8) docTxt = 'DNI ' + dg; else if (dg.length === 9) docTxt = 'C.E. ' + dg; else if (dg.length === 11) docTxt = 'RUC ' + dg; else avisos.push('Documento escrito como "' + D.doc + '": revísalo.'); }
+  var cel = tel9;
+  if (D.cel) { var cg = D.cel.replace(/\D/g, '').slice(-9); if (cg.length === 9 && cg[0] === '9') cel = cg; }
+  var mail = ''; if (D.mail) { var em = D.mail.match(/[^\s@]+@[^\s@]+\.[^\s@]+/); if (em) mail = em[0]; else avisos.push('Correo escrito como "' + D.mail + '": revísalo.'); }
+  var cumple = ''; if (D.cumple) { var cm = D.cumple.match(/(\d{1,2})\s*[\/\-. ]\s*(\d{1,2})/); if (cm && +cm[1] >= 1 && +cm[1] <= 31 && +cm[2] >= 1 && +cm[2] <= 12) cumple = ('0' + cm[1]).slice(-2) + '/' + ('0' + cm[2]).slice(-2); }
+  var dist = '', provU = '', distAviso = false;
+  if (D.dist) {
+    var cands = [D.dist].concat(D.dist.split(/[\/,\-]/)).map(nz).filter(Boolean);
+    for (var c = 0; c < cands.length && !dist && !distAviso; c++) {
+      var f = ubi.filter(function (r) { return nz(r[0]) === cands[c]; });
+      if (f.length > 1 && D.prov) { var f2 = f.filter(function (r) { return nz(r[1]) === nz(D.prov); }); if (f2.length) f = f2; }
+      if (f.length > 1 && D.reg) { var f3 = f.filter(function (r) { return nz(r[2]) === nz(D.reg); }); if (f3.length) f = f3; }
+      if (f.length === 1) { dist = S(f[0][0]).toUpperCase(); provU = nz(f[0][1]); }
+      else if (f.length > 1) { avisos.push('Hay ' + f.length + ' distritos llamados "' + D.dist + '": elígelo a mano.'); distAviso = true; }
+    }
+    if (!dist && !distAviso) avisos.push('Distrito escrito como "' + D.dist + '": no está igual en la lista del ERP, elígelo a mano.');
+  }
+
+  // 3) Origen, asesora, envio y courier
+  var hayAd = Number(L.ad || 0) > 0 || msgs.some(function (m) { return m.message_type === 0 && /QUIERO MAS INFORMACION/.test(nz(m.content)); });
+  var origen = hayAd ? 'ADS DIRECTO' : '';
+  if (!hayAd) avisos.push('No veo anuncio en este chat: elige el origen a mano.');
+  var ASES = ['CAMILA', 'ANGIE', 'LUCIA', 'DAYANN', 'ROXANA', 'LUZ'];
+  var ag = nz(ctx.agente).split(' ')[0];
+  var asesora = ASES.indexOf(ag) >= 0 ? ag : '';
+  var envio = '', courier = '', coment = '';
+  if (res) {
+    if (res.envio === 'destino') { envio = '0'; courier = 'SHALOM'; coment = 'PAGO A DESTINO'; }
+    else if (res.envio != null) envio = String(res.envio);
+    else avisos.push('El resumen no trae línea de envío: complétalo.');
+    if (!courier && res.courier) courier = res.courier;
+    if (!courier && /RECOJO/.test(resTxt)) courier = 'RECOJO';
+    if (!courier && /SHALOM/.test(resTxt)) courier = 'SHALOM';
+  }
+  if (!courier && provU) courier = (provU === 'LIMA' || provU === 'CALLAO') ? 'SALVA' : 'OLVA';
+
+  var num = 0;
+  var pl = lineas.map(function (l) { return l.indexOf('⚠') === 0 ? l : (++num) + '. ' + l; });
+  var prendasTxt = ['Prendas:'].concat(pl).join('\n');
+  var nuevo = ['📋 PEDIDO NUEVO',
+    'Nombre: ' + S(D.nombre || ''), 'Documento: ' + docTxt, 'Teléfono: ' + cel, 'Dirección: ' + S(D.dir || ''),
+    'Distrito: ' + dist, 'Referencia: ' + S(D.ref || ''), 'Correo: ' + mail, 'Cumpleaños: ' + cumple,
+    'Canal: WHATSAPP', 'Origen: ' + origen, 'Asesora: ' + asesora, prendasTxt,
+    'Envío: ' + envio, 'Courier: ' + courier, 'Comentario: ' + coment].join('\n');
+  var agrega = ['📋 AGREGA PEDIDO', 'Teléfono: ' + cel, prendasTxt, 'Envío: ' + envio, 'Courier: ' + courier, 'Comentario: ' + coment].join('\n');
+  return { nuevo: nuevo, agrega: agrega, avisos: avisos, sugerido: /AGREGA/.test(resTxt) ? 'agrega' : 'nuevo', ok: okN, revisar: revN, datos: Object.keys(D).length };
+}
+
+function estado(t) { document.getElementById('estado').textContent = t; }
+function pintar(r) {
+  document.getElementById('t-nuevo').textContent = r.nuevo;
+  document.getElementById('t-agrega').textContent = r.agrega;
+  var a = document.getElementById('avisos');
+  a.innerHTML = '';
+  r.avisos.forEach(function (x) { var d = document.createElement('div'); d.textContent = '⚠ ' + x; a.appendChild(d); });
+  a.style.display = r.avisos.length ? 'block' : 'none';
+  document.getElementById('d-nuevo').open = r.sugerido !== 'agrega';
+  document.getElementById('d-agrega').open = r.sugerido === 'agrega';
+  var det = r.ok + ' prenda(s) lista(s)' + (r.revisar ? ', ' + r.revisar + ' por revisar' : '');
+  document.getElementById('s-nuevo').textContent = '· ' + r.datos + ' dato(s) de la clienta · ' + det;
+  document.getElementById('s-agrega').textContent = '· ' + det;
+}
+function armar() {
+  if (!CTX || !CTX.conversation) { estado('Abre una conversación para armar el pedido.'); return; }
+  var conv = S(CTX.conversation.id);
+  var msgs = (CTX.conversation.messages || []).slice().sort(function (a, b) { return a.id - b.id; });
+  var ctx = { tel: (CTX.contact || {}).phone_number || ((CTX.conversation.meta || {}).sender || {}).phone_number || '', agente: (CTX.currentAgent || {}).name || '' };
+  function listo() { try { pintar(armarPedido(msgs, LISTAS, ctx)); estado('Conversación #' + conv + ' · ' + msgs.length + ' mensajes leídos.'); } catch (e) { estado('No pude armar el pedido: ' + e.message); } }
+  if (LISTAS && LISTAS_CONV === conv) { listo(); return; }
+  estado('Leyendo las listas del ERP…');
+  fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversacion: conv }) })
+    .then(function (r) { return r.json(); })
+    .then(function (j) { if (!j || !j.skus) throw new Error('sin listas'); LISTAS = j; LISTAS_CONV = conv; listo(); })
+    .catch(function () { estado('No pude leer las listas del ERP. Toca Actualizar para reintentar.'); });
+}
+function pedirContexto() { try { window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*'); } catch (e) {} }
+window.addEventListener('message', function (ev) {
+  var d = ev.data;
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { return; } }
+  if (!d || d.event !== 'appContext' || !d.data) return;
+  CTX = d.data; armar();
+});
+document.getElementById('btn-act').addEventListener('click', function () { LISTAS_CONV = ''; pedirContexto(); if (CTX) armar(); });
+document.addEventListener('click', function (ev) {
+  var id = ev.target && ev.target.getAttribute && ev.target.getAttribute('data-copia');
+  if (!id) return;
+  var txt = document.getElementById(id).textContent, b = ev.target, antes = b.textContent;
+  function hecho() { b.textContent = 'Copiado ✓'; setTimeout(function () { b.textContent = antes; }, 1500); }
+  function respaldo() { var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); hecho(); } catch (e) {} document.body.removeChild(ta); }
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(hecho, respaldo); else respaldo();
+});
+pedirContexto();
+</script>
+</body>
+</html>

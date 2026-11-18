@@ -11319,7 +11319,7 @@ async function _conGuardarTextos(v) {
 // >>> 10-oct-2026 · RESEÑAS POR APROBAR (Pablo y Ana). Las reseñas llegan de tulula.com.pe/pages/tu-opinion (WhatsApp).
 // Estrellas y comentario se publican solos; la FOTO solo se ve en la web cuando aquí se aprueba (resenas.fotos_ok).
 // Va directo a la base con la sesión (rpc resenas_admin_lista / resena_admin_decidir, solo rol Admin).
-const RES = { ver: 'pendientes', rows: [], tab: 'prod' };
+const RES = { ver: 'por_aprobar', rows: [], tab: 'prod', niv: 0, cuentas: {}, marca: {} };   // 18-nov · pestaña por defecto: Por aprobar
 async function _resRpc(fn, body) {
   const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('Sin sesión con la base. Vuelve a entrar al ERP.');
   const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
@@ -11330,8 +11330,8 @@ function _resBadge(n) { window._resN = n; const b = document.getElementById('res
 async function loadResenas() {
   const w = document.getElementById('res-w'); if (!w) return;
   w.innerHTML = '<div class="ld"><div class="sp"></div>Cargando reseñas...</div>';
-  try { const d = await _resRpc('resenas_admin_lista', { p_ver: RES.ver }); RES.rows = d.rows || []; _resBadge(d.pendientes || 0); _resPintar(d.pendientes || 0); }
-  catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudieron leer las reseñas: ' + esc(e.message) + '</div>'; }
+  try { const d = await _resRpc('resenas_admin_lista', { p_ver: RES.ver }); RES.rows = d.rows || []; RES.niv = Number(d.nivel) || 0; RES.cuentas = d.cuentas || {}; _resBadge(d.pendientes || 0); _resPintar(d.pendientes || 0); }
+  catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudieron leer las reseñas: ' + esc(e.message) + (/Sin permiso/.test(e.message) ? ' · Pide acceso a «↳Prod. Shopify» en Configuración › Usuarios.' : '') + '</div>'; }
 }
 // 15-oct-2026 (Pablo) · EDICIÓN DE FOTOS DE RESEÑAS: recorte fijo 4:5 (mover + acercar), luz y contraste.
 // La original nunca se toca: la editada se guarda aparte en resenas/editadas/ y es la que ve la tienda.
@@ -11359,10 +11359,12 @@ const _RES_FILTRO_OK = (() => { try { return 'filter' in document.createElement(
 function _resSelDe(r) {
   if (RES.sel[r.id]) return RES.sel[r.id];
   const pub = r.fotos_pub || [], ed = (r.fotos_edit && r.fotos_edit.fotos) || [];
+  /* 18-nov (Pablo) · foto por revisar: llega MARCADA si la IA dice que cumple y DESMARCADA si dice que no (con el motivo a la vista) */
   RES.sel[r.id] = (r.fotos || []).map((u, i) => {
     const e = ed.find(x => x && x.i === i) || null;
     const url = e && e.url ? e.url : u;
-    return { orig: u, url, edit: e ? e.edit : null, pub: r.fotos_ok === true ? pub.indexOf(url) >= 0 : false };
+    const ia = (r.ia || []).find(z => z && z.url === u);
+    return { orig: u, url, edit: e ? e.edit : null, pub: r.fotos_ok === true ? pub.indexOf(url) >= 0 : (r.fotos_ok == null && !!ia && ia.ok === true) };
   });
   return RES.sel[r.id];
 }
@@ -11441,54 +11443,132 @@ function _resEditor(r, i, alListo) {
     } catch (e) { st.style.color = 'var(--rd)'; st.textContent = e.message; bt.forEach(b => b.disabled = false); }
   });
 }
+/* 18-nov-2026 (Pablo) · RESEÑAS: pestañas Por aprobar · Fotos por revisar · Aprobadas · Todas; aprobar en lote lo marcado;
+   corregir ortografía (la original se guarda); aviso de rechazo por WhatsApp con el motivo; cupón ÚNICO por clienta (FOTO<pedido>-XXX,
+   lo crea Shopify solo: shopify-worker «cupon.crear»). Lo usa quien tenga «↳Prod. Shopify» en Configuración › Usuarios (Edición = aprobar). */
+const RES_MOTIVOS = [
+  ['personas', 'Salen otras personas', 'salen otras personas en la foto', 'donde salgas solo tú: ¡tú eres la protagonista! ✨'],
+  ['prenda', 'Prenda incompleta', 'no se ve la prenda completa', 'de cuerpo entero, con la prenda bien puesta'],
+  ['luz', 'Oscura o borrosa', 'la foto salió oscura o movida', 'con buena luz, por ejemplo junto a una ventana'],
+  ['fondo', 'Fondo con ruido', 'el fondo distrae de la prenda', 'con un fondo simple, como una pared lisa o una puerta'],
+  ['captura', 'Captura de pantalla', 'es una captura de pantalla', 'tomada directamente con la cámara'],
+  ['otra', 'No se ve la prenda', 'no se ve tu {p}', 'donde se vea tu {p}']
+];
+function _resTit(s) { return String(s || '').toLowerCase().replace(/(^|\s)\S/g, m => m.toUpperCase()); }
+function _resMotivoIA(r) {
+  const t = (r.ia || []).filter(x => x && x.ok === false).map(x => (x.motivos || []).join(' ')).join(' ').toLowerCase();
+  if (!t) return 'personas';
+  if (/persona|gente|acompa|otra mujer|niñ|grupo/.test(t)) return 'personas';
+  if (/captura|pantalla|screenshot/.test(t)) return 'captura';
+  if (/oscur|borros|movid|nitid|nítid|luz|desenfoc/.test(t)) return 'luz';
+  if (/fondo|ruido|desorden/.test(t)) return 'fondo';
+  if (/complet|cortad|cuerpo|encuadr/.test(t)) return 'prenda';
+  return 'otra';
+}
+function _resMsgRechazo(r, k) {
+  const m = RES_MOTIVOS.find(x => x[0] === k) || RES_MOTIVOS[0], p = _resTit(r.diseno), f = s => s.replace(/\{p\}/g, p);
+  return 'Hola ' + (r.nombre || '') + ' 💙 ¡Gracias por tu foto con tu ' + p + '! Esta vez no pudimos publicarla porque ' + f(m[2]) + '. Si nos mandas por aquí otra foto '
+    + f(m[3]) + ', la revisamos' + (Number(r.estrellas) === 5 ? ' y te llega tu cupón de S/ 50 🎁' : ' para publicarla en la web 🙌');
+}
+function _resVence(s) { try { return new Date(s + 'T12:00:00').toLocaleDateString('es-PE', { day: 'numeric', month: 'long' }); } catch (_) { return ''; } }
 function _resPintar(pend) {
-  const w = document.getElementById('res-w');
+  const w = document.getElementById('res-w'), niv = Number(RES.niv) || 0, C = RES.cuentas || {};
+  RES.marca = RES.marca || {};
   const est = n => '<span style="color:#E2A21B;letter-spacing:1px">' + '★★★★★'.slice(0, n) + '</span><span style="color:var(--bd)">' + '★★★★★'.slice(0, 5 - n) + '</span>';
-  const tit = s => String(s || '').toLowerCase().replace(/(^|\s)\S/g, m => m.toUpperCase());
+  const tit = _resTit;
   const fecha = s => { try { return new Date(s).toLocaleDateString('es-PE', { day: 'numeric', month: 'short' }); } catch (_) { return ''; } };
-  const estado = r => !(r.fotos || []).length ? '' : r.fotos_ok === true ? '<span style="color:var(--gn);font-size:12px">✓ foto aprobada</span>' : r.fotos_ok === false ? '<span style="color:var(--rd);font-size:12px">✗ foto no publicada</span>' : '<span style="color:#B7791F;font-size:12px">● foto por revisar</span>';
-  const permiso = r => !(r.fotos || []).length ? '' : r.permiso_editar === true ? '<span style="font-size:11px;color:var(--gn)">✓ autorizó encuadrar</span>' : r.permiso_editar === false ? '<span style="font-size:11px;color:var(--rd)">✗ no autorizó editar</span>' : '<span style="font-size:11px;color:var(--mu)">permiso: no se le preguntó</span>';
+  const chip = (t, c) => '<span style="font-size:11px;color:' + c + '">' + t + '</span>';
+  const estado = r => !(r.fotos || []).length ? '' : r.fotos_ok === true ? chip('✓ foto en la web' + (r.fotos_pub_at ? ' desde ' + fecha(r.fotos_pub_at) : ''), 'var(--gn)') : r.fotos_ok === false ? chip('✗ foto no publicada', 'var(--rd)') : chip('● foto por revisar', '#B7791F');
+  const permiso = r => !(r.fotos || []).length ? '' : r.permiso_editar === true ? chip('✓ autorizó encuadrar', 'var(--gn)') : r.permiso_editar === false ? chip('✗ no autorizó editar', 'var(--rd)') : chip('permiso: no se le preguntó', 'var(--mu)');
+  const enWeb = r => r.publicar ? chip('● visible en la web', 'var(--gn)') : chip('○ oculta', 'var(--mu)');
   const cupon = r => {
     if (r.fotos_ok !== true || !r.cupon) return '';
-    const txt = 'Hola ' + (r.nombre || '') + ' 💙 ¡Gracias por tu foto con tu ' + tit(r.diseno) + '! Ya la aprobamos. Este es tu cupón de S/ 50 para tu próxima compra: ' + r.cupon + ' (en prendas, compra mínima S/ 150, un uso por clienta).';
-    return '<div style="margin-top:8px;font-size:12px;background:var(--bg3);border-radius:8px;padding:8px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">🎁 Cupón <b>' + esc(r.cupon) + '</b> '
+    const unico = r.cupon !== 'GRACIASFOTO50', listo = !unico || r.cupon_shop === 'ok';
+    const txt = 'Hola ' + (r.nombre || '') + ' 💙 ¡Gracias por tu foto con tu ' + tit(r.diseno) + '! Ya está publicada en tulula.com.pe. Tu cupón de S/ 50 es: ' + r.cupon
+      + (unico ? ' (es solo para ti: un uso, en compras desde S/ 150' + (r.cupon_vence ? ', válido hasta el ' + _resVence(r.cupon_vence) : '') + ').' : ' (en prendas, compra mínima S/ 150, un uso por clienta).');
+    return '<div style="margin-top:8px;font-size:12px;background:var(--bg3);border-radius:8px;padding:8px 10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">🎁 Cupón <b>' + esc(r.cupon) + '</b>'
+      + (unico ? ' <span style="color:var(--mu)">único · pedido ' + esc(r.pedido || '') + (r.cupon_vence ? ' · vence ' + _resVence(r.cupon_vence) : '') + '</span>' : ' <span style="color:var(--mu)">(código antiguo, compartido)</span>')
       + (r.cupon_enviado_at ? '<span style="color:var(--gn)">✓ enviado ' + fecha(r.cupon_enviado_at) + '</span>'
-        : (r.celular ? '<a class="btn bp bs res-cup" target="_blank" rel="noopener" href="https://wa.me/' + esc(r.celular) + '?text=' + encodeURIComponent(txt) + '">📲 Enviar cupón por WhatsApp</a>' : '<span style="color:var(--rd)">sin celular</span>')) + '</div>';
+        : !listo ? '<span style="color:' + (/error/.test(r.cupon_shop || '') ? 'var(--rd)' : 'var(--mu)') + '">' + (/error/.test(r.cupon_shop || '') ? '✗ Shopify no lo creó: ' + esc(String(r.cupon_shop).replace(/^error:?\s*/, '')) : '⏳ creándose en Shopify…') + '</span>'
+        : niv < 2 ? '' : (r.celular ? '<a class="btn bp bs res-cup" target="_blank" rel="noopener" href="https://wa.me/' + esc(r.celular) + '?text=' + encodeURIComponent(txt) + '">📲 Enviar cupón por WhatsApp</a>' : '<span style="color:var(--rd)">sin celular</span>')) + '</div>';
+  };
+  const rechazo = r => {
+    if (niv < 2 || !(r.fotos || []).length || r.fotos_ok === true) return '';
+    if (r.rechazo_at) return '<div style="margin-top:6px;font-size:12px;color:var(--mu)">📲 Rechazo avisado ' + fecha(r.rechazo_at) + ' · ' + esc((RES_MOTIVOS.find(x => x[0] === r.rechazo_motivo) || [0, r.rechazo_motivo])[1] || '') + (r.rechazo_por ? ' · ' + esc(r.rechazo_por.split('@')[0]) : '') + '</div>';
+    if (!r.celular) return '';
+    const k = _resMotivoIA(r);
+    return '<div style="margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px"><span style="color:var(--mu)">Si no la publicas:</span>'
+      + '<select class="res-mot" style="font-size:12px;padding:3px 6px;background:var(--bg3);color:inherit;border:1px solid var(--bd);border-radius:6px">' + RES_MOTIVOS.map(m => '<option value="' + m[0] + '"' + (m[0] === k ? ' selected' : '') + '>' + m[1] + '</option>').join('') + '</select>'
+      + '<a class="btn bg bs res-rech" target="_blank" rel="noopener" href="#" style="font-size:11px">📲 Avisar rechazo por WhatsApp</a></div>';
   };
   const fotosHtml = r => _resSelDe(r).map((f, i) => '<div style="display:flex;flex-direction:column;gap:4px;align-items:center">'
       + '<a href="' + esc(f.url) + '" target="_blank" rel="noopener" style="position:relative"><img src="' + esc(f.url) + '" alt="" style="width:150px;height:188px;object-fit:cover;border-radius:10px;background:var(--bg3)">'
       + (f.url !== f.orig ? '<span style="position:absolute;left:6px;top:6px;font-size:11px;background:#173B61;color:#fff;border-radius:6px;padding:1px 6px">editada</span>' : '') + '</a>'
       + '</div>').join('');
-  /* 8-nov (Pablo) · Editar, Publicar e IA van DEBAJO de «Aprobar fotos marcadas», una línea por foto (ocupa menos alto) */
+  function iaDe(r, u) { const x = (r.ia || []).find(z => z && z.url === u); if (!x || x.ok === null || x.ok === undefined) return '';
+    return x.ok ? '<div style="font-size:11px;color:var(--gn)">🤖 IA: cumple</div>' : '<div style="font-size:11px;color:var(--rd)">🤖 IA: no cumple · ' + esc((x.motivos || []).join(' ') || 'sin motivo') + '</div>'; }
   const fotoCtl = r => { const L = _resSelDe(r); return L.map((f, i) => '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:12px">'
       + (L.length > 1 ? '<span style="color:var(--mu)">Foto ' + (i + 1) + '</span>' : '')
-      + '<button type="button" class="btn bg bs res-ed" data-i="' + i + '" style="font-size:11px">✏️ Editar</button>'
-      + '<label style="font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" class="res-pub" data-i="' + i + '"' + (f.pub ? ' checked' : '') + '> Publicar</label>'
-      + iaDe(r, f.orig).replace('max-width:150px', 'max-width:none') + '</div>').join(''); };
-  // 15-oct (Pablo) · primer filtro de la IA (función resena-filtro): la revisión final es de Tulula
-  function iaDe(r, u) { const x = (r.ia || []).find(z => z && z.url === u); if (!x || x.ok === null || x.ok === undefined) return '';
-    return x.ok ? '<div style="font-size:11px;color:var(--gn);max-width:150px">🤖 IA: cumple</div>' : '<div style="font-size:11px;color:var(--rd);max-width:150px" title="' + esc((x.motivos || []).join(' ')) + '">🤖 IA: ' + esc((x.motivos || []).join(' ') || 'no cumple') + '</div>'; }
+      + (niv >= 2 ? '<button type="button" class="btn bg bs res-ed" data-i="' + i + '" style="font-size:11px">✏️ Editar</button>'
+        + '<label style="font-size:12px;display:flex;gap:4px;align-items:center;cursor:pointer"><input type="checkbox" class="res-pub" data-i="' + i + '"' + (f.pub ? ' checked' : '') + '> Publicar</label>' : '')
+      + iaDe(r, f.orig) + '</div>').join(''); };
+  const datos = r => { const x = r.extra || {}; return [esc(r.nombre || ''), x.g ? esc(x.g) : '', 'pedido ' + esc(r.pedido || ''), x.t ? 'talla ' + esc(x.t) : '', x.f ? 'compró ' + fecha(x.f + 'T12:00:00') : '', 'reseña ' + fecha(r.creado)].filter(Boolean).join(' · '); };
+  const pendiente = r => r.revisado_por == null || ((r.fotos || []).length && r.fotos_ok == null);
+  const coment = r => '<div class="res-com" style="font-size:14px;white-space:pre-wrap;margin-bottom:8px">' + (r.comentario ? '“' + esc(r.comentario) + '”' : '<span style="font-size:12px;color:var(--mu)">Sin comentario</span>')
+      + (niv >= 2 ? ' <button type="button" class="btn bg bs res-cm" style="font-size:11px;padding:1px 6px" title="Corregir ortografía (la original se guarda)">✏️</button>' : '')
+      + (r.comentario_original != null && r.comentario_original !== r.comentario ? '<div style="font-size:11px;color:var(--mu);margin-top:2px" title="' + esc(r.comentario_original || '') + '">corregido · original: “' + esc(String(r.comentario_original || '').slice(0, 80)) + '”</div>' : '') + '</div>';
   const card = r => '<div class="res-c" data-id="' + r.id + '" style="background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:14px;display:flex;gap:14px;flex-wrap:wrap' + (r.publicar ? '' : ';opacity:.55') + '">'
-    + '<div style="display:flex;gap:10px;flex-wrap:wrap">' + fotosHtml(r) + '</div>'
+    + ((r.fotos || []).length ? '<div style="display:flex;gap:10px;flex-wrap:wrap">' + fotosHtml(r) + '</div>' : '')
     + '<div style="flex:1 1 260px;min-width:220px">'
-      + '<div style="font-weight:600">' + esc(tit(r.diseno)) + (r.color ? ' <span style="font-weight:400;color:var(--mu)">· ' + esc(tit(r.color)) + '</span>' : '') + (r.prueba ? ' <span style="font-size:11px;background:var(--bg3);border-radius:6px;padding:1px 6px">PRUEBA</span>' : '') + '</div>'
-      + '<div style="margin:2px 0 6px">' + est(r.estrellas) + ' <span style="font-size:12px;color:var(--mu)">' + esc(r.nombre || '') + ' · pedido ' + esc(r.pedido || '') + ' · ' + fecha(r.creado) + '</span></div>'
-      + (r.comentario ? '<div style="font-size:14px;white-space:pre-wrap;margin-bottom:8px">“' + esc(r.comentario) + '”</div>' : '<div style="font-size:12px;color:var(--mu);margin-bottom:8px">Sin comentario</div>')
+      + '<div style="display:flex;gap:8px;align-items:center">' + (niv >= 2 && pendiente(r) ? '<input type="checkbox" class="res-sel" title="Incluir en «Aprobar seleccionadas»"' + (RES.marca[r.id] !== false ? ' checked' : '') + '>' : '')
+      + '<div style="font-weight:600">' + esc(tit(r.diseno)) + (r.color ? ' <span style="font-weight:400;color:var(--mu)">· ' + esc(tit(r.color)) + '</span>' : '') + (r.prueba ? ' <span style="font-size:11px;background:var(--bg3);border-radius:6px;padding:1px 6px">PRUEBA</span>' : '') + '</div></div>'
+      + '<div style="margin:2px 0 6px">' + est(r.estrellas) + ' <span style="font-size:12px;color:var(--mu)">' + datos(r) + '</span></div>'
+      + coment(r)
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-        + ((r.fotos || []).length ? '<button type="button" class="btn bp bs res-ok">✓ Aprobar fotos marcadas</button><button type="button" class="btn bg bs res-no">✗ No publicar ninguna</button>' : '')
-        + '<button type="button" class="btn bg bs res-oc" style="font-size:11px">' + (r.publicar ? 'Ocultar reseña' : 'Volver a mostrar reseña') + '</button>' + estado(r) + ' ' + permiso(r)
-        + (r.revisado_por ? '<span style="font-size:11px;color:var(--mu)">revisó ' + esc(r.revisado_por.split('@')[0]) + '</span>' : '')
-      + '</div>' + fotoCtl(r) + cupon(r) + '<div class="res-st" style="font-size:12px;margin-top:6px"></div></div></div>';
+        + (niv >= 2 && (r.fotos || []).length ? '<button type="button" class="btn bp bs res-ok">✓ Aprobar fotos marcadas</button><button type="button" class="btn bg bs res-no">✗ No publicar ninguna</button>' : '')
+        + (niv >= 2 && !(r.fotos || []).length && r.revisado_por == null ? '<button type="button" class="btn bp bs res-ap">✓ Aprobar reseña</button>' : '')
+        + (niv >= 2 ? '<button type="button" class="btn bg bs res-oc" style="font-size:11px">' + (r.publicar ? 'Ocultar reseña' : 'Volver a mostrar reseña') + '</button>' : '')
+        + enWeb(r) + estado(r) + ' ' + permiso(r)
+        + (r.revisado_por ? chip('revisó ' + esc(r.revisado_por.split('@')[0]) + (r.revisado_at ? ' · ' + fecha(r.revisado_at) : ''), 'var(--mu)') : chip('sin aprobar', '#B7791F'))
+      + '</div>' + fotoCtl(r) + rechazo(r) + cupon(r) + '<div class="res-st" style="font-size:12px;margin-top:6px"></div></div></div>';
+  const TABS = [['por_aprobar', 'Por aprobar'], ['pendientes', 'Fotos por revisar'], ['aprobadas', 'Aprobadas'], ['todas', 'Todas']];
+  const nSel = () => RES.rows.filter(r => niv >= 2 && pendiente(r) && RES.marca[r.id] !== false).length;
   w.innerHTML = '<div style="padding:16px;max-width:1000px">'
-    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h2 style="margin:0;font-size:20px">Reseñas por aprobar</h2>'
-    + '<div style="display:flex;gap:6px">' + [['pendientes', 'Fotos por revisar (' + pend + ')'], ['todas', 'Todas']].map(t => '<button type="button" class="btn ' + (RES.ver === t[0] ? 'bp' : 'bg') + ' bs res-ver" data-v="' + t[0] + '">' + t[1] + '</button>').join('') + '</div></div>'
-    + '<div style="font-size:12px;color:var(--mu);margin-bottom:12px;line-height:1.6">Revisión final de Tulula. Aprueba solo si: <b>sale solo la clienta</b> · <b>la prenda se ve completa y bien puesta</b> · <b>nítida y con luz</b> · <b>no es captura de pantalla</b>. Con ✏️ Editar recortas en 4:5 y ajustas luz; la original no se toca. Las estrellas y el comentario ya se ven en la tienda; la foto, solo la que marques. Al aprobar se libera el cupón de S/ 50 para enviárselo por WhatsApp.</div>'
-    + (RES.rows.length ? '<div style="display:grid;gap:12px">' + RES.rows.map(card).join('') + '</div>' : '<div style="padding:30px;text-align:center;color:var(--mu)">' + (RES.ver === 'pendientes' ? '✓ No hay fotos por revisar.' : 'Todavía no hay reseñas.') + '</div>')
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h2 style="margin:0;font-size:20px">Reseñas</h2>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + TABS.map(t => '<button type="button" class="btn ' + (RES.ver === t[0] ? 'bp' : 'bg') + ' bs res-ver" data-v="' + t[0] + '">' + t[1] + (C[t[0]] != null ? ' (' + C[t[0]] + ')' : '') + '</button>').join('') + '</div></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin-bottom:10px;line-height:1.6">Aprueba la foto solo si: <b>sale solo la clienta</b> · <b>la prenda se ve completa y bien puesta</b> · <b>nítida y con luz</b> · <b>no es captura</b>. Las que la IA aprueba llegan marcadas. Al aprobar una foto de 5★ se crea su cupón único de S/ 50.</div>'
+    + (niv >= 2 && RES.rows.some(pendiente) ? '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;position:sticky;top:0;z-index:2;background:var(--bg);padding:6px 0">'
+      + '<button type="button" class="btn bp bs res-lote">✓ Aprobar seleccionadas (<span class="res-n">' + nSel() + '</span>)</button>'
+      + '<button type="button" class="btn bg bs res-todas" style="font-size:11px">Marcar todas</button><button type="button" class="btn bg bs res-ning" style="font-size:11px">Ninguna</button>'
+      + '<span class="res-lst" style="font-size:12px;color:var(--mu)">Con foto: publica las fotos marcadas. Sin foto: aprueba la reseña.</span></div>' : '')
+    + (RES.rows.length ? '<div style="display:grid;gap:12px">' + RES.rows.map(card).join('') + '</div>' : '<div style="padding:30px;text-align:center;color:var(--mu)">' + (RES.ver === 'pendientes' ? '✓ No hay fotos por revisar.' : RES.ver === 'por_aprobar' ? '✓ No hay reseñas por aprobar.' : 'Todavía no hay reseñas aquí.') + '</div>')
     + '</div>';
+  const refrescarN = () => { const e = w.querySelector('.res-n'); if (e) e.textContent = nSel(); };
   w.querySelectorAll('.res-ver').forEach(b => b.addEventListener('click', () => { RES.ver = b.dataset.v; RES.sel = {}; loadResenas(); }));
+  const lote = w.querySelector('.res-lote');
+  if (lote) lote.addEventListener('click', async () => {
+    const L = RES.rows.filter(r => pendiente(r) && RES.marca[r.id] !== false), lst = w.querySelector('.res-lst');
+    if (!L.length) { lst.style.color = 'var(--rd)'; lst.textContent = 'No hay reseñas seleccionadas.'; return; }
+    lote.disabled = true; let ok = 0, mal = 0;
+    for (const r of L) {
+      lst.style.color = 'var(--mu)'; lst.textContent = 'Aprobando ' + (ok + mal + 1) + ' de ' + L.length + '…';
+      try {
+        if ((r.fotos || []).length) {
+          const S = _resSelDe(r), edit = { fotos: S.map((f, i) => f.url !== f.orig ? { i, url: f.url, edit: f.edit } : null).filter(Boolean) };
+          const x = await _resRpc('resena_admin_fotos', { p_id: r.id, p_pub: S.filter(f => f.pub).map(f => f.url), p_edit: edit }); if (!x || !x.ok) throw new Error('no');
+        } else { const x = await _resRpc('resena_admin_decidir', { p_id: r.id, p_fotos_ok: null, p_publicar: true }); if (!x || !x.ok) throw new Error('no'); }
+        ok++;
+      } catch (_) { mal++; }
+    }
+    toast('✓ ' + ok + ' de ' + L.length + ' aprobadas' + (mal ? ' · ' + mal + ' no se guardaron' : ''), mal ? 'err' : 'ok'); RES.sel = {}; RES.marca = {}; loadResenas();
+  });
+  const marcarTodas = v => { RES.rows.forEach(r => { if (pendiente(r)) RES.marca[r.id] = v; }); w.querySelectorAll('.res-sel').forEach(x => { x.checked = v; }); refrescarN(); };
+  const bT = w.querySelector('.res-todas'), bN = w.querySelector('.res-ning');
+  if (bT) bT.addEventListener('click', () => marcarTodas(true)); if (bN) bN.addEventListener('click', () => marcarTodas(false));
   w.querySelectorAll('.res-c').forEach(c => {
     const id = Number(c.dataset.id), r = RES.rows.find(x => x.id === id), st = c.querySelector('.res-st');
     const bloquear = v => c.querySelectorAll('button').forEach(b => b.disabled = v);
+    const sel = c.querySelector('.res-sel'); if (sel) sel.addEventListener('change', () => { RES.marca[id] = sel.checked; refrescarN(); });
     c.querySelectorAll('.res-ed').forEach(b => b.addEventListener('click', () => _resEditor(r, Number(b.dataset.i), () => _resPintar(pend))));
     c.querySelectorAll('.res-pub').forEach(x => x.addEventListener('change', () => { _resSelDe(r)[Number(x.dataset.i)].pub = x.checked; }));
     const fotos = async (pub, txt) => {
@@ -11500,15 +11580,32 @@ function _resPintar(pend) {
         toast(txt, 'ok'); delete RES.sel[id]; loadResenas();
       } catch (e) { st.style.color = 'var(--rd)'; st.textContent = 'No se guardó: ' + e.message; bloquear(false); }
     };
-    const ok = c.querySelector('.res-ok'), no = c.querySelector('.res-no'), oc = c.querySelector('.res-oc'), cup = c.querySelector('.res-cup');
+    const ok = c.querySelector('.res-ok'), no = c.querySelector('.res-no'), oc = c.querySelector('.res-oc'), cup = c.querySelector('.res-cup'), ap = c.querySelector('.res-ap'), cm = c.querySelector('.res-cm'), rech = c.querySelector('.res-rech'), mot = c.querySelector('.res-mot');
     if (ok) ok.addEventListener('click', () => {
       const n = _resSelDe(r).filter(f => f.pub).length;
       if (!n) { st.style.color = 'var(--rd)'; st.textContent = 'Marca «Publicar» en al menos una foto (o usa «No publicar ninguna»).'; return; }
-      fotos(true, '✓ ' + n + (n > 1 ? ' fotos aprobadas' : ' foto aprobada') + '. Cupón listo para enviar.');
+      fotos(true, '✓ ' + n + (n > 1 ? ' fotos aprobadas' : ' foto aprobada') + (Number(r.estrellas) === 5 ? '. Su cupón único se está creando en Shopify.' : '.'));
     });
-    if (no) no.addEventListener('click', () => fotos(false, 'Fotos no publicadas (la reseña sigue visible)'));
+    if (no) no.addEventListener('click', () => fotos(false, 'Fotos no publicadas (la reseña sigue visible). Puedes avisarle el motivo por WhatsApp.'));
+    if (ap) ap.addEventListener('click', async () => { bloquear(true); try { const x = await _resRpc('resena_admin_decidir', { p_id: id, p_fotos_ok: null, p_publicar: true }); if (!x || !x.ok) throw new Error('no se encontró la reseña'); toast('✓ Reseña aprobada', 'ok'); loadResenas(); } catch (e) { st.style.color = 'var(--rd)'; st.textContent = 'No se guardó: ' + e.message; bloquear(false); } });
     if (cup) cup.addEventListener('click', () => { _resRpc('resena_admin_cupon_enviado', { p_id: id }).then(() => setTimeout(loadResenas, 800)).catch(() => {}); });
-    oc.addEventListener('click', async () => {
+    if (rech && mot) {
+      const armar = () => { rech.href = 'https://wa.me/' + r.celular + '?text=' + encodeURIComponent(_resMsgRechazo(r, mot.value)); };
+      armar(); mot.addEventListener('change', armar);
+      rech.addEventListener('click', () => { _resRpc('resena_admin_rechazo', { p_id: id, p_motivo: mot.value }).then(() => setTimeout(loadResenas, 1500)).catch(() => {}); });
+    }
+    if (cm) cm.addEventListener('click', () => {
+      const box = c.querySelector('.res-com');
+      box.innerHTML = '<textarea class="res-cmt" rows="3" style="width:100%;font-size:13px;background:var(--bg3);color:inherit;border:1px solid var(--bd);border-radius:8px;padding:6px 8px">' + esc(r.comentario || '') + '</textarea>'
+        + '<div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap"><button type="button" class="btn bp bs res-cmg">Guardar</button><button type="button" class="btn bg bs res-cmx">Cancelar</button><span style="font-size:11px;color:var(--mu);align-self:center">Solo ortografía: no cambies lo que dijo la clienta. La original se guarda.</span></div>';
+      box.querySelector('.res-cmx').addEventListener('click', () => _resPintar(pend));
+      box.querySelector('.res-cmg').addEventListener('click', async () => {
+        const v = box.querySelector('.res-cmt').value; st.style.color = 'var(--mu)'; st.textContent = 'Guardando…';
+        try { const x = await _resRpc('resena_admin_comentario', { p_id: id, p_texto: v }); if (!x || !x.ok) throw new Error('no se encontró la reseña'); toast('✓ Comentario corregido', 'ok'); loadResenas(); }
+        catch (e) { st.style.color = 'var(--rd)'; st.textContent = 'No se guardó: ' + e.message; }
+      });
+    });
+    if (oc) oc.addEventListener('click', async () => {
       bloquear(true); st.style.color = 'var(--mu)'; st.textContent = 'Guardando…';
       try { const x = await _resRpc('resena_admin_decidir', { p_id: id, p_fotos_ok: null, p_publicar: !r.publicar }); if (!x || !x.ok) throw new Error('no se encontró la reseña');
         toast(r.publicar ? 'Reseña oculta de la tienda' : 'Reseña visible otra vez', 'ok'); loadResenas(); }
@@ -11755,9 +11852,11 @@ function _prodPuedeEditar() {
 }
 /** 13-oct 14:30 (Pablo) · PRECIOS solo con «Productos» en Edición; Marketing (solo Contenido) NO cambia precios. */
 function _prodPuedeEditarPrecios() { return _cosYoAdmin() || (!!MY_PERMISOS && (Number(MY_PERMISOS.costos) || 0) >= 2); }
+/** 18-nov-2026 (Pablo) · nivel en Reseñas: Administrador = 2; resto = columna «↳Prod. Shopify» de Configuración › Usuarios. La base vuelve a revisarlo (public._res_niv). */
+function _resNivFront() { if (typeof _esAdminCuadre === 'function' && _esAdminCuadre()) return 2; return (MY_PERMISOS && Number(MY_PERMISOS.prodshop)) || 0; }
 function _conTabs() {
   const box = document.getElementById('con-tabs'); if (!box) return;
-  if (!_esAdminCuadre()) { box.innerHTML = ''; return; }
+  if (!_esAdminCuadre() && _resNivFront() < 1) { box.innerHTML = ''; return; }
   const ver = t => { RES.tab = t;
     if (typeof COS !== 'undefined') { const fv0 = !!COS.fv; COS.fv = t === 'fv'; if (t === 'fv') t = 'prod'; if (fv0 !== COS.fv && COS.modo === 'productos' && COS.data && COS.data.length) { COS.editing = null; const f0 = document.getElementById('cos-form'); if (f0) f0.innerHTML = ''; _cosRender(); } }   /* 17-nov (Pablo) · 📸 Fotos y video */
     if (t === 'cp') { ['res-w', 'car-w', 'ord-w'].forEach(i => { const e = document.getElementById(i); if (e) e.style.display = 'none'; }); return _prodCpVer(); }
@@ -12875,7 +12974,7 @@ const PG_SOLO_MARKETING = {marketing:1, flujo:1, contenido:1, costos:1};   // 13
 // heredan el permiso de su modulo. Sin esto 'nuevo' daba 0 = bloqueado para todos con matriz.
 const PG_PADRE = {nuevo:'pedidos', nuevadev:'devoluciones', cambios:'cambios2', histcambios:'cambios2', stock:'inventario', lotes:'inventario', fallashist:'inventario', reposicion:'inventario', confeccion:'inventario', productos:'inventario'};   // 21-oct (Pablo): cajachica, cuadre y cuadredrive ya NO heredan Egresos: tienen columna propia   // 10-oct · grupo nuevo: caja chica y cuadre heredan el permiso de Egresos
 /** 13-oct (Pablo) · nivel de un módulo en la matriz; «Productos» = el mayor entre costos y contenido. */
-function _permNivPg(m){ if (!MY_PERMISOS) return 0; if (m === 'costos' || m === 'contenido') return Math.max(Number(MY_PERMISOS.costos) || 0, Number(MY_PERMISOS.contenido) || 0); if (m === 'produccion') return Math.max(Number(MY_PERMISOS.produccion) || 0, (Number(MY_PERMISOS.precios) || 0) ? 1 : 0); return Number(MY_PERMISOS[m]) || 0; }   /* 8-nov · con «Precios» se entra a Producción solo a 💲 */
+function _permNivPg(m){ if (!MY_PERMISOS) return 0; if (m === 'costos' || m === 'contenido') return Math.max(Number(MY_PERMISOS.costos) || 0, Number(MY_PERMISOS.contenido) || 0, (Number(MY_PERMISOS.prodshop) || 0) ? 1 : 0);   /* 18-nov · con «↳Prod. Shopify» se entra a Productos (Reseñas) */ if (m === 'produccion') return Math.max(Number(MY_PERMISOS.produccion) || 0, (Number(MY_PERMISOS.precios) || 0) ? 1 : 0); return Number(MY_PERMISOS[m]) || 0; }   /* 8-nov · con «Precios» se entra a Producción solo a 💲 */
 function _esAdminCuadre(){ return (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Administrador') || (typeof _permEsDueno === 'function' && typeof MY_EMAIL !== 'undefined' && _permEsDueno(MY_EMAIL)); }
 function _pgPermitida(pg){
   // 30-set-2026 · si hay matriz de permisos (o "Ver como"), manda la matriz.
@@ -34064,7 +34163,7 @@ function _prodBarra(t, pg){
      Las vistas van como sub-botones chicos al lado del botón activo: menos botones, todo el producto en un solo lugar. */
   var act = pg === 'multimedia' ? 'multimedia' : ((typeof RES !== 'undefined' && RES.tab) || 'prod');
   var adm = typeof _esAdminCuadre === 'function' && _esAdminCuadre();
-  var L = PROD_BARRA.filter(function (x) { return x[0] === 'multimedia' ? _grpPermiso('multimedia') : x[1] === 'cp' ? (typeof _cosNivPrecios === 'function' && _cosNivPrecios() >= 1) : (x[1] === 'prod' || adm); })
+  var L = PROD_BARRA.filter(function (x) { return x[0] === 'multimedia' ? _grpPermiso('multimedia') : x[1] === 'cp' ? (typeof _cosNivPrecios === 'function' && _cosNivPrecios() >= 1) : (x[1] === 'prod' || adm || (x[1] === 'res' && _resNivFront() >= 1)); })   /* 18-nov (Pablo) · ⭐ Reseñas con «↳Prod. Shopify» */
     .map(function (x) { return x[1] === 'cp' && !(typeof _cosYoAdmin === 'function' && _cosYoAdmin()) ? [x[0], x[1], '💲 Precios'] : x; });
   if (adm) L = L.map(function (x) { return x[0] === 'multimedia' ? ['costos', 'fv', 'Fotos y video'] : x; });   /* 17-nov (Pablo) · 📸 Fotos y video = la misma lista del Catálogo */
   var GR = { prod: 'cat', cp: 'cat', fv: 'cat', multimedia: 'cat', res: 'shop', ord: 'shop' }, SUB = { prod: '📋 Lista', cp: null, fv: '📸 Fotos y video', multimedia: '📸 Fotos y video', res: '⭐ Reseñas', ord: 'Orden' };
@@ -47767,7 +47866,7 @@ async function loadConfig() {
 const PERM_GRUPOS = [
   /* 26-oct (Pablo) · mismas columnas y orden que el servidor (Permisos.gs); las que ahora son pestañas de otro módulo llevan «↳ módulo» */
   {g:'Principal', m:[['dashboard','Dashboard',1],['panel','Panel',1]]},
-  {g:'Marketing y ventas', m:[['clientes','Clientes'],['marketing','Marketing'],['flujo','Ventas'],['comisiones','Comisiones'],['costos','Productos'],['precios','↳Prod. Precios'],['contenido','Contenido'],['homologaciones','↳Mkt Homolog.'],['multimedia','↳Mkt Multimedia'],['margen','↳Mkt Margen',1]]},
+  {g:'Marketing y ventas', m:[['clientes','Clientes'],['marketing','Marketing'],['flujo','Ventas'],['comisiones','Comisiones'],['costos','Productos'],['precios','↳Prod. Precios'],['contenido','Contenido'],['homologaciones','↳Mkt Homolog.'],['multimedia','↳Mkt Multimedia'],['margen','↳Mkt Margen',1],['prodshop','↳Prod. Shopify']]},
   {g:'Logística', m:[['pedidos','Pedidos'],['inventario','Stock'],['produccion','Producción'],['prodprog','↳Prod. Programar'],['cambios2','Cambios'],['devoluciones','↳Camb. Devoluc.'],['envios','↳Ped. Envíos juntos']]},
   {g:'Finanzas', m:[['egresos','Egresos'],['cajachica','↳Egr. Caja chica'],['cuadredrive','↳Cuadre ERP vs Drive'],['cuadre','Cuadre y proy.']]},
   {g:'Sistema', m:[['papelera','↳Config. Papelera'],['alertas','↳Config. Alertas'],['config','Config.']]}
@@ -49732,7 +49831,7 @@ function _opRecHtml() {
   const R = OP.rec; if (!R) return '';
   const pct = R.carritos ? Math.round(R.recuperados / R.carritos * 100) : 0;
   return '<div style="font-size:12px;color:var(--mu);margin:2px 0 4px">Últimos 30 días: <b style="color:var(--gn)">' + R.recuperados + ' de ' + R.carritos + ' recuperados (' + pct + '%) · S/ ' + Number(R.soles || 0).toLocaleString('es-PE') + '</b> · '
-    + R.whatsapp + ' por WhatsApp (' + R.con_asesora + ' con asesora) · ' + R.web + ' por la web</div>';
+    + R.whatsapp + ' por WhatsApp u otro canal (' + R.con_asesora + ' contactadas por asesora) · ' + R.web + ' por la web</div>';
 }
 function _opContadores() {
   const a = document.getElementById('op-n-le'), b = document.getElementById('op-n-car');
