@@ -3751,7 +3751,11 @@ function comBorradorPintar() {
   var dueno = false; try { dueno = typeof _permEsDueno === 'function' && _permEsDueno(MY_EMAIL); } catch (e) {}
   if (!dueno || window._VER_COMO || COM.comoEmail) { z.innerHTML = ''; return; }
   if (_COM_BORR) { z.innerHTML = _comBorrHtml(_COM_BORR); return; }
-  z.innerHTML = '<div class="card"><div class="ct">🧪 Borrador · no comisiona</div><div class="ml">Calculando…</div></div>';
+  /* 18-nov (Pablo · velocidad) · el borrador sale del servidor viejo (~7 s). Se muestra AL INSTANTE el último cálculo guardado en este
+     navegador (del mismo mes) y se recalcula por detrás; si cambió, se repinta solo. */
+  var _bk = 'com_borrador_v1', _bv = null; try { _bv = JSON.parse(localStorage.getItem(_bk) || 'null'); } catch (e) {}
+  if (_bv && _bv.d && _bv.mes === new Date().getMonth() + 1) z.innerHTML = _comBorrHtml(_bv.d) + '<div class="ml" style="text-align:right;margin-top:-6px">actualizando…</div>';
+  else z.innerHTML = '<div class="card"><div class="ct">🧪 Borrador · no comisiona</div><div class="ml">Calculando…</div></div>';
   /* 12-nov-2026 (Pablo) · las asesoras prendidas en Usuarios que aún no comisionan entran solas al borrador */
   var _asesTxt = Promise.resolve('');
   try { _asesTxt = _sbSesionAsegurar().then(function (tok) { return fetch(SB_URL + '/rest/v1/erp_asesoras?select=email,nombre', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } }); })
@@ -3759,6 +3763,7 @@ function comBorradorPintar() {
     .catch(function () { return ''; }); } catch (e) {}
   _asesTxt.then(function (txt) { return api('comisiones.borrador', { asesoras: txt }); }).then(function (d) {
     _COM_BORR = d; var z2 = document.getElementById('com-borrador'); if (z2) z2.innerHTML = _comBorrHtml(d);
+    try { localStorage.setItem(_bk, JSON.stringify({ mes: new Date().getMonth() + 1, d: d })); } catch (e) {}
   }).catch(function (e) {
     var z2 = document.getElementById('com-borrador');
     if (z2) z2.innerHTML = '<div class="card"><div class="ct">🧪 Borrador · no comisiona</div><div class="ml">No se pudo calcular: ' + esc(e && e.message || e) + '</div></div>';
