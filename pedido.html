@@ -27,6 +27,7 @@
 <body>
 <div class="top">
   <h1>📋 Pedido para el ERP</h1>
+  <button id="btn-tula" class="p">🤖 Leer con Tula</button>
   <button id="btn-act">Actualizar</button>
 </div>
 <div id="estado">Abre una conversación para armar el pedido.</div>
@@ -59,11 +60,18 @@ function catalogo() {
   CAT = Object.keys(M).map(function (p) { return { p: p, c: Object.keys(M[p]).filter(Boolean), pl: PLm[p] || null }; });
   return CAT;
 }
-function leerConTula(conv, tel, cb) {
-  fetch(FN, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ANON, apikey: ANON }, body: JSON.stringify({ conversacion: conv, tel: tel, catalogo: catalogo() }) })
+var ULT = null;
+function leerConTula(conv, tel, cb, soloGuardada) {
+  fetch(FN, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ANON, apikey: ANON }, body: JSON.stringify({ conversacion: conv, tel: tel, catalogo: soloGuardada ? [] : catalogo(), solo_cache: !!soloGuardada }) })
     .then(function (r) { return r.json(); })
-    .then(function (j) { if (j && j.ok && j.ia) cb(j); else cb(null, (j && (j.error || j.message)) || 'sin respuesta'); })
+    .then(function (j) { if (j && j.ok && j.ia) cb(j); else cb(null, (j && (j.error || j.message)) || (j && j.ok ? 'sin lectura' : 'sin respuesta')); })
     .catch(function () { cb(null, 'sin conexión'); });
+}
+function mostrarTula(j) {
+  if (!ULT) return;
+  IA_MEM[ULT.conv] = j.ia; ULT.ctx.ia = j.ia;
+  try { pintar(armarPedido(ULT.msgs, LISTAS, ULT.ctx)); } catch (e) {}
+  estado('Conversación #' + ULT.conv + ' · Tula leyó ' + (j.mensajes || '') + ' mensajes' + (j.ia.resumen ? ' · ' + j.ia.resumen : ''));
 }
 
 function S(v) { return String(v == null ? '' : v); }
@@ -304,11 +312,10 @@ function armar() {
   var ctx = { tel: (CTX.contact || {}).phone_number || ((CTX.conversation.meta || {}).sender || {}).phone_number || '', agente: (CTX.currentAgent || {}).name || '' };
   function listo() {
     try { if (IA_MEM[conv]) ctx.ia = IA_MEM[conv]; pintar(armarPedido(msgs, LISTAS, ctx)); } catch (e) { estado('No pude armar el pedido: ' + e.message); return; }
-    estado('Tula está leyendo toda la conversación…');
-    leerConTula(conv, ctx.tel, function (j, err) {
-      if (j && j.ia) { IA_MEM[conv] = j.ia; ctx.ia = j.ia; try { pintar(armarPedido(msgs, LISTAS, ctx)); } catch (e) {} estado('Conversación #' + conv + ' · Tula leyó ' + (j.mensajes || '') + ' mensajes' + (j.ia.resumen ? ' · ' + j.ia.resumen : '')); }
-      else estado('Conversación #' + conv + ' · Tula no pudo leer el chat (' + (err || 'error') + '). Toca Actualizar para reintentar.');
-    });
+    ULT = { conv: conv, ctx: ctx, msgs: msgs };
+    // 19-nov (Pablo): Tula lee solo al tocar «Leer con Tula». Al abrir se muestra gratis la última lectura si no hay mensajes nuevos.
+    estado('Conversación #' + conv + ' · Toca «🤖 Leer con Tula» para armar la cotización y el pedido.');
+    leerConTula(conv, ctx.tel, function (j) { if (j && j.ia) mostrarTula(j); }, true);
   }
   if (LISTAS && LISTAS_CONV === conv) { listo(); return; }
   estado('Leyendo las listas del ERP…');
@@ -323,6 +330,14 @@ window.addEventListener('message', function (ev) {
   if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { return; } }
   if (!d || d.event !== 'appContext' || !d.data) return;
   CTX = d.data; armar();
+});
+document.getElementById('btn-tula').addEventListener('click', function () {
+  if (!ULT || !LISTAS) { estado('Abre una conversación para que Tula la lea.'); return; }
+  var b = this; b.disabled = true; estado('Tula está leyendo toda la conversación…');
+  leerConTula(ULT.conv, ULT.ctx.tel, function (j, err) {
+    b.disabled = false;
+    if (j && j.ia) mostrarTula(j); else estado('Conversación #' + ULT.conv + ' · Tula no pudo leer el chat (' + (err || 'error') + '). Vuelve a tocar «Leer con Tula».');
+  }, false);
 });
 document.getElementById('btn-act').addEventListener('click', function () { LISTAS_CONV = ''; pedirContexto(); if (CTX) armar(); });
 document.addEventListener('click', function (ev) {
