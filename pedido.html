@@ -31,6 +31,10 @@
 </div>
 <div id="estado">Abre una conversación para armar el pedido.</div>
 <div id="avisos"></div>
+<details id="d-cot">
+  <summary>Cotización para la clienta <small id="s-cot"></small></summary>
+  <div class="caja"><pre id="t-cot"></pre><button class="p" data-copia="t-cot">Copiar cotización</button></div>
+</details>
 <details id="d-nuevo" open>
   <summary>Pedido nuevo <small id="s-nuevo"></small></summary>
   <div class="caja"><pre id="t-nuevo"></pre><button class="p" data-copia="t-nuevo">Copiar pedido nuevo</button></div>
@@ -39,11 +43,28 @@
   <summary>Agrega pedido <small id="s-agrega"></small></summary>
   <div class="caja"><pre id="t-agrega"></pre><button class="p" data-copia="t-agrega">Copiar agrega pedido</button></div>
 </details>
-<div class="pie">Se arma con los mensajes que están cargados en el chat. Si falta algo, sube en la conversación hasta verlo y toca Actualizar. En el ERP: Pedidos → Nuevo pedido → Pegar pedido. El pago se registra aparte, con su constancia.</div>
+<div class="pie">Tula lee toda la conversación (aunque la clienta pida por partes) y arma la cotización y el pedido. Revisa antes de pegar. En el ERP: Pedidos → Nuevo pedido → Pegar pedido. El pago se registra aparte, con su constancia.</div>
 
 <script>
 var WEBHOOK = 'https://n8n-production-4e716.up.railway.app/webhook/tulula-pedido';
-var CTX = null, LISTAS = null, LISTAS_CONV = '';
+var CTX = null, LISTAS = null, LISTAS_CONV = '', IA_MEM = {}, CAT = null;
+// 18-nov · Tula lee toda la conversación (Edge Function chat-pedido, modelo Haiku; guarda por último mensaje, no gasta dos veces)
+var FN = 'https://vlilvrxfppppzwyaeviu.supabase.co/functions/v1/chat-pedido';
+var ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZsaWx2cnhmcHBwcHp3eWFldml1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ2NDIwMTMsImV4cCI6MjEwMDIxODAxM30.Bmo4CNDDbSF7Vp9JpDm7ceKUlsKKdufKcKFDIGHS4Hs';
+function catalogo() {
+  if (CAT) return CAT;
+  var PLm = {}, M = {}; (LISTAS.pl || []).forEach(function (r) { PLm[nz(r[0])] = r[1]; });
+  (LISTAS.skus || []).forEach(function (r) { var p = nz(r[1] + ' ' + r[2]); (M[p] = M[p] || {})[nz(r[3])] = 1; });
+  (LISTAS.conj || []).forEach(function (c) { var k = 'CONJUNTO ' + nz(c.b); M[k] = M[k] || {}; });
+  CAT = Object.keys(M).map(function (p) { return { p: p, c: Object.keys(M[p]).filter(Boolean), pl: PLm[p] || null }; });
+  return CAT;
+}
+function leerConTula(conv, tel, cb) {
+  fetch(FN, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ANON, apikey: ANON }, body: JSON.stringify({ conversacion: conv, tel: tel, catalogo: catalogo() }) })
+    .then(function (r) { return r.json(); })
+    .then(function (j) { if (j && j.ok && j.ia) cb(j); else cb(null, (j && (j.error || j.message)) || 'sin respuesta'); })
+    .catch(function () { cb(null, 'sin conexión'); });
+}
 
 function S(v) { return String(v == null ? '' : v); }
 function nz(v) { return S(v).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[*_~]/g, ' ').replace(/\s+/g, ' ').trim(); }
@@ -113,7 +134,26 @@ function armarPedido(msgs, L, ctx) {
     var rr = leerResumen(m.content);
     if (rr.items.length) { res = rr; resTxt = up; break; }
   }
+  // 2) Si la asesora no mandó resumen: lo que Tula leyó de TODA la conversación (18-nov, Pablo)
+  var viaIA = false, IA = ctx.ia || null;
+  if (!res && IA && IA.prendas && IA.prendas.length) {
+    var its = IA.prendas.filter(function (p) { return p && p.prenda; }).map(function (p) {
+      var d = nz(p.prenda);
+      if (!DSset[d]) { var f = DS.find(function (x) { return d.indexOf(x) >= 0 || x.indexOf(d) >= 0; }); if (f) d = f; }
+      var pr = (+p.precio > 0) ? +p.precio : (PL[d] || null);
+      var t = nz(p.talla); if (t === 'U' || t === 'UNICA') t = '';
+      return { prenda: d, color: nz(p.color), talla: t, precio: pr, pack: '', cant: Math.max(1, Math.min(10, +p.cantidad || 1)), linea: [d, nz(p.color), t, pr || ''].join(' ').replace(/\s+/g, ' ').trim() };
+    });
+    var ex = []; its.forEach(function (it) { for (var q = 0; q < it.cant; q++) ex.push(it); });
+    var em = IA.envio || {}, ev = (em.monto != null && +em.monto >= 0 && +em.monto < 60) ? +em.monto : null;
+    res = { items: ex, envio: em.pago_destino ? 'destino' : ev, total: +IA.total || null, courier: nz(em.courier), rest: [] };
+    resTxt = IA.es_agrega ? 'AGREGA PEDIDO' : ''; viaIA = true;
+  }
   var avisos = [], lineas = [], okN = 0, revN = 0;
+  if (viaIA) {
+    avisos.push('Tula leyó toda la conversación: revisa prenda, color, talla y precio antes de pegar.');
+    IA.prendas.forEach(function (p) { if (!p) return; if (p.duda) avisos.push(nz(p.prenda) + ': ' + p.duda); if (p.estado === 'cotizada') avisos.push(nz(p.prenda) + ': solo cotizada, la clienta aún no la confirmó.'); });
+  }
   if (!res) avisos.push('No encontré un resumen de pedido de la asesora en los mensajes cargados: las prendas se eligen a mano.');
   else {
     res.items.forEach(function (it) {
@@ -178,6 +218,11 @@ function armarPedido(msgs, L, ctx) {
     });
     if (Object.keys(got).length >= 2) Object.keys(got).forEach(function (k) { D[k] = got[k]; });
   });
+  if (IA && IA.clienta) {
+    var cI = IA.clienta, mp = { nombre: 'nombre', doc: 'documento', cel: 'celular', dir: 'direccion', dist: 'distrito', prov: 'provincia', reg: 'region', ref: 'referencia', mail: 'correo', cumple: 'cumpleanos' };
+    Object.keys(mp).forEach(function (k) { var v = S(cI[mp[k]]).trim(); if (!D[k] && v) D[k] = v; });
+    if (!D.dist && D.prov) D.dist = D.prov;
+  }
   if (!Object.keys(D).length) avisos.push('La clienta no escribió sus datos con etiquetas (Nombre:, DNI:...) en los mensajes cargados: se llenan a mano.');
   var docTxt = '';
   if (D.doc) { var dg = D.doc.replace(/\D/g, ''); if (dg.length === 8) docTxt = 'DNI ' + dg; else if (dg.length === 9) docTxt = 'C.E. ' + dg; else if (dg.length === 11) docTxt = 'RUC ' + dg; else avisos.push('Documento escrito como "' + D.doc + '": revísalo.'); }
@@ -209,13 +254,21 @@ function armarPedido(msgs, L, ctx) {
   if (res) {
     if (res.envio === 'destino') { envio = '0'; courier = 'SHALOM'; coment = 'PAGO A DESTINO'; }
     else if (res.envio != null) envio = String(res.envio);
-    else avisos.push('El resumen no trae línea de envío: complétalo.');
+    else avisos.push(viaIA ? 'En el chat no quedó claro el costo de envío: complétalo.' : 'El resumen no trae línea de envío: complétalo.');
     if (!courier && res.courier) courier = res.courier;
     if (!courier && /RECOJO/.test(resTxt)) courier = 'RECOJO';
     if (!courier && /SHALOM/.test(resTxt)) courier = 'SHALOM';
   }
+  if (IA && IA.comentario && !coment) coment = nz(IA.comentario);
   if (!courier && provU) courier = (provU === 'LIMA' || provU === 'CALLAO') ? 'SALVA' : 'OLVA';
 
+  var cot = '';
+  if (res && res.items.length) {
+    var tot = 0, cap = function (x) { return S(x).toLowerCase().replace(/(^|\s)\S/g, function (c) { return c.toUpperCase(); }); };
+    var ls = res.items.map(function (it) { var p = +it.precio || 0; tot += p; return '• ' + cap(it.prenda) + (it.color ? ' ' + it.color.toLowerCase() : '') + (it.talla ? ' talla ' + it.talla : '') + (p ? ' — S/ ' + p : ''); });
+    var envN = (envio !== '' && !isNaN(+envio)) ? +envio : null;
+    cot = ['Tu pedido 😊'].concat(ls).concat([envN == null ? '' : (envN ? 'Envío: S/ ' + envN : 'Envío: gratis'), 'Total: S/ ' + (tot + (envN || 0))]).filter(Boolean).join('\n');
+  }
   var num = 0;
   var pl = lineas.map(function (l) { return l.indexOf('⚠') === 0 ? l : (++num) + '. ' + l; });
   var prendasTxt = ['Prendas:'].concat(pl).join('\n');
@@ -225,13 +278,15 @@ function armarPedido(msgs, L, ctx) {
     'Canal: WHATSAPP', 'Origen: ' + origen, 'Asesora: ' + asesora, prendasTxt,
     'Envío: ' + envio, 'Courier: ' + courier, 'Comentario: ' + coment].join('\n');
   var agrega = ['📋 AGREGA PEDIDO', 'Teléfono: ' + cel, prendasTxt, 'Envío: ' + envio, 'Courier: ' + courier, 'Comentario: ' + coment].join('\n');
-  return { nuevo: nuevo, agrega: agrega, avisos: avisos, sugerido: /AGREGA/.test(resTxt) ? 'agrega' : 'nuevo', ok: okN, revisar: revN, datos: Object.keys(D).length };
+  return { cot: cot, nuevo: nuevo, agrega: agrega, avisos: avisos, sugerido: /AGREGA/.test(resTxt) ? 'agrega' : 'nuevo', ok: okN, revisar: revN, datos: Object.keys(D).length };
 }
 
 function estado(t) { document.getElementById('estado').textContent = t; }
 function pintar(r) {
   document.getElementById('t-nuevo').textContent = r.nuevo;
   document.getElementById('t-agrega').textContent = r.agrega;
+  document.getElementById('t-cot').textContent = r.cot || 'Todavía no hay prendas en la conversación.';
+  document.getElementById('d-cot').open = !!r.cot;
   var a = document.getElementById('avisos');
   a.innerHTML = '';
   r.avisos.forEach(function (x) { var d = document.createElement('div'); d.textContent = '⚠ ' + x; a.appendChild(d); });
@@ -247,12 +302,19 @@ function armar() {
   var conv = S(CTX.conversation.id);
   var msgs = (CTX.conversation.messages || []).slice().sort(function (a, b) { return a.id - b.id; });
   var ctx = { tel: (CTX.contact || {}).phone_number || ((CTX.conversation.meta || {}).sender || {}).phone_number || '', agente: (CTX.currentAgent || {}).name || '' };
-  function listo() { try { pintar(armarPedido(msgs, LISTAS, ctx)); estado('Conversación #' + conv + ' · ' + msgs.length + ' mensajes leídos.'); } catch (e) { estado('No pude armar el pedido: ' + e.message); } }
+  function listo() {
+    try { if (IA_MEM[conv]) ctx.ia = IA_MEM[conv]; pintar(armarPedido(msgs, LISTAS, ctx)); } catch (e) { estado('No pude armar el pedido: ' + e.message); return; }
+    estado('Tula está leyendo toda la conversación…');
+    leerConTula(conv, ctx.tel, function (j, err) {
+      if (j && j.ia) { IA_MEM[conv] = j.ia; ctx.ia = j.ia; try { pintar(armarPedido(msgs, LISTAS, ctx)); } catch (e) {} estado('Conversación #' + conv + ' · Tula leyó ' + (j.mensajes || '') + ' mensajes' + (j.ia.resumen ? ' · ' + j.ia.resumen : '')); }
+      else estado('Conversación #' + conv + ' · Tula no pudo leer el chat (' + (err || 'error') + '). Toca Actualizar para reintentar.');
+    });
+  }
   if (LISTAS && LISTAS_CONV === conv) { listo(); return; }
   estado('Leyendo las listas del ERP…');
   fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversacion: conv }) })
     .then(function (r) { return r.json(); })
-    .then(function (j) { if (!j || !j.skus) throw new Error('sin listas'); LISTAS = j; LISTAS_CONV = conv; listo(); })
+    .then(function (j) { if (!j || !j.skus) throw new Error('sin listas'); LISTAS = j; LISTAS_CONV = conv; CAT = null; listo(); })
     .catch(function () { estado('No pude leer las listas del ERP. Toca Actualizar para reintentar.'); });
 }
 function pedirContexto() { try { window.parent.postMessage('chatwoot-dashboard-app:fetch-info', '*'); } catch (e) {} }
