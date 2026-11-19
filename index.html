@@ -11326,11 +11326,29 @@ async function _resRpc(fn, body) {
   if (!r.ok) { if (r.status === 401) _sbVencerTok(); const t = await r.text(); throw new Error(/Solo Administrador/.test(t) ? 'Solo Administrador' : ('La base respondió ' + r.status)); }
   return r.json();
 }
+// 19-nov-2026 (Pablo) · CICLO DEL CUPÓN DE FOTO: aviso cuando lo usa en la web, anulación si retira su foto antes de usarlo,
+// y recordatorio cuando faltan 15 días o menos para que venza (día 75 de 90).
+function _resCupDias(v) { try { return Math.ceil((new Date(v + 'T23:59:59-05:00') - Date.now()) / 864e5); } catch (_) { return 999; } }
+function _resMsgRecordar(r) {
+  return 'Hola ' + (r.nombre || '') + ' 💙 Te recordamos que tu cupón de S/ 50 ' + r.cupon + ' vence el ' + _resVence(r.cupon_vence)
+    + '. Vale en compras desde S/ 150 en prendas a precio de lista (sí en packs ×2 y ×3). Úsalo en tulula.com.pe o escríbenos y lo aplicamos a tu pedido.';
+}
+function _resCiclo(r, niv) {
+  const e = (RES.cest || {})[r.codigo] || {}, f = s => { try { return new Date(s).toLocaleDateString('es-PE', { day: 'numeric', month: 'short' }); } catch (_) { return ''; } };
+  if (e.usado_at) return '<span style="color:var(--gn)">✓ usado ' + f(e.usado_at) + (e.usado_pedido ? ' en pedido ' + esc(e.usado_pedido) : '') + '</span>';
+  if (e.anulado_at) return '<span style="color:var(--rd)">🚫 anulado ' + f(e.anulado_at) + ' (retiró su foto)</span>';
+  let h = '';
+  const d = r.cupon_vence ? _resCupDias(r.cupon_vence) : 999;
+  if (r.cupon_enviado_at && d <= 15) h += e.recordado_at ? '<span style="color:var(--mu)">⏰ recordado ' + f(e.recordado_at) + '</span>'
+    : (niv >= 2 && r.celular ? '<a class="btn bg bs res-rec" target="_blank" rel="noopener" href="https://wa.me/' + esc(r.celular) + '?text=' + encodeURIComponent(_resMsgRecordar(r)) + '">⏰ Recordar cupón (vence en ' + Math.max(0, d) + ' d)</a>' : '');
+  if (niv >= 2 && (r.fotos_pub || []).length) h += '<button type="button" class="btn bg bs res-ret" style="font-size:11px">🚫 Retirar foto (lo pidió la clienta)</button>';
+  return h;
+}
 function _resBadge(n) { window._resN = n; const b = document.getElementById('res-badge'); if (!b) return; b.textContent = n; b.style.display = n > 0 ? '' : 'none'; }
 async function loadResenas() {
   const w = document.getElementById('res-w'); if (!w) return;
   w.innerHTML = '<div class="ld"><div class="sp"></div>Cargando reseñas...</div>';
-  try { const d = await _resRpc('resenas_admin_lista', { p_ver: RES.ver }); RES.rows = d.rows || []; RES.niv = Number(d.nivel) || 0; RES.cuentas = d.cuentas || {}; _resBadge(d.pendientes || 0); _resPintar(d.pendientes || 0); }
+  try { const [d, ce] = await Promise.all([_resRpc('resenas_admin_lista', { p_ver: RES.ver }), _resRpc('resenas_cupones_estado', {}).catch(() => ({}))]); RES.cest = ce || {}; /* 19-nov: uso, anulación y recordatorio del cupón */ RES.rows = d.rows || []; RES.niv = Number(d.nivel) || 0; RES.cuentas = d.cuentas || {}; _resBadge(d.pendientes || 0); _resPintar(d.pendientes || 0); }
   catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudieron leer las reseñas: ' + esc(e.message) + (/Sin permiso/.test(e.message) ? ' · Pide acceso a «↳Prod. Shopify» en Configuración › Usuarios.' : '') + '</div>'; }
 }
 // 15-oct-2026 (Pablo) · EDICIÓN DE FOTOS DE RESEÑAS: recorte fijo 4:5 (mover + acercar), luz y contraste.
@@ -11528,7 +11546,8 @@ function _resPintar(pend) {
       + (unico ? ' <span style="color:var(--mu)">único · pedido ' + esc(r.pedido || '') + (r.cupon_vence ? ' · vence ' + _resVence(r.cupon_vence) : '') + '</span>' : ' <span style="color:var(--mu)">(código antiguo, compartido)</span>')
       + (r.cupon_enviado_at ? '<span style="color:var(--gn)">✓ enviado ' + fecha(r.cupon_enviado_at) + '</span>'
         : !listo ? '<span style="color:' + (/error/.test(r.cupon_shop || '') ? 'var(--rd)' : 'var(--mu)') + '">' + (/error/.test(r.cupon_shop || '') ? '✗ Shopify no lo creó: ' + esc(String(r.cupon_shop).replace(/^error:?\s*/, '')) : '⏳ creándose en Shopify…') + '</span>'
-        : niv < 2 ? '' : (r.celular ? '<a class="btn bp bs res-cup" target="_blank" rel="noopener" href="https://wa.me/' + esc(r.celular) + '?text=' + encodeURIComponent(txt) + '">📲 Enviar cupón por WhatsApp</a>' : '<span style="color:var(--rd)">sin celular</span>')) + '</div>';
+        : niv < 2 ? '' : (r.celular ? '<a class="btn bp bs res-cup" target="_blank" rel="noopener" href="https://wa.me/' + esc(r.celular) + '?text=' + encodeURIComponent(txt) + '">📲 Enviar cupón por WhatsApp</a>' : '<span style="color:var(--rd)">sin celular</span>'))
+      + _resCiclo(r, niv) + '</div>';
   };
   const rechazo = r => {
     if (niv < 2 || !(r.fotos || []).length || r.fotos_ok === true) return '';
@@ -11653,6 +11672,18 @@ function _resPintar(pend) {
     const ok = c.querySelector('.res-ok'), no = c.querySelector('.res-no'), oc = c.querySelector('.res-oc'), cup = c.querySelector('.res-cup'), ap = c.querySelector('.res-ap'), cm = c.querySelector('.res-cm'), rech = c.querySelector('.res-rech'), mot = c.querySelector('.res-mot');
     if (ap) ap.addEventListener('click', async () => { bloquear(true); try { const x = await _resRpc('resena_admin_decidir', { p_id: id, p_fotos_ok: null, p_publicar: true }); if (!x || !x.ok) throw new Error('no se encontró la reseña'); toast('✓ Reseña aprobada', 'ok'); loadResenas(); } catch (e) { st.style.color = 'var(--rd)'; st.textContent = 'No se guardó: ' + e.message; bloquear(false); } });
     if (cup) cup.addEventListener('click', () => { _resRpc('resena_admin_cupon_enviado', { p_id: id }).then(() => setTimeout(loadResenas, 800)).catch(() => {}); });
+    const rec = c.querySelector('.res-rec'), ret = c.querySelector('.res-ret');
+    if (rec) rec.addEventListener('click', () => { _resRpc('resena_admin_cupon_recordado', { p_id: id }).then(() => setTimeout(loadResenas, 800)).catch(() => {}); });
+    if (ret) ret.addEventListener('click', async () => {
+      const e = (RES.cest || {})[r.codigo] || {};
+      const msg = e.usado_at ? 'Se retira la foto de la web. Su cupón ya fue usado, así que no se anula nada.'
+        : (r.cupon ? 'Se retira la foto de la web y se ANULA su cupón ' + r.cupon + ' (aún no lo usó). ¿Continuar?' : 'Se retira la foto de la web. ¿Continuar?');
+      if (!(await npConfirm(msg))) return;
+      bloquear(true);
+      try { const x = await _resRpc('resena_admin_retirar', { p_id: id }); if (!x || !x.ok) throw new Error('no se encontró la reseña');
+        toast(x.anulado ? '✓ Foto retirada y cupón ' + x.cupon + ' anulado' : '✓ Foto retirada de la web', 'ok'); loadResenas();
+      } catch (er) { toast('No se pudo retirar: ' + er.message, 'err'); bloquear(false); }
+    });
     if (rech && mot) {
       const armar = () => { rech.href = 'https://wa.me/' + r.celular + '?text=' + encodeURIComponent(_resMsgRechazo(r, mot.value)); };
       armar(); mot.addEventListener('change', armar);
