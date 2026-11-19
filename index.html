@@ -18710,6 +18710,8 @@ async function _cliHistorialRapido(body) {
       Subtotal:    parseFloat(f['Subtotal']) || 0,
       Pago:        parseFloat(f['Pago']) || 0,
       FormaPago:   String(f['Forma pago'] || ''),
+      FechaPago:   String(f['Fecha Pago'] || ''),   // 19-nov (363)
+      PagoId:      String(f['PagoId'] || ''),       // 19-nov (363) · el pago se reconoce por su id
       Estado:      String(f['Estado'] || ''),
       EstadoPago:  String(f['Estado Pago'] || ''),
       Courier:     String(f['Courier'] || ''),
@@ -19763,7 +19765,8 @@ async function _sbRpcEliminar(fn, params) {
       try { const _e = await r.json(); _msg = String(_e && (_e.message || _e.hint) || ''); } catch(_) {}
       // Rechazo de NEGOCIO (cambio o devolucion en curso): es una respuesta
       // valida, no una falla de red. Se propaga para que la persona la vea.
-      if (/No se puede eliminar/i.test(_msg)) { const err = new Error(_msg); err._negocio = true; throw err; }
+      // 19-nov (361): la cascada (cambio/devolución) también rechaza con su motivo → se muestra, NO se va a Apps Script
+      if (/no se puede|DEV:|DEV_CONFIRMAR|SIN_PERMISO/i.test(_msg)) { const err = new Error(_msg); err._negocio = true; throw err; }
       try { console.warn('[eliminar] RPC ' + fn + ' HTTP ' + r.status + ' → via Apps Script'); } catch(_){}
       return null;
     }
@@ -28927,6 +28930,7 @@ function verPed(p) {
     +'<button class="btn bp" id="medit-save">Guardar cambios</button></div>';
 
   mEl.innerHTML = h;
+  try { const _bd = mEl.querySelector('#medit-del'); if (_bd && !_pedPuedeEliminar(nro)) { _bd.style.opacity = '.45'; _bd.title = _pedMotivoNoEliminar(nro); } } catch(_){}   // 19-nov (362)
   if(typeof MY_ROLE!=='undefined' && MY_ROLE==='Ventas'){ _lockReadonly(mEl); _ventasAbrirAgregarPrenda(mEl, prendas); } // Ventas: modal solo-lectura + agregar prenda (7-nov)
   // 26-jul: un pedido archivado se puede mirar, no editar. Editarlo escribiría
   // en la hoja activa, donde ese pedido ya no vive.
@@ -30224,11 +30228,15 @@ async function _guardarPedidoModal(nro, body) {
       || (Array.isArray(pRaw) && pRaw.some(r => String(r['NroPedido']||'').trim() === _nroS && /CAM\s*CAM-?\d+/i.test(String(r['Cambio']||''))));
     const _hayDev = _devArr.some(d => String(d['NroPedido']||'').trim() === _nroS)
       || (!_devArr.length && Array.isArray(pRaw) && pRaw.some(r => String(r['NroPedido']||'').trim() === _nroS && /DEV\s*DEV-?\d+/i.test(String(r['Cambio']||''))));   // 27-oct (256) · con Devoluciones cargadas manda la lista real, no la marca vieja
+    // 19-nov (362) · quien no es administrador solo elimina pedidos que todavía no salieron
+    if (!_pedPuedeEliminar(_nroS)) { toast(_pedMotivoNoEliminar(_nroS), 'err'); return; }
     let _msg = '¿Está seguro de eliminar este pedido?\n\nEl pedido pasará a la Papelera. Más adelante un administrador podrá eliminarlo definitivamente.';
     if (_hayCam || _hayDev) {
-      _msg = '⚠️ ATENCIÓN: este pedido tiene '
+      // 19-nov (361) · se eliminan juntos: el pedido, su cambio/devolución, y las prendas vuelven al stock
+      _msg = '⚠️ Este pedido tiene '
         + (_hayCam && _hayDev ? 'un CAMBIO y una DEVOLUCIÓN' : _hayCam ? 'un CAMBIO' : 'una DEVOLUCIÓN')
-        + ' asociado.\n\nSi lo eliminas, el cambio/devolución queda sin su pedido y este desaparece de todas las vistas.\n\n¿Eliminar de todas formas? Pasará a la Papelera.';
+        + '.\n\nSe eliminan JUNTOS: el pedido, ' + (_hayCam && _hayDev ? 'el cambio y la devolución' : _hayCam ? 'el cambio' : 'la devolución')
+        + ', y todas las prendas vuelven a su estado original en el stock.\n\n¿Eliminar?';
     }
     // 10-set-2026 — antes acá había un "¿está seguro?" y nada más: el motivo se
     // mandaba vacío SIEMPRE. Ahora se pregunta por qué, y esa respuesta viaja al
@@ -30253,15 +30261,32 @@ async function _guardarPedidoModal(nro, body) {
     // y confirmó — si el frontend no lo detectó (datos viejos), el backend bloquea igual.
     // PASO 6b — primero la base (decimas de segundo). Si no se puede, Apps Script.
     (async () => {
-      const _forz = !!(_hayCam || _hayDev);
+      const _forz = true;   // 19-nov (361) · confirmado en la ficha: la base anula cambio/devolución junto con el pedido
       // El motivo viaja por LAS DOS vías con una sola llamada: la RPC lo guarda en el
       // payload de la cola y el Aplicador se lo pasa tal cual a `pedidosEliminar`
       // (Aplicador.gs ya hacía eso; lo que faltaba era que alguien lo mandara).
-      const _base = await _sbRpcEliminar('pedido_eliminar', { p_nro: String(nro), p_motivo: _vrMotivoPedido(_mot), p_force: _forz });   // 1-nov · motivo con la fusión, igual que Code.js
+      let _base;
+      try { _base = await _sbRpcEliminar('pedido_eliminar', { p_nro: String(nro), p_motivo: _vrMotivoPedido(_mot), p_force: _forz });   // 1-nov · motivo con la fusión, igual que Code.js
+      } catch (_e) {
+        // 19-nov (Pablo) · devolución ya reembolsada: ¿la clienta recibió su plata? Sí = se elimina; No = queda como saldo a favor
+        const _mc = /DEV_CONFIRMAR:\s*(\S+)\s*·\s*S\/\s*([\d.]+)/.exec(String(_e && _e.message || ''));
+        if (!_mc) throw _e;
+        const _ya = await npConfirm('La devolución ' + _mc[1] + ' del pedido #' + nro + ' figura como reembolsada (S/ ' + _mc[2] + ').\n\n'
+          + '¿La clienta YA recibió ese dinero?\n\n• Sí: se elimina todo.\n• No: esos S/ ' + _mc[2] + ' quedan como SALDO A FAVOR de la clienta.');
+        _base = await _sbRpcEliminar('pedido_eliminar', { p_nro: String(nro), p_motivo: _vrMotivoPedido(_mot), p_force: _forz, p_dev_reembolsada: !!_ya });
+      }
       if (_base) return _base;
+      // 19-nov (361) · con cambio/devolución, la hoja no sabe anularlos juntos: mejor no eliminar a medias
+      if (_hayCam || _hayDev) throw new Error('la base no respondió; no se eliminó para no dejar el cambio/devolución suelto');
       return apiSend('pedidos.eliminar', {NroPedido:nro, Force:_forz, motivo:_mot.motivo, fusionadoEn:_mot.fusionadoEn});
     })()
-      .then(() => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){}
+      .then((_rb) => { stData=null; confData=null; try{ _stLsDel(); _confLsDel(); }catch(e){}
+        // 19-nov (361) · lo que se anuló junto con el pedido
+        try { const _ac = (_rb && _rb.cambios) || [], _ad = (_rb && _rb.devoluciones) || [];
+          const _as = (_rb && _rb.saldo) || [];
+          if (_as.length) { histDevData = null; toast('💰 Queda como saldo a favor de la clienta: ' + _as.map(x => x.dev + ' S/ ' + fmt(x.monto)).join(', '), 'ok'); }
+          if (_ac.length || _ad.length) { _c2Hist = null; _c2List = null; histCamData = null; histDevData = null; try { _hcLsDel(); } catch(_){}
+            toast('✓ También se anuló: ' + _ac.concat(_ad).join(', ') + ' — prendas de vuelta al stock', 'ok'); } } catch(_){}
         // 23-ago — eliminar un pedido DEVUELVE stock (venta viva): misma duda que al crear.
         // 29-ago · ETAPA 1 — y ademas se rehace la foto para todos, no solo para quien elimino.
         try { _stockMovido(['stock.resumen','catalogo.stock','reposicion.calc'], ['stock.resumen','catalogo.stock']); } catch(_){} })
@@ -35808,6 +35833,30 @@ function _cliDescargarFicha(c, cuenta, elegidos) {
   }
 }
 
+// 19-nov (363) · llave de un pago en la ficha de la clienta. Misma regla que pEnrichPagos.
+function _cliHistLlavePago(p, lk, isPago) {
+  const pid = String(p.PagoId || '').trim();
+  if (pid) return 'id|' + pid;
+  if (isPago) return 'fila|' + (p._filaId != null ? p._filaId : Math.random());
+  return lk + '|' + (parseFloat(p.Pago) || 0) + '|' + String(p.FormaPago || '') + '|' + String(p.FechaPago || '').slice(0, 10);
+}
+
+// 19-nov (362) · eliminar pedido: el administrador siempre; el resto solo si ninguna prenda salió
+const _PED_SALIO = ['EN CAMINO', 'ENTREGADO'];
+function _pedEstadosSalio(nro) {
+  const n = String(nro || '').trim();
+  const est = (Array.isArray(pRaw) ? pRaw : []).filter(r => String(r['NroPedido'] || '').trim() === n)
+    .map(r => String(r['Estado'] || '').trim().toUpperCase());
+  return [...new Set(est.filter(e => _PED_SALIO.indexOf(e) >= 0))];
+}
+function _pedPuedeEliminar(nro) {
+  if (typeof _soyAdminERP === 'function' && _soyAdminERP()) return true;
+  return _pedEstadosSalio(nro).length === 0;
+}
+function _pedMotivoNoEliminar(nro) {
+  return 'El pedido #' + nro + ' ya está ' + _pedEstadosSalio(nro).join(' y ') + ': solo un administrador puede eliminarlo.';
+}
+
 async function cliOpenHistorial(keyOrObj) {
   // Acepta key (string) buscando en cliData, o un objeto {Nombre, DNI, Telefono} directo
   let c;
@@ -35879,7 +35928,11 @@ async function cliOpenHistorial(keyOrObj) {
         let envioRow = 0;
         if (!isPago && !(lk in loteEnvio)) { loteEnvio[lk] = envio; envioRow = envio; }
         let pagoRow = 0;
-        if (pago > 0) { const pk = lk+'|'+pago+'|'+forma; if (!pagoSeen[pk]) { pagoSeen[pk] = true; pagoRow = pago; } }
+        // 19-nov (363 · Irina 23894): antes la llave era pedido+monto+forma y se tragaba el 2º pago
+        // de S/10 BCP (otra fecha, otra constancia). Ahora, igual que pEnrichPagos: PagoId manda;
+        // una fila _PAGO_ siempre es un pago aparte; solo las copias viejas en filas de prenda se juntan
+        // (y con la fecha de pago en la llave).
+        if (pago > 0) { const pk = _cliHistLlavePago(p, lk, isPago); if (!pagoSeen[pk]) { pagoSeen[pk] = true; pagoRow = pago; } }
         p._precioRow   = precio;
         p._envioRow    = envioRow;
         p._subtotalRow = precio + envioRow;
@@ -47105,8 +47158,10 @@ function hdAbrirEditor(r, containerEl) {
   document.getElementById('hde-eliminar').addEventListener('click', async function() {
     // 14-oct (Pablo) · CAPA ADMIN: si la devolución ya devolvió la prenda al stock, solo un administrador la elimina
     // (borrarla revierte stock y pedido). El servidor también lo frena (DevolucionesBase.gs).
-    if (String((r && r['StockProcesado']) || '').trim().toUpperCase() === 'TRUE' && !(typeof _soyAdminERP === 'function' && _soyAdminERP())) {
-      toast('Esta devolución ya devolvió la prenda al stock: solo un administrador (Pablo o Ana) puede eliminarla.', 'err'); return;
+    // 19-nov (Pablo) · Logística también, si el pedido todavía no salió (SEPARAR / ENVIAR). La base frena igual.
+    const _logOk = (typeof MY_ROLE !== 'undefined' && MY_ROLE === 'Logistica') && _pedEstadosSalio(r && r['NroPedido']).length === 0;
+    if (String((r && r['StockProcesado']) || '').trim().toUpperCase() === 'TRUE' && !(typeof _soyAdminERP === 'function' && _soyAdminERP()) && !_logOk) {
+      toast('Esta devolución ya devolvió la prenda al stock y su pedido ya salió: solo un administrador (Pablo o Ana) puede eliminarla.', 'err'); return;
     }
     if (!await _uiSeguro('¿Eliminar la devolución ' + id + '?\nEsta acción no se puede deshacer.')) return;
     // 1-oct · F3: borrar tarda ~11 s en el servidor (revierte stock y limpia el pedido). La asesora ya no
