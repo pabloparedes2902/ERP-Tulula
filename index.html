@@ -11363,6 +11363,7 @@ function _resBadge(n) { window._resN = n; const b = document.getElementById('res
 async function loadResenas() {
   const w = document.getElementById('res-w'); if (!w) return;
   w.innerHTML = '<div class="ld"><div class="sp"></div>Cargando reseñas...</div>';
+  if (RES.ver === 'cupones') return _resCuponesCargar(w);   // 19-nov · pestaña Cupones
   try { const [d, ce] = await Promise.all([_resRpc('resenas_admin_lista', { p_ver: RES.ver }), _resRpc('resenas_cupones_estado', {}).catch(() => ({}))]); RES.cest = ce || {}; /* 19-nov: uso, anulación y recordatorio del cupón */ RES.rows = d.rows || []; RES.niv = Number(d.nivel) || 0; RES.cuentas = d.cuentas || {}; _resBadge(d.pendientes || 0); _resPintar(d.pendientes || 0); }
   catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudieron leer las reseñas: ' + esc(e.message) + (/Sin permiso/.test(e.message) ? ' · Pide acceso a «↳Prod. Shopify» en Configuración › Usuarios.' : '') + '</div>'; }
 }
@@ -11538,6 +11539,44 @@ function _resPrevia(r, i) {
   document.body.appendChild(ov);
 }
 function _resVence(s) { try { return new Date(s + 'T12:00:00').toLocaleDateString('es-PE', { day: 'numeric', month: 'long' }); } catch (_) { return ''; } }
+// 19-nov-2026 (Pablo) · RESEÑAS › 🎁 CUPONES: todo el programa en una tabla — quién tiene cupón, si se le envió, si lo usó, en qué pedido y cuándo vence.
+const RES_TABS = [['por_aprobar', 'Por aprobar'], ['pendientes', 'Fotos por revisar'], ['aprobadas', 'Aprobadas'], ['todas', 'Todas'], ['cupones', '🎁 Cupones']];
+function _resCupEstado(x) {
+  const hoy = new Date().toISOString().slice(0, 10);
+  if (x.usado_at) return ['Usado', 'ok', 5];
+  if (x.anulado_at) return ['Anulado', 'rd', 1];
+  if (x.vence && x.vence < hoy) return ['Vencido', 'rd', 0];
+  if (x.cupon_shop !== 'ok') return ['Creándose', 'am', 2];
+  if (!x.enviado_at) return ['Por enviar', 'am', 4];
+  return ['Enviado', '', 3];
+}
+async function _resCuponesCargar(w) {
+  let L = [];
+  try { L = (await _resRpc('resenas_cupones_lista', {})) || []; }
+  catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudieron leer los cupones: ' + esc(e.message) + '</div>'; return; }
+  const f = s => { try { return s ? new Date(s).toLocaleDateString('es-PE', { day: 'numeric', month: 'short' }) : '—'; } catch (_) { return '—'; } };
+  const fv = s => s ? _resVence(s) : '—', E = L.map(x => [x, _resCupEstado(x)]);
+  const n = k => E.filter(e => e[1][0] === k).length, porVencer = E.filter(([x, e]) => e[0] === 'Enviado' && x.vence && _resCupDias(x.vence) <= 15).length;
+  const usados = E.filter(([x]) => x.usado_at);
+  const kpi = (lab, v, nota) => '<div><div class="ui-lab">' + lab + '</div><div class="ui-kpi">' + v + '</div>' + (nota ? '<div class="ui-nota">' + nota + '</div>' : '') + '</div>';
+  w.innerHTML = '<div style="padding:16px;max-width:1100px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px"><h2 class="ui-pag">Reseñas</h2>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + RES_TABS.map(t => '<button type="button" class="btn ' + (RES.ver === t[0] ? 'bp' : 'bg') + ' bs res-ver" data-v="' + t[0] + '">' + t[1] + '</button>').join('') + '</div></div>'
+    + '<div class="ui-kpis" style="margin-bottom:14px">' + kpi('Cupones', L.length) + kpi('Por enviar', n('Por enviar')) + kpi('Enviados', n('Enviado'), porVencer ? porVencer + ' vencen en ≤15 días' : '')
+    + kpi('Usados', usados.length, L.length ? Math.round(usados.length * 100 / L.length) + '% de los cupones' : '') + kpi('Anulados / vencidos', n('Anulado') + n('Vencido')) + '</div>'
+    + (L.length ? '<div class="tt-w" style="max-height:calc(100vh - 280px);overflow:auto"><table class="tt" style="width:100%"><thead><tr><th>Clienta</th><th>Pedido</th><th>Prenda</th><th>Cupón</th><th>Estado</th><th>Enviado</th><th>Vence</th><th>Usado en</th><th data-no-ord></th></tr></thead><tbody>'
+      + E.sort((a, b) => b[1][2] - a[1][2] || String(a[0].vence || '').localeCompare(String(b[0].vence || ''))).map(([x, e]) => {
+          const d = x.vence ? _resCupDias(x.vence) : 999;
+          return '<tr><td>' + esc(x.nombre || '') + '</td><td>' + esc(x.pedido || '') + '</td><td title="' + esc(x.color || '') + '">' + esc(_resTit(x.diseno || '')) + '</td><td>' + esc(x.cupon) + '</td>'
+            + '<td><span class="ui-chip ' + e[1] + '">' + e[0] + '</span></td><td>' + f(x.enviado_at) + '</td>'
+            + '<td' + (e[0] === 'Enviado' && d <= 15 ? ' style="color:var(--am)" title="Recuérdale: botón ⏰ en Aprobadas"' : '') + '>' + fv(x.vence) + '</td>'
+            + '<td>' + (x.usado_at ? esc(x.usado_pedido || '') + ' · ' + f(x.usado_at) : '—') + '</td>'
+            + '<td>' + (x.celular ? '<a class="tt-ico" target="_blank" rel="noopener" title="Abrir su WhatsApp" href="https://wa.me/' + esc(x.celular) + '">📲</a>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
+      : '<div style="padding:30px;text-align:center;color:var(--mu)">Todavía no hay cupones de foto.</div>')
+    + '<p class="ui-nota" style="margin-top:8px">Para enviar o recordar un cupón: pestaña Aprobadas, botón de cada reseña.</p></div>';
+  w.querySelectorAll('.res-ver').forEach(b => b.addEventListener('click', () => { RES.ver = b.dataset.v; RES.sel = {}; loadResenas(); }));
+}
 function _resPintar(pend) {
   const w = document.getElementById('res-w'), niv = Number(RES.niv) || 0, C = RES.cuentas || {};
   RES.marca = RES.marca || {};
@@ -11614,7 +11653,7 @@ function _resPintar(pend) {
         + enWeb(r) + estado(r) + ' ' + permiso(r)
         + (r.revisado_por ? chip('revisó ' + esc(r.revisado_por.split('@')[0]) + (r.revisado_at ? ' · ' + fecha(r.revisado_at) : ''), 'var(--mu)') : chip('sin aprobar', '#B7791F'))
       + '</div>' + fotoCtl(r) + rechazo(r) + cupon(r) + '<div class="res-st" style="font-size:12px;margin-top:6px"></div></div></div>';
-  const TABS = [['por_aprobar', 'Por aprobar'], ['pendientes', 'Fotos por revisar'], ['aprobadas', 'Aprobadas'], ['todas', 'Todas']];
+  const TABS = RES_TABS;
   const nSel = () => RES.rows.filter(r => niv >= 2 && loteOk(r) && RES.marca[r.id] !== false).length;
   w.innerHTML = '<div style="padding:16px;max-width:1000px">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h2 style="margin:0;font-size:20px">Reseñas</h2>'
