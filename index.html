@@ -1018,6 +1018,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
       <div id="np-autodetect" style="display:none;margin-bottom:10px"></div>
       <!-- Banner de saldos vigentes del cliente -->
       <div id="np-saldos-banner" style="display:none;margin-bottom:10px"></div>
+      <div id="np-cupon-banner" style="display:none;margin-bottom:10px"></div>
       <div class="card" id="np-form-card">
         <div class="ct" style="margin-bottom:14px">Datos del cliente</div>
         <!-- 1. Fecha + 2. Nombre -->
@@ -31541,6 +31542,7 @@ async function npLookupSaldosDo() {
   const dni    = (document.getElementById('np-dnum')?.value || '').trim();
   const tels   = [...document.querySelectorAll('#np-tels input')].map(i => (i.value||'').trim()).filter(Boolean);
   const tel    = tels.find(t => t.length >= 9) || '';
+  try { _npCuponBuscar(tel); } catch (_) {}   // 19-nov · cupón de foto por celular
   // Mínimo 1 campo válido: DNI 8+ ó tel 9+ ó nombre 4+
   const okDni    = dni && dni.length >= 8;
   const okTel    = !!tel;
@@ -31584,6 +31586,59 @@ async function npLookupSaldosDo() {
   }
 }
 
+// 19-nov-2026 (Pablo) · CUPÓN DE FOTO EN NUEVO PEDIDO (venta por WhatsApp).
+// Al escribir el celular, si la clienta tiene un cupón de foto vigente, aparece el aviso con «Aplicar».
+// Aplicar = baja S/ 50 repartido en las prendas (no Yayitas), solo si las prendas suman desde S/ 150; el envío no se toca.
+// Al guardar el pedido, el cupón queda USADO (con el número de pedido) y se apaga en Shopify para que no se use dos veces.
+const NP_CUPON_MONTO = 50, NP_CUPON_MIN = 150;
+let _npCupon = { tel: '', lista: [], aplicado: '', previos: [] };
+async function _npCuponBuscar(tel) {
+  const d = String(tel || '').replace(/\D/g, '').slice(-9);
+  if (d.length < 9 || d === _npCupon.tel) return;
+  _npCupon.tel = d; _npCupon.lista = [];
+  try { _npCupon.lista = (await _resRpc('resena_cupones_de_celular', { p_cel: d })) || []; } catch (_) { _npCupon.lista = []; }
+  _npCuponPintar();
+}
+function _npCuponFilas() { return [...document.querySelectorAll('#np-prendas .pbox')].filter(x => !(x.querySelector('.np-yayita') && x.querySelector('.np-yayita').checked) && (parseFloat(x.querySelector('.np-prec').value) || 0) > 0); }
+function _npCuponPintar() {
+  const b = document.getElementById('np-cupon-banner'); if (!b) return;
+  const c = (_npCupon.lista || [])[0];
+  if (!c && !_npCupon.aplicado) { b.style.display = 'none'; b.innerHTML = ''; return; }
+  const cod = _npCupon.aplicado || c.cupon;
+  b.style.display = '';
+  b.innerHTML = '<div style="background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px">'
+    + '🎁 <b>Cupón de foto S/ ' + NP_CUPON_MONTO + '</b> <span style="color:var(--mu)">' + esc(cod) + (c && c.vence ? ' · vence ' + esc(_resVence(c.vence)) : '') + ' · prendas a precio de lista, compra desde S/ ' + NP_CUPON_MIN + ', no cubre el envío</span>'
+    + (_npCupon.aplicado ? '<span style="color:var(--gn);font-weight:600">✓ Aplicado (−S/ ' + NP_CUPON_MONTO + ')</span><button type="button" class="btn bg bs" id="np-cupon-quitar">Quitar</button>'
+      : '<button type="button" class="btn bp bs" id="np-cupon-aplicar">Aplicar</button>') + '</div>';
+  const a = document.getElementById('np-cupon-aplicar'), q = document.getElementById('np-cupon-quitar');
+  if (a) a.addEventListener('click', () => _npCuponAplicar(c.cupon));
+  if (q) q.addEventListener('click', _npCuponQuitar);
+}
+function _npCuponAplicar(cod) {
+  const F = _npCuponFilas(), val = x => (parseFloat(x.querySelector('.np-prec').value) || 0) * (parseFloat(x.querySelector('.np-cant').value) || 1);
+  const S = F.reduce((s, x) => s + val(x), 0);
+  if (S < NP_CUPON_MIN - 0.005) { toast('Las prendas suman S/ ' + fmt(S) + '. El cupón vale en compras desde S/ ' + NP_CUPON_MIN + ' en prendas.', 'err'); return; }
+  _npCupon.previos = F.map(x => [x, x.querySelector('.np-prec').value]);
+  let resto = NP_CUPON_MONTO;
+  F.forEach((x, i) => {
+    const cant = parseFloat(x.querySelector('.np-cant').value) || 1, pr = parseFloat(x.querySelector('.np-prec').value) || 0;
+    const baja = i === F.length - 1 ? resto : Math.round(NP_CUPON_MONTO * val(x) / S * 100) / 100;
+    resto = Math.round((resto - baja) * 100) / 100;
+    x.querySelector('.np-prec').value = (Math.round((pr - baja / cant) * 100) / 100).toFixed(2);
+  });
+  _npCupon.aplicado = cod;
+  const o = document.getElementById('np-obs'); if (o && o.value.indexOf(cod) < 0) o.value = (o.value ? o.value + ' · ' : '') + 'Cupón ' + cod + ' (−S/ ' + NP_CUPON_MONTO + ')';
+  try { npCalc(); } catch (_) {}
+  _npCuponPintar(); toast('✓ Cupón ' + cod + ' aplicado: −S/ ' + NP_CUPON_MONTO + ' repartido en las prendas', 'ok');
+}
+function _npCuponQuitar() {
+  (_npCupon.previos || []).forEach(([x, v]) => { if (x && x.isConnected) x.querySelector('.np-prec').value = v; });
+  const o = document.getElementById('np-obs'), cod = _npCupon.aplicado;
+  if (o && cod) o.value = o.value.replace(new RegExp('( · )?Cupón ' + cod + ' \\(−S/ ' + NP_CUPON_MONTO + '\\)'), '');
+  _npCupon.aplicado = ''; _npCupon.previos = [];
+  try { npCalc(); } catch (_) {}
+  _npCuponPintar();
+}
 function npRenderSaldosBanner(data) {
   const banner = document.getElementById('np-saldos-banner');
   if (!banner) return;
@@ -32927,6 +32982,7 @@ async function npGuardar() {
       saldosFavor: (_npSaldos.applyFavor || []).slice(),
       saldosDevs: (_npSaldos.applyDevs || []).slice(),
       saldosPendiente: (_npSaldos.applyPendiente || []).slice(),
+      cuponFoto: (typeof _npCupon === 'object' && _npCupon.aplicado) || '',   // 19-nov · cupón de foto aplicado
       label: cliBase.NombreApellido || 'pedido',
       intentos: 0,
       // #9 Idempotencia: token del FORMULARIO, no del intento.
@@ -33146,6 +33202,7 @@ async function _npProcessSaveQueue() {
       _npQueuePersist();
       _npUpdateSaveIndicator();
       try { _waAvisoGuardado('pedido', String(nroReal || job.nroPedBase || ''), job.modo === 'agregar' ? 'AGREGA' : ''); } catch(_){}   // 22-oct · 📲 WhatsApp
+      if (job.cuponFoto) _resRpc('resena_cupon_usar_erp', { p_cupon: job.cuponFoto, p_pedido: String(nroReal || job.nroPedBase || '') }).catch(e => toast('El pedido se guardó, pero el cupón ' + job.cuponFoto + ' no quedó marcado como usado: ' + e.message, 'err'));   // 19-nov · cupón de foto
       // PERF v12 — convertir el provisional en REAL al instante (sin esperar al polling).
       try {
         if (job._provNro && nroReal) {
@@ -34931,6 +34988,7 @@ function npLimpiar() {
     _npSaldos.items = []; _npSaldos.devs = []; _npSaldos.applyFavor = []; _npSaldos.applyDevs = [];
     _npSaldos.applyPendiente = []; _npSaldos.acked = false; _npSaldos.lastKey = '';
   }
+  if (typeof _npCupon === 'object') { _npCupon.tel = ''; _npCupon.lista = []; _npCupon.aplicado = ''; _npCupon.previos = []; const cb = document.getElementById('np-cupon-banner'); if (cb) { cb.style.display = 'none'; cb.innerHTML = ''; } }   // 19-nov
   ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-cumple','np-obs','np-fenv'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
   // el selector de documento vuelve a DNI y el campo se destraba (si quedo en N/A
   // estaba en readOnly, y sin esto el formulario nuevo nacia bloqueado)
