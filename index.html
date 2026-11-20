@@ -40741,7 +40741,8 @@ async function npYayAltaAuto(prendas, motivo) {
   for (const kk of Object.keys(pedir)) {
     const t = kk.slice(0, 3), k = kk.slice(4);
     let hay = 0; try { hay = t === 'YAY' ? await _yayDisponibles(k) : await _mueDisponibles(k); } catch (e) { hay = 0; }
-    const falta = pedir[kk] - (hay || 0);
+    let falta = pedir[kk] - (hay || 0);
+    if (falta > 0 && t === 'YAY') falta -= await _yayDesdeOtras(k, falta);   // 20-nov noche · Corrección / Sin decidir → Yayita antes que el stock normal
     if (falta > 0) items.push({ prenda: k, cantidad: falta, motivo: motivo || (t === 'YAY' ? 'Yayita vendida sin registro previo' : 'Muestra vendida sin registro previo'), destino: t === 'YAY' ? 'YAYITAS' : 'MUESTRA' });
   }
   if (!items.length) return 0;
@@ -40754,6 +40755,35 @@ async function npYayAltaAuto(prendas, motivo) {
   return items.length;
 }
 
+/* 20-nov noche (Pablo) · «Corrección y Falla sin decidir quedan en Yayita»: antes de sacar del stock normal, la Yayita
+   se toma de esas unidades (rpc falla_cambiar_tipo, con su historial). Devuelve [{tipo, prenda, diseno, color, talla, n}]. */
+async function _yayOtrasDe(nombre) {
+  const k = _yayClaveDe(nombre); if (!k) return [];
+  let t = null; try { t = await _yayStockTipos(); } catch (_) { t = null; } if (!t) return [];
+  const out = [];
+  t.forEach(f => { if (f.tipo !== 'CORRECCION' && f.tipo !== 'SIN') return;
+    Object.keys(f.stock || {}).forEach(tal => { const n = Number(f.stock[tal]) || 0;
+      if (n > 0 && _yayClaveDe(f.prenda + ' ' + f.diseno + ' ' + f.color + ' ' + tal) === k)
+        out.push({ tipo: f.tipo, prenda: f.prenda, diseno: f.diseno, color: f.color, talla: (f.treal && f.treal[tal]) || tal, n: n }); }); });
+  out.sort((a, b) => (a.tipo === 'CORRECCION' ? 0 : 1) - (b.tipo === 'CORRECCION' ? 0 : 1));
+  return out;
+}
+async function _yayDesdeOtras(nombre, falta) {   // mueve hasta «falta» unidades de Corrección / Sin decidir a Yayita; devuelve cuántas movió
+  let movidas = 0;
+  for (const o of await _yayOtrasDe(nombre)) {
+    if (movidas >= falta) break;
+    const c = Math.min(o.n, falta - movidas);
+    try {
+      const tok = await _sbSesionAsegurar(); if (!tok) break;
+      const r = await fetch(SB_URL + '/rest/v1/rpc/falla_cambiar_tipo', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_prenda: o.prenda, p_diseno: o.diseno, p_color: o.color, p_talla: o.talla, p_de: o.tipo, p_a: 'YAYITA', p_cant: c }) });
+      if (r.ok) { const j = await r.json().catch(() => ({})); movidas += (+j.movidas || c); }
+    } catch (_) {}
+  }
+  if (movidas) { try { _yayOlvidar(); } catch (_) {} }
+  return movidas;
+}
+
 /* 20-nov (Pablo) · Yayita o Muestra que el ERP no tiene registrada: se puede vender igual (puede estar físicamente),
    con un aviso. Al guardar se pasa del stock normal; si tampoco hay, queda pendiente de regularizar en Stock. */
 async function _npSinStockFaltan(lineas) {
@@ -40763,6 +40793,7 @@ async function _npSinStockFaltan(lineas) {
   for (const k of Object.keys(need)) {
     const t = k.slice(0, 3), nom = k.slice(4); let hay = 0;
     try { hay = t === 'YAY' ? await _yayDisponibles(nom) : await _mueDisponibles(nom); } catch (_) { hay = 0; }
+    if (t === 'YAY' && (hay || 0) < need[k]) { try { (await _yayOtrasDe(nom)).forEach(o => { hay += o.n; }); } catch (_) {} }   // 20-nov noche · Corrección / Sin decidir cuentan como Yayita
     if ((hay || 0) < need[k]) faltan.push((t === 'YAY' ? 'Yayita' : 'Muestra') + ' · ' + nom);
   }
   return faltan;
