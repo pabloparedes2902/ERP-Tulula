@@ -61,6 +61,10 @@ function catalogo() {
   return CAT;
 }
 var ULT = null;
+function abrirGratis(conv, tel, cb) {
+  fetch(FN, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ANON, apikey: ANON }, body: JSON.stringify({ conversacion: conv, tel: tel, catalogo: [], solo_cache: true, con_mensajes: true }) })
+    .then(function (r) { return r.json(); }).then(function (j) { cb(j && j.ok ? j : null); }).catch(function () { cb(null); });
+}
 function leerConTula(conv, tel, cb, soloGuardada) {
   fetch(FN, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + ANON, apikey: ANON }, body: JSON.stringify({ conversacion: conv, tel: tel, catalogo: soloGuardada ? [] : catalogo(), solo_cache: !!soloGuardada }) })
     .then(function (r) { return r.json(); })
@@ -228,21 +232,25 @@ function armarPedido(msgs, L, ctx) {
   var D = {};
   msgs.forEach(function (m) {
     if (m.message_type !== 0 || !m.content) return;
-    var got = {};
+    var got = {}, primera = null;
     S(m.content).split(/\n+/).forEach(function (raw) {
       var o = raw.replace(/^[\s\-*•·>_]+/, '').replace(/[*_]/g, '').trim();
       if (!o) return;
-      var u = nz(o);
+      var u = nz(o), etiq = false;
       for (var k = 0; k < LAB.length; k++) {
         var mm = u.match(LAB[k][1]);
         if (!mm) continue;
+        etiq = true;
         var v = '', ci = o.indexOf(':');
         if (ci >= 0) v = o.slice(ci + 1).trim();
         else v = o.split(/\s+/).slice(mm[0].split(' ').length).join(' ').trim();
         if (v && !got[LAB[k][0]]) got[LAB[k][0]] = v;
         break;
       }
+      if (primera === null) primera = etiq ? '' : o;
     });
+    // 19-nov (Pablo, chat #9533): la clienta pone su nombre en la primera línea, sin «Nombre:»
+    if (!got.nombre && primera && /^[A-Za-zÁÉÍÓÚÑÜáéíóúñü' ]+$/.test(primera) && primera.split(/\s+/).length >= 2 && primera.split(/\s+/).length <= 6) got.nombre = primera;
     if (Object.keys(got).length >= 2) Object.keys(got).forEach(function (k) { D[k] = got[k]; });
   });
   if (IA && IA.clienta) {
@@ -275,8 +283,9 @@ function armarPedido(msgs, L, ctx) {
   var origen = hayAd ? 'ADS DIRECTO' : '';
   if (!hayAd) avisos.push('No veo anuncio en este chat: elige el origen a mano.');
   var ASES = ['CAMILA', 'ANGIE', 'LUCIA', 'DAYANN', 'ROXANA', 'LUZ'];
-  var ag = nz(ctx.agente).split(' ')[0];
-  var asesora = ASES.indexOf(ag) >= 0 ? ag : '';
+  // 19-nov (Pablo, chat #9533): manda la asesora asignada a la conversación, no quien mira el panel
+  var asesora = [ctx.asignada, ctx.agente].map(function (x) { return nz(x).split(' ')[0]; }).filter(function (x) { return ASES.indexOf(x) >= 0; })[0] || '';
+  if (!asesora) avisos.push('La conversación no tiene una asesora asignada: elígela a mano.');
   var envio = '', courier = '', coment = '';
   if (res) {
     if (res.envio === 'destino') { envio = '0'; courier = 'SHALOM'; coment = 'PAGO A DESTINO'; }
@@ -287,6 +296,18 @@ function armarPedido(msgs, L, ctx) {
     if (!courier && /SHALOM/.test(resTxt)) courier = 'SHALOM';
   }
   if (IA && IA.comentario && !coment) coment = nz(IA.comentario);
+  // 19-nov (Pablo, chat #9533): «pago contra entrega de 89» → saldo contra entrega; adelanto = total − saldo
+  var ceM = null;
+  for (var w = msgs.length - 1; w >= 0 && ceM == null; w--) {
+    var mw = msgs[w]; if (mw.message_type !== 1 || mw.private || !mw.content) continue;
+    var mc = nz(mw.content).match(/CONTRA ?ENTREGA[^0-9]{0,20}([0-9]{2,4}(?:\.[0-9]+)?)/); if (mc) ceM = +mc[1];
+  }
+  if (ceM != null) {
+    var totP = res && res.total > 0 ? res.total : (res ? res.items.reduce(function (a, it) { return a + (+it.precio || 0); }, 0) + (+envio || 0) : 0);
+    var adel = totP > ceM ? Math.round((totP - ceM) * 100) / 100 : 0;
+    coment = [coment, adel ? 'ADELANTO S/' + adel : '', 'CONTRA ENTREGA S/' + ceM].filter(Boolean).join(' · ');
+    avisos.push((adel ? 'Adelanto S/' + adel + ': regístralo en Pagos con su constancia. ' : '') + 'Saldo S/' + ceM + ' se cobra contra entrega.');
+  }
   if (!courier && provU) courier = (provU === 'LIMA' || provU === 'CALLAO') ? 'SALVA' : 'OLVA';
 
   var cot = '';
@@ -328,13 +349,20 @@ function armar() {
   if (!CTX || !CTX.conversation) { estado('Abre una conversación para armar el pedido.'); return; }
   var conv = S(CTX.conversation.id);
   var msgs = (CTX.conversation.messages || []).slice().sort(function (a, b) { return a.id - b.id; });
-  var ctx = { tel: (CTX.contact || {}).phone_number || ((CTX.conversation.meta || {}).sender || {}).phone_number || '', agente: (CTX.currentAgent || {}).name || '' };
+  var ctx = { tel: (CTX.contact || {}).phone_number || ((CTX.conversation.meta || {}).sender || {}).phone_number || '', agente: (CTX.currentAgent || {}).name || '', asignada: ((CTX.conversation.meta || {}).assignee || {}).name || '' };
   function listo() {
     try { if (IA_MEM[conv]) ctx.ia = IA_MEM[conv]; pintar(armarPedido(msgs, LISTAS, ctx)); } catch (e) { estado('No pude armar el pedido: ' + e.message); return; }
     ULT = { conv: conv, ctx: ctx, msgs: msgs };
     // 19-nov (Pablo): Tula lee solo al tocar «Leer con Tula». Al abrir se muestra gratis la última lectura si no hay mensajes nuevos.
     estado('Conversación #' + conv + ' · Toca «🤖 Leer con Tula» para armar la cotización y el pedido.');
-    leerConTula(conv, ctx.tel, function (j) { if (j && j.ia) mostrarTula(j); }, true);
+    // 19-nov (Pablo, chat #9533): Chatwoot solo pasa los últimos ~20 mensajes; la función trae la conversación entera (gratis, sin IA)
+    abrirGratis(conv, ctx.tel, function (j) {
+      if (!j || !ULT || ULT.conv !== conv) return;
+      if (j.lista && j.lista.length) ULT.msgs = j.lista.slice().sort(function (a, b) { return a.id - b.id; });
+      if (j.ia) { mostrarTula(j); return; }
+      try { pintar(armarPedido(ULT.msgs, LISTAS, ULT.ctx)); } catch (e) {}
+      estado('Conversación #' + conv + ' · leí los ' + ULT.msgs.length + ' mensajes. Si falta algo, toca «🤖 Leer con Tula».');
+    });
   }
   if (LISTAS && LISTAS_CONV === conv) { listo(); return; }
   estado('Leyendo las listas del ERP…');
