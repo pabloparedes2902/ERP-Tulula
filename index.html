@@ -29145,7 +29145,7 @@ function verPed(p) {
       if (sel) {
         sel.innerHTML = '<option value="">Sale de: Stock</option>'
           + '<option value="YAY">Sale de: Yayita (' + (n > 0 ? n + ' con falla' : 'se pasa a Yayitas al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible: npYayAltaAuto */
-          + '<option value="MUE"' + (nm > 0 ? '' : ' disabled') + '>Sale de: Muestra (' + nm + (nm > 0 ? '' : ' · regístrala primero como No disponible → Muestra') + ')</option>';
+          + '<option value="MUE">Sale de: Muestra (' + (nm > 0 ? nm + ' registradas' : 'se pasa a Muestras al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible, con aviso si no hay */;
         sel.style.display = 'inline-block';   // 20-nov · siempre visible
         if (!sel._ok) { sel._ok = 1; sel.addEventListener('change', () => {
           const v = sel.value; if (chk) chk.checked = (v === 'YAY'); if (mue) mue.checked = (v === 'MUE');
@@ -29226,7 +29226,12 @@ function verPed(p) {
       // total en pantalla sea correcto desde ya (ver _loteSiguienteLocal).
       const _loteAdiv = _loteSiguienteLocal(nro);
       const _esYay  = !!(qId('mpf-yay-chk') && qId('mpf-yay-chk').checked);
-      if (_esYay) await npYayAltaAuto([{ dis: _prendaTxt, esYayita: true, cant: 1 }]);   // 20-nov · sin registro previo
+      if (_esYay || _esMue) {   // 20-nov (Pablo) · Yayita/Muestra sin registro: aviso y se puede registrar igual
+        const _falA = await _npSinStockFaltan([{ nombre: _prendaTxt.replace(/^MUESTRA\s*-\s*/i, ''), tipo: _esMue ? 'MUE' : 'YAY', cant: 1 }]);
+        if (_falA.length && !(await _npSinStockConfirmar(_falA))) { this.disabled = false; return; }
+        try { await npYayAltaAuto([{ dis: _esMue ? prenda : _prendaTxt, esYayita: _esYay && !_esMue, cant: 1 }], _falA.length ? 'Registrada al vender (no estaba en el ERP)' : undefined); }
+        catch (eA) { if (!_falA.length) throw eA; toast('⚠ No se pudo pasar al montón: queda pendiente de regularizar en Stock', 'warn'); }
+      }
       const _estAdd = qId('medit-Estado').value;
       const _fpAdd  = qId('medit-FechaPedido').value;
       let _filaOptDom = null;   // 1-oct: la fila del modal, para quitarla si no se guarda
@@ -32148,7 +32153,7 @@ function npAddPrenda() {
   function _npSaleOpts(n, nm) {
     saleSel.innerHTML = '<option value="">Sale de: Stock</option>'
       + '<option value="YAY">Sale de: Yayita (' + (n > 0 ? n + ' con falla' : 'se pasa a Yayitas al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible: npYayAltaAuto */
-      + '<option value="MUE"' + (nm > 0 ? '' : ' disabled') + '>Sale de: Muestra (' + nm + (nm > 0 ? '' : ' · regístrala primero como No disponible → Muestra') + ')</option>';
+      + '<option value="MUE">Sale de: Muestra (' + (nm > 0 ? nm + ' registradas' : 'se pasa a Muestras al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible, con aviso si no hay */;
     saleSel.style.display = 'inline-block';   // 20-nov · siempre visible: la Yayita ya no exige registro previo
   }
   saleSel.addEventListener('change', () => {
@@ -33026,6 +33031,21 @@ async function npGuardar() {
     }
   }
 
+  if (!window._pvCancelado) {   /* 20-nov (Pablo) · Yayita/Muestra sin registro: aviso y se puede registrar igual */
+    const _ls = [...document.querySelectorAll('#np-prendas .pbox')].map(d => {
+      const v = d.querySelector('.np-prenda') ? d.querySelector('.np-prenda').value.trim().replace(/^MUESTRA\s*-\s*/i, '') : '';
+      const t = (d.querySelector('.np-muestra') && d.querySelector('.np-muestra').checked) ? 'MUE' : ((d.querySelector('.np-yayita') && d.querySelector('.np-yayita').checked) ? 'YAY' : '');
+      return { nombre: v, tipo: t, cant: parseFloat((d.querySelector('.np-cant') || {}).value) || 1 };
+    }).filter(l => l.nombre && l.tipo);
+    const _fal = _ls.length ? await _npSinStockFaltan(_ls) : [];
+    window._npSinStockOk = false;
+    if (_fal.length) {
+      if (!(await _npSinStockConfirmar(_fal))) return;
+      window._npSinStockOk = true;
+      const _ob = document.getElementById('np-obs');
+      if (_ob && !/Regularizar en Stock/.test(_ob.value)) _ob.value = (_ob.value ? _ob.value + ' · ' : '') + '⚠ Regularizar en Stock: ' + _fal.join(', ');
+    }
+  }
   if (window._pvCancelado) { window._pvCancelado = false; toast('No se guardó: cancelaste en el aviso de stock', 'warn'); return; }   // VR_PREVENTA_2NOV
   const btn = document.getElementById('btn-guardar');
   btn.disabled = true; btn.textContent = 'Guardando...';
@@ -33476,7 +33496,9 @@ async function _npExecuteSave(job) {
   // en el servidor. Por eso: si el mapa que ya está en memoria dice que alcanza, va por
   // la base; si dice que NO o no lo pudo leer, se va por Apps Script, que tiene la
   // validación autoritativa. Rápido cuando está claro, seguro cuando hay duda.
-  await npYayAltaAuto(job.prendasData);   // 20-nov · Yayita sin registro previo → se registra aquí (No disponible → Yayitas)
+  const _ssOk = !!window._npSinStockOk; window._npSinStockOk = false;   // 20-nov · «Sí, registrar igual»
+  try { await npYayAltaAuto(job.prendasData, _ssOk ? 'Registrada al vender (no estaba en el ERP)' : undefined); }   // 20-nov · Yayita/Muestra sin registro previo → se registra aquí
+  catch (eA) { if (!_ssOk) throw eA; try { toast('⚠ No se pudo pasar al montón: queda pendiente de regularizar en Stock', 'warn'); } catch (_) {} }
   const _hayYayita = (job.prendasData || []).some(p => p && p.esYayita);
   let _bodyRapido = _bodyCrear;
   if (_hayYayita) {
@@ -33484,7 +33506,7 @@ async function _npExecuteSave(job) {
     try { _yayOlvidar(); } catch(e) {}          // se consumió una: el mapa quedó viejo
     // 1-oct-2026 · la hoja esta congelada: Apps Script ya no puede crear el pedido.
     // Si el monton no alcanza, se dice CLARO en vez de mandar a una puerta cerrada.
-    if (!_alcanza) throw new Error('No hay Yayitas disponibles para todas las prendas marcadas. Revisa Stock › Yayitas o desmarca la casilla. No se guardo nada.');
+    if (!_alcanza && !_ssOk) throw new Error('No hay Yayitas disponibles para todas las prendas marcadas. Revisa Stock › Yayitas o desmarca la casilla. No se guardo nada.');
     else _bodyRapido = Object.assign({}, _bodyCrear, {
       prendas: (job.prendasData || []).map(p => (p && p.esYayita)
         ? Object.assign({}, p, { dis: _yayPrefijar(p.dis) }) : p),
@@ -40709,15 +40731,18 @@ function _yayPrefijar(prenda) {
 // si antes la registraban en Stock › Movimiento de stock › No disponible → Yayitas. Ahora, si faltan, se registran aquí mismo
 // (mismo movimiento: Conf. Real −1, Yayitas +1) y la venta las consume del montón. Neto: vendible −1, igual que vender la prenda.
 async function npYayAltaAuto(prendas, motivo) {
-  const marc = (prendas || []).filter(p => p && p.esYayita && p.dis);
+  // 20-nov (Pablo) · también Muestras: «MUESTRA - x» sin registro previo → No disponible → Muestra (mismo movimiento).
+  const RX = /^\s*(YAYITA|MUESTRA)\s*[-–—]?\s+/i;
+  const marc = (prendas || []).filter(p => p && p.dis && (p.esYayita || /^\s*MUESTRA\b/i.test(p.dis)));
   if (!marc.length) return 0;
   const pedir = {};
-  marc.forEach(p => { const k = String(p.dis).replace(/^\s*YAYITA\s*[-–—]?\s+/i, '').trim(); pedir[k] = (pedir[k] || 0) + (parseInt(p.cant, 10) || 1); });
+  marc.forEach(p => { const t = p.esYayita ? 'YAY' : 'MUE'; const k = t + '|' + String(p.dis).replace(RX, '').trim(); pedir[k] = (pedir[k] || 0) + (parseInt(p.cant, 10) || 1); });
   const items = [];
-  for (const k of Object.keys(pedir)) {
-    let hay = 0; try { hay = await _yayDisponibles(k); } catch (e) { hay = 0; }
-    const falta = pedir[k] - (hay || 0);
-    if (falta > 0) items.push({ prenda: k, cantidad: falta, motivo: motivo || 'Yayita vendida sin registro previo', destino: 'YAYITAS' });
+  for (const kk of Object.keys(pedir)) {
+    const t = kk.slice(0, 3), k = kk.slice(4);
+    let hay = 0; try { hay = t === 'YAY' ? await _yayDisponibles(k) : await _mueDisponibles(k); } catch (e) { hay = 0; }
+    const falta = pedir[kk] - (hay || 0);
+    if (falta > 0) items.push({ prenda: k, cantidad: falta, motivo: motivo || (t === 'YAY' ? 'Yayita vendida sin registro previo' : 'Muestra vendida sin registro previo'), destino: t === 'YAY' ? 'YAYITAS' : 'MUESTRA' });
   }
   if (!items.length) return 0;
   try {
@@ -40725,8 +40750,26 @@ async function npYayAltaAuto(prendas, motivo) {
     let rf = await _fallasIngresarRapido(items);
     if (!rf) rf = await apiSend('fallas.ingresar', { items: items });
     _yayEspejoConfirmar(rf);
-  } catch (e) { throw new Error('No se pudo pasar la prenda a Yayitas: ' + ((e && e.message) || e) + '. No se guardó nada.'); }
+  } catch (e) { throw new Error('No se pudo pasar la prenda a Yayitas/Muestras: ' + ((e && e.message) || e) + '. No se guardó nada.'); }
   return items.length;
+}
+
+/* 20-nov (Pablo) · Yayita o Muestra que el ERP no tiene registrada: se puede vender igual (puede estar físicamente),
+   con un aviso. Al guardar se pasa del stock normal; si tampoco hay, queda pendiente de regularizar en Stock. */
+async function _npSinStockFaltan(lineas) {
+  const need = {};
+  (lineas || []).forEach(l => { if (l && l.nombre && l.tipo) { const k = l.tipo + '|' + l.nombre; need[k] = (need[k] || 0) + (l.cant || 1); } });
+  const faltan = [];
+  for (const k of Object.keys(need)) {
+    const t = k.slice(0, 3), nom = k.slice(4); let hay = 0;
+    try { hay = t === 'YAY' ? await _yayDisponibles(nom) : await _mueDisponibles(nom); } catch (_) { hay = 0; }
+    if ((hay || 0) < need[k]) faltan.push((t === 'YAY' ? 'Yayita' : 'Muestra') + ' · ' + nom);
+  }
+  return faltan;
+}
+function _npSinStockConfirmar(faltan) {
+  if (!faltan || !faltan.length) return Promise.resolve(true);
+  return _uiSeguro('No hay stock registrado en el ERP de:\n\n' + faltan.join('\n') + '\n\n¿Registrarla igual? Al guardar se pasa del stock normal; si tampoco hay, queda pendiente de regularizar en Stock › Movimiento de stock.', 'Sí, registrar igual');
 }
 
 async function _yayAlcanzaParaTodas(prendas) {
