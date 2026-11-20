@@ -14185,10 +14185,12 @@ async function renderHeroDiario() {
   let bars='', dnum='';
   dias.forEach(d => {
     const ha=(d.actual/top)*H;
-    bars += '<div class="hd-bar" data-dia="'+d.dia+'" style="min-width:44px;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:'+(d.actual>0?'pointer':'default')+'">'
+    bars += '<div class="hd-bar" data-dia="'+d.dia+'" data-v="'+(+d.actual||0)+'" style="min-width:44px;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;cursor:'+(d.actual>0?'pointer':'default')+'">'
       + (d.actual>0 ? '<div style="font-size:11px;color:var(--tx);margin-bottom:3px;white-space:nowrap;font-weight:500">'+kfmt(d.actual)+'</div>' : '')
       + '<div style="width:62%;background:var(--ac);border-radius:2px 2px 0 0;height:'+Math.max(0, ha)+'px"></div></div>';
-    dnum += '<div style="min-width:44px;flex:1;text-align:center;font-size:11px;color:var(--mu)">'+d.dia+'</div>';
+    /* 20-nov-2026 (Pablo) · inicial del día de la semana debajo del número: L M X J V S D */
+    const _dow = (() => { const y = +String(curKey).slice(0, 4), mo = +String(curKey).slice(5, 7); const t = new Date(y, mo - 1, +d.dia); return isNaN(t.getTime()) ? '' : 'DLMXJVS'.charAt(t.getDay()); })();
+    dnum += '<div style="min-width:44px;flex:1;text-align:center;font-size:11px;color:var(--mu);line-height:1.3">'+d.dia+(_dow ? '<br><span style="font-size:11px;color:var(--mu)">'+_dow+'</span>' : '')+'</div>';
   });
   host.innerHTML =
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">'
@@ -14249,13 +14251,38 @@ function _hdDetalleEnganchar(host, mes) {
     tip.style.cssText = 'position:fixed;z-index:9999;display:none;min-width:230px;max-width:300px;background:var(--bg2,#1e1e1e);color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:12px;pointer-events:none';
     document.body.appendChild(tip); }
   const fechaTxt = (dia) => String(dia).padStart(2,'0') + '/' + String(mes || '').slice(5, 7);
+  /* 20-nov-2026 (Pablo) · ELEGIR VARIAS BARRAS: Shift/Cmd + clic, o arrastrar sobre las barras. Recuadro con total y promedio
+     por día de los días elegidos (✕ lo cierra). Con días elegidos, un clic simple suma o quita ese día. */
+  const selD = new Set(); let arr = null;
+  host.style.position = 'relative';
+  const box = document.createElement('div');
+  box.style.cssText = 'position:absolute;right:12px;top:44px;z-index:20;display:none;min-width:220px;background:var(--bg2,#1e1e1e);color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:12px';
+  host.appendChild(box);
+  const selPintar = () => {
+    host.querySelectorAll('.hd-bar').forEach(b => { const on = selD.has(b.getAttribute('data-dia')); const br = b.lastElementChild;
+      if (br) { br.style.outline = on ? '2px solid var(--tx)' : ''; br.style.opacity = (selD.size && !on) ? '.4' : ''; } });
+    if (!selD.size) { box.style.display = 'none'; return; }
+    let tot = 0; selD.forEach(dd => { const b = host.querySelector('.hd-bar[data-dia="' + dd + '"]'); tot += +(b && b.getAttribute('data-v')) || 0; });
+    const n = selD.size, lista = [...selD].map(Number).sort((a, b) => a - b).map(fechaTxt).join(' · ');
+    box.innerHTML = '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;font-weight:600;font-size:13px"><span>' + n + (n > 1 ? ' días elegidos' : ' día elegido') + '</span>'
+      + '<button class="btn bs" data-x="1" title="Quitar la selección" style="padding:0 8px;min-height:24px">✕</button></div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px"><tr><td style="padding:2px 0">Total</td><td style="text-align:right;font-weight:600">S/ ' + fmt(tot) + '</td></tr>'
+      + '<tr><td style="padding:2px 0">Promedio por día</td><td style="text-align:right;font-weight:600">S/ ' + fmt(tot / n) + '</td></tr></table>'
+      + '<div style="margin-top:6px;color:var(--mu);font-size:11px">' + esc(lista) + '</div>';
+    box.style.display = 'block';
+    box.querySelector('[data-x]').onclick = (ev) => { ev.stopPropagation(); selD.clear(); selPintar(); };
+  };
+  const selRango = (a, b) => { const lo = Math.min(+a, +b), hi = Math.max(+a, +b); host.querySelectorAll('.hd-bar').forEach(x => { const d0 = +x.getAttribute('data-dia'); if (d0 >= lo && d0 <= hi && +x.getAttribute('data-v') > 0) selD.add(String(d0)); }); };
+  document.addEventListener('mouseup', () => { if (arr) setTimeout(() => { arr = null; }, 0); });
   host.querySelectorAll('.hd-bar').forEach(el => {
     const dia = el.getAttribute('data-dia');
+    el.addEventListener('mousedown', ev => { if (ev.button === 0) arr = { de: dia, movio: false }; });
+    el.addEventListener('mouseenter', () => { if (arr && arr.de !== dia) { arr.movio = true; selRango(arr.de, dia); selPintar(); } });
     el.addEventListener('mouseenter', async () => {
       const d = await det; const x = d && d.dias && d.dias[dia]; if (!x) return;
       tip.innerHTML = '<div style="display:flex;justify-content:space-between;gap:10px;font-weight:600;font-size:13px"><span>'+fechaTxt(dia)+'</span><span>S/ '+fmt(x.total)+' · '+x.n+' ped.</span></div>'
         + _hdTabla('Por canal', x.canales, 'canal') + _hdTabla('Por asesora (sus prendas, sin envío)', x.asesoras, 'asesora')
-        + '<div style="margin-top:6px;color:var(--mu);font-size:11px">Clic en la barra: ver los pedidos</div>';
+        + '<div style="margin-top:6px;color:var(--mu);font-size:11px">Clic: ver los pedidos · Shift + clic o arrastrar: sumar varios días</div>';
       if (d.caja) tip.innerHTML = tip.innerHTML.replace('Por asesora (sus prendas, sin envío)', 'Por asesora (cobrado, con envío)');   /* VR_CAJA_2NOV */
       const r = el.getBoundingClientRect(); tip.style.display = 'block';
       const w = tip.offsetWidth, h = tip.offsetHeight;
@@ -14263,8 +14290,14 @@ function _hdDetalleEnganchar(host, mes) {
       tip.style.top = Math.max(8, r.top - h - 8) + 'px';
     });
     el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
-    el.addEventListener('click', async () => {
+    el.addEventListener('click', async (ev) => {
       tip.style.display = 'none';
+      if (arr && arr.movio) return;   // 20-nov · terminó un arrastre: ya se eligieron los días
+      if (ev.shiftKey || ev.metaKey || ev.ctrlKey || selD.size) {   // 20-nov · elegir varios días
+        if (!(+el.getAttribute('data-v') > 0)) return;
+        if (selD.has(dia)) selD.delete(dia); else selD.add(dia);
+        selPintar(); return;
+      }
       const d = await det; const x = d && d.dias && d.dias[dia]; if (!x) return;
       let filas = '';
       (x.pedidos || []).forEach(p => { filas += '<tr><td style="padding:4px 8px 4px 0;font-weight:600">'+esc(String(p.nro))+'</td><td style="padding:4px 8px">'+esc(String(p.canal))+'</td><td style="padding:4px 8px;color:var(--mu)">'+esc(String(p.asesora))+'</td><td style="padding:4px 0;text-align:right;font-weight:600">S/ '+fmt(p.monto)+'</td></tr>'; });
@@ -28774,6 +28807,7 @@ function verPed(p) {
     +'</div>'
     +'<input type="hidden" id="mpfe-original">'
     +'<div style="display:flex;gap:8px;justify-content:flex-end">'
+    +'<button class="btn bg bs" id="mpfe-yay" title="Era una Yayita registrada como prenda normal: corrige el nombre y el stock">Convertir en Yayita</button>'
     +'<button class="btn bg bs" id="mpfe-cancel">Cancelar</button>'
     +'<button class="btn bp bs" id="mpfe-save">Guardar cambios</button>'
     +'</div></div>';
@@ -29110,9 +29144,9 @@ function verPed(p) {
       try { [n, nm] = await Promise.all([_yayDisponibles(nombre), _mueDisponibles(nombre)]); } catch (e) { return; }
       if (sel) {
         sel.innerHTML = '<option value="">Sale de: Stock</option>'
-          + '<option value="YAY"' + (n > 0 ? '' : ' disabled') + '>Sale de: Yayita (' + n + ' con falla)</option>'
+          + '<option value="YAY">Sale de: Yayita (' + (n > 0 ? n + ' con falla' : 'se pasa a Yayitas al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible: npYayAltaAuto */
           + '<option value="MUE"' + (nm > 0 ? '' : ' disabled') + '>Sale de: Muestra (' + nm + (nm > 0 ? '' : ' · regístrala primero como No disponible → Muestra') + ')</option>';
-        sel.style.display = (n > 0 || nm > 0) ? 'inline-block' : 'none';
+        sel.style.display = 'inline-block';   // 20-nov · siempre visible
         if (!sel._ok) { sel._ok = 1; sel.addEventListener('change', () => {
           const v = sel.value; if (chk) chk.checked = (v === 'YAY'); if (mue) mue.checked = (v === 'MUE');
           if (chk) chk.dispatchEvent(new Event('change')); if (mue) mue.dispatchEvent(new Event('change'));
@@ -29192,6 +29226,7 @@ function verPed(p) {
       // total en pantalla sea correcto desde ya (ver _loteSiguienteLocal).
       const _loteAdiv = _loteSiguienteLocal(nro);
       const _esYay  = !!(qId('mpf-yay-chk') && qId('mpf-yay-chk').checked);
+      if (_esYay) await npYayAltaAuto([{ dis: _prendaTxt, esYayita: true, cant: 1 }]);   // 20-nov · sin registro previo
       const _estAdd = qId('medit-Estado').value;
       const _fpAdd  = qId('medit-FechaPedido').value;
       let _filaOptDom = null;   // 1-oct: la fila del modal, para quitarla si no se guarda
@@ -29363,6 +29398,22 @@ function verPed(p) {
   });
   qId('mpfe-cancel').addEventListener('click', () => {
     qId('medit-prenda-edit-form').style.display = 'none';
+  });
+  // 20-nov-2026 (Pablo) · CONVERTIR EN YAYITA una prenda ya vendida como normal (no había cómo marcarla Yayita).
+  // Stock: la venta Yayita no descuenta del vendible sino del montón de Yayitas. Si ese montón no tenía la unidad,
+  // npYayAltaAuto la registra (No disponible → Yayitas). Neto: el vendible queda igual y el montón no queda negativo.
+  qId('mpfe-yay').addEventListener('click', async function() {
+    const orig = qId('mpfe-original').value.trim();
+    if (/^\s*YAYITA\b/i.test(orig)) { toast('Esta prenda ya está registrada como Yayita', 'err'); return; }
+    if (/^\s*MUESTRA\b/i.test(orig)) { toast('Una Muestra no se puede convertir en Yayita', 'err'); return; }
+    const base = qId('mpfe-prenda').value.trim().replace(/^\s*YAYITA\s*[-–—]?\s+/i, '') || orig;
+    if (!(await _uiSeguro('¿Convertir «' + base + '» en Yayita?\n\nQueda como «YAYITA - ' + base + '» y el stock se corrige: la unidad sale de Yayitas, no del stock normal.'))) return;
+    this.disabled = true;
+    try { await npYayAltaAuto([{ dis: base, esYayita: true, cant: 1 }]); }
+    catch (e) { this.disabled = false; toast(esc((e && e.message) || String(e)), 'err'); return; }
+    this.disabled = false;
+    qId('mpfe-prenda').value = _yayPrefijar(base);
+    qId('mpfe-save').click();
   });
   qId('mpfe-save').addEventListener('click', function() {
     const originalNombre = qId('mpfe-original').value;
@@ -32096,9 +32147,9 @@ function npAddPrenda() {
   div.appendChild(saleSel);
   function _npSaleOpts(n, nm) {
     saleSel.innerHTML = '<option value="">Sale de: Stock</option>'
-      + '<option value="YAY"' + (n > 0 ? '' : ' disabled') + '>Sale de: Yayita (' + n + ' con falla)</option>'
+      + '<option value="YAY">Sale de: Yayita (' + (n > 0 ? n + ' con falla' : 'se pasa a Yayitas al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible: npYayAltaAuto */
       + '<option value="MUE"' + (nm > 0 ? '' : ' disabled') + '>Sale de: Muestra (' + nm + (nm > 0 ? '' : ' · regístrala primero como No disponible → Muestra') + ')</option>';
-    saleSel.style.display = (n > 0 || nm > 0) ? 'inline-block' : 'none';
+    saleSel.style.display = 'inline-block';   // 20-nov · siempre visible: la Yayita ya no exige registro previo
   }
   saleSel.addEventListener('change', () => {
     const v = saleSel.value;
@@ -33425,6 +33476,7 @@ async function _npExecuteSave(job) {
   // en el servidor. Por eso: si el mapa que ya está en memoria dice que alcanza, va por
   // la base; si dice que NO o no lo pudo leer, se va por Apps Script, que tiene la
   // validación autoritativa. Rápido cuando está claro, seguro cuando hay duda.
+  await npYayAltaAuto(job.prendasData);   // 20-nov · Yayita sin registro previo → se registra aquí (No disponible → Yayitas)
   const _hayYayita = (job.prendasData || []).some(p => p && p.esYayita);
   let _bodyRapido = _bodyCrear;
   if (_hayYayita) {
@@ -33958,17 +34010,9 @@ const NP_ORI = { tel: '', res: null };
 function _npTel1(){ const i = document.querySelector('#np-tels input'); return i ? String(i.value || '').replace(/\D/g, '').slice(-9) : ''; }
 function _npEsAds(){ const c = String((document.getElementById('np-canal') || {}).value || '').toUpperCase(), o = String((document.getElementById('np-origen') || {}).value || '').toUpperCase(); return c === 'WHATSAPP' && o.indexOf('ADS') === 0; }
 async function _npClicDe(t){
-  if (t.length !== 9) return null;
-  if (NP_ORI.tel === t && NP_ORI.res) return NP_ORI.res;
-  try {
-    const tok = await _sbSesionAsegurar(); if (!tok) return null;
-    /* 28-oct 17h30 · nunca frena el Guardar más de 3 s: si la base no contesta, no se pregunta nada */
-    const ac = (typeof AbortController === 'function') ? new AbortController() : null; const tm = ac ? setTimeout(() => ac.abort(), 3000) : null;
-    const r = await fetch(SB_URL + '/rest/v1/rpc/anuncio_por_telefono', { method: 'POST', signal: ac ? ac.signal : undefined, headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify({ p_tel: t }) });
-    if (tm) clearTimeout(tm);
-    if (!r.ok) return null;
-    const j = await r.json(); NP_ORI.tel = t; NP_ORI.res = { tel9: t, clic: j && j.ad_id ? j : null }; return NP_ORI.res;
-  } catch (_) { return null; }
+  /* 20-nov · misma fuente que el aviso de orgánico (clics + chats de anuncio del bot): la vieja
+     anuncio_por_telefono no veía a clientas como la del 23775 y avisaba «no tocó ningún anuncio» */
+  return _npChatDe(t);
 }
 async function _npOrigenPista(){
   const sel = document.getElementById('np-origen'); if (!sel) return;
@@ -37431,6 +37475,64 @@ let invShowAll=(function(){ try{ return localStorage.getItem('erp_inv_showall_v2
 const IV_GRUPOS = ['Confección total', 'No disponible', 'Confección real', 'Ventas', 'Stock'];
 let invCols=(function(){ try{ const a=JSON.parse(localStorage.getItem('erp_inv_cols_v1')||'null'); if(Array.isArray(a)){ const b=a.map(Number).filter(i=>i>=0&&i<=4); if(b.length) return b; } }catch(e){} return invShowAll?[0,1,2,3,4]:[2,3,4]; })();
 function _ivColsVis(){ return IV_GRUPOS.map((_,i)=>i).filter(i=>invCols.indexOf(i)>=0); }
+/* 20-nov-2026 (Pablo) · SUMAR CELDAS DE UN GRUPO: arrastrar sobre las celdas (o Shift/Cmd + clic) dentro de UN mismo grupo de
+   columnas (ej. Ventas) y ver la suma en un recuadro con ✕. Ej.: cuántas ventas tuvo una blusa o un grupo de prendas.
+   Las celdas llevan data-ivg (grupo) y data-ivv (valor) desde el armado de la tabla. Un clic simple fuera de la selección la borra. */
+(function _ivSumaInstalar(){
+  if (window._ivSumaOk) return; window._ivSumaOk = 1;
+  const st = document.createElement('style');
+  st.textContent = 'td.iv-sel{box-shadow:inset 0 0 0 2px #8b5cf6 !important}';
+  document.head.appendChild(st);
+  let g = null, ini = null, arr = false, mov = false;
+  const sel = new Set();
+  const caja = () => { let b = document.getElementById('iv-suma'); if (!b) { b = document.createElement('div'); b.id = 'iv-suma';
+    b.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:9998;min-width:220px;background:var(--bg2,#1e1e1e);color:var(--tx);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;box-shadow:0 8px 24px rgba(0,0,0,.35);font-size:12px;display:none';
+    document.body.appendChild(b); } return b; };
+  const limpiar = () => { sel.forEach(td => td.classList.remove('iv-sel')); sel.clear(); g = null; caja().style.display = 'none'; };
+  const pintar = () => {
+    const b = caja(); if (!sel.size) { b.style.display = 'none'; return; }
+    let tot = 0, n = 0; sel.forEach(td => { const v = parseFloat(td.getAttribute('data-ivv')); if (!isNaN(v)) { tot += v; n++; } });
+    b.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:600;font-size:13px"><span>' + esc(String(IV_GRUPOS[+g] || '')) + '</span>'
+      + '<button class="btn bs" data-x="1" title="Quitar la selección" style="padding:0 8px;min-height:24px">✕</button></div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px"><tr><td style="padding:2px 0">Suma</td><td style="text-align:right;font-weight:600">' + tot.toLocaleString('es-PE') + '</td></tr>'
+      + '<tr><td style="padding:2px 0;color:var(--mu)">Celdas</td><td style="text-align:right;color:var(--mu)">' + n + '</td></tr></table>';
+    b.style.display = 'block';
+    b.querySelector('[data-x]').onclick = limpiar;
+  };
+  const rect = (a, c) => {   // todas las celdas del grupo dentro del rectángulo entre la celda de inicio y la actual
+    const r1 = a.getBoundingClientRect(), r2 = c.getBoundingClientRect();
+    const x0 = Math.min(r1.left, r2.left), x1 = Math.max(r1.right, r2.right), y0 = Math.min(r1.top, r2.top), y1 = Math.max(r1.bottom, r2.bottom);
+    const tb = a.closest('table'); if (!tb) return;
+    sel.forEach(td => td.classList.remove('iv-sel')); sel.clear();
+    tb.querySelectorAll('td[data-ivg="' + g + '"]').forEach(td => { const r = td.getBoundingClientRect(), cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+      if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) { sel.add(td); td.classList.add('iv-sel'); } });
+  };
+  document.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    const td = e.target.closest && e.target.closest('td[data-ivg]');
+    if (!td) { if (sel.size && !(e.target.closest && e.target.closest('#iv-suma'))) limpiar(); return; }
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {   // sumar / quitar una celda
+      e.preventDefault();
+      if (g !== null && td.getAttribute('data-ivg') !== g) limpiar();
+      g = td.getAttribute('data-ivg');
+      if (sel.has(td)) { sel.delete(td); td.classList.remove('iv-sel'); } else { sel.add(td); td.classList.add('iv-sel'); }
+      pintar(); return;
+    }
+    arr = true; mov = false; ini = td;
+  }, true);
+  document.addEventListener('mouseover', e => {
+    if (!arr || !ini) return;
+    const td = e.target.closest && e.target.closest('td[data-ivg]');
+    if (!td || td === ini || td.getAttribute('data-ivg') !== ini.getAttribute('data-ivg')) return;
+    if (!mov) { mov = true; limpiar(); g = ini.getAttribute('data-ivg'); }
+    try { window.getSelection().removeAllRanges(); } catch (_) {}
+    rect(ini, td); pintar();
+  });
+  document.addEventListener('mouseup', () => {
+    if (arr && !mov && sel.size && ini && !sel.has(ini)) limpiar();   // clic simple en otra celda: se borra
+    arr = false; ini = null;
+  });
+})();
 function _ivColsCerrar(){ const p=document.getElementById('iv-cols-pop'); if(p) p.remove(); document.removeEventListener('mousedown',_ivColsFuera,true); }
 function _ivColsFuera(e){ const p=document.getElementById('iv-cols-pop'); if(p && !p.contains(e.target) && !(e.target.closest && e.target.closest('#iv-cols'))) _ivColsCerrar(); }
 function _ivColsAbrir(el){
@@ -38127,8 +38229,8 @@ function renderInv(el){
             const _edU=(bi===0 && !_stYayMode)
               ? ` class="iv-tot-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="${_tU}" title="Talla única · doble clic: mover stock"`
               : '';
-            if(dash) tr+=`<td${_edU||_hiU}${_cs} style="${STEMPTY}${TB}${P}${_sepU}${C}color:#6b7280">–</td>`;
-            else tr+=`<td${_edU||_hiU}${_cs} style="${dataSt}${TB}${P}${_sepU}${C}${_hiU?'cursor:zoom-in;':''}"><span style="font-size:11px;opacity:.75;margin-right:4px">U</span>${_capsula(v)}</td>`;
+            if(dash) tr+=`<td data-ivg="${bi}" data-ivv="${dash?'':(v==null?'':v)}"${_edU||_hiU}${_cs} style="${STEMPTY}${TB}${P}${_sepU}${C}color:#6b7280">–</td>`;
+            else tr+=`<td data-ivg="${bi}" data-ivv="${dash?'':(v==null?'':v)}"${_edU||_hiU}${_cs} style="${dataSt}${TB}${P}${_sepU}${C}${_hiU?'cursor:zoom-in;':''}"><span style="font-size:11px;opacity:.75;margin-right:4px">U</span>${_capsula(v)}</td>`;
             return;
           }
           const _lab = (d.tlab && d.tlab[t]) ? `<div style="font-size:11px;line-height:1;opacity:.8;margin-bottom:1px">${esc(d.tlab[t])}</div>` : '';
@@ -38144,7 +38246,7 @@ function renderInv(el){
             ? ` class="iv-tot-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="${t}" title="Doble clic: mover stock de ${esc(d.diseno)} ${esc(d.color)} ${t}"`
             : '';
           const _edCur=_edT?'cursor:cell;':'';
-          if(dash) tr+=`<td${_edT} style="${STEMPTY}${TB}${P}${sep}${C}${_edCur}color:#6b7280">–</td>`;
+          if(dash) tr+=`<td data-ivg="${bi}" data-ivv="${dash?'':(v==null?'':v)}"${_edT} style="${STEMPTY}${TB}${P}${sep}${C}${_edCur}color:#6b7280">–</td>`;
           else if(bi===0){ const _ndCel=(d.fallas&&d.fallas[t])||0;   /* 20-set · ndui: Total = disponibles + no disponibles */
             /* 21-set · SE SACA EL DESGLOSE «(30 + 2 🚫)» DE LA CELDA.
                Lo agregue el 20-set sin que Pablo lo pidiera: ensuciaba la
@@ -38152,10 +38254,10 @@ function renderInv(el){
                numero estaba mal. La explicacion sigue estando donde se
                necesita — dentro del editor de la talla, cuando hay unidades
                no disponibles — que es el momento en que la pregunta aparece. */
-            tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_lab}${_capsula(v)}</td>`; }
+            tr+=`<td data-ivg="${bi}" data-ivv="${dash?'':(v==null?'':v)}"${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_lab}${_capsula(v)}</td>`; }
           else if(bi===4){ /* 15-oct (Pablo) · doble clic en Stock = historial completo del SKU */
-            tr+=`<td class="iv-stk-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="${t}" data-v="${v}" title="Doble clic: historial completo de ${esc(d.diseno)} ${esc(d.color)} ${t}" style="${dataSt}${TB}${P}${sep}${C}cursor:zoom-in;">${_lab}${_capsula(v)}</td>`; }
-          else { tr+=`<td${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_lab}${_capsula(v)}</td>`; }
+            tr+=`<td data-ivg="${bi}" data-ivv="${dash?'':(v==null?'':v)}" class="iv-stk-cell" data-pren="${esc(d.prenda)}" data-dis="${esc(d.diseno)}" data-colr="${esc(d.color)}" data-tal="${t}" data-v="${v}" title="Doble clic: historial completo de ${esc(d.diseno)} ${esc(d.color)} ${t}" style="${dataSt}${TB}${P}${sep}${C}cursor:zoom-in;">${_lab}${_capsula(v)}</td>`; }
+          else { tr+=`<td data-ivg="${bi}" data-ivv="${dash?'':(v==null?'':v)}"${_edT} style="${dataSt}${TB}${P}${sep}${C}${_edCur}">${_lab}${_capsula(v)}</td>`; }
         });
       });
       tr+='</tr>';
@@ -40591,6 +40693,30 @@ function _yayPrefijar(prenda) {
 // Cuenta las repetidas: dos unidades del mismo SKU en un pedido necesitan 2, no 1.
 // Devuelve false ante cualquier duda (mapa vacío, SKU que no resuelve) — y esa duda
 // manda el pedido por Apps Script, que valida de verdad. Nunca al revés.
+// 20-nov-2026 (Pablo) · «antes se podía elegir si era Yayita al agregar la prenda». Desde el 30-oct la Yayita solo salía
+// si antes la registraban en Stock › Movimiento de stock › No disponible → Yayitas. Ahora, si faltan, se registran aquí mismo
+// (mismo movimiento: Conf. Real −1, Yayitas +1) y la venta las consume del montón. Neto: vendible −1, igual que vender la prenda.
+async function npYayAltaAuto(prendas) {
+  const marc = (prendas || []).filter(p => p && p.esYayita && p.dis);
+  if (!marc.length) return 0;
+  const pedir = {};
+  marc.forEach(p => { const k = String(p.dis).replace(/^\s*YAYITA\s*[-–—]?\s+/i, '').trim(); pedir[k] = (pedir[k] || 0) + (parseInt(p.cant, 10) || 1); });
+  const items = [];
+  for (const k of Object.keys(pedir)) {
+    let hay = 0; try { hay = await _yayDisponibles(k); } catch (e) { hay = 0; }
+    const falta = pedir[k] - (hay || 0);
+    if (falta > 0) items.push({ prenda: k, cantidad: falta, motivo: 'Yayita vendida sin registro previo', destino: 'YAYITAS' });
+  }
+  if (!items.length) return 0;
+  try {
+    _yayOlvidar();
+    let rf = await _fallasIngresarRapido(items);
+    if (!rf) rf = await apiSend('fallas.ingresar', { items: items });
+    _yayEspejoConfirmar(rf);
+  } catch (e) { throw new Error('No se pudo pasar la prenda a Yayitas: ' + ((e && e.message) || e) + '. No se guardó nada.'); }
+  return items.length;
+}
+
 async function _yayAlcanzaParaTodas(prendas) {
   try {
     const need = {};
