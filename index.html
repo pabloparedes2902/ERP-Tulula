@@ -35916,7 +35916,11 @@ async function cliOpenHistorial(keyOrObj) {
     // deduplican los pagos repetidos (un pago que cubre varias prendas cuenta 1 vez). Evita inflar
     // Subtotal/Pagado (ej.: 469→459 y 619→459).
     (function _histEnrich(){
-      const loteEnvio = {}, pagoSeen = {};
+      const loteEnvio = {}, pagoSeen = {}, loteDesc = {};
+      // 19-nov · envío y descuento: el MAYOR del lote, esté en la fila que esté (hay pedidos con el envío en la 2ª prenda)
+      const _maxEnv = {}, _maxDes = {};
+      (_cliHist.peds||[]).forEach(q => { if (esFilaPago(q)) return; const k = String(q.NroPedido||'') + '|' + String(q.FechaPedido||'').slice(0,10);
+        _maxEnv[k] = Math.max(_maxEnv[k] || 0, parseFloat(q.Envio) || 0); _maxDes[k] = Math.max(_maxDes[k] || 0, parseFloat(q.Descuento) || 0); });
       let tS = 0, tP = 0;
       (_cliHist.peds||[]).forEach(p => {
         const lk = String(p.NroPedido||'') + '|' + String(p.FechaPedido||'').slice(0,10);
@@ -35926,7 +35930,11 @@ async function cliOpenHistorial(keyOrObj) {
         const pago   = parseFloat(p.Pago)||0;
         const forma  = String(p.FormaPago||'');
         let envioRow = 0;
-        if (!isPago && !(lk in loteEnvio)) { loteEnvio[lk] = envio; envioRow = envio; }
+        if (!isPago && !(lk in loteEnvio)) { loteEnvio[lk] = envio; envioRow = _maxEnv[lk] || 0; }
+        // 19-nov · el descuento del pedido se resta una vez por lote (antes no se restaba: 23490 debía S/11 que no debía)
+        const desc = _maxDes[lk] || 0;
+        let descRow = 0;
+        if (!isPago && desc > 0 && !(lk in loteDesc)) { loteDesc[lk] = desc; descRow = desc; }
         let pagoRow = 0;
         // 19-nov (363 · Irina 23894): antes la llave era pedido+monto+forma y se tragaba el 2º pago
         // de S/10 BCP (otra fecha, otra constancia). Ahora, igual que pEnrichPagos: PagoId manda;
@@ -35935,9 +35943,9 @@ async function cliOpenHistorial(keyOrObj) {
         if (pago > 0) { const pk = _cliHistLlavePago(p, lk, isPago); if (!pagoSeen[pk]) { pagoSeen[pk] = true; pagoRow = pago; } }
         p._precioRow   = precio;
         p._envioRow    = envioRow;
-        p._subtotalRow = precio + envioRow;
+        p._subtotalRow = precio + envioRow - descRow;
         p._pagoRow     = pagoRow;
-        if (!isPago) tS += precio + envioRow;
+        if (!isPago) tS += precio + envioRow - descRow;
         tP += pagoRow;
       });
       _cliHist._totSubtotal = tS;
