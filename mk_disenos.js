@@ -292,14 +292,16 @@ async function disCargar(){
   const [f, p, m, pu, pz, sf] = await Promise.all([
     _mklSb('/rest/v1/mk_disenos?select=*&order=creado.desc'),
     DIS.prods ? Promise.resolve(DIS.prods) : _mklSb('/rest/v1/rpc/mk_dis_productos', { method: 'POST', body: '{}' }),
-    _mklSb('/rest/v1/mk_dis_config?select=valor&clave=eq.marca').catch(() => []),
+    _mklSb('/rest/v1/mk_dis_config?select=clave,valor&clave=in.(marca,orden_plantillas)').catch(() => []),
     _mklSb('/rest/v1/rpc/_mk_puede_editar', { method: 'POST', body: '{}' }).catch(() => false),
     _mklSb('/rest/v1/mk_dis_piezas?select=*&estado=neq.archivada&order=creado.desc&limit=2000').catch(() => []),
     _mklSb('/rest/v1/mk_dis_sinfondo?select=foto,url').catch(() => [])]);
   DIS.filas = Array.isArray(f) ? f : [];
   DIS.piezas = Array.isArray(pz) ? pz : []; DIS.sinf = {}; (Array.isArray(sf) ? sf : []).forEach(x => { DIS.sinf[x.foto] = x.url; });
   DIS.prods = (Array.isArray(p) ? p : []).filter(x => !/^archived$/i.test(x.estado || '')).sort((a, b) => (_disActivo(a) ? 0 : 1) - (_disActivo(b) ? 0 : 1) || String(a.titulo).localeCompare(String(b.titulo)));
-  DIS.marca = Object.assign({}, DIS_MARCA_DEF, (m && m[0] && m[0].valor) || {});
+  const cfg = k => ((Array.isArray(m) ? m : []).find(x => x.clave === k) || {}).valor;
+  DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null;
+  _disFondosCargar();
   DIS.puede = pu === true;
 }
 async function disInfo(handle){
@@ -351,6 +353,7 @@ function _disFotoSrc(cx, src){
   if (k === 'n') return cx.fotos[i] || '';
   if (k === 'ben'){ const b = cx.ben[i]; if (b && b.foto){ const f = cx.fotos.find(u => _disArch(u) === _disArch(b.foto)); if (f) return f; } return cx.fotos[cx.i0 + i + 1] || ''; }
   if (k === 'url') return src.slice(4);
+  if (k === 'fondo'){ const f = (DIS.fondos || [])[i]; return f ? f.url : ''; }
   return '';
 }
 function _disTxt(cx, t){
@@ -410,7 +413,7 @@ function disHtml(d, cx, s, opt){
       inner = u ? '<img crossorigin="anonymous" src="' + disA(sf ? u : _disTam(u, anchoFoto)) + '" style="width:100%;height:100%;object-fit:' + (c.fit || (c.sinfondo ? 'contain' : 'cover')) + ';object-position:' + op + ';display:block;pointer-events:none;'
         + (z > 1 ? 'transform:scale(' + z + ');transform-origin:' + fxp + ';' : '') + (fil ? 'filter:' + fil + ';' : '') + '" draggable="false">' : '';
     } else if (c.t === 'forma'){
-      estilo = 'background:' + _disCol(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';';
+      estilo = 'background:' + _disCol(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';' + (+c.blur ? 'filter:blur(' + (+c.blur * s) + 'px);' : '');
     } else if (c.t === 'degradado'){
       const dir = { abajo: 'to top', arriba: 'to bottom', izq: 'to right', der: 'to left' }[c.desde || 'abajo'] || 'to top';
       estilo = 'background:linear-gradient(' + dir + ',' + _disRgba(_disCol(c.color), c.op != null ? +c.op : 0.8) + ' 0%,' + _disRgba(_disCol(c.color), 0) + ' 100%);';
@@ -492,8 +495,8 @@ async function disAbrir(){
 }
 function _disVisibles(){
   const q = _mkNorm(DIS.q);
-  return (DIS.filas || []).filter(f => (DIS.ver === 'archivados' ? f.estado === 'archivada' : DIS.ver === 'ganadoras' ? f.estado === 'ganadora' : f.estado !== 'archivada')
-    && (!DIS.fForm || f.formato === DIS.fForm) && (!DIS.fMsj || f.mensaje === DIS.fMsj) && (!q || _mkNorm(f.nombre).indexOf(q) >= 0));
+  return _disOrdenar((DIS.filas || []).filter(f => (DIS.ver === 'archivados' ? f.estado === 'archivada' : DIS.ver === 'ganadoras' ? f.estado === 'ganadora' : f.estado !== 'archivada')
+    && (!DIS.fForm || f.formato === DIS.fForm) && (!DIS.fMsj || f.mensaje === DIS.fMsj) && (!q || _mkNorm(f.nombre).indexOf(q) >= 0)));
 }
 function disPintar(){
   const el = document.getElementById('mkDis'); if (!el) return;
@@ -503,7 +506,7 @@ function disPintar(){
   const sel = (id, v, ops, ph) => '<select onchange="' + id + '=this.value;disPintar()"><option value="">' + ph + '</option>' + ops.map(o => '<option value="' + o[0] + '"' + (v === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
   const m = DIS.marca || DIS_MARCA_DEF;
   let h = '<div class="dis-cabeza"><div><div class="ui-blo">Diseños de anuncios</div><div class="ui-nota">Plantillas que se llenan solas con fotos, precios, colores y reseñas de cada prenda.</div></div>'
-    + '<div class="dis-barra-der">' + (DIS.puede ? '<button class="btn" onclick="disPiezasAbrir(null)">🧩 Piezas <span class="dis-cnt">' + DIS.piezas.filter(x => x.estado !== 'archivada').length + '</span></button><button class="btn" onclick="disMarcaAbrir()">🎨 Marca</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : '') + '</div></div>'
+    + '<div class="dis-barra-der">' + (DIS.puede ? '<button class="btn" onclick="disPiezasAbrir(null)">🧩 Piezas <span class="dis-cnt">' + DIS.piezas.filter(x => x.estado !== 'archivada').length + '</span></button><button class="btn" onclick="disFondosAbrir()">🏞️ Fondos</button><button class="btn" onclick="disMarcaAbrir()">🎨 Marca</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : '') + '</div></div>'
     + '<div class="dis-barra"><div class="dis-barra-izq">' + b('activos', 'Activos') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + '</div>'
     + '<div class="dis-barra-der">' + sel('DIS.fForm', DIS.fForm, [['4x5', 'Feed 4:5'], ['9x16', 'Historias 9:16']], 'Todos los formatos') + sel('DIS.fMsj', DIS.fMsj, DIS_MSJ, 'Todos los mensajes')
     + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px"></div></div>';
@@ -512,6 +515,7 @@ function disPintar(){
   if (!vis.length) h += '<div class="mkl-vacio">' + (fs.length ? 'Nada para mostrar con estos filtros.' : 'Todavía no hay diseños. Crea el primero con ➕ Nuevo diseño.') + '</div>';
   else h += '<div class="dis-grilla">' + vis.map(f => _disTarjeta(f)).join('') + '</div>';
   el.innerHTML = h;
+  if (DIS.puede && DIS.ver === 'activos') _disArrastrable(el.querySelector('.dis-grilla'), ks => _disGuardarOrdenDis(ks.filter(k => { const f = (DIS.filas || []).find(x => x.id === +k); return f && f.estado !== 'ganadora'; })));
   vis.forEach(f => _disMini(f));
 }
 function _disTarjeta(f){
@@ -524,8 +528,8 @@ function _disTarjeta(f){
       + '<button class="btn" onclick="disDuplicar(' + f.id + ')" title="Duplicar">⧉</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Archivar (se puede restaurar)">🗄</button>';
   const estSel = DIS.puede && est !== 'archivada' ? '<select class="dis-est" onchange="disEstado(' + f.id + ',this.value)">' + ['borrador', 'prueba', 'ganadora'].map(k => '<option value="' + k + '"' + (k === est ? ' selected' : '') + '>' + DIS_EST[k] + '</option>').join('') + '</select>'
     : '<span class="ui-chip ' + chip + '">' + DIS_EST[est] + '</span>';
-  return '<div class="dis-tarj"><div class="dis-mini" id="disMini' + f.id + '" onclick="' + (DIS.puede && est !== 'archivada' ? 'disEditar(' + f.id + ')' : '') + '"></div>'
-    + '<div class="dis-tarj-pie"><div class="dis-fila"><div class="ui-tot dis-nom" title="' + disA(f.nombre) + '">' + esc(f.nombre) + '</div>' + estSel + '</div>'
+  return '<div class="dis-tarj" data-k="' + f.id + '"' + (DIS.puede && est !== 'archivada' && est !== 'ganadora' ? ' draggable="true" title="Arrastra para cambiar el orden"' : '') + '><div class="dis-mini" id="disMini' + f.id + '" onclick="' + (DIS.puede && est !== 'archivada' ? 'disEditar(' + f.id + ')' : '') + '"></div>'
+    + '<div class="dis-tarj-pie"><div class="dis-fila"><div class="ui-tot dis-nom" title="' + disA(f.nombre) + '"><span class="dis-cod">#' + _disCod(f.id) + '</span> ' + esc(f.nombre) + '</div>' + estSel + '</div>'
     + '<div class="ui-nota">' + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (npz ? ' · <a href="#" onclick="disPiezasAbrir(' + f.id + ');return false">' + npz + ' piezas</a>' : '') + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
     + '<div class="mkcr-acc dis-acc">' + acc + '</div></div></div>';
 }
@@ -535,6 +539,8 @@ async function _disMini(f){
   const inf = await disInfo(p.handle), W = (DIS_TAM[f.formato] || DIS_TAM['4x5'])[0];
   const cx = disCtx(p, inf, aj.prev_color, aj); try { await _disLuzPrep(f, cx); } catch (_) {}
   box.innerHTML = disHtml(f, cx, 248 / W, { ancho: 500 });
+  if ((f.capas || []).some(c => c.t === 'foto' && c.sinfondo && _disVis(c, cx) && !DIS.sinf[_disArch(_disFotoSrc(cx, c.src))]))
+    DIS._colaSF = (DIS._colaSF || Promise.resolve()).then(() => _disSinFondoPrep(f, cx)).then(() => { const b2 = document.getElementById('disMini' + f.id); if (b2) b2.innerHTML = disHtml(f, cx, 248 / W, { ancho: 500 }); }).catch(() => {});
 }
 
 /* ── crear, duplicar, estado ── */
@@ -543,9 +549,11 @@ function disNuevoAbrir(){
   let h = '<div class="dis-modal" id="disNuevo"><div class="dis-caja" style="max-width:1180px"><div class="dis-cab"><div><div class="ui-pag">Nuevo diseño</div><div class="ui-nota">Elige un punto de partida. Todo se cambia después. Muestra: ' + esc((p || {}).titulo || '') + '</div></div><span style="flex:1"></span>'
     + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="4x5">Feed 4:5</option><option value="9x16">Historias 9:16</option></select>'
     + '<button class="dis-ib" onclick="document.getElementById(\'disNuevo\').remove()" title="Cerrar">' + disIco('cerrar') + '</button></div><div class="dis-grilla" id="disNuevoGrilla">';
-  DIS_BASE.forEach((b, i) => { h += '<div class="dis-tarj dis-elegir" onclick="disNuevo(' + i + ')"><div class="dis-mini" id="disBase' + i + '"></div><div class="dis-tarj-pie"><div class="ui-tot">' + esc(b.nombre) + '</div><div class="ui-nota">Estilo ' + esc(b.ref || '') + '</div></div></div>'; });
+  if (DIS.puede) h += '<div class="dis-tarj dis-elegir" onclick="disCapturaAbrir()"><div class="dis-mini dis-blanco dis-ia">📷<b>Crear desde captura</b><span class="ui-nota">Pega un anuncio que te guste y la IA lo adapta a Tulula</span></div><div class="dis-tarj-pie"><div class="ui-tot">✨ Desde captura</div><div class="ui-nota">~US$0,04 cada una</div></div></div>';
+  _disOrdenPlantillas().forEach(i => { const b = DIS_BASE[i]; h += '<div class="dis-tarj dis-elegir" data-k="' + i + '"' + (DIS.puede ? ' draggable="true"' : '') + ' onclick="disNuevo(' + i + ')"><div class="dis-mini" id="disBase' + i + '"></div><div class="dis-tarj-pie"><div class="ui-tot"><span class="dis-cod">' + _disCod(i + 1) + '</span> ' + esc(b.nombre) + '</div><div class="ui-nota">Estilo ' + esc(b.ref || '') + (DIS.puede ? ' · arrastra para ordenar' : '') + '</div></div></div>'; });
   h += '<div class="dis-tarj dis-elegir" onclick="disNuevo(-1)"><div class="dis-mini dis-blanco">＋ En blanco</div><div class="dis-tarj-pie"><div class="ui-tot">En blanco</div><div class="ui-nota">Arma el tuyo desde cero</div></div></div></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h);
+  if (DIS.puede) _disArrastrable(document.getElementById('disNuevoGrilla'), ks => _disGuardarOrdenPlant(ks));
   disNuevoPintar();
 }
 function disNuevoPintar(){
@@ -595,6 +603,7 @@ function _disEdAbrir(){
     + '<select onchange="DIS.ed.mensaje=this.value;DIS.ed._sucio=true" title="Mensaje del anuncio">' + DIS_MSJ.map(o => '<option value="' + o[0] + '"' + (DIS.ed.mensaje === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
     + _disIb('deshacer', 'Deshacer (Ctrl+Z)', 'disDeshacer()') + _disIb('rehacer', 'Rehacer (Ctrl+Y)', 'disRehacer()')
     + '<span style="flex:1"></span><span class="ui-nota" id="disEdRes"></span>'
+    + '<button class="btn" onclick="disIAMensajeAbrir()" title="Escribe lo que quieres cambiar y la IA lo hace (~US$0,01)">✨ Pedir un cambio</button>'
     + '<button class="btn" onclick="disVerMuchos()" title="El mismo diseño con 6 productos distintos">' + disIco('grilla', 14) + ' Ver en 6 productos</button>'
     + '<button class="btn" onclick="disLoteDesdeEditor()">🔁 Replicar</button><button class="btn" onclick="disUsar(null)">📤 Usar</button>'
     + '<button class="btn on" onclick="disGuardar()">Guardar</button>' + _disIb('cerrar', 'Cerrar', 'disEdCerrar()') + '</div>'
@@ -604,11 +613,13 @@ function _disEdAbrir(){
     + '<span class="ui-nota" style="margin-left:auto">Arrastra para mover · esquina para agrandar · flechas para afinar · Ctrl+Z deshace</span></div></div>'
     + '<div class="dis-ed-panel" id="disEdPanel"></div></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h);
-  _disArrastreIni(); _disTeclas(true); disEdPintar();
+  _disArrastreIni(); _disTeclas(true); disEdPintar(); DIS._orig = (DIS.ed.id || DIS.ed.ajustes.origen !== 'captura') ? _disHuella() : '';
 }
+/* 21-nov · «cambios sin guardar» = lo que guardarías difiere de lo que abriste (mirar en 9:16 o cambiar el producto de prueba no cuenta) */
+function _disHuella(){ const d = DIS.ed; if (!d) return ''; const a = Object.assign({}, d.ajustes || {}); delete a.prev_handle; delete a.prev_color; return JSON.stringify([d.nombre, d.mensaje, d.capas, a]); }
 function disEdFormato(f){ _disMemo(); DIS.ed.formato = f; DIS.ed._sucio = true; document.querySelectorAll('#disEd .dis-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === f)); disEdPintar(); }
 async function disEdCerrar(){
-  if (DIS.ed && DIS.ed._sucio && !await _uiSeguro('Hay cambios sin guardar. ¿Cerrar igual?', 'Cerrar sin guardar')) return;
+  if (DIS.ed && _disHuella() !== DIS._orig && !await _uiSeguro('Hay cambios sin guardar. ¿Cerrar igual?', 'Cerrar sin guardar')) return;
   const v = document.getElementById('disEd'); if (v) v.remove(); DIS.ed = null; _disTeclas(false);
 }
 function disEdProd(handle, paso){
@@ -681,6 +692,7 @@ function _disPanel(cx){
   const fs = (DIS.ed.ajustes && DIS.ed.ajustes.fondo) || 'fondo';
   h += sec('fondo', 'Fondo del diseño', '<div class="dis-colores">' + DIS_COLS.map(o => '<button type="button" class="dis-col' + (fs === o[0] ? ' on' : '') + '" style="background:' + _disCol(o[0]) + '" title="' + o[1] + '" onclick="disFondo(\'' + o[0] + '\')"></button>').join('') + '</div>'
     + '<label class="btn dis-subir">' + disIco('subir', 14) + ' Subir una imagen de fondo<input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="disFondoSubir(this.files[0])"></label>'
+    + '<button class="btn" style="margin-top:6px" onclick="disFondosAbrir()">🏞️ Elegir de la biblioteca de Fondos</button>'
     + '<div class="ui-nota">Ej.: una oficina, mármol o lino. Queda detrás de todo.</div>');
   pn.innerHTML = h;
 }
@@ -835,7 +847,7 @@ async function disGuardar(callado){
     const r = await _mklSb('/rest/v1/rpc/mk_diseno_guardar', { method: 'POST', body: JSON.stringify({ p_id: d.id || null, p_datos: { nombre: d.nombre, formato: d.formato, tipo: d.tipo || 'estatico', mensaje: d.mensaje, capas: d.capas, ajustes: d.ajustes, padre_id: d.padre_id || null } }) });
     if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
     const i = DIS.filas.findIndex(x => x.id === r.fila.id); if (i >= 0) DIS.filas[i] = r.fila; else DIS.filas.unshift(r.fila);
-    d.id = r.fila.id; d._sucio = false; if (res) res.textContent = '✓ Guardado';
+    d.id = r.fila.id; d._sucio = false; DIS._orig = _disHuella(); if (res) res.textContent = '✓ Guardado';
     if (!callado) disPintar();
     return r.fila;
   } catch (e) { if (res) res.innerHTML = '<span class="mal">No se guardó (' + esc(e.message) + ').</span>'; return null; }
@@ -848,7 +860,14 @@ async function disVerMuchos(){
   const [W] = DIS_TAM[d.formato] || DIS_TAM['4x5'];
   document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disMuchos" onclick="if(event.target===this)this.remove()"><div class="dis-caja" style="max-width:1280px"><div class="dis-cab"><div class="ui-pag">«' + esc(d.nombre) + '» en 6 productos</div><span style="flex:1"></span>'
     + '<button class="dis-ib" onclick="document.getElementById(\'disMuchos\').remove()" title="Cerrar">' + disIco('cerrar') + '</button></div><div class="dis-grilla dis-muchos">' + pick.map((p, k) => '<div class="dis-tarj"><div class="dis-mini" id="disM' + k + '"></div><div class="dis-tarj-pie"><div class="ui-nota dis-nom">' + esc(p.titulo) + '</div></div></div>').join('') + '</div></div></div>');
-  for (let k = 0; k < pick.length; k++){ const inf = await disInfo(pick[k].handle), el = document.getElementById('disM' + k); if (el) el.innerHTML = disHtml(d, disCtx(pick[k], inf, '', d.ajustes), 290 / W, { ancho: 500 }); }
+  const cxs = [];
+  for (let k = 0; k < pick.length; k++){ const inf = await disInfo(pick[k].handle), el = document.getElementById('disM' + k); cxs[k] = disCtx(pick[k], inf, '', d.ajustes); if (el) el.innerHTML = disHtml(d, cxs[k], 290 / W, { ancho: 500 }); }
+  /* 21-nov · Pablo: «a los demás no se les quitó el fondo». Cada producto recorta su foto (la 1ª vez 5-15 s; después queda guardada) */
+  for (let k = 0; k < pick.length; k++){ const el = document.getElementById('disM' + k); if (!el) return;
+    const falta = (d.capas || []).some(c => c.t === 'foto' && c.sinfondo && _disVis(c, cxs[k]) && !DIS.sinf[_disArch(_disFotoSrc(cxs[k], c.src))]);
+    if (falta) el.insertAdjacentHTML('beforeend', '<div class="dis-mini-av">✂ Quitando el fondo…</div>');
+    try { await _disSinFondoPrep(d, cxs[k]); await _disLuzPrep(d, cxs[k]); } catch (_) {}
+    const e2 = document.getElementById('disM' + k); if (e2) e2.innerHTML = disHtml(d, cxs[k], 290 / W, { ancho: 500 }); }
 }
 
 /* ── imagen final (PNG 1080) y paso a 🎬 Biblioteca › Por usar ── */
@@ -911,7 +930,7 @@ async function disUsar(id){
 /* ── marca (aprobación de Pablo) ── */
 function disMarcaAbrir(){
   const m = DIS.marca || DIS_MARCA_DEF, col = (k, t) => '<label class="dis-prop"><span class="ui-nota">' + t + '</span><input type="color" id="disM_' + k + '" value="' + disA(m[k]) + '"></label>';
-  const h = '<div class="dis-modal" id="disMarca"><div class="dis-caja" style="max-width:560px"><div class="dis-cab"><span class="ui-pag">Marca de las plantillas</span><span style="flex:1"></span><button class="tt-ico" onclick="document.getElementById(\'disMarca\').remove()" title="Cerrar">✕</button></div>'
+  const h = '<div class="dis-modal" id="disMarca"><div class="dis-caja" style="max-width:560px"><div class="dis-cab"><span class="ui-pag">Marca de las plantillas</span><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disMarca\').remove()') + '</div>'
     + '<div class="ui-nota" style="margin-bottom:10px">Sacada de tulula.com.pe. Se aplica a todos los diseños.</div><div class="dis-props">'
     + '<label class="dis-prop"><span class="ui-nota">Letra de títulos</span><input id="disM_f_titulo" value="' + disA(m.f_titulo) + '"></label>'
     + '<label class="dis-prop"><span class="ui-nota">Letra de textos</span><input id="disM_f_texto" value="' + disA(m.f_texto) + '"></label></div><div class="dis-props">'
@@ -977,6 +996,11 @@ async function disMarcaGuardar(aprobar){
     + '.dis-capa-acc{display:flex;gap:0;opacity:0;transition:opacity .12s}.dis-capa:hover .dis-capa-acc,.dis-capa.on .dis-capa-acc{opacity:1}.dis-capa-acc .dis-ib{width:24px;height:24px}'
     + '.dis-props{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;align-items:flex-end}.dis-prop{display:flex;flex-direction:column;gap:3px;min-width:78px}.dis-prop input[type=number]{width:78px}.dis-ancho{width:100%}'
     + '.dis-chk{display:inline-flex;align-items:center;gap:6px;font:400 12px var(--ui-f);color:var(--txt);cursor:pointer;margin-right:6px}'
+    + '#disEdRes{max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+    + '.dis-cod{font-size:11px;font-weight:600;color:var(--mu,#8a93a6);letter-spacing:.5px;margin-right:2px}.dis-tarj[draggable=true]{cursor:grab}.dis-mueve{opacity:.4}'
+    + '.dis-ia{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;padding:14px;font-size:28px}.dis-ia b{font-size:14px}'
+    + '.dis-cap-zona{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px;border:2px dashed var(--bd);border-radius:10px;cursor:pointer;text-align:center;background-size:cover;background-position:center}.dis-ocupado{opacity:.6;pointer-events:none}'
+    + '.dis-mini{position:relative}.dis-mini-av{position:absolute;left:8px;bottom:8px;background:rgba(0,0,0,.65);color:#fff;font-size:12px;padding:4px 8px;border-radius:6px}'
     + '.dis-asi{font-size:13px;margin:0 0 6px;line-height:1.35}.dis-916{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px}'
     + '.dis-colores{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0}.dis-col{width:24px;height:24px;border-radius:50%;border:2px solid var(--bd);cursor:pointer;padding:0}'
     + '.dis-col.on{border-color:#7c5cff;box-shadow:0 0 0 2px rgba(124,92,255,.45)}.dis-col.nada{background:repeating-linear-gradient(45deg,transparent 0 4px,var(--bd) 4px 5px)}'
@@ -1020,6 +1044,156 @@ async function _disSinFondoPrep(d, cx, avisar){
     DIS.sinf[k] = url;
   }
 }
+/* ══ 21-nov (3ª tanda, Pablo) ══ códigos y orden · IA (crear desde captura, pedir un cambio) · Fondos · recortes en «Ver en 6» ══ */
+function _disCod(n){ return String(n).padStart(3, '0'); }
+/* orden: 🏆 ganadoras primero (automático) → el orden que tú arrastras → lo más nuevo */
+function _disOrdenar(L){
+  return L.slice().sort((a, b) => (a.estado === 'ganadora' ? 0 : 1) - (b.estado === 'ganadora' ? 0 : 1)
+    || ((a.ajustes && a.ajustes.orden) || 1e9) - ((b.ajustes && b.ajustes.orden) || 1e9) || String(b.creado || '').localeCompare(String(a.creado || '')));
+}
+function _disOrdenPlantillas(){
+  const n = DIS_BASE.length, o = (Array.isArray(DIS.ordenP) ? DIS.ordenP : []).filter(i => i >= 0 && i < n);
+  for (let i = 0; i < n; i++) if (o.indexOf(i) < 0) o.push(i);
+  return o;
+}
+/* arrastrar y soltar para reordenar tarjetas (data-k = clave) */
+function _disArrastrable(cont, alSoltar){
+  if (!cont || cont._dnd) return; cont._dnd = 1; let src = null;
+  cont.addEventListener('dragstart', e => { src = e.target.closest('[data-k]'); if (src){ src.classList.add('dis-mueve'); e.dataTransfer.effectAllowed = 'move'; } });
+  cont.addEventListener('dragend', () => { if (src) src.classList.remove('dis-mueve'); src = null; });
+  cont.addEventListener('dragover', e => { const t = e.target.closest('[data-k]'); if (!src || !t || t === src || t.parentNode !== src.parentNode) return; e.preventDefault();
+    const r = t.getBoundingClientRect(), antes = (e.clientX - r.left) < r.width / 2; t.parentNode.insertBefore(src, antes ? t : t.nextSibling); });
+  cont.addEventListener('drop', e => { if (!src) return; e.preventDefault(); alSoltar([...src.parentNode.querySelectorAll(':scope > [data-k]')].map(x => x.dataset.k)); });
+}
+async function _disGuardarOrdenDis(ids){
+  ids = ids.map(Number); ids.forEach((id, k) => { const f = (DIS.filas || []).find(x => x.id === id); if (f){ f.ajustes = f.ajustes || {}; f.ajustes.orden = k + 1; } });
+  try { await _mklSb('/rest/v1/rpc/mk_diseno_orden', { method: 'POST', body: JSON.stringify({ p_ids: ids }) }); } catch (e) { DIS.msg = '⚠ No se guardó el orden (' + esc(e.message) + ').'; disPintar(); }
+}
+async function _disGuardarOrdenPlant(ks){
+  DIS.ordenP = ks.map(Number).filter(k => k >= 0);
+  try { await _mklSb('/rest/v1/rpc/mk_dis_config_guardar', { method: 'POST', body: JSON.stringify({ p_clave: 'orden_plantillas', p_valor: DIS.ordenP }) }); } catch (_) {}
+}
+/* ── IA: una sola puerta (Edge Function disenos-ia). Gasto aprobado por Pablo ~US$3-5/mes ── */
+async function _disIA(cuerpo){
+  const tok = _mkSbTok(); if (!tok) throw new Error('tu sesión del ERP venció: recarga la página');
+  const r = await fetch(MK_SB_URL + '/functions/v1/disenos-ia', { method: 'POST', headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) });
+  const j = await r.json().catch(() => ({})); if (!r.ok || !j.ok) throw new Error(j.error || ('la IA respondió ' + r.status)); return j;
+}
+function _disImgB64(file, max){
+  return new Promise((ok, mal) => { const u = URL.createObjectURL(file), im = new Image();
+    im.onload = () => { const k = Math.min(1, (max || 1100) / Math.max(im.naturalWidth, im.naturalHeight)), c = document.createElement('canvas');
+      c.width = Math.round(im.naturalWidth * k); c.height = Math.round(im.naturalHeight * k); c.getContext('2d').drawImage(im, 0, 0, c.width, c.height); URL.revokeObjectURL(u); ok(c.toDataURL('image/jpeg', 0.86)); };
+    im.onerror = () => mal(new Error('no pude leer la imagen')); im.src = u; });
+}
+const _DIS_T = ['foto', 'texto', 'forma', 'degradado', 'logo', 'lista', 'colores'];
+function _disLimpiarCapas(C){
+  const n = v => (v == null || v === '' || isNaN(+v)) ? undefined : +v;
+  const L = (Array.isArray(C) ? C : []).filter(c => c && _DIS_T.indexOf(c.t) >= 0).map(c => {
+    const o = Object.assign({}, c); ['x', 'y', 'w', 'h', 'tam', 'ls', 'lh', 'op', 'pad', 'r', 'zoom', 'fx', 'fy', 'bri', 'marco'].forEach(k => { if (o[k] != null){ const v = n(o[k]); if (v == null) delete o[k]; else o[k] = v; } });
+    if (o.x == null) o.x = 0; if (o.y == null) o.y = 0; if (o.w == null) o.w = 100;
+    if (o.t === 'foto' && !/^(color|ben|n|url|fondo):/.test(o.src || '')) o.src = 'color:0';
+    if (o.t === 'texto' && !o.txt) o.txt = '{{nombre}}'; if (o.tam != null) o.tam = Math.max(12, Math.min(220, o.tam));
+    return o; });
+  if (!L.some(c => c.t === 'logo')) L.push({ t: 'logo', x: 39, y: 3, w: 22 });
+  return L;
+}
+function disCapturaAbrir(){
+  const v = document.getElementById('disCap'); if (v) v.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disCap" style="z-index:10050"><div class="dis-caja" style="max-width:560px"><div class="dis-cab"><div><div class="ui-pag">📷 Crear desde captura</div><div class="ui-nota">La IA copia la idea del anuncio y la arma con tu marca, fotos y precios · ~US$0,04 por captura</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'disCapturaCerrar()') + '</div>'
+    + '<label class="dis-cap-zona" id="disCapZona">' + disIco('subir', 28) + '<b>Pega la captura (Ctrl+V) o haz clic para elegirla</b><span class="ui-nota">JPG o PNG · una captura = una plantilla</span><input type="file" accept="image/*" style="display:none" onchange="disCapturaCrear(this.files[0])"></label>'
+    + '<textarea id="disCapNota" rows="2" style="width:100%;margin-top:10px" placeholder="Opcional: qué quieres (ej. «solo la idea del panel de la derecha», «con el precio más grande»)"></textarea>'
+    + '<div class="ui-nota" id="disCapRes" style="margin-top:8px"></div></div></div>');
+  DIS._pega = e => { const it = [...((e.clipboardData && e.clipboardData.items) || [])].find(x => /^image\//.test(x.type)); if (it){ e.preventDefault(); disCapturaCrear(it.getAsFile()); } };
+  document.addEventListener('paste', DIS._pega);
+}
+function disCapturaCerrar(){ const v = document.getElementById('disCap'); if (v) v.remove(); if (DIS._pega){ document.removeEventListener('paste', DIS._pega); DIS._pega = null; } }
+async function disCapturaCrear(file){
+  const res = document.getElementById('disCapRes'), z = document.getElementById('disCapZona'); if (!file || DIS._capCorre) return;
+  DIS._capCorre = 1; if (z) z.classList.add('dis-ocupado');
+  try {
+    if (res) res.innerHTML = '✨ La IA está armando la plantilla… (15-30 s)';
+    const img = await _disImgB64(file, 1100), nota = ((document.getElementById('disCapNota') || {}).value || '').trim();
+    if (z) z.style.backgroundImage = 'url(' + img + ')';
+    const r = await _disIA({ modo: 'captura', imagen: img, tipo: 'image/jpeg', nota }), d = r.diseno || {};
+    disCapturaCerrar(); const nv = document.getElementById('disNuevo'); if (nv) nv.remove();
+    const p = _disProdLindo() || (DIS.prods || [])[0] || {};
+    DIS.ed = { id: null, nombre: String(d.nombre || 'Desde captura').slice(0, 60), formato: '4x5', tipo: 'estatico', mensaje: DIS_MSJ.some(x => x[0] === d.mensaje) ? d.mensaje : 'producto',
+      capas: _disLimpiarCapas(d.capas), ajustes: { fondo: DIS_COLS.some(x => x[0] === d.fondo) ? d.fondo : 'fondo', prev_handle: p.handle || '', origen: 'captura' }, padre_id: null };
+    DIS.sel = -1; DIS.prod = DIS.ed.ajustes.prev_handle; DIS.color = ''; _disEdAbrir();
+    const e2 = document.getElementById('disEdRes'); if (e2) e2.innerHTML = '✨ ' + esc(d.nota || 'Plantilla creada') + ' · US$' + String(r.usd).replace('.', ',');
+  } catch (e) { if (res) res.innerHTML = '<span class="mal">No se pudo (' + esc(e.message) + ').</span>'; }
+  finally { DIS._capCorre = 0; if (z) z.classList.remove('dis-ocupado'); }
+}
+const DIS_IA_EJ = ['Pon el precio más grande y en naranja', 'Baja el logo y hazlo más chico', 'Oscurece la foto de la izquierda', 'Agrega «Envío gratis» abajo', 'Más aire: separa los textos', 'Fondo azul y letras crema'];
+function disIAMensajeAbrir(){
+  const v = document.getElementById('disIAm'); if (v) v.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disIAm" style="z-index:10050"><div class="dis-caja" style="max-width:540px"><div class="dis-cab"><div><div class="ui-pag">✨ Pedir un cambio</div><div class="ui-nota">Escribe lo que quieres y la IA edita el diseño · ~US$0,01 · Ctrl+Z lo deshace</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disIAm\').remove()') + '</div>'
+    + '<textarea id="disIAtxt" rows="3" style="width:100%" placeholder="Ej.: baja el descuento, sube el precio y pon el logo en azul" onkeydown="event.stopPropagation();if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();disIAMensaje()}"></textarea>'
+    + '<div class="dis-campos" style="margin:8px 0">' + DIS_IA_EJ.map(t => '<button type="button" class="dis-campo" onclick="document.getElementById(\'disIAtxt\').value=this.textContent">' + esc(t) + '</button>').join('') + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center"><span class="ui-nota" id="disIAres" style="flex:1"></span><button class="btn on" id="disIAbtn" onclick="disIAMensaje()">✨ Aplicar</button></div></div></div>');
+  setTimeout(() => { const t = document.getElementById('disIAtxt'); if (t) t.focus(); }, 50);
+}
+async function disIAMensaje(){
+  const t = document.getElementById('disIAtxt'), res = document.getElementById('disIAres'), b = document.getElementById('disIAbtn'), msg = ((t || {}).value || '').trim();
+  if (!msg || !DIS.ed || DIS._iaCorre) return; DIS._iaCorre = 1; if (b) b.disabled = true; if (res) res.textContent = '✨ Editando… (5-15 s)';
+  try {
+    const cx = DIS._cx || {}, muestra = { nombre: cx.nombre, precio: cx.precio, precio_antes: cx.antes, descuento: cx.descuento, color: cx.color, colores: (cx.colores || []).length, oferta: !!cx.oferta, beneficios: (cx.ben || []).map(x => x.titulo) };
+    const r = await _disIA({ modo: 'mensaje', mensaje: msg, diseno: { formato: DIS.ed.formato, capas: DIS.ed.capas, ajustes: { fondo: (DIS.ed.ajustes || {}).fondo } }, muestra }), d = r.diseno || {};
+    _disMemo(); DIS.ed.capas = _disLimpiarCapas(d.capas); if (DIS_COLS.some(x => x[0] === d.fondo)) DIS.ed.ajustes.fondo = d.fondo;
+    DIS.ed._sucio = true; DIS.sel = -1; await disEdPintar();
+    const v = document.getElementById('disIAm'); if (v) v.remove();
+    const e2 = document.getElementById('disEdRes'); if (e2) e2.innerHTML = '✨ ' + esc(d.nota || 'Listo') + ' · Ctrl+Z deshace';
+  } catch (e) { if (res) res.innerHTML = '<span class="mal">No se pudo (' + esc(e.message) + ').</span>'; }
+  finally { DIS._iaCorre = 0; if (b) b.disabled = false; }
+}
+/* ── 🏞️ Fondos: biblioteca de fotos de ambiente (Lima, oficinas, texturas) para poner detrás de la prenda recortada ── */
+const DIS_ORIGEN = [['propia', 'Foto propia'], ['unsplash', 'Unsplash (libre)'], ['pexels', 'Pexels (libre)'], ['permiso', 'Con permiso del dueño']];
+async function _disFondosCargar(){ try { const L = await _mklSb('/rest/v1/mk_dis_fondos?select=*&estado=eq.activo&order=creado.desc'); DIS.fondos = Array.isArray(L) ? L : []; } catch (_) { DIS.fondos = DIS.fondos || []; } }
+function disFondosAbrir(){
+  const v = document.getElementById('disFon'); if (v) v.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disFon" style="z-index:10050"><div class="dis-caja" style="max-width:1000px"><div class="dis-cab"><div><div class="ui-pag">🏞️ Fondos</div><div class="ui-nota">Lugares para poner detrás de la prenda recortada: calles de Lima, oficinas, texturas.</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disFon\').remove()') + '</div>'
+    + (DIS.puede ? '<div class="dis-barra"><div class="dis-barra-izq"><input id="disFonNom" placeholder="Nombre (ej. Óvalo Gutiérrez de noche)" style="width:260px"><select id="disFonOri">' + DIS_ORIGEN.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('') + '</select>'
+      + '<label class="btn on">' + disIco('subir', 14) + ' Subir fondo<input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="disFondoNuevo(this.files[0])"></label></div><span class="ui-nota" id="disFonRes"></span></div>' : '')
+    + '<div class="ui-nota" style="margin:4px 0 10px">Solo fotos propias o libres de uso (unsplash.com, pexels.com: busca «Lima», «Miraflores», «office»). Las de Google casi siempre tienen dueño y Meta puede bajar el anuncio.</div>'
+    + '<div class="dis-pz-grilla" id="disFonGrilla"><div class="ui-nota">Cargando…</div></div></div></div>');
+  _disFondosCargar().then(disFondosPintar);
+}
+function disFondosPintar(){
+  const g = document.getElementById('disFonGrilla'); if (!g) return; const L = DIS.fondos || [];
+  g.innerHTML = L.length ? L.map(f => '<div class="dis-pz" style="cursor:default"><img src="' + disA(f.url) + '" style="width:100%;aspect-ratio:4/5;object-fit:cover;display:block;border-radius:6px">'
+    + '<div class="ui-nota dis-nom">' + esc(f.nombre || 'Fondo') + ' · ' + esc(((DIS_ORIGEN.find(o => o[0] === f.origen) || ['', f.origen])[1])) + '</div>'
+    + (DIS.puede ? '<div class="dis-acc">' + (DIS.ed ? '<button class="btn on" onclick="disFondoPoner(' + f.id + ')">Poner en el diseño</button>' : '') + _disIb('basura', 'Archivar fondo', 'disFondoArchivar(' + f.id + ')', 'rojo') + '</div>' : '') + '</div>').join('')
+    : '<div class="mkl-vacio">Todavía no hay fondos. Sube el primero arriba.</div>';
+}
+async function disFondoNuevo(file){
+  const res = document.getElementById('disFonRes'); if (!file) return;
+  const nom = ((document.getElementById('disFonNom') || {}).value || '').trim() || file.name.replace(/\.[a-z0-9]+$/i, ''), ori = (document.getElementById('disFonOri') || {}).value || 'propia';
+  try { if (res) res.textContent = 'Subiendo…';
+    const b64 = await _disImgB64(file, 1600), blob = await (await fetch(b64)).blob();
+    const url = await _disSubir(blob, 'creativos/dis/fondos/' + Date.now() + '.jpg');
+    const r = await _mklSb('/rest/v1/rpc/mk_dis_fondo_guardar', { method: 'POST', body: JSON.stringify({ p_url: url, p_nombre: nom, p_origen: ori }) });
+    if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
+    DIS.fondos = [r.fila].concat(DIS.fondos || []); if (res) res.textContent = '✓ Fondo guardado'; disFondosPintar();
+  } catch (e) { if (res) res.innerHTML = '<span class="mal">' + esc(e.message) + '</span>'; }
+}
+async function disFondoArchivar(id){
+  if (!await _uiSeguro('¿Archivar este fondo? Los diseños que ya lo usan no cambian.', 'Archivar')) return;
+  try { await _mklSb('/rest/v1/rpc/mk_dis_fondo_estado', { method: 'POST', body: JSON.stringify({ p_id: id, p_estado: 'archivado' }) }); DIS.fondos = (DIS.fondos || []).filter(f => f.id !== id); disFondosPintar(); } catch (_) {}
+}
+/* el fondo va atrás (algo desenfocado y oscuro, con un velo azul) y la prenda recortada encima, con sombra a sus pies:
+   «collage editorial» (lo honesto: no fingimos que la foto se tomó ahí) */
+function disFondoPoner(id){
+  const f = (DIS.fondos || []).find(x => x.id === id); if (!f || !DIS.ed) return; _disMemo();
+  const C = DIS.ed.capas, i0 = C.findIndex(c => c.esFondo);
+  const capa = { t: 'foto', src: 'url:' + f.url, x: 0, y: 0, w: 100, h: 100, blur: 3, bri: 85, esFondo: true, pos: 'center center' };
+  if (i0 >= 0) C[i0] = capa; else {
+    C.unshift(capa, { t: 'degradado', x: 0, y: 0, w: 100, h: 100, color: 'principal', desde: 'abajo', op: 0.35, esVelo: true });
+    const k = C.findIndex(c => c.t === 'foto' && !c.esFondo);
+    if (k >= 0){ const p = C[k]; p.sinfondo = true; p.sombra = true; p.fit = 'contain'; p.pos = 'center bottom';
+      C.splice(k, 0, { t: 'forma', x: p.x + p.w * 0.25, y: Math.min(97, p.y + (p.h || 100) - 2.5), w: p.w * 0.5, h: 3, color: 'negro', op: 0.35, elipse: true, blur: 10 }); }
+  }
+  DIS.ed._sucio = true; const v = document.getElementById('disFon'); if (v) v.remove(); disEdPintar();
+}
 /* lote: combinaciones producto × color × formato × foto (función pura: la prueba la usa) */
 function _disLoteCombos(sel, formatos, fotos){
   const out = []; Object.keys(sel || {}).forEach(h => (sel[h] || []).forEach(c => (formatos || []).forEach(f => { for (let k = 0; k < Math.max(1, +fotos || 1); k++) out.push({ handle: h, color: c, formato: f, foto_n: k }); })));
@@ -1031,7 +1205,7 @@ function disLoteAbrir(id){
   const f = (DIS.filas || []).find(x => x.id === id); if (!f) return;
   DIS.lote = { id, sel: {}, formatos: [f.formato], fotos: 1, q: '', stock: true, corriendo: false, parar: false };
   const h = '<div class="dis-modal" id="disLote"><div class="dis-caja" style="max-width:860px"><div class="dis-cab"><span class="ui-pag">Replicar «' + esc(f.nombre) + '»</span><span style="flex:1"></span>'
-    + '<button class="tt-ico" onclick="disLoteCerrar()" title="Cerrar">✕</button></div><div id="disLoteCuerpo"></div></div></div>';
+    + '' + _disIb('cerrar', 'Cerrar', 'disLoteCerrar()') + '</div><div id="disLoteCuerpo"></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h); disLotePintar();
 }
 function disLoteCerrar(){ if (DIS.lote && DIS.lote.corriendo){ DIS.lote.parar = true; return; } const v = document.getElementById('disLote'); if (v) v.remove(); DIS.lote = null; disPintar(); }
@@ -1064,7 +1238,7 @@ async function disLoteCorrer(){
   const res = () => document.getElementById('disLoteRes'); let ok = 0, salt = 0, mal = 0; const t0 = Date.now();
   for (let i = 0; i < combos.length; i++){
     if (L.parar) break;
-    const x = combos[i], r = res(); if (r) r.innerHTML = 'Generando ' + (i + 1) + ' de ' + combos.length + '… <button class="tt-ico" title="Parar" onclick="DIS.lote.parar=true">⏹</button>';
+    const x = combos[i], r = res(); if (r) r.innerHTML = 'Generando ' + (i + 1) + ' de ' + combos.length + '… <button class="btn" onclick="DIS.lote.parar=true">⏹ Parar</button>';
     try {
       const p = _disProd(x.handle), inf = await disInfo(x.handle), cx = disCtx(p, inf, x.color, f.ajustes);
       if (L.stock && cx.agotado){ salt++; continue; }
@@ -1087,7 +1261,7 @@ async function disLoteCorrer(){
 /* piezas: elegir (el orden de los clics = el orden del carrusel), llevar a Por usar, descargar, archivar */
 function disPiezasAbrir(id){
   DIS.pz = { dis: id || '', prod: '', sel: [] };
-  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disPz"><div class="dis-caja" style="max-width:1100px"><div class="dis-cab"><span class="ui-pag">🧩 Piezas</span><span style="flex:1"></span><button class="tt-ico" onclick="disPiezasCerrar()" title="Cerrar">✕</button></div><div id="disPzCuerpo"></div></div></div>');
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disPz"><div class="dis-caja" style="max-width:1100px"><div class="dis-cab"><span class="ui-pag">🧩 Piezas</span><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'disPiezasCerrar()') + '</div><div id="disPzCuerpo"></div></div></div>');
   disPiezasPintar();
 }
 function disPiezasCerrar(){ const v = document.getElementById('disPz'); if (v) v.remove(); DIS.pz = null; disPintar(); }
