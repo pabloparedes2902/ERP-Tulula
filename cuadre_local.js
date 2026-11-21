@@ -562,8 +562,9 @@ function cua_13_EMPAREJAR_VENTAS() {
   var ESP = { drive: [], erp: [] };
   var _cmEsp = function (t) { t = String(t || '').trim(); if (!t) return '';
     if (/^YAYA\b|^YAYITA\b|[-\u2013\u2014]\s*FALLA\s*$/i.test(t)) return 'YAYITA';
+    if (/^SESI[OÓ]N\b|\bSESI[OÓ]N\s*$/i.test(t)) return 'SESION';   // 21-nov · venta de Sesión/Live: aparte, como la Muestra
     if (/\bMUESTRA\b/i.test(t)) return 'MUESTRA'; return ''; };
-  var _cmEspBase = function (t) { return String(t || '').replace(/^\s*(YAYITA|YAYA|MUESTRA)\s*[:\-\u2013\u2014]?\s*/i, '').replace(/\s*[-\u2013\u2014]\s*FALLA\s*$/i, '').replace(/\bMUESTRA\b/ig, ' ').replace(/\s+/g, ' ').trim(); };
+  var _cmEspBase = function (t) { return String(t || '').replace(/^\s*(YAYITA|YAYA|MUESTRA|SESI[OÓ]N)\s*[:\-\u2013\u2014]?\s*/i, '').replace(/\s*[-\u2013\u2014]?\s*SESI[OÓ]N\s*$/i, '').replace(/\s*[-\u2013\u2014]\s*FALLA\s*$/i, '').replace(/\bMUESTRA\b/ig, ' ').replace(/\s+/g, ' ').trim(); };
   var _cmEspK = function (t) { var rs = null; try { rs = libroResolverPrenda(_cmEspBase(t)); } catch (e) { rs = null; } return rs ? rs.p + '|' + rs.d + '|' + rs.c + '|' + rs.t : ''; };
   var iv = _planillaSoloLectura_(STK_DRIVE_SS_ID).getSheetByName('Ing').getDataRange().getValues();
   for (var i = 1; i < iv.length; i++) {
@@ -613,7 +614,7 @@ function cua_13_EMPAREJAR_VENTAS() {
       if (est === 'CANCELADO' || est === 'DEVOLUCION') return;
       if (/^C2DEV /.test(String(p.cambio2 || ''))) return;   // 15-oct: devuelta en un cambio sin prenda nueva (ej. 22378 CAM-0219): ya no es venta
       var pr = String(p.prenda || '').trim(); if (!pr || vocCanon(pr) === '_PAGO_') return;
-      var _rj = { EsMuestra: p.mue }, _tE = (String(p.yay || '').trim().toUpperCase() === 'SI' || /^\s*YAYITA\b/i.test(pr)) ? 'YAYITA' : ((String(_rj.EsMuestra || '').trim().toUpperCase() === 'SI' || /^\s*MUESTRA\b/i.test(pr)) ? 'MUESTRA' : '');
+      var _rj = { EsMuestra: p.mue }, _tE = (String(p.yay || '').trim().toUpperCase() === 'SI' || /^\s*YAYITA\b/i.test(pr)) ? 'YAYITA' : ((String(_rj.EsMuestra || '').trim().toUpperCase() === 'SI' || /^\s*MUESTRA\b/i.test(pr)) ? 'MUESTRA' : (/^\s*SESI[OÓ]N\b/i.test(pr) ? 'SESION' : ''));   // 21-nov · + SESION
       if (_tE) { var _fE = dia(p.fecha_pedido); if (_fE && _fE >= cutDia) ESP.erp.push({ tipo: _tE, k: _cmEspK(pr), texto: pr, nro: String(p.nro_pedido), f: _fE, per: persona(p.dni, p.celular, p.nombres), nom: String(p.nombres || '').slice(0, 40) }); return; }   // 30-oct · venta especial: va aparte
       var f = dia(p.fecha_pedido); if (!f || f < parDia) return;
       // 13-oct (Pablo aprobó): un CONJUNTO se parte en sus piezas igual que el stock (erp.alias_ventas 1→2)
