@@ -29138,15 +29138,12 @@ function verPed(p) {
       const box = qId('mpf-yay'), chk = qId('mpf-yay-chk'), txt = qId('mpf-yay-txt'), mue = qId('mpf-mue-chk'), sel = qId('mpf-sale-de');
       if (!box) return;
       box.style.display = 'none'; if (chk) chk.checked = false; if (mue) mue.checked = false;
-      if (sel) { sel.value = ''; sel.style.display = 'none'; }
+      if (sel) { sel.value = ''; sel.style.display = 'none'; if (sel._grp) sel._grp.style.display = 'none'; }
       if (!nombre) return;
       let n = 0, nm = 0;
       try { [n, nm] = await Promise.all([_yayDisponibles(nombre), _mueDisponibles(nombre)]); } catch (e) { return; }
       if (sel) {
-        sel.innerHTML = '<option value="">Sale de: Stock</option>'
-          + '<option value="YAY">Sale de: Yayita (' + (n > 0 ? n + ' con falla' : 'se pasa a Yayitas al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible: npYayAltaAuto */
-          + '<option value="MUE">Sale de: Muestra (' + (nm > 0 ? nm + ' registradas' : 'se pasa a Muestras al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible, con aviso si no hay */;
-        sel.style.display = 'inline-block';   // 20-nov · siempre visible
+        _saleBotones(sel, n, nm);   /* 20-nov noche · 4 botones */
         if (!sel._ok) { sel._ok = 1; sel.addEventListener('change', () => {
           const v = sel.value; if (chk) chk.checked = (v === 'YAY'); if (mue) mue.checked = (v === 'MUE');
           if (chk) chk.dispatchEvent(new Event('change')); if (mue) mue.dispatchEvent(new Event('change'));
@@ -29412,7 +29409,8 @@ function verPed(p) {
     if (/^\s*YAYITA\b/i.test(orig)) { toast('Esta prenda ya está registrada como Yayita', 'err'); return; }
     if (/^\s*MUESTRA\b/i.test(orig)) { toast('Una Muestra no se puede convertir en Yayita', 'err'); return; }
     const base = qId('mpfe-prenda').value.trim().replace(/^\s*YAYITA\s*[-–—]?\s+/i, '') || orig;
-    if (!(await _uiSeguro('¿Convertir «' + base + '» en Yayita?\n\nQueda como «YAYITA - ' + base + '» y el stock se corrige: la unidad sale de Yayitas, no del stock normal.'))) return;
+    const _falC = await _npSinStockFaltan([{ nombre: base, tipo: 'YAY', cant: 1 }]);   // 20-nov noche · sin Yayita registrada: se avisa y se puede convertir igual
+    if (_falC.length ? !(await _npSinStockConfirmar(_falC)) : !(await _uiSeguro('¿Convertir «' + base + '» en Yayita?\n\nQueda como «YAYITA - ' + base + '» y el stock se corrige: la unidad sale de Yayitas, no del stock normal.'))) return;
     this.disabled = true;
     try { await npYayAltaAuto([{ dis: base, esYayita: true, cant: 1 }], 'Convertida en Yayita · pedido #' + nro); }   // 20-nov · rastro en Historial de fallas
     catch (e) { this.disabled = false; toast(esc((e && e.message) || String(e)), 'err'); return; }
@@ -32150,12 +32148,8 @@ function npAddPrenda() {
   saleSel.className = 'np-sale-de';
   saleSel.style.cssText = 'display:none;margin-top:6px;padding:3px 8px;font-size:12px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit';
   div.appendChild(saleSel);
-  function _npSaleOpts(n, nm) {
-    saleSel.innerHTML = '<option value="">Sale de: Stock</option>'
-      + '<option value="YAY">Sale de: Yayita (' + (n > 0 ? n + ' con falla' : 'se pasa a Yayitas al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible: npYayAltaAuto */
-      + '<option value="MUE">Sale de: Muestra (' + (nm > 0 ? nm + ' registradas' : 'se pasa a Muestras al guardar') + ')</option>'   /* 20-nov (Pablo) · siempre elegible, con aviso si no hay */;
-    saleSel.style.display = 'inline-block';   // 20-nov · siempre visible: la Yayita ya no exige registro previo
-  }
+  function _npSaleOpts(n, nm) { _saleBotones(saleSel, n, nm); }   /* 20-nov noche · 4 botones */
+
   saleSel.addEventListener('change', () => {
     const v = saleSel.value;
     if (yayChk.checked !== (v === 'YAY')) { yayChk.checked = (v === 'YAY'); yayChk.dispatchEvent(new Event('change')); }
@@ -32191,7 +32185,7 @@ function npAddPrenda() {
   async function npMostrarYayitas(nombre) {
     yayEl.style.display = 'none'; yayChk.checked = false; div.style.borderLeft = '';
     if (mueChk.checked) { mueChk.checked = false; }
-    saleSel.value = ''; saleSel.style.display = 'none';
+    saleSel.value = ''; saleSel.style.display = 'none'; if (saleSel._grp) saleSel._grp.style.display = 'none';
     if (!nombre) return;
     let n = 0, nm = 0;
     try { [n, nm] = await Promise.all([_yayDisponibles(nombre), _mueDisponibles(nombre)]); }
@@ -33498,7 +33492,7 @@ async function _npExecuteSave(job) {
   // validación autoritativa. Rápido cuando está claro, seguro cuando hay duda.
   const _ssOk = !!window._npSinStockOk; window._npSinStockOk = false;   // 20-nov · «Sí, registrar igual»
   try { await npYayAltaAuto(job.prendasData, _ssOk ? 'Registrada al vender (no estaba en el ERP)' : undefined); }   // 20-nov · Yayita/Muestra sin registro previo → se registra aquí
-  catch (eA) { if (!_ssOk) throw eA; try { toast('⚠ No se pudo pasar al montón: queda pendiente de regularizar en Stock', 'warn'); } catch (_) {} }
+  catch (eA) { if (!_ssOk) throw eA; }
   const _hayYayita = (job.prendasData || []).some(p => p && p.esYayita);
   let _bodyRapido = _bodyCrear;
   if (_hayYayita) {
@@ -40730,29 +40724,54 @@ function _yayPrefijar(prenda) {
 // 20-nov-2026 (Pablo) · «antes se podía elegir si era Yayita al agregar la prenda». Desde el 30-oct la Yayita solo salía
 // si antes la registraban en Stock › Movimiento de stock › No disponible → Yayitas. Ahora, si faltan, se registran aquí mismo
 // (mismo movimiento: Conf. Real −1, Yayitas +1) y la venta las consume del montón. Neto: vendible −1, igual que vender la prenda.
-async function npYayAltaAuto(prendas, motivo) {
-  // 20-nov (Pablo) · también Muestras: «MUESTRA - x» sin registro previo → No disponible → Muestra (mismo movimiento).
-  const RX = /^\s*(YAYITA|MUESTRA)\s*[-–—]?\s+/i;
-  const marc = (prendas || []).filter(p => p && p.dis && (p.esYayita || /^\s*MUESTRA\b/i.test(p.dis)));
-  if (!marc.length) return 0;
-  const pedir = {};
-  marc.forEach(p => { const t = p.esYayita ? 'YAY' : 'MUE'; const k = t + '|' + String(p.dis).replace(RX, '').trim(); pedir[k] = (pedir[k] || 0) + (parseInt(p.cant, 10) || 1); });
-  const items = [];
-  for (const kk of Object.keys(pedir)) {
-    const t = kk.slice(0, 3), k = kk.slice(4);
-    let hay = 0; try { hay = t === 'YAY' ? await _yayDisponibles(k) : await _mueDisponibles(k); } catch (e) { hay = 0; }
-    let falta = pedir[kk] - (hay || 0);
-    if (falta > 0 && t === 'YAY') falta -= await _yayDesdeOtras(k, falta);   // 20-nov noche · Corrección / Sin decidir → Yayita antes que el stock normal
-    if (falta > 0) items.push({ prenda: k, cantidad: falta, motivo: motivo || (t === 'YAY' ? 'Yayita vendida sin registro previo' : 'Muestra vendida sin registro previo'), destino: t === 'YAY' ? 'YAYITAS' : 'MUESTRA' });
+/* 20-nov noche (Pablo) · «Sale de» en 4 BOTONES: Stock (morado, por defecto) · Yayita · Muestra · Sesión / Live.
+   Cada uno es un stock distinto: elegir Yayita o Muestra NO saca nada del stock normal. El <select> queda oculto y manda. */
+function _saleBotones(sel, n, nm) {
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Stock</option><option value="YAY">Yayita</option><option value="MUE">Muestra</option>';
+  sel.style.display = 'none';
+  let g = sel._grp;
+  if (!g) {
+    g = document.createElement('div'); g.className = 'sale-de-grp';
+    g.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px';
+    sel.parentNode.insertBefore(g, sel.nextSibling); sel._grp = g;
+    g.addEventListener('click', e => {
+      const b = e.target.closest && e.target.closest('button[data-v]'); if (!b || b.disabled) return;
+      e.preventDefault(); sel.value = b.dataset.v; sel.dispatchEvent(new Event('change')); _saleBotonesPintar(sel);
+    });
+    if (!sel._pinta) { sel._pinta = 1; sel.addEventListener('change', () => _saleBotonesPintar(sel)); }
   }
-  if (!items.length) return 0;
-  try {
-    _yayOlvidar();
-    let rf = await _fallasIngresarRapido(items);
-    if (!rf) rf = await apiSend('fallas.ingresar', { items: items });
-    _yayEspejoConfirmar(rf);
-  } catch (e) { throw new Error('No se pudo pasar la prenda a Yayitas/Muestras: ' + ((e && e.message) || e) + '. No se guardó nada.'); }
-  return items.length;
+  const lbl = (t, k) => t + (k > 0 ? ' (' + k + ')' : '');
+  g.innerHTML = '<button type="button" data-v="">Stock</button>'
+    + '<button type="button" data-v="YAY" title="Sale del stock de Yayitas, no del stock normal">' + lbl('Yayita', n) + '</button>'
+    + '<button type="button" data-v="MUE" title="Sale del stock de Muestras, no del stock normal">' + lbl('Muestra', nm) + '</button>'
+    + '<button type="button" data-v="SES" disabled title="Sesión / Live: se activa en el próximo paso">Sesión / Live</button>';
+  g.style.display = 'flex';
+  _saleBotonesPintar(sel);
+}
+function _saleBotonesPintar(sel) {
+  const g = sel && sel._grp; if (!g) return;
+  g.querySelectorAll('button[data-v]').forEach(b => {
+    const on = b.dataset.v === (sel.value || '');
+    b.style.cssText = 'font-family:inherit;font-size:12px;font-weight:' + (on ? '600' : '500') + ';padding:4px 12px;border-radius:999px;cursor:' + (b.disabled ? 'not-allowed' : 'pointer')
+      + ';border:1px solid ' + (on ? '#8b5cf6' : 'var(--bd)') + ';background:' + (on ? '#8b5cf6' : 'var(--bg3)') + ';color:' + (on ? '#fff' : 'var(--tx)') + (b.disabled ? ';opacity:.45' : '');
+  });
+}
+
+async function npYayAltaAuto(prendas, motivo) {
+  // 20-nov noche (Pablo) · Yayita, Muestra y Sesión son stocks DISTINTOS: nunca se saca del stock normal.
+  // Solo una Yayita puede tomarse de Corrección / Falla sin decidir (son no disponibles, no stock normal).
+  // Lo que falte queda pendiente de regularizar (la base marca la fila RegularizarStock = SI).
+  const RX = /^\s*(YAYITA|MUESTRA)\s*[-–—]?\s+/i;
+  const pedir = {};
+  (prendas || []).filter(p => p && p.dis && p.esYayita).forEach(p => { const k = String(p.dis).replace(RX, '').trim(); pedir[k] = (pedir[k] || 0) + (parseInt(p.cant, 10) || 1); });
+  let movidas = 0;
+  for (const k of Object.keys(pedir)) {
+    let hay = 0; try { hay = await _yayDisponibles(k); } catch (e) { hay = 0; }
+    const falta = pedir[k] - (hay || 0);
+    if (falta > 0) movidas += await _yayDesdeOtras(k, falta);
+  }
+  return movidas;
 }
 
 /* 20-nov noche (Pablo) · «Corrección y Falla sin decidir quedan en Yayita»: antes de sacar del stock normal, la Yayita
@@ -40800,7 +40819,7 @@ async function _npSinStockFaltan(lineas) {
 }
 function _npSinStockConfirmar(faltan) {
   if (!faltan || !faltan.length) return Promise.resolve(true);
-  return _uiSeguro('No hay stock registrado en el ERP de:\n\n' + faltan.join('\n') + '\n\n¿Registrarla igual? Al guardar se pasa del stock normal; si tampoco hay, queda pendiente de regularizar en Stock › Movimiento de stock.', 'Sí, registrar igual');
+  return _uiSeguro('No hay stock registrado en el ERP de:\n\n' + faltan.join('\n') + '\n\n¿Registrarla igual? No se toca el stock normal: queda pendiente de regularizar en Stock › Movimiento de stock › No disponible.', 'Sí, registrar igual');
 }
 
 async function _yayAlcanzaParaTodas(prendas) {
