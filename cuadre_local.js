@@ -562,9 +562,9 @@ function cua_13_EMPAREJAR_VENTAS() {
   var ESP = { drive: [], erp: [] };
   var _cmEsp = function (t) { t = String(t || '').trim(); if (!t) return '';
     if (/^YAYA\b|^YAYITA\b|[-\u2013\u2014]\s*FALLA\s*$/i.test(t)) return 'YAYITA';
-    if (/^SESI[OÓ]N\b|\bSESI[OÓ]N\s*$/i.test(t)) return 'SESION';   // 21-nov · venta de Sesión/Live: aparte, como la Muestra
+    if (/^(SESI[OÓ]N|TIK ?TOK)\b|\bSESI[OÓ]N\s*$/i.test(t)) return 'SESION';   // 21-nov · venta de Sesión/Live/TikTok (Drive: «SESION: SKU» o «TIKTOK: SKU»): aparte, como la Muestra
     if (/\bMUESTRA\b/i.test(t)) return 'MUESTRA'; return ''; };
-  var _cmEspBase = function (t) { return String(t || '').replace(/^\s*(YAYITA|YAYA|MUESTRA|SESI[OÓ]N)\s*[:\-\u2013\u2014]?\s*/i, '').replace(/\s*[-\u2013\u2014]?\s*SESI[OÓ]N\s*$/i, '').replace(/\s*[-\u2013\u2014]\s*FALLA\s*$/i, '').replace(/\bMUESTRA\b/ig, ' ').replace(/\s+/g, ' ').trim(); };
+  var _cmEspBase = function (t) { return String(t || '').replace(/^\s*(YAYITA|YAYA|MUESTRA|SESI[OÓ]N|TIK ?TOK)\s*[:\-\u2013\u2014]?\s*/i, '').replace(/\s*[-\u2013\u2014]?\s*SESI[OÓ]N\s*$/i, '').replace(/\s*[-\u2013\u2014]\s*FALLA\s*$/i, '').replace(/\bMUESTRA\b/ig, ' ').replace(/\s+/g, ' ').trim(); };
   var _cmEspK = function (t) { var rs = null; try { rs = libroResolverPrenda(_cmEspBase(t)); } catch (e) { rs = null; } return rs ? rs.p + '|' + rs.d + '|' + rs.c + '|' + rs.t : ''; };
   var iv = _planillaSoloLectura_(STK_DRIVE_SS_ID).getSheetByName('Ing').getDataRange().getValues();
   for (var i = 1; i < iv.length; i++) {
