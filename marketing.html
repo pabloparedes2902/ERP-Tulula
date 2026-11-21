@@ -4242,7 +4242,8 @@ function mkPintar(){
           + ' title="Ver los anuncios de ' + (r._nivelGrupo === 'campana' ? 'esta campaña' : 'este conjunto') + '">'
           + '<div class="col"><div class="nom" style="font-weight:600;color:var(--bot)">' + r.anuncio + ' \u203a</div></div></div>')
       : ('<div class="mkcre">' + img
-          + '<div class="col"><div class="nom" title="' + String(r.anuncio).replace(/"/g,'') + '">' + r.anuncio + '</div></div></div>');
+          + '<div class="col"><div class="nom" title="' + String(r.anuncio).replace(/"/g,'') + '">' + r.anuncio
+          + ' <button class="mkren" title="Editar el nombre del anuncio (cambia en Meta y en el ERP)" onclick="event.stopPropagation();mkRenombrarAbrir(\'' + String(r.ad_id || '').replace(/\D/g, '') + '\')" style="background:none;border:0;cursor:pointer;opacity:.55;font-size:12px;padding:0 2px">✏️</button></div></div></div>');
     return '<tr' + (r._grupo ? ' style="background:var(--panel)"' : '') + '>'
       + tdFijo(anchoCam, L1, '<div class="mktxt" title="' + String(r.campana||'').replace(/"/g,'') + '">' + esc(r.campana || '—') + '</div>')
       + tdFijo(anchoCon, L2, '<div class="mktxt" title="' + String(r.conjunto||'').replace(/"/g,'') + '">' + esc(r.conjunto || '—') + '</div>')
@@ -4735,6 +4736,36 @@ const URL_MARCAR_ESTADO = 'https://n8n-production-4e716.up.railway.app/webhook/m
 const URL_META_PRESUPUESTO = 'https://n8n-production-4e716.up.railway.app/webhook/meta-presupuesto';
 let MKACC = null;   /* {adId, accion, fila, nivel} de lo que se esta por hacer */
 
+/* 21-nov-2026 (Pablo: «dame la opción de editar los nombres de los anuncios desde Marketing › Anuncios») · ✏️ junto al nombre:
+   cambia el nombre en Meta y en el historial del ERP (n8n /webhook/meta-renombrar, lista blanca = anuncios conocidos).
+   «Traer de Meta» copia el nombre si lo cambiaron en Ads Manager. Avisa si el producto no está en el catálogo (motorPrenda). */
+const URL_META_RENOMBRAR = 'https://n8n-production-4e716.up.railway.app/webhook/meta-renombrar';
+function mkRenombrarAbrir(adId){
+  const r = (MK.filas || []).find(x => String(x.ad_id) === String(adId)); if (!r) return;
+  let m = document.getElementById('mkRenM'); if (m) m.remove();
+  m = document.createElement('div'); m.id = 'mkRenM';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center';
+  m.innerHTML = '<div style="background:var(--card,#1a1d24);border:1px solid var(--bd,#333);border-radius:14px;padding:16px;width:min(720px,92vw)">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:14px">Editar nombre del anuncio</b><button onclick="document.getElementById(\'mkRenM\').remove()" style="background:none;border:0;color:inherit;font-size:14px;cursor:pointer">✕</button></div>'
+    + '<input id="mkRenTxt" style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--bd,#333);background:var(--panel,#111);color:inherit;font:inherit;font-size:13px" maxlength="250">'
+    + '<div id="mkRenAv" style="font-size:12px;margin:6px 0;min-height:16px"></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" onclick="mkRenombrar(\'' + adId + '\',\'sincronizar\')" title="Si ya lo cambiaste en Ads Manager">Traer de Meta</button><button class="btn on" onclick="mkRenombrar(\'' + adId + '\',\'renombrar\')">Guardar en Meta y en el ERP</button></div></div>';
+  document.body.appendChild(m);
+  const i = document.getElementById('mkRenTxt'); i.value = r.anuncio || ''; i.focus();
+  const av = () => { const p = motorPrenda(i.value), mal = MK_NOMBRE_MAL[i.value]; document.getElementById('mkRenAv').innerHTML = mal ? '<span style="color:#fbbf24">⚠ «' + esc(mal.mal.toLowerCase()) + '» no existe: ¿quisiste decir «' + esc(mal.bien.toLowerCase()) + '»?</span>' : (p.tipo === 'otro' ? '<span style="color:var(--txt2)">No reconozco el tipo de prenda en el 2º tramo (ej. «Pan Catalina»).</span>' : ''); };
+  i.addEventListener('input', av); av();
+}
+async function mkRenombrar(adId, accion){
+  const i = document.getElementById('mkRenTxt'), av = document.getElementById('mkRenAv'), nom = String(i && i.value || '').replace(/\s+/g, ' ').trim();
+  if (accion === 'renombrar' && MK_NOMBRE_MAL[nom]){ av.innerHTML = '<span style="color:#f87171">Corrige el modelo antes de guardar.</span>'; return; }
+  av.textContent = accion === 'renombrar' ? 'Guardando en Meta…' : 'Leyendo el nombre en Meta…';
+  try {
+    const j = await (await fetch(URL_META_RENOMBRAR, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ad_id: adId, accion, nombre: nom, quien: _mkYo() }) })).json();
+    if (!j || !j.ok) { av.innerHTML = '<span style="color:#f87171">No se pudo: ' + esc((j && j.error) || 'sin respuesta') + '</span>'; return; }
+    (MK.filas || []).forEach(x => { if (String(x.ad_id) === String(adId)) x.anuncio = j.nombre; });
+    document.getElementById('mkRenM').remove(); try { mkPintar(); } catch (_) {} try { toast('✓ Nombre actualizado', 'ok'); } catch (_) {}
+  } catch (e) { av.innerHTML = '<span style="color:#f87171">Sin conexión con n8n.</span>'; }
+}
 const MKACC_QUE = { ad:'anuncio', adset:'conjunto', campaign:'campaña' };
 
 function mkEjecPreg(adId, accion){
