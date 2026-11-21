@@ -1001,6 +1001,7 @@ html .card,html .pl-card,html .pl-box,html .pl-ses,html .inv-k,html .inv-b{borde
 
   <div class="mkkpis" id="mkKpis"></div>
   <div id="mkAviso" class="mkaviso" style="display:none"></div>
+  <div id="mkDesinc" class="mkaviso alto" style="display:none"></div>
 
   <div class="mkbar">
     <span style="display:flex;align-items:center;gap:4px" title="Agrupar la tabla por campaña, por conjunto o ver cada anuncio">
@@ -4740,6 +4741,40 @@ let MKACC = null;   /* {adId, accion, fila, nivel} de lo que se esta por hacer *
    cambia el nombre en Meta y en el historial del ERP (n8n /webhook/meta-renombrar, lista blanca = anuncios conocidos).
    «Traer de Meta» copia el nombre si lo cambiaron en Ads Manager. Avisa si el producto no está en el catálogo (motorPrenda). */
 const URL_META_RENOMBRAR = 'https://n8n-production-4e716.up.railway.app/webhook/meta-renombrar';
+/* 21-nov-2026 (Pablo: «si algo se desincroniza, que me avise; si todo está bien, nada»). Al abrir Marketing se compara
+   (solo lectura, ~1,6 s, n8n /webhook/meta-nombres-revisar) el nombre de cada anuncio en Meta vs el más reciente del ERP.
+   0 diferencias = no se muestra nada. Si hay, aviso con ✕ y «Traer de Meta» por anuncio. */
+const URL_META_REVISAR = 'https://n8n-production-4e716.up.railway.app/webhook/meta-nombres-revisar';
+let _mkDesincLista = [];
+async function mkRevisarNombres(){
+  const box = document.getElementById('mkDesinc'); if (!box) return;
+  try {
+    const j = await (await fetch(URL_META_REVISAR)).json();
+    _mkDesincLista = (j && j.ok && j.distintos) || [];
+  } catch (e) { return; }
+  mkDesincPintar();
+}
+function mkDesincPintar(){
+  const box = document.getElementById('mkDesinc'); if (!box) return;
+  if (!_mkDesincLista.length) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  box.innerHTML = '<div style="display:flex;justify-content:space-between;gap:8px"><b>' + _mkDesincLista.length + ' anuncio(s) con nombre distinto en Meta y en el ERP</b><button onclick="document.getElementById(\'mkDesinc\').style.display=\'none\'" style="background:none;border:0;color:inherit;cursor:pointer">✕</button></div>'
+    + _mkDesincLista.map(d => '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:4px"><span>ERP: ' + esc(d.erp) + '<br>Meta: ' + esc(d.meta) + '</span><button class="btn" onclick="mkDesincTraer(\'' + String(d.ad_id).replace(/\D/g, '') + '\', this)">Traer de Meta</button></div>').join('');
+}
+async function mkDesincTraer(adId, btn){
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const j = await (await fetch(URL_META_RENOMBRAR, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ad_id: adId, accion: 'sincronizar', nombre: '', quien: _mkYo() }) })).json();
+    if (j && j.ok) {
+      (MK.filas || []).forEach(x => { if (String(x.ad_id) === String(adId)) x.anuncio = j.nombre; });
+      _mkDesincLista = _mkDesincLista.filter(d => String(d.ad_id) !== String(adId));
+      mkDesincPintar(); try { mkPintar(); } catch (_) {}
+      return;
+    }
+  } catch (e) {}
+  if (btn) { btn.disabled = false; btn.textContent = 'Reintentar'; }
+}
+window.addEventListener('load', () => setTimeout(mkRevisarNombres, 4000));
 function mkRenombrarAbrir(adId){
   const r = (MK.filas || []).find(x => String(x.ad_id) === String(adId)); if (!r) return;
   let m = document.getElementById('mkRenM'); if (m) m.remove();
