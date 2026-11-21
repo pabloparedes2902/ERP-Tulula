@@ -28,7 +28,7 @@ const DIS_BASE = [
     { t: 'texto', txt: '{{descuento}}', x: 3.5, y: 3, w: 30, tam: 30, fuente: 'texto', peso: 600, color: 'blanco', fondo: 'acento', pad: 10, r: 2, ls: 2, vis: 'oferta' },
     { t: 'logo', x: 66, y: 5.5, w: 28 },
     { t: 'texto', txt: '{{categoria}}', x: 64, y: 17, w: 33, tam: 22, fuente: 'texto', peso: 500, color: 'acento', mayus: true, ls: 6 },
-    { t: 'texto', txt: '{{nombre_corto}}', x: 64, y: 20.5, w: 33, tam: 62, fuente: 'titulo', color: 'principal', mayus: true, ls: 1, lh: 1 },
+    { t: 'texto', txt: '{{nombre_corto}}', x: 64, y: 20.5, w: 33, tam: 54, fuente: 'titulo', color: 'principal', mayus: true, ls: 1, lh: 1 },
     { t: 'forma', x: 64, y: 32.5, w: 7, h: 0.3, color: 'principal' },
     { t: 'texto', txt: '★ {{estrellas}}  ·  {{n_resenas}}', x: 64, y: 34.5, w: 33, tam: 22, fuente: 'texto', color: 'texto', ls: 1, vis: 'resenas' },
     { t: 'foto', src: 'ben:0', x: 64, y: 40, w: 32, h: 30, zoom: 1.5, fx: 50, fy: 45 },
@@ -46,8 +46,8 @@ const DIS_BASE = [
     { t: 'foto', src: 'color:0', x: 0, y: 0, w: 63.5, h: 82 },
     { t: 'foto', src: 'ben:0', x: 64.3, y: 0, w: 35.7, h: 40.6, zoom: 1.5, fx: 50, fy: 45 },
     { t: 'foto', src: 'ben:1', x: 64.3, y: 41.4, w: 35.7, h: 40.6, zoom: 1.5, fx: 50, fy: 45 },
-    { t: 'texto', txt: '{{beneficio1}}', x: 66, y: 34.5, w: 32, tam: 19, fuente: 'texto', peso: 500, color: 'principal', fondo: 'fondo', pad: 7, ls: 1, vis: 'beneficios' },
-    { t: 'texto', txt: '{{beneficio2}}', x: 66, y: 75.8, w: 32, tam: 19, fuente: 'texto', peso: 500, color: 'principal', fondo: 'fondo', pad: 7, ls: 1, vis: 'beneficios' },
+    { t: 'texto', txt: '{{beneficio1}}', x: 66, y: 33.5, w: 32, tam: 23, fuente: 'texto', peso: 500, color: 'principal', fondo: 'fondo', pad: 7, ls: 1, vis: 'beneficios' },
+    { t: 'texto', txt: '{{beneficio2}}', x: 66, y: 74.8, w: 32, tam: 23, fuente: 'texto', peso: 500, color: 'principal', fondo: 'fondo', pad: 7, ls: 1, vis: 'beneficios' },
     { t: 'forma', x: 0, y: 82, w: 100, h: 18, color: 'principal' },
     { t: 'logo', x: 5, y: 87.6, w: 21, claro: true },
     { t: 'texto', txt: '{{nombre_corto}}', x: 31, y: 86.4, w: 40, tam: 38, fuente: 'titulo', color: 'fondo', mayus: true, ls: 2 },
@@ -68,9 +68,8 @@ const DIS_BASE = [
     { t: 'texto', txt: '{{precio}}  ·  Tallas {{tallas}}', x: 8.5, y: 88.5, w: 62, tam: 26, fuente: 'texto', color: 'suave', ls: 1 },
     { t: 'logo', x: 71, y: 88.6, w: 21, claro: true } ] },
   { nombre: 'Reseña de clienta', mensaje: 'resenas', ref: 'Baukjen', capas: [
-    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 100, h: 60, pos: 'center 20%' },
-    { t: 'degradado', x: 0, y: 0, w: 100, h: 16, color: 'negro', desde: 'arriba', op: 0.35 },
-    { t: 'logo', x: 38, y: 3.5, w: 24, claro: true },
+    { t: 'logo', x: 40, y: 2.3, w: 20 },
+    { t: 'foto', src: 'color:0', x: 0, y: 8, w: 100, h: 53, pos: 'center 15%' },
     { t: 'texto', txt: '★★★★★', x: 8, y: 64, w: 84, tam: 30, fuente: 'texto', color: 'acento', al: 'center', ls: 8 },
     { t: 'texto', txt: '«{{resena}}»', x: 9, y: 68.5, w: 82, tam: 38, fuente: 'titulo', color: 'principal', al: 'center', lh: 1.25, vis: 'cita' },
     { t: 'texto', txt: '{{frase}}', x: 9, y: 70, w: 82, tam: 56, fuente: 'titulo', color: 'principal', al: 'center', mayus: true, vis: 'sin_cita' },
@@ -85,17 +84,15 @@ const DIS_BASE = [
     { t: 'texto', txt: '{{precio_antes}}', x: 10, y: 86.2, w: 80, tam: 26, fuente: 'texto', color: 'texto', tachado: true, op: 0.6, al: 'center', vis: 'oferta' },
     { t: 'texto', txt: '{{precio}}', x: 10, y: 89.2, w: 80, tam: 46, fuente: 'texto', peso: 500, color: 'principal', al: 'center' } ] },
   { nombre: 'Colores', mensaje: 'colores', ref: 'Cuyana · Skims', capas: [
-    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 100, h: 68 },
-    { t: 'degradado', x: 0, y: 0, w: 100, h: 16, color: 'negro', desde: 'arriba', op: 0.3 },
-    { t: 'logo', x: 39, y: 3.5, w: 22, claro: true },
+    { t: 'logo', x: 40, y: 2.3, w: 20 },
+    { t: 'foto', src: 'color:0', x: 0, y: 8, w: 100, h: 61, pos: 'center 10%' },
     { t: 'texto', txt: 'Disponible en {{colores_n}}', x: 6, y: 71.5, w: 88, tam: 22, fuente: 'texto', peso: 500, color: 'acento', al: 'center', ls: 6, mayus: true },
     { t: 'colores', x: 10, y: 75.8, w: 80, h: 14, estilo: 'punto' },
     { t: 'texto', txt: '{{nombre}}  ·  {{precio}}', x: 6, y: 93, w: 88, tam: 26, fuente: 'texto', peso: 500, color: 'principal', al: 'center', ls: 1 } ] },
   { nombre: 'Pantalla completa', mensaje: 'producto', ref: 'Historias y reels', capas: [
     { t: 'foto', src: 'color:0', x: 0, y: 0, w: 100, h: 100 },
-    { t: 'degradado', x: 0, y: 0, w: 100, h: 20, color: 'negro', desde: 'arriba', op: 0.35 },
     { t: 'degradado', x: 0, y: 50, w: 100, h: 50, color: 'principal', desde: 'abajo', op: 0.92 },
-    { t: 'logo', x: 37, y: 4.5, w: 26, claro: true },
+    { t: 'logo', x: 71, y: 90, w: 22, claro: true },
     { t: 'texto', txt: '{{badge}}', x: 7, y: 63, w: 60, tam: 21, fuente: 'texto', peso: 600, color: 'blanco', fondo: 'acento', pad: 8, ls: 4, mayus: true, vis: 'badge' },
     { t: 'texto', txt: '{{categoria}}', x: 7, y: 68.5, w: 86, tam: 22, fuente: 'texto', peso: 500, color: 'suave', ls: 7, mayus: true },
     { t: 'texto', txt: '{{nombre_corto}}', x: 7, y: 71.5, w: 86, tam: 80, fuente: 'titulo', color: 'blanco', mayus: true, ls: 1, lh: 1 },
@@ -186,6 +183,15 @@ function _disTxt(cx, t){
       categoria: cx.categoria, nombre_corto: cx.nombre_corto, badge: cx.badge }[k];
     return v == null ? '' : v; });
 }
+/* un texto con tramos «a · b · c»: se cae solo el tramo cuyo dato viene vacío (ej. «Tallas {{tallas}}» sin tallas) */
+function _disTxtSeg(cx, t){
+  return String(t || '').split(/(\s+·\s+)/).reduce((acc, seg, i, arr) => {
+    if (i % 2) return acc;
+    const tiene = /\{\{\w+\}\}/.test(seg), vals = (seg.match(/\{\{\w+\}\}/g) || []).map(m => _disTxt(cx, m));
+    if (tiene && vals.every(v => !String(v).trim())) return acc;
+    return acc.concat([_disTxt(cx, seg)]);
+  }, []).join('  ·  ').replace(/\s+·\s+/g, '  ·  ');
+}
 function _disVis(c, cx){
   if (c.oculto) return false;
   const v = c.vis || 'siempre';
@@ -229,10 +235,10 @@ function disHtml(d, cx, s, opt){
     } else if (c.t === 'logo'){
       inner = '<img crossorigin="anonymous" src="' + disA(m.logo_oscuro) + '" style="width:100%;display:block;pointer-events:none;' + (c.claro ? 'filter:brightness(0) invert(1)' : '') + '" draggable="false">';
     } else if (c.t === 'texto'){
-      const t = _disTxt(cx, c.txt); if (!t.trim() || /^[\s·«»—★]*$/.test(t.replace(/\{\{|\}\}/g, ''))) return;
+      const t = _disTxtSeg(cx, c.txt); if (!t.trim() || /^[\s·«»—★]*$/.test(t)) return;
       const fondo = c.fondo ? 'background:' + _disCol(c.fondo) + ';padding:' + ((+c.pad || 0) * s) + 'px ' + ((+c.pad || 0) * 1.4 * s) + 'px;border-radius:' + ((+c.r || 0) * s) + 'px;' : '';
       const col = _disCol(c.color);
-      estilo = 'text-align:' + (c.al || 'left') + ';line-height:' + (c.lh || 1.12) + ';' + (c.vertical ? 'writing-mode:vertical-rl;transform:rotate(180deg);' : '');
+      estilo = 'text-align:' + (c.al || 'left') + ';line-height:' + (c.lh || 1.12) + ';font-size:' + ((+c.tam || 40) * s) + 'px;' + (c.vertical ? 'writing-mode:vertical-rl;transform:rotate(180deg);' : '');
       inner = '<span style="display:inline-block;' + fondo + 'font-family:' + (c.fuente === 'titulo' ? ft : fx) + ';font-size:' + ((+c.tam || 40) * s) + 'px;font-weight:' + (c.peso || 400) + ';'
         + (c.contorno ? 'color:transparent;-webkit-text-stroke:' + Math.max(0.6, (+c.trazo || 2) * s) + 'px ' + col + ';' : 'color:' + col + ';')
         + 'letter-spacing:' + ((+c.ls || 0) * s) + 'px;' + (c.mayus ? 'text-transform:uppercase;' : '') + (c.tachado ? 'text-decoration:line-through;' : '') + (c.cursiva ? 'font-style:italic;' : '') + 'white-space:pre-wrap">' + disA(t) + '</span>';
@@ -645,7 +651,7 @@ async function disPng(d, cx){
     await Promise.all([...el.querySelectorAll('img')].map(im => im.complete && im.naturalWidth ? 0 : new Promise(r => { im.onload = im.onerror = r; setTimeout(r, 15000); })));
     const malas = [...el.querySelectorAll('img')].filter(im => !im.naturalWidth).length;
     if (malas) throw new Error(malas + (malas > 1 ? ' fotos no cargaron' : ' foto no cargó'));
-    const blob = await window.htmlToImage.toBlob(el, { width: W, height: H, pixelRatio: 1, backgroundColor: _disCol('fondo') });
+    const blob = await window.htmlToImage.toBlob(el, { width: W, height: H, pixelRatio: 1, backgroundColor: _disCol((d.ajustes && d.ajustes.fondo) || 'fondo') });   /* 21-nov · respeta el fondo del diseño (antes forzaba crema) */
     if (!blob) throw new Error('la imagen salió vacía');
     return blob;
   } finally { box.remove(); }
