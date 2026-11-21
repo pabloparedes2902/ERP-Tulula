@@ -16,6 +16,95 @@ const DIS_MARCA_DEF = { aprobada: false, f_titulo: 'Tenor Sans', f_texto: 'Jost'
   logo_oscuro: 'https://cdn.shopify.com/s/files/1/0722/3564/7189/files/logo-oscuro_649cf6f9-9636-42ac-9f18-05f5af1ff2de.png' };
 /* Zonas seguras 9:16 (guía de Meta para historias y reels): ~14% arriba y ~20% abajo los tapa la interfaz. */
 const DIS_SEGURA = { arriba: 14, abajo: 20 };
+/* 21-nov (capturas de Pablo) · muestras de color sólidas: nombre del ERP → color. Lo que no está sale con la foto del color. */
+const DIS_COLOR_HEX = { negro: '#111111', blanco: '#f7f7f5', hueso: '#efe9dc', perla: '#e6e2da', crema: '#ede3cf', vainilla: '#f1e6c8', avena: '#d9cdb5', arena: '#cdb796', beige: '#d6c2a3', nude: '#d9b9a0',
+  camel: '#b58552', toffee: '#9a6b43', moca: '#7a5642', cocoa: '#6b4a3a', chocolate: '#4e3427', marron: '#6a4a35', topo: '#7d7266', plomo: '#8c8c8c', azul: '#1f4f8f', azulino: '#3d6fd1', celeste: '#9cc3e6',
+  'azul noche': '#1b2a44', 'azul marino': '#1d2b4f', 'azul acero': '#4f6f8f', 'azul presidente': '#203a7a', verde: '#2f6b48', 'verde botella': '#1f4a35', 'verde jade': '#3f9a82', 'verde perico': '#5cae3c', 'verde claro': '#9cc79a', 'verde oscuro': '#1e3d2c',
+  rojo: '#b3202a', vino: '#6b1f2e', lacre: '#8e1c22', ladrillo: '#a3492f', coral: '#e8735f', naranja: '#e07a2e', mostaza: '#c99a2e', amarillo: '#e9c53b', dorado: '#c8a24a', rosa: '#e8a9b8', palorosa: '#d8a7a7', fucsia: '#c81d77', lila: '#b9a3d6', 'uva pastel': '#a58fc0', morado: '#5c2f73' };
+function _disColorHex(n){ const s = String(n || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[-_]/g, ' ').trim();
+  if (DIS_COLOR_HEX[s]) return DIS_COLOR_HEX[s]; const dos = s.split(/\s+/).slice(0, 2).join(' '); if (DIS_COLOR_HEX[dos]) return DIS_COLOR_HEX[dos]; return DIS_COLOR_HEX[s.split(/\s+/)[0]] || ''; }
+/* 21-nov · Historias 9:16 SIN que nada caiga donde Instagram tapa (Pablo: «arriba y abajo se va a tapar»).
+   Las capas se diseñan en 4:5; en 9:16 se acomodan solas dentro de la franja segura (14 % arriba · 20 % abajo),
+   los fondos de borde a borde siguen ocupando todo. Si la mueves estando en 9:16, esa capa guarda su propio lugar (g916). */
+function _disGeo(c, f){
+  const g = { x: +c.x || 0, y: +c.y || 0, w: c.w != null ? +c.w : 100, h: c.h != null ? +c.h : null };
+  if (f !== '9x16') return g;
+  if (c.g916) return Object.assign(g, c.g916);
+  const A = DIS_SEGURA.arriba, B = DIS_SEGURA.abajo, k = (100 - A - B) / 100, m = y => Math.round((A + y * k) * 10) / 10;
+  const arriba = g.y <= 0.5, abajo = g.h != null && g.y + g.h >= 99.5;
+  if (g.h != null && arriba && abajo) return g;                        /* de borde a borde: igual */
+  if (g.h != null && arriba){ g.h = m(g.y + g.h); g.y = 0; return g; }  /* pegada arriba: estira hasta su borde */
+  if (abajo){ g.y = m(g.y); g.h = 100 - g.y; return g; }               /* pegada abajo: llega al borde */
+  g.y = m(g.y); if (g.h != null) g.h = Math.round(g.h * k * 10) / 10; return g;
+}
+function _disGeoSet(c, f, g){
+  if (f === '9x16'){ c.g916 = { x: g.x, y: g.y, w: g.w }; if (g.h != null) c.g916.h = g.h; return; }
+  c.x = g.x; c.y = g.y; c.w = g.w; if (g.h != null) c.h = g.h;
+}
+/* 21-nov · el logo se ve SIEMPRE (Pablo: «el logo blanco sobre fondo casi blanco no se ve»): en «Automático» mira qué hay detrás
+   (foto, forma, degradado o el fondo) y elige azul de marca o blanco. */
+const DIS_LOGO_COL = [['auto', 'Automático (se ve siempre)'], ['principal', 'Azul de marca'], ['blanco', 'Blanco'], ['negro', 'Negro']];
+function _disLum(hex){ const h = String(hex || '#000').replace('#', ''), n = h.length === 3 ? h.split('').map(c => c + c).join('') : h.slice(0, 6), v = parseInt(n, 16) || 0;
+  return (0.299 * ((v >> 16) & 255) + 0.587 * ((v >> 8) & 255) + 0.114 * (v & 255)) / 255; }
+function _disLogoColor(c){ return c.color || (c.claro ? 'blanco' : 'auto'); }
+function _disPosPct(c){
+  if (c.fx != null || c.fy != null) return [c.fx != null ? +c.fx : 50, c.fy != null ? +c.fy : 0];
+  const t = String(c.pos || 'center top').split(/\s+/), v = s => s === 'left' || s === 'top' ? 0 : s === 'right' || s === 'bottom' ? 100 : s === 'center' ? 50 : parseFloat(s) || 0;
+  return [v(t[0] || 'center'), v(t[1] || 'top')];
+}
+function _disLuzClave(u, r){ return u + '|' + r.map(v => Math.round(v * 100)).join(','); }
+function _disLogoTono(d, cx, i, gl){
+  const f = d.formato, [W, H] = DIS_TAM[f] || DIS_TAM['4x5'], px = gl.x + gl.w / 2, lh = gl.w * 0.22 * W / H, py = gl.y + lh / 2;
+  DIS._mix = 0;
+  for (let j = i - 1; j >= 0; j--){
+    const c = d.capas[j]; if (!c || !_disVis(c, cx) || !/^(foto|forma|degradado)$/.test(c.t)) continue;
+    const g = _disGeo(c, f), h = g.h != null ? g.h : 100;
+    if (px < g.x || px > g.x + g.w || py < g.y || py > g.y + h) continue;
+    if (c.t === 'forma'){ if (c.op != null && +c.op < 0.45) continue; return _disLum(_disCol(c.color)); }
+    if (c.t === 'degradado'){ const t = { abajo: (g.y + h - py) / h, arriba: (py - g.y) / h, izq: (px - g.x) / g.w, der: (g.x + g.w - px) / g.w }[c.desde || 'abajo'];
+      const a = (c.op != null ? +c.op : 0.8) * (1 - Math.max(0, Math.min(1, t))); if (a < 0.45) continue; return _disLum(_disCol(c.color)); }
+    const u0 = _disFotoSrc(cx, c.src), sf = c.sinfondo && DIS.sinf[_disArch(u0)]; if (!u0) continue;
+    const r = [(gl.x - g.x) / g.w, (gl.y - g.y) / h, gl.w / g.w, lh / h], v = (DIS.luz || {})[_disLuzClave(u0, r)];
+    if (sf) continue;   /* recorte: se ve lo de atrás en casi todo el borde */
+    DIS._mix = (DIS.luzMix || {})[_disLuzClave(u0, r)] || 0;
+    return v != null ? v : 0.8;
+  }
+  return _disLum(_disCol((d.ajustes && d.ajustes.fondo) || 'fondo'));
+}
+async function _disLuzMedir(u, c, gFoto, r, W, H){
+  const im = await new Promise((ok, mal) => { const x = new Image(); x.crossOrigin = 'anonymous'; x.onload = () => ok(x); x.onerror = mal; x.src = _disTam(u, 400); });
+  const bw = gFoto.w / 100 * W, bh = (gFoto.h != null ? gFoto.h : 100) / 100 * H, iw = im.naturalWidth, ih = im.naturalHeight;
+  const cover = (c.fit || 'cover') === 'cover', sc = cover ? Math.max(bw / iw, bh / ih) : Math.min(bw / iw, bh / ih), [ppx, ppy] = _disPosPct(c);
+  const ox = (bw - iw * sc) * ppx / 100, oy = (bh - ih * sc) * ppy / 100;
+  const sx = (r[0] * bw - ox) / sc, sy = (r[1] * bh - oy) / sc, sw = Math.max(1, r[2] * bw / sc), sh = Math.max(1, r[3] * bh / sc);
+  const cv = document.createElement('canvas'); cv.width = 6; cv.height = 3; const g = cv.getContext('2d');
+  g.drawImage(im, Math.max(0, sx), Math.max(0, sy), Math.min(iw, sw), Math.min(ih, sh), 0, 0, 6, 3);
+  const dt = g.getImageData(0, 0, 6, 3).data; let s = 0, mn = 1, mx = 0; for (let k = 0; k < dt.length; k += 4){ const l = (0.299 * dt[k] + 0.587 * dt[k + 1] + 0.114 * dt[k + 2]) / 255; s += l; mn = Math.min(mn, l); mx = Math.max(mx, l); }
+  return { v: s / (dt.length / 4), mix: mx - mn };
+}
+async function _disLuzPrep(d, cx){
+  if (!d || !cx || typeof document === 'undefined') return false; DIS.luz = DIS.luz || {}; let nuevo = false;
+  const f = d.formato, [W, H] = DIS_TAM[f] || DIS_TAM['4x5'];
+  for (let i = 0; i < (d.capas || []).length; i++){
+    const L = d.capas[i]; if (L.t !== 'logo' || _disLogoColor(L) !== 'auto' || !_disVis(L, cx)) continue;
+    const gl = _disGeo(L, f), px = gl.x + gl.w / 2, lh = gl.w * 0.22 * W / H, py = gl.y + lh / 2;
+    for (let j = i - 1; j >= 0; j--){
+      const c = d.capas[j]; if (!c || !_disVis(c, cx) || !/^(foto|forma|degradado)$/.test(c.t)) continue;
+      const g = _disGeo(c, f), h = g.h != null ? g.h : 100; if (px < g.x || px > g.x + g.w || py < g.y || py > g.y + h) continue;
+      if (c.t !== 'foto' || c.sinfondo) break;
+      const u = _disFotoSrc(cx, c.src), r = [(gl.x - g.x) / g.w, (gl.y - g.y) / h, gl.w / g.w, lh / h], k = _disLuzClave(u, r);
+      if (u && DIS.luz[k] == null){ DIS.luzMix = DIS.luzMix || {}; try { const m = await _disLuzMedir(u, c, g, r, W, H); DIS.luz[k] = m.v; DIS.luzMix[k] = m.mix; nuevo = true; } catch (_) { DIS.luz[k] = 0.8; } }
+      break;
+    }
+  }
+  return nuevo;
+}
+/* 21-nov · texto con estilo dentro: **negrita**, *cursiva*, ***negrita cursiva***, ~~precio tachado chico~~ */
+function _disMarcas(html){
+  return String(html).replace(/~~\s*~~/g, '').replace(/(\*{2,3})\s*\1/g, '')
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<b style="font-weight:700;font-style:italic">$1</b>').replace(/\*\*(.+?)\*\*/g, '<b style="font-weight:700">$1</b>')
+    .replace(/\*(.+?)\*/g, '<i>$1</i>').replace(/~~(.+?)~~/g, '<s style="opacity:.55;font-size:.62em;font-weight:400">$1</s>');
+}
 const disA = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 /* ── plantillas de arranque · 21-nov v2 (Pablo: «quiero algo de lujo, no PowerPoint»).
@@ -104,7 +193,98 @@ const DIS_BASE = [
     { t: 'texto', txt: 'PREVENTA', x: 6, y: 72, w: 60, tam: 24, fuente: 'texto', peso: 600, color: 'acento', ls: 9 },
     { t: 'texto', txt: 'Sé la primera en tenerla', x: 6, y: 76, w: 88, tam: 58, fuente: 'titulo', color: 'fondo', lh: 1.05 },
     { t: 'texto', txt: '{{nombre}}  ·  {{precio}}', x: 6, y: 89.5, w: 60, tam: 26, fuente: 'texto', color: 'suave', ls: 1 },
-    { t: 'logo', x: 72, y: 89.4, w: 22, claro: true } ] }
+    { t: 'logo', x: 72, y: 89.4, w: 22, claro: true } ] },
+  /* ── 21-nov · las 10 capturas que eligió Pablo, adaptadas a Tulula (letra, colores, datos y fotos de la tienda) ── */
+  { nombre: 'Ficha con detalle', mensaje: 'producto', ref: 'Captura Skims · ficha', capas: [
+    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 58, h: 100, pos: 'center top' },
+    { t: 'foto', src: 'ben:0', x: 52, y: 2.5, w: 46, h: 51, zoom: 1.35, fx: 50, fy: 40, marco: 12, marcoColor: 'fondo' },
+    { t: 'logo', x: 4, y: 4, w: 22 },
+    { t: 'texto', txt: '{{categoria}}', x: 62, y: 58.5, w: 35, tam: 22, fuente: 'texto', peso: 500, color: 'texto', mayus: true, ls: 3 },
+    { t: 'texto', txt: '{{nombre_corto}}', x: 62, y: 62, w: 35, tam: 48, fuente: 'texto', peso: 600, color: 'principal', mayus: true, ls: 1, lh: 1.02 },
+    { t: 'forma', x: 62, y: 78.5, w: 34, h: 0.15, color: 'texto', op: 0.4 },
+    { t: 'texto', txt: '{{n_resenas}}', x: 62, y: 81, w: 35, tam: 21, fuente: 'texto', color: 'texto', mayus: true, ls: 1, vis: 'resenas' },
+    { t: 'texto', txt: '★★★★★', x: 62, y: 84.3, w: 35, tam: 26, fuente: 'texto', color: 'principal', ls: 4, vis: 'resenas' },
+    { t: 'texto', txt: '{{precio}}  ~~{{precio_antes}}~~', x: 62, y: 89.3, w: 35, tam: 42, fuente: 'texto', peso: 500, color: 'principal' } ] },
+  { nombre: 'Logo gigante detrás', mensaje: 'producto', ref: 'Captura Skims · logo', ajustes: { fondo: 'suave' }, capas: [
+    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 100, h: 100, pos: 'center top' },
+    { t: 'logo', x: 7, y: 8.5, w: 86, color: 'principal', op: 0.92 },
+    { t: 'foto', src: 'color:0', sinfondo: true, fit: 'cover', x: 0, y: 0, w: 100, h: 100, pos: 'center top' },
+    { t: 'degradado', x: 0, y: 74, w: 100, h: 26, color: 'negro', desde: 'abajo', op: 0.5 },
+    { t: 'texto', txt: '{{nombre}}', x: 6, y: 89.5, w: 56, tam: 28, fuente: 'texto', peso: 500, color: 'blanco', mayus: true, ls: 3 },
+    { t: 'texto', txt: '{{precio}}', x: 58, y: 88, w: 36, tam: 46, fuente: 'texto', peso: 500, color: 'blanco', al: 'right' } ] },
+  { nombre: 'Estilo de vida + prenda', mensaje: 'producto', ref: 'Captura Cuyana', ajustes: { fondo: 'blanco' }, capas: [
+    { t: 'foto', src: 'color:1', x: 0, y: 0, w: 55, h: 100, pos: 'center top' },
+    { t: 'degradado', x: 0, y: 74, w: 55, h: 26, color: 'negro', desde: 'abajo', op: 0.45 },
+    { t: 'logo', x: 13.5, y: 91.5, w: 28, color: 'blanco' },
+    { t: 'texto', txt: '{{badge}}', x: 60, y: 8, w: 35, tam: 19, fuente: 'texto', peso: 500, color: 'blanco', fondo: 'principal', pad: 8, r: 999, al: 'center', ls: 1, vis: 'badge' },
+    { t: 'texto', txt: '{{nombre}}', x: 58, y: 14.5, w: 39, tam: 34, fuente: 'titulo', color: 'principal', al: 'center', lh: 1.18 },
+    { t: 'foto', src: 'color:0', sinfondo: true, fit: 'contain', x: 58, y: 25, w: 39, h: 50, pos: 'center bottom', sombra: true },
+    { t: 'texto', txt: 'Color — {{color}}', x: 58, y: 78, w: 39, tam: 22, fuente: 'texto', color: 'texto', al: 'center' },
+    { t: 'colores', estilo: 'mini', al: 'center', x: 58, y: 82.3, w: 39, h: 5 },
+    { t: 'texto', txt: '{{precio}}  ~~{{precio_antes}}~~', x: 58, y: 89.5, w: 39, tam: 34, fuente: 'texto', peso: 500, color: 'principal', al: 'center' } ] },
+  { nombre: 'Ficha con dos detalles', mensaje: 'beneficios', ref: 'Captura Huckberry · detalles', capas: [
+    { t: 'foto', src: 'ben:0', x: 60, y: 0, w: 40, h: 49.8, zoom: 1.6, fx: 50, fy: 45 },
+    { t: 'foto', src: 'ben:1', x: 60, y: 50.2, w: 40, h: 49.8, zoom: 1.6, fx: 50, fy: 55 },
+    { t: 'logo', x: 17, y: 5, w: 26 },
+    { t: 'texto', txt: '{{categoria}}', x: 4, y: 12.3, w: 52, tam: 20, fuente: 'texto', peso: 500, color: 'texto', al: 'center', mayus: true, ls: 3 },
+    { t: 'texto', txt: '{{nombre_corto}}', x: 4, y: 15.2, w: 52, tam: 44, fuente: 'titulo', color: 'principal', al: 'center', lh: 1.05 },
+    { t: 'forma', x: 25, y: 23.6, w: 10, h: 0.25, color: 'principal' },
+    { t: 'texto', txt: '{{precio}}  ~~{{precio_antes}}~~', x: 4, y: 25.6, w: 52, tam: 34, fuente: 'texto', peso: 500, color: 'principal', al: 'center' },
+    { t: 'foto', src: 'color:0', sinfondo: true, fit: 'contain', x: 6, y: 32, w: 48, h: 52, pos: 'center bottom', sombra: true },
+    { t: 'forma', x: 4, y: 87.5, w: 52, h: 0.15, color: 'texto', op: 0.35 },
+    { t: 'texto', txt: 'Color — {{color}}', x: 4, y: 90.6, w: 28, tam: 21, fuente: 'texto', peso: 500, color: 'texto' },
+    { t: 'colores', estilo: 'mini', al: 'right', tam: 40, x: 30, y: 89.8, w: 26, h: 4 } ] },
+  { nombre: 'Tríptico', mensaje: 'producto', ref: 'Captura Feedr · tres vistas', ajustes: { fondo: 'principal' }, capas: [
+    { t: 'foto', src: 'color:0', x: 2, y: 2, w: 31.3, h: 70 },
+    { t: 'foto', src: 'ben:0', x: 34.35, y: 2, w: 31.3, h: 70, zoom: 1.4, fx: 50, fy: 40 },
+    { t: 'foto', src: 'color:1', x: 66.7, y: 2, w: 31.3, h: 70 },
+    { t: 'texto', txt: '{{nombre}}', x: 4, y: 76, w: 62, tam: 36, fuente: 'titulo', color: 'blanco', lh: 1.15 },
+    { t: 'texto', txt: '{{precio_antes}}', x: 4, y: 84.6, w: 30, tam: 26, fuente: 'texto', color: 'suave', tachado: true, vis: 'oferta' },
+    { t: 'texto', txt: '{{precio}}', x: 4, y: 88, w: 30, tam: 56, fuente: 'texto', peso: 500, color: 'blanco' },
+    { t: 'texto', txt: '{{badge}}', x: 30, y: 90, w: 34, tam: 19, fuente: 'texto', peso: 600, color: 'blanco', fondo: 'acento', pad: 7, r: 4, mayus: true, ls: 2, vis: 'badge' },
+    { t: 'logo', x: 72, y: 85.5, w: 23, color: 'blanco', caja: true } ] },
+  { nombre: 'Llegada nueva', mensaje: 'producto', ref: 'Captura Feedr · new arrival', capas: [
+    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 52, h: 100, zoom: 1.6, fx: 50, fy: 30 },
+    { t: 'logo', x: 4, y: 90, w: 22, caja: true },
+    { t: 'texto', txt: '———  NUEVA LLEGADA  ———', x: 55, y: 5.5, w: 43, tam: 21, fuente: 'texto', color: 'principal', al: 'center', ls: 4 },
+    { t: 'texto', txt: '{{nombre}}', x: 56, y: 11.5, w: 40, tam: 28, fuente: 'texto', color: 'texto', mayus: true, ls: 1, lh: 1.2 },
+    { t: 'texto', txt: '{{precio}}  ~~{{precio_antes}}~~', x: 56, y: 19, w: 40, tam: 46, fuente: 'titulo', color: 'principal' },
+    { t: 'foto', src: 'color:1', x: 56, y: 28.5, w: 40, h: 66, pos: 'center top' } ] },
+  { nombre: 'Oferta en curva', mensaje: 'oferta', ref: 'Captura Feedr · SALE', capas: [
+    { t: 'degradado', x: 0, y: 0, w: 100, h: 100, color: 'acento', desde: 'der', op: 0.16 },
+    { t: 'forma', x: -38, y: -12, w: 64, h: 124, color: 'principal', elipse: true },
+    { t: 'texto', txt: 'O\nF\nE\nR\nT\nA', x: 2, y: 7, w: 19, tam: 140, fuente: 'titulo', color: 'fondo', al: 'center', lh: 0.98, vis: 'oferta' },
+    { t: 'texto', txt: 'N\nU\nE\nV\nA', x: 2, y: 12, w: 19, tam: 140, fuente: 'titulo', color: 'fondo', al: 'center', lh: 0.98, vis: 'sin_oferta' },
+    { t: 'foto', src: 'color:0', sinfondo: true, fit: 'cover', x: 14, y: 0, w: 52, h: 100, pos: 'center top', sombra: true },
+    { t: 'logo', x: 76, y: 5, w: 19, caja: true },
+    { t: 'texto', txt: '{{nombre}}', x: 58, y: 48, w: 38, tam: 32, fuente: 'titulo', color: 'principal', al: 'right', lh: 1.15 },
+    { t: 'texto', txt: '~~{{precio_antes}}~~  {{precio}}', x: 50, y: 60, w: 46, tam: 54, fuente: 'texto', peso: 500, color: 'acento', al: 'right' } ] },
+  { nombre: 'Cinta de colección', mensaje: 'producto', ref: 'Captura Feedr · new collection', capas: [
+    { t: 'forma', x: 0, y: 0, w: 100, h: 9.5, color: 'blanco' },
+    { t: 'texto', txt: 'COLECCIÓN  ***NUEVA COLECCIÓN***  NUEVA COLECCIÓN  ***NUEVA COLECCIÓN***  NUEVA COLECCIÓN', x: -9, y: 2.2, w: 130, tam: 50, fuente: 'texto', color: 'principal', linea: true },
+    { t: 'foto', src: 'color:0', x: 40, y: 9.5, w: 60, h: 90.5, pos: 'center top' },
+    { t: 'logo', x: 12, y: 49, w: 24, caja: true },
+    { t: 'texto', txt: '{{nombre}}', x: 3, y: 61.5, w: 34, tam: 28, fuente: 'texto', color: 'texto', al: 'right', lh: 1.2 },
+    { t: 'texto', txt: '{{precio}}', x: 3, y: 67.5, w: 34, tam: 52, fuente: 'texto', peso: 600, color: 'principal', al: 'right' },
+    { t: 'texto', txt: '{{precio_antes}}', x: 3, y: 74.5, w: 34, tam: 26, fuente: 'texto', color: 'texto', tachado: true, op: 0.6, al: 'right', vis: 'oferta' } ] },
+  { nombre: 'Prenda en panel', mensaje: 'colores', ref: 'Captura Huckberry · estilo de vida', capas: [
+    { t: 'foto', src: 'color:1', x: 0, y: 0, w: 57, h: 100, pos: 'center top' },
+    { t: 'logo', x: 66, y: 5, w: 24 },
+    { t: 'foto', src: 'color:0', sinfondo: true, fit: 'contain', x: 61, y: 12, w: 35, h: 47, pos: 'center bottom', sombra: true },
+    { t: 'texto', txt: '{{categoria}}', x: 61, y: 63, w: 36, tam: 20, fuente: 'texto', peso: 500, color: 'texto', mayus: true, ls: 2, op: 0.7 },
+    { t: 'texto', txt: '{{nombre_corto}}', x: 61, y: 66.5, w: 36, tam: 40, fuente: 'titulo', color: 'principal', lh: 1.1 },
+    { t: 'texto', txt: '{{precio}}  ~~{{precio_antes}}~~', x: 61, y: 76.5, w: 36, tam: 32, fuente: 'texto', peso: 500, color: 'principal' },
+    { t: 'forma', x: 61, y: 84, w: 35, h: 0.15, color: 'texto', op: 0.35 },
+    { t: 'texto', txt: 'Color — {{color}}', x: 61, y: 86.8, w: 36, tam: 21, fuente: 'texto', color: 'texto' },
+    { t: 'colores', estilo: 'mini', al: 'left', tam: 42, x: 61, y: 90.6, w: 36, h: 4.5 } ] },
+  { nombre: 'Franja oscura con precio', mensaje: 'oferta', ref: 'Captura Ted Baker', capas: [
+    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 32.5, h: 100, zoom: 1.8, fx: 30, fy: 20, bri: 45 },
+    { t: 'foto', src: 'color:0', x: 32.5, y: 0, w: 67.5, h: 100, pos: 'center top' },
+    { t: 'logo', x: 4, y: 6, w: 24.5, color: 'blanco' },
+    { t: 'texto', txt: '{{precio_antes}}', x: 4, y: 74.5, w: 27, tam: 30, fuente: 'texto', color: 'blanco', tachado: true, op: 0.75, vis: 'oferta' },
+    { t: 'texto', txt: '{{precio}}', x: 4, y: 79, w: 27, tam: 54, fuente: 'texto', peso: 500, color: 'blanco' },
+    { t: 'texto', txt: '{{nombre}}', x: 4, y: 87, w: 26, tam: 20, fuente: 'texto', color: 'blanco', op: 0.85, mayus: true, ls: 2, lh: 1.3 } ] }
+
 ];
 
 /* ── datos ── */
@@ -212,7 +392,7 @@ function disHtml(d, cx, s, opt){
   let h = '<div class="dis-lienzo" style="position:relative;overflow:hidden;width:' + Math.round(W * s) + 'px;height:' + Math.round(H * s) + 'px;background:' + _disCol((d.ajustes && d.ajustes.fondo) || 'fondo') + '">';
   (d.capas || []).forEach((c, i) => {
     if (!_disVis(c, cx)) return;
-    const pos = 'position:absolute;left:' + (+c.x || 0) + '%;top:' + (+c.y || 0) + '%;width:' + (c.w != null ? +c.w : 100) + '%;' + (c.h != null ? 'height:' + (+c.h) + '%;' : '')
+    const g = _disGeo(c, d.formato), pos = 'position:absolute;left:' + g.x + '%;top:' + g.y + '%;width:' + g.w + '%;' + (g.h != null ? 'height:' + g.h + '%;' : '')
       + (c.op != null && c.t !== 'forma' && c.t !== 'degradado' ? 'opacity:' + (+c.op) + ';' : '');
     const sel = opt.sel === i ? 'outline:' + Math.max(1, 2) + 'px solid #7c5cff;outline-offset:-1px;' : '', da = opt.edit ? ' data-capa="' + i + '"' : '';
     const cur = opt.edit ? 'cursor:move;' : '';
@@ -221,27 +401,32 @@ function disHtml(d, cx, s, opt){
       const u0 = _disFotoSrc(cx, c.src), sf = c.sinfondo && DIS.sinf[_disArch(u0)], u = sf || u0;
       const z = Math.max(1, +c.zoom || 1), fxp = (c.fx != null ? +c.fx : 50) + '% ' + (c.fy != null ? +c.fy : 0) + '%';
       const op = c.pos || (c.fx != null || c.fy != null ? fxp : 'center top');
+      const fil = [c.bri != null && +c.bri !== 100 ? 'brightness(' + (+c.bri / 100) + ')' : '', c.con != null && +c.con !== 100 ? 'contrast(' + (+c.con / 100) + ')' : '', c.sat != null && +c.sat !== 100 ? 'saturate(' + (+c.sat / 100) + ')' : '',
+        +c.blur ? 'blur(' + (+c.blur * s) + 'px)' : '', c.sinfondo && c.sombra ? 'drop-shadow(0 ' + (26 * s) + 'px ' + (30 * s) + 'px rgba(0,0,0,.35))' : ''].filter(Boolean).join(' ');
       const rad = c.arco ? '9999px 9999px 0 0' : ((+c.r || 0) * s) + 'px';
       estilo = 'border-radius:' + rad + ';overflow:hidden;background:' + (c.sinfondo ? 'transparent' : '#e9e7e2') + ';'
         + (c.marco ? 'border:' + (+c.marco * s) + 'px solid ' + _disCol(c.marcoColor || 'fondo') + ';box-sizing:border-box;' : '')
         + (c.sombra && !c.sinfondo ? 'box-shadow:0 ' + (24 * s) + 'px ' + (60 * s) + 'px rgba(0,0,0,.28);' : '');
       inner = u ? '<img crossorigin="anonymous" src="' + disA(sf ? u : _disTam(u, anchoFoto)) + '" style="width:100%;height:100%;object-fit:' + (c.fit || (c.sinfondo ? 'contain' : 'cover')) + ';object-position:' + op + ';display:block;pointer-events:none;'
-        + (z > 1 ? 'transform:scale(' + z + ');transform-origin:' + fxp + ';' : '') + (c.sinfondo && c.sombra ? 'filter:drop-shadow(0 ' + (26 * s) + 'px ' + (30 * s) + 'px rgba(0,0,0,.35));' : '') + '" draggable="false">' : '';
+        + (z > 1 ? 'transform:scale(' + z + ');transform-origin:' + fxp + ';' : '') + (fil ? 'filter:' + fil + ';' : '') + '" draggable="false">' : '';
     } else if (c.t === 'forma'){
-      estilo = 'background:' + _disCol(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + ((+c.r || 0) * s) + 'px;';
+      estilo = 'background:' + _disCol(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';';
     } else if (c.t === 'degradado'){
       const dir = { abajo: 'to top', arriba: 'to bottom', izq: 'to right', der: 'to left' }[c.desde || 'abajo'] || 'to top';
       estilo = 'background:linear-gradient(' + dir + ',' + _disRgba(_disCol(c.color), c.op != null ? +c.op : 0.8) + ' 0%,' + _disRgba(_disCol(c.color), 0) + ' 100%);';
     } else if (c.t === 'logo'){
-      inner = '<img crossorigin="anonymous" src="' + disA(m.logo_oscuro) + '" style="width:100%;display:block;pointer-events:none;' + (c.claro ? 'filter:brightness(0) invert(1)' : '') + '" draggable="false">';
+      const lc = _disLogoColor(c), tono = lc === 'auto' ? (_disLogoTono(d, cx, i, g) > 0.55 ? 'principal' : 'blanco') : lc, halo = lc === 'auto' && DIS._mix > 0.3;   /* fondo mezclado (pelo + pared): aura suave para que se lea */
+      const hexL = tono === 'blanco' ? '#ffffff' : tono === 'negro' ? '#000000' : _disCol('principal');
+      if (c.caja) estilo = 'border:' + Math.max(1, 3 * s) + 'px solid ' + hexL + ';border-radius:' + (16 * s) + 'px;padding:' + (14 * s) + 'px ' + (18 * s) + 'px;box-sizing:border-box;';
+      inner = '<img crossorigin="anonymous" src="' + disA(m.logo_oscuro) + '" data-tono="' + tono + '" style="width:100%;display:block;pointer-events:none;' + 'filter:' + (tono === 'blanco' ? 'brightness(0) invert(1)' : tono === 'negro' ? 'brightness(0)' : (halo ? '' : 'none')) + (halo ? (tono === 'blanco' ? ' drop-shadow(0 0 ' + (10 * s) + 'px rgba(0,0,0,.55))' : ' drop-shadow(0 0 ' + (10 * s) + 'px rgba(255,255,255,.9)) drop-shadow(0 0 ' + (4 * s) + 'px rgba(255,255,255,.9))') : '') + '" draggable="false">';
     } else if (c.t === 'texto'){
-      const t = _disTxtSeg(cx, c.txt); if (!t.trim() || /^[\s·«»—★]*$/.test(t)) return;
+      const t = _disTxtSeg(cx, c.txt); if (!t.trim() || (/\{\{/.test(c.txt || '') && /^[\s·«»—★~*]*$/.test(t))) return;
       const fondo = c.fondo ? 'background:' + _disCol(c.fondo) + ';padding:' + ((+c.pad || 0) * s) + 'px ' + ((+c.pad || 0) * 1.4 * s) + 'px;border-radius:' + ((+c.r || 0) * s) + 'px;' : '';
       const col = _disCol(c.color);
       estilo = 'text-align:' + (c.al || 'left') + ';line-height:' + (c.lh || 1.12) + ';font-size:' + ((+c.tam || 40) * s) + 'px;' + (c.vertical ? 'writing-mode:vertical-rl;transform:rotate(180deg);' : '');
       inner = '<span style="display:inline-block;' + fondo + 'font-family:' + (c.fuente === 'titulo' ? ft : fx) + ';font-size:' + ((+c.tam || 40) * s) + 'px;font-weight:' + (c.peso || 400) + ';'
         + (c.contorno ? 'color:transparent;-webkit-text-stroke:' + Math.max(0.6, (+c.trazo || 2) * s) + 'px ' + col + ';' : 'color:' + col + ';')
-        + 'letter-spacing:' + ((+c.ls || 0) * s) + 'px;' + (c.mayus ? 'text-transform:uppercase;' : '') + (c.tachado ? 'text-decoration:line-through;' : '') + (c.cursiva ? 'font-style:italic;' : '') + 'white-space:pre-wrap">' + disA(t) + '</span>';
+        + 'letter-spacing:' + ((+c.ls || 0) * s) + 'px;' + (c.mayus ? 'text-transform:uppercase;' : '') + (c.tachado ? 'text-decoration:line-through;' : '') + (c.cursiva ? 'font-style:italic;' : '') + 'white-space:' + (c.linea ? 'nowrap' : 'pre-wrap') + '">' + _disMarcas(disA(t)) + '</span>';
     } else if (c.t === 'lista'){
       const L = cx.ben.slice(0, +c.max || 3); if (!L.length) return;
       const tam = (+c.tam || 30) * s;
@@ -249,6 +434,13 @@ function disHtml(d, cx, s, opt){
       inner = L.map(b => '<div style="display:flex;gap:' + (tam * 0.45) + 'px;margin-bottom:' + (tam * 0.7) + 'px"><span style="font-size:' + tam + 'px;line-height:1.1;color:' + _disCol('acento') + '">' + disA(c.icono || '✓') + '</span>'
         + '<div><div style="font-size:' + tam + 'px;font-weight:600;line-height:1.15">' + disA(b.titulo) + '</div>'
         + (c.detalle && b.texto ? '<div style="font-size:' + (tam * 0.72) + 'px;line-height:1.25;margin-top:' + (tam * 0.15) + 'px;opacity:.85">' + disA(b.texto) + '</div>' : '') + '</div></div>').join('');
+    } else if (c.t === 'colores' && c.estilo === 'mini'){
+      const P = cx.portadas; if (!P.length) return; const lado = (+c.tam || 46) * s;
+      estilo = 'display:flex;align-items:center;gap:' + (lado * 0.35) + 'px;justify-content:' + ({ left: 'flex-start', right: 'flex-end' }[c.al] || 'center') + ';';
+      inner = P.slice(0, 8).map(x => { const hx = _disColorHex(x.c), on = x.c === cx.color;
+        return '<div title="' + disA(x.c) + '" style="width:' + lado + 'px;height:' + lado + 'px;border-radius:50%;flex:none;overflow:hidden;background:' + (hx || '#e9e7e2') + ';'
+          + (on ? 'box-shadow:0 0 0 ' + (3 * s) + 'px ' + _disCol((d.ajustes && d.ajustes.fondo) || 'fondo') + ',0 0 0 ' + (5 * s) + 'px ' + _disCol('texto') + ';' : 'box-shadow:inset 0 0 0 ' + (1.5 * s) + 'px rgba(0,0,0,.14);') + '">'
+          + (hx || !x.src ? '' : '<img crossorigin="anonymous" src="' + disA(_disTam(x.src, 200)) + '" style="width:100%;height:100%;object-fit:cover;object-position:center 30%;display:block;pointer-events:none" draggable="false">') + '</div>'; }).join('');
     } else if (c.t === 'colores'){
       const P = cx.portadas.filter(x => x.src); if (P.length < 2) return;
       const punto = c.estilo === 'punto', lado = punto ? 120 : 110;
@@ -341,7 +533,8 @@ async function _disMini(f){
   const box = document.getElementById('disMini' + f.id); if (!box) return;
   const aj = f.ajustes || {}, p = _disProd(aj.prev_handle); if (!p){ box.innerHTML = '<div class="ui-nota">Sin productos</div>'; return; }
   const inf = await disInfo(p.handle), W = (DIS_TAM[f.formato] || DIS_TAM['4x5'])[0];
-  box.innerHTML = disHtml(f, disCtx(p, inf, aj.prev_color, aj), 248 / W, { ancho: 500 });
+  const cx = disCtx(p, inf, aj.prev_color, aj); try { await _disLuzPrep(f, cx); } catch (_) {}
+  box.innerHTML = disHtml(f, cx, 248 / W, { ancho: 500 });
 }
 
 /* ── crear, duplicar, estado ── */
@@ -422,7 +615,8 @@ function disEdProd(handle, paso){
   const L = (DIS.prods || []).filter(_disActivo); if (paso){ const i = L.findIndex(p => p.handle === DIS.prod); handle = (L[(i + 1) % L.length] || {}).handle; const s = document.getElementById('disEdProd'); if (s) s.value = handle; }
   DIS.prod = handle; DIS.color = ''; disEdPintar();
 }
-function _disLienzoRepintar(){ const lz = document.getElementById('disEdLienzo'); if (lz && DIS.ed && DIS._cx) lz.innerHTML = disHtml(DIS.ed, DIS._cx, DIS._s, { edit: true, sel: DIS.sel, guia: true, ancho: 900 }); }
+function _disLienzoRepintar(){ const lz = document.getElementById('disEdLienzo'); if (!(lz && DIS.ed && DIS._cx)) return; lz.innerHTML = disHtml(DIS.ed, DIS._cx, DIS._s, { edit: true, sel: DIS.sel, guia: true, ancho: 900 });
+  if (!DIS._luzCorre){ DIS._luzCorre = 1; _disLuzPrep(DIS.ed, DIS._cx).then(n => { DIS._luzCorre = 0; if (n) _disLienzoRepintar(); }).catch(() => { DIS._luzCorre = 0; }); } }
 async function disEdPintar(){
   if (!DIS.ed) return;
   const p = _disProd(DIS.prod), inf = p ? await disInfo(p.handle) : {};
@@ -457,7 +651,7 @@ function _disTeclas(on){
     if (e.key === 'Escape'){ DIS.sel = -1; return disEdPintar(); }
     const d = e.shiftKey ? 2 : 0.5, k = { ArrowLeft: ['x', -d], ArrowRight: ['x', d], ArrowUp: ['y', -d], ArrowDown: ['y', d] }[e.key];
     if (k){ e.preventDefault(); if (!DIS._nudge){ _disMemo(); DIS._nudge = 1; } clearTimeout(DIS._nt); DIS._nt = setTimeout(() => { DIS._nudge = 0; _disPanel(DIS._cx); }, 600);
-      c[k[0]] = Math.round(((+c[k[0]] || 0) + k[1]) * 2) / 2; DIS.ed._sucio = true; _disLienzoRepintar(); }
+      const f = DIS.ed.formato, g = _disGeo(c, f); g[k[0]] = Math.round((g[k[0]] + k[1]) * 2) / 2; _disGeoSet(c, f, g); DIS.ed._sucio = true; _disLienzoRepintar(); }
   };
   document.addEventListener('keydown', DIS._kh);
 }
@@ -481,6 +675,8 @@ function _disPanel(cx){
   let h = sec('capas', 'Capas', add + '<div class="dis-capas">' + filas + '</div>', '<span class="dis-cnt">' + C.length + '</span>');
   const c = C[DIS.sel];
   h += c ? sec('capa', 'Editar · ' + esc(_disCapaNombre(c)), _disProps(c, DIS.sel, cx)) : '<div class="dis-sec dis-vacio ui-nota">Haz clic en algo del lienzo (o en una capa) para editarlo.</div>';
+  if (DIS.ed.formato === '9x16') h += '<div class="dis-sec dis-916"><span class="ui-nota">Historias: lo rayado lo tapa Instagram. Todo se acomoda solo dentro de la zona segura.</span>'
+    + (C.some(x => x.g916) ? '<button type="button" class="btn" onclick="disAuto916()">↺ Acomodar todo solo</button>' : '') + '</div>';
   h += sec('ben', 'Beneficios de esta prenda', _disBenPanel(cx));
   const fs = (DIS.ed.ajustes && DIS.ed.ajustes.fondo) || 'fondo';
   h += sec('fondo', 'Fondo del diseño', '<div class="dis-colores">' + DIS_COLS.map(o => '<button type="button" class="dis-col' + (fs === o[0] ? ' on' : '') + '" style="background:' + _disCol(o[0]) + '" title="' + o[1] + '" onclick="disFondo(\'' + o[0] + '\')"></button>').join('') + '</div>'
@@ -495,7 +691,7 @@ async function disFondoSubir(f){
     _disMemo(); DIS.ed.capas.unshift({ t: 'foto', src: 'url:' + url, x: 0, y: 0, w: 100, h: 100, pos: 'center center' }); DIS.sel = 0; DIS.ed._sucio = true; if (res) res.textContent = ''; disEdPintar(); }
   catch (e) { if (res) res.innerHTML = '<span class="mal">' + esc(e.message) + '</span>'; }
 }
-function disCentrar(i, eje){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); if (eje === 'x') c.x = Math.round((50 - (c.w != null ? +c.w : 100) / 2) * 2) / 2; else if (c.h != null) c.y = Math.round((50 - (+c.h) / 2) * 2) / 2; DIS.ed._sucio = true; disEdPintar(); }
+function disCentrar(i, eje){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); const f = DIS.ed.formato, g = _disGeo(c, f); if (eje === 'x') g.x = Math.round((50 - g.w / 2) * 2) / 2; else if (g.h != null) g.y = Math.round((50 - g.h / 2) * 2) / 2; _disGeoSet(c, f, g); DIS.ed._sucio = true; disEdPintar(); }
 function _disProps(c, i, cx){
   const num = (k, t, paso, ph) => '<label class="dis-prop"><span class="ui-nota">' + t + '</span><input type="number" step="' + (paso || 1) + '" value="' + (c[k] != null ? c[k] : '') + '" placeholder="' + (ph || '') + '" onchange="disCapaSet(' + i + ',\'' + k + '\',this.value===\'\'?null:+this.value)"></label>';
   const selc = (k, t, ops, v) => '<label class="dis-prop"><span class="ui-nota">' + t + '</span><select onchange="disCapaSet(' + i + ',\'' + k + '\',this.value)">' + ops.map(o => '<option value="' + o[0] + '"' + (String(v != null ? v : (c[k] != null ? c[k] : '')) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select></label>';
@@ -503,15 +699,20 @@ function _disProps(c, i, cx){
   const col = (k, t) => '<div class="dis-prop dis-ancho"><span class="ui-nota">' + t + '</span><div class="dis-colores">' + (k === 'fondo' || k === 'marcoColor' ? '<button type="button" class="dis-col nada' + (!c[k] ? ' on' : '') + '" title="Ninguno" onclick="disCapaSet(' + i + ',\'' + k + '\',\'\')"></button>' : '')
     + DIS_COLS.map(o => '<button type="button" class="dis-col' + (c[k] === o[0] ? ' on' : '') + '" style="background:' + _disCol(o[0]) + '" title="' + o[1] + '" onclick="disCapaSet(' + i + ',\'' + k + '\',\'' + o[0] + '\')"></button>').join('') + '</div></div>';
   const grupo = (t, x) => '<div class="dis-grupo"><div class="dis-grupo-t">' + t + '</div>' + x + '</div>';
-  let cont = '', est = '';
+  let cont = '', est = ''; const G = _disGeo(c, DIS.ed.formato);
+  const numG = (k, t) => '<label class="dis-prop"><span class="ui-nota">' + t + '</span><input type="number" step="0.5" value="' + (G[k] != null ? G[k] : '') + '" onchange="disCapaSet(' + i + ',\'' + k + '\',this.value===\'\'?null:+this.value)"></label>';
   if (c.t === 'texto'){
-    cont = '<textarea rows="2" style="width:100%" oninput="disCapaSet(' + i + ',\'txt\',this.value,1)">' + esc(c.txt || '') + '</textarea>'
+    const tok = /\{\{\w+\}\}/.test(c.txt || '');
+    cont = '<div class="dis-asi"><span class="ui-nota">Así se ve:</span> <b>' + esc(_disTxtSeg(cx, c.txt) || '(vacío en este producto)') + '</b></div>'
+      + (tok ? '<button type="button" class="btn" style="margin:0 0 6px" onclick="disTextoFijar(' + i + ')" title="Cambia los campos automáticos por lo que ves, para escribir encima">✏️ Escribir mi propio texto</button>' : '')
+      + '<textarea id="disTxt' + i + '" rows="2" style="width:100%" oninput="disCapaSet(' + i + ',\'txt\',this.value,1)">' + esc(c.txt || '') + '</textarea>'
+      + '<div class="ui-nota" style="margin:4px 0">Doble clic en el lienzo para escribir directo · **negrita** · *cursiva* · ~~precio tachado~~</div>'
       + '<div class="ui-nota" style="margin:6px 0 4px">Campos que se llenan solos (pasa el mouse para ver el valor):</div>'
       + '<div class="dis-campos">' + DIS_CAMPOS.map(x => '<button type="button" class="dis-campo" title="' + disA(_disTxt(cx, x[0]) || '(vacío en este producto)') + '" onclick="disCampoInsertar(' + i + ',\'' + x[0] + '\')">' + x[1] + '</button>').join('') + '</div>';
     est = '<div class="dis-props">' + selc('fuente', 'Letra', [['titulo', 'Títulos (Tenor)'], ['texto', 'Texto (Jost)']]) + num('tam', 'Tamaño') + selc('peso', 'Grosor', [['300', 'Fino'], ['400', 'Normal'], ['500', 'Medio'], ['600', 'Negrita']], String(c.peso || 400))
       + selc('al', 'Alinear', [['left', 'Izquierda'], ['center', 'Centro'], ['right', 'Derecha']], c.al || 'left') + num('ls', 'Espaciado', 0.5) + num('lh', 'Interlínea', 0.05, '1.12') + num('op', 'Opacidad', 0.05, '1') + '</div>'
       + col('color', 'Color') + col('fondo', 'Fondo de etiqueta') + '<div class="dis-props">' + num('pad', 'Relleno') + num('r', 'Redondeo') + '</div>'
-      + '<div class="dis-props">' + chk('mayus', 'MAYÚSCULAS') + chk('cursiva', 'Cursiva') + chk('tachado', 'Tachado') + chk('contorno', 'Solo contorno') + chk('vertical', 'Vertical') + '</div>';
+      + '<div class="dis-props">' + chk('mayus', 'MAYÚSCULAS') + chk('cursiva', 'Cursiva') + chk('tachado', 'Tachado') + chk('contorno', 'Solo contorno') + chk('vertical', 'Vertical') + chk('linea', 'En una sola línea') + '</div>';
   } else if (c.t === 'foto'){
     const n = cx.fotos.length, ops = [];
     for (let k = 0; k < 6; k++) ops.push(['color:' + k, k ? 'Foto ' + (k + 1) + ' del color' : 'Portada del color']);
@@ -519,13 +720,17 @@ function _disProps(c, i, cx){
     for (let k = 0; k < n; k++) ops.push(['n:' + k, 'Foto ' + (k + 1) + ' de ' + n + ' (todas)']);
     if (String(c.src || '').indexOf('url:') === 0) ops.unshift([c.src, 'Imagen propia']);
     cont = '<div class="dis-props">' + selc('src', 'Qué foto', ops, c.src || 'color:0') + '</div><div class="dis-props">' + chk('sinfondo', '✂ Quitar el fondo (gratis; la 1ª vez 5-15 s)') + chk('sombra', 'Sombra') + chk('arco', 'Forma de arco') + '</div>';
-    est = '<div class="dis-props">' + selc('fit', 'Encaje', [['cover', 'Llenar'], ['contain', 'Entera']], c.fit || (c.sinfondo ? 'contain' : 'cover')) + num('zoom', 'Acercar ×', 0.1, '1') + num('fx', 'Foco horiz. %', 5, '50') + num('fy', 'Foco vert. %', 5, '0') + num('r', 'Redondeo') + num('marco', 'Marco') + '</div>' + (c.marco ? col('marcoColor', 'Color del marco') : '');
-  } else if (c.t === 'forma'){ est = col('color', 'Color') + '<div class="dis-props">' + num('op', 'Opacidad 0-1', 0.05) + num('r', 'Redondeo') + '</div>'; }
+    est = '<div class="dis-props">' + selc('fit', 'Encaje', [['cover', 'Llenar'], ['contain', 'Entera']], c.fit || (c.sinfondo ? 'contain' : 'cover')) + num('zoom', 'Acercar ×', 0.1, '1') + num('fx', 'Foco horiz. %', 5, '50') + num('fy', 'Foco vert. %', 5, '0') + num('r', 'Redondeo') + num('marco', 'Marco') + '</div>' + (c.marco ? col('marcoColor', 'Color del marco') : '')
+      + '<div class="dis-props"><button type="button" class="btn" onclick="disCapaPaso(' + i + ',\'bri\',-10)">☾ Más oscura</button><button type="button" class="btn" onclick="disCapaPaso(' + i + ',\'bri\',10)">☀ Más clara</button></div>'
+      + '<div class="dis-props">' + num('bri', 'Brillo %', 5, '100') + num('con', 'Contraste %', 5, '100') + num('sat', 'Color %', 5, '100') + num('blur', 'Desenfoque', 1, '0') + '</div>';
+  } else if (c.t === 'forma'){ est = col('color', 'Color') + '<div class="dis-props">' + num('op', 'Opacidad 0-1', 0.05) + num('r', 'Redondeo') + chk('elipse', 'Curva / óvalo') + '</div>'; }
   else if (c.t === 'degradado'){ est = col('color', 'Color') + '<div class="dis-props">' + selc('desde', 'Más fuerte', [['abajo', 'Abajo'], ['arriba', 'Arriba'], ['izq', 'Izquierda'], ['der', 'Derecha']], c.desde || 'abajo') + num('op', 'Intensidad 0-1', 0.05) + '</div>'; }
-  else if (c.t === 'logo'){ est = '<div class="dis-props">' + chk('claro', 'Logo blanco (sobre foto o fondo oscuro)') + num('op', 'Opacidad', 0.05, '1') + '</div>'; }
+  else if (c.t === 'logo'){ est = '<div class="dis-props">' + selc('color', 'Color del logo', DIS_LOGO_COL, _disLogoColor(c)) + num('op', 'Opacidad', 0.05, '1') + chk('caja', 'En recuadro') + '</div>'; }
   else if (c.t === 'lista'){ est = '<div class="dis-props">' + num('max', 'Cuántos') + num('tam', 'Tamaño') + '</div>' + col('color', 'Color') + '<div class="dis-props">' + chk('detalle', 'Con detalle debajo') + '</div>'; }
-  else if (c.t === 'colores'){ est = '<div class="dis-props">' + selc('estilo', 'Muestras', [['cuadro', 'Cuadradas'], ['punto', 'Redondas']], c.estilo || 'cuadro') + '</div>'; }
-  const posi = '<div class="dis-props">' + num('x', 'X %', 0.5) + num('y', 'Y %', 0.5) + num('w', 'Ancho %', 0.5) + (c.h != null || /^(foto|forma|degradado|colores)$/.test(c.t) ? num('h', 'Alto %', 0.5) : '') + '</div>'
+  else if (c.t === 'colores'){ est = '<div class="dis-props">' + selc('estilo', 'Muestras', [['cuadro', 'Fotos cuadradas'], ['punto', 'Fotos redondas'], ['mini', 'Puntos de color']], c.estilo || 'cuadro')
+    + (c.estilo === 'mini' ? selc('al', 'Alinear', [['left', 'Izquierda'], ['center', 'Centro'], ['right', 'Derecha']], c.al || 'center') + num('tam', 'Tamaño del punto', 2, '46') : '') + '</div>'; }
+  const posi = (DIS.ed.formato === '9x16' ? '<div class="ui-nota" style="margin-bottom:4px">' + (c.g916 ? 'Lugar propio en Historias' : 'Acomodada sola en Historias') + '</div>' : '')
+    + '<div class="dis-props">' + numG('x', 'X %') + numG('y', 'Y %') + numG('w', 'Ancho %') + (G.h != null || /^(foto|forma|degradado|colores)$/.test(c.t) ? numG('h', 'Alto %') : '') + '</div>'
     + '<div class="dis-props"><button type="button" class="btn" onclick="disCentrar(' + i + ',\'x\')">↔ Centrar</button><button type="button" class="btn" onclick="disCentrar(' + i + ',\'y\')">↕ Centrar</button></div>';
   return (cont ? grupo('Contenido', cont) : '') + grupo('Posición y tamaño', posi) + (est ? grupo('Estilo', est) : '') + grupo('Cuándo aparece', '<div class="dis-props">' + selc('vis', 'Se muestra', DIS_VIS, c.vis || 'siempre') + '</div>');
 }
@@ -555,10 +760,25 @@ function disCapaSet(i, k, v, suave){
   if (!suave || !DIS._tx){ _disMemo(); if (suave) DIS._tx = 1; }
   if (k === 'sinfondo' && v){ c[k] = v; DIS.ed._sucio = true; const res = document.getElementById('disEdRes');
     _disSinFondoPrep(DIS.ed, DIS._cx, t => { if (res) res.innerHTML = t; }).then(() => { if (res) res.textContent = ''; disEdPintar(); }).catch(e => { if (res) res.innerHTML = '<span class="mal">' + esc(e.message) + '</span>'; }); return; }
+  if (/^[xywh]$/.test(k) && DIS.ed.formato === '9x16'){ const g = _disGeo(c, '9x16'); g[k] = v == null ? g[k] : +v; _disGeoSet(c, '9x16', g); DIS.ed._sucio = true; disEdPintar(); return; }
+  if (k === 'color' && c.t === 'logo') delete c.claro;
   if (v === '' && (k === 'fondo' || k === 'marcoColor')) delete c[k]; else c[k] = (k === 'peso' ? +v : v);
   DIS.ed._sucio = true;
   if (suave){ clearTimeout(DIS._ct); DIS._ct = setTimeout(() => { DIS._tx = 0; _disLienzoRepintar(); }, 250); return; }
   disEdPintar();
+}
+function disCapaPaso(i, k, d){ const c = DIS.ed.capas[i]; if (!c) return; disCapaSet(i, k, Math.max(10, Math.min(200, (c[k] != null ? +c[k] : 100) + d))); }
+function disAuto916(){ _disMemo(); DIS.ed.capas.forEach(c => { delete c.g916; }); DIS.ed._sucio = true; disEdPintar(); }
+function disTextoFijar(i){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); c.txt = _disTxtSeg(DIS._cx, c.txt); DIS.ed._sucio = true; disEdPintar(); setTimeout(() => { const t = document.getElementById('disTxt' + i); if (t){ t.focus(); t.select(); } }, 60); }
+/* 21-nov · doble clic sobre un texto del lienzo = escribir encima (Pablo: «los textos están rígidos»). Si tenía campos automáticos, queda fijo. */
+function disTextoEnLinea(i, el){
+  const c = DIS.ed.capas[i], sp = el && el.querySelector('span'); if (!c || !sp) return;
+  const antes = _disTxtSeg(DIS._cx, c.txt);
+  sp.innerText = antes; sp.contentEditable = 'true'; sp.style.outline = '2px dashed #C15B07'; sp.style.cursor = 'text'; el.style.cursor = 'text'; sp.focus();
+  try { const r = document.createRange(); r.selectNodeContents(sp); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(r); } catch (_) {}
+  const alSalir = () => { sp.removeEventListener('blur', alSalir); const nuevo = sp.innerText.replace(/\n+$/, ''); if (nuevo !== antes){ _disMemo(); c.txt = nuevo; DIS.ed._sucio = true; } disEdPintar(); };
+  sp.addEventListener('blur', alSalir);
+  sp.addEventListener('keydown', ev => { ev.stopPropagation(); if (ev.key === 'Escape'){ ev.preventDefault(); sp.removeEventListener('blur', alSalir); disEdPintar(); } else if (ev.key === 'Enter' && !ev.shiftKey){ ev.preventDefault(); sp.blur(); } });
 }
 function disCampoInsertar(i, campo){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); c.txt = (c.txt ? c.txt + ' ' : '') + campo; DIS.ed._sucio = true; disEdPintar(); }
 function disCapaMover(i, d){ const C = DIS.ed.capas, j = i + d; if (j < 0 || j >= C.length) return; _disMemo(); const t = C[i]; C[i] = C[j]; C[j] = t; DIS.sel = j; DIS.ed._sucio = true; disEdPintar(); }
@@ -574,35 +794,37 @@ function disCapaAgregar(t){
 function _disArrastreIni(){
   const lz = document.getElementById('disEdLienzo'); if (!lz) return;
   lz.addEventListener('mousedown', e => {
-    const cont = lz.querySelector('.dis-lienzo'); if (!cont || !DIS.ed) return;
+    const cont = lz.querySelector('.dis-lienzo'); if (!cont || !DIS.ed || e.target.isContentEditable) return;
     const tir = e.target.closest('[data-tirador]'), el = e.target.closest('[data-capa]');
     if (!el && !tir){ if (DIS.sel >= 0){ DIS.sel = -1; disEdPintar(); } return; }
     e.preventDefault(); const i = +(tir ? tir.dataset.tirador : el.dataset.capa), c = DIS.ed.capas[i]; if (!c) return;
     const caja = tir ? tir.parentElement : el;
     if (DIS.sel !== i){ DIS.sel = i; _disPanel(DIS._cx); lz.querySelectorAll('[data-capa]').forEach(x => { x.style.outline = ''; }); caja.style.outline = '2px solid #7c5cff'; }
     _disMemo();
-    const W = cont.clientWidth, H = cont.clientHeight, x0 = e.clientX, y0 = e.clientY, o = { x: +c.x || 0, y: +c.y || 0, w: c.w != null ? +c.w : 100, h: c.h != null ? +c.h : null, tam: +c.tam || 40 };
+    const g0 = _disGeo(c, DIS.ed.formato), W = cont.clientWidth, H = cont.clientHeight, x0 = e.clientX, y0 = e.clientY, o = { x: g0.x, y: g0.y, w: g0.w, h: g0.h, tam: +c.tam || 40 }; let movio = 0;
     const gv = cont.querySelector('.dis-guia-v'), gh = cont.querySelector('.dis-guia-h'), r2 = v => Math.round(v * 2) / 2;
     const mv = ev => {
       const dx = (ev.clientX - x0) / W * 100, dy = (ev.clientY - y0) / H * 100;
       if (tir){
-        c.w = Math.max(2, r2(o.w + dx)); if (o.h != null) c.h = Math.max(1, r2(ev.shiftKey ? o.h * c.w / o.w : o.h + dy));
-        if (c.t === 'texto') c.tam = Math.max(8, Math.round(o.tam * c.w / o.w));
-        caja.style.width = c.w + '%'; if (c.h != null) caja.style.height = c.h + '%';
+        const nw = Math.max(2, r2(o.w + dx)), nh = o.h != null ? Math.max(1, r2(ev.shiftKey ? o.h * nw / o.w : o.h + dy)) : null;
+        _disGeoSet(c, DIS.ed.formato, { x: o.x, y: o.y, w: nw, h: nh }); movio = 1;
+        if (c.t === 'texto') c.tam = Math.max(8, Math.round(o.tam * nw / o.w));
+        caja.style.width = nw + '%'; if (nh != null) caja.style.height = nh + '%';
         if (c.t === 'texto') { const sp = caja.querySelector('span'); if (sp) sp.style.fontSize = (c.tam * DIS._s) + 'px'; }
       } else {
         let nx = r2(o.x + dx), ny = r2(o.y + dy); const cxp = nx + o.w / 2, cyp = o.h != null ? ny + o.h / 2 : null;
         const pegaX = Math.abs(cxp - 50) < 1.2, pegaY = cyp != null && Math.abs(cyp - 50) < 1.2;
         if (pegaX) nx = r2(50 - o.w / 2); if (pegaY) ny = r2(50 - o.h / 2);
         if (gv) gv.style.display = pegaX ? 'block' : 'none'; if (gh) gh.style.display = pegaY ? 'block' : 'none';
-        c.x = nx; c.y = ny; caja.style.left = nx + '%'; caja.style.top = ny + '%';
+        if (nx !== o.x || ny !== o.y){ _disGeoSet(c, DIS.ed.formato, { x: nx, y: ny, w: o.w, h: o.h }); movio = 1; } caja.style.left = nx + '%'; caja.style.top = ny + '%';
       }
       DIS.ed._sucio = true;
     };
     const up = () => { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); if (gv) gv.style.display = 'none'; if (gh) gh.style.display = 'none';
-      if (c.x === o.x && c.y === o.y && c.w === o.w && DIS.hist) DIS.hist.pila.pop(); _disLienzoRepintar(); _disPanel(DIS._cx); };
+      if (!movio && DIS.hist) DIS.hist.pila.pop(); _disLienzoRepintar(); _disPanel(DIS._cx); };
     document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
   });
+  lz.addEventListener('dblclick', e => { const el = e.target.closest('[data-capa]'); if (!el || !DIS.ed) return; const i = +el.dataset.capa, c = DIS.ed.capas[i]; if (c && c.t === 'texto') disTextoEnLinea(i, el); });
 }
 async function disGuardar(callado){
   const res = document.getElementById('disEdRes'), d = DIS.ed; if (!d) return null;
@@ -640,7 +862,7 @@ async function _disLib(){
   await new Promise((ok, mal) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.js'; s.onload = ok; s.onerror = () => mal(new Error('no cargó el generador de imágenes')); document.head.appendChild(s); });
 }
 async function disPng(d, cx){
-  _disFuentes(); await _disLib(); await _disSinFondoPrep(d, cx);
+  _disFuentes(); await _disLib(); await _disSinFondoPrep(d, cx); try { await _disLuzPrep(d, cx); } catch (_) {}
   const m = DIS.marca || DIS_MARCA_DEF;
   try { await Promise.all([document.fonts.load("60px '" + m.f_titulo + "'"), document.fonts.load("600 60px '" + m.f_texto + "'"), document.fonts.load("60px '" + m.f_texto + "'")]); } catch (_) {}
   const [W, H] = DIS_TAM[d.formato] || DIS_TAM['4x5'];
@@ -755,6 +977,7 @@ async function disMarcaGuardar(aprobar){
     + '.dis-capa-acc{display:flex;gap:0;opacity:0;transition:opacity .12s}.dis-capa:hover .dis-capa-acc,.dis-capa.on .dis-capa-acc{opacity:1}.dis-capa-acc .dis-ib{width:24px;height:24px}'
     + '.dis-props{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;align-items:flex-end}.dis-prop{display:flex;flex-direction:column;gap:3px;min-width:78px}.dis-prop input[type=number]{width:78px}.dis-ancho{width:100%}'
     + '.dis-chk{display:inline-flex;align-items:center;gap:6px;font:400 12px var(--ui-f);color:var(--txt);cursor:pointer;margin-right:6px}'
+    + '.dis-asi{font-size:13px;margin:0 0 6px;line-height:1.35}.dis-916{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px}'
     + '.dis-colores{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0}.dis-col{width:24px;height:24px;border-radius:50%;border:2px solid var(--bd);cursor:pointer;padding:0}'
     + '.dis-col.on{border-color:#7c5cff;box-shadow:0 0 0 2px rgba(124,92,255,.45)}.dis-col.nada{background:repeating-linear-gradient(45deg,transparent 0 4px,var(--bd) 4px 5px)}'
     + '.dis-campos{display:flex;flex-wrap:wrap;gap:4px}'
