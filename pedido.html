@@ -18,6 +18,8 @@
   #estado { color:var(--mu); font-size:13px; margin-bottom:10px; }
   #avisos { background:var(--warnbg); color:var(--warn); border-radius:8px; padding:8px 12px; margin-bottom:12px; font-size:13px; display:none; }
   #avisos div { margin:3px 0; }
+  #ya-compro { display:none; border:1px solid #22c55e; color:var(--tx,inherit); border-radius:8px; padding:8px 12px; margin-bottom:10px; font-size:13px; }
+  #ya-compro a { color:#22c55e; font-weight:600; }
   details { background:var(--card); border:1px solid var(--bd); border-radius:10px; margin-bottom:10px; overflow:hidden; }
   summary { cursor:pointer; padding:11px 14px; font-weight:600; display:flex; align-items:center; gap:8px; }
   summary small { font-weight:400; color:var(--mu); }
@@ -33,6 +35,7 @@
   <button id="btn-act">Actualizar</button>
 </div>
 <div id="estado">Abre una conversación para armar el pedido.</div>
+<div id="ya-compro"></div>
 <div id="avisos"></div>
 <details id="d-cot">
   <summary>Cotización para la clienta <small id="s-cot"></small></summary>
@@ -300,7 +303,7 @@ function armarPedido(msgs, L, ctx) {
   var hayAd = Number(L.ad || 0) > 0 || msgs.some(function (m) { return m.message_type === 0 && /QUIERO MAS INFORMACION/.test(nz(m.content)); });
   var origen = hayAd ? 'ADS DIRECTO' : '';
   if (!hayAd) avisos.push('No veo anuncio en este chat: elige el origen a mano.');
-  var ASES = ['CAMILA', 'ANGIE', 'LUCIA', 'DAYANN', 'ROXANA', 'LUZ'];
+  var ASES = ['CAMILA', 'ANGIE', 'LUCIA', 'ROXANA', 'LUZ'];   // 21-nov (Pablo): Dayann ya no es asesora
   // 19-nov (Pablo, chat #9533): manda la asesora asignada a la conversación, no quien mira el panel
   var asesora = [ctx.asignada, ctx.agente].map(function (x) { return nz(x).split(' ')[0]; }).filter(function (x) { return ASES.indexOf(x) >= 0; })[0] || '';
   if (!asesora) avisos.push('La conversación no tiene una asesora asignada: elígela a mano.');
@@ -348,6 +351,22 @@ function armarPedido(msgs, L, ctx) {
 }
 
 function estado(t) { document.getElementById('estado').textContent = t; }
+/* 21-nov-2026 (Pablo) · si la clienta ya compró (en cualquier canal), se dice arriba con el número de pedido: un clic lo abre en el ERP.
+   rpc cliente_ya_compro: solo número, fecha, canal y cantidad de prendas (sin datos personales). */
+var ERP_URL = 'https://pabloparedes2902.github.io/ERP-Tulula/';
+function yaCompro(tel) {
+  var b = document.getElementById('ya-compro'); if (!b) return; b.style.display = 'none';
+  var t9 = S(tel).replace(/\D/g, '').slice(-9); if (t9.length < 9) return;
+  fetch('https://vlilvrxfppppzwyaeviu.supabase.co/rest/v1/rpc/cliente_ya_compro', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: ANON, Authorization: 'Bearer ' + ANON }, body: JSON.stringify({ p_tel: t9 }) })
+    .then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      var x = Array.isArray(j) ? j[0] : j; if (!x || !x.nro) return;
+      var f = S(x.fecha).slice(0, 10).split('-'); var fe = f.length === 3 ? f[2] + '/' + f[1] : '';
+      b.innerHTML = '🛍️ Esta clienta ya compró: <a target="_blank" rel="noopener" href="' + ERP_URL + '?pedido=' + encodeURIComponent(x.nro) + '">pedido ' + x.nro + '</a>'
+        + (fe ? ' · ' + fe : '') + (x.canal ? ' · ' + S(x.canal).toLowerCase() + (x.origen && /LIVE/i.test(x.origen) ? ' live' : '') : '') + (x.prendas ? ' · ' + x.prendas + ' prenda(s)' : '')
+        + (x.pedidos > 1 ? ' · ' + x.pedidos + ' pedidos en total' : '');
+      b.style.display = 'block';
+    }).catch(function () {});
+}
 function pintar(r) {
   document.getElementById('t-nuevo').textContent = r.nuevo;
   document.getElementById('t-agrega').textContent = r.agrega;
@@ -380,6 +399,7 @@ function armar() {
   function listo() {
     try { if (IA_MEM[conv]) ctx.ia = IA_MEM[conv]; pintar(armarPedido(msgs, LISTAS, ctx)); } catch (e) { estado('No pude armar el pedido: ' + e.message); return; }
     ULT = { conv: conv, ctx: ctx, msgs: msgs };
+    yaCompro(ctx.tel);
     // 19-nov (Pablo): Tula lee solo al tocar «Leer con Tula». Al abrir se muestra gratis la última lectura si no hay mensajes nuevos.
     estado('Conversación #' + conv + ' · Toca «🤖 Leer con Tula» para armar la cotización y el pedido.');
     // 19-nov (Pablo, chat #9533): Chatwoot solo pasa los últimos ~20 mensajes; la función trae la conversación entera (gratis, sin IA)

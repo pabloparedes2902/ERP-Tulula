@@ -1281,7 +1281,24 @@ function motorPrenda(nombre){
   const seg = _mkNorm(p.length > 1 ? p[1] : p[0]).trim().split(/\s+/);
   const k = seg[0] || '';
   let tipo = MOTOR_ABR[k] || MOTOR_ABR[k.slice(0,3)] || 'otro';
-  return { tipo, modelo: seg.slice(1).join(' ') };
+  return { tipo, modelo: _mkModeloCanon(seg.slice(1).join(' '), nombre) };
+}
+/* 21-nov-2026 (Pablo: «dice Pantalón Catlina… corrígelo en su origen») · el modelo sale del NOMBRE del anuncio en Meta
+   (lo escribe quien crea el anuncio). Si no existe en el catálogo del ERP pero le falta/sobra/cambia UNA letra respecto de un
+   modelo real (Catlina → Catalina), se lee como el real y queda anotado en MK_NOMBRE_MAL para avisar que corrijan el anuncio. */
+const MK_NOMBRE_MAL = {};
+function _mkLev1(a, b){ if (a === b) return true; const la = a.length, lb = b.length; if (Math.abs(la - lb) > 1) return false;
+  let i = 0, j = 0, d = 0; while (i < la && j < lb){ if (a[i] === b[j]){ i++; j++; continue; } if (++d > 1) return false;
+    if (la > lb) i++; else if (lb > la) j++; else { i++; j++; } } return d + (la - i) + (lb - j) <= 1; }
+function _mkModeloCanon(m, nombre){
+  m = String(m || '').trim(); if (!m || m.length < 4) return m;
+  const reales = new Set(); (MOTOR_TOPES || []).forEach(x => { if (x.modelo) reales.add(x.modelo); });
+  (typeof ESC_STOCK !== 'undefined' && ESC_STOCK || []).forEach(x => { const w = _mkNorm(x.d).trim(); if (w) reales.add(w); });
+  if (!reales.size || reales.has(m) || [...reales].some(r => (' ' + r + ' ').includes(' ' + m + ' '))) return m;
+  const cand = [...reales].filter(r => r.length >= 4 && _mkLev1(m, r));
+  if (cand.length !== 1) return m;
+  MK_NOMBRE_MAL[String(nombre || '')] = { mal: m, bien: cand[0] };
+  return cand[0];
 }
 function _motorProm(arr){ return arr.length ? arr.reduce((s,x) => s + x.u, 0) / arr.length : null; }
 function motorMargenUnit(nombre){
@@ -5140,6 +5157,14 @@ async function mkNuevoCrear(){
               botones: wa ? Math.min(MKN.botones || 2, _mknBotMax()) : 0, link: wa ? '' : g('mknLink'), ..._mknExtrasDatos(wa) };
   const faltan = mkNuevoValidar(v);
   if (faltan.length){ res.innerHTML = '<span class="mal">Falta: ' + esc(faltan.join(', ')) + '.</span>'; return; }
+  /* 21-nov-2026 (Pablo: «Catlina» en vez de «Catalina») · el producto del nombre tiene que existir en el catálogo del ERP: si le
+     falta una letra se corrige solo; si no existe, no se crea el anuncio (si no, Escalamiento y Margen no lo reconocen). */
+  { const pr = motorPrenda('x / ' + g('mknProd')), pz = _mkNorm(g('mknProd')).trim().split(/\s+/).slice(1).join(' ');
+    const reales = new Set((MOTOR_TOPES || []).map(z => z.modelo).filter(Boolean));
+    if (pr.tipo !== 'otro' && pz && reales.size && pz !== pr.modelo){ const el = document.getElementById('mknProd'); el.value = el.value.replace(new RegExp(pz.split(' ')[0], 'i'), pr.modelo.charAt(0) + pr.modelo.slice(1).toLowerCase()); mkNuevoNombre();
+      res.innerHTML = '<span class="mal">Corregí el producto a «' + esc(el.value) + '» (estaba mal escrito). Revisa y vuelve a crear.</span>'; return; }
+    if (pr.tipo !== 'otro' && pz && reales.size && ![...reales].some(r => r === pz || (' ' + r + ' ').includes(' ' + pz + ' '))){
+      res.innerHTML = '<span class="mal">El modelo «' + esc(pz.toLowerCase()) + '» no está en el catálogo del ERP: escríbelo igual que en Productos.</span>'; return; } }
   /* 16-oct · ✅ revisión: los avisos no bloquean, pero se confirman una vez con «Crear igual» */
   const rv = mkNuevoRevision(v);
   if (rv.avisos.length && !MKN.revOk){
@@ -7687,6 +7712,11 @@ function _escFantPieza(pz, vs){
 }
 /* ── producto del anuncio y sus prendas en Stock (un conjunto = sus 2 prendas) ── */
 function _escClave(r){ const p = motorPrenda(r.anuncio); return (p.tipo === 'otro' || !p.modelo) ? null : p.tipo + '|' + p.modelo; }
+/* 21-nov-2026 · aviso en Escalamiento: anuncios cuyo nombre en Meta tiene el modelo mal escrito (se leen como el modelo real) */
+function _escNombreMalHtml(f){
+  const L = (f.filas || []).map(r => MK_NOMBRE_MAL[String(r.anuncio || '')]).filter(Boolean); if (!L.length) return '';
+  return '<div style="font-size:12px;color:#fbbf24;margin-top:3px">⚠ ' + L.length + (L.length === 1 ? ' anuncio dice' : ' anuncios dicen') + ' «' + esc(L[0].mal.toLowerCase()) + '» en Meta: lo leo como «' + esc(L[0].bien.toLowerCase()) + '». Corrige el nombre del anuncio en Meta.</div>';
+}
 function _escNom(k){ const [t, m] = String(k).split('|'); return (t || '').charAt(0).toUpperCase() + (t || '').slice(1) + ' ' + String(m || '').replace(/(^|\s)\S/g, s => s.toUpperCase()); }
 function _escPiezas(tipo, modelo){
   if (!ESC_STOCK) return [];
@@ -8465,7 +8495,7 @@ function escPintar(cambio){
     h += '<div class="esx-stage' + (cambio ? ' esx-entra' : '') + '">';
     h += '<div class="esx-prod">' + (f.img ? '<img src="' + esc(f.img) + '" alt="">' : '<div class="esx-noimg">' + esc(f.nombre.charAt(0)) + '</div>')
        + '<div><b>' + esc(f.nombre) + '</b><span>' + (SUG.some(s => s.k === f.k) ? '★ ganador · ' : '') + 'sus anuncios dejan S/ ' + mkNum(_escMcOf(f)) + (_escMcProd(f) != null ? ' · como producto (💰 Margen): S/ ' + mkNum(_escMcProd(f)) : '') + '</span>'
-       + '<a href="#" class="esx-ver" style="font-size:12px;color:var(--accent,#7c5cff);font-weight:600;text-decoration:none;display:inline-block;margin-top:3px" onclick="event.preventDefault();escVerAnuncios(\'' + esc(f.k).replace(/'/g, "\\'") + '\')">📣 Ver sus ' + f.filas.length + ' anuncios →</a></div></div>';
+       + '<a href="#" class="esx-ver" style="font-size:12px;color:var(--accent,#7c5cff);font-weight:600;text-decoration:none;display:inline-block;margin-top:3px" onclick="event.preventDefault();escVerAnuncios(\'' + esc(f.k).replace(/'/g, "\\'") + '\')">📣 Ver sus ' + f.filas.length + ' anuncios →</a>' + _escNombreMalHtml(f) + '</div></div>';
     const [fc, fx] = String(foco || '').split('|');
     const ln0 = f.lanes.find(l => !l.vacio);
     const LEY = { stock:'PRENDA · 🔴 disponible menos de ' + _ep('esc_cub_rojo') + '% · 🟡 menos de ' + _ep('esc_cub_verde') + '%, o va a bajar de ahí antes de que llegue la reposición · 🟢 ' + _ep('esc_cub_verde') + '% o más. La línea del borde = % disponible',
