@@ -1188,6 +1188,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
       <div id="repo-w"><div class="ld"><div class="sp"></div>Calculando reposición...</div></div>
     </div>
     <div id="pg-stock" class="pg">
+      <div id="st-reg"></div>
       <div id="st-w"><div class="ld"><div class="sp"></div>Cargando stock...</div></div>
     </div>
     <div id="pg-confeccion" class="pg"><div id="conf-w"><div class="ld"><div class="sp"></div>Cargando confección...</div></div></div>
@@ -37082,6 +37083,7 @@ async function stockYayitasToggle() {
 }
 
 function renderStock(el) {
+  try { _stRegCargar(); } catch (_) {}   /* 21-nov · lista «Por regularizar en Stock» */
   // Datos invalidados (p.ej. tras cambiar un color): mostrar "Actualizando…" y recargar solos,
   // en vez del antiguo "Sin datos" que se quedaba pegado hasta salir y volver a entrar.
   const _fuente=_stFuente();
@@ -50327,6 +50329,31 @@ function _alProdPintar() { const c = document.getElementById('al-prod'); if (!c)
    La asesora anota a la clienta que pidió una talla agotada (Stock → 📝 Lista de espera). Cuando esa talla vuelve a tener stock,
    aparece en Alertas y en la lista con el botón para escribirle por WhatsApp (mensaje listo) y «Ya le avisé». Tabla: public.lista_espera. */
 const LE = { L: null, cargando: false };
+/* 21-nov-2026 (Pablo) · STOCK › «Por regularizar»: pedidos de Yayita / Muestra / Sesión que se registraron SIN stock de ese tipo
+   (marcados RegularizarStock=SI por el freno de la base, o con la nota «⚠ Regularizar en Stock» del Nuevo pedido). Logística ingresa la unidad
+   en Stock y aprieta «Listo» (rpc stock_regularizar_listo; no toca el pedido). Base: PEGAR_EN_SUPABASE_stock_regularizar_21nov.sql. */
+const STREG = { L: null, t: 0, oculto: false };
+function _stRegCargar(forzar) {
+  if (!forzar && Date.now() - STREG.t < 60000) { _stRegPintar(); return; }
+  STREG.t = Date.now();
+  _leRpc('stock_por_regularizar').then(L => { STREG.L = Array.isArray(L) ? L : []; _stRegPintar(); }).catch(() => {});
+}
+function _stRegPintar() {
+  const w = document.getElementById('st-reg'); if (!w) return;
+  const L = STREG.L || []; if (!L.length || STREG.oculto) { w.innerHTML = ''; return; }
+  w.innerHTML = '<div class="card" style="padding:14px 16px;margin-bottom:12px;border-top:4px solid #d97706">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div style="font-size:14px;font-weight:600">⚠ Por regularizar en Stock (' + L.length + ')</div>'
+    + '<button class="btn bg bs" title="Ocultar hasta volver a entrar" onclick="STREG.oculto=true;_stRegPintar()">✕</button></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin:2px 0 8px">Se vendieron sin stock de Yayita, Muestra o Sesión: ingresa la unidad en Stock y aprieta «Listo».</div>'
+    + '<table class="tt" style="width:100%"><thead><tr><th>Pedido</th><th>Fecha</th><th>Prenda</th><th>Clienta</th><th>Asesora</th><th></th></tr></thead><tbody>'
+    + L.map(x => '<tr><td>' + esc(x.nro) + '</td><td>' + esc(_opHace(x.fecha)) + '</td><td>' + esc(x.prenda || x.nota || '') + '</td><td>' + esc(x.nombre || '') + '</td><td>' + esc(x.asesora || '') + '</td>'
+      + '<td><button class="btn bg bs" style="font-size:12px" onclick="_stRegListo(' + Number(x.id) + ')">✓ Listo</button></td></tr>').join('')
+    + '</tbody></table></div>';
+}
+async function _stRegListo(id) {
+  try { const r = await _leRpc('stock_regularizar_listo', { p_id: Number(id) }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
+    STREG.L = (STREG.L || []).filter(x => Number(x.id) !== Number(id)); _stRegPintar(); toast('✓ Regularizado', 'ok'); } catch (e) { toast('No se pudo: ' + esc(e.message), 'err'); }
+}
 async function _leRpc(fn, body) {
   const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('Inicia sesión en el ERP');
   const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
@@ -50386,15 +50413,21 @@ function _opQuien(e) { const n = String(e || '').split('@')[0]; return n ? n.cha
 function _opHace(t) { const m = Math.max(0, Math.round((Date.now() - new Date(t).getTime()) / 6e4)); return m < 60 ? 'hace ' + m + ' min' : m < 1440 ? 'hace ' + Math.round(m / 60) + ' h' : 'hace ' + Math.round(m / 1440) + ' d'; }
 function _opTomadaHtml(por, en) { return por ? '<span class="ui-chip" style="font-size:11px;font-weight:600;color:var(--gn)">👩 ' + esc(_opQuien(por)) + ' · ' + esc(_opHace(en)) + '</span>' : ''; }
 function _opChatUrl(tel) { const c = OP.conv[_opCel9(tel)]; return c ? AL_CHATWOOT + encodeURIComponent(c) : OP_CW_BUSCAR + _opCel9(tel); }   /* directo al chat; si no hay, la búsqueda por celular */
-function _opBtnContactar(tipo, id, tel) { return '<a class="btn bs" style="background:#16a34a;color:#fff;text-decoration:none;font-size:12px" target="_blank" rel="noopener" href="' + esc(_opChatUrl(tel)) + '" onclick="_opTomar(\'' + tipo + '\',\'' + esc(String(id)) + '\')">💬 Contactar</a>'; }
+/* 21-nov-2026 (Pablo) · botones de Oportunidades: «Chatbot» (logo oficial de Chatwoot) y «WhatsApp» (logo oficial) solo ABREN el chat, sin fondo y con el borde del color de su logo; «Contactada» anota quién la contactó; «Compró» sin color (check). Logos: Simple Icons (CC0). */
+const OP_ICO_CW = '<svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"><path fill="#1F93FF" d="M0 12c0 6.629 5.371 12 12 12s12-5.371 12-12S18.629 0 12 0 0 5.371 0 12m17.008 5.29H11.44a5.57 5.57 0 0 1-5.562-5.567A5.57 5.57 0 0 1 11.44 6.16a5.57 5.57 0 0 1 5.567 5.563Z"/></svg>';
+const OP_ICO_WA = '<svg viewBox="0 0 24 24" width="14" height="14" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"><path fill="#25D366" d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/></svg>';
+const OP_BTN_BORDE = c => 'background:transparent;border:1.5px solid ' + c + ';color:var(--tx);text-decoration:none;font-size:12px';
+function _opBtnContactar(tipo, id, tel) { return '<a class="btn bs" style="' + OP_BTN_BORDE('#1F93FF') + '" target="_blank" rel="noopener" title="Abre el chat de la clienta en el chatbot (Chatwoot)" href="' + esc(_opChatUrl(tel)) + '">' + OP_ICO_CW + 'Chatbot</a>'; }
+function _opBtnContactada(tipo, id) { return '<button class="btn bg bs" style="font-size:12px" title="Anota que ya la contactaste (aunque no haya respondido)" onclick="_opTomar(\'' + tipo + '\',\'' + esc(String(id)) + '\')">Contactada</button>'; }
+function _opBtnCompro(js) { return '<button class="btn bg bs" style="font-size:12px" onclick="' + js + '">✅ Compró</button>'; }
 function _opLeLista() { return (LE.L || []).filter(x => x.estado === 'espera').sort((a, b) => ((+b.stock > 0) - (+a.stock > 0)) || (new Date(b.creado) - new Date(a.creado))); }
 function _opLeFila(x) {
   const ok = +x.stock > 0, dias = Math.max(0, Math.round((Date.now() - new Date(x.creado).getTime()) / 864e5)), t = OP.tom[x.id] || {};
   return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;margin-top:6px;border-radius:8px;background:var(--bg2,rgba(0,0,0,.06));border-left:3px solid ' + (ok ? 'var(--gn)' : '#d97706') + '">'
     + '<div style="flex:1;min-width:200px;font-size:13px"><b>' + esc(x.nombre || x.telefono) + '</b> · ' + esc(x.producto) + (x.color ? ' ' + esc(x.color) : '') + ' <b>' + esc(x.talla) + '</b>'
     + '<div style="font-size:12px;color:var(--mu)">' + (ok ? '✅ Volvió: hay ' + x.stock + ' en stock' : '⏳ Esperando hace ' + dias + (dias === 1 ? ' día' : ' días')) + ' · ' + esc(_opCel9(x.telefono)) + (x.nota ? ' · ' + esc(x.nota) : '') + '</div></div>'
-    + _opTomadaHtml(t.por, t.en) + _opBtnContactar('le', x.id, x.telefono) + _opBtnWsp('le', x.id, x.telefono, x.nombre)
-    + '<button class="btn bg bs" style="font-size:12px" onclick="leMarcar(' + Number(x.id) + ',\'cancelada\')">No va a llegar</button></div>';
+    + _opTomadaHtml(t.por, t.en) + _opBtnContactar('le', x.id, x.telefono) + _opBtnWsp('le', x.id, x.telefono, x.nombre) + _opBtnContactada('le', x.id)
+    + '<button class="btn bg bs" style="font-size:12px" onclick="leMarcar(' + Number(x.id) + ',\'cancelada\')">No va a llegar</button>' + _opBtnCompro('leMarcar(' + Number(x.id) + ',\'compro\')') + '</div>';
 }
 function _leOpHtml(){
   if (!LE.L) return '<div style="font-size:12px;color:var(--mu)">Cargando…</div>';
@@ -50408,16 +50441,16 @@ function _opCarHtml() {
   return OP.car.map(r => '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;margin-top:6px;border-radius:8px;background:var(--bg2,rgba(0,0,0,.06));border-left:3px solid ' + (r.tomado_por ? 'var(--mu)' : '#d97706') + '">'
     + '<div style="flex:1;min-width:200px;font-size:13px"><b>' + esc(r.nombre || '—') + '</b> · ' + esc(r.prendas || '') + ' · <b>' + sol(r.total) + '</b>'
     + '<div style="font-size:12px;color:var(--mu)">🛒 ' + esc(_opHace(r.creado)) + ' · ' + esc(_opCel9(r.celular)) + '</div></div>'
-    + _opTomadaHtml(r.tomado_por, r.tomado_en) + _opBtnContactar('car', r.id, r.celular) + _opBtnWsp('car', r.id, r.celular, r.nombre)
-    + '<button class="btn bs" style="font-size:12px;background:var(--gn);color:#fff" onclick="_opCarMarcar(\'' + esc(String(r.id)) + '\',\'compro\')">✅ Compró</button>'
-    + '<button class="btn bg bs" style="font-size:12px" onclick="_opCarMarcar(\'' + esc(String(r.id)) + '\',\'no_interesa\')">No le interesa</button></div>').join('');
+    + _opTomadaHtml(r.tomado_por, r.tomado_en) + _opBtnContactar('car', r.id, r.celular) + _opBtnWsp('car', r.id, r.celular, r.nombre) + _opBtnContactada('car', r.id)
+    + '<button class="btn bg bs" style="font-size:12px" onclick="_opCarMarcar(\'' + esc(String(r.id)) + '\',\'no_interesa\')">No le interesa</button>'
+    + _opBtnCompro('_opCarMarcar(\'' + esc(String(r.id)) + '\',\'compro\')') + '</div>').join('');
 }
 /* 18-nov-2026 (Pablo) · carritos: «🟢 WhatsApp» abre el chat en el WhatsApp de la asesora (Business u otro número, el que tenga abierto en ese equipo);
    «✅ Compró» / «No le interesa» la sacan de la lista; si ya hay un pedido en el ERP con ese celular después del carrito, sale sola (carritos_contactables).
    Resumen: carritos_recuperados (PEGAR_EN_SUPABASE_carritos_recuperados_18nov.sql). */
 function _opBtnWsp(tipo, id, tel, nom) {
   const t = 'Hola' + (nom ? ' ' + String(nom).split(' ')[0] : '') + (tipo === 'le' ? ', te escribo de Tulula: ¡volvió la talla que estabas esperando! 😊' : ', te escribo de Tulula por las prendas que dejaste en tu carrito 😊');
-  return '<a class="btn bs" style="background:#128c7e;color:#fff;text-decoration:none;font-size:12px" target="_blank" rel="noopener" title="Abre el chat en el WhatsApp que tengas abierto en este equipo (por ejemplo, WhatsApp Business)" href="https://wa.me/51' + esc(_opCel9(tel)) + '?text=' + encodeURIComponent(t) + '" onclick="_opTomar(\'' + tipo + '\',\'' + esc(String(id)) + '\')">🟢 WhatsApp</a>';
+  return '<a class="btn bs" style="' + OP_BTN_BORDE('#25D366') + '" target="_blank" rel="noopener" title="Abre el chat en el WhatsApp que tengas abierto en este equipo (por ejemplo, WhatsApp Business)" href="https://wa.me/51' + esc(_opCel9(tel)) + '?text=' + encodeURIComponent(t) + '">' + OP_ICO_WA + 'WhatsApp</a>';
 }
 async function _opCarMarcar(id, est) {
   try { const r = await _leRpc('carritos_marcar', { p_id: String(id), p_estado: est }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
@@ -50428,7 +50461,15 @@ function _opRecHtml() {
   const R = OP.rec; if (!R) return '';
   const pct = R.carritos ? Math.round(R.recuperados / R.carritos * 100) : 0;
   return '<div style="font-size:12px;color:var(--mu);margin:2px 0 4px">Últimos 30 días: <b style="color:var(--gn)">' + R.recuperados + ' de ' + R.carritos + ' recuperados (' + pct + '%) · S/ ' + Number(R.soles || 0).toLocaleString('es-PE') + '</b> · '
-    + R.whatsapp + ' por WhatsApp u otro canal (' + R.con_asesora + ' contactadas por asesora) · ' + R.web + ' por la web</div>';
+    + R.whatsapp + ' por WhatsApp u otro canal (' + R.con_asesora + ' contactadas por asesora) · ' + R.web + ' por la web</div>' + _opCuandoHtml();
+}
+/* 21-nov-2026 (Pablo) · carritos: cuándo compraron (tiempo del carrito al primer pedido en el ERP, últimos 30 días) · rpc carritos_cuando */
+function _opCuandoHtml() {
+  const C = OP.cuando; if (!C || !C.compraron) return '';
+  const h = +C.mediana_horas || 0, med = h < 1 ? Math.round(h * 60) + ' min' : h < 48 ? String(h).replace('.', ',') + ' h' : Math.round(h / 24) + ' días';
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--mu);margin:0 0 6px">Cuándo compraron (' + C.compraron + '):'
+    + (C.tramos || []).map(t => '<span class="ui-chip" style="font-size:11px;font-weight:600" title="' + t.con_asesora + ' de ' + t.total + ' contactadas por asesora">' + esc(t.tramo) + ' · ' + t.total + ' (' + Math.round(t.total / C.compraron * 100) + '%)</span>').join('')
+    + '<span>· la mitad compra antes de ' + med + '</span></div>';
 }
 function _opContadores() {
   const a = document.getElementById('op-n-le'), b = document.getElementById('op-n-car');
@@ -50439,6 +50480,7 @@ async function _opCargar() {
   try { const T = await _leRpc('lista_espera_tomadas'); OP.tom = {}; (Array.isArray(T) ? T : []).forEach(t => { OP.tom[t.id] = t; }); } catch (_) {}
   try { const C = await _leRpc('carritos_contactables'); OP.car = Array.isArray(C) ? C : []; } catch (_) { if (!OP.car) OP.car = []; }
   try { const R = await _leRpc('carritos_recuperados', { p_dias: 30 }); if (R && typeof R === 'object' && 'carritos' in R) OP.rec = R; } catch (_) {}   /* 18-nov */
+  try { const W = await _leRpc('carritos_cuando', { p_dias: 30 }); if (W && typeof W === 'object' && 'compraron' in W) OP.cuando = W; } catch (_) {}   /* 21-nov */
   try { const tels = (LE.L || []).filter(x => x.estado === 'espera').map(x => x.telefono).concat((OP.car || []).map(r => r.celular)).filter(Boolean);
     if (tels.length) { const M = await _leRpc('chat_conv_por_tel', { p_tels: tels }); if (M && typeof M === 'object' && !Array.isArray(M)) OP.conv = M; } } catch (_) {}   /* sin la función: queda la búsqueda */
   const c = document.getElementById('op-car'); if (c) c.innerHTML = _opRecHtml() + _opCarHtml();
