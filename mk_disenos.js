@@ -334,12 +334,12 @@ async function disCargar(){
   const pRes = _mklSb('/rest/v1/rpc/mk_dis_resultados', { method: 'POST', body: '{}' }).catch(() => null), pCrit = _mklSb('/rest/v1/mk_dis_critica?select=diseno_id,total,detalle,creado&order=creado.desc&limit=500').catch(() => null);
   const [f, p, m, pu, pz, sf, jn] = await Promise.all([
     _mklSb('/rest/v1/mk_disenos?select=*&order=creado.desc'),
-    DIS.prods ? Promise.resolve(DIS.prods) : _mklSb('/rest/v1/rpc/mk_dis_productos', { method: 'POST', body: '{}' }),
+    (DIS.prods && !DIS._refrescar) ? Promise.resolve(DIS.prods) : _mklSb('/rest/v1/rpc/mk_dis_productos', { method: 'POST', body: '{}' }),
     _mklSb('/rest/v1/mk_dis_config?select=clave,valor&clave=in.(marca,orden_plantillas)').catch(() => []),
     _mklSb('/rest/v1/rpc/_mk_puede_editar', { method: 'POST', body: '{}' }).catch(() => false),
     _mklSb('/rest/v1/mk_dis_piezas?select=*&estado=neq.archivada&order=creado.desc&limit=2000').catch(() => []),
     _mklSb('/rest/v1/mk_dis_sinfondo?select=foto,url').catch(() => []),
-    DIS.juntas ? Promise.resolve(DIS.juntas) : _mklSb('/rest/v1/rpc/mk_dis_juntas', { method: 'POST', body: '{}' }).catch(() => [])]);
+    (DIS.juntas && !DIS._refrescar) ? Promise.resolve(DIS.juntas) : _mklSb('/rest/v1/rpc/mk_dis_juntas', { method: 'POST', body: '{}' }).catch(() => [])]);
   DIS.filas = Array.isArray(f) ? f : []; DIS.juntas = Array.isArray(jn) ? jn : [];
   DIS.piezas = Array.isArray(pz) ? pz : []; DIS.sinf = {}; (Array.isArray(sf) ? sf : []).forEach(x => { DIS.sinf[x.foto] = x.url; });
   DIS.prods = (Array.isArray(p) ? p : []).filter(x => !/^archived$/i.test(x.estado || '')).sort((a, b) => (_disActivo(a) ? 0 : 1) - (_disActivo(b) ? 0 : 1) || String(a.titulo).localeCompare(String(b.titulo)));
@@ -544,8 +544,13 @@ async function disAbrir(){
   const el = document.getElementById('mkDis'); if (!el) return;
   _disFuentes();
   if (DIS.filas === null){
+    if (await _disCacheLeer()){   /* 22-nov · Fase A: se pinta al instante con lo de la última vez y se actualiza por detrás */
+      disPintar(); DIS._refrescar = 1;
+      disCargar().then(() => { DIS._refrescar = 0; _disCacheGuardar(); if (document.getElementById('mkDis') && !DIS.ed) disPintar(); }).catch(() => { DIS._refrescar = 0; });
+      return;
+    }
     el.innerHTML = '<div class="mkl-vacio">Cargando diseños…</div>';
-    try { await disCargar(); } catch (e) { el.innerHTML = '<div class="mkl-vacio">No pude cargar los diseños (' + esc(e.message) + ').</div>'; return; }
+    try { await disCargar(); _disCacheGuardar(); } catch (e) { el.innerHTML = '<div class="mkl-vacio">No pude cargar los diseños (' + esc(e.message) + ').</div>'; return; }
   }
   disPintar();
 }
@@ -578,7 +583,7 @@ function _disTarjeta(f){
   const msj = (DIS_MSJ.find(x => x[0] === f.mensaje) || ['', f.mensaje])[1], npz = _disNPz(f.id);
   const acc = !DIS.puede ? '' : est === 'archivada'
     ? '<button class="btn" onclick="disEstado(' + f.id + ',\'borrador\')">↩️ Restaurar</button><button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button>'
-    : '<button class="btn" onclick="disUsar(' + f.id + ')" title="Hace la imagen y la guarda en 🎬 Biblioteca › Por usar con su nombre de anuncio">📤 Usar</button>'
+    : '<button class="btn" onclick="disUsar(' + f.id + ')" title="Hace la imagen (y su versión Historias) y la deja en 🎬 Biblioteca › Por usar con su nombre de anuncio">🚀 Anunciar</button>'
       + '<button class="btn" onclick="disCriticarFila(' + f.id + ')" title="Nota de la IA y qué mejorar (~US$0,01)">🧐 Revisar</button>'
       + '<div class="dis-acc4"><button class="btn" onclick="disEditar(' + f.id + ')">✏️ Editar</button><button class="btn" onclick="disDuplicar(' + f.id + ')">⧉ Duplicar</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Se guarda en Archivados y se puede restaurar">🗄 Archivar</button><button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button></div>';
   const estSel = DIS.puede && est !== 'archivada' ? '<select class="dis-est" onchange="disEstado(' + f.id + ',this.value)">' + ['borrador', 'prueba', 'ganadora'].map(k => '<option value="' + k + '"' + (k === est ? ' selected' : '') + '>' + DIS_EST[k] + '</option>').join('') + '</select>'
@@ -687,12 +692,11 @@ function _disEdAbrir(){
     + '<button class="btn" onclick="disCriticarEditor()" title="La IA le pone nota y dice qué mejorar (~US$0,01)">🧐 Revisar</button>'
     + '<button class="btn" onclick="disIAMensajeAbrir()" title="Escribe lo que quieres cambiar y la IA lo hace (~US$0,01)">✨ Pedir un cambio</button>'
     + '<button class="btn" onclick="disVerMuchos()" title="El mismo diseño con 6 productos distintos">' + disIco('grilla', 14) + ' Ver en 6 productos</button>'
-    + '<button class="btn' + (DIS.ed.tipo === 'carrusel' ? ' on' : '') + '" onclick="disLoteDesdeEditor(1)" title="Guarda y arma un carrusel con 2 a 10 prendas o colores">🎠 Carrusel</button><button class="btn" onclick="disVideoDesdeEditor()" title="Video corto para Reels e Historias (sin costo)">🎬 Video</button><button class="btn" onclick="disUsar(null)">📤 Usar</button>'
+    + '<button class="btn' + (DIS.ed.tipo === 'carrusel' ? ' on' : '') + '" onclick="disLoteDesdeEditor(1)" title="Guarda y arma un carrusel con 2 a 10 prendas o colores">🎠 Carrusel</button><button class="btn" onclick="disVideoDesdeEditor()" title="Video corto para Reels e Historias (sin costo)">🎬 Video</button><span class="dis-seg" title="Estilo de un clic">' + [['claro', '☀ Claro'], ['oscuro', '● Oscuro'], ['azul', '■ Azul']].map(o => '<button type="button" onclick="disEstilo(\'' + o[0] + '\')">' + o[1] + '</button>').join('') + '</span><button class="btn on" onclick="disUsar(null)" title="Guarda, hace la imagen (y su versión Historias) y la deja en 🎬 Biblioteca › Por usar con su nombre (Ctrl+Enter)">🚀 Listo para anunciar</button>'
     + '<button class="btn on" onclick="disGuardar()">Guardar</button>' + _disIb('cerrar', 'Cerrar', 'disEdCerrar()') + '</div>'
     + '<div class="dis-ed-cuerpo"><div class="dis-ed-izq"><div class="dis-ed-lienzo" id="disEdLienzo"></div>'
-    + '<div class="dis-ed-prueba"><span class="ui-nota">Probar con</span><select id="disEdProd" onchange="disEdProd(this.value)">' + prods + '</select>'
-    + '<select id="disEdColor" onchange="DIS.color=this.value;disEdPintar()"></select><button class="btn" onclick="disEdProd(null,1)" title="Siguiente producto">Siguiente ›</button>'
-    + '<span class="ui-nota" style="margin-left:auto">Arrastra para mover · esquina para agrandar · flechas para afinar · Ctrl+Z deshace</span></div></div>'
+    + '<div class="dis-ed-prueba"><input type="search" placeholder="🔍 Prenda" value="' + disA(DIS.tiraQ || '') + '" oninput="disTiraBuscar(this.value)" style="width:120px"><div class="dis-tira" id="disEdTira">' + _disTiraHtml() + '</div></div>'
+    + '<div class="dis-ed-prueba"><span class="ui-nota">Color</span><div class="dis-tira" id="disEdCols"></div><span class="ui-nota" style="margin-left:auto" title="Ctrl+Z deshacer · Ctrl+Y rehacer · Ctrl+D duplicar · Ctrl+C / Ctrl+V copiar y pegar capa · Supr quitar · flechas mover · [ ] atrás/adelante · Ctrl+Enter listo para anunciar">⌨️ Atajos</span></div></div>'
     + '<div class="dis-ed-panel" id="disEdPanel"></div></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h);
   _disArrastreIni(); _disTeclas(true); disEdPintar(); DIS._orig = (DIS.ed.id || DIS.ed.ajustes.origen !== 'captura') ? _disHuella() : '';
@@ -708,13 +712,14 @@ function disEdProd(handle, paso){
   const L = (DIS.prods || []).filter(_disActivo); if (paso){ const i = L.findIndex(p => p.handle === DIS.prod); handle = (L[(i + 1) % L.length] || {}).handle; const s = document.getElementById('disEdProd'); if (s) s.value = handle; }
   DIS.prod = handle; DIS.color = ''; disEdPintar();
 }
-function _disLienzoRepintar(){ const lz = document.getElementById('disEdLienzo'); if (!(lz && DIS.ed && DIS._cx)) return; lz.innerHTML = disHtml(DIS.ed, DIS._cx, DIS._s, { edit: true, sel: DIS.sel, guia: true, ancho: 900 });
+function _disLienzoRepintar(){ const lz = document.getElementById('disEdLienzo'); if (!(lz && DIS.ed && DIS._cx)) return; lz.innerHTML = disHtml(DIS.ed, DIS._cx, DIS._s, { edit: true, sel: DIS.sel, guia: true, ancho: 900 }); _disFlotPintar();
   if (!DIS._luzCorre){ DIS._luzCorre = 1; _disLuzPrep(DIS.ed, DIS._cx).then(n => { DIS._luzCorre = 0; if (n) _disLienzoRepintar(); }).catch(() => { DIS._luzCorre = 0; }); } }
 async function disEdPintar(){
   if (!DIS.ed) return;
   const p = _disProd(DIS.prod), inf = p ? await disInfo(p.handle) : {};
   if (!DIS.ed) return;
   const cx = disCtx(p, inf, DIS.color, DIS.ed.ajustes); DIS.color = cx.color; DIS._cx = cx;
+  const cc = document.getElementById('disEdCols'); if (cc) cc.innerHTML = _disColoresHtml(cx); document.querySelectorAll('#disEdTira .dis-tira-p').forEach(b => b.classList.toggle('on', b.dataset.h === DIS.prod));
   const cs = document.getElementById('disEdColor'); if (cs) cs.innerHTML = cx.colores.map(c => '<option' + (c === cx.color ? ' selected' : '') + '>' + esc(c) + '</option>').join('') || '<option value="">Sin color</option>';
   const lz = document.getElementById('disEdLienzo'); if (!lz) return;
   const [W, H] = DIS_TAM[DIS.ed.formato] || DIS_TAM['4x5'], alto = Math.max(320, lz.clientHeight - 24), ancho = Math.max(240, lz.clientWidth - 24);
@@ -737,8 +742,13 @@ function _disTeclas(on){
     if (mod && k0 === 'z' && !enCampo){ e.preventDefault(); return e.shiftKey ? disRehacer() : disDeshacer(); }
     if (mod && k0 === 'y' && !enCampo){ e.preventDefault(); return disRehacer(); }
     if (mod && k0 === 's'){ e.preventDefault(); return disGuardar(); }
+    if (mod && e.key === 'Enter'){ e.preventDefault(); return disUsar(null); }
+    if (mod && k0 === 'v' && !enCampo && DIS._clip){ e.preventDefault(); _disMemo(); const n = JSON.parse(DIS._clip); n.x = (+n.x || 0) + 3; n.y = (+n.y || 0) + 3; DIS.ed.capas.push(n); DIS.sel = DIS.ed.capas.length - 1; DIS.ed._sucio = true; return disEdPintar(); }
     if (enCampo || DIS.sel < 0) return;
     const c = DIS.ed.capas[DIS.sel]; if (!c) return;
+    if (mod && k0 === 'c'){ DIS._clip = JSON.stringify(c); return; }
+    if (e.key === ']'){ e.preventDefault(); return disCapaExtremo(DIS.sel, true); }
+    if (e.key === '['){ e.preventDefault(); return disCapaExtremo(DIS.sel, false); }
     if (mod && k0 === 'd'){ e.preventDefault(); return disCapaDuplicar(DIS.sel); }
     if (e.key === 'Delete' || e.key === 'Backspace'){ e.preventDefault(); return disCapaQuitar(DIS.sel); }
     if (e.key === 'Escape'){ DIS.sel = -1; return disEdPintar(); }
@@ -905,6 +915,7 @@ function _disArrastreIni(){
     _disMemo();
     const g0 = _disGeo(c, DIS.ed.formato), W = cont.clientWidth, H = cont.clientHeight, x0 = e.clientX, y0 = e.clientY, o = { x: g0.x, y: g0.y, w: g0.w, h: g0.h, tam: +c.tam || 40 }; let movio = 0;
     const gv = cont.querySelector('.dis-guia-v'), gh = cont.querySelector('.dis-guia-h'), r2 = v => Math.round(v * 2) / 2;
+    const G = _disGuias(cont, i), wP = caja.offsetWidth / W * 100, hP = caja.offsetHeight / H * 100, fv = lz.querySelector('.dis-flot'); if (fv) fv.remove();
     const mv = ev => {
       const dx = (ev.clientX - x0) / W * 100, dy = (ev.clientY - y0) / H * 100;
       if (tir){
@@ -914,10 +925,9 @@ function _disArrastreIni(){
         caja.style.width = nw + '%'; if (nh != null) caja.style.height = nh + '%';
         if (c.t === 'texto') { const sp = caja.querySelector('span'); if (sp) sp.style.fontSize = (c.tam * DIS._s) + 'px'; }
       } else {
-        let nx = r2(o.x + dx), ny = r2(o.y + dy); const cxp = nx + o.w / 2, cyp = o.h != null ? ny + o.h / 2 : null;
-        const pegaX = Math.abs(cxp - 50) < 1.2, pegaY = cyp != null && Math.abs(cyp - 50) < 1.2;
-        if (pegaX) nx = r2(50 - o.w / 2); if (pegaY) ny = r2(50 - o.h / 2);
-        if (gv) gv.style.display = pegaX ? 'block' : 'none'; if (gh) gh.style.display = pegaY ? 'block' : 'none';
+        let nx = r2(o.x + dx), ny = r2(o.y + dy); const px = _disPegar(nx, wP, G.xs), py = _disPegar(ny, hP, G.ys);   /* 22-nov · se pega a bordes y centros */
+        if (px) nx = r2(px.v); if (py) ny = r2(py.v);
+        if (gv){ gv.style.display = px ? 'block' : 'none'; if (px) gv.style.left = px.l + '%'; } if (gh){ gh.style.display = py ? 'block' : 'none'; if (py) gh.style.top = py.l + '%'; }
         if (nx !== o.x || ny !== o.y){ _disGeoSet(c, DIS.ed.formato, { x: nx, y: ny, w: o.w, h: o.h }); movio = 1; } caja.style.left = nx + '%'; caja.style.top = ny + '%';
       }
       DIS.ed._sucio = true;
@@ -1006,7 +1016,8 @@ async function disUsar(id){
     const blob = await disPng(d, cx);
     const nomArch = ('DIS' + d.id + '-' + p.handle + '-' + (cx.color || 'unico') + '-' + d.formato).replace(/[^a-z0-9-]+/gi, '-').toLowerCase() + '.png';
     const file = new File([blob], nomArch, { type: 'image/png' });
-    await _disABiblioteca(file, d, p);
+    const v916 = await _dis916Url(d, cx);
+    await _disABiblioteca(file, d, p, v916);
   } catch (e) { avisar('<span class="mal">No pude hacer la imagen (' + esc(e.message) + ').</span>'); }
 }
 
@@ -1046,6 +1057,9 @@ async function disMarcaGuardar(aprobar){
     + '.dis-cabeza{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}'
     + '.dis-barra{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}.dis-barra-izq,.dis-barra-der{display:flex;gap:6px;align-items:center;flex-wrap:wrap}'
     + '.dis-cnt{display:inline-block;min-width:18px;padding:0 6px;margin-left:4px;border-radius:9px;background:rgba(255,255,255,.08);font:600 11px var(--ui-f);text-align:center}'
+    + '.dis-flot{position:absolute;z-index:30;display:flex;align-items:center;gap:2px;padding:4px;background:#1b1f2a;border:1px solid #33394a;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.45);white-space:nowrap}.dis-flot button{min-width:28px;height:28px;padding:0 6px;border:0;border-radius:6px;background:transparent;color:#e9ecf3;font:500 13px var(--ui-f);cursor:pointer}.dis-flot button:hover{background:#2b3142}.dis-flot .dis-flot-col{min-width:18px;width:18px;height:18px;padding:0;border-radius:50%;border:2px solid #555}.dis-flot .dis-flot-col.on{border-color:#7c5cff}.dis-flot-sep{width:1px;height:18px;background:#33394a;margin:0 3px}'
+    + '.dis-txs{display:flex;flex-direction:column;gap:6px;max-height:55vh;overflow:auto}.dis-txs button{text-align:left;padding:9px 12px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-txs button:hover{border-color:#7c5cff}'
+    + '.dis-tira{display:flex;gap:6px;overflow-x:auto;flex:1;padding:2px 0;scrollbar-width:thin;scrollbar-color:#33394a transparent}.dis-tira-p,.dis-tira-c{flex:0 0 auto;padding:0;border:2px solid transparent;border-radius:8px;background:#0d1017;cursor:pointer;overflow:hidden}.dis-tira-p img{width:44px;height:55px;object-fit:cover;display:block}.dis-tira-c img{width:34px;height:34px;object-fit:cover;display:block}.dis-tira-c span{display:block;padding:6px 8px;font:400 12px var(--ui-f);color:var(--txt)}.dis-tira-p.on,.dis-tira-c.on{border-color:#7c5cff}'
     + '.dis-nv{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.dis-nv-op{display:flex;flex-direction:column;align-items:center;gap:6px;padding:18px 12px;border:1px solid var(--bd);border-radius:12px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer;text-align:center}.dis-nv-op:hover{border-color:#7c5cff}.dis-nv-ico{font-size:22px}'
     + '.dis-acc4{display:flex;gap:6px;width:100%;margin-top:6px}.dis-acc4 .btn{flex:1 1 0;min-width:0;justify-content:center;white-space:nowrap;flex-direction:row;padding:0 4px;font-size:12px;gap:3px}'
     + '.dis-cal{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}.dis-cal-f{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid var(--bd);border-radius:999px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-cal-f.on{border-color:#7c5cff;background:rgba(124,92,255,.14)}'
@@ -1661,11 +1675,11 @@ function _disNomAuto(d){
     tc: en('tc', { frio: 'F', tibio: 'T', caliente: 'C' }[_disTemp(d)] || 'T', 'T'),
     cta: /\{\{ventaja1\}\}|cuotas/i.test(txt) ? en('cta', 'CTAcuotas') : /\{\{ventaja[56]\}\}|env[ií]o gratis/i.test(txt) ? en('cta', 'CTAenvio') : /\{\{ventaja3\}\}|primera compra/i.test(txt) ? en('cta', 'CTAprimera') : en('cta', 'sinCTA') };
 }
-async function _disABiblioteca(files, d, p){
+async function _disABiblioteca(files, d, p, extra){
   files = Array.isArray(files) ? files : [files];
   try { await _mklSb('/rest/v1/rpc/mk_diseno_usado', { method: 'POST', body: JSON.stringify({ p_id: d.id }) }); const f = (DIS.filas || []).find(x => x.id === d.id); if (f) f.usos = (f.usos || 0) + 1; } catch (_) {}
   const e = document.getElementById('disEd'); if (e) e.remove(); DIS.ed = null; try { _disTeclas(false); } catch (_) {} DIS.msg = '';
-  mkIrSub('contenido'); await mkcrAbrir(); mkcrSubirAbrir(null); MKCR.disenoId = d.id; mkcrArchivo(files);
+  mkIrSub('contenido'); await mkcrAbrir(); mkcrSubirAbrir(null); MKCR.disenoId = d.id; MKCR.v916 = extra && extra.url ? extra.url : null; mkcrArchivo(files);
   const prod = _disProdNom(p && p.titulo), set = (id, v) => { const el = document.getElementById(id); if (el && v){ el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); } };
   set('mkcrProd', prod);
   const a = _disNomAuto(d); set('mkcrAng', a.ang); set('mkcrFor', a.form); set('mkcrCta', a.cta);
@@ -1675,4 +1689,95 @@ async function _disABiblioteca(files, d, p){
   const c = mkNomLeer('mkcr'), falta = [['prod', 'producto'], ['ang', 'ángulo'], ['form', 'contexto'], ['tc', 'T/C/F'], ['cta', 'CTA'], ['tal', 'talento']].filter(k => !c[k[0]]).map(k => k[1]);
   if (MKCR.tipoArchivo !== 'video' && !falta.length) return mkcrGuardar();
   const r = document.getElementById('mkcrRes'); if (r) r.innerHTML = '<span class="esp">Desde 🎨 Diseños. ' + (falta.length ? 'Completa: ' + esc(falta.join(', ')) + ' y guarda.' : 'Revisa el hook del video y guarda.') + '</span>';
+}
+
+/* ══════════ 22-nov · FASE A (Pablo aprobó): editar en menos clics, como Canva ══════════ */
+/* A1 · barra flotante junto a la capa elegida */
+const DIS_FLOT_COL = ['principal', 'acento', 'blanco', 'texto', 'fondo'];
+function _disFlotHtml(c, i){
+  const b = (t, tit, fn) => '<button type="button" title="' + disA(tit) + '" onclick="' + fn + '">' + t + '</button>', sep = '<span class="dis-flot-sep"></span>';
+  const cols = k => DIS_FLOT_COL.map(n => '<button type="button" class="dis-flot-col' + (c[k] === n ? ' on' : '') + '" title="' + n + '" style="background:' + _disCol(n) + '" onclick="disCapaSet(' + i + ',\'' + k + '\',\'' + n + '\')"></button>').join('');
+  let h = '';
+  if (c.t === 'texto') h = b('A−', 'Letra más chica', 'disFlotTam(' + i + ',0.9)') + b('A+', 'Letra más grande', 'disFlotTam(' + i + ',1.1)') + b('<b>B</b>', 'Negrita', 'disCapaSet(' + i + ',\'peso\',' + ((+c.peso || 400) >= 600 ? 400 : 700) + ')')
+    + sep + b('⟸', 'Alinear a la izquierda', 'disCapaSet(' + i + ',\'al\',\'left\')') + b('≡', 'Centrar', 'disCapaSet(' + i + ',\'al\',\'center\')') + b('⟹', 'Alinear a la derecha', 'disCapaSet(' + i + ',\'al\',\'right\')')
+    + sep + cols('color') + sep + b('💬 Textos', 'Textos de la tienda para esta prenda', 'disFlotTextos(' + i + ')');
+  else if (c.t === 'foto') h = b('☀', 'Más clara', 'disCapaPaso(' + i + ',\'bri\',10)') + b('☾', 'Más oscura', 'disCapaPaso(' + i + ',\'bri\',-10)') + b('🔥', 'Más cálida', 'disFlotCal(' + i + ',8)') + b('❄️', 'Más fría', 'disFlotCal(' + i + ',-8)')
+    + sep + b('✂', c.sinfondo ? 'Volver a poner el fondo' : 'Quitar el fondo', 'disCapaSet(' + i + ',\'sinfondo\',' + (c.sinfondo ? 'false' : 'true') + ')') + b('↻', 'Otra foto de la prenda', 'disFlotFoto(' + i + ')');
+  else if (c.t === 'forma' || c.t === 'degradado') h = cols('color') + sep + b('◐−', 'Más transparente', 'disFlotOp(' + i + ',-0.1)') + b('◐+', 'Más sólida', 'disFlotOp(' + i + ',0.1)');
+  else if (c.t === 'logo') h = b('Auto', 'El logo elige su color según el fondo', 'disCapaSet(' + i + ',\'color\',\'auto\')') + cols('color');
+  return h + sep + b('⇡', 'Traer al frente', 'disCapaExtremo(' + i + ',true)') + b('⇣', 'Mandar al fondo', 'disCapaExtremo(' + i + ',false)') + b('⧉', 'Duplicar (Ctrl+D)', 'disCapaDuplicar(' + i + ')') + b('🗑', 'Quitar (Supr)', 'disCapaQuitar(' + i + ')');
+}
+function _disFlotPintar(){
+  const lz = document.getElementById('disEdLienzo'); if (!lz) return; const v = lz.querySelector('.dis-flot'); if (v) v.remove();
+  if (!DIS.ed || DIS.sel < 0) return; const c = DIS.ed.capas[DIS.sel], el = lz.querySelector('[data-capa="' + DIS.sel + '"]'); if (!c || !el) return;
+  const r = el.getBoundingClientRect(), z = lz.getBoundingClientRect(), d = document.createElement('div');
+  d.className = 'dis-flot'; d.innerHTML = _disFlotHtml(c, DIS.sel); d.onmousedown = e => e.stopPropagation(); lz.style.position = 'relative'; lz.appendChild(d);
+  const top = r.top - z.top - d.offsetHeight - 8; d.style.top = Math.max(4, top < 4 ? r.bottom - z.top + 8 : top) + 'px';
+  d.style.left = Math.max(4, Math.min(z.width - d.offsetWidth - 4, r.left - z.left + r.width / 2 - d.offsetWidth / 2)) + 'px';
+}
+function disFlotTam(i, f){ const c = DIS.ed.capas[i]; if (c) disCapaSet(i, 'tam', Math.max(8, Math.round((+c.tam || 40) * f))); }
+function disFlotCal(i, d){ const c = DIS.ed.capas[i]; if (c) disCapaSet(i, 'calidez', Math.max(-40, Math.min(40, (+c.calidez || 0) + d))); }
+function disFlotOp(i, d){ const c = DIS.ed.capas[i]; if (c) disCapaSet(i, 'op', Math.max(0.05, Math.min(1, Math.round(((c.op != null ? +c.op : 1) + d) * 100) / 100))); }
+function disFlotFoto(i){ const c = DIS.ed.capas[i]; if (!c) return; const m = String(c.src || 'color:0').match(/^(color|ben|n):(\d+)$/), k = m ? m[1] : 'color', n = m ? +m[2] : 0, tot = (DIS._cx && DIS._cx.fotos.length) || 1;
+  disCapaSet(i, 'src', (k === 'ben' ? 'color' : k) + ':' + ((n + 1) % Math.max(1, tot))); }
+/* 💬 Textos: primero lo que ya está en Shopify (nombre, frase, beneficios, reseñas, ventajas); la IA solo si nada convence */
+function disFlotTextos(i){
+  const cx = DIS._cx || {}, v = document.getElementById('disTxs'); if (v) v.remove();
+  const L = [['{{nombre}}', cx.nombre], ['{{frase}}', cx.frase], ['{{badge}}', cx.badge]].concat((cx.ben || []).slice(0, 3).map((b, k) => ['{{beneficio' + (k + 1) + '}}', b.titulo]))
+    .concat([['«{{resena}}»', cx.cita ? '«' + cx.cita + '»' : ''], ['{{estrellas}} ★', cx.estrellas ? cx.estrellas + ' ★' : '']]).concat(_disVentajas().map((t, k) => ['{{ventaja' + (k + 1) + '}}', t])).filter(x => String(x[1] || '').trim());
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disTxs"><div class="dis-caja" style="max-width:520px"><div class="dis-cab"><div><div class="ui-pag">💬 Textos de la tienda</div><div class="ui-nota">Salen de Shopify y cambian solos con cada prenda</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disTxs\').remove()') + '</div>'
+    + '<div class="dis-txs">' + L.map(x => '<button type="button" onclick="disCapaSet(' + i + ',\'txt\',' + disA(JSON.stringify(x[0])) + ');document.getElementById(\'disTxs\').remove()">' + esc(String(x[1]).slice(0, 140)) + '</button>').join('') + '</div>'
+    + '<div class="ui-nota" style="margin-top:10px">¿Nada te convence? <a href="#" onclick="document.getElementById(\'disTxs\').remove();disIAMensajeAbrir();setTimeout(()=>{const t=document.querySelector(\'#disIAM textarea\');if(t){t.value=\'Dame un texto más llamativo para la capa de texto seleccionada, para público \' + _disTemp(DIS.ed) + \'\';t.focus();}},50);return false">✨ Pedir ideas a la IA (~US$0,01)</a></div></div></div>');
+}
+/* A2 · guías al arrastrar: se pega a bordes y centros de las otras capas y del lienzo */
+function _disGuias(cont, i){
+  const R = cont.getBoundingClientRect(), xs = [0, 50, 100], ys = [0, 50, 100];
+  cont.querySelectorAll('[data-capa]').forEach(el => { if (+el.dataset.capa === i) return; const r = el.getBoundingClientRect(); if (!r.width) return;
+    const x = (r.left - R.left) / R.width * 100, y = (r.top - R.top) / R.height * 100, w = r.width / R.width * 100, h = r.height / R.height * 100;
+    xs.push(x, x + w / 2, x + w); ys.push(y, y + h / 2, y + h); });
+  return { xs, ys };
+}
+function _disPegar(pos, tam, lineas){
+  let mejor = null; [0, tam / 2, tam].forEach(off => lineas.forEach(l => { const d = Math.abs(pos + off - l); if (d < 1 && (!mejor || d < mejor.d)) mejor = { d, v: l - off, l }; }));
+  return mejor;
+}
+/* A3+A4 · 🚀 Listo para anunciar: guarda, hace la imagen 4:5 y además la versión Historias 9:16, y la deja en Por usar con su nombre */
+async function _dis916Url(d, cx){
+  try { const d2 = Object.assign({}, d, { formato: d.formato === '9x16' ? '4x5' : '9x16' }), blob = await disPng(d2, cx);
+    const ruta = 'creativos/dis/' + d.id + '/' + Date.now().toString(36) + '-' + d2.formato + '.png'; return { url: await _disSubir(blob, ruta), formato: d2.formato }; } catch (_) { return null; }
+}
+/* A5 · tira de prendas y colores bajo el lienzo: cambiar con 1 clic */
+function _disTiraHtml(){
+  const q = _mkNorm(DIS.tiraQ || ''), L = (DIS.prods || []).filter(p => _disActivo(p) && _disFotos(p).length && (!q || _mkNorm(p.titulo).indexOf(q) >= 0)).slice(0, 60);
+  return L.map(p => '<button type="button" data-h="' + disA(p.handle) + '" class="dis-tira-p' + (p.handle === DIS.prod ? ' on' : '') + '" title="' + disA(p.titulo) + '" onclick="disEdProd(\'' + disA(p.handle) + '\')"><img loading="lazy" src="' + disA(_disTam(_disFotos(p)[0], 120)) + '"></button>').join('') || '<span class="ui-nota">Sin prendas</span>';
+}
+function disTiraBuscar(t){ DIS.tiraQ = t; const el = document.getElementById('disEdTira'); if (el) el.innerHTML = _disTiraHtml(); }
+function _disColoresHtml(cx){
+  if ((cx.portadas || []).length < 2) return '<span class="ui-nota">Color único</span>';
+  return (cx.portadas || []).map(o => '<button type="button" class="dis-tira-c' + (o.c === cx.color ? ' on' : '') + '" title="' + disA(o.c) + '" onclick="DIS.color=' + disA(JSON.stringify(o.c)) + ';disEdPintar()">' + (o.src ? '<img src="' + disA(_disTam(o.src, 80)) + '">' : '<span>' + esc(o.c) + '</span>') + '</button>').join('');
+}
+/* A8 · estilos de un clic */
+const DIS_ESTILOS = { claro: { fondo: 'fondo', claro: 'principal' }, oscuro: { fondo: 'negro', claro: 'blanco' }, azul: { fondo: 'principal', claro: 'fondo' } };
+function disEstilo(k){
+  const E = DIS_ESTILOS[k], d = DIS.ed; if (!E || !d) return; _disMemo();
+  const viejo = (d.ajustes && d.ajustes.fondo) || 'fondo', TXT = ['principal', 'texto', 'blanco', 'fondo', 'negro'];
+  d.ajustes = Object.assign({}, d.ajustes || {}, { fondo: E.fondo });
+  d.capas.forEach(c => {
+    if (c.t === 'texto' && !c.fondo && TXT.indexOf(c.color || 'texto') >= 0) c.color = E.claro;
+    if ((c.t === 'forma' || c.t === 'degradado') && (c.color === viejo)) c.color = E.fondo;
+    if (c.t === 'logo') c.color = 'auto';
+  });
+  d._sucio = true; disEdPintar();
+}
+/* Diseños abre al instante: se pinta con lo de la última vez y se actualiza por detrás */
+const DIS_CACHE_K = 'dis_cache_v1';   /* IndexedDB: el localStorage del ERP ya está lleno (5 MB) */
+function _disIdb(){ return new Promise((ok, mal) => { try { const r = indexedDB.open('tulula_dis', 1); r.onupgradeneeded = () => r.result.createObjectStore('c'); r.onsuccess = () => ok(r.result); r.onerror = () => mal(r.error); } catch (e) { mal(e); } }); }
+async function _disCacheGuardar(){
+  try { const o = { t: Date.now(), filas: DIS.filas, prods: DIS.prods, marca: DIS.marca, ordenP: DIS.ordenP, juntas: DIS.juntas, puede: DIS.puede };
+    const db = await _disIdb(); await new Promise((ok, mal) => { const tx = db.transaction('c', 'readwrite'); tx.objectStore('c').put(o, DIS_CACHE_K); tx.oncomplete = ok; tx.onerror = () => mal(tx.error); }); db.close(); return true; } catch (_) { return false; }
+}
+async function _disCacheLeer(){
+  try { const db = await _disIdb(), o = await new Promise((ok, mal) => { const r = db.transaction('c').objectStore('c').get(DIS_CACHE_K); r.onsuccess = () => ok(r.result); r.onerror = () => mal(r.error); }); db.close();
+    if (!o || Date.now() - o.t > 7 * 864e5 || !Array.isArray(o.filas)) return false;
+    Object.assign(DIS, { filas: o.filas, prods: o.prods, marca: o.marca, ordenP: o.ordenP, juntas: o.juntas, puede: !!o.puede }); return true; } catch (_) { return false; }
 }
