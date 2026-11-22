@@ -9,8 +9,8 @@ const DIS = { piezas: [], sinf: {}, lote: null, pz: null, filas: null, prods: nu
 const DIS_TAM = { '4x5': [1080, 1350], '9x16': [1080, 1920] };
 const DIS_MSJ = [['producto','Producto'],['beneficios','Beneficios'],['oferta','Oferta'],['colores','Colores'],['preventa','Preventa'],['frase','Frase'],['resenas','Reseñas']];
 const DIS_EST = { borrador: 'Borrador', prueba: 'En prueba', ganadora: 'Ganadora', archivada: 'Archivada' };
-const DIS_VIS = [['siempre','Siempre'],['oferta','Solo en oferta'],['sin_oferta','Solo sin oferta'],['preventa','Solo en preventa'],['beneficios','Solo con beneficios'],['ultimas','Solo en últimas tallas'],['resenas','Solo con reseñas'],['cita','Solo con cita de clienta'],['sin_cita','Solo sin cita de clienta'],['badge','Solo si hay etiqueta']];
-const DIS_CAMPOS = [['{{nombre}}','Nombre'],['{{precio}}','Precio'],['{{precio_antes}}','Precio antes'],['{{descuento}}','% descuento'],['{{ahorro}}','Ahorro'],['{{frase}}','Frase gigante'],['{{color}}','Color'],['{{colores_n}}','N.º de colores'],['{{tallas}}','Tallas'],['{{ultimas}}','Últimas tallas'],['{{categoria}}','Categoría'],['{{nombre_corto}}','Nombre corto'],['{{estrellas}}','Estrellas'],['{{n_resenas}}','N.º reseñas'],['{{resena}}','Cita de clienta'],['{{resena_quien}}','Quién la dijo'],['{{badge}}','Etiqueta automática'],['{{beneficio1}}','Beneficio 1'],['{{beneficio2}}','Beneficio 2'],['{{beneficio3}}','Beneficio 3'],['{{beneficio1_texto}}','Detalle beneficio 1']];
+const DIS_VIS = [['siempre','Siempre'],['oferta','Solo en oferta'],['sin_oferta','Solo sin oferta'],['preventa','Solo en preventa'],['beneficios','Solo con beneficios'],['ultimas','Solo en últimas tallas'],['resenas','Solo con reseñas'],['cita','Solo con cita de clienta'],['sin_cita','Solo sin cita de clienta'],['badge','Solo si hay etiqueta'],['foto_clienta','Solo con reseña con foto'],['sin_foto_clienta','Solo sin reseña con foto'],['con_precio','Solo si se muestra el precio']];
+const DIS_CAMPOS = [['{{nombre}}','Nombre'],['{{precio}}','Precio'],['{{precio_antes}}','Precio antes'],['{{descuento}}','% descuento'],['{{ahorro}}','Ahorro'],['{{frase}}','Frase gigante'],['{{color}}','Color'],['{{colores_n}}','N.º de colores'],['{{tallas}}','Tallas'],['{{ultimas}}','Últimas tallas'],['{{categoria}}','Categoría'],['{{nombre_corto}}','Nombre corto'],['{{estrellas}}','Estrellas'],['{{n_resenas}}','N.º reseñas'],['{{resena}}','Cita de clienta'],['{{resena_quien}}','Quién la dijo'],['{{badge}}','Etiqueta automática'],['{{ventaja1}}','Ventaja 1 (cuotas)'],['{{ventaja2}}','Ventaja 2'],['{{ventaja3}}','Ventaja 3'],['{{ventaja4}}','Ventaja 4'],['{{resena_foto_texto}}','Reseña con foto'],['{{beneficio1}}','Beneficio 1'],['{{beneficio2}}','Beneficio 2'],['{{beneficio3}}','Beneficio 3'],['{{beneficio1_texto}}','Detalle beneficio 1']];
 const DIS_COLS = [['principal','Azul'],['acento','Naranja'],['fondo','Crema'],['suave','Gris azulado'],['texto','Texto'],['oferta','Oferta'],['blanco','Blanco'],['negro','Negro']];
 const DIS_MARCA_DEF = { aprobada: false, f_titulo: 'Tenor Sans', f_texto: 'Jost', c_principal: '#173B61', c_acento: '#C15B07', c_texto: '#000000', c_fondo: '#EDEAE3', c_oferta: '#C15B07', c_suave: '#D3DBE5',   /* 21-nov · colores oficiales que pasó Pablo */
   logo_oscuro: 'https://cdn.shopify.com/s/files/1/0722/3564/7189/files/logo-oscuro_649cf6f9-9636-42ac-9f18-05f5af1ff2de.png' };
@@ -258,7 +258,9 @@ const DIS_BASE = [
     { t: 'foto', src: 'color:0', sinfondo: true, fit: 'cover', x: 14, y: 0, w: 52, h: 100, pos: 'center top', sombra: true },
     { t: 'logo', x: 76, y: 5, w: 19, caja: true },
     { t: 'texto', txt: '{{nombre}}', x: 58, y: 48, w: 38, tam: 32, fuente: 'titulo', color: 'principal', al: 'right', lh: 1.15 },
-    { t: 'texto', txt: '~~{{precio_antes}}~~  {{precio}}', x: 50, y: 60, w: 46, tam: 54, fuente: 'texto', peso: 500, color: 'acento', al: 'right' } ] },
+    { t: 'texto', txt: '~~{{precio_antes}}~~  {{precio}}', x: 50, y: 60, w: 46, tam: 54, fuente: 'texto', peso: 500, color: 'acento', al: 'right' },
+    { t: 'texto', txt: '{{descuento}}', x: 78, y: 68.5, w: 18, tam: 30, fuente: 'texto', peso: 600, color: 'blanco', fondo: 'acento', pad: 10, r: 999, al: 'center', vis: 'oferta' },
+    { t: 'texto', txt: '{{ventaja1}}', x: 50, y: 92, w: 46, tam: 21, fuente: 'texto', color: 'principal', al: 'right', ls: 1 } ] },
   { nombre: 'Cinta de colección', mensaje: 'producto', ref: 'Captura Feedr · new collection', capas: [
     { t: 'forma', x: 0, y: 0, w: 100, h: 9.5, color: 'blanco' },
     { t: 'texto', txt: 'COLECCIÓN  ***NUEVA COLECCIÓN***  NUEVA COLECCIÓN  ***NUEVA COLECCIÓN***  NUEVA COLECCIÓN', x: -9, y: 2.2, w: 130, tam: 50, fuente: 'texto', color: 'principal', linea: true },
@@ -283,7 +285,18 @@ const DIS_BASE = [
     { t: 'logo', x: 4, y: 6, w: 24.5, color: 'blanco' },
     { t: 'texto', txt: '{{precio_antes}}', x: 4, y: 74.5, w: 27, tam: 30, fuente: 'texto', color: 'blanco', tachado: true, op: 0.75, vis: 'oferta' },
     { t: 'texto', txt: '{{precio}}', x: 4, y: 79, w: 27, tam: 54, fuente: 'texto', peso: 500, color: 'blanco' },
-    { t: 'texto', txt: '{{nombre}}', x: 4, y: 87, w: 26, tam: 20, fuente: 'texto', color: 'blanco', op: 0.85, mayus: true, ls: 2, lh: 1.3 } ] }
+    { t: 'texto', txt: '{{nombre}}', x: 4, y: 87, w: 26, tam: 20, fuente: 'texto', color: 'blanco', op: 0.85, mayus: true, ls: 2, lh: 1.3 },
+    { t: 'texto', txt: '{{descuento}}', x: 4, y: 67, w: 14, tam: 30, fuente: 'texto', peso: 600, color: 'blanco', fondo: 'acento', pad: 10, r: 999, al: 'center', vis: 'oferta' },
+    { t: 'texto', txt: '{{ventaja1}}', x: 36, y: 93, w: 60, tam: 21, fuente: 'texto', color: 'blanco', fondo: 'principal', pad: 8, r: 999, al: 'center', ls: 1 } ] },
+  /* 21-nov · Fase 4: reseña real CON FOTO de la clienta (solo productos que la tienen; si no, usa la foto de la prenda) */
+  { nombre: 'Reseña con foto', mensaje: 'resenas', ref: 'Prueba social real', capas: [
+    { t: 'foto', src: 'resena:0', x: 5, y: 5, w: 50, h: 70, marco: 10, marcoColor: 'blanco', sombra: true, pos: 'center center' },
+    { t: 'foto', src: 'color:0', x: 56, y: 22, w: 40, h: 53, pos: 'center top' },
+    { t: 'texto', txt: '★★★★★', x: 5, y: 78, w: 60, tam: 30, fuente: 'texto', color: 'acento', ls: 6 },
+    { t: 'texto', txt: '«{{resena_foto_texto}}»', x: 5, y: 82, w: 88, tam: 30, fuente: 'titulo', color: 'principal', lh: 1.22, vis: 'foto_clienta' },
+    { t: 'texto', txt: '«{{resena}}»', x: 5, y: 82, w: 88, tam: 30, fuente: 'titulo', color: 'principal', lh: 1.22, vis: 'sin_foto_clienta' },
+    { t: 'texto', txt: '{{resena_foto_quien}} · clienta real · {{nombre}}', x: 5, y: 93.5, w: 88, tam: 20, fuente: 'texto', color: 'texto', mayus: true, ls: 2 },
+    { t: 'logo', x: 66, y: 7, w: 26 } ] }
 
 ];
 
@@ -346,7 +359,7 @@ function disCtx(p, inf, color, aj){
   return { p, fotos, i0, color, colores: cols, portadas: cols.map(c => ({ c, src: portadaDe(c) })), benBase, ben,
     precio: _disSol(precio), antes: oferta ? _disSol(antes) : '', descuento: oferta ? '-' + Math.round((1 - precio / antes) * 100) + '%' : '',
     ahorro: oferta ? 'Ahorras ' + _disSol(antes - precio) : '', oferta, preventa, tallas, ultimas, agotado: !!vsAll.length && !tallas.length && ti >= 0,
-    estrellas: p.estrellas != null ? String(p.estrellas).replace('.', ',') : '', n_resenas: +p.n_resenas || 0, cita: p.cita || '', cita_quien: p.cita_quien || '',
+    estrellas: p.estrellas != null ? (+p.estrellas).toFixed(1).replace('.', ',') : '', n_resenas: +p.n_resenas || 0, cita: p.cita || '', cita_quien: p.cita_quien || '', foto_clienta: p.foto_clienta || '', foto_texto: p.foto_texto || '', foto_quien: p.foto_quien || '',
     categoria: String(p.titulo || '').trim().split(/\s+/)[0] || '', nombre_corto: String(p.titulo || '').trim().split(/\s+/).slice(1).join(' ') || String(p.titulo || ''),
     badge: preventa ? 'Preventa' : ultimas ? 'Últimas tallas' : oferta ? 'Oferta ' + ('-' + Math.round((1 - precio / antes) * 100) + '%') : ((+p.n_resenas || 0) >= 10 ? 'Favorita de clientas' : ''), frase: p.frase || '', nombre: String(p.titulo || '') };
 }
@@ -356,6 +369,7 @@ function _disFotoSrc(cx, src){
   if (k === 'n') return cx.fotos[i] || '';
   if (k === 'ben'){ const b = cx.ben[i]; if (b && b.foto){ const f = cx.fotos.find(u => _disArch(u) === _disArch(b.foto)); if (f) return f; } return cx.fotos[cx.i0 + i + 1] || ''; }
   if (k === 'url') return src.slice(4);
+  if (k === 'resena') return cx.foto_clienta || cx.fotos[cx.i0] || '';
   if (k === 'fondo'){ const f = (DIS.fondos || [])[i]; return f ? f.url : ''; }
   return '';
 }
@@ -365,7 +379,8 @@ function _disTxt(cx, t){
     const n = cx.tallas.length, tal = n > 2 ? cx.tallas[0] + ' a ' + cx.tallas[n - 1] : cx.tallas.join(' y ');
     const v = { nombre: cx.nombre, precio: cx.precio, precio_antes: cx.antes, descuento: cx.descuento, ahorro: cx.ahorro, frase: cx.frase, color: cx.color,
       colores_n: cx.colores.length > 1 ? cx.colores.length + ' colores' : '', tallas: tal, ultimas: cx.ultimas ? 'Últimas tallas: ' + cx.tallas.join(' y ') : '', marca: 'TULULA',
-      estrellas: cx.estrellas, n_resenas: cx.n_resenas ? cx.n_resenas + (cx.n_resenas === 1 ? ' reseña' : ' reseñas') : '', resena: cx.cita, resena_quien: cx.cita_quien,
+      estrellas: cx.estrellas, n_resenas: cx.n_resenas >= 100 ? cx.n_resenas + ' reseñas' : '',   /* 21-nov · Pablo: con menos de 100 no se muestra */
+      ventaja1: _disVentajas()[0] || '', ventaja2: _disVentajas()[1] || '', ventaja3: _disVentajas()[2] || '', ventaja4: _disVentajas()[3] || '', resena_foto_texto: cx.foto_texto || '', resena_foto_quien: cx.foto_quien || '', resena: cx.cita, resena_quien: cx.cita_quien,
       categoria: cx.categoria, nombre_corto: cx.nombre_corto, badge: cx.badge }[k];
     return v == null ? '' : v; });
 }
@@ -381,7 +396,7 @@ function _disTxtSeg(cx, t){
 function _disVis(c, cx){
   if (c.oculto) return false;
   const v = c.vis || 'siempre';
-  return v === 'siempre' || (v === 'oferta' && cx.oferta) || (v === 'sin_oferta' && !cx.oferta) || (v === 'preventa' && cx.preventa) || (v === 'beneficios' && cx.ben.length > 0) || (v === 'ultimas' && !!cx.ultimas) || (v === 'resenas' && cx.n_resenas > 0) || (v === 'cita' && !!cx.cita) || (v === 'sin_cita' && !cx.cita) || (v === 'badge' && !!cx.badge);
+  return v === 'siempre' || (v === 'oferta' && cx.oferta) || (v === 'sin_oferta' && !cx.oferta) || (v === 'preventa' && cx.preventa) || (v === 'beneficios' && cx.ben.length > 0) || (v === 'ultimas' && !!cx.ultimas) || (v === 'resenas' && cx.n_resenas > 0) || (v === 'cita' && !!cx.cita) || (v === 'foto_clienta' && !!cx.foto_clienta) || (v === 'sin_foto_clienta' && !cx.foto_clienta) || (v === 'con_precio' && !!cx.precio) || (v === 'sin_cita' && !cx.cita) || (v === 'badge' && !!cx.badge);
 }
 function _disCol(c){
   const m = DIS.marca || DIS_MARCA_DEF;
@@ -393,7 +408,7 @@ function _disCol(c){
 function _disRgba(hex, a){ const h = String(hex || '#000').replace('#', ''), n = h.length === 3 ? h.split('').map(c => c + c).join('') : h.slice(0, 6), v = parseInt(n, 16) || 0;
   return 'rgba(' + ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255) + ',' + (a == null ? 1 : a) + ')'; }
 function disHtml(d, cx, s, opt){
-  opt = opt || {}; const [W, H] = DIS_TAM[d.formato] || DIS_TAM['4x5'], m = DIS.marca || DIS_MARCA_DEF;
+  opt = opt || {}; if (_disSinPrecio(d)) cx = _disCxSinPrecio(cx); const [W, H] = DIS_TAM[d.formato] || DIS_TAM['4x5'], m = DIS.marca || DIS_MARCA_DEF;
   const ft = "'" + m.f_titulo + "', serif", fx = "'" + m.f_texto + "', sans-serif", anchoFoto = opt.ancho || 1080;
   let h = '<div class="dis-lienzo" style="position:relative;overflow:hidden;width:' + Math.round(W * s) + 'px;height:' + Math.round(H * s) + 'px;background:' + _disCol((d.ajustes && d.ajustes.fondo) || 'fondo') + '">';
   (d.capas || []).forEach((c, i) => {
@@ -408,7 +423,8 @@ function disHtml(d, cx, s, opt){
       const z = Math.max(1, +c.zoom || 1), fxp = (c.fx != null ? +c.fx : 50) + '% ' + (c.fy != null ? +c.fy : 0) + '%';
       const op = c.pos || (c.fx != null || c.fy != null ? fxp : 'center top');
       const fil = [c.bri != null && +c.bri !== 100 ? 'brightness(' + (+c.bri / 100) + ')' : '', c.con != null && +c.con !== 100 ? 'contrast(' + (+c.con / 100) + ')' : '', c.sat != null && +c.sat !== 100 ? 'saturate(' + (+c.sat / 100) + ')' : '',
-        +c.blur ? 'blur(' + (+c.blur * s) + 'px)' : '', c.sinfondo && c.sombra ? 'drop-shadow(0 ' + (26 * s) + 'px ' + (30 * s) + 'px rgba(0,0,0,.35))' : ''].filter(Boolean).join(' ');
+        +c.blur ? 'blur(' + (+c.blur * s) + 'px)' : '',
+        +c.calidez > 0 ? 'sepia(' + (+c.calidez / 100) + ') saturate(' + (1 + +c.calidez / 150) + ')' : +c.calidez < 0 ? 'hue-rotate(' + (-c.calidez * 0.6) + 'deg) saturate(0.95)' : '', c.sinfondo && c.sombra ? 'drop-shadow(0 ' + (26 * s) + 'px ' + (30 * s) + 'px rgba(0,0,0,.35))' : ''].filter(Boolean).join(' ');
       const rad = c.arco ? '9999px 9999px 0 0' : ((+c.r || 0) * s) + 'px';
       estilo = 'border-radius:' + rad + ';overflow:hidden;background:' + (c.sinfondo ? 'transparent' : '#e9e7e2') + ';'
         + (c.marco ? 'border:' + (+c.marco * s) + 'px solid ' + _disCol(c.marcoColor || 'fondo') + ';box-sizing:border-box;' : '')
@@ -416,7 +432,7 @@ function disHtml(d, cx, s, opt){
       inner = u ? '<img crossorigin="anonymous" src="' + disA(sf ? u : _disTam(u, anchoFoto)) + '" style="width:100%;height:100%;object-fit:' + (c.fit || (c.sinfondo ? 'contain' : 'cover')) + ';object-position:' + op + ';display:block;pointer-events:none;'
         + (z > 1 ? 'transform:scale(' + z + ');transform-origin:' + fxp + ';' : '') + (fil ? 'filter:' + fil + ';' : '') + '" draggable="false">' : '';
     } else if (c.t === 'forma'){
-      estilo = 'background:' + _disCol(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';' + (+c.blur ? 'filter:blur(' + (+c.blur * s) + 'px);' : '');
+      estilo = 'background:' + _disCol(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';' + (+c.blur ? 'filter:blur(' + (+c.blur * s) + 'px);' : '') + (c.mezcla ? 'mix-blend-mode:' + c.mezcla + ';' : '');
     } else if (c.t === 'degradado'){
       const dir = { abajo: 'to top', arriba: 'to bottom', izq: 'to right', der: 'to left' }[c.desde || 'abajo'] || 'to top';
       estilo = 'background:linear-gradient(' + dir + ',' + _disRgba(_disCol(c.color), c.op != null ? +c.op : 0.8) + ' 0%,' + _disRgba(_disCol(c.color), 0) + ' 100%);';
@@ -539,6 +555,7 @@ function _disTarjeta(f){
     + '<div class="dis-tarj-pie"><div class="dis-fila"><div class="ui-tot dis-nom" title="' + disA(f.nombre) + '"><span class="dis-cod">#' + _disCod(f.id) + '</span> ' + esc(f.nombre) + '</div>' + estSel + '</div>'
     + '<div class="dis-fila" style="margin:2px 0">' + (DIS.puede && est !== 'archivada' ? '<select class="dis-est" title="Público al que apunta" onchange="disTempCambiar(' + f.id + ',this.value)">' + DIS_TEMP.map(o => '<option value="' + o[0] + '"' + (_disTemp(f) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>' : _disTempChip(_disTemp(f))) + '</div>'
     + _disResLinea(f)
+    + (_disGemelo(f) ? '<div class="ui-nota" style="color:#e9c53b" title="Meta trata anuncios casi iguales como uno solo: cambia la composición, no solo el color">⚠ ' + Math.round(_disGemelo(f).p * 100) + '% igual a #' + _disCod(_disGemelo(f).f.id) + '</div>' : '')
     + (_disCritDe(f.id) ? '<div class="dis-res"><span class="ui-nota" title="' + disA(((_disCritDe(f.id).detalle || {}).veredicto) || '') + '">🧐 Nota IA</span><span class="dis-etapa ' + (+_disCritDe(f.id).total >= 8 ? 'e3' : +_disCritDe(f.id).total >= 6 ? 'e1' : '') + '">' + String(_disCritDe(f.id).total).replace('.', ',') + '/10</span></div>' : '')
     + '<div class="ui-nota">' + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (npz ? ' · <a href="#" onclick="disPiezasAbrir(' + f.id + ');return false">' + npz + ' piezas</a>' : '') + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
     + '<div class="mkcr-acc dis-acc">' + acc + '</div></div></div>';
@@ -570,7 +587,7 @@ function _disPlantillasHtml(){
 }
 function disNuevoPintar(){
   const p = _disProdLindo(), form = (document.getElementById('disNuevoForm') || {}).value || '4x5'; if (!p) return;
-  disInfo(p.handle).then(inf => DIS_BASE.forEach((b, i) => { const el = document.getElementById('disBase' + i); if (el) el.innerHTML = disHtml({ formato: form, capas: b.capas, ajustes: b.ajustes || {} }, disCtx(p, inf), 248 / 1080, { ancho: 500 }); }));
+  disInfo(p.handle).then(inf => DIS_BASE.forEach((b, i) => { const el = document.getElementById('disBase' + i); if (el) el.innerHTML = disHtml({ nombre: b.nombre, mensaje: b.mensaje, formato: form, capas: b.capas, ajustes: b.ajustes || {} }, disCtx(p, inf), 248 / 1080, { ancho: 500 }); }));
 }
 function disNuevo(i){
   const b = DIS_BASE[i], form = (document.getElementById('disNuevoForm') || {}).value || '4x5';
@@ -622,6 +639,7 @@ function _disEdAbrir(){
     + '<input id="disEdNombre" class="dis-nombre" value="' + disA(DIS.ed.nombre) + '" maxlength="120" oninput="DIS.ed.nombre=this.value;DIS.ed._sucio=true" title="Nombre del diseño">'
     + '<div class="dis-seg">' + ['4x5', '9x16'].map(f => '<button type="button" data-f="' + f + '" class="' + (DIS.ed.formato === f ? 'on' : '') + '" onclick="disEdFormato(\'' + f + '\')">' + (f === '4x5' ? 'Feed 4:5' : 'Historias 9:16') + '</button>').join('') + '</div>'
     + '<select onchange="DIS.ed.mensaje=this.value;DIS.ed._sucio=true" title="Mensaje del anuncio">' + DIS_MSJ.map(o => '<option value="' + o[0] + '"' + (DIS.ed.mensaje === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
+    + '<select title="Precio en este diseño" onchange="DIS.ed.ajustes.precio=this.value;DIS.ed._sucio=true;disEdPintar()">' + [['', 'Precio: según público'], ['si', 'Precio: siempre'], ['no', 'Precio: nunca']].map(o => '<option value="' + o[0] + '"' + ((DIS.ed.ajustes.precio || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
     + _disIb('deshacer', 'Deshacer (Ctrl+Z)', 'disDeshacer()') + _disIb('rehacer', 'Rehacer (Ctrl+Y)', 'disRehacer()')
     + '<span style="flex:1"></span><span class="ui-nota" id="disEdRes"></span>'
     + '<button class="btn" onclick="disCriticarEditor()" title="La IA le pone nota y dice qué mejorar (~US$0,01)">🧐 Revisar</button>'
@@ -714,7 +732,7 @@ function _disPanel(cx){
   const fs = (DIS.ed.ajustes && DIS.ed.ajustes.fondo) || 'fondo';
   h += sec('fondo', 'Fondo del diseño', '<div class="dis-colores">' + DIS_COLS.map(o => '<button type="button" class="dis-col' + (fs === o[0] ? ' on' : '') + '" style="background:' + _disCol(o[0]) + '" title="' + o[1] + '" onclick="disFondo(\'' + o[0] + '\')"></button>').join('') + '</div>'
     + '<label class="btn dis-subir">' + disIco('subir', 14) + ' Subir una imagen de fondo<input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="disFondoSubir(this.files[0])"></label>'
-    + '<button class="btn" style="margin-top:6px" onclick="disFondosAbrir()">🏞️ Elegir de la biblioteca de Fondos</button>'
+    + '<button class="btn" style="margin-top:6px" onclick="disFondosAbrir()">🏞️ Elegir de la biblioteca de Fondos</button><button class="btn" style="margin-top:6px" onclick="disIgualarLuz()" title="Calienta o enfría la prenda para que calce con la luz del fondo">🎨 Igualar luz con el fondo</button>'
     + '<div class="ui-nota">Ej.: una oficina, mármol o lino. Queda detrás de todo.</div>');
   pn.innerHTML = h;
 }
@@ -755,9 +773,9 @@ function _disProps(c, i, cx){
     if (String(c.src || '').indexOf('url:') === 0) ops.unshift([c.src, 'Imagen propia']);
     cont = '<div class="dis-props">' + selc('src', 'Qué foto', ops, c.src || 'color:0') + '</div><div class="dis-props">' + chk('sinfondo', '✂ Quitar el fondo (gratis; la 1ª vez 5-15 s)') + chk('sombra', 'Sombra') + chk('arco', 'Forma de arco') + '</div>';
     est = '<div class="dis-props">' + selc('fit', 'Encaje', [['cover', 'Llenar'], ['contain', 'Entera']], c.fit || (c.sinfondo ? 'contain' : 'cover')) + num('zoom', 'Acercar ×', 0.1, '1') + num('fx', 'Foco horiz. %', 5, '50') + num('fy', 'Foco vert. %', 5, '0') + num('r', 'Redondeo') + num('marco', 'Marco') + '</div>' + (c.marco ? col('marcoColor', 'Color del marco') : '')
-      + '<div class="dis-props"><button type="button" class="btn" onclick="disCapaPaso(' + i + ',\'bri\',-10)">☾ Más oscura</button><button type="button" class="btn" onclick="disCapaPaso(' + i + ',\'bri\',10)">☀ Más clara</button></div>'
-      + '<div class="dis-props">' + num('bri', 'Brillo %', 5, '100') + num('con', 'Contraste %', 5, '100') + num('sat', 'Color %', 5, '100') + num('blur', 'Desenfoque', 1, '0') + '</div>';
-  } else if (c.t === 'forma'){ est = col('color', 'Color') + '<div class="dis-props">' + num('op', 'Opacidad 0-1', 0.05) + num('r', 'Redondeo') + chk('elipse', 'Curva / óvalo') + '</div>'; }
+      + '<div class="dis-props"><button type="button" class="btn" onclick="disCapaPaso(' + i + ',\'bri\',-10)">☾ Más oscura</button><button type="button" class="btn" onclick="disCapaPaso(' + i + ',\'bri\',10)">☀ Más clara</button><button type="button" class="btn" onclick="disCapaSet(' + i + ',\'calidez\',Math.min(40,(+DIS.ed.capas[' + i + '].calidez||0)+8))">🔥 Más cálida</button><button type="button" class="btn" onclick="disCapaSet(' + i + ',\'calidez\',Math.max(-30,(+DIS.ed.capas[' + i + '].calidez||0)-8))">❄️ Más fría</button></div>'
+      + '<div class="dis-props">' + num('bri', 'Brillo %', 5, '100') + num('con', 'Contraste %', 5, '100') + num('sat', 'Color %', 5, '100') + num('blur', 'Desenfoque', 1, '0') + num('calidez', 'Calidez (−30 a 40)', 2, '0') + '</div>';
+  } else if (c.t === 'forma'){ est = col('color', 'Color') + '<div class="dis-props">' + num('op', 'Opacidad 0-1', 0.05) + num('r', 'Redondeo') + chk('elipse', 'Curva / óvalo') + num('blur', 'Desenfoque', 1, '0') + selc('mezcla', 'Mezcla', [['', 'Normal'], ['soft-light', 'Luz suave'], ['multiply', 'Oscurecer'], ['screen', 'Aclarar']], c.mezcla || '') + '</div>'; }
   else if (c.t === 'degradado'){ est = col('color', 'Color') + '<div class="dis-props">' + selc('desde', 'Más fuerte', [['abajo', 'Abajo'], ['arriba', 'Arriba'], ['izq', 'Izquierda'], ['der', 'Derecha']], c.desde || 'abajo') + num('op', 'Intensidad 0-1', 0.05) + '</div>'; }
   else if (c.t === 'logo'){ est = '<div class="dis-props">' + selc('color', 'Color del logo', DIS_LOGO_COL, _disLogoColor(c)) + num('op', 'Opacidad', 0.05, '1') + chk('caja', 'En recuadro') + '</div>'; }
   else if (c.t === 'lista'){ est = '<div class="dis-props">' + num('max', 'Cuántos') + num('tam', 'Tamaño') + '</div>' + col('color', 'Color') + '<div class="dis-props">' + chk('detalle', 'Con detalle debajo') + '</div>'; }
@@ -965,6 +983,8 @@ function disMarcaAbrir(){
     + '<label class="dis-prop"><span class="ui-nota">Letra de títulos</span><input id="disM_f_titulo" value="' + disA(m.f_titulo) + '"></label>'
     + '<label class="dis-prop"><span class="ui-nota">Letra de textos</span><input id="disM_f_texto" value="' + disA(m.f_texto) + '"></label></div><div class="dis-props">'
     + col('c_principal', 'Azul') + col('c_acento', 'Naranja') + col('c_fondo', 'Crema') + col('c_suave', 'Gris azulado') + col('c_texto', 'Texto') + col('c_oferta', 'Oferta') + '</div>'
+    + '<label class="dis-prop" style="width:100%"><span class="ui-nota">Ventajas de la tienda (una por línea · campos {{ventaja1}}…{{ventaja4}})</span><textarea id="disM_ventajas" rows="4" style="width:100%">' + esc(_disVentajas().join('\n')) + '</textarea></label>'
+    + '<label class="dis-prop" style="width:100%"><span class="ui-nota">Precio en los anuncios</span><select id="disM_precio_publico"><option value="caliente"' + ((m.precio_publico || 'caliente') === 'caliente' ? ' selected' : '') + '>Solo en público 🔥 Caliente (Frío y Tibio sin precio)</option><option value="todos"' + (m.precio_publico === 'todos' ? ' selected' : '') + '>En todos los públicos</option></select></label>'
     + '<label class="dis-prop" style="width:100%"><span class="ui-nota">Logo (PNG)</span><input id="disM_logo_oscuro" value="' + disA(m.logo_oscuro) + '" style="width:100%"></label>'
     + '<div class="dis-acc" style="margin-top:12px"><span class="ui-nota" id="disMRes"></span><span style="flex:1"></span><button class="btn" onclick="disMarcaGuardar(false)">Guardar</button><button class="btn on" onclick="disMarcaGuardar(true)">✓ Aprobar marca</button></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h);
@@ -972,6 +992,8 @@ function disMarcaAbrir(){
 async function disMarcaGuardar(aprobar){
   const v = Object.assign({}, DIS.marca || DIS_MARCA_DEF);
   ['f_titulo', 'f_texto', 'c_principal', 'c_acento', 'c_texto', 'c_fondo', 'c_oferta', 'c_suave', 'logo_oscuro'].forEach(k => { const el = document.getElementById('disM_' + k); if (el && el.value.trim()) v[k] = el.value.trim(); });
+  const vt = document.getElementById('disM_ventajas'); if (vt) v.ventajas = vt.value.split('\n').map(x => x.trim()).filter(Boolean).slice(0, 4);
+  const pp = document.getElementById('disM_precio_publico'); if (pp) v.precio_publico = pp.value;
   if (aprobar) v.aprobada = true;
   const res = document.getElementById('disMRes'); if (res) res.textContent = 'Guardando…';
   try {
@@ -1228,7 +1250,7 @@ function disFondoPoner(id){
     if (k >= 0){ const p = C[k]; p.sinfondo = true; p.sombra = true; p.fit = 'contain'; p.pos = 'center bottom';
       C.splice(k, 0, { t: 'forma', x: p.x + p.w * 0.25, y: Math.min(97, p.y + (p.h || 100) - 2.5), w: p.w * 0.5, h: 3, color: 'negro', op: 0.35, elipse: true, blur: 10 }); }
   }
-  DIS.ed._sucio = true; const v = document.getElementById('disFon'); if (v) v.remove(); disEdPintar();
+  DIS.ed._sucio = true; const v = document.getElementById('disFon'); if (v) v.remove(); disEdPintar(); setTimeout(disIgualarLuz, 300);
 }
 /* ══ 21-nov · FASE 3 (Pablo): público Frío / Tibio / Caliente + regla de ganadora en 3 etapas con datos del ERP ══ */
 const DIS_TEMP = [['frio', '❄️ Frío'], ['tibio', '🌤️ Tibio'], ['caliente', '🔥 Caliente']];
@@ -1236,16 +1258,16 @@ const DIS_TEMP_NOTA = { frio: 'No te conoce: gancho, prenda o reseña; precio ch
 /* criterio propio de Claude con los datos de Confect/Madgicx (ver turno 21-nov): qué público ataca mejor cada plantilla */
 const DIS_TEMP_BASE = { 'Editorial dividido': 'caliente', 'Díptico': 'tibio', 'Detalle de la prenda': 'frio', 'Recorte sobre azul': 'frio', 'Marco de galería': 'frio', 'Reseña de clienta': 'frio',
   'Arco editorial': 'caliente', 'Colores': 'tibio', 'Pantalla completa': 'frio', 'Preventa': 'tibio', 'Ficha con detalle': 'tibio', 'Logo gigante detrás': 'frio', 'Estilo de vida + prenda': 'tibio',
-  'Ficha con dos detalles': 'tibio', 'Tríptico': 'caliente', 'Llegada nueva': 'tibio', 'Oferta en curva': 'caliente', 'Cinta de colección': 'frio', 'Prenda en panel': 'tibio', 'Franja oscura con precio': 'caliente' };
+  'Ficha con dos detalles': 'tibio', 'Tríptico': 'caliente', 'Llegada nueva': 'tibio', 'Oferta en curva': 'caliente', 'Cinta de colección': 'frio', 'Prenda en panel': 'tibio', 'Franja oscura con precio': 'caliente', 'Reseña con foto': 'frio' };
 function _disTemp(f){ const a = (f && f.ajustes) || {}; const nb = String((f && f.nombre) || ''); return a.temp || DIS_TEMP_BASE[nb] || DIS_TEMP_BASE[Object.keys(DIS_TEMP_BASE).find(k => nb.indexOf(k) === 0) || ''] || ({ oferta: 'caliente', preventa: 'tibio', colores: 'tibio' }[f && f.mensaje]) || 'frio'; }
 function _disTempChip(t){ const o = DIS_TEMP.find(x => x[0] === t) || DIS_TEMP[0]; return '<span class="dis-temp dis-temp-' + o[0] + '" title="' + disA(DIS_TEMP_NOTA[o[0]]) + '">' + o[1] + '</span>'; }
 /* regla de ganadora: gasto mínimo en «veces el CPA objetivo», compras mínimas y ROAS en «veces el ROAS de equilibrio».
    Base (Motion/Foreplay/práctica de cuentas grandes): no juzgar antes de gastar 1-3 CPA; ganadora = volumen + retorno sostenido. */
-const DIS_REGLA_DEF = { e1: { gx: 1, c: 1, r: 1 }, e2: { gx: 2, c: 3, r: 1.3 }, e3: { gx: 3, c: 10, r: 1.5 } };
-function _disRegla(){ const r = DIS.regla || {}; return { e1: Object.assign({}, DIS_REGLA_DEF.e1, r.e1), e2: Object.assign({}, DIS_REGLA_DEF.e2, r.e2), e3: Object.assign({}, DIS_REGLA_DEF.e3, r.e3) }; }
+const DIS_REGLA_DEF = { e1: { c: 1, roas: 1.7, cpa: 114 }, e2: { c: 3, roas: 2.5, cpa: 85 }, e3: { c: 5, roas: 3, cpa: 65 } };   /* 21-nov · Pablo: ganadora = ROAS ≥ 3 y ≥ 5 compras; en vez de gasto mínimo, costo por compra máximo */
+function _disRegla(){ const r = DIS.regla || {}, ok = x => x && x.roas != null; return { e1: Object.assign({}, DIS_REGLA_DEF.e1, ok(r.e1) ? r.e1 : {}), e2: Object.assign({}, DIS_REGLA_DEF.e2, ok(r.e2) ? r.e2 : {}), e3: Object.assign({}, DIS_REGLA_DEF.e3, ok(r.e3) ? r.e3 : {}) }; }
 function _disEtapa(x, base, regla){
-  if (!x || !base || !(+x.gasto > 0)) return 0; regla = regla || _disRegla(); const cpa = +base.cpa_obj || 0, be = +base.roas_be || 0, roas = +x.roas || 0;
-  let e = 0; ['e1', 'e2', 'e3'].forEach((k, i) => { const q = regla[k]; if (+x.gasto >= q.gx * cpa && +x.pedidos >= q.c && roas >= q.r * be) e = i + 1; });
+  if (!x || !(+x.gasto > 0)) return 0; regla = regla || _disRegla(); const roas = +x.roas || 0, cpa = +x.pedidos > 0 ? +x.gasto / +x.pedidos : Infinity;
+  let e = 0; ['e1', 'e2', 'e3'].forEach((k, i) => { const q = regla[k]; if (+x.pedidos >= +q.c && roas >= +q.roas && cpa <= +q.cpa) e = i + 1; });
   return e;
 }
 function _disRes(id){ return ((DIS.res && DIS.res.disenos) || []).find(x => +x.diseno === +id) || null; }
@@ -1274,18 +1296,18 @@ async function disTempCambiar(id, t){
 function disReglaAbrir(){
   const v = document.getElementById('disRegla'); if (v) v.remove(); const R = _disRegla(), b = (DIS.res && DIS.res.base) || {}, n = v => String(v == null ? '—' : v).replace('.', ',');
   const fila = (k, t, nota) => '<tr><td><b>' + t + '</b><div class="ui-nota">' + nota + '</div></td>'
-    + '<td><input type="number" step="0.5" min="0" id="disR_' + k + '_gx" value="' + R[k].gx + '" style="width:70px"> × CPA <span class="ui-nota">(S/ ' + Math.round((+b.cpa_obj || 0) * R[k].gx) + ')</span></td>'
     + '<td><input type="number" step="1" min="0" id="disR_' + k + '_c" value="' + R[k].c + '" style="width:70px"></td>'
-    + '<td><input type="number" step="0.1" min="0" id="disR_' + k + '_r" value="' + R[k].r + '" style="width:70px"> × equilibrio <span class="ui-nota">(ROAS ' + n(Math.round((+b.roas_be || 0) * R[k].r * 100) / 100) + ')</span></td></tr>';
-  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disRegla"><div class="dis-caja" style="max-width:820px"><div class="dis-cab"><div><div class="ui-pag">🏆 Regla de ganadora</div><div class="ui-nota">Una plantilla sube de etapa cuando cumple las 3 cosas a la vez. En la etapa 3 pasa sola a 🏆 Ganadoras.</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disRegla\').remove()') + '</div>'
-    + '<div class="dis-kpis"><div><span class="ui-nota">MARGEN 90 DÍAS</span><b>' + n(b.margen_pct) + '%</b></div><div><span class="ui-nota">TICKET PROMEDIO</span><b>S/ ' + n(b.ticket) + '</b></div><div><span class="ui-nota">CPA OBJETIVO</span><b>S/ ' + n(b.cpa_obj) + '</b></div><div><span class="ui-nota">ROAS DE EQUILIBRIO</span><b>' + n(b.roas_be) + '</b></div></div>'
-    + '<div class="ui-nota" style="margin:6px 0 10px">Salen solos del ERP: CPA objetivo = lo que deja de margen una venta promedio; ROAS de equilibrio = el que no gana ni pierde.</div>'
-    + '<table class="tt" style="width:100%"><thead><tr><th>Etapa</th><th>Gasto mínimo</th><th>Compras</th><th>ROAS mínimo</th></tr></thead><tbody>'
-    + fila('e1', '1 · Prometedora', 'Ya vendió y no pierde plata') + fila('e2', '2 · En ascenso', 'Repite ventas con ganancia') + fila('e3', '3 · 🏆 Ganadora', 'Volumen y retorno sostenidos: escalar y replicar') + '</tbody></table>'
+    + '<td><input type="number" step="0.1" min="0" id="disR_' + k + '_roas" value="' + R[k].roas + '" style="width:70px"></td>'
+    + '<td>S/ <input type="number" step="1" min="0" id="disR_' + k + '_cpa" value="' + R[k].cpa + '" style="width:80px"></td></tr>';
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disRegla"><div class="dis-caja" style="max-width:820px"><div class="dis-cab"><div><div class="ui-pag">🏆 Regla de ganadora</div><div class="ui-nota">Sube de etapa cuando cumple las 3 cosas a la vez. En la etapa 3 pasa sola a 🏆 Ganadoras.</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disRegla\').remove()') + '</div>'
+    + '<div class="dis-kpis"><div><span class="ui-nota">MARGEN 90 DÍAS</span><b>' + n(b.margen_pct) + '%</b></div><div><span class="ui-nota">TICKET PROMEDIO</span><b>S/ ' + n(b.ticket) + '</b></div><div><span class="ui-nota">COSTO POR COMPRA SIN PÉRDIDA</span><b>S/ ' + n(b.cpa_obj) + '</b></div><div><span class="ui-nota">ROAS DE EQUILIBRIO</span><b>' + n(b.roas_be) + '</b></div></div>'
+    + '<div class="ui-nota" style="margin:6px 0 10px">Salen solos del ERP (últimos 90 días). Por encima de ese costo por compra, o por debajo de ese ROAS, el anuncio pierde plata.</div>'
+    + '<table class="tt" style="width:100%"><thead><tr><th>Etapa</th><th>Compras mín.</th><th>ROAS mín.</th><th>Costo por compra máx.</th></tr></thead><tbody>'
+    + fila('e1', '1 · Prometedora', 'Ya vendió y no pierde plata') + fila('e2', '2 · En ascenso', 'Repite ventas con ganancia') + fila('e3', '3 · 🏆 Ganadora', 'Escalar y replicar en otras prendas') + '</tbody></table>'
     + (DIS.puede ? '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><span class="ui-nota" id="disReglaRes" style="flex:1"></span><button class="btn" onclick="disReglaGuardar(true)">↺ Valores recomendados</button><button class="btn on" onclick="disReglaGuardar()">Guardar regla</button></div>' : '') + '</div></div>');
 }
 async function disReglaGuardar(def){
-  const v = {}; ['e1', 'e2', 'e3'].forEach(k => { v[k] = def ? Object.assign({}, DIS_REGLA_DEF[k]) : { gx: +document.getElementById('disR_' + k + '_gx').value || 0, c: +document.getElementById('disR_' + k + '_c').value || 0, r: +document.getElementById('disR_' + k + '_r').value || 0 }; });
+  const v = {}; ['e1', 'e2', 'e3'].forEach(k => { v[k] = def ? Object.assign({}, DIS_REGLA_DEF[k]) : { c: +document.getElementById('disR_' + k + '_c').value || 0, roas: +document.getElementById('disR_' + k + '_roas').value || 0, cpa: +document.getElementById('disR_' + k + '_cpa').value || 0 }; });
   const res = document.getElementById('disReglaRes');
   try { const r = await _mklSb('/rest/v1/rpc/mk_dis_config_guardar', { method: 'POST', body: JSON.stringify({ p_clave: 'regla_ganadora', p_valor: v }) }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
     DIS.regla = v; disReglaAbrir(); const r2 = document.getElementById('disReglaRes'); if (r2) r2.textContent = '✓ Regla guardada'; _disAutoEstado(); disPintar();
@@ -1324,6 +1346,45 @@ function disCriticarEditor(){ if (DIS.ed && DIS._cx) disCriticar(DIS.ed, DIS._cx
 async function disCriticarFila(id){
   const f = (DIS.filas || []).find(x => x.id === id); if (!f) return; const aj = f.ajustes || {}, p = _disProd(aj.prev_handle); if (!p) return;
   disCriticar(f, disCtx(p, await disInfo(p.handle), aj.prev_color, aj));
+}
+/* ══ 21-nov noche (Pablo) · precio según público, ventajas de la tienda, luz del ambiente, parecido entre diseños ══ */
+/* Ventajas de Tulula (de tulula.com.pe + las que dijo Pablo). Editables en 🎨 Marca. Campos {{ventaja1}}…{{ventaja4}}. */
+const DIS_VENTAJAS_DEF = ['Paga hasta en 6 cuotas sin intereses', 'Primer cambio de talla gratis', '10% en tu primera compra', 'Pago semi contra entrega'];
+function _disVentajas(){ const v = (DIS.marca && DIS.marca.ventajas) || DIS_VENTAJAS_DEF; return Array.isArray(v) ? v.filter(x => String(x || '').trim()) : DIS_VENTAJAS_DEF; }
+/* Decisión de Pablo: Frío y Tibio SIN precio; Caliente con precio nuevo grande + tachado + % (se puede forzar por diseño). */
+function _disSinPrecio(d){
+  const a = (d && d.ajustes) || {}, modo = (DIS.marca && DIS.marca.precio_publico) || 'caliente';
+  if (a.precio === 'si') return false; if (a.precio === 'no') return true;
+  return modo === 'caliente' && _disTemp(d) !== 'caliente';
+}
+function _disCxSinPrecio(cx){ return Object.assign({}, cx, { precio: '', antes: '', descuento: '', ahorro: '', oferta: false, badge: cx.preventa ? 'Preventa' : cx.ultimas ? 'Últimas tallas' : ((+cx.n_resenas || 0) >= 10 ? 'Favorita de clientas' : '') }); }
+/* parecido entre diseños: misma «huella» de capas (tipo y lugar en una grilla de 10 %). Meta trata casi-iguales como uno solo. */
+function _disHuellaCapas(d){ return new Set((d.capas || []).filter(c => !c.oculto).map(c => c.t + ':' + Math.round((+c.x || 0) / 10) + ':' + Math.round((+c.y || 0) / 10) + ':' + Math.round((c.w != null ? +c.w : 100) / 10))); }
+function _disParecido(a, b){ const A = _disHuellaCapas(a), B = _disHuellaCapas(b); let i = 0; A.forEach(x => { if (B.has(x)) i++; }); const u = A.size + B.size - i; return u ? i / u : 0; }
+function _disGemelo(f){
+  let mejor = null; (DIS.filas || []).forEach(g => { if (g.id === f.id || g.estado === 'archivada' || f.estado === 'archivada') return; const p = _disParecido(f, g); if (p >= 0.7 && (!mejor || p > mejor.p)) mejor = { f: g, p }; });
+  return mejor;
+}
+/* luz del ambiente: mide el color promedio del fondo y calienta/enfría la prenda + capa de «luz suave» del mismo color */
+async function _disColorPromedio(url){
+  const im = await new Promise((ok, mal) => { const x = new Image(); x.crossOrigin = 'anonymous'; x.onload = () => ok(x); x.onerror = mal; x.src = url; });
+  const c = document.createElement('canvas'); c.width = 12; c.height = 12; const g = c.getContext('2d'); g.drawImage(im, 0, 0, 12, 12);
+  const d = g.getImageData(0, 0, 12, 12).data; let r = 0, gg = 0, b = 0, n = 0; for (let i = 0; i < d.length; i += 4){ if (d[i + 3] < 200) continue; r += d[i]; gg += d[i + 1]; b += d[i + 2]; n++; }
+  return n ? [r / n, gg / n, b / n] : [128, 128, 128];
+}
+async function disIgualarLuz(){
+  if (!DIS.ed) return; const C = DIS.ed.capas, fo = C.find(c => c.esFondo), pr = C.find(c => c.t === 'foto' && !c.esFondo);
+  if (!fo || !pr){ const r = document.getElementById('disEdRes'); if (r) r.textContent = 'Primero pon un fondo de la biblioteca.'; return; }
+  try {
+    const [r, g, b] = await _disColorPromedio(_disFotoSrc(DIS._cx, fo.src)), lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255, calido = (r - b) / 255;
+    _disMemo();
+    pr.calidez = Math.max(-25, Math.min(35, Math.round(calido * 90)));
+    pr.bri = Math.max(80, Math.min(112, Math.round(88 + lum * 24)));
+    const hex = '#' + [r, g, b].map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
+    const i = C.findIndex(c => c.esLuz), luz = { t: 'forma', x: 0, y: 0, w: 100, h: 100, color: hex, op: 0.32, mezcla: 'soft-light', esLuz: true };
+    if (i >= 0) C[i] = luz; else { const k = C.indexOf(pr); C.splice(k + 1, 0, luz); }
+    DIS.ed._sucio = true; disEdPintar(); const e2 = document.getElementById('disEdRes'); if (e2) e2.textContent = '🎨 Luz igualada al fondo (Ctrl+Z deshace)';
+  } catch (e) { const e2 = document.getElementById('disEdRes'); if (e2) e2.innerHTML = '<span class="mal">No pude medir la luz del fondo.</span>'; }
 }
 /* lote: combinaciones producto × color × formato × foto (función pura: la prueba la usa) */
 function _disLoteCombos(sel, formatos, fotos){
