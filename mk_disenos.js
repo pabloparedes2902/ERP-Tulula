@@ -561,12 +561,10 @@ function disPintar(){
   const b = (k, t) => '<button class="btn' + (DIS.ver === k ? ' on' : '') + '" onclick="DIS.ver=\'' + k + '\';disPintar()">' + t + ' <span class="dis-cnt">' + n[k] + '</span></button>';
   const sel = (id, v, ops, ph) => '<select onchange="' + id + '=this.value;disPintar()"><option value="">' + ph + '</option>' + ops.map(o => '<option value="' + o[0] + '"' + (v === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
   const m = DIS.marca || DIS_MARCA_DEF;
-  let h = '<div class="dis-cabeza"><div><div class="ui-blo">Diseños de anuncios</div><div class="ui-nota">Plantillas que se llenan solas con fotos, precios, colores y reseñas de cada prenda.</div></div>'
-    + '<div class="dis-barra-der">' + (DIS.puede ? '<button class="btn" onclick="disPiezasAbrir(null)">🧩 Piezas <span class="dis-cnt">' + DIS.piezas.filter(x => x.estado !== 'archivada').length + '</span></button><button class="btn" onclick="disADNAbrir()" title="Qué tienen en común los diseños que venden">🧬 ADN</button><button class="btn" onclick="disFondosAbrir()">🏞️ Fondos</button><button class="btn" onclick="disMarcaAbrir()">🎨 Marca</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : '') + '</div></div>'
-    + '<div class="dis-barra"><div class="dis-barra-izq">' + b('plantillas', '✨ Plantillas') + b('activos', 'Mis diseños') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + '</div>'
-    + (DIS.ver === 'plantillas' ? '</div>' : '<div class="dis-barra-der">' + sel('DIS.fForm', DIS.fForm, [['4x5', 'Feed 4:5'], ['9x16', 'Historias 9:16']], 'Todos los formatos') + sel('DIS.fMsj', DIS.fMsj, DIS_MSJ, 'Todos los mensajes')
-    + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px"></div></div>');
-  if (!m.aprobada && DIS.puede) h += '<div class="dis-aviso">🎨 Marca lista con el azul, naranja y crema de Tulula. Revísala en <b>🎨 Marca</b> y apruébala.</div>';
+  let h = '<div class="dis-barra"><div class="dis-barra-izq">' + b('plantillas', '✨ Plantillas') + b('activos', 'Mis diseños') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + '</div>'
+    + (DIS.ver === 'plantillas' ? _disBarraDer('') + '</div>' : '<div class="dis-barra-der">' + sel('DIS.fForm', DIS.fForm, [['4x5', 'Feed 4:5'], ['9x16', 'Historias 9:16']], 'Todos los formatos') + sel('DIS.fMsj', DIS.fMsj, DIS_MSJ, 'Todos los mensajes')
+    + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px">' + _disBarraBtns() + '</div></div>');
+  if (!m.aprobada && DIS.puede) h += '<div class="dis-aviso">🎨 Marca lista con el azul, naranja y crema de Tulula. Revísala en <b>⚙️ Configuración › 🎨 Marca</b> y apruébala.</div>';
   if (DIS.msg) h += '<div class="dis-aviso">' + DIS.msg + ' <button class="dis-ib" onclick="DIS.msg=\'\';disPintar()" title="Cerrar">' + disIco('cerrar', 14) + '</button></div>';
   if (DIS.ver === 'plantillas'){ el.innerHTML = h + _disPlantillasHtml(); if (DIS.puede) _disArrastrable(document.getElementById('disNuevoGrilla'), ks => _disGuardarOrdenPlant(ks)); disNuevoPintar(); return; }
   if (!vis.length) h += '<div class="mkl-vacio">' + (fs.length ? 'Nada para mostrar con estos filtros.' : 'Todavía no hay diseños. Crea el primero con ➕ Nuevo diseño.') + '</div>';
@@ -580,14 +578,9 @@ function _disTarjeta(f){
   const msj = (DIS_MSJ.find(x => x[0] === f.mensaje) || ['', f.mensaje])[1], npz = _disNPz(f.id);
   const acc = !DIS.puede ? '' : est === 'archivada'
     ? '<button class="btn" onclick="disEstado(' + f.id + ',\'borrador\')">↩️ Restaurar</button><button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button>'
-    : '<button class="btn" onclick="disEditar(' + f.id + ')">✏️ Editar</button><button class="btn" onclick="disLoteAbrir(' + f.id + ')" title="Varios productos y colores de una vez">🔁 Replicar</button>'
-      + '<button class="btn" onclick="disUsar(' + f.id + ')" title="Hacer la imagen y llevarla a 🎬 Biblioteca › Por usar">📤 Usar</button>'
-      + '<button class="btn" onclick="disLoteAbrir(' + f.id + ',1)" title="Elige 2 a 10 prendas o colores y sale como carrusel">🎠 Carrusel</button>'
+    : '<button class="btn" onclick="disUsar(' + f.id + ')" title="Hace la imagen y la guarda en 🎬 Biblioteca › Por usar con su nombre de anuncio">📤 Usar</button>'
       + '<button class="btn" onclick="disCriticarFila(' + f.id + ')" title="Nota de la IA y qué mejorar (~US$0,01)">🧐 Revisar</button>'
-      + '<button class="btn" onclick="disVideoAbrir(' + f.id + ')" title="Video corto para Reels e Historias (sin costo)">🎬 Video</button>'
-      + '<button class="btn" onclick="disMarcoCatalogo(' + f.id + ')" title="Marco transparente para anuncios de catálogo de Meta">🖼 Marco catálogo</button>'
-      + '<button class="btn" onclick="disDuplicar(' + f.id + ')">⧉ Duplicar</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Se guarda en Archivados y se puede restaurar">🗄 Archivar</button>'
-      + '<button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button>';
+      + '<div class="dis-acc4"><button class="btn" onclick="disEditar(' + f.id + ')">✏️ Editar</button><button class="btn" onclick="disDuplicar(' + f.id + ')">⧉ Duplicar</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Se guarda en Archivados y se puede restaurar">🗄 Archivar</button><button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button></div>';
   const estSel = DIS.puede && est !== 'archivada' ? '<select class="dis-est" onchange="disEstado(' + f.id + ',this.value)">' + ['borrador', 'prueba', 'ganadora'].map(k => '<option value="' + k + '"' + (k === est ? ' selected' : '') + '>' + DIS_EST[k] + '</option>').join('') + '</select>'
     : '<span class="ui-chip ' + chip + '">' + DIS_EST[est] + '</span>';
   return '<div class="dis-tarj" data-k="' + f.id + '"' + (DIS.puede && est !== 'archivada' && est !== 'ganadora' ? ' draggable="true" title="Arrastra para cambiar el orden"' : '') + '><div class="dis-mini" id="disMini' + f.id + '" onclick="' + (DIS.puede && est !== 'archivada' ? 'disEditar(' + f.id + ')' : '') + '"></div>'
@@ -596,7 +589,7 @@ function _disTarjeta(f){
     + _disResLinea(f)
     + (_disGemelo(f) ? '<div class="ui-nota" style="color:#e9c53b" title="Meta trata anuncios casi iguales como uno solo: cambia la composición, no solo el color">⚠ ' + Math.round(_disGemelo(f).p * 100) + '% igual a #' + _disCod(_disGemelo(f).f.id) + '</div>' : '')
     + (_disCritDe(f.id) ? '<div class="dis-res"><span class="ui-nota" title="' + disA(((_disCritDe(f.id).detalle || {}).veredicto) || '') + '">🧐 Nota IA</span><span class="dis-etapa ' + (+_disCritDe(f.id).total >= 8 ? 'e3' : +_disCritDe(f.id).total >= 6 ? 'e1' : '') + '">' + String(_disCritDe(f.id).total).replace('.', ',') + '/10</span></div>' : '')
-    + '<div class="ui-nota">' + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (npz ? ' · <a href="#" onclick="disPiezasAbrir(' + f.id + ');return false">' + npz + ' piezas</a>' : '') + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
+    + '<div class="ui-nota">' + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
     + '<div class="mkcr-acc dis-acc">' + acc + '</div></div></div>';
 }
 async function _disMini(f){
@@ -618,12 +611,12 @@ function _disPlantillasHtml(){
     + '<div class="dis-seg">' + [['', 'Todos'], ...DIS_TEMP].map(o => '<button type="button" class="' + ((DIS.fTemp || '') === o[0] ? 'on' : '') + '" title="' + disA(DIS_TEMP_NOTA[o[0]] || 'Todas las plantillas') + '" onclick="DIS.fTemp=\'' + o[0] + '\';disPintar()">' + o[1] + '</button>').join('') + '</div>'
     + '<div class="dis-seg">' + seg('estatico', '🖼 Una imagen') + seg('carrusel', '🎠 Carrusel') + '</div>'
     + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="4x5">Feed 4:5</option><option value="9x16">Historias 9:16</option></select></div></div>'
-    + _disCalendarioHtml()
     + (DIS.tipoNuevo === 'carrusel' ? '<div class="dis-aviso">🎠 Carrusel: eliges la plantilla, la guardas y luego marcas 2 a 10 prendas o colores. Cada una sale como una tarjeta del carrusel, en el orden que las elijas, y va junta a 🎬 Biblioteca › Por usar.</div>' : '')
     + '<div class="dis-grilla" id="disNuevoGrilla">';
+  h += '<div class="dis-tarj dis-elegir" onclick="disNuevo(-1)"><div class="dis-mini dis-blanco">＋ En blanco</div><div class="dis-tarj-pie"><div class="ui-tot">En blanco</div><div class="ui-nota">Arma el tuyo desde cero</div></div></div>';
   if (DIS.puede) h += '<div class="dis-tarj dis-elegir" onclick="disCapturaAbrir()"><div class="dis-mini dis-blanco dis-ia">📷<b>Crear desde captura</b><span class="ui-nota">Pega un anuncio que te guste y la IA lo adapta a Tulula</span></div><div class="dis-tarj-pie"><div class="ui-tot">✨ Desde captura</div><div class="ui-nota">~US$0,02 cada una</div></div></div>';
   _disOrdenPlantillas().filter(i => !DIS.fTemp || _disTemp(DIS_BASE[i]) === DIS.fTemp).forEach(i => { const b = DIS_BASE[i]; h += '<div class="dis-tarj dis-elegir" data-k="' + i + '"' + (DIS.puede ? ' draggable="true"' : '') + ' onclick="disNuevo(' + i + ')"><div class="dis-mini" id="disBase' + i + '"></div><div class="dis-tarj-pie"><div class="ui-tot"><span class="dis-cod">' + _disCod(i + 1) + '</span> ' + esc(b.nombre) + ' ' + _disTempChip(_disTemp(b)) + '</div><div class="ui-nota">Estilo ' + esc(b.ref || '') + (DIS.puede ? ' · arrastra para ordenar' : '') + '</div></div></div>'; });
-  return h + '<div class="dis-tarj dis-elegir" onclick="disNuevo(-1)"><div class="dis-mini dis-blanco">＋ En blanco</div><div class="dis-tarj-pie"><div class="ui-tot">En blanco</div><div class="ui-nota">Arma el tuyo desde cero</div></div></div></div>';
+  return h + '</div>';
 }
 function disNuevoPintar(){
   const p = _disProdLindo(), form = (document.getElementById('disNuevoForm') || {}).value || '4x5'; if (!p) return;
@@ -685,7 +678,7 @@ function _disEdAbrir(){
     + '<button class="btn" onclick="disCriticarEditor()" title="La IA le pone nota y dice qué mejorar (~US$0,01)">🧐 Revisar</button>'
     + '<button class="btn" onclick="disIAMensajeAbrir()" title="Escribe lo que quieres cambiar y la IA lo hace (~US$0,01)">✨ Pedir un cambio</button>'
     + '<button class="btn" onclick="disVerMuchos()" title="El mismo diseño con 6 productos distintos">' + disIco('grilla', 14) + ' Ver en 6 productos</button>'
-    + '<button class="btn' + (DIS.ed.tipo === 'carrusel' ? ' on' : '') + '" onclick="disLoteDesdeEditor(1)" title="Guarda y arma un carrusel con 2 a 10 prendas o colores">🎠 Carrusel</button><button class="btn" onclick="disLoteDesdeEditor()">🔁 Replicar</button><button class="btn" onclick="disUsar(null)">📤 Usar</button>'
+    + '<button class="btn' + (DIS.ed.tipo === 'carrusel' ? ' on' : '') + '" onclick="disLoteDesdeEditor(1)" title="Guarda y arma un carrusel con 2 a 10 prendas o colores">🎠 Carrusel</button><button class="btn" onclick="disVideoDesdeEditor()" title="Video corto para Reels e Historias (sin costo)">🎬 Video</button><button class="btn" onclick="disUsar(null)">📤 Usar</button>'
     + '<button class="btn on" onclick="disGuardar()">Guardar</button>' + _disIb('cerrar', 'Cerrar', 'disEdCerrar()') + '</div>'
     + '<div class="dis-ed-cuerpo"><div class="dis-ed-izq"><div class="dis-ed-lienzo" id="disEdLienzo"></div>'
     + '<div class="dis-ed-prueba"><span class="ui-nota">Probar con</span><select id="disEdProd" onchange="disEdProd(this.value)">' + prods + '</select>'
@@ -1004,14 +997,7 @@ async function disUsar(id){
     const blob = await disPng(d, cx);
     const nomArch = ('DIS' + d.id + '-' + p.handle + '-' + (cx.color || 'unico') + '-' + d.formato).replace(/[^a-z0-9-]+/gi, '-').toLowerCase() + '.png';
     const file = new File([blob], nomArch, { type: 'image/png' });
-    try { await _mklSb('/rest/v1/rpc/mk_diseno_usado', { method: 'POST', body: JSON.stringify({ p_id: d.id }) }); const f = DIS.filas.find(x => x.id === d.id); if (f) f.usos = (f.usos || 0) + 1; } catch (_) {}
-    const v = document.getElementById('disEd'); if (v) v.remove(); DIS.ed = null; DIS.msg = '';
-    mkIrSub('contenido'); await mkcrAbrir(); mkcrSubirAbrir(null);
-    MKCR.disenoId = d.id;   /* mkcrGuardar lo deja en campos.diseno: así el creativo (y su anuncio) sabe de qué plantilla salió */
-    mkcrArchivo([file]);
-    const pr = document.getElementById('mkcrProd'), nom = _disProdNom(p.titulo);
-    if (pr && nom){ pr.value = nom; pr.dispatchEvent(new Event('input', { bubbles: true })); }
-    try { mkcrNombreArmar(); } catch (_) {}
+    await _disABiblioteca(file, d, p);
   } catch (e) { avisar('<span class="mal">No pude hacer la imagen (' + esc(e.message) + ').</span>'); }
 }
 
@@ -1051,6 +1037,7 @@ async function disMarcaGuardar(aprobar){
     + '.dis-cabeza{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}'
     + '.dis-barra{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}.dis-barra-izq,.dis-barra-der{display:flex;gap:6px;align-items:center;flex-wrap:wrap}'
     + '.dis-cnt{display:inline-block;min-width:18px;padding:0 6px;margin-left:4px;border-radius:9px;background:rgba(255,255,255,.08);font:600 11px var(--ui-f);text-align:center}'
+    + '.dis-acc4{display:flex;gap:6px;width:100%;margin-top:6px}.dis-acc4 .btn{flex:1 1 0;min-width:0;justify-content:center;white-space:nowrap;flex-direction:row;padding:0 4px;font-size:12px;gap:3px}'
     + '.dis-cal{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}.dis-cal-f{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid var(--bd);border-radius:999px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-cal-f.on{border-color:#7c5cff;background:rgba(124,92,255,.14)}'
     + '.dis-aviso{display:flex;align-items:center;gap:8px;justify-content:space-between;margin:0 0 14px;padding:9px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);font:400 13px var(--ui-f);color:var(--txt)}'
     + '.dis-grilla{display:grid;grid-template-columns:repeat(auto-fill,minmax(264px,1fr));gap:14px}'
@@ -1447,11 +1434,11 @@ function disLotePintar(){
   const q = _mkNorm(L.q), prods = (DIS.prods || []).filter(p => _disActivo(p) && (!q || _mkNorm(p.titulo).indexOf(q) >= 0));
   const n = _disLoteCombos(L.sel, L.formatos, L.fotos).length;
   let h = '<div class="dis-barra"><div class="dis-barra-izq"><input type="search" placeholder="Buscar producto" value="' + disA(L.q) + '" oninput="DIS.lote.q=this.value;clearTimeout(DIS._lt);DIS._lt=setTimeout(disLotePintar,250)" style="width:180px">'
-    + '<label class="dis-chk"><input type="checkbox"' + (L.formatos.indexOf('4x5') >= 0 ? ' checked' : '') + ' onchange="disLoteFormato(\'4x5\',this.checked)"> <span class="ui-nota">4:5</span></label>'
-    + '<label class="dis-chk"><input type="checkbox"' + (L.formatos.indexOf('9x16') >= 0 ? ' checked' : '') + ' onchange="disLoteFormato(\'9x16\',this.checked)"> <span class="ui-nota">9:16</span></label>'
+    + (L.carr ? '' : '<label class="dis-chk"><input type="checkbox"' + (L.formatos.indexOf('4x5') >= 0 ? ' checked' : '') + ' onchange="disLoteFormato(\'4x5\',this.checked)"> <span class="ui-nota">4:5</span></label>'
+    + '<label class="dis-chk"><input type="checkbox"' + (L.formatos.indexOf('9x16') >= 0 ? ' checked' : '') + ' onchange="disLoteFormato(\'9x16\',this.checked)"> <span class="ui-nota">9:16</span></label>')
     + '<label class="dis-prop" style="flex-direction:row;align-items:center;gap:6px"><span class="ui-nota">Fotos por color</span><select onchange="DIS.lote.fotos=+this.value;disLotePintar()">' + [1, 2, 3, 4, 5].map(k => '<option' + (k === L.fotos ? ' selected' : '') + '>' + k + '</option>').join('') + '</select></label>'
     + '<label class="dis-chk" title="No genera piezas de colores sin ninguna talla disponible"><input type="checkbox"' + (L.stock ? ' checked' : '') + ' onchange="DIS.lote.stock=this.checked"> <span class="ui-nota">Saltar colores agotados</span></label></div>'
-    + '<div class="dis-barra-der"><span class="ui-nota" id="disLoteRes"></span><button class="btn on" ' + (n && !L.corriendo ? '' : 'disabled ') + 'onclick="disLoteCorrer()">Generar ' + n + ' pieza' + (n === 1 ? '' : 's') + '</button></div></div>'
+    + '<div class="dis-barra-der"><span class="ui-nota" id="disLoteRes"></span><button class="btn on" ' + (n && !L.corriendo ? '' : 'disabled ') + 'onclick="disLoteCorrer()">' + (L.carr ? '🎠 Armar carrusel de ' + Math.min(n, 10) + (n > 10 ? ' (máx. 10)' : '') : 'Generar ' + n + ' pieza' + (n === 1 ? '' : 's')) + '</button></div></div>'
     + '<div class="dis-lote-lista">' + prods.map(p => { const on = !!L.sel[p.handle], inf = DIS.info[p.handle], cols = inf && !inf.then && inf.options ? ((inf.options.find(o => /color/i.test(o.name || '')) || {}).values || []) : null;
       return '<div class="dis-lote-fila"><label class="dis-chk"><input type="checkbox"' + (on ? ' checked' : '') + ' onchange="disLoteProd(\'' + disA(p.handle) + '\',this.checked)"> <span>' + esc(p.titulo) + '</span></label>'
         + (on ? '<div class="dis-campos">' + (cols ? cols.map(c => '<button class="dis-campo' + (L.sel[p.handle].indexOf(c) >= 0 ? ' on' : '') + '" onclick="disLoteColor(\'' + disA(p.handle) + '\',\'' + disA(c).replace(/\\/g, '') + '\')">' + esc(c) + '</button>').join('') : '<span class="ui-nota">cargando colores…</span>') + '</div>' : '') + '</div>'; }).join('') + '</div>';
@@ -1478,6 +1465,7 @@ async function disLoteCorrer(){
       if (x.foto_n && !cx.fotos[cx.i0 + x.foto_n]){ salt++; continue; }
       const d = Object.assign({}, f, { formato: x.formato, capas: _disCapasFoto(f.capas, x.foto_n) });
       const blob = await disPng(d, cx);
+      if (L.carr){ L.files = L.files || []; if (!L.prim) L.prim = x.handle; L.files.push(new File([blob], ('DIS' + f.id + '-' + x.handle + '-' + (cx.color || 'unico') + '-' + (L.files.length + 1)).replace(/[^a-z0-9-]+/gi, '-').toLowerCase() + '.png', { type: 'image/png' })); ok++; if (L.files.length >= 10) break; continue; }
       const ruta = 'creativos/dis/' + f.id + '/' + (x.handle + '-' + (cx.color || 'unico') + '-' + x.formato + '-' + (x.foto_n + 1)).replace(/[^a-z0-9-]+/gi, '-').toLowerCase() + '-' + Date.now() + '.png';
       const url = await _disSubir(blob, ruta);
       const g = await _mklSb('/rest/v1/rpc/mk_dis_pieza_guardar', { method: 'POST', body: JSON.stringify({ p_diseno: f.id, p_handle: x.handle, p_color: cx.color, p_formato: x.formato, p_foto_n: x.foto_n, p_url: url, p_ruta: ruta }) });
@@ -1488,6 +1476,9 @@ async function disLoteCorrer(){
   }
   L.corriendo = false;
   const seg = Math.round((Date.now() - t0) / 1000);
+  if (L.carr){ L.corriendo = false; const v0 = document.getElementById('disLote'); if (v0) v0.remove(); DIS.lote = null;
+    if ((L.files || []).length < 2){ DIS.msg = '<span class="mal">Un carrusel necesita 2 a 10 imágenes (salieron ' + (L.files || []).length + ').</span>'; disPintar(); return; }
+    return _disABiblioteca(L.files.slice(0, 10), f, _disProd(L.prim)); }
   DIS.msg = '🔁 ' + ok + ' pieza' + (ok === 1 ? '' : 's') + ' lista' + (ok === 1 ? '' : 's') + ' en ' + seg + ' s' + (salt ? ' · ' + salt + ' saltadas (agotado o sin esa foto)' : '') + (mal ? ' · <span class="mal">' + mal + ' fallaron</span>' : '') + (L.parar ? ' · parado' : '') + '. Están en 🧩 Piezas.';
   const v = document.getElementById('disLote'); if (v) v.remove(); const id = L.id; DIS.lote = null; disPintar(); if (ok){ disPiezasAbrir(id); if (L.carr && DIS.pz){ DIS.pz.sel = L.nuevas.slice(0, 10); disPiezasPintar(); } }
 }
@@ -1576,37 +1567,6 @@ function _disFechasProx(hoy){
     .sort((a, b) => a.d - b.d);
 }
 function _disFecha(k, hoy){ const L = _disFechasProx(hoy); return (k && L.find(x => x.k === k)) || L[0] || null; }
-function _disCalendarioHtml(){
-  const L = _disFechasProx().slice(0, 5), sel = (_disFecha(DIS.fechaSel) || {}).k;
-  return '<div class="dis-cal"><span class="ui-nota" style="margin-right:6px">📅 PRÓXIMAS FECHAS</span>' + L.map(x => '<button type="button" class="dis-cal-f' + (x.k === sel ? ' on' : '') + '" onclick="DIS.fechaSel=\'' + x.k + '\';disPintar()" title="' + disA('Creativos desde el ' + _disDM(x.crea) + ' · pauta desde el ' + _disDM(x.pauta) + ' · ' + x.limite) + '">'
-    + x.e + ' <b>' + esc(x.nombre) + '</b> <span class="ui-nota">en ' + x.dias + ' días' + (x.ya ? ' · 🔴 ya toca pautar' : ' · pauta desde ' + _disDM(x.pauta)) + '</span></button>').join('') + '</div>';
-}
-
-/* ══ 21-nov noche · Fase 4 · 🧬 ADN DEL CREATIVO: qué tienen en común los diseños que venden (datos reales de sus anuncios) ══ */
-const DIS_ADN_EJES = [
-  ['Plantilla', f => String(f.nombre || '').replace(/\s*\(copia.*\)\s*$/i, '')],
-  ['Público', f => (DIS_TEMP.find(x => x[0] === _disTemp(f)) || ['', '—'])[1]],
-  ['Precio', f => _disSinPrecio(f) ? 'Sin precio' : 'Con precio'],
-  ['Foto', f => (f.capas || []).some(c => /^fondo:/.test(c.src || '')) ? 'Con fondo de ambiente' : 'De estudio'],
-  ['Tipo', f => f.tipo === 'carrusel' ? 'Carrusel' : 'Una imagen'],
-  ['Formato', f => f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5']];
-function _disADN(filas){
-  return DIS_ADN_EJES.map(([eje, fn]) => { const g = {};
-    (filas || []).filter(f => f.estado !== 'archivada').forEach(f => { const k = fn(f), x = _disRes(f.id) || {}, o = g[k] || (g[k] = { k, n: 0, gasto: 0, compras: 0, ingreso: 0, gana: 0 });
-      o.n++; o.gasto += +x.gasto || 0; o.compras += +x.pedidos || 0; o.ingreso += +x.ingreso || 0; if (f.estado === 'ganadora') o.gana++; });
-    const L = Object.values(g).map(o => Object.assign(o, { roas: o.gasto > 0 ? o.ingreso / o.gasto : null })).sort((a, b) => (b.roas || -1) - (a.roas || -1) || b.n - a.n);
-    return { eje, L, mejor: L.find(o => o.gasto > 0 && o.compras > 0) || null }; });
-}
-function disADNAbrir(){
-  const v = document.getElementById('disADN'); if (v) v.remove(); const A = _disADN(DIS.filas), n = x => String(x).replace('.', ',');
-  const hay = A.some(a => a.L.some(o => o.gasto > 0));
-  const res = hay ? '<div class="dis-aviso">🧬 Lo que más vende: ' + A.filter(a => a.mejor).map(a => '<b>' + esc(a.eje) + ':</b> ' + esc(a.mejor.k) + ' (ROAS ' + n(a.mejor.roas.toFixed(1)) + ')').join(' · ') + '</div>'
-    : '<div class="dis-aviso">Todavía ningún diseño de esta sección tiene anuncio con gasto. El ADN se llena solo cuando Paola use los diseños (📤 Usar → anuncio).</div>';
-  const tabla = a => '<div class="ui-blo" style="margin-top:12px">' + esc(a.eje) + '</div><table class="tt" style="width:100%"><thead><tr><th>' + esc(a.eje) + '</th><th>Diseños</th><th>Gasto</th><th>Compras</th><th>ROAS</th><th>🏆</th></tr></thead><tbody>'
-    + a.L.map(o => '<tr><td>' + esc(o.k) + '</td><td>' + o.n + '</td><td>S/ ' + Math.round(o.gasto) + '</td><td>' + o.compras + '</td><td>' + (o.roas == null ? '—' : n(o.roas.toFixed(2))) + '</td><td>' + (o.gana || '') + '</td></tr>').join('') + '</tbody></table>';
-  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disADN"><div class="dis-caja" style="max-width:760px;max-height:88vh;overflow:auto"><div class="dis-cab"><div><div class="ui-pag">🧬 ADN de los diseños</div><div class="ui-nota">Qué tienen en común los que venden · datos reales de sus anuncios</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disADN\').remove()') + '</div>'
-    + res + A.map(tabla).join('') + '</div></div>');
-}
 
 /* ══ 21-nov noche · Fase 5 · 🎬 VIDEO desde un diseño (sin costo: se arma en el navegador).
    «Zoom suave» = una prenda 6 s · «Sus colores» = un color tras otro (2,4 s c/u). MP4 si el navegador puede; si no, WebM (Meta acepta los dos). ══ */
@@ -1663,28 +1623,46 @@ async function disVideoHacer(id, modo){
   } catch (e) { res.innerHTML = '<span class="mal">No pude hacer el video (' + esc(e.message) + ').</span>'; }
   DIS._vidCorre = 0;
 }
-async function _disABiblioteca(file, d, p){
-  try { await _mklSb('/rest/v1/rpc/mk_diseno_usado', { method: 'POST', body: JSON.stringify({ p_id: d.id }) }); } catch (_) {}
-  mkIrSub('contenido'); await mkcrAbrir(); mkcrSubirAbrir(null); MKCR.disenoId = d.id; mkcrArchivo([file]);
-  const pr = document.getElementById('mkcrProd'), nom = _disProdNom(p.titulo); if (pr && nom){ pr.value = nom; pr.dispatchEvent(new Event('input', { bubbles: true })); }
-  try { mkcrNombreArmar(); } catch (_) {}
-}
-async function disVideoABiblioteca(){ const v = DIS._vid; if (!v) return; const m = document.getElementById('disVid'); if (m) m.remove(); await _disABiblioteca(v.file, v.d, v.p); }
+async function disVideoABiblioteca(){ const v = DIS._vid; if (!v) return; const m = document.getElementById('disVid'); if (m) m.remove(); await _disABiblioteca([v.file], v.d, v.p); }
 
-/* ══ 21-nov noche · Fase 5 · 🖼 MARCO PARA CATÁLOGO: PNG 1:1 transparente con lo fijo del diseño (logo, formas, ventajas).
-   Se sube en Meta al anuncio de catálogo (Opciones de catálogo › Marco) y se pone encima de TODAS las prendas de la web. ══ */
-function _disCapasMarco(capas){
-  return (capas || []).filter(c => c.t === 'logo' || c.t === 'forma' || c.t === 'degradado' || (c.t === 'texto' && !/\{\{(?!ventaja\d)\w+\}\}/.test(c.txt || '')));
+/* ══ 21-nov noche (Pablo) · sección más simple: sin título, ⚙️ Configuración (Marca + Fondos) y ➕ Nuevo diseño a la derecha ══ */
+function _disBarraBtns(){ return DIS.puede ? '<button class="btn" onclick="disConfigAbrir()">⚙️ Configuración</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : ''; }
+function _disBarraDer(){ return '<div class="dis-barra-der">' + _disBarraBtns() + '</div>'; }
+function disConfigAbrir(){
+  const v = document.getElementById('disCfg'); if (v) v.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disCfg"><div class="dis-caja" style="max-width:420px"><div class="dis-cab"><span class="ui-pag">⚙️ Configuración</span><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disCfg\').remove()') + '</div>'
+    + '<div style="display:flex;flex-direction:column;gap:8px"><button class="btn" onclick="document.getElementById(\'disCfg\').remove();disMarcaAbrir()">🎨 Marca · colores, letras, ventajas y precio</button>'
+    + '<button class="btn" onclick="document.getElementById(\'disCfg\').remove();disFondosAbrir()">🏞️ Fondos · ambientes para poner detrás de la prenda</button></div></div></div>');
 }
-async function disMarcoCatalogo(id){
-  const f = (DIS.filas || []).find(x => x.id === id); if (!f) return;
-  DIS.msg = 'Haciendo el marco para catálogo…'; disPintar();
-  try {
-    const d = JSON.parse(JSON.stringify(f)); d.formato = '1x1'; d.ajustes = Object.assign({}, d.ajustes || {}, { fondo: 'transparente' }); d.capas = _disCapasMarco(d.capas);
-    if (!d.capas.length) throw new Error('este diseño no tiene partes fijas (logo, formas o ventajas)');
-    const p = _disProd(d.ajustes.prev_handle), cx = disCtx(p, await disInfo(p.handle), '', d.ajustes), blob = await disPng(d, cx);
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = ('marco-catalogo-DIS' + f.id).toLowerCase() + '.png'; document.body.appendChild(a); a.click(); a.remove();
-    DIS.msg = '🖼 Marco descargado (1080×1080, fondo transparente). En Meta: anuncio de catálogo › Opciones de catálogo › Marco › subir esta imagen.';
-  } catch (e) { DIS.msg = '<span class="mal">No pude hacer el marco (' + esc(e.message) + ').</span>'; }
-  disPintar();
+async function disVideoDesdeEditor(){
+  if (!DIS.ed) return; const g = (!DIS.ed.id || DIS.ed._sucio) ? await disGuardar(true) : DIS.ed; if (!g) return;
+  disVideoAbrir(g.id || DIS.ed.id);
+}
+/* ══ 21-nov noche (Pablo) · 📤 Usar = el diseño llega a 🎬 Biblioteca › Por usar YA CON SU NOMBRE DE ANUNCIO
+   (código / producto / hook / ángulo / contexto / T-C-F / CTA / talento), igual que los demás creativos, y se edita ahí.
+   Se llena solo con lo que el diseño sabe; el talento se toma del último creativo de ese producto. Si falta algo, queda el formulario abierto. ══ */
+function _disNomAuto(d){
+  const L = k => { try { return (mkNomLista(k) || []).map(String); } catch (_) { return []; } };
+  const en = (k, ...op) => { const l = L(k); for (const o of op){ const m = l.find(x => _mkNorm(x) === _mkNorm(o)); if (m) return m; } return ''; };
+  const m = d.mensaje, n = String(d.nombre || ''), txt = (d.capas || []).map(c => c.txt || '').join(' ');
+  return {
+    ang: /juntas/i.test(n) ? en('ang', 'Versatilidad', 'Versatil') : en('ang', { beneficios: 'Funcional', oferta: 'Promesa', colores: 'Versatilidad', preventa: 'New drop', resenas: 'Testimonio' }[m] || 'Aspiracional', 'Aspiracional'),
+    form: en('form', { resenas: 'Social Proof', oferta: 'Valor', preventa: 'New drop', colores: 'Versatil', beneficios: 'Educativo' }[m] || 'Demostracion', 'Demostracion'),
+    tc: en('tc', { frio: 'F', tibio: 'T', caliente: 'C' }[_disTemp(d)] || 'T', 'T'),
+    cta: /\{\{ventaja1\}\}|cuotas/i.test(txt) ? en('cta', 'CTAcuotas') : /\{\{ventaja[56]\}\}|env[ií]o gratis/i.test(txt) ? en('cta', 'CTAenvio') : /\{\{ventaja3\}\}|primera compra/i.test(txt) ? en('cta', 'CTAprimera') : en('cta', 'sinCTA') };
+}
+async function _disABiblioteca(files, d, p){
+  files = Array.isArray(files) ? files : [files];
+  try { await _mklSb('/rest/v1/rpc/mk_diseno_usado', { method: 'POST', body: JSON.stringify({ p_id: d.id }) }); const f = (DIS.filas || []).find(x => x.id === d.id); if (f) f.usos = (f.usos || 0) + 1; } catch (_) {}
+  const e = document.getElementById('disEd'); if (e) e.remove(); DIS.ed = null; try { _disTeclas(false); } catch (_) {} DIS.msg = '';
+  mkIrSub('contenido'); await mkcrAbrir(); mkcrSubirAbrir(null); MKCR.disenoId = d.id; mkcrArchivo(files);
+  const prod = _disProdNom(p && p.titulo), set = (id, v) => { const el = document.getElementById(id); if (el && v){ el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); } };
+  set('mkcrProd', prod);
+  const a = _disNomAuto(d); set('mkcrAng', a.ang); set('mkcrFor', a.form); set('mkcrCta', a.cta);
+  const tc = document.getElementById('mkcrTC'); if (tc && a.tc) tc.value = a.tc;
+  const prev = prod && (MKCR.filas || []).find(x => x.campos && x.campos.prod === prod && x.campos.tal); if (prev) set('mkcrTal', prev.campos.tal);
+  try { mkcrNombreArmar(); } catch (_) {}
+  const c = mkNomLeer('mkcr'), falta = [['prod', 'producto'], ['ang', 'ángulo'], ['form', 'contexto'], ['tc', 'T/C/F'], ['cta', 'CTA'], ['tal', 'talento']].filter(k => !c[k[0]]).map(k => k[1]);
+  if (MKCR.tipoArchivo !== 'video' && !falta.length) return mkcrGuardar();
+  const r = document.getElementById('mkcrRes'); if (r) r.innerHTML = '<span class="esp">Desde 🎨 Diseños. ' + (falta.length ? 'Completa: ' + esc(falta.join(', ')) + ' y guarda.' : 'Revisa el hook del video y guarda.') + '</span>';
 }
