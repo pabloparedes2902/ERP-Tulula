@@ -303,6 +303,7 @@ async function disCargar(){
   DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null; DIS.regla = cfg('regla_ganadora') || null;
   _disFondosCargar();
   try { DIS.res = await _mklSb('/rest/v1/rpc/mk_dis_resultados', { method: 'POST', body: '{}' }); } catch (_) { DIS.res = null; }
+  try { const L = await _mklSb('/rest/v1/mk_dis_critica?select=diseno_id,total,detalle,creado&order=creado.desc&limit=500'); DIS.crit = {}; (L || []).forEach(x => { if (!DIS.crit[x.diseno_id]) DIS.crit[x.diseno_id] = x; }); } catch (_) { DIS.crit = DIS.crit || {}; }
   _disAutoEstado();
   DIS.puede = pu === true;
 }
@@ -529,6 +530,7 @@ function _disTarjeta(f){
     : '<button class="btn" onclick="disEditar(' + f.id + ')">✏️ Editar</button><button class="btn" onclick="disLoteAbrir(' + f.id + ')" title="Varios productos y colores de una vez">🔁 Replicar</button>'
       + '<button class="btn" onclick="disUsar(' + f.id + ')" title="Hacer la imagen y llevarla a 🎬 Biblioteca › Por usar">📤 Usar</button>'
       + '<button class="btn" onclick="disLoteAbrir(' + f.id + ',1)" title="Elige 2 a 10 prendas o colores y sale como carrusel">🎠 Carrusel</button>'
+      + '<button class="btn" onclick="disCriticarFila(' + f.id + ')" title="Nota de la IA y qué mejorar (~US$0,01)">🧐 Revisar</button>'
       + '<button class="btn" onclick="disDuplicar(' + f.id + ')">⧉ Duplicar</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Se guarda en Archivados y se puede restaurar">🗄 Archivar</button>'
       + '<button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button>';
   const estSel = DIS.puede && est !== 'archivada' ? '<select class="dis-est" onchange="disEstado(' + f.id + ',this.value)">' + ['borrador', 'prueba', 'ganadora'].map(k => '<option value="' + k + '"' + (k === est ? ' selected' : '') + '>' + DIS_EST[k] + '</option>').join('') + '</select>'
@@ -537,6 +539,7 @@ function _disTarjeta(f){
     + '<div class="dis-tarj-pie"><div class="dis-fila"><div class="ui-tot dis-nom" title="' + disA(f.nombre) + '"><span class="dis-cod">#' + _disCod(f.id) + '</span> ' + esc(f.nombre) + '</div>' + estSel + '</div>'
     + '<div class="dis-fila" style="margin:2px 0">' + (DIS.puede && est !== 'archivada' ? '<select class="dis-est" title="Público al que apunta" onchange="disTempCambiar(' + f.id + ',this.value)">' + DIS_TEMP.map(o => '<option value="' + o[0] + '"' + (_disTemp(f) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>' : _disTempChip(_disTemp(f))) + '</div>'
     + _disResLinea(f)
+    + (_disCritDe(f.id) ? '<div class="dis-res"><span class="ui-nota" title="' + disA(((_disCritDe(f.id).detalle || {}).veredicto) || '') + '">🧐 Nota IA</span><span class="dis-etapa ' + (+_disCritDe(f.id).total >= 8 ? 'e3' : +_disCritDe(f.id).total >= 6 ? 'e1' : '') + '">' + String(_disCritDe(f.id).total).replace('.', ',') + '/10</span></div>' : '')
     + '<div class="ui-nota">' + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (npz ? ' · <a href="#" onclick="disPiezasAbrir(' + f.id + ');return false">' + npz + ' piezas</a>' : '') + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
     + '<div class="mkcr-acc dis-acc">' + acc + '</div></div></div>';
 }
@@ -621,6 +624,7 @@ function _disEdAbrir(){
     + '<select onchange="DIS.ed.mensaje=this.value;DIS.ed._sucio=true" title="Mensaje del anuncio">' + DIS_MSJ.map(o => '<option value="' + o[0] + '"' + (DIS.ed.mensaje === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
     + _disIb('deshacer', 'Deshacer (Ctrl+Z)', 'disDeshacer()') + _disIb('rehacer', 'Rehacer (Ctrl+Y)', 'disRehacer()')
     + '<span style="flex:1"></span><span class="ui-nota" id="disEdRes"></span>'
+    + '<button class="btn" onclick="disCriticarEditor()" title="La IA le pone nota y dice qué mejorar (~US$0,01)">🧐 Revisar</button>'
     + '<button class="btn" onclick="disIAMensajeAbrir()" title="Escribe lo que quieres cambiar y la IA lo hace (~US$0,01)">✨ Pedir un cambio</button>'
     + '<button class="btn" onclick="disVerMuchos()" title="El mismo diseño con 6 productos distintos">' + disIco('grilla', 14) + ' Ver en 6 productos</button>'
     + '<button class="btn' + (DIS.ed.tipo === 'carrusel' ? ' on' : '') + '" onclick="disLoteDesdeEditor(1)" title="Guarda y arma un carrusel con 2 a 10 prendas o colores">🎠 Carrusel</button><button class="btn" onclick="disLoteDesdeEditor()">🔁 Replicar</button><button class="btn" onclick="disUsar(null)">📤 Usar</button>'
@@ -1025,6 +1029,9 @@ async function disMarcaGuardar(aprobar){
     + '.dis-temp{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;margin-left:4px;vertical-align:middle}.dis-temp-frio{background:#1e3a5f;color:#9cc3e6}.dis-temp-tibio{background:#4a3a14;color:#e9c53b}.dis-temp-caliente{background:#5a2412;color:#f3a27a}'
     + '.dis-res{display:flex;justify-content:space-between;gap:6px;align-items:center;font-size:12px;margin:2px 0}.dis-etapa{font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--bg3,#2a3142);color:var(--txt2)}.dis-etapa.e1{background:#3b3a14;color:#e9c53b}.dis-etapa.e2{background:#173b2a;color:#7fd3a0}.dis-etapa.e3{background:#1d4d2e;color:#a6f0c0}'
     + '.dis-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;text-align:center;margin:6px 0}.dis-kpis b{display:block;font-size:22px;font-weight:600}'
+    + '.dis-crit-total{text-align:center;margin:4px 0 12px}.dis-crit-total b{font-size:22px;font-weight:600}.dis-crit-total span{color:var(--txt2);font-size:13px}.dis-crit-total div{font-size:13px;margin-top:4px}'
+    + '.dis-crit-eje{display:grid;grid-template-columns:150px 1fr 34px;gap:8px;align-items:center;font-size:13px;margin:6px 0}.dis-crit-eje b{text-align:right}.dis-barra-n{height:8px;border-radius:999px;background:var(--bg3,#2a3142);overflow:hidden}.dis-barra-n div{height:100%}'
+    + '.dis-crit-mej{margin:0;padding-left:18px;font-size:13px;line-height:1.5}'
     + '#disEdRes{max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
     + '.dis-cod{font-size:11px;font-weight:600;color:var(--mu,#8a93a6);letter-spacing:.5px;margin-right:2px}.dis-tarj[draggable=true]{cursor:grab}.dis-mueve{opacity:.4}'
     + '.dis-ia{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;padding:14px;font-size:28px}.dis-ia b{font-size:14px}'
@@ -1182,7 +1189,7 @@ function disFondosAbrir(){
   const v = document.getElementById('disFon'); if (v) v.remove();
   document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disFon" style="z-index:10050"><div class="dis-caja" style="max-width:1000px"><div class="dis-cab"><div><div class="ui-pag">🏞️ Fondos</div><div class="ui-nota">Lugares para poner detrás de la prenda recortada: calles de Lima, oficinas, texturas.</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disFon\').remove()') + '</div>'
     + (DIS.puede ? '<div class="dis-barra"><div class="dis-barra-izq"><input id="disFonNom" placeholder="Nombre (ej. Óvalo Gutiérrez de noche)" style="width:260px"><select id="disFonOri">' + DIS_ORIGEN.map(o => '<option value="' + o[0] + '">' + o[1] + '</option>').join('') + '</select>'
-      + '<label class="btn on">' + disIco('subir', 14) + ' Subir fondo<input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="disFondoNuevo(this.files[0])"></label></div><span class="ui-nota" id="disFonRes"></span></div>' : '')
+      + '<label class="btn on">' + disIco('subir', 14) + ' Subir fondo (se guarda solo)<input type="file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="disFondoNuevo(this.files[0])"></label></div><span class="ui-nota" id="disFonRes"></span></div>' : '')
     + '<div class="ui-nota" style="margin:4px 0 10px">Solo fotos propias o libres de uso (unsplash.com, pexels.com: busca «Lima», «Miraflores», «office»). Las de Google casi siempre tienen dueño y Meta puede bajar el anuncio.</div>'
     + '<div class="dis-pz-grilla" id="disFonGrilla"><div class="ui-nota">Cargando…</div></div></div></div>');
   _disFondosCargar().then(disFondosPintar);
@@ -1283,6 +1290,40 @@ async function disReglaGuardar(def){
   try { const r = await _mklSb('/rest/v1/rpc/mk_dis_config_guardar', { method: 'POST', body: JSON.stringify({ p_clave: 'regla_ganadora', p_valor: v }) }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
     DIS.regla = v; disReglaAbrir(); const r2 = document.getElementById('disReglaRes'); if (r2) r2.textContent = '✓ Regla guardada'; _disAutoEstado(); disPintar();
   } catch (e) { if (res) res.innerHTML = '<span class="mal">' + esc(e.message) + '</span>'; }
+}
+/* ══ 21-nov · CRÍTICO CON IA (Pablo aprobó ~US$0,01 por revisión): nota 1-10 en legibilidad, jerarquía, marca y público + 3 mejoras.
+   «Aprende»: le mandamos las 🏆 ganadoras reales (con su nota y ROAS) como referencia de lo que le funciona a Tulula. ══ */
+const DIS_CRIT_EJES = [['legibilidad', 'Se lee'], ['jerarquia', 'Jerarquía'], ['marca', 'Marca de lujo'], ['publico', 'Encaja con el público']];
+function _disCritDe(id){ return (DIS.crit || {})[id] || null; }
+function _disAprendido(){
+  return (DIS.filas || []).filter(f => f.estado === 'ganadora').map(f => { const c = _disCritDe(f.id), r = _disRes(f.id); return { nombre: f.nombre, temp: _disTemp(f), nota: c ? +c.total : null, roas: r ? r.roas : null }; });
+}
+async function disCriticar(d, cx){
+  if (!d || !cx || DIS._critCorre) return; DIS._critCorre = 1;
+  const v = document.getElementById('disCrit'); if (v) v.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disCrit" style="z-index:10050"><div class="dis-caja" style="max-width:560px"><div class="dis-cab"><div><div class="ui-pag">🧐 Revisión con IA · «' + esc(d.nombre || '') + '»</div><div class="ui-nota">' + _disTempChip(_disTemp(d)) + ' · ~US$0,01</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disCrit\').remove()') + '</div><div id="disCritCuerpo" class="ui-nota">Mirando el diseño… (5-10 s)</div></div></div>');
+  const cu = () => document.getElementById('disCritCuerpo');
+  try {
+    const blob = await disPng(Object.assign({}, d), cx), img = await _disImgB64(blob, 900);
+    const r = await _disIA({ modo: 'critica', imagen: img, temp: _disTemp(d), nombre: d.nombre, formato: d.formato, diseno_id: d.id || null, aprendido: _disAprendido() }), k = r.critica || {};
+    if (d.id){ DIS.crit = DIS.crit || {}; DIS.crit[d.id] = { diseno_id: d.id, total: k.total, detalle: k }; }
+    const n = v => String(v == null ? '—' : v).replace('.', ','), barra = x => { const p = Math.max(0, Math.min(10, +x || 0)) * 10; return '<div class="dis-barra-n"><div style="width:' + p + '%;background:' + (p >= 80 ? '#2f9e62' : p >= 60 ? '#c99a2e' : '#c4452c') + '"></div></div>'; };
+    if (!cu()) return;
+    cu().innerHTML = '<div class="dis-crit-total"><b>' + n(k.total) + '</b><span>/10</span><div>' + esc(k.veredicto || '') + '</div></div>'
+      + DIS_CRIT_EJES.map(e => '<div class="dis-crit-eje"><span>' + e[1] + '</span>' + barra(k[e[0]]) + '<b>' + n(k[e[0]]) + '</b></div>').join('')
+      + '<div class="ui-tot" style="margin:12px 0 4px">Qué cambiar</div><ol class="dis-crit-mej">' + (k.mejoras || []).map(m => '<li>' + esc(m) + '</li>').join('') + '</ol>'
+      + (DIS.ed && DIS.ed === d && k.instruccion ? '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn on" onclick="disCritAplicar()">✨ Aplicar estas mejoras</button></div>' : '')
+      + '<div class="ui-nota" style="margin-top:8px">US$' + n(r.usd) + (_disAprendido().length ? ' · comparó con ' + _disAprendido().length + ' ganadora(s) de Tulula' : ' · aún no hay ganadoras para comparar: aprende cuando las haya') + '</div>';
+    DIS._critInstr = k.instruccion || '';
+    if (!DIS.ed) disPintar();
+  } catch (e) { if (cu()) cu().innerHTML = '<span class="mal">No se pudo (' + esc(e.message) + ').</span>'; }
+  finally { DIS._critCorre = 0; }
+}
+function disCritAplicar(){ const v = document.getElementById('disCrit'); if (v) v.remove(); disIAMensajeAbrir(); setTimeout(() => { const t = document.getElementById('disIAtxt'); if (t){ t.value = DIS._critInstr || ''; disIAMensaje(); } }, 80); }
+function disCriticarEditor(){ if (DIS.ed && DIS._cx) disCriticar(DIS.ed, DIS._cx); }
+async function disCriticarFila(id){
+  const f = (DIS.filas || []).find(x => x.id === id); if (!f) return; const aj = f.ajustes || {}, p = _disProd(aj.prev_handle); if (!p) return;
+  disCriticar(f, disCtx(p, await disInfo(p.handle), aj.prev_color, aj));
 }
 /* lote: combinaciones producto × color × formato × foto (función pura: la prueba la usa) */
 function _disLoteCombos(sel, formatos, fotos){
