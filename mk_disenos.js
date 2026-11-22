@@ -1601,8 +1601,8 @@ function _disFecha(k, hoy){ const L = _disFechasProx(hoy); return (k && L.find(x
 function disVideoAbrir(id){
   const f = (DIS.filas || []).find(x => x.id === id); if (!f) return; const v = document.getElementById('disVid'); if (v) v.remove();
   document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disVid"><div class="dis-caja" style="max-width:520px"><div class="dis-cab"><div><div class="ui-pag">🎬 Video · «' + esc(f.nombre) + '»</div><div class="ui-nota">Sin costo · no cambies de pestaña mientras se graba</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disVid\').remove()') + '</div>'
-    + '<div class="dis-props"><label class="dis-prop"><span class="ui-nota">Formato</span><select id="disVidForm"><option value="9x16"' + (f.formato === '9x16' ? ' selected' : '') + '>Historias y Reels 9:16</option><option value="4x5"' + (f.formato !== '9x16' ? ' selected' : '') + '>Feed 4:5</option></select></label></div>'
-    + '<div style="display:flex;gap:8px;margin:10px 0"><button class="btn on" onclick="disVideoHacer(' + id + ',\'zoom\')">🔍 Zoom suave (6 s)</button><button class="btn" onclick="disVideoHacer(' + id + ',\'colores\')">🎨 Sus colores, uno tras otro</button></div>'
+    + '<div class="dis-props"><label class="dis-prop"><span class="ui-nota">Formato</span><select id="disVidForm"><option value="9x16" selected>Historias y Reels 9:16</option><option value="4x5">Feed 4:5</option></select></label></div>'
+    + '<div style="display:flex;gap:8px;margin:10px 0"><button class="btn on" onclick="disVideoHacer(' + id + ',\'fotos\')" title="Las fotos del color pasan una tras otra con el mismo diseño encima">🎞 Fotos en movimiento</button><button class="btn" onclick="disVideoHacer(' + id + ',\'colores\')">🎨 Sus colores</button><button class="btn" onclick="disVideoHacer(' + id + ',\'zoom\')">🔍 Zoom suave</button></div>'
     + '<div id="disVidRes" class="ui-nota"></div></div></div>');
 }
 async function _disMuxLib(){
@@ -1610,14 +1610,19 @@ async function _disMuxLib(){
   await new Promise((ok, mal) => { const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js'; sc.onload = ok; sc.onerror = () => mal(new Error('no cargó el armador de video')); document.head.appendChild(sc); });
 }
 function _disVidMime(){ const L = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']; return L.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || 'video/webm'; }
-function _disVidPlan(n, modo){ const seg = modo === 'colores' ? 2.4 : 6; return { seg, total: seg * Math.max(1, n), fade: 0.4 }; }
+function _disVidPlan(n, modo){ const seg = modo === 'fotos' ? 1.6 : modo === 'colores' ? 2.4 : 6; return { seg, total: seg * Math.max(1, n), fade: modo === 'fotos' ? 0.3 : 0.4 }; }
+/* 22-nov · Fase C: cuántas fotos tiene el color (desde su portada hasta la portada del color siguiente), máx. 5 */
+function _disFotosDelColor(cx){ const otras = (cx.portadas || []).filter(o => o.c !== cx.color && o.src).map(o => cx.fotos.findIndex(u => _disArch(u) === _disArch(o.src))).filter(i => i > cx.i0);
+  return Math.max(1, Math.min(5, (otras.length ? Math.min.apply(null, otras) : cx.fotos.length) - cx.i0)); }
 async function disVideoHacer(id, modo){
   const f = (DIS.filas || []).find(x => x.id === id), res = document.getElementById('disVidRes'); if (!f || !res || DIS._vidCorre) return; DIS._vidCorre = 1;
   try {
     const d = JSON.parse(JSON.stringify(f)); d.ajustes = d.ajustes || {}; d.formato = (document.getElementById('disVidForm') || {}).value || d.formato || '4x5';
     const p = _disProd(d.ajustes.prev_handle), inf = await disInfo(p.handle), cx0 = disCtx(p, inf, d.ajustes.prev_color, d.ajustes);
     const cols = modo === 'colores' ? (cx0.colores.length > 1 ? cx0.colores.slice(0, 5) : [cx0.color]) : [cx0.color], imgs = [];
-    for (let i = 0; i < cols.length; i++){ res.textContent = 'Haciendo la imagen ' + (i + 1) + ' de ' + cols.length + '…'; imgs.push(await createImageBitmap(await disPng(d, disCtx(p, inf, cols[i], d.ajustes)))); }
+    if (modo === 'fotos'){ const n = _disFotosDelColor(cx0); if (n < 2) throw new Error('este color tiene una sola foto: usa «Zoom suave»');
+      for (let k = 0; k < n; k++){ res.textContent = 'Haciendo la foto ' + (k + 1) + ' de ' + n + '…'; imgs.push(await createImageBitmap(await disPng(Object.assign({}, d, { capas: _disCapasFoto(d.capas, k) }), cx0))); } }
+    else for (let i = 0; i < cols.length; i++){ res.textContent = 'Haciendo la imagen ' + (i + 1) + ' de ' + cols.length + '…'; imgs.push(await createImageBitmap(await disPng(d, disCtx(p, inf, cols[i], d.ajustes)))); }
     const [W, H] = DIS_TAM[d.formato] || DIS_TAM['4x5'], cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
     const pl = _disVidPlan(imgs.length, modo), FPS = 30;
     const pinta = (im, z, a) => { g.globalAlpha = a; g.drawImage(im, (W - W * z) / 2, (H - H * z) / 2, W * z, H * z); g.globalAlpha = 1; };
@@ -1643,7 +1648,7 @@ async function disVideoHacer(id, modo){
     }
     if (blob.size < 20000) throw new Error('el video salió vacío');
     const ext = /mp4/.test(mime) ? 'mp4' : 'webm', url = URL.createObjectURL(blob);
-    const nom = ('DIS' + f.id + '-' + p.handle + '-video-' + d.formato).replace(/[^a-z0-9-]+/gi, '-').toLowerCase() + '.' + ext;
+    const nom = ('DIS' + f.id + '-' + p.handle + '-' + (modo === 'fotos' ? 'fotos' : 'video') + '-' + d.formato).replace(/[^a-z0-9-]+/gi, '-').toLowerCase() + '.' + ext;
     DIS._vid = { file: new File([blob], nom, { type: blob.type }), d, p };
     res.innerHTML = '<video src="' + url + '" controls autoplay loop muted playsinline style="width:100%;max-height:52vh;border-radius:8px;background:#000"></video>'
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><a class="btn" href="' + url + '" download="' + nom + '">⬇ Descargar</a><button class="btn on" onclick="disVideoABiblioteca()">📤 Mandar a Biblioteca</button></div>'

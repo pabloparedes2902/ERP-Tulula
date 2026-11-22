@@ -3079,14 +3079,22 @@ function _mkSnapClave(){ return 'mkSnap:' + (mkPers ? ('p' + (document.getElemen
 function _mkSnapGuardar(k){
   try { Object.keys(localStorage).filter(x => x.indexOf('mkSnap:') === 0 && x !== k).map(x => { let t = 0; try { t = (JSON.parse(localStorage.getItem(x) || '{}') || {}).ts || 0; } catch (_) {} return { x: x, t: t }; })
     .sort((a, b) => b.t - a.t).slice(1).forEach(o => localStorage.removeItem(o.x)); } catch (_) {}
-  try {
-    localStorage.setItem(k, JSON.stringify({ v: MK_SNAP_V, ts: Date.now(),
+  try {   /* 22-nov · la foto (~1,3 MB) va a IndexedDB: en el almacén compartido del ERP no entraba (lo llenaba solo) */
+    const o = JSON.parse(JSON.stringify({ v: MK_SNAP_V, ts: Date.now(),
       MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP, MKLV: MKLV, MKLVP: MKLVP, MKDET: MKDET, MK_AP: MK_AP, MK_APN: MK_APN }));
+    MKSNAP_MEM[k] = o; const viejas = Object.keys(MKSNAP_MEM).filter(x => x !== k).sort((a, b) => (MKSNAP_MEM[b].ts || 0) - (MKSNAP_MEM[a].ts || 0)).slice(1);
+    viejas.forEach(x => { delete MKSNAP_MEM[x]; });
+    try { localStorage.removeItem(k); } catch (_) {}
+    _mkSnapIdb().then(db => { const tx = db.transaction('snap', 'readwrite'), st = tx.objectStore('snap'); st.put(o, k); viejas.forEach(x => st.delete(x)); tx.oncomplete = () => db.close(); }).catch(() => {});
   } catch (e) { /* sin espacio o sin permiso: no pasa nada */ }
 }
+const MKSNAP_MEM = {};
+function _mkSnapIdb(){ return new Promise((ok, mal) => { try { const r = indexedDB.open('tulula_mk', 1); r.onupgradeneeded = () => r.result.createObjectStore('snap'); r.onsuccess = () => ok(r.result); r.onerror = () => mal(r.error); } catch (e) { mal(e); } }); }
+const _mkSnapListo = _mkSnapIdb().then(db => new Promise(ok => { const st = db.transaction('snap').objectStore('snap'), rk = st.getAllKeys(), rv = st.getAll();
+  rv.onsuccess = () => { (rk.result || []).forEach((k, i) => { MKSNAP_MEM[k] = rv.result[i]; }); db.close(); ok(); }; rv.onerror = () => { db.close(); ok(); }; })).catch(() => {});
 function _mkSnapUsar(k){
   try {
-    const o = JSON.parse(localStorage.getItem(k) || 'null');
+    const o = MKSNAP_MEM[k] || JSON.parse(localStorage.getItem(k) || 'null');
     if (!o || o.v !== MK_SNAP_V || !o.MK || !Array.isArray(o.MK.filas)) return 0;
     MK = o.MK; MKV = o.MKV; MKVP = o.MKVP; MKC = o.MKC || null; MKCP = o.MKCP || null; MKLV = o.MKLV || null; MKLVP = o.MKLVP || null; MKE = o.MKE; MKEP = o.MKEP; MKTXT = o.MKTXT || {};
     MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD; MKDET = o.MKDET || null; if (o.MK_AP) MK_AP = o.MK_AP; if (o.MK_APN) MK_APN = o.MK_APN;
@@ -3206,6 +3214,7 @@ async function mkCargar(refrescarMeta){
   }
   try { const _dd = Math.round((new Date(_mkH + 'T12:00:00') - new Date(_mkD + 'T12:00:00')) / 864e5) + 1; if (_dd > 0) mkPeriodoDias = _dd; } catch (_) {}
   const _snapK = _mkSnapClave();
+  try { await Promise.race([_mkSnapListo, new Promise(r => setTimeout(r, 400))]); } catch (_) {}   /* foto en IndexedDB: ~50 ms */
   const _snapTs = _mkSnapUsar(_snapK);
   if (_snapTs && !refrescarMeta){
     sub.style.display = ''; sub.style.color = 'var(--txt2)';
@@ -5268,6 +5277,7 @@ async function mkNuevoCrear(){
   const x = MKN.sel || {};
   const wa = x.destino === 'WA';
   const v = { campana: x.campana || '', conjunto: x.nombre || '', ad_ref: x.ad_ref || '', adset_id: x.id || '', destino: x.destino || '', video_url: MKN.tipo === 'estatico' ? '' : MKN.video, tipo: MKN.tipo || 'video', image_url: MKN.tipo === 'estatico' ? MKN.imagen : '', imagenes: MKN.tipo === 'carrusel' ? (MKN.imagenes || []) : [],
+              image_alt: MKN.tipo === 'estatico' && MKN.alt ? MKN.alt.url : '', image_alt_formato: MKN.tipo === 'estatico' && MKN.alt ? MKN.alt.formato : '',
               creativo_id: MKN.creativo ? MKN.creativo.id : '', meta_video_id: (MKN.creativo && MKN.creativo.meta_video_id) || '', meta_image_hash: (MKN.creativo && MKN.creativo.meta_image_hash) || '',
               campos: _mknCampos(), texto: g('mknTexto'), titulo: g('mknTit'), desc1: g('mknD1'), desc2: g('mknD2'),
               producto_msg: wa ? g('mknMsg') : '', msg1: wa ? g('mknM1') : '', msg2: wa ? g('mknM2') : '', msg3: wa ? g('mknM3') : '',
@@ -5367,13 +5377,15 @@ function mkNuevoLlenarCreativos(){
 function mkNuevoCreativo(){
   const id = Number(document.getElementById('mknCreativo').value);
   const f = (MKN.creativos || []).find(x => x.id === id) || null;
-  MKN.creativo = f; MKN.video = null; MKN.imagen = null; MKN.imagenes = []; MKN.pc = null;
+  MKN.creativo = f; MKN.video = null; MKN.imagen = null; MKN.imagenes = []; MKN.pc = null; MKN.alt = null;
   const pv = document.getElementById('mknPrevia'), st = document.getElementById('mknVideoEst');
   if (!f){ pv.innerHTML = ''; st.innerHTML = ''; return; }
   if (f.tipo === 'video' || f.tipo === 'animacion') MKN.video = f.url; else if (f.tipo === 'carrusel') MKN.imagenes = (f.archivos || []).map(a => a.url); else MKN.imagen = f.url;
+  MKN.alt = _mknAlt(f);   /* 22-nov · Fase D: el diseño trae su otra versión (Feed 4:5 o Historias 9:16) */
   pv.innerHTML = f.tipo === 'carrusel' ? '<div class="mkcr-carr">' + MKN.imagenes.map((u, i) => '<div class="mkcr-c"><img src="' + esc(u) + '"><span>' + (i + 1) + '</span></div>').join('') + '</div>'
     : (f.tipo === 'video' || f.tipo === 'animacion') ? '<video src="' + esc(f.url) + '" controls playsinline muted preload="metadata"' + (f.miniatura ? ' poster="' + esc(f.miniatura) + '"' : '') + '></video>' : '<img src="' + esc(f.url) + '">';
-  st.innerHTML = '<span class="esp">' + (f.meta_video_id || f.meta_image_hash ? '✓ Ya está en Meta: no se vuelve a subir (más rápido).' : 'Se sube a Meta al crear el anuncio.') + '</span>';
+  st.innerHTML = '<span class="esp">' + (f.meta_video_id || f.meta_image_hash ? '✓ Ya está en Meta: no se vuelve a subir (más rápido).' : 'Se sube a Meta al crear el anuncio.') + '</span>'
+    + (MKN.alt ? '<div class="esp">📐 Lleva sus 2 versiones: Feed 4:5 y Historias/Reels 9:16 — Meta usa cada una en su lugar.</div>' : '');
   /* el nombre sale de la nomenclatura del creativo */
   const c = Object.assign({}, f.campos || {}); if (!c.prod) { const p = mkNomParse(f.nombre); if (p) Object.assign(c, p); }
   mkNomEscribir('mkn', c);
@@ -7121,11 +7133,14 @@ function _mknExtrasDatos(wa){
   }
   return o;
 }
+function _mknAlt(f){ const c = (f && f.campos) || {}; if (!f || f.tipo !== 'estatico') return null;
+  if (c.v916) return { url: c.v916, formato: '9x16' }; if (c.v45) return { url: c.v45, formato: '4x5' }; return null; }
 function _mknDatos(){
   const g = id => String((document.getElementById(id) || {}).value || '').trim();
   const x = MKN.sel || {}, wa = x.destino === 'WA';
   return { campana: x.campana || '', conjunto: x.nombre || '', destino: x.destino || '', tipo: MKN.tipo || 'video',
            video_url: MKN.tipo === 'estatico' ? '' : MKN.video, image_url: MKN.tipo === 'estatico' ? MKN.imagen : '', imagenes: MKN.tipo === 'carrusel' ? (MKN.imagenes || []) : [],
+           image_alt: MKN.tipo === 'estatico' && MKN.alt ? MKN.alt.url : '', image_alt_formato: MKN.tipo === 'estatico' && MKN.alt ? MKN.alt.formato : '',
            campos: _mknCampos(), texto: g('mknTexto'), titulo: g('mknTit'), desc1: g('mknD1'), desc2: g('mknD2'),
            producto_msg: wa ? g('mknMsg') : '', msg1: wa ? g('mknM1') : '', msg2: wa ? g('mknM2') : '', msg3: wa ? g('mknM3') : '',
            botones: wa ? Math.min(MKN.botones || 2, _mknBotMax()) : 0, link: wa ? '' : g('mknLink'), ..._mknExtrasDatos(wa) };
@@ -7187,7 +7202,7 @@ async function _mknEnviarUno(v, nombre, x, alProgreso){
     const r = await fetch(URL_ANUNCIO_CREAR, { method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ ad_ref: x.ad_ref || '', adset_id: x.ad_ref ? '' : (x.id || ''), campana: x.campana || '', conjunto: x.nombre || '', nombre: nombre, video_url: v.video_url, texto: v.texto,
                              titulo: v.titulo, desc1: v.desc1, desc2: v.desc2, producto_msg: v.producto_msg, msg1: v.msg1, msg2: v.msg2, msg3: v.msg3, botones: v.botones, link: v.link, quien: _mkQuien(),
-                             tipo: v.tipo, image_url: v.image_url, imagenes: v.imagenes, creativo_id: v.creativo_id, meta_video_id: v.meta_video_id, meta_image_hash: v.meta_image_hash,
+                             tipo: v.tipo, image_url: v.image_url, image_alt: v.image_alt, image_alt_formato: v.image_alt_formato, imagenes: v.imagenes, creativo_id: v.creativo_id, meta_video_id: v.meta_video_id, meta_image_hash: v.meta_image_hash,
                              textos: v.textos, titulos: v.titulos, descs: v.descs, catalogo: v.catalogo, product_set_id: v.product_set_id, pe_carrusel: v.pe_carrusel }) });   /* 22-oct */
     d = await r.json(); if (Array.isArray(d)) d = d[0] || {};
   } catch (e) { d = { ok: false, motivo: 'No hubo respuesta del servidor. No se creó nada.' }; }
