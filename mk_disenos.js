@@ -331,6 +331,7 @@ const DIS_BASE = [
 
 /* ── datos ── */
 async function disCargar(){
+  _mklSb('/rest/v1/rpc/mk_dis_rank', { method: 'POST', body: '{}' }).then(r => { if (Array.isArray(r)){ DIS.rank = r; DIS._rk = {}; const t = document.getElementById('disEdTira'); if (t) t.innerHTML = _disTiraHtml(); } }).catch(() => {});   /* 22-nov · Fase B: margen y stock */
   const pRes = _mklSb('/rest/v1/rpc/mk_dis_resultados', { method: 'POST', body: '{}' }).catch(() => null), pCrit = _mklSb('/rest/v1/mk_dis_critica?select=diseno_id,total,detalle,creado&order=creado.desc&limit=500').catch(() => null);
   const [f, p, m, pu, pz, sf, jn] = await Promise.all([
     _mklSb('/rest/v1/mk_disenos?select=*&order=creado.desc'),
@@ -566,10 +567,11 @@ function disPintar(){
   const b = (k, t) => '<button class="btn' + (DIS.ver === k ? ' on' : '') + '" onclick="DIS.ver=\'' + k + '\';disPintar()">' + t + ' <span class="dis-cnt">' + n[k] + '</span></button>';
   const sel = (id, v, ops, ph) => '<select onchange="' + id + '=this.value;disPintar()"><option value="">' + ph + '</option>' + ops.map(o => '<option value="' + o[0] + '"' + (v === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
   const m = DIS.marca || DIS_MARCA_DEF;
-  let h = '<div class="dis-barra"><div class="dis-barra-izq">' + b('plantillas', '✨ Plantillas') + b('activos', 'Mis diseños') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + '</div>'
+  let h = '<div class="dis-barra"><div class="dis-barra-izq">' + b('plantillas', '✨ Plantillas') + b('activos', 'Mis diseños') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + (DIS.ver === 'plantillas' ? '' : _disMetaChip()) + '</div>'
     + (DIS.ver === 'plantillas' ? _disBarraDer('') + '</div>' : '<div class="dis-barra-der">' + sel('DIS.fForm', DIS.fForm, [['4x5', 'Feed 4:5'], ['9x16', 'Historias 9:16']], 'Todos los formatos') + sel('DIS.fMsj', DIS.fMsj, DIS_MSJ, 'Todos los mensajes')
     + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px">' + _disBarraBtns() + '</div></div>');
   if (!m.aprobada && DIS.puede) h += '<div class="dis-aviso">🎨 Marca lista con el azul, naranja y crema de Tulula. Revísala en <b>⚙️ Configuración › 🎨 Marca</b> y apruébala.</div>';
+  if (DIS.ver !== 'plantillas' && DIS.puede) h += _disAvisoGanadoras();
   if (DIS.msg) h += '<div class="dis-aviso">' + DIS.msg + ' <button class="dis-ib" onclick="DIS.msg=\'\';disPintar()" title="Cerrar">' + disIco('cerrar', 14) + '</button></div>';
   if (DIS.ver === 'plantillas'){ el.innerHTML = h + _disPlantillasHtml(); if (DIS.puede) _disArrastrable(document.getElementById('disNuevoGrilla'), ks => _disGuardarOrdenPlant(ks)); disNuevoPintar(); return; }
   if (!vis.length) h += '<div class="mkl-vacio">' + (fs.length ? 'Nada para mostrar con estos filtros.' : 'Todavía no hay diseños. Crea el primero con ➕ Nuevo diseño.') + '</div>';
@@ -585,6 +587,7 @@ function _disTarjeta(f){
     ? '<button class="btn" onclick="disEstado(' + f.id + ',\'borrador\')">↩️ Restaurar</button><button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button>'
     : '<button class="btn" onclick="disUsar(' + f.id + ')" title="Hace la imagen (y su versión Historias) y la deja en 🎬 Biblioteca › Por usar con su nombre de anuncio">🚀 Anunciar</button>'
       + '<button class="btn" onclick="disCriticarFila(' + f.id + ')" title="Nota de la IA y qué mejorar (~US$0,01)">🧐 Revisar</button>'
+      + (_disEsGanadora(f) ? '<button class="btn on dis-var-btn" onclick="disVariantesAbrir(' + f.id + ')" title="Multiplica la ganadora: otro color, otra prenda, otro gancho u otro estilo">🧬 Variantes' + (_disVarDe(f) ? ' (' + _disVarDe(f) + ')' : '') + '</button>' : '')
       + '<div class="dis-acc4"><button class="btn" onclick="disEditar(' + f.id + ')">✏️ Editar</button><button class="btn" onclick="disDuplicar(' + f.id + ')">⧉ Duplicar</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Se guarda en Archivados y se puede restaurar">🗄 Archivar</button><button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button></div>';
   const estSel = DIS.puede && est !== 'archivada' ? '<select class="dis-est" onchange="disEstado(' + f.id + ',this.value)">' + ['borrador', 'prueba', 'ganadora'].map(k => '<option value="' + k + '"' + (k === est ? ' selected' : '') + '>' + DIS_EST[k] + '</option>').join('') + '</select>'
     : '<span class="ui-chip ' + chip + '">' + DIS_EST[est] + '</span>';
@@ -594,7 +597,7 @@ function _disTarjeta(f){
     + _disResLinea(f)
     + (_disGemelo(f) ? '<div class="ui-nota" style="color:#e9c53b" title="Meta trata anuncios casi iguales como uno solo: cambia la composición, no solo el color">⚠ ' + Math.round(_disGemelo(f).p * 100) + '% igual a #' + _disCod(_disGemelo(f).f.id) + '</div>' : '')
     + (_disCritDe(f.id) ? '<div class="dis-res"><span class="ui-nota" title="' + disA(((_disCritDe(f.id).detalle || {}).veredicto) || '') + '">🧐 Nota IA</span><span class="dis-etapa ' + (+_disCritDe(f.id).total >= 8 ? 'e3' : +_disCritDe(f.id).total >= 6 ? 'e1' : '') + '">' + String(_disCritDe(f.id).total).replace('.', ',') + '/10</span></div>' : '')
-    + '<div class="ui-nota">' + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
+    + '<div class="ui-nota">' + ((f.ajustes || {}).var_de || f.padre_id ? '🧬 de #' + _disCod((f.ajustes || {}).var_de || f.padre_id) + ' · ' : '') + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
     + '<div class="mkcr-acc dis-acc">' + acc + '</div></div></div>';
 }
 async function _disMini(f){
@@ -624,7 +627,7 @@ function _disPlantillasHtml(){
   let h = '<div class="dis-barra"><div class="dis-barra-izq"><span class="ui-nota">Elige una plantilla para empezar · todo se cambia después</span></div><div class="dis-barra-der">'
     + '<div class="dis-seg">' + [['', 'Todos'], ...DIS_TEMP].map(o => '<button type="button" class="' + ((DIS.fTemp || '') === o[0] ? 'on' : '') + '" title="' + disA(DIS_TEMP_NOTA[o[0]] || 'Todas las plantillas') + '" onclick="DIS.fTemp=\'' + o[0] + '\';disPintar()">' + o[1] + '</button>').join('') + '</div>'
     + '<div class="dis-seg">' + seg('estatico', '🖼 Una imagen') + seg('carrusel', '🎠 Carrusel') + '</div>'
-    + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="4x5">Feed 4:5</option><option value="9x16">Historias 9:16</option></select></div></div>'
+    + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="9x16">Historias 9:16</option><option value="4x5">Feed 4:5</option></select></div></div>'
     + (DIS.tipoNuevo === 'carrusel' ? '<div class="dis-aviso">🎠 Carrusel: eliges la plantilla, la guardas y luego marcas 2 a 10 prendas o colores. Cada una sale como una tarjeta del carrusel, en el orden que las elijas, y va junta a 🎬 Biblioteca › Por usar.</div>' : '')
     + '<div class="dis-grilla" id="disNuevoGrilla">';
   h += '<div class="dis-tarj dis-elegir" onclick="disNuevo(-1)"><div class="dis-mini dis-blanco">＋ En blanco</div><div class="dis-tarj-pie"><div class="ui-tot">En blanco</div><div class="ui-nota">Arma el tuyo desde cero</div></div></div>';
@@ -633,11 +636,11 @@ function _disPlantillasHtml(){
   return h + '</div>';
 }
 function disNuevoPintar(){
-  const p = _disProdLindo(), form = (document.getElementById('disNuevoForm') || {}).value || '4x5'; if (!p) return;
+  const p = _disProdLindo(), form = (document.getElementById('disNuevoForm') || {}).value || '9x16'; if (!p) return;
   disInfo(p.handle).then(inf => DIS_BASE.forEach((b, i) => { const el = document.getElementById('disBase' + i); if (el) el.innerHTML = disHtml({ nombre: b.nombre, mensaje: b.mensaje, formato: form, capas: b.capas, ajustes: b.ajustes || {} }, disCtx(p, inf, '', { fecha: DIS.fechaSel }), 248 / 1080, { ancho: 500 }); }));
 }
 function disNuevo(i){
-  const b = DIS_BASE[i], form = (document.getElementById('disNuevoForm') || {}).value || '4x5';
+  const b = DIS_BASE[i], form = (document.getElementById('disNuevoForm') || {}).value || '9x16';
   const n = document.getElementById('disNuevo'); if (n) n.remove();
   const p = (DIS.prods || [])[0];
   DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: DIS.tipoNuevo === 'carrusel' ? 'carrusel' : 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '', temp: b ? _disTemp(b) : 'frio', fecha: (_disFecha(DIS.fechaSel) || {}).k || '' }), padre_id: null, _sucio: true };
@@ -1060,6 +1063,7 @@ async function disMarcaGuardar(aprobar){
     + '.dis-flot{position:absolute;z-index:30;display:flex;align-items:center;gap:2px;padding:4px;background:#1b1f2a;border:1px solid #33394a;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.45);white-space:nowrap}.dis-flot button{min-width:28px;height:28px;padding:0 6px;border:0;border-radius:6px;background:transparent;color:#e9ecf3;font:500 13px var(--ui-f);cursor:pointer}.dis-flot button:hover{background:#2b3142}.dis-flot .dis-flot-col{min-width:18px;width:18px;height:18px;padding:0;border-radius:50%;border:2px solid #555}.dis-flot .dis-flot-col.on{border-color:#7c5cff}.dis-flot-sep{width:1px;height:18px;background:#33394a;margin:0 3px}'
     + '.dis-txs{display:flex;flex-direction:column;gap:6px;max-height:55vh;overflow:auto}.dis-txs button{text-align:left;padding:9px 12px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-txs button:hover{border-color:#7c5cff}'
     + '.dis-tira{display:flex;gap:6px;overflow-x:auto;flex:1;padding:2px 0;scrollbar-width:thin;scrollbar-color:#33394a transparent}.dis-tira-p,.dis-tira-c{flex:0 0 auto;padding:0;border:2px solid transparent;border-radius:8px;background:#0d1017;cursor:pointer;overflow:hidden}.dis-tira-p img{width:44px;height:55px;object-fit:cover;display:block}.dis-tira-c img{width:34px;height:34px;object-fit:cover;display:block}.dis-tira-c span{display:block;padding:6px 8px;font:400 12px var(--ui-f);color:var(--txt)}.dis-tira-p.on,.dis-tira-c.on{border-color:#7c5cff}'
+    + '.dis-var-op{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:pointer;font:400 13px var(--ui-f)}.dis-var-btn{flex:1 1 100%}.dis-tira-p.sin{opacity:.35}'
     + '.dis-nv{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.dis-nv-op{display:flex;flex-direction:column;align-items:center;gap:6px;padding:18px 12px;border:1px solid var(--bd);border-radius:12px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer;text-align:center}.dis-nv-op:hover{border-color:#7c5cff}.dis-nv-ico{font-size:22px}'
     + '.dis-acc4{display:flex;gap:6px;width:100%;margin-top:6px}.dis-acc4 .btn{flex:1 1 0;min-width:0;justify-content:center;white-space:nowrap;flex-direction:row;padding:0 4px;font-size:12px;gap:3px}'
     + '.dis-cal{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}.dis-cal-f{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid var(--bd);border-radius:999px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-cal-f.on{border-color:#7c5cff;background:rgba(124,92,255,.14)}'
@@ -1679,7 +1683,7 @@ async function _disABiblioteca(files, d, p, extra){
   files = Array.isArray(files) ? files : [files];
   try { await _mklSb('/rest/v1/rpc/mk_diseno_usado', { method: 'POST', body: JSON.stringify({ p_id: d.id }) }); const f = (DIS.filas || []).find(x => x.id === d.id); if (f) f.usos = (f.usos || 0) + 1; } catch (_) {}
   const e = document.getElementById('disEd'); if (e) e.remove(); DIS.ed = null; try { _disTeclas(false); } catch (_) {} DIS.msg = '';
-  mkIrSub('contenido'); await mkcrAbrir(); mkcrSubirAbrir(null); MKCR.disenoId = d.id; MKCR.v916 = extra && extra.url ? extra.url : null; mkcrArchivo(files);
+  mkIrSub('contenido'); await mkcrAbrir(); mkcrSubirAbrir(null); MKCR.disenoId = d.id; MKCR.v916 = extra && extra.url && extra.formato === '9x16' ? extra.url : null; MKCR.v45 = extra && extra.url && extra.formato === '4x5' ? extra.url : null; mkcrArchivo(files);
   const prod = _disProdNom(p && p.titulo), set = (id, v) => { const el = document.getElementById(id); if (el && v){ el.value = v; el.dispatchEvent(new Event('input', { bubbles: true })); } };
   set('mkcrProd', prod);
   const a = _disNomAuto(d); set('mkcrAng', a.ang); set('mkcrFor', a.form); set('mkcrCta', a.cta);
@@ -1748,8 +1752,8 @@ async function _dis916Url(d, cx){
 }
 /* A5 · tira de prendas y colores bajo el lienzo: cambiar con 1 clic */
 function _disTiraHtml(){
-  const q = _mkNorm(DIS.tiraQ || ''), L = (DIS.prods || []).filter(p => _disActivo(p) && _disFotos(p).length && (!q || _mkNorm(p.titulo).indexOf(q) >= 0)).slice(0, 60);
-  return L.map(p => '<button type="button" data-h="' + disA(p.handle) + '" class="dis-tira-p' + (p.handle === DIS.prod ? ' on' : '') + '" title="' + disA(p.titulo) + '" onclick="disEdProd(\'' + disA(p.handle) + '\')"><img loading="lazy" src="' + disA(_disTam(_disFotos(p)[0], 120)) + '"></button>').join('') || '<span class="ui-nota">Sin prendas</span>';
+  const q = _mkNorm(DIS.tiraQ || ''), L = (DIS.prods || []).filter(p => _disActivo(p) && _disFotos(p).length && (!q || _mkNorm(p.titulo).indexOf(q) >= 0)); const L2 = _disOrdenRank(L).slice(0, 60);
+  return L2.map(p => '<button type="button" data-h="' + disA(p.handle) + '" class="dis-tira-p' + (p.handle === DIS.prod ? ' on' : '') + (_disRankGrupo(p) === 3 ? ' sin' : '') + '" title="' + disA(p.titulo + _disRankTit(p)) + '" onclick="disEdProd(\'' + disA(p.handle) + '\')"><img loading="lazy" src="' + disA(_disTam(_disFotos(p)[0], 120)) + '"></button>').join('') || '<span class="ui-nota">Sin prendas</span>';
 }
 function disTiraBuscar(t){ DIS.tiraQ = t; const el = document.getElementById('disEdTira'); if (el) el.innerHTML = _disTiraHtml(); }
 function _disColoresHtml(cx){
@@ -1759,25 +1763,102 @@ function _disColoresHtml(cx){
 /* A8 · estilos de un clic */
 const DIS_ESTILOS = { claro: { fondo: 'fondo', claro: 'principal' }, oscuro: { fondo: 'negro', claro: 'blanco' }, azul: { fondo: 'principal', claro: 'fondo' } };
 function disEstilo(k){
-  const E = DIS_ESTILOS[k], d = DIS.ed; if (!E || !d) return; _disMemo();
-  const viejo = (d.ajustes && d.ajustes.fondo) || 'fondo', TXT = ['principal', 'texto', 'blanco', 'fondo', 'negro'];
-  d.ajustes = Object.assign({}, d.ajustes || {}, { fondo: E.fondo });
-  d.capas.forEach(c => {
-    if (c.t === 'texto' && !c.fondo && TXT.indexOf(c.color || 'texto') >= 0) c.color = E.claro;
-    if ((c.t === 'forma' || c.t === 'degradado') && (c.color === viejo)) c.color = E.fondo;
-    if (c.t === 'logo') c.color = 'auto';
-  });
-  d._sucio = true; disEdPintar();
+  const d = DIS.ed; if (!DIS_ESTILOS[k] || !d) return; _disMemo(); _disEstiloAplicar(d, k); d._sucio = true; disEdPintar();
 }
 /* Diseños abre al instante: se pinta con lo de la última vez y se actualiza por detrás */
 const DIS_CACHE_K = 'dis_cache_v1';   /* IndexedDB: el localStorage del ERP ya está lleno (5 MB) */
 function _disIdb(){ return new Promise((ok, mal) => { try { const r = indexedDB.open('tulula_dis', 1); r.onupgradeneeded = () => r.result.createObjectStore('c'); r.onsuccess = () => ok(r.result); r.onerror = () => mal(r.error); } catch (e) { mal(e); } }); }
 async function _disCacheGuardar(){
-  try { const o = { t: Date.now(), filas: DIS.filas, prods: DIS.prods, marca: DIS.marca, ordenP: DIS.ordenP, juntas: DIS.juntas, puede: DIS.puede };
+  try { const o = { t: Date.now(), filas: DIS.filas, prods: DIS.prods, marca: DIS.marca, ordenP: DIS.ordenP, juntas: DIS.juntas, puede: DIS.puede, rank: DIS.rank };
     const db = await _disIdb(); await new Promise((ok, mal) => { const tx = db.transaction('c', 'readwrite'); tx.objectStore('c').put(o, DIS_CACHE_K); tx.oncomplete = ok; tx.onerror = () => mal(tx.error); }); db.close(); return true; } catch (_) { return false; }
 }
 async function _disCacheLeer(){
   try { const db = await _disIdb(), o = await new Promise((ok, mal) => { const r = db.transaction('c').objectStore('c').get(DIS_CACHE_K); r.onsuccess = () => ok(r.result); r.onerror = () => mal(r.error); }); db.close();
     if (!o || Date.now() - o.t > 7 * 864e5 || !Array.isArray(o.filas)) return false;
-    Object.assign(DIS, { filas: o.filas, prods: o.prods, marca: o.marca, ordenP: o.ordenP, juntas: o.juntas, puede: !!o.puede }); return true; } catch (_) { return false; }
+    Object.assign(DIS, { filas: o.filas, prods: o.prods, marca: o.marca, ordenP: o.ordenP, juntas: o.juntas, puede: !!o.puede, rank: o.rank || null, _rk: {} }); return true; } catch (_) { return false; }
+}
+
+/* ══════════ 22-nov · FASE B (Pablo aprobó): multiplicar el ganador + volumen con variedad ══════════ */
+/* orden de prendas para anunciar: con stock y más margen (60 días) primero — fuente: mk_dis_rank (libro de stock + v_linea_margen) */
+function _disNormT(t){ return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase(); }
+function _disRank(p){
+  if (!p || !Array.isArray(DIS.rank)) return null; DIS._rk = DIS._rk || {}; if (p.handle in DIS._rk) return DIS._rk[p.handle];
+  const w = _disNormT(p.titulo).split(/[^A-Z0-9]+/), K = r => String(r.k || '').split(' '); let m = null;
+  if (w.indexOf('CONJUNTO') >= 0){   /* conjunto = sus piezas: el stock lo pone la pieza que menos tiene, el margen se suma */
+    const de = DIS.rank.filter(r => K(r)[1] && w.indexOf(K(r)[1]) >= 0), con = de.filter(r => w.indexOf(K(r)[0]) >= 0), pz = con.length ? con : de;
+    if (pz.length) m = { k: pz.map(r => r.k).join(' + '), st: Math.min.apply(null, pz.map(r => +r.st || 0)), mg: pz.reduce((n, r) => n + (+r.mg || 0), 0), u: Math.min.apply(null, pz.map(r => +r.u || 0)) };
+  } else DIS.rank.forEach(r => { const k = K(r); if (k.length >= 2 && w.indexOf(k[0]) >= 0 && w.indexOf(k[1]) >= 0 && (!m || +r.mg > +m.mg)) m = r; });
+  return (DIS._rk[p.handle] = m);
+}
+function _disModelo(p){ const r = _disRank(p); return r ? String(r.k).split(' + ')[0].split(' ')[1] : _disNormT(p.titulo); }
+function _disRankGrupo(p){ const r = _disRank(p); if (!r) return 2; return +r.st >= 5 ? 0 : +r.st > 0 ? 1 : 3; }
+function _disOrdenRank(L){ return L.slice().sort((a, b) => _disRankGrupo(a) - _disRankGrupo(b) || ((+(_disRank(b) || {}).mg || 0) - (+(_disRank(a) || {}).mg || 0)) || String(a.titulo).localeCompare(String(b.titulo))); }
+function _disRankTit(p){ const r = _disRank(p); return r ? ' · S/ ' + String(Math.round(+r.mg)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + ' de margen en 60 días · ' + r.st + ' en stock' : ''; }
+
+/* estilo aplicado a cualquier diseño (el editor y las variantes usan lo mismo) */
+function _disEstiloAplicar(d, k){
+  const E = DIS_ESTILOS[k]; if (!E || !d) return d;
+  const viejo = (d.ajustes && d.ajustes.fondo) || 'fondo', TXT = ['principal', 'texto', 'blanco', 'fondo', 'negro'];
+  d.ajustes = Object.assign({}, d.ajustes || {}, { fondo: E.fondo, estilo: k });
+  (d.capas || []).forEach(c => {
+    if (c.t === 'texto' && !c.fondo && TXT.indexOf(c.color || 'texto') >= 0) c.color = E.claro;
+    if ((c.t === 'forma' || c.t === 'degradado') && c.color === viejo) c.color = E.fondo;
+    if (c.t === 'logo') c.color = 'auto';
+  });
+  return d;
+}
+
+/* 🧬 variantes de una ganadora: cambia UNA cosa a la vez (así se sabe qué funcionó) y se guardan como hijas */
+const DIS_GANCHOS = [['{{frase}}', 'frase'], ['«{{resena}}»', 'cita'], ['{{beneficio1}}', 'b1'], ['{{nombre}}', 'nombre']];
+function _disTitular(d){ let i = -1, t = 0; (d.capas || []).forEach((c, k) => { if (c.t === 'texto' && /\{\{(frase|resena|beneficio\d|nombre|badge)\}\}/.test(c.txt || '') && (+c.tam || 0) > t){ t = +c.tam || 0; i = k; } }); return i; }
+async function _disVariantesPlan(f){
+  const p = _disProd((f.ajustes || {}).prev_handle) || (DIS.prods || [])[0], inf = await disInfo(p.handle), cx = disCtx(p, inf, (f.ajustes || {}).prev_color || '', f.ajustes || {});
+  const base = () => JSON.parse(JSON.stringify({ nombre: f.nombre, formato: f.formato, tipo: f.tipo, mensaje: f.mensaje, capas: f.capas, ajustes: f.ajustes || {} })), V = [];
+  (cx.portadas || []).filter(o => o.c && o.c !== cx.color && o.src).slice(0, 2).forEach(o => { const d = base(); d.ajustes.prev_color = o.c; V.push({ q: 'color', et: 'Color ' + o.c, d }); });
+  const ya = { [_disModelo(p)]: 1 };   /* otra prenda = otro modelo (no dos conjuntos Mirella) */
+  _disOrdenRank((DIS.prods || []).filter(x => _disActivo(x) && _disFotos(x).length && x.handle !== p.handle && _disRankGrupo(x) === 0)).filter(x => { const k = _disModelo(x); if (ya[k]) return false; ya[k] = 1; return true; }).slice(0, 2)
+    .forEach(x => { const d = base(); d.ajustes.prev_handle = x.handle; d.ajustes.prev_color = ''; V.push({ q: 'prenda', et: 'Prenda: ' + x.titulo, d }); });
+  const it = _disTitular(f);
+  if (it >= 0){ const ya = f.capas[it].txt; DIS_GANCHOS.filter(g => g[0] !== ya && (g[1] === 'frase' ? cx.frase : g[1] === 'cita' ? cx.cita : g[1] === 'b1' ? (cx.ben || [])[0] : cx.nombre)).slice(0, 2)
+    .forEach(g => { const d = base(); d.capas[it].txt = g[0]; V.push({ q: 'gancho', et: 'Gancho: ' + _disCorta(String(g[1] === 'frase' ? cx.frase : g[1] === 'cita' ? '«' + cx.cita + '»' : g[1] === 'b1' ? cx.ben[0].titulo : cx.nombre), 48), d }); }); }
+  const est = (f.ajustes || {}).fondo === 'negro' ? 'claro' : 'oscuro'; { const d = _disEstiloAplicar(base(), est); V.push({ q: 'estilo', et: 'Estilo ' + (est === 'claro' ? 'Claro' : 'Oscuro'), d }); }
+  return { p, V };
+}
+async function disVariantesAbrir(id){
+  const f = (DIS.filas || []).find(x => x.id === id); if (!f) return; const v = document.getElementById('disVar'); if (v) v.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disVar"><div class="dis-caja" style="max-width:560px"><div class="dis-cab"><div><div class="ui-pag">🧬 Variantes de #' + _disCod(f.id) + '</div><div class="ui-nota">Cada una cambia una sola cosa: así sabes qué hizo ganar al anuncio</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disVar\').remove()') + '</div><div id="disVarL" class="ui-nota">Armando…</div></div></div>');
+  try {
+    const { V } = await _disVariantesPlan(f); DIS._var = { f, V };
+    const el = document.getElementById('disVarL'); if (!el) return;
+    el.className = ''; el.innerHTML = !V.length ? '<div class="ui-nota">No encontré qué variar (sin otros colores ni prendas con stock).</div>'
+      : '<div class="dis-txs">' + V.map((x, k) => '<label class="dis-var-op"><input type="checkbox" checked data-k="' + k + '"> <span class="dis-etapa e1">' + ({ color: '🎨', prenda: '👗', gancho: '💬', estilo: '◐' }[x.q]) + '</span> ' + esc(x.et) + '</label>').join('') + '</div>'
+      + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disVarRes"></span><span style="flex:1"></span><button class="btn on" onclick="disVariantesCrear()">Crear las elegidas</button></div>';
+  } catch (e) { const el = document.getElementById('disVarL'); if (el) el.innerHTML = '<span class="mal">No pude armar las variantes (' + esc(e.message) + ').</span>'; }
+}
+async function disVariantesCrear(){
+  const S = DIS._var; if (!S) return; const ks = [...document.querySelectorAll('#disVar input[data-k]:checked')].map(i => +i.dataset.k), res = document.getElementById('disVarRes');
+  if (!ks.length){ if (res) res.textContent = 'Elige al menos una.'; return; }
+  let n = 0;
+  for (const k of ks){ const x = S.V[k]; if (res) res.textContent = 'Creando ' + (n + 1) + ' de ' + ks.length + '…';
+    x.d.ajustes = Object.assign({}, x.d.ajustes, { variante: x.q, var_de: S.f.id });
+    const r = await _mklSb('/rest/v1/rpc/mk_diseno_guardar', { method: 'POST', body: JSON.stringify({ p_id: null, p_datos: { nombre: (S.f.nombre + ' · ' + x.et).slice(0, 120), formato: x.d.formato, tipo: x.d.tipo || 'estatico', mensaje: x.d.mensaje, capas: x.d.capas, ajustes: x.d.ajustes, padre_id: S.f.id } }) }).catch(() => null);
+    if (r && r.ok){ DIS.filas.unshift(r.fila); n++; } }
+  const v = document.getElementById('disVar'); if (v) v.remove(); DIS._var = null;
+  DIS.msg = n ? '🧬 ' + n + ' variante' + (n > 1 ? 's' : '') + ' de #' + _disCod(S.f.id) + ' en «Mis diseños». Revísalas y pulsa 🚀 Anunciar.' : '<span class="mal">No se creó ninguna variante.</span>';
+  DIS.ver = 'activos'; disPintar(); _disCacheGuardar();
+}
+function _disVarDe(f){ return (DIS.filas || []).filter(x => x.padre_id === f.id || ((x.ajustes || {}).var_de === f.id)).length; }
+function _disEsGanadora(f){ return f.estado === 'ganadora' || _disGana(_disRes(f.id)); }
+
+/* 🎯 meta semanal: 3 conceptos nuevos (diseños que no son copia ni variante), lunes a domingo hora Lima */
+const DIS_META_SEMANA = 3;
+function _disLunesLima(ahora){ const l = new Date((ahora || new Date()).getTime() - 5 * 36e5), dw = (l.getUTCDay() + 6) % 7; return new Date(Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate() - dw) + 5 * 36e5); }
+function _disConceptosSemana(ahora){ const l = _disLunesLima(ahora).getTime();
+  return (DIS.filas || []).filter(f => f.creado && new Date(f.creado).getTime() >= l && !f.padre_id && !(f.ajustes || {}).var_de && !/\(copia\)$/.test(f.nombre || '') && f.estado !== 'archivada').length; }
+function _disMetaChip(){ const n = _disConceptosSemana(), ok = n >= DIS_META_SEMANA;
+  return '<span class="ui-chip ' + (ok ? 'ok' : 'am') + '" title="Conceptos nuevos esta semana (no cuentan copias ni variantes). Volumen con variedad: Meta premia anuncios distintos">🎯 ' + Math.min(n, 99) + ' de ' + DIS_META_SEMANA + ' conceptos</span>'; }
+function _disAvisoGanadoras(){
+  if (DIS._sinAviso) return ''; const L = (DIS.filas || []).filter(f => f.estado !== 'archivada' && _disEsGanadora(f) && !_disVarDe(f)); if (!L.length) return '';
+  return '<div class="dis-aviso"><span>🏆 ' + (L.length === 1 ? '#' + _disCod(L[0].id) + ' está ganando y no tiene variantes' : L.length + ' ganadoras sin variantes') + '. Multiplica lo que funciona:</span>'
+    + L.slice(0, 3).map(f => '<button class="btn on" onclick="disVariantesAbrir(' + f.id + ')">🧬 #' + _disCod(f.id) + '</button>').join('') + '<span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'DIS._sinAviso=1;disPintar()') + '</div>';
 }
