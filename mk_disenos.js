@@ -331,6 +331,7 @@ const DIS_BASE = [
 
 /* ── datos ── */
 async function disCargar(){
+  const pRes = _mklSb('/rest/v1/rpc/mk_dis_resultados', { method: 'POST', body: '{}' }).catch(() => null), pCrit = _mklSb('/rest/v1/mk_dis_critica?select=diseno_id,total,detalle,creado&order=creado.desc&limit=500').catch(() => null);
   const [f, p, m, pu, pz, sf, jn] = await Promise.all([
     _mklSb('/rest/v1/mk_disenos?select=*&order=creado.desc'),
     DIS.prods ? Promise.resolve(DIS.prods) : _mklSb('/rest/v1/rpc/mk_dis_productos', { method: 'POST', body: '{}' }),
@@ -345,10 +346,13 @@ async function disCargar(){
   const cfg = k => ((Array.isArray(m) ? m : []).find(x => x.clave === k) || {}).valor;
   DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null;
   _disFondosCargar();
-  try { DIS.res = await _mklSb('/rest/v1/rpc/mk_dis_resultados', { method: 'POST', body: '{}' }); } catch (_) { DIS.res = null; }
-  try { const L = await _mklSb('/rest/v1/mk_dis_critica?select=diseno_id,total,detalle,creado&order=creado.desc&limit=500'); DIS.crit = {}; (L || []).forEach(x => { if (!DIS.crit[x.diseno_id]) DIS.crit[x.diseno_id] = x; }); } catch (_) { DIS.crit = DIS.crit || {}; }
-  _disAutoEstado();
   DIS.puede = pu === true;
+  /* 21-nov noche (medido: resultados ~2,2 s porque lee anuncios de otra base) · ya no frena la galería: se pinta primero y los
+     resultados y notas del crítico llegan después y repintan. Arrancan junto con lo demás (pRes/pCrit al inicio). */
+  Promise.all([pRes, pCrit]).then(([r, L]) => {
+    DIS.res = r || null; DIS.crit = {}; (Array.isArray(L) ? L : []).forEach(x => { if (!DIS.crit[x.diseno_id]) DIS.crit[x.diseno_id] = x; });
+    _disAutoEstado(); if (document.getElementById('mkDis') && DIS.filas) disPintar();
+  });
 }
 async function disInfo(handle){
   if (!handle) return {};
