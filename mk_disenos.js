@@ -5,7 +5,7 @@
    Base: public.mk_disenos + public.mk_dis_config (PEGAR_EN_SUPABASE_disenos_21nov.sql). Editan Admin y Marketing en Edición.
    Archivar en vez de borrar. «📤 A Por usar» = PNG listo → 🎬 Biblioteca › Por usar (ahí 🚀 Anuncio lo crea en Meta en pausa).
    Formatos: 4:5 (feed) y 9:16 (historias y reels, con zonas seguras de Meta). */
-const DIS = { piezas: [], sinf: {}, lote: null, pz: null, filas: null, prods: null, marca: null, puede: false, info: {}, ver: 'activos', fForm: '', fMsj: '', q: '', ed: null, sel: -1, prod: '', color: '', msg: '' };
+const DIS = { piezas: [], sinf: {}, lote: null, pz: null, filas: null, prods: null, marca: null, puede: false, info: {}, ver: 'plantillas', tipoNuevo: 'estatico', fForm: '', fMsj: '', q: '', ed: null, sel: -1, prod: '', color: '', msg: '' };
 const DIS_TAM = { '4x5': [1080, 1350], '9x16': [1080, 1920] };
 const DIS_MSJ = [['producto','Producto'],['beneficios','Beneficios'],['oferta','Oferta'],['colores','Colores'],['preventa','Preventa'],['frase','Frase'],['resenas','Reseñas']];
 const DIS_EST = { borrador: 'Borrador', prueba: 'En prueba', ganadora: 'Ganadora', archivada: 'Archivada' };
@@ -501,17 +501,18 @@ function _disVisibles(){
 function disPintar(){
   const el = document.getElementById('mkDis'); if (!el) return;
   const fs = DIS.filas || [], vis = _disVisibles();
-  const n = { activos: fs.filter(f => f.estado !== 'archivada').length, ganadoras: fs.filter(f => f.estado === 'ganadora').length, archivados: fs.filter(f => f.estado === 'archivada').length };
+  const n = { plantillas: DIS_BASE.length, activos: fs.filter(f => f.estado !== 'archivada').length, ganadoras: fs.filter(f => f.estado === 'ganadora').length, archivados: fs.filter(f => f.estado === 'archivada').length };
   const b = (k, t) => '<button class="btn' + (DIS.ver === k ? ' on' : '') + '" onclick="DIS.ver=\'' + k + '\';disPintar()">' + t + ' <span class="dis-cnt">' + n[k] + '</span></button>';
   const sel = (id, v, ops, ph) => '<select onchange="' + id + '=this.value;disPintar()"><option value="">' + ph + '</option>' + ops.map(o => '<option value="' + o[0] + '"' + (v === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
   const m = DIS.marca || DIS_MARCA_DEF;
   let h = '<div class="dis-cabeza"><div><div class="ui-blo">Diseños de anuncios</div><div class="ui-nota">Plantillas que se llenan solas con fotos, precios, colores y reseñas de cada prenda.</div></div>'
     + '<div class="dis-barra-der">' + (DIS.puede ? '<button class="btn" onclick="disPiezasAbrir(null)">🧩 Piezas <span class="dis-cnt">' + DIS.piezas.filter(x => x.estado !== 'archivada').length + '</span></button><button class="btn" onclick="disFondosAbrir()">🏞️ Fondos</button><button class="btn" onclick="disMarcaAbrir()">🎨 Marca</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : '') + '</div></div>'
-    + '<div class="dis-barra"><div class="dis-barra-izq">' + b('activos', 'Activos') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + '</div>'
-    + '<div class="dis-barra-der">' + sel('DIS.fForm', DIS.fForm, [['4x5', 'Feed 4:5'], ['9x16', 'Historias 9:16']], 'Todos los formatos') + sel('DIS.fMsj', DIS.fMsj, DIS_MSJ, 'Todos los mensajes')
-    + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px"></div></div>';
+    + '<div class="dis-barra"><div class="dis-barra-izq">' + b('plantillas', '✨ Plantillas') + b('activos', 'Mis diseños') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + '</div>'
+    + (DIS.ver === 'plantillas' ? '</div>' : '<div class="dis-barra-der">' + sel('DIS.fForm', DIS.fForm, [['4x5', 'Feed 4:5'], ['9x16', 'Historias 9:16']], 'Todos los formatos') + sel('DIS.fMsj', DIS.fMsj, DIS_MSJ, 'Todos los mensajes')
+    + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px"></div></div>');
   if (!m.aprobada && DIS.puede) h += '<div class="dis-aviso">🎨 Marca lista con el azul, naranja y crema de Tulula. Revísala en <b>🎨 Marca</b> y apruébala.</div>';
   if (DIS.msg) h += '<div class="dis-aviso">' + DIS.msg + ' <button class="dis-ib" onclick="DIS.msg=\'\';disPintar()" title="Cerrar">' + disIco('cerrar', 14) + '</button></div>';
+  if (DIS.ver === 'plantillas'){ el.innerHTML = h + _disPlantillasHtml(); if (DIS.puede) _disArrastrable(document.getElementById('disNuevoGrilla'), ks => _disGuardarOrdenPlant(ks)); disNuevoPintar(); return; }
   if (!vis.length) h += '<div class="mkl-vacio">' + (fs.length ? 'Nada para mostrar con estos filtros.' : 'Todavía no hay diseños. Crea el primero con ➕ Nuevo diseño.') + '</div>';
   else h += '<div class="dis-grilla">' + vis.map(f => _disTarjeta(f)).join('') + '</div>';
   el.innerHTML = h;
@@ -522,10 +523,12 @@ function _disTarjeta(f){
   const est = f.estado, chip = est === 'ganadora' ? 'ok' : est === 'prueba' ? 'am' : '';
   const msj = (DIS_MSJ.find(x => x[0] === f.mensaje) || ['', f.mensaje])[1], npz = _disNPz(f.id);
   const acc = !DIS.puede ? '' : est === 'archivada'
-    ? '<button class="btn" onclick="disEstado(' + f.id + ',\'borrador\')">↩️ Restaurar</button>'
+    ? '<button class="btn" onclick="disEstado(' + f.id + ',\'borrador\')">↩️ Restaurar</button><button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button>'
     : '<button class="btn" onclick="disEditar(' + f.id + ')">✏️ Editar</button><button class="btn" onclick="disLoteAbrir(' + f.id + ')" title="Varios productos y colores de una vez">🔁 Replicar</button>'
       + '<button class="btn" onclick="disUsar(' + f.id + ')" title="Hacer la imagen y llevarla a 🎬 Biblioteca › Por usar">📤 Usar</button>'
-      + '<button class="btn" onclick="disDuplicar(' + f.id + ')" title="Duplicar">⧉</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Archivar (se puede restaurar)">🗄</button>';
+      + '<button class="btn" onclick="disLoteAbrir(' + f.id + ',1)" title="Elige 2 a 10 prendas o colores y sale como carrusel">🎠 Carrusel</button>'
+      + '<button class="btn" onclick="disDuplicar(' + f.id + ')">⧉ Duplicar</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Se guarda en Archivados y se puede restaurar">🗄 Archivar</button>'
+      + '<button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button>';
   const estSel = DIS.puede && est !== 'archivada' ? '<select class="dis-est" onchange="disEstado(' + f.id + ',this.value)">' + ['borrador', 'prueba', 'ganadora'].map(k => '<option value="' + k + '"' + (k === est ? ' selected' : '') + '>' + DIS_EST[k] + '</option>').join('') + '</select>'
     : '<span class="ui-chip ' + chip + '">' + DIS_EST[est] + '</span>';
   return '<div class="dis-tarj" data-k="' + f.id + '"' + (DIS.puede && est !== 'archivada' && est !== 'ganadora' ? ' draggable="true" title="Arrastra para cambiar el orden"' : '') + '><div class="dis-mini" id="disMini' + f.id + '" onclick="' + (DIS.puede && est !== 'archivada' ? 'disEditar(' + f.id + ')' : '') + '"></div>'
@@ -544,17 +547,18 @@ async function _disMini(f){
 }
 
 /* ── crear, duplicar, estado ── */
-function disNuevoAbrir(){
-  const p = _disProdLindo();
-  let h = '<div class="dis-modal" id="disNuevo"><div class="dis-caja" style="max-width:1180px"><div class="dis-cab"><div><div class="ui-pag">Nuevo diseño</div><div class="ui-nota">Elige un punto de partida. Todo se cambia después. Muestra: ' + esc((p || {}).titulo || '') + '</div></div><span style="flex:1"></span>'
-    + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="4x5">Feed 4:5</option><option value="9x16">Historias 9:16</option></select>'
-    + '<button class="dis-ib" onclick="document.getElementById(\'disNuevo\').remove()" title="Cerrar">' + disIco('cerrar') + '</button></div><div class="dis-grilla" id="disNuevoGrilla">';
-  if (DIS.puede) h += '<div class="dis-tarj dis-elegir" onclick="disCapturaAbrir()"><div class="dis-mini dis-blanco dis-ia">📷<b>Crear desde captura</b><span class="ui-nota">Pega un anuncio que te guste y la IA lo adapta a Tulula</span></div><div class="dis-tarj-pie"><div class="ui-tot">✨ Desde captura</div><div class="ui-nota">~US$0,04 cada una</div></div></div>';
+/* 21-nov · «Nuevo diseño» = la pestaña ✨ Plantillas (Pablo: que sea lo primero que se ve) */
+function disNuevoAbrir(){ DIS.ver = 'plantillas'; disPintar(); const el = document.getElementById('mkDis'); if (el) el.scrollIntoView({ block: 'start' }); }
+function _disPlantillasHtml(){
+  const seg = (k, t) => '<button type="button" class="' + (DIS.tipoNuevo === k ? 'on' : '') + '" onclick="DIS.tipoNuevo=\'' + k + '\';disPintar()">' + t + '</button>';
+  let h = '<div class="dis-barra"><div class="dis-barra-izq"><span class="ui-nota">Elige una plantilla para empezar · todo se cambia después</span></div><div class="dis-barra-der">'
+    + '<div class="dis-seg">' + seg('estatico', '🖼 Una imagen') + seg('carrusel', '🎠 Carrusel') + '</div>'
+    + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="4x5">Feed 4:5</option><option value="9x16">Historias 9:16</option></select></div></div>'
+    + (DIS.tipoNuevo === 'carrusel' ? '<div class="dis-aviso">🎠 Carrusel: eliges la plantilla, la guardas y luego marcas 2 a 10 prendas o colores. Cada una sale como una tarjeta del carrusel, en el orden que las elijas, y va junta a 🎬 Biblioteca › Por usar.</div>' : '')
+    + '<div class="dis-grilla" id="disNuevoGrilla">';
+  if (DIS.puede) h += '<div class="dis-tarj dis-elegir" onclick="disCapturaAbrir()"><div class="dis-mini dis-blanco dis-ia">📷<b>Crear desde captura</b><span class="ui-nota">Pega un anuncio que te guste y la IA lo adapta a Tulula</span></div><div class="dis-tarj-pie"><div class="ui-tot">✨ Desde captura</div><div class="ui-nota">~US$0,02 cada una</div></div></div>';
   _disOrdenPlantillas().forEach(i => { const b = DIS_BASE[i]; h += '<div class="dis-tarj dis-elegir" data-k="' + i + '"' + (DIS.puede ? ' draggable="true"' : '') + ' onclick="disNuevo(' + i + ')"><div class="dis-mini" id="disBase' + i + '"></div><div class="dis-tarj-pie"><div class="ui-tot"><span class="dis-cod">' + _disCod(i + 1) + '</span> ' + esc(b.nombre) + '</div><div class="ui-nota">Estilo ' + esc(b.ref || '') + (DIS.puede ? ' · arrastra para ordenar' : '') + '</div></div></div>'; });
-  h += '<div class="dis-tarj dis-elegir" onclick="disNuevo(-1)"><div class="dis-mini dis-blanco">＋ En blanco</div><div class="dis-tarj-pie"><div class="ui-tot">En blanco</div><div class="ui-nota">Arma el tuyo desde cero</div></div></div></div></div></div>';
-  document.body.insertAdjacentHTML('beforeend', h);
-  if (DIS.puede) _disArrastrable(document.getElementById('disNuevoGrilla'), ks => _disGuardarOrdenPlant(ks));
-  disNuevoPintar();
+  return h + '<div class="dis-tarj dis-elegir" onclick="disNuevo(-1)"><div class="dis-mini dis-blanco">＋ En blanco</div><div class="dis-tarj-pie"><div class="ui-tot">En blanco</div><div class="ui-nota">Arma el tuyo desde cero</div></div></div></div>';
 }
 function disNuevoPintar(){
   const p = _disProdLindo(), form = (document.getElementById('disNuevoForm') || {}).value || '4x5'; if (!p) return;
@@ -564,7 +568,7 @@ function disNuevo(i){
   const b = DIS_BASE[i], form = (document.getElementById('disNuevoForm') || {}).value || '4x5';
   const n = document.getElementById('disNuevo'); if (n) n.remove();
   const p = (DIS.prods || [])[0];
-  DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '' }), padre_id: null, _sucio: true };
+  DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: DIS.tipoNuevo === 'carrusel' ? 'carrusel' : 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '' }), padre_id: null, _sucio: true };
   DIS.sel = -1; DIS.prod = DIS.ed.ajustes.prev_handle; DIS.color = '';
   _disEdAbrir();
 }
@@ -587,6 +591,15 @@ async function disEstado(id, est){
 
 /* ── editor (mini app): lienzo al centro, panel por secciones, mover y agrandar con el mouse, guías de centro,
    deshacer/rehacer, atajos de teclado y vista en 6 productos a la vez ── */
+/* 21-nov · Pablo pidió poder eliminar (con confirmación). Borra el diseño y sus piezas; lo ya enviado a la Biblioteca se queda allá. */
+async function disEliminar(id){
+  const f = (DIS.filas || []).find(x => x.id === id); if (!f) return; const np = _disNPz(id);
+  if (!await _uiSeguro('¿Eliminar «' + f.nombre + '»' + (np ? ' y sus ' + np + ' piezas' : '') + '? No se puede deshacer. (Lo que ya está en la Biblioteca no se borra.)', 'Eliminar')) return;
+  try { const r = await _mklSb('/rest/v1/rpc/mk_diseno_eliminar', { method: 'POST', body: JSON.stringify({ p_id: id }) }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se eliminó');
+    DIS.filas = DIS.filas.filter(x => x.id !== id); DIS.piezas = DIS.piezas.filter(x => x.diseno_id !== id); DIS.msg = '🗑 «' + esc(f.nombre) + '» eliminado.'; }
+  catch (e) { DIS.msg = '<span class="mal">No se eliminó (' + esc(e.message) + ').</span>'; }
+  disPintar();
+}
 function disEditar(id){
   const f = (DIS.filas || []).find(x => x.id === id); if (!f) return;
   DIS.ed = JSON.parse(JSON.stringify(f)); DIS.ed.ajustes = DIS.ed.ajustes || {};
@@ -605,7 +618,7 @@ function _disEdAbrir(){
     + '<span style="flex:1"></span><span class="ui-nota" id="disEdRes"></span>'
     + '<button class="btn" onclick="disIAMensajeAbrir()" title="Escribe lo que quieres cambiar y la IA lo hace (~US$0,01)">✨ Pedir un cambio</button>'
     + '<button class="btn" onclick="disVerMuchos()" title="El mismo diseño con 6 productos distintos">' + disIco('grilla', 14) + ' Ver en 6 productos</button>'
-    + '<button class="btn" onclick="disLoteDesdeEditor()">🔁 Replicar</button><button class="btn" onclick="disUsar(null)">📤 Usar</button>'
+    + '<button class="btn' + (DIS.ed.tipo === 'carrusel' ? ' on' : '') + '" onclick="disLoteDesdeEditor(1)" title="Guarda y arma un carrusel con 2 a 10 prendas o colores">🎠 Carrusel</button><button class="btn" onclick="disLoteDesdeEditor()">🔁 Replicar</button><button class="btn" onclick="disUsar(null)">📤 Usar</button>'
     + '<button class="btn on" onclick="disGuardar()">Guardar</button>' + _disIb('cerrar', 'Cerrar', 'disEdCerrar()') + '</div>'
     + '<div class="dis-ed-cuerpo"><div class="dis-ed-izq"><div class="dis-ed-lienzo" id="disEdLienzo"></div>'
     + '<div class="dis-ed-prueba"><span class="ui-nota">Probar con</span><select id="disEdProd" onchange="disEdProd(this.value)">' + prods + '</select>'
@@ -680,7 +693,7 @@ function _disPanel(cx){
     + '<span class="dis-capa-ico">' + disIco((DIS_TIPOS[c.t] || ['forma'])[0], 15) + '</span><span class="dis-capa-nom">' + esc(_disCapaNombre(c)) + '</span>'
     + (c.vis && c.vis !== 'siempre' ? '<span class="dis-capa-cond" title="' + disA((DIS_VIS.find(v => v[0] === c.vis) || ['', ''])[1]) + '">si…</span>' : '')
     + '<span class="dis-capa-acc">' + _disIb(c.oculto ? 'ojoNo' : 'ojo', c.oculto ? 'Mostrar' : 'Ocultar', 'event.stopPropagation();disCapaSet(' + i + ',\'oculto\',' + !c.oculto + ')')
-    + _disIb('arriba', 'Traer adelante', 'event.stopPropagation();disCapaMover(' + i + ',1)') + _disIb('abajo', 'Mandar atrás', 'event.stopPropagation();disCapaMover(' + i + ',-1)')
+    + _disIb('arriba', 'Poner encima (tapa a la capa de arriba)', 'event.stopPropagation();disCapaMover(' + i + ',1)') + _disIb('abajo', 'Poner debajo (queda detrás de la capa de abajo)', 'event.stopPropagation();disCapaMover(' + i + ',-1)')
     + _disIb('copia', 'Duplicar capa (Ctrl+D)', 'event.stopPropagation();disCapaDuplicar(' + i + ')') + _disIb('basura', 'Quitar capa (Supr)', 'event.stopPropagation();disCapaQuitar(' + i + ')', 'rojo') + '</span></div>').reverse().join('');
   const add = '<div class="dis-add">' + Object.keys(DIS_TIPOS).map(k => '<button type="button" class="dis-add-b" onclick="disCapaAgregar(\'' + k + '\')" title="Agregar ' + DIS_TIPOS[k][1].toLowerCase() + '">' + disIco(DIS_TIPOS[k][0], 18) + '<span>' + DIS_TIPOS[k][1] + '</span></button>').join('') + '</div>';
   let h = sec('capas', 'Capas', add + '<div class="dis-capas">' + filas + '</div>', '<span class="dis-cnt">' + C.length + '</span>');
@@ -742,9 +755,14 @@ function _disProps(c, i, cx){
   else if (c.t === 'colores'){ est = '<div class="dis-props">' + selc('estilo', 'Muestras', [['cuadro', 'Fotos cuadradas'], ['punto', 'Fotos redondas'], ['mini', 'Puntos de color']], c.estilo || 'cuadro')
     + (c.estilo === 'mini' ? selc('al', 'Alinear', [['left', 'Izquierda'], ['center', 'Centro'], ['right', 'Derecha']], c.al || 'center') + num('tam', 'Tamaño del punto', 2, '46') : '') + '</div>'; }
   const posi = (DIS.ed.formato === '9x16' ? '<div class="ui-nota" style="margin-bottom:4px">' + (c.g916 ? 'Lugar propio en Historias' : 'Acomodada sola en Historias') + '</div>' : '')
-    + '<div class="dis-props">' + numG('x', 'X %') + numG('y', 'Y %') + numG('w', 'Ancho %') + (G.h != null || /^(foto|forma|degradado|colores)$/.test(c.t) ? numG('h', 'Alto %') : '') + '</div>'
-    + '<div class="dis-props"><button type="button" class="btn" onclick="disCentrar(' + i + ',\'x\')">↔ Centrar</button><button type="button" class="btn" onclick="disCentrar(' + i + ',\'y\')">↕ Centrar</button></div>';
-  return (cont ? grupo('Contenido', cont) : '') + grupo('Posición y tamaño', posi) + (est ? grupo('Estilo', est) : '') + grupo('Cuándo aparece', '<div class="dis-props">' + selc('vis', 'Se muestra', DIS_VIS, c.vis || 'siempre') + '</div>');
+    + '<div class="dis-props">' + numG('x', '← Desde la izquierda %') + numG('y', '↓ Desde arriba %') + numG('w', 'Ancho %') + (G.h != null || /^(foto|forma|degradado|colores)$/.test(c.t) ? numG('h', 'Alto %') : '') + '</div>'
+    + '<div class="dis-props"><button type="button" class="btn" onclick="disCentrar(' + i + ',\'x\')">↔ Centrar</button><button type="button" class="btn" onclick="disCentrar(' + i + ',\'y\')">↕ Centrar</button><button type="button" class="btn" onclick="disDeshacer()" title="Ctrl+Z">↶ Deshacer</button></div>'
+    + (c.t === 'degradado' ? '<div class="ui-nota" style="margin:6px 0 4px">Sombra rápida (oscurece un lado para que se lea el texto):</div><div class="dis-props">' + [['abajo', '⬇ Abajo'], ['arriba', '⬆ Arriba'], ['izq', '⬅ Izquierda'], ['der', '➡ Derecha'], ['toda', '▣ Toda la foto']].map(o => '<button type="button" class="btn" onclick="disSombraRapida(' + i + ',\'' + o[0] + '\')">' + o[1] + '</button>').join('') + '</div>' : '');
+  const orden = '<div class="ui-nota" style="margin-bottom:4px">Qué tapa a qué: la capa de más arriba en la lista se ve encima.</div><div class="dis-props">'
+    + '<button type="button" class="btn" onclick="disCapaExtremo(' + i + ',1)">⏫ Al frente</button><button type="button" class="btn" onclick="disCapaMover(' + i + ',1)">⬆ Un paso adelante</button>'
+    + '<button type="button" class="btn" onclick="disCapaMover(' + i + ',-1)">⬇ Un paso atrás</button><button type="button" class="btn" onclick="disCapaExtremo(' + i + ',0)">⏬ Al fondo</button></div>'
+    + (c.t === 'foto' ? '<div class="ui-nota" style="margin-top:6px">Para cambiar la foto de lugar, arrástrala en el lienzo. Para usar otra foto, cambia «Qué foto».</div>' : '');
+  return (cont ? grupo('Contenido', cont) : '') + grupo('Posición y tamaño', posi) + grupo('Adelante o atrás', orden) + (est ? grupo('Estilo', est) : '') + grupo('Cuándo aparece', '<div class="dis-props">' + selc('vis', 'Se muestra', DIS_VIS, c.vis || 'siempre') + '</div>');
 }
 /* beneficios: los de Shopify, elegibles y editables POR PRODUCTO (se guardan en el diseño) */
 function _disBenPanel(cx){
@@ -795,6 +813,9 @@ function disTextoEnLinea(i, el){
 function disCampoInsertar(i, campo){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); c.txt = (c.txt ? c.txt + ' ' : '') + campo; DIS.ed._sucio = true; disEdPintar(); }
 function disCapaMover(i, d){ const C = DIS.ed.capas, j = i + d; if (j < 0 || j >= C.length) return; _disMemo(); const t = C[i]; C[i] = C[j]; C[j] = t; DIS.sel = j; DIS.ed._sucio = true; disEdPintar(); }
 async function disCapaQuitar(i){ if (!await _uiSeguro('¿Quitar esta capa del diseño? (Ctrl+Z la devuelve)', 'Quitar')) return; _disMemo(); DIS.ed.capas.splice(i, 1); DIS.sel = -1; DIS.ed._sucio = true; disEdPintar(); }
+function disCapaExtremo(i, alFrente){ const C = DIS.ed.capas; if (!C[i]) return; _disMemo(); const c = C.splice(i, 1)[0]; if (alFrente) C.push(c); else C.unshift(c); DIS.sel = alFrente ? C.length - 1 : 0; DIS.ed._sucio = true; disEdPintar(); }
+function disSombraRapida(i, lado){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); const g = { abajo: [0, 55, 100, 45], arriba: [0, 0, 100, 45], izq: [0, 0, 55, 100], der: [45, 0, 55, 100], toda: [0, 0, 100, 100] }[lado];
+  c.x = g[0]; c.y = g[1]; c.w = g[2]; c.h = g[3]; delete c.g916; c.desde = lado === 'toda' ? 'abajo' : lado; if (lado === 'toda') c.op = Math.min(+c.op || 0.5, 0.5); DIS.ed._sucio = true; disEdPintar(); }
 function disCapaDuplicar(i){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); const n = JSON.parse(JSON.stringify(c)); n.x = (+n.x || 0) + 2; n.y = (+n.y || 0) + 2; DIS.ed.capas.splice(i + 1, 0, n); DIS.sel = i + 1; DIS.ed._sucio = true; disEdPintar(); }
 function disCapaAgregar(t){
   const n = { texto: { t, txt: '{{nombre}}', x: 8, y: 44, w: 84, tam: 56, fuente: 'titulo', color: 'blanco', al: 'center' }, foto: { t, src: 'color:1', x: 55, y: 55, w: 38, h: 38, r: 0 },
@@ -1200,11 +1221,11 @@ function _disLoteCombos(sel, formatos, fotos){
   return out;
 }
 function _disCapasFoto(capas, k){ return !k ? capas : capas.map(c => c.t === 'foto' && /^color:\d+$/.test(c.src || 'color:0') ? Object.assign({}, c, { src: 'color:' + ((+String(c.src || 'color:0').split(':')[1] || 0) + k) }) : c); }
-function disLoteDesdeEditor(){ disGuardar(true).then(f => { if (!f) return; const v = document.getElementById('disEd'); if (v) v.remove(); DIS.ed = null; disPintar(); disLoteAbrir(f.id); }); }
-function disLoteAbrir(id){
+function disLoteDesdeEditor(carr){ disGuardar(true).then(f => { if (!f) return; const v = document.getElementById('disEd'); if (v) v.remove(); DIS.ed = null; _disTeclas(false); DIS.ver = 'activos'; disPintar(); disLoteAbrir(f.id, carr); }); }
+function disLoteAbrir(id, carr){
   const f = (DIS.filas || []).find(x => x.id === id); if (!f) return;
-  DIS.lote = { id, sel: {}, formatos: [f.formato], fotos: 1, q: '', stock: true, corriendo: false, parar: false };
-  const h = '<div class="dis-modal" id="disLote"><div class="dis-caja" style="max-width:860px"><div class="dis-cab"><span class="ui-pag">Replicar «' + esc(f.nombre) + '»</span><span style="flex:1"></span>'
+  DIS.lote = { id, carr: !!carr, nuevas: [], sel: {}, formatos: [f.formato], fotos: 1, q: '', stock: true, corriendo: false, parar: false };
+  const h = '<div class="dis-modal" id="disLote"><div class="dis-caja" style="max-width:860px"><div class="dis-cab"><div><div class="ui-pag">' + (carr ? '🎠 Carrusel con «' : 'Replicar «') + esc(f.nombre) + '»</div>' + (carr ? '<div class="ui-nota">Marca 2 a 10 prendas o colores: cada una es una tarjeta del carrusel, en el orden en que las marcas.</div>' : '') + '</div><span style="flex:1"></span>'
     + '' + _disIb('cerrar', 'Cerrar', 'disLoteCerrar()') + '</div><div id="disLoteCuerpo"></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h); disLotePintar();
 }
@@ -1250,13 +1271,13 @@ async function disLoteCorrer(){
       const g = await _mklSb('/rest/v1/rpc/mk_dis_pieza_guardar', { method: 'POST', body: JSON.stringify({ p_diseno: f.id, p_handle: x.handle, p_color: cx.color, p_formato: x.formato, p_foto_n: x.foto_n, p_url: url, p_ruta: ruta }) });
       if (!g || !g.ok) throw new Error((g && g.error) || 'no se guardó');
       DIS.piezas = DIS.piezas.filter(z => !(z.diseno_id === f.id && z.handle === x.handle && z.color === cx.color && z.formato === x.formato && z.foto_n === x.foto_n && z.estado === 'nueva'));
-      DIS.piezas.unshift(g.fila); ok++;
+      DIS.piezas.unshift(g.fila); L.nuevas.push(g.fila.id); ok++;
     } catch (e) { mal++; console.warn('[Diseños] pieza', x, e); }
   }
   L.corriendo = false;
   const seg = Math.round((Date.now() - t0) / 1000);
   DIS.msg = '🔁 ' + ok + ' pieza' + (ok === 1 ? '' : 's') + ' lista' + (ok === 1 ? '' : 's') + ' en ' + seg + ' s' + (salt ? ' · ' + salt + ' saltadas (agotado o sin esa foto)' : '') + (mal ? ' · <span class="mal">' + mal + ' fallaron</span>' : '') + (L.parar ? ' · parado' : '') + '. Están en 🧩 Piezas.';
-  const v = document.getElementById('disLote'); if (v) v.remove(); const id = L.id; DIS.lote = null; disPintar(); if (ok) disPiezasAbrir(id);
+  const v = document.getElementById('disLote'); if (v) v.remove(); const id = L.id; DIS.lote = null; disPintar(); if (ok){ disPiezasAbrir(id); if (L.carr && DIS.pz){ DIS.pz.sel = L.nuevas.slice(0, 10); disPiezasPintar(); } }
 }
 /* piezas: elegir (el orden de los clics = el orden del carrusel), llevar a Por usar, descargar, archivar */
 function disPiezasAbrir(id){

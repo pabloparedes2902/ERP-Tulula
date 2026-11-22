@@ -10,7 +10,7 @@
 //
 // Versionado: subí SW_VERSION cuando cambies estrategias para forzar invalidación.
 // ══════════════════════════════════════════════════════════════
-const SW_VERSION = 'tulula-20261121-184501';
+const SW_VERSION = 'tulula-20261121-191812';
 const CACHE_STATIC  = 'tulula-static-' + SW_VERSION;
 const CACHE_RUNTIME = 'tulula-runtime-' + SW_VERSION;
 // VR_CARGA02_2NOV · interruptor: false = vuelve el network-first de siempre (baja el index.html entero en cada apertura).
@@ -134,6 +134,14 @@ self.addEventListener('fetch', event => {
   //      en otro caché): bajaba ~1 MB más en cada apertura y podía contestar con una copia vieja.
   if (VR_CARGA02 && url.origin === self.location.origin && esPaginaErp(url)) {
     event.respondWith(networkFirst(req, CACHE_STATIC));
+    return;
+  }
+
+  // 4.6. 21-nov-2026 · los scripts de las pantallas (mk_disenos.js, mk_dias.js…) → NETWORK-FIRST, igual que el HTML.
+  //      Con stale-while-revalidate Pablo publicó Diseños y su navegador siguió mostrando el script VIEJO (sin Fondos,
+  //      con la ✕ blanca) hasta la segunda recarga. Con la pregunta corta, si no cambió cuesta 0 KB.
+  if (url.origin === self.location.origin && /\/(mk_[a-z_]+|margen_local|cuadre_local)\.js$/.test(url.pathname)) {
+    event.respondWith(networkFirst(req, CACHE_RUNTIME));
     return;
   }
 
