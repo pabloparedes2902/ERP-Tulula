@@ -6,11 +6,11 @@
    Archivar en vez de borrar. «📤 A Por usar» = PNG listo → 🎬 Biblioteca › Por usar (ahí 🚀 Anuncio lo crea en Meta en pausa).
    Formatos: 4:5 (feed) y 9:16 (historias y reels, con zonas seguras de Meta). */
 const DIS = { piezas: [], sinf: {}, lote: null, pz: null, filas: null, prods: null, marca: null, puede: false, info: {}, ver: 'plantillas', tipoNuevo: 'estatico', fForm: '', fMsj: '', q: '', ed: null, sel: -1, prod: '', color: '', msg: '' };
-const DIS_TAM = { '4x5': [1080, 1350], '9x16': [1080, 1920] };
+const DIS_TAM = { '4x5': [1080, 1350], '9x16': [1080, 1920], '1x1': [1080, 1080] };
 const DIS_MSJ = [['producto','Producto'],['beneficios','Beneficios'],['oferta','Oferta'],['colores','Colores'],['preventa','Preventa'],['frase','Frase'],['resenas','Reseñas']];
 const DIS_EST = { borrador: 'Borrador', prueba: 'En prueba', ganadora: 'Ganadora', archivada: 'Archivada' };
 const DIS_VIS = [['siempre','Siempre'],['oferta','Solo en oferta'],['sin_oferta','Solo sin oferta'],['preventa','Solo en preventa'],['beneficios','Solo con beneficios'],['ultimas','Solo en últimas tallas'],['resenas','Solo con reseñas'],['cita','Solo con cita de clienta'],['sin_cita','Solo sin cita de clienta'],['badge','Solo si hay etiqueta'],['foto_clienta','Solo con reseña con foto'],['sin_foto_clienta','Solo sin reseña con foto'],['con_precio','Solo si se muestra el precio'],['junto','Solo si tiene prenda que se compra junta'],['sin_junto','Solo si no tiene prenda junta']];
-const DIS_CAMPOS = [['{{nombre}}','Nombre'],['{{precio}}','Precio'],['{{precio_antes}}','Precio antes'],['{{descuento}}','% descuento'],['{{ahorro}}','Ahorro'],['{{frase}}','Frase gigante'],['{{color}}','Color'],['{{colores_n}}','N.º de colores'],['{{tallas}}','Tallas'],['{{ultimas}}','Últimas tallas'],['{{categoria}}','Categoría'],['{{nombre_corto}}','Nombre corto'],['{{estrellas}}','Estrellas'],['{{n_resenas}}','N.º reseñas'],['{{resena}}','Cita de clienta'],['{{resena_quien}}','Quién la dijo'],['{{badge}}','Etiqueta automática'],['{{ventaja1}}','Ventaja 1 (cuotas)'],['{{ventaja2}}','Ventaja 2'],['{{ventaja3}}','Ventaja 3'],['{{ventaja4}}','Ventaja 4'],['{{ventaja5}}','Ventaja 5 (envío S/ 200)'],['{{ventaja6}}','Ventaja 6 (envío 1.ª compra)'],['{{junto_nombre}}','Se compra junto con'],['{{juntos_n}}','Clientas que las llevaron juntas'],['{{resena_foto_texto}}','Reseña con foto'],['{{beneficio1}}','Beneficio 1'],['{{beneficio2}}','Beneficio 2'],['{{beneficio3}}','Beneficio 3'],['{{beneficio1_texto}}','Detalle beneficio 1']];
+const DIS_CAMPOS = [['{{nombre}}','Nombre'],['{{precio}}','Precio'],['{{precio_antes}}','Precio antes'],['{{descuento}}','% descuento'],['{{ahorro}}','Ahorro'],['{{frase}}','Frase gigante'],['{{color}}','Color'],['{{colores_n}}','N.º de colores'],['{{tallas}}','Tallas'],['{{ultimas}}','Últimas tallas'],['{{categoria}}','Categoría'],['{{nombre_corto}}','Nombre corto'],['{{estrellas}}','Estrellas'],['{{n_resenas}}','N.º reseñas'],['{{resena}}','Cita de clienta'],['{{resena_quien}}','Quién la dijo'],['{{badge}}','Etiqueta automática'],['{{ventaja1}}','Ventaja 1 (cuotas)'],['{{ventaja2}}','Ventaja 2'],['{{ventaja3}}','Ventaja 3'],['{{ventaja4}}','Ventaja 4'],['{{ventaja5}}','Ventaja 5 (envío S/ 200)'],['{{ventaja6}}','Ventaja 6 (envío 1.ª compra)'],['{{junto_nombre}}','Se compra junto con'],['{{fecha}}','Fecha comercial'],['{{fecha_frase}}','Frase de la fecha'],['{{fecha_sub}}','Detalle de la fecha'],['{{fecha_limite}}','Pide hasta… (llega a tiempo)'],['{{juntos_n}}','Clientas que las llevaron juntas'],['{{resena_foto_texto}}','Reseña con foto'],['{{beneficio1}}','Beneficio 1'],['{{beneficio2}}','Beneficio 2'],['{{beneficio3}}','Beneficio 3'],['{{beneficio1_texto}}','Detalle beneficio 1']];
 const DIS_COLS = [['principal','Azul'],['acento','Naranja'],['fondo','Crema'],['suave','Gris azulado'],['texto','Texto'],['oferta','Oferta'],['blanco','Blanco'],['negro','Negro']];
 const DIS_MARCA_DEF = { aprobada: false, f_titulo: 'Tenor Sans', f_texto: 'Jost', c_principal: '#173B61', c_acento: '#C15B07', c_texto: '#000000', c_fondo: '#EDEAE3', c_oferta: '#C15B07', c_suave: '#D3DBE5',   /* 21-nov · colores oficiales que pasó Pablo */
   logo_oscuro: 'https://cdn.shopify.com/s/files/1/0722/3564/7189/files/logo-oscuro_649cf6f9-9636-42ac-9f18-05f5af1ff2de.png' };
@@ -307,7 +307,25 @@ const DIS_BASE = [
     { t: 'texto', txt: '{{nombre}}  +  {{junto_nombre}}', x: 5, y: 82, w: 90, tam: 30, fuente: 'titulo', color: 'principal', lh: 1.2, vis: 'junto' },
     { t: 'texto', txt: '{{nombre}}', x: 5, y: 82, w: 90, tam: 30, fuente: 'titulo', color: 'principal', lh: 1.2, vis: 'sin_junto' },
     { t: 'texto', txt: '{{juntos_n}}', x: 5, y: 88.5, w: 90, tam: 21, fuente: 'texto', color: 'texto', mayus: true, ls: 2 },
-    { t: 'texto', txt: '{{ventaja5}}', x: 5, y: 93.5, w: 90, tam: 21, fuente: 'texto', color: 'acento', ls: 1 } ] }
+    { t: 'texto', txt: '{{ventaja5}}', x: 5, y: 93.5, w: 90, tam: 21, fuente: 'texto', color: 'acento', ls: 1 } ] },
+  /* 21-nov noche · Fase 4 calendario comercial: el texto sale de la fecha elegida (Navidad, Día de la Madre…) */
+  { nombre: 'Fecha · Regalo', mensaje: 'producto', ref: 'Calendario comercial', ajustes: { fondo: 'principal' }, capas: [
+    { t: 'texto', txt: '{{fecha}}', x: 6, y: 5, w: 60, tam: 22, fuente: 'texto', color: 'acento', mayus: true, ls: 4 },
+    { t: 'texto', txt: '{{fecha_frase}}', x: 6, y: 9, w: 88, tam: 70, fuente: 'titulo', color: 'fondo', lh: 1.05 },
+    { t: 'foto', src: 'color:0', x: 20, y: 27, w: 60, h: 58, arco: true, pos: 'center top' },
+    { t: 'texto', txt: '{{nombre}}', x: 6, y: 87, w: 60, tam: 26, fuente: 'titulo', color: 'fondo' },
+    { t: 'texto', txt: '{{fecha_limite}}', x: 6, y: 92.5, w: 88, tam: 21, fuente: 'texto', color: 'fondo', op: 0.85, ls: 1 },
+    { t: 'logo', x: 74, y: 87, w: 20 } ] },
+  { nombre: 'Fecha · Último día', mensaje: 'oferta', ref: 'Calendario comercial · cierre', capas: [
+    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 56, h: 100, pos: 'center top' },
+    { t: 'logo', x: 62, y: 5, w: 30 },
+    { t: 'texto', txt: '{{fecha}}', x: 60, y: 22, w: 36, tam: 22, fuente: 'texto', color: 'acento', mayus: true, ls: 3 },
+    { t: 'texto', txt: '{{fecha_frase}}', x: 60, y: 26, w: 36, tam: 52, fuente: 'titulo', color: 'principal', lh: 1.08 },
+    { t: 'texto', txt: '~~{{precio_antes}}~~', x: 60, y: 52, w: 36, tam: 30, fuente: 'texto', color: 'texto', vis: 'oferta' },
+    { t: 'texto', txt: '{{precio}}', x: 60, y: 56, w: 36, tam: 64, fuente: 'texto', peso: 600, color: 'acento' },
+    { t: 'texto', txt: '{{descuento}}', x: 60, y: 65, w: 16, tam: 28, fuente: 'texto', peso: 600, color: 'blanco', fondo: 'acento', pad: 8, r: 999, al: 'center', vis: 'oferta' },
+    { t: 'texto', txt: '{{fecha_limite}}', x: 60, y: 76, w: 36, tam: 22, fuente: 'texto', color: 'blanco', fondo: 'principal', pad: 10, r: 6, lh: 1.3 },
+    { t: 'texto', txt: '{{ventaja1}}', x: 60, y: 92, w: 36, tam: 19, fuente: 'texto', color: 'texto' } ] }
 
 ];
 
@@ -336,7 +354,9 @@ async function disInfo(handle){
   if (!handle) return {};
   const v = DIS.info[handle]; if (v) return await v;
   const pr = fetch('https://tulula.com.pe/products/' + encodeURIComponent(handle) + '.js').then(r => r.ok ? r.json() : {}).catch(() => ({}));
-  DIS.info[handle] = pr; const j = await pr; DIS.info[handle] = j || {}; return DIS.info[handle];
+  DIS.info[handle] = pr; const j = await pr; DIS.info[handle] = j || {};
+  try { const p0 = (DIS.prods || []).find(x => x.handle === handle), jn = p0 && _disJunto(p0); if (jn && !DIS.info[jn.p.handle]) await disInfo(jn.p.handle); } catch (_) {}
+  return DIS.info[handle];
 }
 /* producto de muestra: activo, con beneficios y reseñas (se ve el diseño completo) */
 function _disProdLindo(){ const L = (DIS.prods || []).filter(_disActivo); return L.find(p => (p.beneficios || []).length >= 2 && p.cita) || L.find(p => (p.beneficios || []).length >= 2) || L[0] || null; }
@@ -371,7 +391,7 @@ function disCtx(p, inf, color, aj){
   return { p, fotos, i0, color, colores: cols, portadas: cols.map(c => ({ c, src: portadaDe(c) })), benBase, ben,
     precio: _disSol(precio), antes: oferta ? _disSol(antes) : '', descuento: oferta ? '-' + Math.round((1 - precio / antes) * 100) + '%' : '',
     ahorro: oferta ? 'Ahorras ' + _disSol(antes - precio) : '', oferta, preventa, tallas, ultimas, agotado: !!vsAll.length && !tallas.length && ti >= 0,
-    estrellas: p.estrellas != null ? (+p.estrellas).toFixed(1).replace('.', ',') : '', n_resenas: +p.n_resenas || 0, cita: p.cita || '', cita_quien: p.cita_quien || '', foto_clienta: p.foto_clienta || '', foto_texto: p.foto_texto || '', foto_quien: p.foto_quien || '', junto: _disJunto(p),
+    estrellas: p.estrellas != null ? (+p.estrellas).toFixed(1).replace('.', ',') : '', n_resenas: +p.n_resenas || 0, cita: p.cita || '', cita_quien: p.cita_quien || '', foto_clienta: p.foto_clienta || '', foto_texto: p.foto_texto || '', foto_quien: p.foto_quien || '', junto: _disJunto(p, color), fecha: _disFecha(aj.fecha),
     categoria: String(p.titulo || '').trim().split(/\s+/)[0] || '', nombre_corto: String(p.titulo || '').trim().split(/\s+/).slice(1).join(' ') || String(p.titulo || ''),
     badge: preventa ? 'Preventa' : ultimas ? 'Últimas tallas' : oferta ? 'Oferta ' + ('-' + Math.round((1 - precio / antes) * 100) + '%') : ((+p.n_resenas || 0) >= 10 ? 'Favorita de clientas' : ''), frase: p.frase || '', nombre: String(p.titulo || '') };
 }
@@ -393,7 +413,7 @@ function _disTxt(cx, t){
     const v = { nombre: cx.nombre, precio: cx.precio, precio_antes: cx.antes, descuento: cx.descuento, ahorro: cx.ahorro, frase: cx.frase, color: cx.color,
       colores_n: cx.colores.length > 1 ? cx.colores.length + ' colores' : '', tallas: tal, ultimas: cx.ultimas ? 'Últimas tallas: ' + cx.tallas.join(' y ') : '', marca: 'TULULA',
       estrellas: cx.estrellas, n_resenas: cx.n_resenas >= 100 ? cx.n_resenas + ' reseñas' : '',   /* 21-nov · Pablo: con menos de 100 no se muestra */
-      ventaja1: _disVentajas()[0] || '', ventaja2: _disVentajas()[1] || '', ventaja3: _disVentajas()[2] || '', ventaja4: _disVentajas()[3] || '', ventaja5: _disVentajas()[4] || '', ventaja6: _disVentajas()[5] || '', junto_nombre: cx.junto ? cx.junto.nombre : '', juntos_n: cx.junto && cx.junto.n >= 10 ? cx.junto.n + ' clientas las llevaron juntas' : '', resena_foto_texto: _disCorta(cx.foto_texto, 120), resena_foto_quien: cx.foto_quien || '', resena: cx.cita, resena_quien: cx.cita_quien,
+      ventaja1: _disVentajas()[0] || '', ventaja2: _disVentajas()[1] || '', ventaja3: _disVentajas()[2] || '', ventaja4: _disVentajas()[3] || '', ventaja5: _disVentajas()[4] || '', ventaja6: _disVentajas()[5] || '', junto_nombre: cx.junto ? cx.junto.nombre : '', fecha: cx.fecha ? cx.fecha.nombre : '', fecha_frase: cx.fecha ? cx.fecha.frase : '', fecha_sub: cx.fecha ? cx.fecha.sub : '', fecha_limite: cx.fecha ? cx.fecha.limite : '', juntos_n: cx.junto && cx.junto.n >= 10 ? cx.junto.n + ' clientas las llevaron juntas' : '', resena_foto_texto: _disCorta(cx.foto_texto, 120), resena_foto_quien: cx.foto_quien || '', resena: cx.cita, resena_quien: cx.cita_quien,
       categoria: cx.categoria, nombre_corto: cx.nombre_corto, badge: cx.badge }[k];
     return v == null ? '' : v; });
 }
@@ -413,7 +433,7 @@ function _disVis(c, cx){
 }
 function _disCol(c){
   const m = DIS.marca || DIS_MARCA_DEF;
-  return { principal: m.c_principal, acento: m.c_acento, texto: m.c_texto, fondo: m.c_fondo, oferta: m.c_oferta, suave: m.c_suave || '#D3DBE5', blanco: '#ffffff', negro: '#000000' }[c] || (/^#[0-9a-f]{3,8}$/i.test(c || '') ? c : m.c_principal);
+  return { principal: m.c_principal, acento: m.c_acento, texto: m.c_texto, fondo: m.c_fondo, oferta: m.c_oferta, suave: m.c_suave || '#D3DBE5', blanco: '#ffffff', negro: '#000000', transparente: 'transparent' }[c] || (/^#[0-9a-f]{3,8}$/i.test(c || '') ? c : m.c_principal);
 }
 
 /* ── dibujar: el mismo HTML sirve para la galería (chico), el editor y la imagen final (1080).
@@ -538,7 +558,7 @@ function disPintar(){
   const sel = (id, v, ops, ph) => '<select onchange="' + id + '=this.value;disPintar()"><option value="">' + ph + '</option>' + ops.map(o => '<option value="' + o[0] + '"' + (v === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
   const m = DIS.marca || DIS_MARCA_DEF;
   let h = '<div class="dis-cabeza"><div><div class="ui-blo">Diseños de anuncios</div><div class="ui-nota">Plantillas que se llenan solas con fotos, precios, colores y reseñas de cada prenda.</div></div>'
-    + '<div class="dis-barra-der">' + (DIS.puede ? '<button class="btn" onclick="disPiezasAbrir(null)">🧩 Piezas <span class="dis-cnt">' + DIS.piezas.filter(x => x.estado !== 'archivada').length + '</span></button><button class="btn" onclick="disFondosAbrir()">🏞️ Fondos</button><button class="btn" onclick="disMarcaAbrir()">🎨 Marca</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : '') + '</div></div>'
+    + '<div class="dis-barra-der">' + (DIS.puede ? '<button class="btn" onclick="disPiezasAbrir(null)">🧩 Piezas <span class="dis-cnt">' + DIS.piezas.filter(x => x.estado !== 'archivada').length + '</span></button><button class="btn" onclick="disADNAbrir()" title="Qué tienen en común los diseños que venden">🧬 ADN</button><button class="btn" onclick="disFondosAbrir()">🏞️ Fondos</button><button class="btn" onclick="disMarcaAbrir()">🎨 Marca</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : '') + '</div></div>'
     + '<div class="dis-barra"><div class="dis-barra-izq">' + b('plantillas', '✨ Plantillas') + b('activos', 'Mis diseños') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + '</div>'
     + (DIS.ver === 'plantillas' ? '</div>' : '<div class="dis-barra-der">' + sel('DIS.fForm', DIS.fForm, [['4x5', 'Feed 4:5'], ['9x16', 'Historias 9:16']], 'Todos los formatos') + sel('DIS.fMsj', DIS.fMsj, DIS_MSJ, 'Todos los mensajes')
     + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px"></div></div>');
@@ -560,6 +580,8 @@ function _disTarjeta(f){
       + '<button class="btn" onclick="disUsar(' + f.id + ')" title="Hacer la imagen y llevarla a 🎬 Biblioteca › Por usar">📤 Usar</button>'
       + '<button class="btn" onclick="disLoteAbrir(' + f.id + ',1)" title="Elige 2 a 10 prendas o colores y sale como carrusel">🎠 Carrusel</button>'
       + '<button class="btn" onclick="disCriticarFila(' + f.id + ')" title="Nota de la IA y qué mejorar (~US$0,01)">🧐 Revisar</button>'
+      + '<button class="btn" onclick="disVideoAbrir(' + f.id + ')" title="Video corto para Reels e Historias (sin costo)">🎬 Video</button>'
+      + '<button class="btn" onclick="disMarcoCatalogo(' + f.id + ')" title="Marco transparente para anuncios de catálogo de Meta">🖼 Marco catálogo</button>'
       + '<button class="btn" onclick="disDuplicar(' + f.id + ')">⧉ Duplicar</button><button class="btn" onclick="disEstado(' + f.id + ',\'archivada\')" title="Se guarda en Archivados y se puede restaurar">🗄 Archivar</button>'
       + '<button class="btn" onclick="disEliminar(' + f.id + ')">🗑 Eliminar</button>';
   const estSel = DIS.puede && est !== 'archivada' ? '<select class="dis-est" onchange="disEstado(' + f.id + ',this.value)">' + ['borrador', 'prueba', 'ganadora'].map(k => '<option value="' + k + '"' + (k === est ? ' selected' : '') + '>' + DIS_EST[k] + '</option>').join('') + '</select>'
@@ -592,6 +614,7 @@ function _disPlantillasHtml(){
     + '<div class="dis-seg">' + [['', 'Todos'], ...DIS_TEMP].map(o => '<button type="button" class="' + ((DIS.fTemp || '') === o[0] ? 'on' : '') + '" title="' + disA(DIS_TEMP_NOTA[o[0]] || 'Todas las plantillas') + '" onclick="DIS.fTemp=\'' + o[0] + '\';disPintar()">' + o[1] + '</button>').join('') + '</div>'
     + '<div class="dis-seg">' + seg('estatico', '🖼 Una imagen') + seg('carrusel', '🎠 Carrusel') + '</div>'
     + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="4x5">Feed 4:5</option><option value="9x16">Historias 9:16</option></select></div></div>'
+    + _disCalendarioHtml()
     + (DIS.tipoNuevo === 'carrusel' ? '<div class="dis-aviso">🎠 Carrusel: eliges la plantilla, la guardas y luego marcas 2 a 10 prendas o colores. Cada una sale como una tarjeta del carrusel, en el orden que las elijas, y va junta a 🎬 Biblioteca › Por usar.</div>' : '')
     + '<div class="dis-grilla" id="disNuevoGrilla">';
   if (DIS.puede) h += '<div class="dis-tarj dis-elegir" onclick="disCapturaAbrir()"><div class="dis-mini dis-blanco dis-ia">📷<b>Crear desde captura</b><span class="ui-nota">Pega un anuncio que te guste y la IA lo adapta a Tulula</span></div><div class="dis-tarj-pie"><div class="ui-tot">✨ Desde captura</div><div class="ui-nota">~US$0,02 cada una</div></div></div>';
@@ -600,13 +623,13 @@ function _disPlantillasHtml(){
 }
 function disNuevoPintar(){
   const p = _disProdLindo(), form = (document.getElementById('disNuevoForm') || {}).value || '4x5'; if (!p) return;
-  disInfo(p.handle).then(inf => DIS_BASE.forEach((b, i) => { const el = document.getElementById('disBase' + i); if (el) el.innerHTML = disHtml({ nombre: b.nombre, mensaje: b.mensaje, formato: form, capas: b.capas, ajustes: b.ajustes || {} }, disCtx(p, inf), 248 / 1080, { ancho: 500 }); }));
+  disInfo(p.handle).then(inf => DIS_BASE.forEach((b, i) => { const el = document.getElementById('disBase' + i); if (el) el.innerHTML = disHtml({ nombre: b.nombre, mensaje: b.mensaje, formato: form, capas: b.capas, ajustes: b.ajustes || {} }, disCtx(p, inf, '', { fecha: DIS.fechaSel }), 248 / 1080, { ancho: 500 }); }));
 }
 function disNuevo(i){
   const b = DIS_BASE[i], form = (document.getElementById('disNuevoForm') || {}).value || '4x5';
   const n = document.getElementById('disNuevo'); if (n) n.remove();
   const p = (DIS.prods || [])[0];
-  DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: DIS.tipoNuevo === 'carrusel' ? 'carrusel' : 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '', temp: b ? _disTemp(b) : 'frio' }), padre_id: null, _sucio: true };
+  DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: DIS.tipoNuevo === 'carrusel' ? 'carrusel' : 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '', temp: b ? _disTemp(b) : 'frio', fecha: (_disFecha(DIS.fechaSel) || {}).k || '' }), padre_id: null, _sucio: true };
   DIS.sel = -1; DIS.prod = DIS.ed.ajustes.prev_handle; DIS.color = '';
   _disEdAbrir();
 }
@@ -1024,6 +1047,7 @@ async function disMarcaGuardar(aprobar){
     + '.dis-cabeza{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}'
     + '.dis-barra{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}.dis-barra-izq,.dis-barra-der{display:flex;gap:6px;align-items:center;flex-wrap:wrap}'
     + '.dis-cnt{display:inline-block;min-width:18px;padding:0 6px;margin-left:4px;border-radius:9px;background:rgba(255,255,255,.08);font:600 11px var(--ui-f);text-align:center}'
+    + '.dis-cal{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}.dis-cal-f{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid var(--bd);border-radius:999px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-cal-f.on{border-color:#7c5cff;background:rgba(124,92,255,.14)}'
     + '.dis-aviso{display:flex;align-items:center;gap:8px;justify-content:space-between;margin:0 0 14px;padding:9px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);font:400 13px var(--ui-f);color:var(--txt)}'
     + '.dis-grilla{display:grid;grid-template-columns:repeat(auto-fill,minmax(264px,1fr));gap:14px}'
     + '.dis-tarj{background:var(--card);border:1px solid var(--bd);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;transition:border-color .15s,transform .15s}'
@@ -1271,7 +1295,7 @@ const DIS_TEMP_NOTA = { frio: 'No te conoce: gancho, prenda o reseña; precio ch
 /* criterio propio de Claude con los datos de Confect/Madgicx (ver turno 21-nov): qué público ataca mejor cada plantilla */
 const DIS_TEMP_BASE = { 'Editorial dividido': 'caliente', 'Díptico': 'tibio', 'Detalle de la prenda': 'frio', 'Recorte sobre azul': 'frio', 'Marco de galería': 'frio', 'Reseña de clienta': 'frio',
   'Arco editorial': 'caliente', 'Colores': 'tibio', 'Pantalla completa': 'frio', 'Preventa': 'tibio', 'Ficha con detalle': 'tibio', 'Logo gigante detrás': 'frio', 'Estilo de vida + prenda': 'tibio',
-  'Ficha con dos detalles': 'tibio', 'Tríptico': 'caliente', 'Llegada nueva': 'tibio', 'Oferta en curva': 'caliente', 'Cinta de colección': 'frio', 'Prenda en panel': 'tibio', 'Franja oscura con precio': 'caliente', 'Reseña con foto': 'frio', 'Se compran juntas': 'tibio' };
+  'Ficha con dos detalles': 'tibio', 'Tríptico': 'caliente', 'Llegada nueva': 'tibio', 'Oferta en curva': 'caliente', 'Cinta de colección': 'frio', 'Prenda en panel': 'tibio', 'Franja oscura con precio': 'caliente', 'Reseña con foto': 'frio', 'Se compran juntas': 'tibio', 'Fecha · Regalo': 'tibio', 'Fecha · Último día': 'caliente' };
 function _disTemp(f){ const a = (f && f.ajustes) || {}; const nb = String((f && f.nombre) || ''); return a.temp || DIS_TEMP_BASE[nb] || DIS_TEMP_BASE[Object.keys(DIS_TEMP_BASE).find(k => nb.indexOf(k) === 0) || ''] || ({ oferta: 'caliente', preventa: 'tibio', colores: 'tibio' }[f && f.mensaje]) || 'frio'; }
 function _disTempChip(t){ const o = DIS_TEMP.find(x => x[0] === t) || DIS_TEMP[0]; return '<span class="dis-temp dis-temp-' + o[0] + '" title="' + disA(DIS_TEMP_NOTA[o[0]]) + '">' + o[1] + '</span>'; }
 /* regla de ganadora: gasto mínimo en «veces el CPA objetivo», compras mínimas y ROAS en «veces el ROAS de equilibrio».
@@ -1281,12 +1305,22 @@ function _disTempChip(t){ const o = DIS_TEMP.find(x => x[0] === t) || DIS_TEMP[0
 /* pareja del producto: misma prenda+diseño del ERP («BLAZER MIRELLA») ↔ producto de Shopify por su título */
 function _disNorm(t){ return String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase(); }
 function _disLado(p, k){ const w = _disNorm(p && p.titulo).split(/\s+/), q = String(k || '').split(' '); return w[0] === q[0] && w.indexOf(q[1]) > 0; }
-function _disJunto(p){
+/* 21-nov noche (Pablo) · solo CONJUNTOS: misma prenda-diseño con el mismo nombre (Blazer Mirella + Pantalón Mirella).
+   Una blusa con un pantalón de otro nombre NO cuenta. La pareja sale en el MISMO color (si lo tiene). */
+function _disJunto(p, color){
   if (!p || !Array.isArray(DIS.juntas) || !DIS.juntas.length) return null;
   for (const j of DIS.juntas){
+    const qa = String(j.a || '').split(' '), qb = String(j.b || '').split(' '); if (!qa[1] || qa[1] !== qb[1]) continue;
     const otro = _disLado(p, j.a) ? j.b : _disLado(p, j.b) ? j.a : ''; if (!otro) continue;
     const q = (DIS.prods || []).filter(x => x.handle !== p.handle && _disLado(x, otro) && _disFotos(x).length).sort((a, b) => (_disActivo(a) ? 0 : 1) - (_disActivo(b) ? 0 : 1))[0];
-    if (q) return { p: q, nombre: String(q.titulo || ''), fotos: _disFotos(q), n: +j.n || 0 };
+    if (!q) continue;
+    let fotos = _disFotos(q); const inf = DIS.info && DIS.info[q.handle];
+    if (color && inf && !(inf instanceof Promise) && Array.isArray(inf.variants)){
+      const ops = inf.options || [], ci = ops.findIndex(o => /color/i.test(o.name || o)), cn = _disNorm(color);
+      const v = ci >= 0 && inf.variants.find(x => _disNorm((x.options || [x.option1, x.option2, x.option3])[ci]) === cn && x.featured_image);
+      if (v){ const k = fotos.findIndex(u => _disArch(u) === _disArch(v.featured_image.src)); if (k > 0) fotos = [fotos[k]].concat(fotos.filter((_, i) => i !== k)); }
+    }
+    return { p: q, nombre: String(q.titulo || ''), fotos, n: +j.n || 0 };
   }
   return null;
 }
@@ -1352,7 +1386,7 @@ async function disCriticarFila(id){
 }
 /* ══ 21-nov noche (Pablo) · precio según público, ventajas de la tienda, luz del ambiente, parecido entre diseños ══ */
 /* Ventajas de Tulula (de tulula.com.pe + las que dijo Pablo). Editables en 🎨 Marca. Campos {{ventaja1}}…{{ventaja4}}. */
-const DIS_VENTAJAS_DEF = ['Paga hasta en 6 cuotas sin intereses', 'Primer cambio de talla gratis', '10% en tu primera compra', 'Pago semi contra entrega', 'Envío gratis desde S/ 200', 'Envío gratis desde S/ 100 en tu primera compra'];
+const DIS_VENTAJAS_DEF = ['Paga hasta en 6 cuotas sin intereses', 'Primer cambio de talla gratis', '10% en tu primera compra', 'Pago semi contra entrega', 'Envío gratis desde S/ 200', 'Envío gratis en tu primera compra web desde S/ 100'];
 function _disVentajas(){ const v = (DIS.marca && DIS.marca.ventajas) || DIS_VENTAJAS_DEF; return Array.isArray(v) ? v.filter(x => String(x || '').trim()) : DIS_VENTAJAS_DEF; }
 /* Decisión de Pablo: Frío y Tibio SIN precio; Caliente con precio nuevo grande + tachado + % (se puede forzar por diseño). */
 function _disSinPrecio(d){
@@ -1516,3 +1550,137 @@ async function disPiezasUsar(){
     + '.dis-pz-env{position:absolute;top:8px;right:8px}';
   document.head.appendChild(s);
 })();
+
+/* ══ 21-nov noche · Fase 4 · 📅 CALENDARIO COMERCIAL (Pablo aprobó). Fechas de Perú que mueven moda ejecutiva.
+   Criterio (práctica de retail grande, no dato de Tulula): creativos listos ~1 semana antes de pautar; pauta 2-5 semanas antes según la fecha;
+   la fecha límite de pedido deja 4 días para que llegue (Lima y provincias). ══ */
+const DIS_FECHAS = [
+  { k: 'valentin', nombre: 'San Valentín', e: '💝', f: y => new Date(y, 1, 14), frase: 'Un look para enamorarte de ti', sub: 'Regálate algo que te haga sentir poderosa', ant: 21 },
+  { k: 'oficina', nombre: 'Regreso a la oficina', e: '💼', f: y => new Date(y, 2, 2), frase: 'Vuelve a la oficina con todo', sub: 'Looks listos para tu primera reunión', ant: 21 },
+  { k: 'mujer', nombre: 'Día de la Mujer', e: '🌷', f: y => new Date(y, 2, 8), frase: 'Para la mujer que lidera', sub: 'Celebra a la ejecutiva que eres', ant: 14 },
+  { k: 'madre', nombre: 'Día de la Madre', e: '💐', f: y => { const d = new Date(y, 4, 1); return new Date(y, 4, 1 + (7 - d.getDay()) % 7 + 7); }, frase: 'El regalo que mamá sí va a usar', sub: 'Elegancia para todos sus días', ant: 28 },
+  { k: 'patrias', nombre: 'Fiestas Patrias', e: '🇵🇪', f: y => new Date(y, 6, 28), frase: 'Impecable estas Fiestas Patrias', sub: 'Looks para los almuerzos y reuniones de julio', ant: 21 },
+  { k: 'blackfriday', nombre: 'Black Friday', e: '🖤', f: y => { const d = new Date(y, 10, 1); return new Date(y, 10, 1 + (4 - d.getDay() + 7) % 7 + 22); }, frase: 'Lo mejor de Tulula al mejor precio', sub: 'Solo por pocos días', ant: 14, oferta: true },
+  { k: 'navidad', nombre: 'Navidad', e: '🎄', f: y => new Date(y, 11, 25), frase: 'Regala elegancia esta Navidad', sub: 'El regalo perfecto para ella (o para ti)', ant: 35 },
+  { k: 'finano', nombre: 'Fin de año', e: '🥂', f: y => new Date(y, 11, 31), frase: 'Tu look para cerrar el año', sub: 'Brilla en la cena de fin de año', ant: 21 }];
+function _disDM(d){ return d.getDate() + '/' + (d.getMonth() + 1); }
+function _disFechasProx(hoy){
+  hoy = hoy || new Date(); const h0 = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+  return DIS_FECHAS.map(x => { let d = x.f(h0.getFullYear()); if (d < h0) d = x.f(h0.getFullYear() + 1);
+    const dias = Math.round((d - h0) / 864e5), pauta = new Date(d - x.ant * 864e5), crea = new Date(pauta - 7 * 864e5), lim = new Date(d - 4 * 864e5);
+    return Object.assign({}, x, { d, dias, pauta, crea, limite: x.oferta ? 'Solo hasta el ' + _disDM(d) : 'Pide hasta el ' + _disDM(lim) + ' y llega a tiempo', ya: h0 >= pauta }); })
+    .sort((a, b) => a.d - b.d);
+}
+function _disFecha(k, hoy){ const L = _disFechasProx(hoy); return (k && L.find(x => x.k === k)) || L[0] || null; }
+function _disCalendarioHtml(){
+  const L = _disFechasProx().slice(0, 5), sel = (_disFecha(DIS.fechaSel) || {}).k;
+  return '<div class="dis-cal"><span class="ui-nota" style="margin-right:6px">📅 PRÓXIMAS FECHAS</span>' + L.map(x => '<button type="button" class="dis-cal-f' + (x.k === sel ? ' on' : '') + '" onclick="DIS.fechaSel=\'' + x.k + '\';disPintar()" title="' + disA('Creativos desde el ' + _disDM(x.crea) + ' · pauta desde el ' + _disDM(x.pauta) + ' · ' + x.limite) + '">'
+    + x.e + ' <b>' + esc(x.nombre) + '</b> <span class="ui-nota">en ' + x.dias + ' días' + (x.ya ? ' · 🔴 ya toca pautar' : ' · pauta desde ' + _disDM(x.pauta)) + '</span></button>').join('') + '</div>';
+}
+
+/* ══ 21-nov noche · Fase 4 · 🧬 ADN DEL CREATIVO: qué tienen en común los diseños que venden (datos reales de sus anuncios) ══ */
+const DIS_ADN_EJES = [
+  ['Plantilla', f => String(f.nombre || '').replace(/\s*\(copia.*\)\s*$/i, '')],
+  ['Público', f => (DIS_TEMP.find(x => x[0] === _disTemp(f)) || ['', '—'])[1]],
+  ['Precio', f => _disSinPrecio(f) ? 'Sin precio' : 'Con precio'],
+  ['Foto', f => (f.capas || []).some(c => /^fondo:/.test(c.src || '')) ? 'Con fondo de ambiente' : 'De estudio'],
+  ['Tipo', f => f.tipo === 'carrusel' ? 'Carrusel' : 'Una imagen'],
+  ['Formato', f => f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5']];
+function _disADN(filas){
+  return DIS_ADN_EJES.map(([eje, fn]) => { const g = {};
+    (filas || []).filter(f => f.estado !== 'archivada').forEach(f => { const k = fn(f), x = _disRes(f.id) || {}, o = g[k] || (g[k] = { k, n: 0, gasto: 0, compras: 0, ingreso: 0, gana: 0 });
+      o.n++; o.gasto += +x.gasto || 0; o.compras += +x.pedidos || 0; o.ingreso += +x.ingreso || 0; if (f.estado === 'ganadora') o.gana++; });
+    const L = Object.values(g).map(o => Object.assign(o, { roas: o.gasto > 0 ? o.ingreso / o.gasto : null })).sort((a, b) => (b.roas || -1) - (a.roas || -1) || b.n - a.n);
+    return { eje, L, mejor: L.find(o => o.gasto > 0 && o.compras > 0) || null }; });
+}
+function disADNAbrir(){
+  const v = document.getElementById('disADN'); if (v) v.remove(); const A = _disADN(DIS.filas), n = x => String(x).replace('.', ',');
+  const hay = A.some(a => a.L.some(o => o.gasto > 0));
+  const res = hay ? '<div class="dis-aviso">🧬 Lo que más vende: ' + A.filter(a => a.mejor).map(a => '<b>' + esc(a.eje) + ':</b> ' + esc(a.mejor.k) + ' (ROAS ' + n(a.mejor.roas.toFixed(1)) + ')').join(' · ') + '</div>'
+    : '<div class="dis-aviso">Todavía ningún diseño de esta sección tiene anuncio con gasto. El ADN se llena solo cuando Paola use los diseños (📤 Usar → anuncio).</div>';
+  const tabla = a => '<div class="ui-blo" style="margin-top:12px">' + esc(a.eje) + '</div><table class="tt" style="width:100%"><thead><tr><th>' + esc(a.eje) + '</th><th>Diseños</th><th>Gasto</th><th>Compras</th><th>ROAS</th><th>🏆</th></tr></thead><tbody>'
+    + a.L.map(o => '<tr><td>' + esc(o.k) + '</td><td>' + o.n + '</td><td>S/ ' + Math.round(o.gasto) + '</td><td>' + o.compras + '</td><td>' + (o.roas == null ? '—' : n(o.roas.toFixed(2))) + '</td><td>' + (o.gana || '') + '</td></tr>').join('') + '</tbody></table>';
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disADN"><div class="dis-caja" style="max-width:760px;max-height:88vh;overflow:auto"><div class="dis-cab"><div><div class="ui-pag">🧬 ADN de los diseños</div><div class="ui-nota">Qué tienen en común los que venden · datos reales de sus anuncios</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disADN\').remove()') + '</div>'
+    + res + A.map(tabla).join('') + '</div></div>');
+}
+
+/* ══ 21-nov noche · Fase 5 · 🎬 VIDEO desde un diseño (sin costo: se arma en el navegador).
+   «Zoom suave» = una prenda 6 s · «Sus colores» = un color tras otro (2,4 s c/u). MP4 si el navegador puede; si no, WebM (Meta acepta los dos). ══ */
+function disVideoAbrir(id){
+  const f = (DIS.filas || []).find(x => x.id === id); if (!f) return; const v = document.getElementById('disVid'); if (v) v.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disVid"><div class="dis-caja" style="max-width:520px"><div class="dis-cab"><div><div class="ui-pag">🎬 Video · «' + esc(f.nombre) + '»</div><div class="ui-nota">Sin costo · no cambies de pestaña mientras se graba</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disVid\').remove()') + '</div>'
+    + '<div class="dis-props"><label class="dis-prop"><span class="ui-nota">Formato</span><select id="disVidForm"><option value="9x16"' + (f.formato === '9x16' ? ' selected' : '') + '>Historias y Reels 9:16</option><option value="4x5"' + (f.formato !== '9x16' ? ' selected' : '') + '>Feed 4:5</option></select></label></div>'
+    + '<div style="display:flex;gap:8px;margin:10px 0"><button class="btn on" onclick="disVideoHacer(' + id + ',\'zoom\')">🔍 Zoom suave (6 s)</button><button class="btn" onclick="disVideoHacer(' + id + ',\'colores\')">🎨 Sus colores, uno tras otro</button></div>'
+    + '<div id="disVidRes" class="ui-nota"></div></div></div>');
+}
+async function _disMuxLib(){
+  if (window.Mp4Muxer) return;
+  await new Promise((ok, mal) => { const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/build/mp4-muxer.min.js'; sc.onload = ok; sc.onerror = () => mal(new Error('no cargó el armador de video')); document.head.appendChild(sc); });
+}
+function _disVidMime(){ const L = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']; return L.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || 'video/webm'; }
+function _disVidPlan(n, modo){ const seg = modo === 'colores' ? 2.4 : 6; return { seg, total: seg * Math.max(1, n), fade: 0.4 }; }
+async function disVideoHacer(id, modo){
+  const f = (DIS.filas || []).find(x => x.id === id), res = document.getElementById('disVidRes'); if (!f || !res || DIS._vidCorre) return; DIS._vidCorre = 1;
+  try {
+    const d = JSON.parse(JSON.stringify(f)); d.ajustes = d.ajustes || {}; d.formato = (document.getElementById('disVidForm') || {}).value || d.formato || '4x5';
+    const p = _disProd(d.ajustes.prev_handle), inf = await disInfo(p.handle), cx0 = disCtx(p, inf, d.ajustes.prev_color, d.ajustes);
+    const cols = modo === 'colores' ? (cx0.colores.length > 1 ? cx0.colores.slice(0, 5) : [cx0.color]) : [cx0.color], imgs = [];
+    for (let i = 0; i < cols.length; i++){ res.textContent = 'Haciendo la imagen ' + (i + 1) + ' de ' + cols.length + '…'; imgs.push(await createImageBitmap(await disPng(d, disCtx(p, inf, cols[i], d.ajustes)))); }
+    const [W, H] = DIS_TAM[d.formato] || DIS_TAM['4x5'], cv = document.createElement('canvas'); cv.width = W; cv.height = H; const g = cv.getContext('2d');
+    const pl = _disVidPlan(imgs.length, modo), FPS = 30;
+    const pinta = (im, z, a) => { g.globalAlpha = a; g.drawImage(im, (W - W * z) / 2, (H - H * z) / 2, W * z, H * z); g.globalAlpha = 1; };
+    const cuadro = t => { const i = Math.min(imgs.length - 1, Math.floor(t / pl.seg)), lt = t - i * pl.seg; g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+      if (i > 0 && lt < pl.fade) pinta(imgs[i - 1], 1.06, 1); pinta(imgs[i], 1 + 0.06 * (lt / pl.seg), Math.min(1, lt / pl.fade)); };
+    let blob, mime;
+    if (window.VideoEncoder){
+      /* cuadro por cuadro (no depende de que la pestaña esté al frente) → MP4 de verdad, con duración */
+      res.textContent = 'Armando el video…'; await _disMuxLib(); mime = 'video/mp4';
+      const mx = new Mp4Muxer.Muxer({ target: new Mp4Muxer.ArrayBufferTarget(), video: { codec: 'avc', width: W, height: H }, fastStart: 'in-memory' });
+      let err = null; const enc = new VideoEncoder({ output: (c, m) => mx.addVideoChunk(c, m), error: e => { err = e; } });
+      enc.configure({ codec: 'avc1.640028', width: W, height: H, bitrate: 6e6, framerate: FPS });
+      const N = Math.round(pl.total * FPS);
+      for (let k = 0; k < N; k++){ if (err) throw err; cuadro(k / FPS); const vf = new VideoFrame(cv, { timestamp: Math.round(k * 1e6 / FPS), duration: Math.round(1e6 / FPS) }); enc.encode(vf, { keyFrame: k % 60 === 0 }); vf.close();
+        if (enc.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 0)); if (k % 30 === 0) res.textContent = 'Armando el video… ' + Math.round(k / N * 100) + '%'; }
+      await enc.flush(); if (err) throw err; mx.finalize(); blob = new Blob([mx.target.buffer], { type: mime });
+    } else {
+      mime = _disVidMime(); const ch = [], rec = new MediaRecorder(cv.captureStream(FPS), { mimeType: mime, videoBitsPerSecond: 8e6 });
+      rec.ondataavailable = e => { if (e.data && e.data.size) ch.push(e.data); };
+      res.textContent = 'Grabando ' + Math.round(pl.total) + ' s…'; rec.start(200); const t0 = performance.now();
+      await new Promise(ok => { const paso = () => { const t = (performance.now() - t0) / 1000; if (t >= pl.total){ ok(); return; } cuadro(t); requestAnimationFrame(paso); }; paso(); });
+      await new Promise(ok => { rec.onstop = ok; rec.stop(); }); blob = new Blob(ch, { type: mime.split(';')[0] });
+    }
+    if (blob.size < 20000) throw new Error('el video salió vacío');
+    const ext = /mp4/.test(mime) ? 'mp4' : 'webm', url = URL.createObjectURL(blob);
+    const nom = ('DIS' + f.id + '-' + p.handle + '-video-' + d.formato).replace(/[^a-z0-9-]+/gi, '-').toLowerCase() + '.' + ext;
+    DIS._vid = { file: new File([blob], nom, { type: blob.type }), d, p };
+    res.innerHTML = '<video src="' + url + '" controls autoplay loop muted playsinline style="width:100%;max-height:52vh;border-radius:8px;background:#000"></video>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><a class="btn" href="' + url + '" download="' + nom + '">⬇ Descargar</a><button class="btn on" onclick="disVideoABiblioteca()">📤 Mandar a Biblioteca</button></div>'
+      + '<div class="ui-nota">' + ext.toUpperCase() + ' · ' + Math.round(blob.size / 1024) + ' KB · ' + Math.round(pl.total) + ' s</div>';
+  } catch (e) { res.innerHTML = '<span class="mal">No pude hacer el video (' + esc(e.message) + ').</span>'; }
+  DIS._vidCorre = 0;
+}
+async function _disABiblioteca(file, d, p){
+  try { await _mklSb('/rest/v1/rpc/mk_diseno_usado', { method: 'POST', body: JSON.stringify({ p_id: d.id }) }); } catch (_) {}
+  mkIrSub('contenido'); await mkcrAbrir(); mkcrSubirAbrir(null); MKCR.disenoId = d.id; mkcrArchivo([file]);
+  const pr = document.getElementById('mkcrProd'), nom = _disProdNom(p.titulo); if (pr && nom){ pr.value = nom; pr.dispatchEvent(new Event('input', { bubbles: true })); }
+  try { mkcrNombreArmar(); } catch (_) {}
+}
+async function disVideoABiblioteca(){ const v = DIS._vid; if (!v) return; const m = document.getElementById('disVid'); if (m) m.remove(); await _disABiblioteca(v.file, v.d, v.p); }
+
+/* ══ 21-nov noche · Fase 5 · 🖼 MARCO PARA CATÁLOGO: PNG 1:1 transparente con lo fijo del diseño (logo, formas, ventajas).
+   Se sube en Meta al anuncio de catálogo (Opciones de catálogo › Marco) y se pone encima de TODAS las prendas de la web. ══ */
+function _disCapasMarco(capas){
+  return (capas || []).filter(c => c.t === 'logo' || c.t === 'forma' || c.t === 'degradado' || (c.t === 'texto' && !/\{\{(?!ventaja\d)\w+\}\}/.test(c.txt || '')));
+}
+async function disMarcoCatalogo(id){
+  const f = (DIS.filas || []).find(x => x.id === id); if (!f) return;
+  DIS.msg = 'Haciendo el marco para catálogo…'; disPintar();
+  try {
+    const d = JSON.parse(JSON.stringify(f)); d.formato = '1x1'; d.ajustes = Object.assign({}, d.ajustes || {}, { fondo: 'transparente' }); d.capas = _disCapasMarco(d.capas);
+    if (!d.capas.length) throw new Error('este diseño no tiene partes fijas (logo, formas o ventajas)');
+    const p = _disProd(d.ajustes.prev_handle), cx = disCtx(p, await disInfo(p.handle), '', d.ajustes), blob = await disPng(d, cx);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = ('marco-catalogo-DIS' + f.id).toLowerCase() + '.png'; document.body.appendChild(a); a.click(); a.remove();
+    DIS.msg = '🖼 Marco descargado (1080×1080, fondo transparente). En Meta: anuncio de catálogo › Opciones de catálogo › Marco › subir esta imagen.';
+  } catch (e) { DIS.msg = '<span class="mal">No pude hacer el marco (' + esc(e.message) + ').</span>'; }
+  disPintar();
+}
