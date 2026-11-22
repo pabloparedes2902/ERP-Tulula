@@ -604,7 +604,16 @@ async function _disMini(f){
 
 /* ── crear, duplicar, estado ── */
 /* 21-nov · «Nuevo diseño» = la pestaña ✨ Plantillas (Pablo: que sea lo primero que se ve) */
-function disNuevoAbrir(){ DIS.ver = 'plantillas'; disPintar(); const el = document.getElementById('mkDis'); if (el) el.scrollIntoView({ block: 'start' }); }
+/* 22-nov (Pablo: «el botón Nuevo diseño no funciona») · antes solo cambiaba a Plantillas, y si ya estabas ahí no pasaba nada.
+   Ahora abre «¿Cómo empiezas?» con 3 caminos de 1 clic, como Canva. */
+function disNuevoAbrir(){
+  const v = document.getElementById('disNv'); if (v) v.remove();
+  const op = (ico, t, d, fn) => '<button class="dis-nv-op" onclick="document.getElementById(\'disNv\').remove();' + fn + '"><span class="dis-nv-ico">' + ico + '</span><b>' + t + '</b><span class="ui-nota">' + d + '</span></button>';
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disNv"><div class="dis-caja" style="max-width:640px"><div class="dis-cab"><span class="ui-pag">¿Cómo empiezas?</span><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disNv\').remove()') + '</div>'
+    + '<div class="dis-nv">' + op('✨', 'Con una plantilla', 'Eliges una y se llena sola con la prenda', "DIS.ver='plantillas';disPintar()")
+    + op('＋', 'En blanco', 'Lienzo vacío para armarlo a tu gusto', 'disNuevo(-1)')
+    + (DIS.puede ? op('📷', 'Desde una captura', 'Pegas un anuncio que te gusta y la IA lo adapta', 'disCapturaAbrir()') : '') + '</div></div></div>');
+}
 function _disPlantillasHtml(){
   const seg = (k, t) => '<button type="button" class="' + (DIS.tipoNuevo === k ? 'on' : '') + '" onclick="DIS.tipoNuevo=\'' + k + '\';disPintar()">' + t + '</button>';
   let h = '<div class="dis-barra"><div class="dis-barra-izq"><span class="ui-nota">Elige una plantilla para empezar · todo se cambia después</span></div><div class="dis-barra-der">'
@@ -1037,6 +1046,7 @@ async function disMarcaGuardar(aprobar){
     + '.dis-cabeza{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}'
     + '.dis-barra{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}.dis-barra-izq,.dis-barra-der{display:flex;gap:6px;align-items:center;flex-wrap:wrap}'
     + '.dis-cnt{display:inline-block;min-width:18px;padding:0 6px;margin-left:4px;border-radius:9px;background:rgba(255,255,255,.08);font:600 11px var(--ui-f);text-align:center}'
+    + '.dis-nv{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.dis-nv-op{display:flex;flex-direction:column;align-items:center;gap:6px;padding:18px 12px;border:1px solid var(--bd);border-radius:12px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer;text-align:center}.dis-nv-op:hover{border-color:#7c5cff}.dis-nv-ico{font-size:22px}'
     + '.dis-acc4{display:flex;gap:6px;width:100%;margin-top:6px}.dis-acc4 .btn{flex:1 1 0;min-width:0;justify-content:center;white-space:nowrap;flex-direction:row;padding:0 4px;font-size:12px;gap:3px}'
     + '.dis-cal{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}.dis-cal-f{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid var(--bd);border-radius:999px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-cal-f.on{border-color:#7c5cff;background:rgba(124,92,255,.14)}'
     + '.dis-aviso{display:flex;align-items:center;gap:8px;justify-content:space-between;margin:0 0 14px;padding:9px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);font:400 13px var(--ui-f);color:var(--txt)}'
