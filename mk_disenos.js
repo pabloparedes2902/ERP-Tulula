@@ -292,7 +292,7 @@ async function disCargar(){
   const [f, p, m, pu, pz, sf] = await Promise.all([
     _mklSb('/rest/v1/mk_disenos?select=*&order=creado.desc'),
     DIS.prods ? Promise.resolve(DIS.prods) : _mklSb('/rest/v1/rpc/mk_dis_productos', { method: 'POST', body: '{}' }),
-    _mklSb('/rest/v1/mk_dis_config?select=clave,valor&clave=in.(marca,orden_plantillas)').catch(() => []),
+    _mklSb('/rest/v1/mk_dis_config?select=clave,valor&clave=in.(marca,orden_plantillas,regla_ganadora)').catch(() => []),
     _mklSb('/rest/v1/rpc/_mk_puede_editar', { method: 'POST', body: '{}' }).catch(() => false),
     _mklSb('/rest/v1/mk_dis_piezas?select=*&estado=neq.archivada&order=creado.desc&limit=2000').catch(() => []),
     _mklSb('/rest/v1/mk_dis_sinfondo?select=foto,url').catch(() => [])]);
@@ -300,8 +300,10 @@ async function disCargar(){
   DIS.piezas = Array.isArray(pz) ? pz : []; DIS.sinf = {}; (Array.isArray(sf) ? sf : []).forEach(x => { DIS.sinf[x.foto] = x.url; });
   DIS.prods = (Array.isArray(p) ? p : []).filter(x => !/^archived$/i.test(x.estado || '')).sort((a, b) => (_disActivo(a) ? 0 : 1) - (_disActivo(b) ? 0 : 1) || String(a.titulo).localeCompare(String(b.titulo)));
   const cfg = k => ((Array.isArray(m) ? m : []).find(x => x.clave === k) || {}).valor;
-  DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null;
+  DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null; DIS.regla = cfg('regla_ganadora') || null;
   _disFondosCargar();
+  try { DIS.res = await _mklSb('/rest/v1/rpc/mk_dis_resultados', { method: 'POST', body: '{}' }); } catch (_) { DIS.res = null; }
+  _disAutoEstado();
   DIS.puede = pu === true;
 }
 async function disInfo(handle){
@@ -506,7 +508,7 @@ function disPintar(){
   const sel = (id, v, ops, ph) => '<select onchange="' + id + '=this.value;disPintar()"><option value="">' + ph + '</option>' + ops.map(o => '<option value="' + o[0] + '"' + (v === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>';
   const m = DIS.marca || DIS_MARCA_DEF;
   let h = '<div class="dis-cabeza"><div><div class="ui-blo">Diseños de anuncios</div><div class="ui-nota">Plantillas que se llenan solas con fotos, precios, colores y reseñas de cada prenda.</div></div>'
-    + '<div class="dis-barra-der">' + (DIS.puede ? '<button class="btn" onclick="disPiezasAbrir(null)">🧩 Piezas <span class="dis-cnt">' + DIS.piezas.filter(x => x.estado !== 'archivada').length + '</span></button><button class="btn" onclick="disFondosAbrir()">🏞️ Fondos</button><button class="btn" onclick="disMarcaAbrir()">🎨 Marca</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : '') + '</div></div>'
+    + '<div class="dis-barra-der">' + (DIS.puede ? '<button class="btn" onclick="disPiezasAbrir(null)">🧩 Piezas <span class="dis-cnt">' + DIS.piezas.filter(x => x.estado !== 'archivada').length + '</span></button><button class="btn" onclick="disReglaAbrir()">🏆 Regla</button><button class="btn" onclick="disFondosAbrir()">🏞️ Fondos</button><button class="btn" onclick="disMarcaAbrir()">🎨 Marca</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : '') + '</div></div>'
     + '<div class="dis-barra"><div class="dis-barra-izq">' + b('plantillas', '✨ Plantillas') + b('activos', 'Mis diseños') + b('ganadoras', '🏆 Ganadoras') + b('archivados', 'Archivados') + '</div>'
     + (DIS.ver === 'plantillas' ? '</div>' : '<div class="dis-barra-der">' + sel('DIS.fForm', DIS.fForm, [['4x5', 'Feed 4:5'], ['9x16', 'Historias 9:16']], 'Todos los formatos') + sel('DIS.fMsj', DIS.fMsj, DIS_MSJ, 'Todos los mensajes')
     + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px"></div></div>');
@@ -533,6 +535,8 @@ function _disTarjeta(f){
     : '<span class="ui-chip ' + chip + '">' + DIS_EST[est] + '</span>';
   return '<div class="dis-tarj" data-k="' + f.id + '"' + (DIS.puede && est !== 'archivada' && est !== 'ganadora' ? ' draggable="true" title="Arrastra para cambiar el orden"' : '') + '><div class="dis-mini" id="disMini' + f.id + '" onclick="' + (DIS.puede && est !== 'archivada' ? 'disEditar(' + f.id + ')' : '') + '"></div>'
     + '<div class="dis-tarj-pie"><div class="dis-fila"><div class="ui-tot dis-nom" title="' + disA(f.nombre) + '"><span class="dis-cod">#' + _disCod(f.id) + '</span> ' + esc(f.nombre) + '</div>' + estSel + '</div>'
+    + '<div class="dis-fila" style="margin:2px 0">' + (DIS.puede && est !== 'archivada' ? '<select class="dis-est" title="Público al que apunta" onchange="disTempCambiar(' + f.id + ',this.value)">' + DIS_TEMP.map(o => '<option value="' + o[0] + '"' + (_disTemp(f) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>' : _disTempChip(_disTemp(f))) + '</div>'
+    + _disResLinea(f)
     + '<div class="ui-nota">' + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (npz ? ' · <a href="#" onclick="disPiezasAbrir(' + f.id + ');return false">' + npz + ' piezas</a>' : '') + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
     + '<div class="mkcr-acc dis-acc">' + acc + '</div></div></div>';
 }
@@ -552,12 +556,13 @@ function disNuevoAbrir(){ DIS.ver = 'plantillas'; disPintar(); const el = docume
 function _disPlantillasHtml(){
   const seg = (k, t) => '<button type="button" class="' + (DIS.tipoNuevo === k ? 'on' : '') + '" onclick="DIS.tipoNuevo=\'' + k + '\';disPintar()">' + t + '</button>';
   let h = '<div class="dis-barra"><div class="dis-barra-izq"><span class="ui-nota">Elige una plantilla para empezar · todo se cambia después</span></div><div class="dis-barra-der">'
+    + '<div class="dis-seg">' + [['', 'Todos'], ...DIS_TEMP].map(o => '<button type="button" class="' + ((DIS.fTemp || '') === o[0] ? 'on' : '') + '" title="' + disA(DIS_TEMP_NOTA[o[0]] || 'Todas las plantillas') + '" onclick="DIS.fTemp=\'' + o[0] + '\';disPintar()">' + o[1] + '</button>').join('') + '</div>'
     + '<div class="dis-seg">' + seg('estatico', '🖼 Una imagen') + seg('carrusel', '🎠 Carrusel') + '</div>'
     + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="4x5">Feed 4:5</option><option value="9x16">Historias 9:16</option></select></div></div>'
     + (DIS.tipoNuevo === 'carrusel' ? '<div class="dis-aviso">🎠 Carrusel: eliges la plantilla, la guardas y luego marcas 2 a 10 prendas o colores. Cada una sale como una tarjeta del carrusel, en el orden que las elijas, y va junta a 🎬 Biblioteca › Por usar.</div>' : '')
     + '<div class="dis-grilla" id="disNuevoGrilla">';
   if (DIS.puede) h += '<div class="dis-tarj dis-elegir" onclick="disCapturaAbrir()"><div class="dis-mini dis-blanco dis-ia">📷<b>Crear desde captura</b><span class="ui-nota">Pega un anuncio que te guste y la IA lo adapta a Tulula</span></div><div class="dis-tarj-pie"><div class="ui-tot">✨ Desde captura</div><div class="ui-nota">~US$0,02 cada una</div></div></div>';
-  _disOrdenPlantillas().forEach(i => { const b = DIS_BASE[i]; h += '<div class="dis-tarj dis-elegir" data-k="' + i + '"' + (DIS.puede ? ' draggable="true"' : '') + ' onclick="disNuevo(' + i + ')"><div class="dis-mini" id="disBase' + i + '"></div><div class="dis-tarj-pie"><div class="ui-tot"><span class="dis-cod">' + _disCod(i + 1) + '</span> ' + esc(b.nombre) + '</div><div class="ui-nota">Estilo ' + esc(b.ref || '') + (DIS.puede ? ' · arrastra para ordenar' : '') + '</div></div></div>'; });
+  _disOrdenPlantillas().filter(i => !DIS.fTemp || _disTemp(DIS_BASE[i]) === DIS.fTemp).forEach(i => { const b = DIS_BASE[i]; h += '<div class="dis-tarj dis-elegir" data-k="' + i + '"' + (DIS.puede ? ' draggable="true"' : '') + ' onclick="disNuevo(' + i + ')"><div class="dis-mini" id="disBase' + i + '"></div><div class="dis-tarj-pie"><div class="ui-tot"><span class="dis-cod">' + _disCod(i + 1) + '</span> ' + esc(b.nombre) + ' ' + _disTempChip(_disTemp(b)) + '</div><div class="ui-nota">Estilo ' + esc(b.ref || '') + (DIS.puede ? ' · arrastra para ordenar' : '') + '</div></div></div>'; });
   return h + '<div class="dis-tarj dis-elegir" onclick="disNuevo(-1)"><div class="dis-mini dis-blanco">＋ En blanco</div><div class="dis-tarj-pie"><div class="ui-tot">En blanco</div><div class="ui-nota">Arma el tuyo desde cero</div></div></div></div>';
 }
 function disNuevoPintar(){
@@ -568,7 +573,7 @@ function disNuevo(i){
   const b = DIS_BASE[i], form = (document.getElementById('disNuevoForm') || {}).value || '4x5';
   const n = document.getElementById('disNuevo'); if (n) n.remove();
   const p = (DIS.prods || [])[0];
-  DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: DIS.tipoNuevo === 'carrusel' ? 'carrusel' : 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '' }), padre_id: null, _sucio: true };
+  DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: DIS.tipoNuevo === 'carrusel' ? 'carrusel' : 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '', temp: b ? _disTemp(b) : 'frio' }), padre_id: null, _sucio: true };
   DIS.sel = -1; DIS.prod = DIS.ed.ajustes.prev_handle; DIS.color = '';
   _disEdAbrir();
 }
@@ -1017,6 +1022,9 @@ async function disMarcaGuardar(aprobar){
     + '.dis-capa-acc{display:flex;gap:0;opacity:0;transition:opacity .12s}.dis-capa:hover .dis-capa-acc,.dis-capa.on .dis-capa-acc{opacity:1}.dis-capa-acc .dis-ib{width:24px;height:24px}'
     + '.dis-props{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;align-items:flex-end}.dis-prop{display:flex;flex-direction:column;gap:3px;min-width:78px}.dis-prop input[type=number]{width:78px}.dis-ancho{width:100%}'
     + '.dis-chk{display:inline-flex;align-items:center;gap:6px;font:400 12px var(--ui-f);color:var(--txt);cursor:pointer;margin-right:6px}'
+    + '.dis-temp{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;margin-left:4px;vertical-align:middle}.dis-temp-frio{background:#1e3a5f;color:#9cc3e6}.dis-temp-tibio{background:#4a3a14;color:#e9c53b}.dis-temp-caliente{background:#5a2412;color:#f3a27a}'
+    + '.dis-res{display:flex;justify-content:space-between;gap:6px;align-items:center;font-size:12px;margin:2px 0}.dis-etapa{font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--bg3,#2a3142);color:var(--txt2)}.dis-etapa.e1{background:#3b3a14;color:#e9c53b}.dis-etapa.e2{background:#173b2a;color:#7fd3a0}.dis-etapa.e3{background:#1d4d2e;color:#a6f0c0}'
+    + '.dis-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;text-align:center;margin:6px 0}.dis-kpis b{display:block;font-size:22px;font-weight:600}'
     + '#disEdRes{max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
     + '.dis-cod{font-size:11px;font-weight:600;color:var(--mu,#8a93a6);letter-spacing:.5px;margin-right:2px}.dis-tarj[draggable=true]{cursor:grab}.dis-mueve{opacity:.4}'
     + '.dis-ia{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;padding:14px;font-size:28px}.dis-ia b{font-size:14px}'
@@ -1214,6 +1222,67 @@ function disFondoPoner(id){
       C.splice(k, 0, { t: 'forma', x: p.x + p.w * 0.25, y: Math.min(97, p.y + (p.h || 100) - 2.5), w: p.w * 0.5, h: 3, color: 'negro', op: 0.35, elipse: true, blur: 10 }); }
   }
   DIS.ed._sucio = true; const v = document.getElementById('disFon'); if (v) v.remove(); disEdPintar();
+}
+/* ══ 21-nov · FASE 3 (Pablo): público Frío / Tibio / Caliente + regla de ganadora en 3 etapas con datos del ERP ══ */
+const DIS_TEMP = [['frio', '❄️ Frío'], ['tibio', '🌤️ Tibio'], ['caliente', '🔥 Caliente']];
+const DIS_TEMP_NOTA = { frio: 'No te conoce: gancho, prenda o reseña; precio chico', tibio: 'Ya te vio: nombre, colores y precio visibles', caliente: 'Casi compra: precio grande, descuento, urgencia' };
+/* criterio propio de Claude con los datos de Confect/Madgicx (ver turno 21-nov): qué público ataca mejor cada plantilla */
+const DIS_TEMP_BASE = { 'Editorial dividido': 'caliente', 'Díptico': 'tibio', 'Detalle de la prenda': 'frio', 'Recorte sobre azul': 'frio', 'Marco de galería': 'frio', 'Reseña de clienta': 'frio',
+  'Arco editorial': 'caliente', 'Colores': 'tibio', 'Pantalla completa': 'frio', 'Preventa': 'tibio', 'Ficha con detalle': 'tibio', 'Logo gigante detrás': 'frio', 'Estilo de vida + prenda': 'tibio',
+  'Ficha con dos detalles': 'tibio', 'Tríptico': 'caliente', 'Llegada nueva': 'tibio', 'Oferta en curva': 'caliente', 'Cinta de colección': 'frio', 'Prenda en panel': 'tibio', 'Franja oscura con precio': 'caliente' };
+function _disTemp(f){ const a = (f && f.ajustes) || {}; const nb = String((f && f.nombre) || ''); return a.temp || DIS_TEMP_BASE[nb] || DIS_TEMP_BASE[Object.keys(DIS_TEMP_BASE).find(k => nb.indexOf(k) === 0) || ''] || ({ oferta: 'caliente', preventa: 'tibio', colores: 'tibio' }[f && f.mensaje]) || 'frio'; }
+function _disTempChip(t){ const o = DIS_TEMP.find(x => x[0] === t) || DIS_TEMP[0]; return '<span class="dis-temp dis-temp-' + o[0] + '" title="' + disA(DIS_TEMP_NOTA[o[0]]) + '">' + o[1] + '</span>'; }
+/* regla de ganadora: gasto mínimo en «veces el CPA objetivo», compras mínimas y ROAS en «veces el ROAS de equilibrio».
+   Base (Motion/Foreplay/práctica de cuentas grandes): no juzgar antes de gastar 1-3 CPA; ganadora = volumen + retorno sostenido. */
+const DIS_REGLA_DEF = { e1: { gx: 1, c: 1, r: 1 }, e2: { gx: 2, c: 3, r: 1.3 }, e3: { gx: 3, c: 10, r: 1.5 } };
+function _disRegla(){ const r = DIS.regla || {}; return { e1: Object.assign({}, DIS_REGLA_DEF.e1, r.e1), e2: Object.assign({}, DIS_REGLA_DEF.e2, r.e2), e3: Object.assign({}, DIS_REGLA_DEF.e3, r.e3) }; }
+function _disEtapa(x, base, regla){
+  if (!x || !base || !(+x.gasto > 0)) return 0; regla = regla || _disRegla(); const cpa = +base.cpa_obj || 0, be = +base.roas_be || 0, roas = +x.roas || 0;
+  let e = 0; ['e1', 'e2', 'e3'].forEach((k, i) => { const q = regla[k]; if (+x.gasto >= q.gx * cpa && +x.pedidos >= q.c && roas >= q.r * be) e = i + 1; });
+  return e;
+}
+function _disRes(id){ return ((DIS.res && DIS.res.disenos) || []).find(x => +x.diseno === +id) || null; }
+function _disResLinea(f){
+  const x = _disRes(f.id), b = DIS.res && DIS.res.base; if (!x || !(+x.gasto > 0)) return '<div class="ui-nota">' + (x && x.creativos ? 'En la Biblioteca, sin anuncio con gasto todavía' : 'Sin anuncios todavía') + '</div>';
+  const e = _disEtapa(x, b), n = v => String(v).replace('.', ',');
+  return '<div class="dis-res"><span>S/ ' + Math.round(x.gasto) + ' · ' + x.pedidos + ' compra' + (x.pedidos === 1 ? '' : 's') + ' · ROAS ' + n(x.roas || 0) + '</span>'
+    + '<span class="dis-etapa e' + e + '" title="Regla de ganadora: etapa ' + e + ' de 3">' + (e ? 'Etapa ' + e + '/3' : 'Aún no pasa la etapa 1') + '</span></div>';
+}
+/* sube sola: con gasto → «En prueba»; etapa 3 → 🏆 Ganadora (nunca baja sola) */
+async function _disAutoEstado(){
+  if (!DIS.puede || !DIS.res) return; const b = DIS.res.base, sub = [];
+  for (const f of (DIS.filas || [])){ if (f.estado === 'archivada' || f.estado === 'ganadora') continue;
+    const x = _disRes(f.id), e = _disEtapa(x, b), est = e >= 3 ? 'ganadora' : (x && +x.gasto > 0 && f.estado === 'borrador') ? 'prueba' : '';
+    if (!est) continue;
+    try { const r = await _mklSb('/rest/v1/rpc/mk_diseno_estado', { method: 'POST', body: JSON.stringify({ p_id: f.id, p_estado: est }) }); if (r && r.ok){ Object.assign(f, r.fila); if (est === 'ganadora') sub.push(f.nombre); } } catch (_) {}
+  }
+  if (sub.length){ DIS.msg = '🏆 Pasó a Ganadoras por la regla: ' + sub.map(esc).join(', ') + '.'; disPintar(); }
+}
+async function disTempCambiar(id, t){
+  const f = (DIS.filas || []).find(x => x.id === id); if (!f) return; f.ajustes = Object.assign({}, f.ajustes || {}, { temp: t });
+  try { const r = await _mklSb('/rest/v1/rpc/mk_diseno_guardar', { method: 'POST', body: JSON.stringify({ p_id: f.id, p_datos: { nombre: f.nombre, formato: f.formato, tipo: f.tipo || 'estatico', mensaje: f.mensaje, capas: f.capas, ajustes: f.ajustes, padre_id: f.padre_id || null } }) });
+    if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó'); } catch (e) { DIS.msg = '<span class="mal">No se guardó el público (' + esc(e.message) + ').</span>'; }
+  disPintar();
+}
+function disReglaAbrir(){
+  const v = document.getElementById('disRegla'); if (v) v.remove(); const R = _disRegla(), b = (DIS.res && DIS.res.base) || {}, n = v => String(v == null ? '—' : v).replace('.', ',');
+  const fila = (k, t, nota) => '<tr><td><b>' + t + '</b><div class="ui-nota">' + nota + '</div></td>'
+    + '<td><input type="number" step="0.5" min="0" id="disR_' + k + '_gx" value="' + R[k].gx + '" style="width:70px"> × CPA <span class="ui-nota">(S/ ' + Math.round((+b.cpa_obj || 0) * R[k].gx) + ')</span></td>'
+    + '<td><input type="number" step="1" min="0" id="disR_' + k + '_c" value="' + R[k].c + '" style="width:70px"></td>'
+    + '<td><input type="number" step="0.1" min="0" id="disR_' + k + '_r" value="' + R[k].r + '" style="width:70px"> × equilibrio <span class="ui-nota">(ROAS ' + n(Math.round((+b.roas_be || 0) * R[k].r * 100) / 100) + ')</span></td></tr>';
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disRegla"><div class="dis-caja" style="max-width:820px"><div class="dis-cab"><div><div class="ui-pag">🏆 Regla de ganadora</div><div class="ui-nota">Una plantilla sube de etapa cuando cumple las 3 cosas a la vez. En la etapa 3 pasa sola a 🏆 Ganadoras.</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disRegla\').remove()') + '</div>'
+    + '<div class="dis-kpis"><div><span class="ui-nota">MARGEN 90 DÍAS</span><b>' + n(b.margen_pct) + '%</b></div><div><span class="ui-nota">TICKET PROMEDIO</span><b>S/ ' + n(b.ticket) + '</b></div><div><span class="ui-nota">CPA OBJETIVO</span><b>S/ ' + n(b.cpa_obj) + '</b></div><div><span class="ui-nota">ROAS DE EQUILIBRIO</span><b>' + n(b.roas_be) + '</b></div></div>'
+    + '<div class="ui-nota" style="margin:6px 0 10px">Salen solos del ERP: CPA objetivo = lo que deja de margen una venta promedio; ROAS de equilibrio = el que no gana ni pierde.</div>'
+    + '<table class="tt" style="width:100%"><thead><tr><th>Etapa</th><th>Gasto mínimo</th><th>Compras</th><th>ROAS mínimo</th></tr></thead><tbody>'
+    + fila('e1', '1 · Prometedora', 'Ya vendió y no pierde plata') + fila('e2', '2 · En ascenso', 'Repite ventas con ganancia') + fila('e3', '3 · 🏆 Ganadora', 'Volumen y retorno sostenidos: escalar y replicar') + '</tbody></table>'
+    + (DIS.puede ? '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><span class="ui-nota" id="disReglaRes" style="flex:1"></span><button class="btn" onclick="disReglaGuardar(true)">↺ Valores recomendados</button><button class="btn on" onclick="disReglaGuardar()">Guardar regla</button></div>' : '') + '</div></div>');
+}
+async function disReglaGuardar(def){
+  const v = {}; ['e1', 'e2', 'e3'].forEach(k => { v[k] = def ? Object.assign({}, DIS_REGLA_DEF[k]) : { gx: +document.getElementById('disR_' + k + '_gx').value || 0, c: +document.getElementById('disR_' + k + '_c').value || 0, r: +document.getElementById('disR_' + k + '_r').value || 0 }; });
+  const res = document.getElementById('disReglaRes');
+  try { const r = await _mklSb('/rest/v1/rpc/mk_dis_config_guardar', { method: 'POST', body: JSON.stringify({ p_clave: 'regla_ganadora', p_valor: v }) }); if (!r || !r.ok) throw new Error((r && r.error) || 'no se guardó');
+    DIS.regla = v; disReglaAbrir(); const r2 = document.getElementById('disReglaRes'); if (r2) r2.textContent = '✓ Regla guardada'; _disAutoEstado(); disPintar();
+  } catch (e) { if (res) res.innerHTML = '<span class="mal">' + esc(e.message) + '</span>'; }
 }
 /* lote: combinaciones producto × color × formato × foto (función pura: la prueba la usa) */
 function _disLoteCombos(sel, formatos, fotos){
