@@ -729,7 +729,7 @@ async function disEdPintar(){
   const p = _disProd(DIS.prod), inf = p ? await disInfo(p.handle) : {};
   if (!DIS.ed) return;
   const cx = disCtx(p, inf, DIS.color, DIS.ed.ajustes); DIS.color = cx.color; DIS._cx = cx;
-  const cc = document.getElementById('disEdCols'); if (cc) cc.innerHTML = _disColoresHtml(cx); document.querySelectorAll('#disEdTira .dis-tira-p').forEach(b => b.classList.toggle('on', b.dataset.h === DIS.prod));
+  const cc = document.getElementById('disEdCols'); if (cc) cc.innerHTML = _disColoresHtml(cx) + _disStockChip(p); document.querySelectorAll('#disEdTira .dis-tira-p').forEach(b => b.classList.toggle('on', b.dataset.h === DIS.prod));
   const cs = document.getElementById('disEdColor'); if (cs) cs.innerHTML = cx.colores.map(c => '<option' + (c === cx.color ? ' selected' : '') + '>' + esc(c) + '</option>').join('') || '<option value="">Sin color</option>';
   const lz = document.getElementById('disEdLienzo'); if (!lz) return;
   const [W, H] = DIS_TAM[DIS.ed.formato] || DIS_TAM['4x5'], alto = Math.max(320, lz.clientHeight - 24), ancho = Math.max(240, lz.clientWidth - 24);
@@ -1911,4 +1911,12 @@ function disAtajosAbrir(){
     ['Supr', 'Quitar lo elegido'], ['Flechas', 'Mover un poquito (con Shift, más)'], ['[  y  ]', 'Mandar atrás / traer adelante'], ['Doble clic en un texto', 'Escribir encima'], ['Esc', 'Soltar lo elegido']];
   document.body.insertAdjacentHTML('beforeend', '<div class="dis-atj" id="disAtj"><div class="dis-cab"><span class="ui-tot">⌨️ Atajos del teclado</span><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disAtj\').remove()') + '</div>'
     + '<table class="tt"><tbody>' + L.map(x => '<tr><td><b>' + esc(x[0]) + '</b></td><td>' + esc(x[1]) + '</td></tr>').join('') + '</tbody></table></div>');
+}
+
+/* 22-nov · Fase D: aviso de stock en el editor (no anunciar lo que no hay) — sale de mk_dis_rank */
+function _disStockChip(p){
+  const r = _disRank(p); if (!r) return '';
+  const st = +r.st || 0, cls = st >= 5 ? 'ok' : st > 0 ? 'am' : 'mal';
+  return '<span class="ui-chip ' + cls + '" style="margin-left:8px" title="Unidades disponibles del modelo (todas las tallas y colores). Margen de los últimos 60 días: S/ ' + String(Math.round(+r.mg || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, '.') + '">'
+    + (st >= 5 ? '📦 ' + st + ' en stock' : st > 0 ? '⚠ Solo ' + st + ' en stock' : '⛔ Sin stock: mejor no anunciar') + '</span>';
 }

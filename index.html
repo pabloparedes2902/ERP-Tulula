@@ -583,6 +583,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
 <link id="ui-font" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link id="ui-font" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link id="ui-font" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link id="ui-font" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
 <!-- ══════════════════════════════════════════════════════════════════════
@@ -1277,7 +1278,15 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <div class="fr">
           <div class="fg"><label>Diferencia en prendas (S/) <span style="color:var(--mu);font-weight:400">— se calcula sola</span></label><input id="cam-diferencia" type="number" step="0.01" placeholder="0" title="Se calcula: precio de las prendas nuevas menos precio de las devueltas. Para forzarlo a mano, escríbelo; doble clic lo devuelve a automático."></div>
           <div class="fg"><label>Envío (S/)</label><input id="cam-envio" type="number" min="0" step="1" placeholder="0"></div>
+          <div class="fg"><label>¿Quién paga el envío? *</label><select id="cam-envio-paga">
+            <option value="">— Elige —</option>
+            <option value="CLIENTA">Clienta</option>
+            <option value="SIN_ENVIO">Sin envío</option>
+            <option value="PRIMER_CAMBIO_GRATIS">Tulula · 1er cambio gratis</option>
+            <option value="ERROR_TULULA">Tulula · error nuestro</option>
+          </select></div>
         </div>
+        <div id="cam-envio-nota" class="ui-nota" style="font-size:12px;color:var(--mu);margin-top:4px"></div>
 
         <!-- 7-set-2026 — RESULTADO DEL CAMBIO. El formulario ya no deja que la
              diferencia a favor de la clienta se pierda en silencio: si la prenda
@@ -1403,6 +1412,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           morado "Actualizar" que duplicaba el 🔄 de arriba. Se elimina entera:
           el botón se va junto a las pestañas (lo arma renderCambios2) y para
           recargar queda el 🔄 del encabezado, que ya recarga la pantalla activa. -->
+     <div id="c2-costo" class="card" style="margin-bottom:12px;padding:14px 16px;display:none"></div>
      <div id="cambios2-w"><div class="ld"><div class="sp"></div>Cargando...</div></div>
    </div>
 
@@ -16697,6 +16707,7 @@ function _c2Agrupar(filas) {
         FechaRecepcionOriginal: r.FechaRecepcionOriginal || '',
         DiferenciaPrecio: parseFloat(r.DiferenciaPrecio) || 0,
         PrecioEnvio: parseFloat(r.PrecioEnvio) || 0,
+        EnvioPaga: r.EnvioPaga || '', EnvioCostoTulula: parseFloat(r.EnvioCostoTulula) || 0,
         MontoPagadoCliente: parseFloat(r.MontoPagadoCliente) || 0,
         MontoAsumidoEmpresa: parseFloat(r.MontoAsumidoEmpresa) || 0,
         Sincronizado: String(r.SyncProcesado || '').toUpperCase() === 'TRUE',
@@ -17981,7 +17992,7 @@ function _c2ComoFilasHist_(grupos) {
       Region: g.Region, Direccion: g.Direccion, FechaSolicitud: g.FechaSolicitud,
       Estado: g.Estado, Motivo: g.Motivo, MotivoDetalle: g.MotivoDetalle,
       Comentario: g.Comentario, FechaRecepcionOriginal: g.FechaRecepcionOriginal,
-      DiferenciaPrecio: g.DiferenciaPrecio, PrecioEnvio: g.PrecioEnvio,
+      DiferenciaPrecio: g.DiferenciaPrecio, PrecioEnvio: g.PrecioEnvio, EnvioPaga: g.EnvioPaga, EnvioCostoTulula: g.EnvioCostoTulula,
       MontoPagadoCliente: g.MontoPagadoCliente, MontoAsumidoEmpresa: g.MontoAsumidoEmpresa,
       Sincronizado: g.Sincronizado, RecibidoOriginal: g.RecibidoOriginal,
       EnviadaNueva: g.EnviadaNueva, FechaEnvioNueva: g.FechaEnvioNueva,
@@ -41436,6 +41447,8 @@ function _camBindEvents() {
   const _btnPagoEmp = document.getElementById('btn-cam-pago-emp');
   if (_btnPagoEmp) _btnPagoEmp.addEventListener('click', camAddPagoEmp);
   document.getElementById('cam-envio').addEventListener('input', camCalc);
+  const _envPaga = document.getElementById('cam-envio-paga');
+  if (_envPaga) _envPaga.addEventListener('change', () => { if (_envPaga.value === 'SIN_ENVIO') { const e = document.getElementById('cam-envio'); if (e) e.value = ''; } _camEnvioNota(); camCalc(); });
   const _dif = document.getElementById('cam-diferencia');
   if (_dif) _dif.addEventListener('input', () => { _dif.dataset.manual = '1'; camCalc(); });
   // Doble clic en la Diferencia = volver al cálculo automático.
@@ -41664,12 +41677,48 @@ function _camPintarDestino() {
     v === 'EMPRESA'  ? 'No se le acredita nada a la clienta: la empresa absorbe la diferencia.' : '';
 }
 
+/* ENVIO_PAGA_22NOV (Pablo) · «¿Quién paga el envío?» es obligatorio. Clienta: se le cobra. Sin envío: 0.
+   Tulula · 1er cambio gratis (solo el primer pedido de la clienta) y Tulula · error nuestro: el monto se guarda
+   como costo de Tulula, no se le cobra; el de 1er cambio gratis se resta de la comisión, el de error suma a «Costo de cambios». */
+const CAM_ENVIO_TULULA = ['PRIMER_CAMBIO_GRATIS', 'ERROR_TULULA'];
+function _camEnvioCobrable() {
+  const paga = (document.getElementById('cam-envio-paga') || {}).value || '';
+  const env = parseFloat(document.getElementById('cam-envio')?.value) || 0;
+  if (paga === 'SIN_ENVIO' || CAM_ENVIO_TULULA.includes(paga)) return 0;
+  return env;
+}
+function _camEnvioNota() {
+  const paga = (document.getElementById('cam-envio-paga') || {}).value || '';
+  const el = document.getElementById('cam-envio-nota'); if (!el) return;
+  el.textContent =
+    paga === 'CLIENTA' ? 'Se le cobra a la clienta. No suma a la comisión.' :
+    paga === 'SIN_ENVIO' ? 'Recojo en almacén o va con otro pedido.' :
+    paga === 'PRIMER_CAMBIO_GRATIS' ? 'Pon lo que cuesta el envío: lo paga Tulula y se resta de la comisión. Solo vale para el primer pedido de la clienta.' :
+    paga === 'ERROR_TULULA' ? 'Pon lo que cuesta el envío: lo paga Tulula y suma a «Costo de cambios».' : '';
+}
+/* Revisa lo elegido antes de guardar. Devuelve el texto del problema o '' si está bien. */
+function _camEnvioValidar(paga, env) {
+  if (!paga) return 'Elige quién paga el envío';
+  if (paga === 'CLIENTA' && !(env > 0)) return 'Pon el monto del envío que paga la clienta';
+  if (CAM_ENVIO_TULULA.includes(paga) && !(env > 0)) return 'Pon cuánto cuesta el envío que paga Tulula';
+  return '';
+}
+async function _camEnvioGuardarBase(nc, paga, monto) {
+  if (!nc || !paga) return;
+  try { await _npRpc('cambio_envio_guardar', { p_nc: nc, p_paga: paga, p_monto: monto || 0 }); return true; }
+  catch (e) { toast('El cambio ' + nc + ' se guardó, pero no quién paga el envío: ' + String(e.message || e).slice(0, 120), 'err'); }
+}
+
+async function _camEnvioTras(r2, job) {   // guarda quién paga el envío del cambio recién creado y vuelve a avisar al espejo
+  if (await _camEnvioGuardarBase(r2.NroCambio, job.payload.EnvioPaga, job.payload.EnvioCostoTulula)) { try { _sbEspejarYa(r2.NroCambio); } catch (_) {} }
+}
+
 function camCalc() {
   const dfIn = document.getElementById('cam-diferencia');
   const _auto = _camDiffAuto();
   if (dfIn && dfIn.dataset.manual !== '1' && _auto !== null) dfIn.value = _auto ? String(_auto) : '';
   const diff = parseFloat(dfIn?.value) || 0;
-  const env  = parseFloat(document.getElementById('cam-envio')?.value) || 0;
+  const env  = typeof _camEnvioCobrable === 'function' ? _camEnvioCobrable() : (parseFloat(document.getElementById('cam-envio')?.value) || 0);   // ENVIO_PAGA_22NOV: si lo paga Tulula no se le cobra a la clienta
 
   // Pagos Cliente / Empresa asume
   let pagCli = 0, pagEmp = 0;
@@ -42665,7 +42714,18 @@ async function camRegistrar() {
     if (_choques.length) { toast('No se puede: ' + _choques.join('; ') + '. Primero debe volver la prenda del cambio anterior.', 'err'); return; }
   } catch (eCascada) {}
 
-  const env       = parseFloat(document.getElementById('cam-envio')?.value) || 0;
+  const envPaga   = (document.getElementById('cam-envio-paga') || {}).value || '';
+  const envMonto  = envPaga === 'SIN_ENVIO' ? 0 : (parseFloat(document.getElementById('cam-envio')?.value) || 0);
+  const _envErr   = _camEnvioValidar(envPaga, envMonto);
+  if (_envErr) { toast(_envErr, 'err'); try { document.getElementById('cam-envio-paga').focus(); } catch (_) {} return; }
+  if (envPaga === 'PRIMER_CAMBIO_GRATIS') {
+    const _nroPrim = String((devueltas[0] && devueltas[0].NroPedido) || '').trim();
+    try {
+      const _pp = await _npRpc('cambio_primer_pedido', { p_nro: _nroPrim });
+      if (!_pp || !_pp.primero) { toast('El envío gratis es solo para el primer pedido de la clienta' + (_pp && _pp.primer_nro ? ' (su primer pedido es el ' + _pp.primer_nro + ')' : '') + '. Elige otra opción.', 'err'); return; }
+    } catch (_ePP) { toast('No pude revisar si es su primer pedido: ' + String(_ePP.message || _ePP).slice(0, 100), 'err'); return; }
+  }
+  const env       = CAM_ENVIO_TULULA.includes(envPaga) ? 0 : envMonto;   // a la clienta solo se le cobra si paga ella
   const fpago     = pagos.length ? pagos[0].forma : '';
   const respCosto = getV('cam-responsabilidad') || 'CLIENTE';
   const montoCli  = parseFloat(getV('cam-monto-cli')) || 0;
@@ -42693,6 +42753,8 @@ async function camRegistrar() {
     devueltas: devueltas,
     nuevas:    nuevas,
     PrecioEnvio: env,
+    EnvioPaga: envPaga,
+    EnvioCostoTulula: CAM_ENVIO_TULULA.includes(envPaga) ? envMonto : 0,
     Diferencia: _difReg,
     DestinoDiferencia: (_difReg < -0.005 ? _destReg : ''),
     ResponsabilidadCosto: respCosto,
@@ -42766,7 +42828,7 @@ async function _camProcessSaveQueue() {
       // UNA sola llamada: crea el cambio completo (multi-prenda / multi-pedido)
       // Primero la base; si no contesta con un ok explícito, la vía de siempre.
       var _r2 = await _sbRpcCambioRegistrar(job.payload);
-      if (_r2) { await _camSaldoFavorTras(_r2, job); try { _sbEspejarYa(_r2.NroCambio); } catch(_){} }
+      if (_r2) { await _camSaldoFavorTras(_r2, job); try { _sbEspejarYa(_r2.NroCambio); } catch(_){} await _camEnvioTras(_r2, job); }
       else if (SB_ESCRITURA_CAMBIOS) { throw _camBaseNoRespondio('guardar el cambio'); }   // 7-oct Fase 3: sin respaldo por la hoja congelada
       else {
         _r2 = await apiSend('cambios2.registrarYSync', job.payload);
@@ -42909,7 +42971,7 @@ function camLimpiar() {
   const clr = id => { const el = document.getElementById(id); if (el) el.value = ''; };
   ['cam-nro-badge','cam-hint'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = ''; });
   ['cam-input-busq','cam-nom','cam-dni','cam-cel','cam-dir','cam-ref','cam-dist','cam-prov','cam-reg',
-   'cam-envio','cam-fenvio','cam-com','cam-motivo-det','cam-precio-orig','cam-precio-nueva',
+   'cam-envio','cam-envio-paga','cam-fenvio','cam-com','cam-motivo-det','cam-precio-orig','cam-precio-nueva',
    'cam-diferencia','cam-monto-cli','cam-monto-emp','cam-constancia-dif','cam-destino',
    'cam-frecep-nueva','cam-fdev-orig','cam-frecep-orig'].forEach(clr);
   ['cam-estado','cam-courier','cam-courier-dev','cam-motivo','cam-fpago-dif'].forEach(id => {
@@ -43137,8 +43199,32 @@ if (!window._comExpBound) {
   });
 }
 
+/* COSTO_CAMBIOS_22NOV (Pablo) · cuánto pone Tulula en envíos de cambios en el mes: 1er cambio gratis + errores nuestros. */
+var _c2CostoMem = { t: 0, mes: '', d: null };
+async function _c2CostoPintar(mes) {
+  var box = document.getElementById('c2-costo'); if (!box) return;
+  mes = mes || new Date(Date.now() - 5 * 3600e3).toISOString().slice(0, 7);
+  var d = _c2CostoMem.d;
+  if (!d || _c2CostoMem.mes !== mes || Date.now() - _c2CostoMem.t > 5 * 60e3) {
+    try { d = await _npRpc('cambios_costo_mes', { p_mes: mes }); _c2CostoMem = { t: Date.now(), mes: mes, d: d }; } catch (_) { return; }
+  }
+  if (!d) return;
+  var M = function (v) { return 'S/ ' + fmt(Number(v) || 0); };
+  var k = function (lab, v, nota) { return '<div><div class="ui-lab">' + lab + '</div><div class="ui-kpi">' + v + '</div>' + (nota ? '<div class="ui-nota">' + nota + '</div>' : '') + '</div>'; };
+  var mot = (d.por_motivo || []).map(function (x) { return x.motivo + ': ' + M(x.monto) + ' (' + x.n + ')'; }).join(' · ');
+  box.style.display = '';
+  box.innerHTML = '<div class="ui-blo-h"><div class="ui-blo">Costo de cambios · ' + esc(d.mes_txt || mes) + '</div>'
+    + '<input type="month" id="c2-costo-mes" value="' + mes + '" style="font-size:12px"></div>'
+    + '<div class="ui-kpis">' + k('Envíos 1er cambio gratis', M(d.gratis_monto), d.gratis_n + ' cambios · se restan de la comisión')
+    + k('Envíos por error nuestro', M(d.error_monto), d.error_n + ' cambios')
+    + k('Total que pone Tulula', M((Number(d.gratis_monto) || 0) + (Number(d.error_monto) || 0)), d.sin_elegir_n ? d.sin_elegir_n + ' cambios sin «quién paga»' : '') + '</div>'
+    + (mot ? '<div class="ui-nota" style="margin-top:8px">' + esc(mot) + '</div>' : '');
+  var mi = document.getElementById('c2-costo-mes');
+  if (mi) mi.addEventListener('change', function () { if (mi.value) _c2CostoPintar(mi.value); });
+}
 function renderCambios2(el, cambios){
   cambios = cambios||[];
+  try { _c2CostoPintar(); } catch (_) {}
   var COLS=[
     {k:'nro',t:'Nro. cambio',g:function(c){return c.NroCambio||'';}},
     {k:'cli',t:'Cliente',g:function(c){return c.Nombre||'';}},
@@ -43598,7 +43684,10 @@ function editarCambios2(nc){
     +'<div id="c2e-nue-list"></div>'
     +'<div style="display:flex;gap:10px;margin:12px 0">'
     +'<div style="'+fg+'"><span style="'+lbl+'">Diferencia (S/)</span><input id="c2e-dif" type="number" step="0.01" style="'+inp+'" value="'+(c.DiferenciaPrecio||'')+'"></div>'
-    +'<div style="'+fg+'"><span style="'+lbl+'">Envío (S/)</span><input id="c2e-env" type="number" step="0.01" style="'+inp+'" value="'+(c.PrecioEnvio||'')+'"></div></div>'
+    +'<div style="'+fg+'"><span style="'+lbl+'">Envío (S/)</span><input id="c2e-env" type="number" step="0.01" style="'+inp+'" value="'+((CAM_ENVIO_TULULA.includes(c.EnvioPaga)?c.EnvioCostoTulula:c.PrecioEnvio)||'')+'"></div>'
+    +'<div style="'+fg+'"><span style="'+lbl+'">¿Quién paga el envío?</span><select id="c2e-envpaga" style="'+inp+'">'
+    +[['','— Sin elegir —'],['CLIENTA','Clienta'],['SIN_ENVIO','Sin envío'],['PRIMER_CAMBIO_GRATIS','Tulula · 1er cambio gratis'],['ERROR_TULULA','Tulula · error nuestro']].map(function(o){return '<option value="'+o[0]+'"'+((c.EnvioPaga||'')===o[0]?' selected':'')+'>'+o[1]+'</option>';}).join('')
+    +'</select></div></div>'
     +'<div style="display:flex;gap:10px;margin-bottom:12px">'
     +'<div style="'+fg+'"><span style="'+lbl+'">Pago cliente (S/)</span><input id="c2e-pcli" type="number" step="0.01" style="'+inp+'" value="'+(c.MontoPagadoCliente||'')+'"></div>'
     +'<div style="'+fg+'"><span style="'+lbl+'">Empresa asume (S/)</span><input id="c2e-pemp" type="number" step="0.01" style="'+inp+'" value="'+(c.MontoAsumidoEmpresa||'')+'"></div></div>'
@@ -43761,7 +43850,17 @@ function editarCambios2(nc){
     }
     // F3 (24-jul): mandar la versión que este editor tenía en pantalla — si otro
     // usuario guardó primero, el backend avisa en vez de pisar su trabajo.
-    var body={ NroCambio:nc, _versionVista:(c&&c.Version)||'', Nombre:gv('c2e-nom'), Diferencia:gv('c2e-dif'), PrecioEnvio:gv('c2e-env'), MontoPagadoCliente:gv('c2e-pcli'), MontoAsumidoEmpresa:gv('c2e-pemp'), Motivo:gv('c2e-mot'), MotivoDetalle:gv('c2e-motd'), FechaSolicitud:gv('c2e-fsol'), FechaRecepcionOriginal:gv('c2e-frec'), FechaEnvioNueva:gv('c2e-fenv'), Comentario:gv('c2e-com'), devueltas:devs, nuevas:nues };
+    // ENVIO_PAGA_22NOV · si eligen quién paga, se valida igual que al registrar; si lo paga Tulula, a la clienta no se le cobra.
+    var _ePaga = gv('c2e-envpaga') || '', _eMonto = _ePaga === 'SIN_ENVIO' ? 0 : (parseFloat(gv('c2e-env')) || 0);
+    if (_ePaga) { var _eErr = _camEnvioValidar(_ePaga, _eMonto); if (_eErr) { toast(_eErr, 'err'); return; } }
+    if (_ePaga === 'PRIMER_CAMBIO_GRATIS') {
+      var _eNro = String(((c && c.devueltas && c.devueltas[0]) || {}).NroPedido || ((c && c.pedidos) || [])[0] || '').trim();
+      try { var _ePP = await _npRpc('cambio_primer_pedido', { p_nro: _eNro });
+        if (!_ePP || !_ePP.primero) { toast('El envío gratis es solo para el primer pedido de la clienta' + (_ePP && _ePP.primer_nro ? ' (su primer pedido es el ' + _ePP.primer_nro + ')' : ''), 'err'); return; }
+      } catch (_eX) { toast('No pude revisar si es su primer pedido', 'err'); return; }
+    }
+    var _eEnvCli = _ePaga ? (CAM_ENVIO_TULULA.includes(_ePaga) ? '0' : String(_eMonto)) : gv('c2e-env');
+    var body={ NroCambio:nc, _versionVista:(c&&c.Version)||'', Nombre:gv('c2e-nom'), Diferencia:gv('c2e-dif'), PrecioEnvio:_eEnvCli, MontoPagadoCliente:gv('c2e-pcli'), MontoAsumidoEmpresa:gv('c2e-pemp'), Motivo:gv('c2e-mot'), MotivoDetalle:gv('c2e-motd'), FechaSolicitud:gv('c2e-fsol'), FechaRecepcionOriginal:gv('c2e-frec'), FechaEnvioNueva:gv('c2e-fenv'), Comentario:gv('c2e-com'), devueltas:devs, nuevas:nues };
     this.disabled=true; this.textContent='Guardando...';
     // 27-jul: ya no se espera al servidor. Se encola y se libera la pantalla.
     // Este cronómetro mide lo que espera LA PERSONA (debería dar casi cero).
@@ -43769,6 +43868,8 @@ function editarCambios2(nc){
     var _cronEsp = _cronAbrir('flujo.cambio.editar', nc);
     _c2PintarOptimista(nc, body);
     _c2EditEncolar({ nc: nc, body: body, label: (c && c.Nombre) || nc, alTerminar: function () {
+      // ENVIO_PAGA_22NOV · después de que la edición quedó en la base (editar puede rehacer las filas del cambio)
+      if (_ePaga) _camEnvioGuardarBase(nc, _ePaga, CAM_ENVIO_TULULA.includes(_ePaga) ? _eMonto : 0);
       // La pantalla de Cambios ya quedó al día en _c2CerrarEdicion, sin pedir nada.
       // Acá solo se invalidan las cachés de las OTRAS pantallas (Pedidos, historial),
       // que se rearmarán solas la próxima vez que se entre. Nada de esto repinta
