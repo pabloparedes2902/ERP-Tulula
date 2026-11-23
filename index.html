@@ -16775,6 +16775,23 @@ function _c2HistMapDe(filas) {
   return out;
 }
 
+/* 23-nov-2026 (Pablo: velocidad, «que no vuelva a pasar») · ÚLTIMO RECURSO DE TODA LECTURA SIN APPS SCRIPT. Medido 14 días: cuando la base
+   tardaba un instante, 6 lecturas igual caían a Apps Script (maestros 7,9 s, colores 14 s, pedidos.porNros 36 s…). Ahora: la copia del espejo
+   aunque tenga días; si no hay, la MISMA lectura se reintenta 1 vez contra la base a los 1,5 s; si tampoco, error claro y la pantalla conserva
+   lo que mostraba. Apps Script lee la misma base: no agregaba nada. Candado: tests/regresion_candado_lecturas_23nov.js. REVERSA: VR_SIN_APPS_LECTURAS = false. */
+const _lecSAen = {};
+async function _lecSA(fn, args, accion, porApps) {
+  if (!((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO)) return porApps();
+  if (window._sbSaltarEspejo || typeof SB_URL === 'undefined' || !SB_ANON) return porApps();   // 🔄 pidió el servidor a propósito, o no hay base: como siempre
+  try { const _v = await _espejoAunqueViejo(accion); if (_v != null) return _v; } catch (_) {}
+  if (!_lecSAen[fn] && typeof globalThis[fn] === 'function') {
+    _lecSAen[fn] = 1;
+    try { await _sbEsperar(1500); return await globalThis[fn].apply(null, Array.prototype.slice.call(args || [])); }
+    finally { delete _lecSAen[fn]; }
+  }
+  try { if (typeof _errLog === 'function') _errLog('sinApps.' + accion, new Error('la base no contestó 2 veces')); } catch (_) {}
+  throw new Error('La base tardó en responder (' + accion + '). Vuelve a intentar en unos segundos.');
+}
 // ── Las tres puertas que usa el ERP ──────────────────────────────────────
 async function _c2ListarRapido() {
   const filas = await _sbFilasEspejo('cambios2');
@@ -17708,6 +17725,12 @@ async function _stockResumenRapido() {
   const d = await _sbCacheLeer('stock.resumen');
   if (Array.isArray(d) && d.length) return d;
   // 3) Apps Script. Vino en vivo: es el dato del segundo, no una copia.
+  /* 23-nov (Pablo: velocidad, 4 saltos) · antes caía a Apps Script (p50 64 s). Ahora: la copia aunque tenga horas, 1 reintento a la base y, si no, error claro (la pantalla conserva lo que mostraba) */
+  if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO) {
+    { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('stock.resumen') : null; if (Array.isArray(_v) && _v.length) return _v; }
+    await _sbEsperar(1500); const l2 = await _sbLibroDirecto(); if (Array.isArray(l2) && l2.length) return l2;
+    throw new Error('La base tardó en responder el stock. Vuelve a intentar en unos segundos.');
+  }
   try { (window._espejoGen = window._espejoGen || {})['stock.resumen'] = Date.now(); } catch (_) {}
   return api('stock.resumen', {});
 }
@@ -17715,13 +17738,13 @@ async function _stockResumenRapido() {
 async function _clientesListarRapido() {
   const d = await _sbCacheLeer('clientes.listar');
   if (Array.isArray(d) && d.length) return d;
-  return api('clientes.listar', { limit: 2000 });
+  return _lecSA('_clientesListarRapido', arguments, 'clientes.listar', () => api('clientes.listar', { limit: 2000 }));
 }
 
 async function _panelRoasRapido() {
   const d = await _sbCacheLeer('panel.roas');
   if (d && d.dias) return d;
-  return api('panel.roas', { dias: 180 });
+  return _lecSA('_panelRoasRapido', arguments, 'panel.roas', () => api('panel.roas', { dias: 180 }));
 }
 
 // 1-oct · F2 · DASHBOARD DESDE LA BASE. La base lo calcula cada 2 min (pg_cron dashboard-base-2min,
@@ -17754,7 +17777,7 @@ async function _dashboardTodoRapido() {
   } catch (_) {}
   const d = await _sbCacheLeer('dashboard.todo');
   if (d && typeof d === 'object' && !Array.isArray(d)) return d;
-  return api('dashboard.todo');
+  return _lecSA('_dashboardTodoRapido', arguments, 'dashboard.todo', () => api('dashboard.todo'));
 }
 
 // 26-jul: los tres botones de Stock (Catálogo, Reposición, Lotes) tardaban lo
@@ -17766,7 +17789,7 @@ async function _productosListarRapido() {
   const d = await _sbCacheLeer('productos.listar');
   if (Array.isArray(d) && d.length) return d;
   { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('productos.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
-  return api('productos.listar', { force: '1' });
+  return _lecSA('_productosListarRapido', arguments, 'productos.listar', () => api('productos.listar', { force: '1' }));
 }
 // ══ FASE 4.3 (10-set-2026) · EL CATÁLOGO SALE DE LA TABLA VIVA ═══════════════
 // MEDIDO esta noche, con la sesión real de Pablo:
@@ -17814,7 +17837,7 @@ async function _maestrosSkusRapido() {
   const d = await _sbCacheLeer('catalogo.maestrosSkus');   // el espejo: hasta 30 min
   if (Array.isArray(d) && d.length) return d;
   { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('catalogo.maestrosSkus'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
-  return api('catalogo.maestrosSkus', {});        // Apps Script: el último recurso
+  return _lecSA('_maestrosSkusRapido', arguments, 'catalogo.maestrosSkus', () => api('catalogo.maestrosSkus', {}));        // Apps Script: el último recurso
 }
 // 1-oct · F2 bloque A2 · LECTURA DIRECTA DE LA BASE (lotes y fallas). Tablas/vistas chicas que el
 // equipo ya puede leer (fallas_lectura_equipo; vistas erp.v_lotes_*). Se piden por paginas de 1000
@@ -17911,7 +17934,7 @@ async function _lotesRapido() {
   } catch (_) {}
   const d = await _sbCacheLeer('lotes.listar');
   if (Array.isArray(d) && d.length) return d;
-  return api('lotes.listar', {});
+  return _lecSA('_lotesRapido', arguments, 'lotes.listar', () => api('lotes.listar', {}));
 }
 // La reposición se guarda calculada a 30 días. Si se pide otra ventana, se
 // calcula al momento: no tendría sentido guardar una por cada número posible.
@@ -17920,7 +17943,7 @@ async function _reposicionRapido(dias) {
     const d = await _sbCacheLeer('reposicion.calc');
     if (d && (d.items || Array.isArray(d))) return d;
   }
-  return api('reposicion.calc', { dias: dias });
+  return _lecSA('_reposicionRapido', arguments, 'reposicion.calc', () => api('reposicion.calc', { dias: dias }));
 }
 
 // 26-jul: las lecturas más caras que quedaban. Medido en vivo, una por una:
@@ -17948,7 +17971,7 @@ async function _catalogoPrendasRapido() {
   try { const b = await _catPrendasDeLaBase(); if (b) return b; } catch (_) {}
   const d = await _sbCacheLeer('catalogo.prendas');
   if (d && (Array.isArray(d) ? d.length : Object.keys(d).length)) return d;
-  return api('catalogo.prendas', {});
+  return _lecSA('_catalogoPrendasRapido', arguments, 'catalogo.prendas', () => api('catalogo.prendas', {}));
 }
 // 1-oct · F2 · CATALOGO DE STOCK desde el LIBRO VIVO (el mismo que ya lee Inventario, _sbLibroDirecto):
 // misma cuenta que _catalogoStockDesdeLibro_ (EspejoDatos.gs). Ensayo 1-oct: 1.965 de 1.965 iguales, mismo orden, 0,6 s.
@@ -17975,7 +17998,7 @@ async function _catalogoStockRapido() {
   try { const lib = await _sbLibroDirecto(); const c = _catalogoStockDeLibro(lib); if (c && c.length) return c; } catch (_) {}
   const d = await _sbCacheLeer('catalogo.stock');
   if (d && (Array.isArray(d) ? d.length : Object.keys(d).length)) return d;
-  return api('catalogo.stock', {});
+  return _lecSA('_catalogoStockRapido', arguments, 'catalogo.stock', () => api('catalogo.stock', {}));
 }
 // FIX 2-set-2026 (Pablo) — el módulo Cambios (historial grande, loadHistCambios) leía
 // SOLO cambios.listar (la hoja Cambios vieja). Pero TODO cambio nuevo se registra desde
@@ -18038,12 +18061,19 @@ async function _cambiosViejosDeLaBase() {
   return f.map(function (x) { return x && x.row_json; }).filter(Boolean)
     .sort(function (a, b) { return new Date(b['FechaSolicitud'] || 0) - new Date(a['FechaSolicitud'] || 0); });
 }
+/* 23-nov (4 saltos) · último recurso de los cambios viejos (v1, ya no se escriben): 1 reintento a la base; nunca Apps Script (p50 7,8 s) */
+async function _camViejosSinApps() {
+  if (!((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO)) return api('cambios.listar', {});
+  await _sbEsperar(1500);
+  try { const v = await _cambiosViejosDeLaBase(); if (v) return v; } catch (_) {}
+  throw new Error('La base tardó en responder el historial de cambios. Vuelve a intentar en unos segundos.');
+}
 async function _cambiosListarRapido() {
   // 10-oct · C1: los dos pedidos a la base salen A LA VEZ (antes uno después del otro)
   const _pNuevo = _c2ListarRapido().then(x => x, e => { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} return null; });
   let viejo = null;
   try { viejo = await _cambiosViejosDeLaBase(); } catch (_) { viejo = null; }
-  if (!viejo) { const d = await _sbCacheLeer('cambios.listar'); viejo = (Array.isArray(d) && d.length) ? d : (((typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('cambios.listar') : null) || await api('cambios.listar', {})); }   /* 17-nov */
+  if (!viejo) { const d = await _sbCacheLeer('cambios.listar'); viejo = (Array.isArray(d) && d.length) ? d : (((typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('cambios.listar') : null) || await _camViejosSinApps()); }   /* 17-nov · 23-nov: sin Apps Script */
   let nuevo = [];
   try { const _x = await _pNuevo; nuevo = _x ? _c2ComoFilasHist_(_x) : []; } catch (e) { try { _errLog('cambiosListarRapido.v2', e); } catch(_) {} }
   return (Array.isArray(viejo) ? viejo : []).concat(nuevo);
@@ -18065,14 +18095,14 @@ async function _coloresListarRapido() {
   const d = await _sbCacheLeer('colores.listar');
   if (d && Object.keys(d).length) return d;
   { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('colores.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
-  return api('colores.listar', {});
+  return _lecSA('_coloresListarRapido', arguments, 'colores.listar', () => api('colores.listar', {}));
 }
 async function _maestrosListarRapido() {
   try { const b = await _listaDeLaBase('maestros_listar_calc', function (d) { return _esMapaLleno(d) && Object.keys(d).some(function (k) { return Array.isArray(d[k]) && d[k].length; }); }); if (b) return b; } catch (_) {}
   const d = await _sbCacheLeer('maestros.listar');
   if (d && Object.keys(d).length) return d;
   { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('maestros.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
-  return api('maestros.listar', {});
+  return _lecSA('_maestrosListarRapido', arguments, 'maestros.listar', () => api('maestros.listar', {}));
 }
 
 // 26-jul · PRIORIDAD 1 DE LA MIGRACIÓN — las cinco lecturas lentas que quedaban.
@@ -18167,6 +18197,10 @@ async function _confeccionListarRapido() {
   try { const v = await _listaDeLaBase('confeccion_listar_vivo', function (x) { return Array.isArray(x) && x.length > 0; }); if (v) return v; } catch (_) {}
   try { const b = await _listaDeLaBase('confeccion_listar_calc', function (x) { return Array.isArray(x) && x.length > 0; }); if (b) return b; } catch (_) {}
   { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('confeccion.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
+  if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO) {   /* 23-nov · 4 saltos: 1 reintento a la base, nunca Apps Script (p50 17 s) */
+    await _sbEsperar(1500); try { const b2 = await _listaDeLaBase('confeccion_listar_calc', function (x) { return Array.isArray(x) && x.length > 0; }); if (b2) return b2; } catch (_) {}
+    throw new Error('La base tardó en responder Confección. Vuelve a intentar en unos segundos.');
+  }
   return api('confeccion.listar', {});
 }
 async function _alertasListarRapido(soloEspejo) {
@@ -18187,6 +18221,10 @@ async function _alertasListarRapido(soloEspejo) {
   } catch (_) {}
   if (soloEspejo) throw new Error('espejo no disponible (pestaña oculta)');
   { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('alertas.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
+  if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO) {   /* 23-nov · 4 saltos: 1 reintento a la base, nunca Apps Script (p50 17 s) */
+    await _sbEsperar(1500); try { const v2 = await _listaDeLaBase('alertas_listar_vivo', function (x) { return !!x && typeof x === 'object' && !!x.totales; }); if (v2) return v2; } catch (_) {}
+    throw new Error('La base tardó en responder las alertas. Vuelve a intentar en unos segundos.');
+  }
   return api('alertas.listar');
 }
 // 31-oct · 🔄 en Alertas: lo de Apps Script llega por detrás y repinta solo si cambió algo y sigues en Alertas.
@@ -18304,6 +18342,11 @@ async function _fallasResumenRapido(desde, hasta) {
     const d = await _sbCacheLeer('fallas.resumen');
     if (d && typeof d === 'object') return d;
   }
+  if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO) {   /* 23-nov · sin Apps Script: 1 reintento a la base */
+    await _sbEsperar(1500);
+    try { const f2 = await _sbTablaLeer('fallas?select=row_json&order=id.asc'); if (Array.isArray(f2) && f2.length) return _fallasResumenDeFilas(f2.map(function (x) { return x && x.row_json; }), desde, hasta); } catch (_) {}
+    throw new Error('La base tardó en responder Fallas. Vuelve a intentar en unos segundos.');
+  }
   return api('fallas.resumen', Object.assign({}, desde ? { desde: desde } : {}, hasta ? { hasta: hasta } : {}));
 }
 async function _vistasStockRapido() {
@@ -18311,6 +18354,10 @@ async function _vistasStockRapido() {
   const d = await _sbCacheLeer('vistas.stock.listar');
   if (Array.isArray(d)) return d;
   { const _v = (typeof _espejoAunqueViejo === 'function') ? await _espejoAunqueViejo('vistas.stock.listar'): null; if (_v != null) return _v; }   /* 17-nov · antes que Apps Script: la copia aunque esté vieja */
+  if ((typeof VR_SIN_APPS_LECTURAS !== 'undefined' && VR_SIN_APPS_LECTURAS) && !SB_APAGADO) {   /* 23-nov · sin Apps Script (p50 27 s): 1 reintento; si no, sin vistas guardadas (la pantalla de Stock sigue) */
+    await _sbEsperar(1500); try { const b2 = await _listaDeLaBase('vistas_stock_listar_calc', Array.isArray); if (b2) return b2; } catch (_) {}
+    return [];
+  }
   return api('vistas.stock.listar');
 }
 
@@ -18509,7 +18556,7 @@ async function _pedDatosRapido(p) {
 async function _pedPorNrosRapido(nros) {
   const lista = String(nros == null ? '' : nros).split(',').map(x => x.trim()).filter(Boolean);
   if (!lista.length) return { rows: [] };
-  const porApps = () => api('pedidos.porNros', { nros: lista.join(',') });
+  const porApps = () => _lecSA('_pedPorNrosRapido', arguments, 'pedidos.porNros', () => api('pedidos.porNros', { nros: lista.join(',') }));
   if (!SB_LECTURA_PEDIDO) return porApps();
   if (typeof SB_URL === 'undefined' || !SB_ANON) return porApps();
   if (window._sbSaltarEspejo) return porApps();
@@ -18602,10 +18649,10 @@ async function _cambiosPorPedidoRapido(nro) {
   if (!n) return [];
   try {
     const todos = await _cambiosListarRapido();
-    if (!Array.isArray(todos)) return api('cambios.porPedido', { nro: n });
+    if (!Array.isArray(todos)) return _lecSA('_cambiosPorPedidoRapido', arguments, 'cambios.porPedido', () => api('cambios.porPedido', { nro: n }));
     return todos.filter(r => String(r['NroPedido'] || '').trim() === n)
                 .sort((a, b) => new Date(_c2Fecha(b['FechaSolicitud']) || 0) - new Date(_c2Fecha(a['FechaSolicitud']) || 0));
-  } catch (e) { try { _errLog('sb.cambiosPorPedido', e); } catch (_) {} return api('cambios.porPedido', { nro: n }); }
+  } catch (e) { try { _errLog('sb.cambiosPorPedido', e); } catch (_) {} return _lecSA('_cambiosPorPedidoRapido', arguments, 'cambios.porPedido', () => api('cambios.porPedido', { nro: n })); }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -51098,7 +51145,7 @@ async function _metaCapiPanelRapido(soloEspejo){
     if (d && typeof d === 'object' && d.errores) return d;
   } catch(_) {}
   if (soloEspejo) return null;
-  return api('metacapi.panel');
+  return _lecSA('_metaCapiPanelRapido', arguments, 'metacapi.panel', () => api('metacapi.panel'));
 }
 async function metaCapiPanelAbrir(){
   const m = document.getElementById('modal-metacapi');
@@ -51796,7 +51843,10 @@ async function startAuth(){
   }
   // Sin sesión guardada (o sin rol): flujo clásico con validación bloqueante.
   if(SESSION_TOKEN){
-    try{ await apiSend('auth.ping', {}); _hideLogin(); bootApp();
+    try{ /* 23-nov · la sesión se confirma en la BASE (~0,3 s) antes que en Apps Script (auth.ping p50 28 s) */
+         let _ms = null; try { _ms = await _puertaRpc('mi_sesion', {}, 8000); } catch (_) { _ms = null; }
+         if (!(_ms && _ms.pong)) await apiSend('auth.ping', {});
+         _hideLogin(); bootApp();
           try { _sbPasePrecalentar(); } catch(_){}   // Etapa 1.5
           return; }
     catch(e){ SESSION_TOKEN=''; localStorage.removeItem('erp_sess'); }
