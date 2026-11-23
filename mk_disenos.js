@@ -69,7 +69,7 @@ function _disLogoTono(d, cx, i, gl){
     DIS._mix = (DIS.luzMix || {})[_disLuzClave(u0, r)] || 0;
     return v != null ? v : 0.8;
   }
-  return _disLum(_disCol((d.ajustes && d.ajustes.fondo) || 'fondo'));
+  const fo = (d.ajustes && d.ajustes.fondo) || 'fondo'; return _disLum(_disCol(_disInvierte(d, cx) && DIS_INV[fo] ? DIS_INV[fo] : fo));   /* 23-nov · fondo invertido por prenda clara */
 }
 async function _disLuzMedir(u, c, gFoto, r, W, H){
   const im = await new Promise((ok, mal) => { const x = new Image(); x.crossOrigin = 'anonymous'; x.onload = () => ok(x); x.onerror = mal; x.src = _disTam(u, 400); });
@@ -325,7 +325,16 @@ const DIS_BASE = [
     { t: 'texto', txt: '{{precio}}', x: 60, y: 56, w: 36, tam: 64, fuente: 'texto', peso: 600, color: 'acento' },
     { t: 'texto', txt: '{{descuento}}', x: 60, y: 65, w: 16, tam: 28, fuente: 'texto', peso: 600, color: 'blanco', fondo: 'acento', pad: 8, r: 999, al: 'center', vis: 'oferta' },
     { t: 'texto', txt: '{{fecha_limite}}', x: 60, y: 76, w: 36, tam: 22, fuente: 'texto', color: 'blanco', fondo: 'principal', pad: 10, r: 6, lh: 1.3 },
-    { t: 'texto', txt: '{{ventaja1}}', x: 60, y: 92, w: 36, tam: 19, fuente: 'texto', color: 'texto' } ] }
+    { t: 'texto', txt: '{{ventaja1}}', x: 60, y: 92, w: 36, tam: 19, fuente: 'texto', color: 'texto' } ] },
+  /* 23-nov (Pablo) · «¿Por qué se agota?» con una FOTO por detalle (close-up de la misma prenda; 🎯 Encuadre lo ajusta por prenda) y letra legible en celular */
+  { nombre: '¿Por qué se agota? · 2 detalles', mensaje: 'beneficios', ref: 'Detalle con foto', capas: [
+    { t: 'texto', txt: '¿Por qué {{nombre_corto}} se agota rápido?', x: 6, y: 3.5, w: 88, tam: 64, fuente: 'titulo', color: 'principal', al: 'center', lh: 1.08 },
+    { t: 'foto', src: 'color:0', x: 5, y: 17, w: 52, h: 72, r: 14, pos: 'center top' },
+    { t: 'foto', src: 'color:0', x: 61, y: 17, w: 34, h: 25, r: 14, zoom: 2.6, fx: 50, fy: 26 },
+    { t: 'texto', txt: '{{beneficio1}}', x: 61, y: 43.5, w: 34, tam: 44, fuente: 'texto', peso: 600, color: 'principal', lh: 1.15 },
+    { t: 'foto', src: 'color:0', x: 61, y: 56, w: 34, h: 25, r: 14, zoom: 2.6, fx: 40, fy: 60 },
+    { t: 'texto', txt: '{{beneficio2}}', x: 61, y: 82.5, w: 34, tam: 44, fuente: 'texto', peso: 600, color: 'principal', lh: 1.15 },
+    { t: 'logo', x: 61, y: 92, w: 22 } ] }
 
 ];
 
@@ -416,6 +425,7 @@ function _disFotoSrc(cx, src){
   if (k === 'fondo'){ const f = (DIS.fondos || [])[i]; return f ? f.url : ''; }
   return '';
 }
+function disLetraPreset(i, k){ const o = DIS_LETRA_PRESET[+k], c = DIS.ed && DIS.ed.capas[i]; if (!o || !c) return; _disMemo(); c.tam = o[1]; c.fuente = o[2]; c.peso = o[3]; DIS.ed._sucio = true; disEdPintar(); }
 function _disTxt(cx, t){
   return String(t || '').replace(/\{\{(\w+)\}\}/g, (m, k) => {
     const b = k.match(/^beneficio(\d)(_texto)?$/); if (b){ const x = cx.ben[+b[1] - 1]; return x ? (b[2] ? x.texto : x.titulo) : ''; }
@@ -450,10 +460,21 @@ function _disCol(c){
    v2 21-nov: marco, arco, recorte de detalle (zoom + foco), sombra, degradado, texto vertical, letra de contorno, cursiva. ── */
 function _disRgba(hex, a){ const h = String(hex || '#000').replace('#', ''), n = h.length === 3 ? h.split('').map(c => c + c).join('') : h.slice(0, 6), v = parseInt(n, 16) || 0;
   return 'rgba(' + ((v >> 16) & 255) + ',' + ((v >> 8) & 255) + ',' + (v & 255) + ',' + (a == null ? 1 : a) + ')'; }
+/* 23-nov (Pablo) · «en el celular no leo nada»: piso de letra. Un lienzo de 1080 px se ve en el celular a ~1/3 → 38 px ≈ 13 px en pantalla
+   (texto), 60 px ≈ 20 px (títulos). Criterio propio de Claude con la regla de Meta de que el texto se lea en el feed del celular. */
+const DIS_LETRA_MIN = { titulo: 60, texto: 38 };
+const DIS_LETRA_PRESET = [['Título', 96, 'titulo', 600], ['Subtítulo', 64, 'titulo', 400], ['Texto', 44, 'texto', 500], ['Nota', 38, 'texto', 400]];
+function _disTamLegible(c){ const t = +c.tam || 40; if ((DIS.marca || {}).letra_libre) return t; return Math.max(t, DIS_LETRA_MIN[c.fuente === 'titulo' ? 'titulo' : 'texto']); }
+function _disPregunta(t){ const x = String(t || '').trim(); return /^(por qu[eé]|qu[eé]|c[oó]mo|cu[aá]l|cu[aá]ndo|d[oó]nde|qui[eé]n)(?=\s)/i.test(x) && !/[?¿]/.test(x) ? '¿' + x + '?' : t; }
+/* Prenda clara sobre fondo crema = todo plano: el fondo pasa a azul y los colores de letra se invierten (se apaga con «Fondo: tal cual»). */
+const DIS_CLAROS = /beige|crema|camel|arena|perla|hueso|blanc|nude|marfil|champ|vainilla|piedra|kaki|khaki|taupe|ivory|off ?white|rosa palo|celeste|melocot|durazno|gris claro|mostaza claro/i;
+function _disInvierte(d, cx){ const a = (d && d.ajustes) || {}; return a.contraste !== 'no' && ((a.fondo || 'fondo') === 'fondo') && DIS_CLAROS.test(String((cx && cx.color) || '')); }
+const DIS_INV = { principal: 'fondo', fondo: 'principal', texto: 'blanco', negro: 'blanco', suave: 'principal' };
 function disHtml(d, cx, s, opt){
   opt = opt || {}; if (_disSinPrecio(d)) cx = _disCxSinPrecio(cx); const [W, H] = DIS_TAM[d.formato] || DIS_TAM['4x5'], m = DIS.marca || DIS_MARCA_DEF;
   const ft = "'" + m.f_titulo + "', serif", fx = "'" + m.f_texto + "', sans-serif", anchoFoto = opt.ancho || 1080;
-  let h = '<div class="dis-lienzo" style="position:relative;overflow:hidden;width:' + Math.round(W * s) + 'px;height:' + Math.round(H * s) + 'px;background:' + _disCol((d.ajustes && d.ajustes.fondo) || 'fondo') + '">';
+  const inv = _disInvierte(d, cx), C = k => _disCol(inv && DIS_INV[k] ? DIS_INV[k] : k);
+  let h = '<div class="dis-lienzo" style="position:relative;overflow:hidden;width:' + Math.round(W * s) + 'px;height:' + Math.round(H * s) + 'px;background:' + C((d.ajustes && d.ajustes.fondo) || 'fondo') + '">';
   (d.capas || []).forEach((c, i) => {
     if (!_disVis(c, cx)) return;
     const g = _disGeo(c, d.formato), pos = 'position:absolute;left:' + g.x + '%;top:' + g.y + '%;width:' + g.w + '%;' + (g.h != null ? 'height:' + g.h + '%;' : '')
@@ -477,7 +498,7 @@ function disHtml(d, cx, s, opt){
         + (z > 1 ? 'transform:scale(' + z + ');transform-origin:' + fxp + ';' : '') + (fil ? 'filter:' + fil + ';' : '') + '" draggable="false">' : '';
       if (c.velo) inner += '<div style="position:absolute;inset:0;background:' + _disCol(c.velo) + ';opacity:' + (c.veloOp != null ? +c.veloOp : 0.5) + ';pointer-events:none"></div>';
     } else if (c.t === 'forma'){
-      estilo = 'background:' + _disCol(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';' + (+c.blur ? 'filter:blur(' + (+c.blur * s) + 'px);' : '') + (c.mezcla ? 'mix-blend-mode:' + c.mezcla + ';' : '');
+      estilo = 'background:' + C(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';' + (+c.blur ? 'filter:blur(' + (+c.blur * s) + 'px);' : '') + (c.mezcla ? 'mix-blend-mode:' + c.mezcla + ';' : '');
     } else if (c.t === 'degradado'){
       const dir = { abajo: 'to top', arriba: 'to bottom', izq: 'to right', der: 'to left' }[c.desde || 'abajo'] || 'to top';
       estilo = 'background:linear-gradient(' + dir + ',' + _disRgba(_disCol(c.color), c.op != null ? +c.op : 0.8) + ' 0%,' + _disRgba(_disCol(c.color), 0) + ' 100%);';
@@ -487,9 +508,10 @@ function disHtml(d, cx, s, opt){
       if (c.caja) estilo = 'border:' + Math.max(1, 3 * s) + 'px solid ' + hexL + ';border-radius:' + (16 * s) + 'px;padding:' + (14 * s) + 'px ' + (18 * s) + 'px;box-sizing:border-box;';
       inner = '<img crossorigin="anonymous" src="' + disA(m.logo_oscuro) + '" data-tono="' + tono + '" style="width:100%;display:block;pointer-events:none;' + 'filter:' + (tono === 'blanco' ? 'brightness(0) invert(1)' : tono === 'negro' ? 'brightness(0)' : (halo ? '' : 'none')) + (halo ? (tono === 'blanco' ? ' drop-shadow(0 0 ' + (10 * s) + 'px rgba(0,0,0,.55))' : ' drop-shadow(0 0 ' + (10 * s) + 'px rgba(255,255,255,.9)) drop-shadow(0 0 ' + (4 * s) + 'px rgba(255,255,255,.9))') : '') + '" draggable="false">';
     } else if (c.t === 'texto'){
-      const t = _disTxtSeg(cx, c.txt); if (!t.trim() || (/\{\{/.test(c.txt || '') && /^[\s·«»—★~*]*$/.test(t))) return;
-      const fondo = c.fondo ? 'background:' + _disCol(c.fondo) + ';padding:' + ((+c.pad || 0) * s) + 'px ' + ((+c.pad || 0) * 1.4 * s) + 'px;border-radius:' + ((+c.r || 0) * s) + 'px;' : '';
-      const col = _disCol(c.color);
+      const t = _disPregunta(_disTxtSeg(cx, c.txt)); if (!t.trim() || (/\{\{/.test(c.txt || '') && /^[\s·«»—★~*]*$/.test(t))) return;
+      c = Object.assign({}, c, { tam: _disTamLegible(c) });
+      const fondo = c.fondo ? 'background:' + C(c.fondo) + ';padding:' + ((+c.pad || 0) * s) + 'px ' + ((+c.pad || 0) * 1.4 * s) + 'px;border-radius:' + ((+c.r || 0) * s) + 'px;' : '';
+      const col = C(c.color);
       estilo = 'text-align:' + (c.al || 'left') + ';line-height:' + (c.lh || 1.12) + ';font-size:' + ((+c.tam || 40) * s) + 'px;' + (c.vertical ? 'writing-mode:vertical-rl;transform:rotate(180deg);' : '');
       inner = '<span style="display:inline-block;' + fondo + 'font-family:' + (c.fuente === 'titulo' ? ft : fx) + ';font-size:' + ((+c.tam || 40) * s) + 'px;font-weight:' + (c.peso || 400) + ';'
         + (c.contorno ? 'color:transparent;-webkit-text-stroke:' + Math.max(0.6, (+c.trazo || 2) * s) + 'px ' + col + ';' : 'color:' + col + ';')
@@ -497,7 +519,7 @@ function disHtml(d, cx, s, opt){
     } else if (c.t === 'lista'){
       const L = cx.ben.slice(0, +c.max || 3); if (!L.length) return;
       const tam = (+c.tam || 30) * s;
-      estilo = 'font-family:' + fx + ';color:' + _disCol(c.color) + ';';
+      estilo = 'font-family:' + fx + ';color:' + C(c.color) + ';';
       inner = L.map(b => '<div style="display:flex;gap:' + (tam * 0.45) + 'px;margin-bottom:' + (tam * 0.7) + 'px"><span style="font-size:' + tam + 'px;line-height:1.1;color:' + _disCol('acento') + '">' + disA(c.icono || '✓') + '</span>'
         + '<div><div style="font-size:' + tam + 'px;font-weight:600;line-height:1.15">' + disA(b.titulo) + '</div>'
         + (c.detalle && b.texto ? '<div style="font-size:' + (tam * 0.72) + 'px;line-height:1.25;margin-top:' + (tam * 0.15) + 'px;opacity:.85">' + disA(b.texto) + '</div>' : '') + '</div></div>').join('');
@@ -698,6 +720,7 @@ function _disEdAbrir(){
     + '<div class="dis-seg">' + ['4x5', '9x16'].map(f => '<button type="button" data-f="' + f + '" class="' + (DIS.ed.formato === f ? 'on' : '') + '" onclick="disEdFormato(\'' + f + '\')">' + (f === '4x5' ? 'Feed 4:5' : 'Historias 9:16') + '</button>').join('') + '</div>'
     + '<select onchange="DIS.ed.mensaje=this.value;DIS.ed._sucio=true" title="Mensaje del anuncio">' + DIS_MSJ.map(o => '<option value="' + o[0] + '"' + (DIS.ed.mensaje === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
     + '<select title="Automático: a clientas frías y tibias NO se les muestra el precio; a las calientes sí, con el precio de antes tachado y el % de descuento" onchange="DIS.ed.ajustes.precio=this.value;DIS.ed._sucio=true;disEdPintar()">' + [['', 'Precio: automático'], ['si', 'Precio: mostrar siempre'], ['no', 'Precio: ocultar']].map(o => '<option value="' + o[0] + '"' + ((DIS.ed.ajustes.precio || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
+    + '<select title="Automático: si la prenda es clara (beige, crema, blanco…) y el fondo es crema, el fondo pasa a azul para que la prenda resalte" onchange="DIS.ed.ajustes.contraste=this.value;DIS.ed._sucio=true;disEdPintar()">' + [['', 'Fondo: automático'], ['no', 'Fondo: tal cual']].map(o => '<option value="' + o[0] + '"' + ((DIS.ed.ajustes.contraste || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
     + _disIb('deshacer', 'Deshacer (Ctrl+Z)', 'disDeshacer()') + _disIb('rehacer', 'Rehacer (Ctrl+Y)', 'disRehacer()')
     + '<span style="flex:1"></span><span class="ui-nota" id="disEdRes"></span>'
     + '<button class="btn" onclick="disCriticarEditor()" title="La IA le pone nota y dice qué mejorar (~US$0,01)">🧐 Revisar</button>'
@@ -1256,11 +1279,23 @@ function disIAMensajeAbrir(){
   document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disIAm" style="z-index:10050"><div class="dis-caja" style="max-width:540px"><div class="dis-cab"><div><div class="ui-pag">✨ Pedir un cambio</div><div class="ui-nota">Escribe lo que quieres y la IA edita el diseño · ~US$0,01 · Ctrl+Z lo deshace</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disIAm\').remove()') + '</div>'
     + '<textarea id="disIAtxt" rows="3" style="width:100%" placeholder="Ej.: baja el descuento, sube el precio y pon el logo en azul" onkeydown="event.stopPropagation();if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();disIAMensaje()}"></textarea>'
     + '<div class="dis-campos" style="margin:8px 0">' + DIS_IA_EJ.map(t => '<button type="button" class="dis-campo" onclick="document.getElementById(\'disIAtxt\').value=this.textContent">' + esc(t) + '</button>').join('') + '</div>'
-    + '<div style="display:flex;gap:8px;align-items:center"><span class="ui-nota" id="disIAres" style="flex:1"></span><button class="btn on" id="disIAbtn" onclick="disIAMensaje()">✨ Aplicar</button></div></div></div>');
+    + '<div style="display:flex;gap:8px;align-items:center"><span class="ui-nota" id="disIAres" style="flex:1"></span><button class="btn" id="disIAmic" onclick="disIADictar()" title="Habla y se escribe solo (gratis, en el navegador). Vuelve a tocar para parar">🎤 Dictar</button><button class="btn on" id="disIAbtn" onclick="disIAMensaje()">✨ Aplicar</button></div></div></div>');
   setTimeout(() => { const t = document.getElementById('disIAtxt'); if (t) t.focus(); }, 50);
+}
+/* 23-nov (Pablo) · pedir el cambio con la voz: dictado del navegador (Chrome/Edge/Safari), español de Perú, sin costo */
+function disIADictar(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition, t = document.getElementById('disIAtxt'), b = document.getElementById('disIAmic'), res = document.getElementById('disIAres');
+  if (!t) return; if (!SR){ if (res) res.textContent = 'Este navegador no permite dictar: usa Chrome.'; return; }
+  if (DIS._rec){ try { DIS._rec.stop(); } catch (_) {} return; }
+  const r = new SR(), base = t.value ? t.value.replace(/\s*$/, ' ') : ''; DIS._rec = r; r.lang = 'es-PE'; r.continuous = true; r.interimResults = true;
+  r.onresult = e => { let x = ''; for (let k = 0; k < e.results.length; k++) x += e.results[k][0].transcript; t.value = base + x.trim(); };
+  r.onerror = e => { if (res) res.textContent = e.error === 'not-allowed' ? 'Permite el micrófono en el candado de la barra de direcciones.' : 'No se escuchó bien, intenta otra vez.'; };
+  r.onend = () => { DIS._rec = null; if (b) { b.textContent = '🎤 Dictar'; b.classList.remove('on'); } if (res && /Escuchando/.test(res.textContent)) res.textContent = 'Listo: revisa el texto y toca ✨ Aplicar.'; };
+  if (b) { b.textContent = '⏹ Parar'; b.classList.add('on'); } if (res) res.textContent = '🎤 Escuchando… habla con calma.'; r.start();
 }
 async function disIAMensaje(){
   const t = document.getElementById('disIAtxt'), res = document.getElementById('disIAres'), b = document.getElementById('disIAbtn'), msg = ((t || {}).value || '').trim();
+  if (DIS._rec){ try { DIS._rec.stop(); } catch (_) {} }
   if (!msg || !DIS.ed || DIS._iaCorre) return; DIS._iaCorre = 1; if (b) b.disabled = true; if (res) res.textContent = '✨ Editando… (5-15 s)';
   try {
     const cx = DIS._cx || {}, muestra = { nombre: cx.nombre, precio: cx.precio, precio_antes: cx.antes, descuento: cx.descuento, color: cx.color, colores: (cx.colores || []).length, oferta: !!cx.oferta, beneficios: (cx.ben || []).map(x => x.titulo) };
@@ -1775,7 +1810,7 @@ function _disFlotHtml(c, i){
   const b = (t, lab, tit, fn) => '<button type="button" title="' + disA(tit) + '" onclick="' + fn + '"><span>' + t + '</span><small>' + lab + '</small></button>', sep = '<span class="dis-flot-sep"></span>';
   const cols = k => '<span class="dis-flot-cols">' + DIS_FLOT_COL.map(n => '<button type="button" class="dis-flot-col' + (c[k] === n ? ' on' : '') + '" title="Color: ' + n + '" style="background:' + _disCol(n) + '" onclick="disCapaSet(' + i + ',\'' + k + '\',\'' + n + '\')"></button>').join('') + '</span>';
   let h = '';
-  if (c.t === 'texto') h = b('A−', 'Menos', 'Letra más chica', 'disFlotTam(' + i + ',0.9)') + b('A+', 'Más', 'Letra más grande', 'disFlotTam(' + i + ',1.1)') + b('<b>B</b>', 'Negrita', 'Negrita', 'disCapaSet(' + i + ',\'peso\',' + ((+c.peso || 400) >= 600 ? 400 : 700) + ')')
+  if (c.t === 'texto') h = '<select title="Tamaños fijos, legibles en el celular" onchange="disLetraPreset(' + i + ',this.value)"><option value="">Tamaño…</option>' + DIS_LETRA_PRESET.map((o, k) => '<option value="' + k + '">' + o[0] + ' · ' + o[1] + '</option>').join('') + '</select>' + b('A−', 'Menos', 'Letra más chica', 'disFlotTam(' + i + ',0.9)') + b('A+', 'Más', 'Letra más grande', 'disFlotTam(' + i + ',1.1)') + b('<b>B</b>', 'Negrita', 'Negrita', 'disCapaSet(' + i + ',\'peso\',' + ((+c.peso || 400) >= 600 ? 400 : 700) + ')')
     + sep + b('⟸', 'Izq.', 'Alinear a la izquierda', 'disCapaSet(' + i + ',\'al\',\'left\')') + b('≡', 'Centro', 'Centrar', 'disCapaSet(' + i + ',\'al\',\'center\')') + b('⟹', 'Der.', 'Alinear a la derecha', 'disCapaSet(' + i + ',\'al\',\'right\')')
     + sep + cols('color') + sep + b('💬', 'Textos', 'Textos de la tienda para esta prenda', 'disFlotTextos(' + i + ')');
   else if (c.t === 'foto') h = b('🎯', 'Encuadre', 'Elegir qué parte de la prenda se ve (se guarda por prenda)', 'disEncuadreAbrir(' + i + ')') + b('↻', 'Otra foto', 'Otra foto de la prenda', 'disFlotFoto(' + i + ')')

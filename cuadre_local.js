@@ -776,7 +776,34 @@ function cua_13_EMPAREJAR_VENTAS() {
 async function __hdr() { var tok = await _sbSesionAsegurar(); if (!tok) throw new Error('cuadre_local: sin sesion'); return { apikey: SB_ANON, Authorization: 'Bearer ' + tok }; }
 /** Todo se lee por public.cuadre_fuente (solo Administrador): UNA llamada por tabla, sin paginar.
  *  Devuelve lo mismo que la tabla; las páginas siguientes (offset > 0) van vacías → el motor del servidor corta solo. */
+/* 23-nov-2026 (Pablo: «el cuadre está lento», 4-7 s) · COPIA DEL DRIVE Y DE LOS PEDIDOS EN ESTE NAVEGADOR (IndexedDB): se baja solo lo que
+   cambió desde la última vez (rpc cuadre_fuente_delta). Control: la base manda el total de filas y una suma de control (huella del Drive;
+   id + hora de cambio del pedido); si lo armado aquí no coincide, se baja TODO una vez. Medido antes: Drive 4,5 MB en 2,9 s y pedidos 3 MB
+   en 1,9 s en cada apertura. Si la función no está en la base: el camino de siempre. REVERSA: CD_DELTA = false. */
+var CD_DELTA = true;
+function __idb() { return new Promise(function (ok, no) { var r = indexedDB.open('tulula_cuadre', 1); r.onupgradeneeded = function () { r.result.createObjectStore('f'); }; r.onsuccess = function () { ok(r.result); }; r.onerror = function () { no(r.error); }; }); }
+async function __idbGet(k) { try { var db = await __idb(); return await new Promise(function (ok) { var q = db.transaction('f').objectStore('f').get(k); q.onsuccess = function () { ok(q.result || null); }; q.onerror = function () { ok(null); }; }); } catch (e) { return null; } }
+async function __idbSet(k, v) { try { var db = await __idb(); await new Promise(function (ok) { var t = db.transaction('f', 'readwrite'); t.objectStore('f').put(v, k); t.oncomplete = ok; t.onerror = ok; t.onabort = ok; }); } catch (e) {} }
+function __chk(tabla, filas) { var s = 0; filas.forEach(function (x) { if (tabla === 'drive_ing') { var h = String(x.h || ''); s += /^[0-9a-f]{8}/.test(h) ? parseInt(h.slice(0, 8), 16) : h.length; } else s += Number(x.id) + Number(x.tc); }); return s; }
+async function __fuenteDelta(tabla, desde) {
+  if (!CD_DELTA || typeof indexedDB === 'undefined' || !desde) return null;
+  var k = tabla + '|' + desde, prev = await __idbGet(k), clave = tabla === 'drive_ing' ? 'fila' : 'id';
+  for (var intento = 0; intento < 2; intento++) {
+    var tras = (prev && prev.ahora && intento === 0) ? new Date(Date.parse(prev.ahora) - 10000).toISOString() : null;
+    var h = Object.assign({ 'Content-Type': 'application/json' }, await __hdr());
+    var r = await fetch(SB_URL + '/rest/v1/rpc/cuadre_fuente_delta', { method: 'POST', headers: h, body: JSON.stringify({ p_tabla: tabla, p_desde: desde, p_tras: tras }) });
+    if (!r.ok) return null;
+    var j = await r.json(); if (!j || !Array.isArray(j.filas)) return null;
+    var M = new Map(); if (tras) prev.filas.forEach(function (x) { M.set(x[clave], x); }); j.filas.forEach(function (x) { M.set(x[clave], x); });
+    var filas = Array.from(M.values()).sort(function (a, b) { return a[clave] - b[clave]; });
+    if (filas.length === Number(j.n) && __chk(tabla, filas) === Number(j.chk)) { __idbSet(k, { ahora: j.ahora, filas: filas }); __DELTA[tabla] = { nuevas: j.filas.length, completo: !tras }; return filas; }
+    prev = null;   // no cuadra con la base: se baja todo una vez
+  }
+  return null;
+}
+var __DELTA = {};
 async function __fuente(tabla, desde, nros) {
+  if (tabla === 'pedidos' && desde && !nros) { try { var fd = await __fuenteDelta('pedidos', desde); if (fd) return { code: 200, body: JSON.stringify(fd) }; } catch (eD) {} }   // 23-nov · solo lo que cambió
   var h = Object.assign({ 'Content-Type': 'application/json' }, await __hdr());
   var r = await fetch(SB_URL + '/rest/v1/rpc/cuadre_fuente', { method: 'POST', headers: h, body: JSON.stringify({ p_tabla: tabla, p_desde: desde || null, p_nros: nros || null }) });
   return { code: r.status, body: await r.text() };
@@ -793,8 +820,8 @@ async function __bajar(f) {
 }
 /** La copia del Drive desde una fecha, armada como getValues(): fila N en la posición N-1. */
 async function __bajarDrive(desde) {
-  var r = await __fuente('drive_ing', desde); if (r.code >= 300) throw new Error('drive_ing HTTP ' + r.code + ' ' + String(r.body).slice(0, 200));
-  var filas = JSON.parse(r.body || '[]');
+  var filas = null; try { filas = await __fuenteDelta('drive_ing', desde); } catch (eD) { filas = null; }   // 23-nov · solo lo que cambió
+  if (!filas) { var r = await __fuente('drive_ing', desde); if (r.code >= 300) throw new Error('drive_ing HTTP ' + r.code + ' ' + String(r.body).slice(0, 200)); filas = JSON.parse(r.body || '[]'); }
   var max = filas.reduce(function (m, x) { return Math.max(m, x.fila); }, 1), v = new Array(max);
   v[0] = []; for (var i = 1; i < max; i++) v[i] = [];
   filas.forEach(function (x) { v[x.fila - 1] = x.valores || []; });
@@ -807,7 +834,7 @@ window.cuadreLocalCanon = function (t) { try { var o = libroResolverPrenda(Strin
 /** Corre el emparejador del servidor en el navegador. corte = 'yyyy-mm-dd' (STOCK_CUTOFF del servidor). */
 window.cuadreLocalEmparejar = async function (corte) {
   var t0 = Date.now(), viajes = 0;
-  __RUTAS = {}; __SALIDA = {}; __PROPS = { STOCK_CUTOFF: corte };
+  __RUTAS = {}; __SALIDA = {}; __PROPS = { STOCK_CUTOFF: corte }; __DELTA = {};
   _LIBRO_IDX = null; _VOC_FRASES_ = null;
   var desde = new Date(new Date(corte + 'T00:00:00-05:00').getTime() - 46 * 864e5).toISOString().slice(0, 10);   // la ventana del emparejador (corte − 45 días) + 1 de margen
   /* 30-oct (Pablo: «el cuadre está lento») · VÍA RÁPIDA: el emparejador pedía sus tablas de a poco (6 vueltas, 8 viajes, ~4 s).
@@ -826,7 +853,7 @@ window.cuadreLocalEmparejar = async function (corte) {
       var M = __SALIDA['claude.cuadre.match'] || null;
       try { var usadas = prev.filter(function (f) { return __RUTAS[f.k]; }).concat(pedidas); var vk = {};
             localStorage.setItem('cd_rutas_prev', JSON.stringify(usadas.filter(function (f) { if (vk[f.k]) return false; vk[f.k] = 1; return true; }).map(function (f) { return { k: f.k, ruta: f.ruta }; }))); } catch (eS) {}
-      return { match: M, resumen: res, ms: Date.now() - t0, msDrive: tDrive, filasDrive: D.n, vueltas: vuelta + 1, viajes: viajes };
+      return { match: M, resumen: res, ms: Date.now() - t0, msDrive: tDrive, filasDrive: D.n, vueltas: vuelta + 1, viajes: viajes, delta: __DELTA };
     }
     var vistos = {}, pedir = __FALTAN.filter(function (f) { if (vistos[f.k]) return false; vistos[f.k] = 1; return true; });
     viajes += pedir.length; pedidas = pedidas.concat(pedir);
