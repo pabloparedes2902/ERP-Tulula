@@ -336,7 +336,7 @@ async function disCargar(){
   const [f, p, m, pu, pz, sf, jn] = await Promise.all([
     _mklSb('/rest/v1/mk_disenos?select=*&order=creado.desc'),
     (DIS.prods && !DIS._refrescar) ? Promise.resolve(DIS.prods) : _mklSb('/rest/v1/rpc/mk_dis_productos', { method: 'POST', body: '{}' }),
-    _mklSb('/rest/v1/mk_dis_config?select=clave,valor&clave=in.(marca,orden_plantillas)').catch(() => []),
+    _mklSb('/rest/v1/mk_dis_config?select=clave,valor&clave=in.(marca,orden_plantillas,descuentos_tienda)').catch(() => []),
     _mklSb('/rest/v1/rpc/_mk_puede_editar', { method: 'POST', body: '{}' }).catch(() => false),
     _mklSb('/rest/v1/mk_dis_piezas?select=*&estado=neq.archivada&order=creado.desc&limit=2000').catch(() => []),
     _mklSb('/rest/v1/mk_dis_sinfondo?select=foto,url').catch(() => []),
@@ -345,7 +345,7 @@ async function disCargar(){
   DIS.piezas = Array.isArray(pz) ? pz : []; DIS.sinf = {}; (Array.isArray(sf) ? sf : []).forEach(x => { DIS.sinf[x.foto] = x.url; });
   DIS.prods = (Array.isArray(p) ? p : []).filter(x => !/^archived$/i.test(x.estado || '')).sort((a, b) => (_disActivo(a) ? 0 : 1) - (_disActivo(b) ? 0 : 1) || String(a.titulo).localeCompare(String(b.titulo)));
   const cfg = k => ((Array.isArray(m) ? m : []).find(x => x.clave === k) || {}).valor;
-  DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null;
+  DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null; DIS.descTienda = cfg('descuentos_tienda') || null;
   _disFondosCargar();
   DIS.puede = pu === true;
   /* 21-nov noche (medido: resultados ~2,2 s porque lee anuncios de otra base) · ya no frena la galería: se pinta primero y los
@@ -1039,7 +1039,7 @@ function disMarcaAbrir(){
     + '<label class="dis-prop"><span class="ui-nota">Letra de títulos</span><input id="disM_f_titulo" value="' + disA(m.f_titulo) + '"></label>'
     + '<label class="dis-prop"><span class="ui-nota">Letra de textos</span><input id="disM_f_texto" value="' + disA(m.f_texto) + '"></label></div><div class="dis-props">'
     + col('c_principal', 'Azul') + col('c_acento', 'Naranja') + col('c_fondo', 'Crema') + col('c_suave', 'Gris azulado') + col('c_texto', 'Texto') + col('c_oferta', 'Oferta') + '</div>'
-    + '<label class="dis-prop" style="width:100%"><span class="ui-nota">Ventajas de la tienda (una por línea · campos {{ventaja1}}…{{ventaja6}})</span><textarea id="disM_ventajas" rows="6" style="width:100%">' + esc(_disVentajas().join('\n')) + '</textarea></label>'
+    + '<label class="dis-prop" style="width:100%"><span class="ui-nota">Ventajas de la tienda (una por línea · campos {{ventaja1}}…{{ventaja6}})</span><textarea id="disM_ventajas" rows="6" style="width:100%">' + esc(_disVentajasManual().join('\n')) + '</textarea><span class="ui-nota" title="Las ventajas de envío gratis se prenden y apagan solas según las promociones activas de la tienda">' + esc(_disVentajasNota()) + '</span></label>'
     + '<label class="dis-prop" style="width:100%"><span class="ui-nota">Precio en los anuncios</span><select id="disM_precio_publico"><option value="caliente"' + ((m.precio_publico || 'caliente') === 'caliente' ? ' selected' : '') + '>Solo en público 🔥 Caliente (Frío y Tibio sin precio)</option><option value="todos"' + (m.precio_publico === 'todos' ? ' selected' : '') + '>En todos los públicos</option></select></label>'
     + '<label class="dis-prop" style="width:100%"><span class="ui-nota">Logo (PNG)</span><input id="disM_logo_oscuro" value="' + disA(m.logo_oscuro) + '" style="width:100%"></label>'
     + '<div class="dis-acc" style="margin-top:12px"><span class="ui-nota" id="disMRes"></span><span style="flex:1"></span><button class="btn" onclick="disMarcaGuardar(false)">Guardar</button><button class="btn on" onclick="disMarcaGuardar(true)">✓ Aprobar marca</button></div></div></div>';
@@ -1416,7 +1416,31 @@ async function disCriticarFila(id){
 /* ══ 21-nov noche (Pablo) · precio según público, ventajas de la tienda, luz del ambiente, parecido entre diseños ══ */
 /* Ventajas de Tulula (de tulula.com.pe + las que dijo Pablo). Editables en 🎨 Marca. Campos {{ventaja1}}…{{ventaja4}}. */
 const DIS_VENTAJAS_DEF = ['Paga hasta en 6 cuotas sin intereses', 'Primer cambio de talla gratis', '10% en tu primera compra', 'Pago semi contra entrega', 'Envío gratis desde S/ 200', 'Envío gratis en tu primera compra web desde S/ 100'];
-function _disVentajas(){ const v = (DIS.marca && DIS.marca.ventajas) || DIS_VENTAJAS_DEF; return Array.isArray(v) ? v.filter(x => String(x || '').trim()) : DIS_VENTAJAS_DEF; }
+function _disVentajasManual(){ const v = (DIS.marca && DIS.marca.ventajas) || DIS_VENTAJAS_DEF; return Array.isArray(v) ? v.filter(x => String(x || '').trim()) : DIS_VENTAJAS_DEF; }
+/* 22-nov (Pablo) · las ventajas de envío siguen a Shopify: si la promoción se apaga en la tienda, sale del anuncio; si se prende una nueva, entra sola.
+   La copia la deja el trabajador shopify-worker (op descuentos.leer, cada 2 h) en mk_dis_config «descuentos_tienda». Sin copia o vieja (>3 días) → la lista manual tal cual. */
+const DIS_DESC_VIEJO_MS = 3 * 864e5;
+function _disDescTienda(){ const d = DIS.descTienda; if (!d || !Array.isArray(d.lista)) return null; const t = Date.parse(d.t || ''); if (!t || Date.now() - t > DIS_DESC_VIEJO_MS) return null; return d.lista; }
+function _disEsEnvio(x){ return /env[ií]o\s+gratis/i.test(String(x || '')); }
+function _disMonto(x){ const m = String(x || '').match(/S\/\s*([0-9]+(?:[.,][0-9]+)?)/i); return m ? Number(m[1].replace(',', '.')) : null; }
+function _disVentajas(){
+  const man = _disVentajasManual(), L = _disDescTienda(); if (!L) return man;
+  const envios = L.filter(x => x && x.tipo === 'envio'), usados = new Set(), out = [];
+  man.forEach(v => {
+    if (!_disEsEnvio(v)) { out.push(v); return; }
+    const mo = _disMonto(v), e = envios.find(x => (Number(x.minimo) || null) === mo);
+    if (e) { usados.add(e); out.push(v); } // sigue activa en la tienda: se queda con la redacción de Pablo
+  });
+  envios.forEach(e => { if (usados.has(e)) return; const t = String(e.titulo || '').trim(); if (!t) return;
+    out.push(e.minimo && _disMonto(t) == null ? t + ' desde S/ ' + Math.round(e.minimo) : t); });
+  return out.slice(0, 6);
+}
+function _disVentajasNota(){
+  const L = _disDescTienda(); if (!L) return 'Shopify: sin lectura reciente de promociones · se usa la lista tal cual';
+  const man = _disVentajasManual(), fin = _disVentajas(), fuera = man.filter(v => fin.indexOf(v) < 0), nuevas = fin.filter(v => man.indexOf(v) < 0);
+  return '🛒 Shopify ' + new Date(DIS.descTienda.t).toLocaleString('es-PE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+    + (fuera.length ? ' · fuera (promoción apagada): ' + fuera.join(' / ') : '') + (nuevas.length ? ' · entra sola: ' + nuevas.join(' / ') : '') + (!fuera.length && !nuevas.length ? ' · todo coincide' : '');
+}
 /* Decisión de Pablo: Frío y Tibio SIN precio; Caliente con precio nuevo grande + tachado + % (se puede forzar por diseño). */
 function _disSinPrecio(d){
   const a = (d && d.ajustes) || {}, modo = (DIS.marca && DIS.marca.precio_publico) || 'caliente';
