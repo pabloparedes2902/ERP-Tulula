@@ -10,7 +10,7 @@ const DIS_TAM = { '4x5': [1080, 1350], '9x16': [1080, 1920], '1x1': [1080, 1080]
 const DIS_MSJ = [['producto','Producto'],['beneficios','Beneficios'],['oferta','Oferta'],['colores','Colores'],['preventa','Preventa'],['frase','Frase'],['resenas','Reseñas']];
 const DIS_EST = { borrador: 'Borrador', prueba: 'En prueba', ganadora: 'Ganadora', archivada: 'Archivada' };
 const DIS_VIS = [['siempre','Siempre'],['oferta','Solo en oferta'],['sin_oferta','Solo sin oferta'],['preventa','Solo en preventa'],['beneficios','Solo con beneficios'],['ultimas','Solo en últimas tallas'],['resenas','Solo con reseñas'],['cita','Solo con cita de clienta'],['sin_cita','Solo sin cita de clienta'],['badge','Solo si hay etiqueta'],['foto_clienta','Solo con reseña con foto'],['sin_foto_clienta','Solo sin reseña con foto'],['con_precio','Solo si se muestra el precio'],['junto','Solo si tiene prenda que se compra junta'],['sin_junto','Solo si no tiene prenda junta']];
-const DIS_CAMPOS = [['{{nombre}}','Nombre'],['{{precio}}','Precio'],['{{precio_antes}}','Precio antes'],['{{descuento}}','% descuento'],['{{ahorro}}','Ahorro'],['{{frase}}','Frase gigante'],['{{color}}','Color'],['{{colores_n}}','N.º de colores'],['{{tallas}}','Tallas'],['{{ultimas}}','Últimas tallas'],['{{categoria}}','Categoría'],['{{nombre_corto}}','Nombre corto'],['{{estrellas}}','Estrellas'],['{{n_resenas}}','N.º reseñas'],['{{resena}}','Cita de clienta'],['{{resena_quien}}','Quién la dijo'],['{{badge}}','Etiqueta automática'],['{{ventaja1}}','Ventaja 1 (cuotas)'],['{{ventaja2}}','Ventaja 2'],['{{ventaja3}}','Ventaja 3'],['{{ventaja4}}','Ventaja 4'],['{{ventaja5}}','Ventaja 5 (envío S/ 200)'],['{{ventaja6}}','Ventaja 6 (envío 1.ª compra)'],['{{junto_nombre}}','Se compra junto con'],['{{fecha}}','Fecha comercial'],['{{fecha_frase}}','Frase de la fecha'],['{{fecha_sub}}','Detalle de la fecha'],['{{fecha_limite}}','Pide hasta… (llega a tiempo)'],['{{juntos_n}}','Clientas que las llevaron juntas'],['{{resena_foto_texto}}','Reseña con foto'],['{{beneficio1}}','Beneficio 1'],['{{beneficio2}}','Beneficio 2'],['{{beneficio3}}','Beneficio 3'],['{{beneficio1_texto}}','Detalle beneficio 1']];
+const DIS_CAMPOS = [['{{nombre}}','Nombre'],['{{precio}}','Precio'],['{{precio_antes}}','Precio antes'],['{{descuento}}','% descuento'],['{{ahorro}}','Ahorro'],['{{frase}}','Frase gigante'],['{{color}}','Color'],['{{colores_n}}','N.º de colores'],['{{tallas}}','Tallas'],['{{ultimas}}','Últimas tallas'],['{{categoria}}','Categoría'],['{{nombre_corto}}','Nombre corto'],['{{estrellas}}','Estrellas'],['{{n_resenas}}','N.º reseñas'],['{{resena}}','Cita de clienta'],['{{resena_quien}}','Quién la dijo'],['{{badge}}','Etiqueta automática'],['{{ventaja1}}','Ventaja 1 (cuotas)'],['{{ventaja2}}','Ventaja 2'],['{{ventaja3}}','Ventaja 3'],['{{ventaja4}}','Ventaja 4'],['{{ventaja5}}','Ventaja 5 (envío S/ 200)'],['{{ventaja6}}','Ventaja 6 (envío 1.ª compra)'],['{{junto_nombre}}','Se compra junto con'],['{{fecha}}','Fecha comercial'],['{{fecha_frase}}','Frase de la fecha'],['{{fecha_sub}}','Detalle de la fecha'],['{{fecha_limite}}','Pide hasta… (llega a tiempo)'],['{{fecha_promo}}','Promoción de Shopify de la fecha'],['{{juntos_n}}','Clientas que las llevaron juntas'],['{{resena_foto_texto}}','Reseña con foto'],['{{beneficio1}}','Beneficio 1'],['{{beneficio2}}','Beneficio 2'],['{{beneficio3}}','Beneficio 3'],['{{beneficio1_texto}}','Detalle beneficio 1']];
 const DIS_COLS = [['principal','Azul'],['acento','Naranja'],['fondo','Crema'],['suave','Gris azulado'],['texto','Texto'],['oferta','Oferta'],['blanco','Blanco'],['negro','Negro']];
 const DIS_MARCA_DEF = { aprobada: false, f_titulo: 'Tenor Sans', f_texto: 'Jost', c_principal: '#173B61', c_acento: '#C15B07', c_texto: '#000000', c_fondo: '#EDEAE3', c_oferta: '#C15B07', c_suave: '#D3DBE5',   /* 21-nov · colores oficiales que pasó Pablo */
   logo_oscuro: 'https://cdn.shopify.com/s/files/1/0722/3564/7189/files/logo-oscuro_649cf6f9-9636-42ac-9f18-05f5af1ff2de.png' };
@@ -423,7 +423,7 @@ function _disTxt(cx, t){
     const v = { nombre: cx.nombre, precio: cx.precio, precio_antes: cx.antes, descuento: cx.descuento, ahorro: cx.ahorro, frase: cx.frase, color: cx.color,
       colores_n: cx.colores.length > 1 ? cx.colores.length + ' colores' : '', tallas: tal, ultimas: cx.ultimas ? 'Últimas tallas: ' + cx.tallas.join(' y ') : '', marca: 'TULULA',
       estrellas: cx.estrellas, n_resenas: cx.n_resenas >= 100 ? cx.n_resenas + ' reseñas' : '',   /* 21-nov · Pablo: con menos de 100 no se muestra */
-      ventaja1: _disVentajas()[0] || '', ventaja2: _disVentajas()[1] || '', ventaja3: _disVentajas()[2] || '', ventaja4: _disVentajas()[3] || '', ventaja5: _disVentajas()[4] || '', ventaja6: _disVentajas()[5] || '', junto_nombre: cx.junto ? cx.junto.nombre : '', fecha: cx.fecha ? cx.fecha.nombre : '', fecha_frase: cx.fecha ? cx.fecha.frase : '', fecha_sub: cx.fecha ? cx.fecha.sub : '', fecha_limite: cx.fecha ? cx.fecha.limite : '', juntos_n: cx.junto && cx.junto.n >= 10 ? cx.junto.n + ' clientas las llevaron juntas' : '', resena_foto_texto: _disCorta(cx.foto_texto, 120), resena_foto_quien: cx.foto_quien || '', resena: cx.cita, resena_quien: cx.cita_quien,
+      ventaja1: _disVentajas()[0] || '', ventaja2: _disVentajas()[1] || '', ventaja3: _disVentajas()[2] || '', ventaja4: _disVentajas()[3] || '', ventaja5: _disVentajas()[4] || '', ventaja6: _disVentajas()[5] || '', junto_nombre: cx.junto ? cx.junto.nombre : '', fecha: cx.fecha ? cx.fecha.nombre : '', fecha_frase: cx.fecha ? cx.fecha.frase : '', fecha_sub: cx.fecha ? cx.fecha.sub : '', fecha_limite: cx.fecha ? cx.fecha.limite : '', fecha_promo: cx.fecha && cx.fecha.promoTxt ? cx.fecha.promoTxt : '', juntos_n: cx.junto && cx.junto.n >= 10 ? cx.junto.n + ' clientas las llevaron juntas' : '', resena_foto_texto: _disCorta(cx.foto_texto, 120), resena_foto_quien: cx.foto_quien || '', resena: cx.cita, resena_quien: cx.cita_quien,
       categoria: cx.categoria, nombre_corto: cx.nombre_corto, badge: cx.badge }[k];
     return v == null ? '' : v; });
 }
@@ -579,6 +579,7 @@ function disPintar(){
     + '<input type="search" placeholder="🔍 Buscar por nombre" value="' + disA(DIS.q) + '" oninput="DIS.q=this.value;clearTimeout(DIS._t);DIS._t=setTimeout(disPintar,250)" style="width:190px">' + _disBarraBtns() + '</div></div>');
   if (!m.aprobada && DIS.puede) h += '<div class="dis-aviso">🎨 Marca lista con el azul, naranja y crema de Tulula. Revísala en <b>⚙️ Configuración › 🎨 Marca</b> y apruébala.</div>';
   if (DIS.ver !== 'plantillas' && DIS.puede) h += _disAvisoGanadoras();
+  if (DIS.puede) h += _disAvisoFecha();
   if (DIS.msg) h += '<div class="dis-aviso">' + DIS.msg + ' <button class="dis-ib" onclick="DIS.msg=\'\';disPintar()" title="Cerrar">' + disIco('cerrar', 14) + '</button></div>';
   if (DIS.ver === 'plantillas'){ el.innerHTML = h + _disPlantillasHtml(); if (DIS.puede) _disArrastrable(document.getElementById('disNuevoGrilla'), ks => _disGuardarOrdenPlant(ks)); disNuevoPintar(); return; }
   if (!vis.length) h += '<div class="mkl-vacio">' + (fs.length ? 'Nada para mostrar con estos filtros.' : 'Todavía no hay diseños. Crea el primero con ➕ Nuevo diseño.') + '</div>';
@@ -601,7 +602,7 @@ function _disTarjeta(f){
   return '<div class="dis-tarj" data-k="' + f.id + '"' + (DIS.puede && est !== 'archivada' && est !== 'ganadora' ? ' draggable="true" title="Arrastra para cambiar el orden"' : '') + '><div class="dis-mini" id="disMini' + f.id + '" onclick="' + (DIS.puede && est !== 'archivada' ? 'disEditar(' + f.id + ')' : '') + '"></div>'
     + '<div class="dis-tarj-pie"><div class="dis-fila"><div class="ui-tot dis-nom" title="' + disA(f.nombre) + '"><span class="dis-cod">#' + _disCod(f.id) + '</span> ' + esc(f.nombre) + '</div>' + estSel + '</div>'
     + '<div class="dis-fila" style="margin:2px 0">' + (DIS.puede && est !== 'archivada' ? '<select class="dis-est" title="Público al que apunta" onchange="disTempCambiar(' + f.id + ',this.value)">' + DIS_TEMP.map(o => '<option value="' + o[0] + '"' + (_disTemp(f) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>' : _disTempChip(_disTemp(f))) + '</div>'
-    + _disResLinea(f)
+    + _disResLinea(f) + _disFechaChip(f)
     + (_disGemelo(f) ? '<div class="ui-nota" style="color:#e9c53b" title="Meta trata anuncios casi iguales como uno solo: cambia la composición, no solo el color">⚠ ' + Math.round(_disGemelo(f).p * 100) + '% igual a #' + _disCod(_disGemelo(f).f.id) + '</div>' : '')
     + (_disCritDe(f.id) ? '<div class="dis-res"><span class="ui-nota" title="' + disA(((_disCritDe(f.id).detalle || {}).veredicto) || '') + '">🧐 Nota IA</span><span class="dis-etapa ' + (+_disCritDe(f.id).total >= 8 ? 'e3' : +_disCritDe(f.id).total >= 6 ? 'e1' : '') + '">' + String(_disCritDe(f.id).total).replace('.', ',') + '/10</span></div>' : '')
     + '<div class="ui-nota">' + ((f.ajustes || {}).var_de || f.padre_id ? '🧬 de #' + _disCod((f.ajustes || {}).var_de || f.padre_id) + ' · ' : '') + (f.formato === '9x16' ? 'Historias 9:16' : 'Feed 4:5') + ' · ' + esc(msj) + (f.usos ? ' · usado ' + f.usos + '×' : '') + '</div>'
@@ -634,7 +635,7 @@ function _disPlantillasHtml(){
   let h = '<div class="dis-barra"><div class="dis-barra-izq"><span class="ui-nota">Elige una plantilla para empezar · todo se cambia después</span></div><div class="dis-barra-der">'
     + '<div class="dis-seg">' + [['', 'Todos'], ...DIS_TEMP].map(o => '<button type="button" class="' + ((DIS.fTemp || '') === o[0] ? 'on' : '') + '" title="' + disA(DIS_TEMP_NOTA[o[0]] || 'Todas las plantillas') + '" onclick="DIS.fTemp=\'' + o[0] + '\';disPintar()">' + o[1] + '</button>').join('') + '</div>'
     + '<div class="dis-seg">' + seg('estatico', '🖼 Una imagen') + seg('carrusel', '🎠 Carrusel') + '</div>'
-    + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="9x16">Historias 9:16</option><option value="4x5">Feed 4:5</option></select></div></div>'
+    + _disFechaSelHtml() + '<select id="disNuevoForm" onchange="disNuevoPintar()"><option value="9x16">Historias 9:16</option><option value="4x5">Feed 4:5</option></select></div></div>'
     + (DIS.tipoNuevo === 'carrusel' ? '<div class="dis-aviso">🎠 Carrusel: eliges la plantilla, la guardas y luego marcas 2 a 10 prendas o colores. Cada una sale como una tarjeta del carrusel, en el orden que las elijas, y va junta a 🎬 Biblioteca › Por usar.</div>' : '')
     + '<div class="dis-grilla" id="disNuevoGrilla">';
   h += '<div class="dis-tarj dis-elegir" onclick="disNuevo(-1)"><div class="dis-mini dis-blanco">＋ En blanco</div><div class="dis-tarj-pie"><div class="ui-tot">En blanco</div><div class="ui-nota">Arma el tuyo desde cero</div></div></div>';
@@ -650,7 +651,7 @@ function disNuevo(i){
   const b = DIS_BASE[i], form = (document.getElementById('disNuevoForm') || {}).value || '9x16';
   const n = document.getElementById('disNuevo'); if (n) n.remove();
   const p = (DIS.prods || [])[0];
-  DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: DIS.tipoNuevo === 'carrusel' ? 'carrusel' : 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '', temp: b ? _disTemp(b) : 'frio', fecha: (_disFecha(DIS.fechaSel) || {}).k || '' }), padre_id: null, _sucio: true };
+  DIS.ed = { id: null, nombre: b ? b.nombre : 'Diseño nuevo', formato: form, tipo: DIS.tipoNuevo === 'carrusel' ? 'carrusel' : 'estatico', mensaje: b ? b.mensaje : 'producto', capas: JSON.parse(JSON.stringify(b ? b.capas : [])), ajustes: Object.assign({}, (b && b.ajustes) || {}, { prev_handle: (_disProdLindo() || p || {}).handle || '', temp: b ? _disTemp(b) : 'frio', fecha: (_disFecha(DIS.fechaSel) || {}).k || '', fecha_fin: _disFinDeFecha(b) }), padre_id: null, _sucio: true };
   DIS.sel = -1; DIS.prod = DIS.ed.ajustes.prev_handle; DIS.color = '';
   _disEdAbrir();
 }
@@ -1019,6 +1020,7 @@ async function disUsar(id){
   if (id != null){ const f = (DIS.filas || []).find(x => x.id === id); if (!f) return; DIS.ed = JSON.parse(JSON.stringify(f)); DIS.ed.ajustes = DIS.ed.ajustes || {}; DIS.prod = DIS.ed.ajustes.prev_handle || ((DIS.prods || [])[0] || {}).handle; DIS.color = DIS.ed.ajustes.prev_color || ''; }
   const d = DIS.ed; if (!d) return;
   const res = document.getElementById('disEdRes'), avisar = t => { if (res) res.innerHTML = t; else { DIS.msg = t; disPintar(); } };
+  if (_disFechaVencida(d)) return avisar('⌛ La fecha de este diseño ya pasó: ya no se anuncia. Duplícalo y elige otra fecha.');
   if (!d.id || d._sucio){ const g = await disGuardar(true); if (!g) return; }
   avisar('Haciendo la imagen…');
   try {
@@ -1425,7 +1427,7 @@ function _disEsEnvio(x){ return /env[ií]o\s+gratis/i.test(String(x || '')); }
 function _disMonto(x){ const m = String(x || '').match(/S\/\s*([0-9]+(?:[.,][0-9]+)?)/i); return m ? Number(m[1].replace(',', '.')) : null; }
 function _disVentajas(){
   const man = _disVentajasManual(), L = _disDescTienda(); if (!L) return man;
-  const envios = L.filter(x => x && x.tipo === 'envio'), usados = new Set(), out = [];
+  const envios = L.filter(x => x && x.tipo === 'envio' && x.auto !== false && (!x.estado || x.estado === 'active')), usados = new Set(), out = [];
   man.forEach(v => {
     if (!_disEsEnvio(v)) { out.push(v); return; }
     const mo = _disMonto(v), e = envios.find(x => (Number(x.minimo) || null) === mo);
@@ -1625,10 +1627,42 @@ function _disFechasProx(hoy){
   hoy = hoy || new Date(); const h0 = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
   return DIS_FECHAS.map(x => { let d = x.f(h0.getFullYear()); if (d < h0) d = x.f(h0.getFullYear() + 1);
     const dias = Math.round((d - h0) / 864e5), pauta = new Date(d - x.ant * 864e5), crea = new Date(pauta - 7 * 864e5), lim = new Date(d - 4 * 864e5);
-    return Object.assign({}, x, { d, dias, pauta, crea, limite: x.oferta ? 'Solo hasta el ' + _disDM(d) : 'Pide hasta el ' + _disDM(lim) + ' y llega a tiempo', ya: h0 >= pauta }); })
+    const promo = _disPromoDe(x, d), fin = promo && promo.fin ? _disLima(promo.fin) : null;
+    return Object.assign({}, x, { d, dias, pauta, crea, promo, fin_promo: fin, promoTxt: promo ? _disPromoTxt(promo) : '',
+      limite: fin ? 'Solo hasta el ' + _disDM(fin) : x.oferta ? 'Solo hasta el ' + _disDM(d) : 'Pide hasta el ' + _disDM(lim) + ' y llega a tiempo', ya: h0 >= pauta }); })
     .sort((a, b) => a.d - b.d);
 }
 function _disFecha(k, hoy){ const L = _disFechasProx(hoy); return (k && L.find(x => x.k === k)) || L[0] || null; }
+/* 23-nov (Pablo) · la fecha comercial se une con su promoción de Shopify (copia «descuentos_tienda», shopify-worker · descuentos.leer, cada 2 h):
+   por nombre («Black Friday» en el título) o porque la promoción tiene fin y cae en la semana de la fecha. Con promoción: el anuncio dice
+   cuánto y hasta cuándo (lo que diga Shopify); sin promoción: el ERP avisa antes de pautar. El diseño de una fecha vencida ya no se anuncia. */
+function _disFinDeFecha(b){ if (!b || !/Calendario comercial/.test(b.ref || '')) return ''; const x = _disFecha(DIS.fechaSel); if (!x) return ''; const v = x.fin_promo || x.d; return new Date(v.getFullYear(), v.getMonth(), v.getDate(), 23, 59).toISOString(); }
+function _disLima(iso){ const t = Date.parse(iso || ''); if (!t) return null; const l = new Date(t - 5 * 36e5); return new Date(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate()); }
+function _disPromoDe(x, d){
+  const L = (_disDescTienda() || []).filter(p => p && p.tipo === 'descuento' && (!p.estado || p.estado === 'active' || p.estado === 'scheduled')); if (!L.length) return null;
+  const nom = _mkNorm(x.nombre), ini = new Date(d - 10 * 864e5), fin = new Date(+d + 864e5);
+  return L.find(p => _mkNorm(p.titulo).indexOf(nom) >= 0)
+    || L.find(p => { const a = _disLima(p.inicio), b = _disLima(p.fin); return b && b >= ini && (!a || a <= fin); }) || null;
+}
+function _disPromoTxt(p){ return p.valor ? p.valor + ' de descuento' + (p.codigo && !p.auto ? ' con el código ' + p.codigo : '') : String(p.titulo || ''); }
+function _disFechaFin(f){ const a = (f && f.ajustes) || {}; return a.fecha && a.fecha_fin ? new Date(a.fecha_fin) : null; }
+function _disFechaVencida(f, hoy){ const v = _disFechaFin(f); return !!v && (hoy || new Date()) > v; }
+function _disFechaChip(f){
+  const a = (f && f.ajustes) || {}, x = a.fecha && DIS_FECHAS.find(y => y.k === a.fecha); if (!x || !a.fecha_fin) return '';
+  return _disFechaVencida(f) ? '<div class="ui-nota" style="color:#e9c53b" title="Su fecha ya pasó: ya no se anuncia. Duplícalo y elige otra fecha">⌛ ' + esc(x.nombre) + ' ya pasó</div>'
+    : '<div class="ui-nota" title="Vale hasta el ' + _disDM(_disFechaFin(f)) + '">' + x.e + ' ' + esc(x.nombre) + ' · hasta el ' + _disDM(_disFechaFin(f)) + '</div>';
+}
+function _disFechaSelHtml(){
+  return '<select title="Fecha comercial que usan las plantillas de fecha" onchange="DIS.fechaSel=this.value;disPintar()">' + _disFechasProx().map(x => '<option value="' + x.k + '"' + ((_disFecha(DIS.fechaSel) || {}).k === x.k ? ' selected' : '') + '>' + x.e + ' ' + esc(x.nombre) + ' · ' + (x.dias ? 'en ' + x.dias + ' días' : 'hoy') + '</option>').join('') + '</select>';
+}
+function _disAvisoFecha(){
+  const x = _disFechasProx()[0]; if (!x || !x.ya || (DIS._sinFecha || {})[x.k]) return '';
+  const cierra = ' <button class="dis-ib" onclick="(DIS._sinFecha=DIS._sinFecha||{})[\'' + x.k + '\']=1;disPintar()" title="Cerrar">' + disIco('cerrar', 14) + '</button>';
+  const shop = !_disDescTienda() ? '🛒 Shopify sin leer' : x.promo ? '🛒 Shopify: «' + esc(x.promo.titulo) + '»' + (x.promo.valor ? ' · ' + esc(x.promo.valor) : '') + (x.fin_promo ? ' hasta el ' + _disDM(x.fin_promo) : ' sin fecha de fin')
+    : (x.oferta ? '⚠ No hay descuento creado en Shopify para esta fecha: créalo y los diseños lo toman solos' : '🛒 Sin promoción en Shopify (no hace falta)');
+  return '<div class="dis-aviso">' + x.e + ' <b>' + esc(x.nombre) + '</b> ' + (x.dias ? 'en ' + x.dias + ' días (' + _disDM(x.d) + ')' : 'es hoy') + ' · ya es tiempo de pautar · ' + shop
+    + (DIS.ver === 'plantillas' ? '' : ' <button class="btn" onclick="DIS.fechaSel=\'' + x.k + '\';DIS.fTemp=\'\';DIS.ver=\'plantillas\';disPintar()">✨ Plantillas de la fecha</button>') + cierra + '</div>';
+}
 
 /* ══ 21-nov noche · Fase 5 · 🎬 VIDEO desde un diseño (sin costo: se arma en el navegador).
    «Zoom suave» = una prenda 6 s · «Sus colores» = un color tras otro (2,4 s c/u). MP4 si el navegador puede; si no, WebM (Meta acepta los dos). ══ */
