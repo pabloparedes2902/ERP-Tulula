@@ -3761,14 +3761,54 @@ function comBorradorPintar() {
   try { _asesTxt = _sbSesionAsegurar().then(function (tok) { return fetch(SB_URL + '/rest/v1/erp_asesoras?select=email,nombre', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } }); })
     .then(function (r) { return r.ok ? r.json() : []; }).then(function (a) { return (Array.isArray(a) ? a : []).map(function (x) { return String(x.nombre || '').toUpperCase() + '|' + String(x.email || '').toLowerCase(); }).join(','); })
     .catch(function () { return ''; }); } catch (e) {}
-  _asesTxt.then(function (txt) { return api('comisiones.borrador', { asesoras: txt }); }).then(function (d) {
+  _asesTxt.then(function (txt) { return COM_BORR_BASE ? _comBorradorBase(txt) : api('comisiones.borrador', { asesoras: txt }); }).then(function (d) {
     _COM_BORR = d; var z2 = document.getElementById('com-borrador'); if (z2) z2.innerHTML = _comBorrHtml(d);
     try { localStorage.setItem(_bk, JSON.stringify({ mes: new Date().getMonth() + 1, d: d })); } catch (e) {}
   }).catch(function (e) {
     var z2 = document.getElementById('com-borrador');
-    if (z2) z2.innerHTML = '<div class="card"><div class="ct">🧪 Borrador · no comisiona</div><div class="ml">No se pudo calcular: ' + esc(e && e.message || e) + '</div></div>';
+    if (z2) z2.innerHTML = (_bv && _bv.d && _bv.mes === new Date().getMonth() + 1) ? _comBorrHtml(_bv.d)   /* 23-nov · si la base tarda, se queda lo último */
+      : '<div class="card"><div class="ct">🧪 Borrador · no comisiona</div><div class="ml">No se pudo calcular: ' + esc(e && e.message || e) + '</div></div>';
   });
 }
+/* 23-nov-2026 (Pablo: velocidad, comisiones a la base) · el borrador salía del motor VIEJO de Apps Script (18-34 s) y además daba
+   otros números que el cálculo oficial que paga a las asesoras (medido 23-nov, noviembre: Camila 16.528/10.156 viejo vs 15.845/9.699
+   oficial; Mari 6.530/4.021 vs 6.090/3.750). Ahora sale del MISMO cálculo oficial de la base (comisiones_trimestre, ~0,5 s):
+   borradores = asesoras que este mes no comisionan; mismas reglas (x_meta, tramos). REVERSA: COM_BORR_BASE = false y publicar. */
+var COM_BORR_BASE = true;
+var COM_BORR_SUELDO = { CAMILA: { b: 2000, tp: 'honorarios', desde: '2026-11-01' } };   // igual que COM_BORRADOR (ComisionBorrador.gs)
+function _comBorrFactor(desde, y, m) {
+  if (!desde) return 1; var d = new Date(desde + 'T12:00:00'), ini = new Date(y, m - 1, 1), dias = new Date(y, m, 0).getDate();
+  if (isNaN(d) || d <= ini) return 1; if (d.getFullYear() !== y || d.getMonth() + 1 !== m) return d > ini ? 0 : 1;
+  return (dias - d.getDate() + 1) / dias;
+}
+function _comBorradorBase(txt, hoyDado) {
+  var hoy = hoyDado || new Date(), y = hoy.getFullYear(), m = hoy.getMonth() + 1, q = Math.ceil(m / 3);
+  var dias = new Date(y, m, 0).getDate(), dia = hoy.getDate();
+  return _comOfRpc('comisiones_trimestre', { p_year: y, p_q: q }).then(function (t) {
+    if (!t || !Array.isArray(t.asesoras)) throw new Error('La base no devolvió las comisiones');
+    var R = t.reglas || {}, tiers = (R.tramos || []).map(function (z) { return { from: Number(z.desde), rate: Number(z.tasa) }; });
+    var x = Number(R.x_meta) || 12, gate = tiers.length ? tiers[0].from : 80;
+    var tramo = function (c) { var r = 0; tiers.forEach(function (z) { if (c >= z.from) r = z.rate; }); return r; };
+    var r2 = function (n) { return Math.round(n * 100) / 100; };
+    var lista = [];
+    t.asesoras.forEach(function (a) { var mm = (a.meses || []).filter(function (z) { return Number(z.mes) === m; })[0];
+      if (mm && mm.activa === false) lista.push({ n: String(a.nombre || '').toUpperCase(), mm: mm }); });
+    lista.sort(function (p1, p2) { return (COM_BORR_SUELDO[p2.n] ? 1 : 0) - (COM_BORR_SUELDO[p1.n] ? 1 : 0); });
+    var borradores = lista.map(function (it) {
+      var v = COM_BORR_SUELDO[it.n] || { b: 0, tp: '', desde: '' };
+      var ventas = Math.round(Number(it.mm.ventas) || 0), margen = Math.round(Number(it.mm.margen) || 0);
+      var meta = v.b ? Math.round(x * v.b * _comBorrFactor(v.desde, y, m)) : 0;
+      var cumpl = meta > 0 ? margen / meta * 100 : 0, proy = dia < dias ? Math.round(margen * dias / dia) : margen;
+      var cumplP = meta > 0 ? proy / meta * 100 : 0, tr = tramo(cumpl), tP = tramo(cumplP);
+      return { nombre: it.n, sueldo: v.b, tipo: v.tp, sinSueldo: !v.b, ventas: ventas, margen: margen, meta: meta,
+        cumpl: r2(cumpl), tramo: tr, bono: cumpl >= gate ? Math.round(tr / 100 * margen) : 0,
+        proyMargen: proy, proyCumpl: r2(cumplP), proyTramo: tP, proyBono: cumplP >= gate ? Math.round(tP / 100 * proy) : 0,
+        faltaPiso: Math.max(0, Math.round(meta * gate / 100 - margen)) };
+    });
+    return { ok: true, year: y, mes: m, dia: dia, dias: dias, gate: gate, xMeta: x, tiers: tiers, borradores: borradores, fuente: 'base' };
+  });
+}
+window._comBorradorBase = _comBorradorBase;
 function _comBorrHtml(d) {
   if (!d || !d.borradores || !d.borradores.length) return '';
   var MES = ['', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'setiembre', 'octubre', 'noviembre', 'diciembre'][d.mes] || '';
