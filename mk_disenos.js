@@ -280,7 +280,7 @@ const DIS_BASE = [
     { t: 'texto', txt: 'Color — {{color}}', x: 61, y: 86.8, w: 36, tam: 21, fuente: 'texto', color: 'texto' },
     { t: 'colores', estilo: 'mini', al: 'left', tam: 42, x: 61, y: 90.6, w: 36, h: 4.5 } ] },
   { nombre: 'Franja oscura con precio', mensaje: 'oferta', ref: 'Captura Ted Baker', capas: [
-    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 32.5, h: 100, zoom: 1.8, fx: 30, fy: 20, bri: 45 },
+    { t: 'foto', src: 'color:0', x: 0, y: 0, w: 32.5, h: 100, zoom: 2.4, fx: 48, fy: 30, bri: 45 },   /* 22-nov noche · close-up al cuello/hombros (donde están los detalles), no al brazo */
     { t: 'foto', src: 'color:0', x: 32.5, y: 0, w: 67.5, h: 100, pos: 'center top' },
     { t: 'logo', x: 4, y: 6, w: 24.5, color: 'blanco' },
     { t: 'texto', txt: '{{precio_antes}}', x: 4, y: 74.5, w: 27, tam: 30, fuente: 'texto', color: 'blanco', tachado: true, op: 0.75, vis: 'oferta' },
@@ -357,7 +357,8 @@ async function disCargar(){
 }
 async function disInfo(handle){
   if (!handle) return {};
-  const v = DIS.info[handle]; if (v) return await v;
+  DIS.infoT = DIS.infoT || {}; const v = DIS.info[handle]; if (v && Date.now() - (DIS.infoT[handle] || 0) < 6e5) return await v;   /* 22-nov noche · fotos nuevas de Shopify a los 10 min */
+  DIS.infoT[handle] = Date.now();
   const pr = fetch('https://tulula.com.pe/products/' + encodeURIComponent(handle) + '.js').then(r => r.ok ? r.json() : {}).catch(() => ({}));
   DIS.info[handle] = pr; const j = await pr; DIS.info[handle] = j || {};
   try { const p0 = (DIS.prods || []).find(x => x.handle === handle), jn = p0 && _disJunto(p0); if (jn && !DIS.info[jn.p.handle]) await disInfo(jn.p.handle); } catch (_) {}
@@ -375,7 +376,7 @@ function _disSol(c){ if (c == null || c === '' || isNaN(+c)) return ''; c = +c; 
 /* el contexto = todo lo que una plantilla puede mostrar de UN producto en UN color */
 function disCtx(p, inf, color, aj){
   inf = inf || {}; p = p || {}; aj = aj || {};
-  const fotos = _disFotos(p), ops = inf.options || [];
+  let fotos = _disFotos(p); const ops = inf.options || [];
   const ci = ops.findIndex(o => /color/i.test(o.name || o)), ti = ops.findIndex(o => /talla/i.test(o.name || o));
   const cols = ci >= 0 ? (ops[ci].values || []) : [];
   if (!color || cols.indexOf(color) < 0) color = cols[0] || '';
@@ -385,7 +386,11 @@ function disCtx(p, inf, color, aj){
   const precio = v0.price != null ? v0.price : inf.price, antes = v0.compare_at_price != null ? v0.compare_at_price : inf.compare_at_price;
   const oferta = !!(antes && precio && +antes > +precio);
   const portadaDe = c => { const v = vsAll.find(x => (ci < 0 || opc(x, ci) === c) && x.featured_image); return v ? v.featured_image.src : ''; };
-  const port = portadaDe(color); let i0 = port ? fotos.findIndex(u => _disArch(u) === _disArch(port)) : 0; if (i0 < 0) i0 = 0;
+  const port = portadaDe(color); let i0 = port ? fotos.findIndex(u => _disArch(u) === _disArch(port)) : 0;
+  if (i0 < 0 && port){   /* 22-nov noche · foto recién subida a Shopify que la base aún no tiene: se usan las fotos de la tienda */
+    const im = (inf.images || []).map(u => String(u).indexOf('//') === 0 ? 'https:' + u : String(u)); const k = im.findIndex(u => _disArch(u) === _disArch(port));
+    if (k >= 0){ fotos = im; i0 = k; } else { fotos = fotos.concat([port.indexOf('//') === 0 ? 'https:' + port : port]); i0 = fotos.length - 1; } }
+  if (i0 < 0) i0 = 0;
   const tallas = []; vs.forEach(v => { const t = ti >= 0 ? opc(v, ti) : ''; if (v.available && t && tallas.indexOf(t) < 0) tallas.push(t); });
   const benBase = (Array.isArray(p.beneficios) ? p.beneficios : []).map(b => ({ titulo: String(b.titulo || ''), texto: String(b.texto || ''), foto: b.foto || '' }));
   const benAj = aj.ben && aj.ben[p.handle];
@@ -457,6 +462,7 @@ function disHtml(d, cx, s, opt){
     const cur = opt.edit ? 'cursor:move;' : '';
     let inner = '', estilo = '';
     if (c.t === 'foto'){
+      const ov = _disEnc(d, cx, i); if (ov) c = Object.assign({}, c, ov);   /* 22-nov · close-up guardado para esta prenda */
       const u0 = _disFotoSrc(cx, c.src), sf = c.sinfondo && DIS.sinf[_disArch(u0)], u = sf || u0;
       const z = Math.max(1, +c.zoom || 1), fxp = (c.fx != null ? +c.fx : 50) + '% ' + (c.fy != null ? +c.fy : 0) + '%';
       const op = c.pos || (c.fx != null || c.fy != null ? fxp : 'center top');
@@ -469,6 +475,7 @@ function disHtml(d, cx, s, opt){
         + (c.sombra && !c.sinfondo ? 'box-shadow:0 ' + (24 * s) + 'px ' + (60 * s) + 'px rgba(0,0,0,.28);' : '');
       inner = u ? '<img crossorigin="anonymous" src="' + disA(sf ? u : _disTam(u, anchoFoto)) + '" style="width:100%;height:100%;object-fit:' + (c.fit || (c.sinfondo ? 'contain' : 'cover')) + ';object-position:' + op + ';display:block;pointer-events:none;'
         + (z > 1 ? 'transform:scale(' + z + ');transform-origin:' + fxp + ';' : '') + (fil ? 'filter:' + fil + ';' : '') + '" draggable="false">' : '';
+      if (c.velo) inner += '<div style="position:absolute;inset:0;background:' + _disCol(c.velo) + ';opacity:' + (c.veloOp != null ? +c.veloOp : 0.5) + ';pointer-events:none"></div>';
     } else if (c.t === 'forma'){
       estilo = 'background:' + _disCol(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';' + (+c.blur ? 'filter:blur(' + (+c.blur * s) + 'px);' : '') + (c.mezcla ? 'mix-blend-mode:' + c.mezcla + ';' : '');
     } else if (c.t === 'degradado'){
@@ -689,7 +696,7 @@ function _disEdAbrir(){
     + '<input id="disEdNombre" class="dis-nombre" value="' + disA(DIS.ed.nombre) + '" maxlength="120" oninput="DIS.ed.nombre=this.value;DIS.ed._sucio=true" title="Nombre del diseño">'
     + '<div class="dis-seg">' + ['4x5', '9x16'].map(f => '<button type="button" data-f="' + f + '" class="' + (DIS.ed.formato === f ? 'on' : '') + '" onclick="disEdFormato(\'' + f + '\')">' + (f === '4x5' ? 'Feed 4:5' : 'Historias 9:16') + '</button>').join('') + '</div>'
     + '<select onchange="DIS.ed.mensaje=this.value;DIS.ed._sucio=true" title="Mensaje del anuncio">' + DIS_MSJ.map(o => '<option value="' + o[0] + '"' + (DIS.ed.mensaje === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
-    + '<select title="Precio en este diseño" onchange="DIS.ed.ajustes.precio=this.value;DIS.ed._sucio=true;disEdPintar()">' + [['', 'Precio: según público'], ['si', 'Precio: siempre'], ['no', 'Precio: nunca']].map(o => '<option value="' + o[0] + '"' + ((DIS.ed.ajustes.precio || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
+    + '<select title="Automático: a clientas frías y tibias NO se les muestra el precio; a las calientes sí, con el precio de antes tachado y el % de descuento" onchange="DIS.ed.ajustes.precio=this.value;DIS.ed._sucio=true;disEdPintar()">' + [['', 'Precio: automático'], ['si', 'Precio: mostrar siempre'], ['no', 'Precio: ocultar']].map(o => '<option value="' + o[0] + '"' + ((DIS.ed.ajustes.precio || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>'
     + _disIb('deshacer', 'Deshacer (Ctrl+Z)', 'disDeshacer()') + _disIb('rehacer', 'Rehacer (Ctrl+Y)', 'disRehacer()')
     + '<span style="flex:1"></span><span class="ui-nota" id="disEdRes"></span>'
     + '<button class="btn" onclick="disCriticarEditor()" title="La IA le pone nota y dice qué mejorar (~US$0,01)">🧐 Revisar</button>'
@@ -699,7 +706,7 @@ function _disEdAbrir(){
     + '<button class="btn on" onclick="disGuardar()">Guardar</button>' + _disIb('cerrar', 'Cerrar', 'disEdCerrar()') + '</div>'
     + '<div class="dis-ed-cuerpo"><div class="dis-ed-izq"><div class="dis-ed-lienzo" id="disEdLienzo"></div>'
     + '<div class="dis-ed-prueba"><input type="search" placeholder="🔍 Prenda" value="' + disA(DIS.tiraQ || '') + '" oninput="disTiraBuscar(this.value)" style="width:120px"><div class="dis-tira" id="disEdTira">' + _disTiraHtml() + '</div></div>'
-    + '<div class="dis-ed-prueba"><span class="ui-nota">Color</span><div class="dis-tira" id="disEdCols"></div><span class="ui-nota" style="margin-left:auto" title="Ctrl+Z deshacer · Ctrl+Y rehacer · Ctrl+D duplicar · Ctrl+C / Ctrl+V copiar y pegar capa · Supr quitar · flechas mover · [ ] atrás/adelante · Ctrl+Enter listo para anunciar">⌨️ Atajos</span></div></div>'
+    + '<div class="dis-ed-prueba"><span class="ui-nota">Color</span><div class="dis-tira" id="disEdCols"></div><button type="button" class="btn" style="margin-left:auto" onclick="disAtajosAbrir()" title="Teclas para trabajar más rápido">⌨️ Atajos del teclado</button></div></div>'
     + '<div class="dis-ed-panel" id="disEdPanel"></div></div></div></div>';
   document.body.insertAdjacentHTML('beforeend', h);
   _disArrastreIni(); _disTeclas(true); disEdPintar(); DIS._orig = (DIS.ed.id || DIS.ed.ajustes.origen !== 'captura') ? _disHuella() : '';
@@ -1060,6 +1067,9 @@ async function disMarcaGuardar(aprobar){
     + '.dis-cabeza{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}'
     + '.dis-barra{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:14px}.dis-barra-izq,.dis-barra-der{display:flex;gap:6px;align-items:center;flex-wrap:wrap}'
     + '.dis-cnt{display:inline-block;min-width:18px;padding:0 6px;margin-left:4px;border-radius:9px;background:rgba(255,255,255,.08);font:600 11px var(--ui-f);text-align:center}'
+    + '.dis-flot small{display:block;font:500 11px var(--ui-f);color:#aab1c2;line-height:1.1;margin-top:1px}.dis-flot button:not(.dis-flot-col){display:flex;flex-direction:column;align-items:center;justify-content:center;height:auto;min-width:46px;padding:4px 6px}.dis-flot-cols{display:flex;gap:4px;padding:0 4px}'
+    + '.dis-enc-foto{position:relative;cursor:crosshair;border-radius:8px;overflow:hidden;max-height:60vh}.dis-enc-foto img{width:100%;display:block}.dis-enc-pt{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border:3px solid #fff;border-radius:50%;box-shadow:0 0 0 2px #7c5cff,0 2px 8px rgba(0,0,0,.5);pointer-events:none}'
+    + '.dis-atj{position:fixed;right:24px;bottom:24px;z-index:9999;background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px 14px;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:380px}'
     + '.dis-flot{position:absolute;z-index:30;display:flex;align-items:center;gap:2px;padding:4px;background:#1b1f2a;border:1px solid #33394a;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.45);white-space:nowrap}.dis-flot button{min-width:28px;height:28px;padding:0 6px;border:0;border-radius:6px;background:transparent;color:#e9ecf3;font:500 13px var(--ui-f);cursor:pointer}.dis-flot button:hover{background:#2b3142}.dis-flot .dis-flot-col{min-width:18px;width:18px;height:18px;padding:0;border-radius:50%;border:2px solid #555}.dis-flot .dis-flot-col.on{border-color:#7c5cff}.dis-flot-sep{width:1px;height:18px;background:#33394a;margin:0 3px}'
     + '.dis-txs{display:flex;flex-direction:column;gap:6px;max-height:55vh;overflow:auto}.dis-txs button{text-align:left;padding:9px 12px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-txs button:hover{border-color:#7c5cff}'
     + '.dis-tira{display:flex;gap:6px;overflow-x:auto;flex:1;padding:2px 0;scrollbar-width:thin;scrollbar-color:#33394a transparent}.dis-tira-p,.dis-tira-c{flex:0 0 auto;padding:0;border:2px solid transparent;border-radius:8px;background:#0d1017;cursor:pointer;overflow:hidden}.dis-tira-p img{width:44px;height:55px;object-fit:cover;display:block}.dis-tira-c img{width:34px;height:34px;object-fit:cover;display:block}.dis-tira-c span{display:block;padding:6px 8px;font:400 12px var(--ui-f);color:var(--txt)}.dis-tira-p.on,.dis-tira-c.on{border-color:#7c5cff}'
@@ -1704,17 +1714,18 @@ async function _disABiblioteca(files, d, p, extra){
 /* A1 · barra flotante junto a la capa elegida */
 const DIS_FLOT_COL = ['principal', 'acento', 'blanco', 'texto', 'fondo'];
 function _disFlotHtml(c, i){
-  const b = (t, tit, fn) => '<button type="button" title="' + disA(tit) + '" onclick="' + fn + '">' + t + '</button>', sep = '<span class="dis-flot-sep"></span>';
-  const cols = k => DIS_FLOT_COL.map(n => '<button type="button" class="dis-flot-col' + (c[k] === n ? ' on' : '') + '" title="' + n + '" style="background:' + _disCol(n) + '" onclick="disCapaSet(' + i + ',\'' + k + '\',\'' + n + '\')"></button>').join('');
+  const b = (t, lab, tit, fn) => '<button type="button" title="' + disA(tit) + '" onclick="' + fn + '"><span>' + t + '</span><small>' + lab + '</small></button>', sep = '<span class="dis-flot-sep"></span>';
+  const cols = k => '<span class="dis-flot-cols">' + DIS_FLOT_COL.map(n => '<button type="button" class="dis-flot-col' + (c[k] === n ? ' on' : '') + '" title="Color: ' + n + '" style="background:' + _disCol(n) + '" onclick="disCapaSet(' + i + ',\'' + k + '\',\'' + n + '\')"></button>').join('') + '</span>';
   let h = '';
-  if (c.t === 'texto') h = b('A−', 'Letra más chica', 'disFlotTam(' + i + ',0.9)') + b('A+', 'Letra más grande', 'disFlotTam(' + i + ',1.1)') + b('<b>B</b>', 'Negrita', 'disCapaSet(' + i + ',\'peso\',' + ((+c.peso || 400) >= 600 ? 400 : 700) + ')')
-    + sep + b('⟸', 'Alinear a la izquierda', 'disCapaSet(' + i + ',\'al\',\'left\')') + b('≡', 'Centrar', 'disCapaSet(' + i + ',\'al\',\'center\')') + b('⟹', 'Alinear a la derecha', 'disCapaSet(' + i + ',\'al\',\'right\')')
-    + sep + cols('color') + sep + b('💬 Textos', 'Textos de la tienda para esta prenda', 'disFlotTextos(' + i + ')');
-  else if (c.t === 'foto') h = b('☀', 'Más clara', 'disCapaPaso(' + i + ',\'bri\',10)') + b('☾', 'Más oscura', 'disCapaPaso(' + i + ',\'bri\',-10)') + b('🔥', 'Más cálida', 'disFlotCal(' + i + ',8)') + b('❄️', 'Más fría', 'disFlotCal(' + i + ',-8)')
-    + sep + b('✂', c.sinfondo ? 'Volver a poner el fondo' : 'Quitar el fondo', 'disCapaSet(' + i + ',\'sinfondo\',' + (c.sinfondo ? 'false' : 'true') + ')') + b('↻', 'Otra foto de la prenda', 'disFlotFoto(' + i + ')');
-  else if (c.t === 'forma' || c.t === 'degradado') h = cols('color') + sep + b('◐−', 'Más transparente', 'disFlotOp(' + i + ',-0.1)') + b('◐+', 'Más sólida', 'disFlotOp(' + i + ',0.1)');
-  else if (c.t === 'logo') h = b('Auto', 'El logo elige su color según el fondo', 'disCapaSet(' + i + ',\'color\',\'auto\')') + cols('color');
-  return h + sep + b('⇡', 'Traer al frente', 'disCapaExtremo(' + i + ',true)') + b('⇣', 'Mandar al fondo', 'disCapaExtremo(' + i + ',false)') + b('⧉', 'Duplicar (Ctrl+D)', 'disCapaDuplicar(' + i + ')') + b('🗑', 'Quitar (Supr)', 'disCapaQuitar(' + i + ')');
+  if (c.t === 'texto') h = b('A−', 'Menos', 'Letra más chica', 'disFlotTam(' + i + ',0.9)') + b('A+', 'Más', 'Letra más grande', 'disFlotTam(' + i + ',1.1)') + b('<b>B</b>', 'Negrita', 'Negrita', 'disCapaSet(' + i + ',\'peso\',' + ((+c.peso || 400) >= 600 ? 400 : 700) + ')')
+    + sep + b('⟸', 'Izq.', 'Alinear a la izquierda', 'disCapaSet(' + i + ',\'al\',\'left\')') + b('≡', 'Centro', 'Centrar', 'disCapaSet(' + i + ',\'al\',\'center\')') + b('⟹', 'Der.', 'Alinear a la derecha', 'disCapaSet(' + i + ',\'al\',\'right\')')
+    + sep + cols('color') + sep + b('💬', 'Textos', 'Textos de la tienda para esta prenda', 'disFlotTextos(' + i + ')');
+  else if (c.t === 'foto') h = b('🎯', 'Encuadre', 'Elegir qué parte de la prenda se ve (se guarda por prenda)', 'disEncuadreAbrir(' + i + ')') + b('↻', 'Otra foto', 'Otra foto de la prenda', 'disFlotFoto(' + i + ')')
+    + sep + b('☀', 'Más luz', 'Más clara', 'disCapaPaso(' + i + ',\'bri\',10)') + b('☾', 'Menos luz', 'Más oscura', 'disCapaPaso(' + i + ',\'bri\',-10)') + b('🔥', 'Cálida', 'Más cálida', 'disFlotCal(' + i + ',8)') + b('❄️', 'Fría', 'Más fría', 'disFlotCal(' + i + ',-8)')
+    + sep + b('✂', c.sinfondo ? 'Con fondo' : 'Sin fondo', c.sinfondo ? 'Volver a poner el fondo' : 'Quitar el fondo', 'disCapaSet(' + i + ',\'sinfondo\',' + (c.sinfondo ? 'false' : 'true') + ')');
+  else if (c.t === 'forma' || c.t === 'degradado') h = cols('color') + sep + b('◐', 'Más clara', 'Más transparente', 'disFlotOp(' + i + ',-0.1)') + b('●', 'Más sólida', 'Más sólida', 'disFlotOp(' + i + ',0.1)');
+  else if (c.t === 'logo') h = b('A', 'Auto', 'El logo elige su color según el fondo', 'disCapaSet(' + i + ',\'color\',\'auto\')') + cols('color');
+  return h + sep + b('⇡', 'Adelante', 'Traer al frente', 'disCapaExtremo(' + i + ',true)') + b('⇣', 'Atrás', 'Mandar al fondo', 'disCapaExtremo(' + i + ',false)') + b('⧉', 'Duplicar', 'Duplicar (Ctrl+D)', 'disCapaDuplicar(' + i + ')') + b('🗑', 'Quitar', 'Quitar (Supr)', 'disCapaQuitar(' + i + ')');
 }
 function _disFlotPintar(){
   const lz = document.getElementById('disEdLienzo'); if (!lz) return; const v = lz.querySelector('.dis-flot'); if (v) v.remove();
@@ -1766,7 +1777,7 @@ function _disColoresHtml(cx){
   return (cx.portadas || []).map(o => '<button type="button" class="dis-tira-c' + (o.c === cx.color ? ' on' : '') + '" title="' + disA(o.c) + '" onclick="DIS.color=' + disA(JSON.stringify(o.c)) + ';disEdPintar()">' + (o.src ? '<img src="' + disA(_disTam(o.src, 80)) + '">' : '<span>' + esc(o.c) + '</span>') + '</button>').join('');
 }
 /* A8 · estilos de un clic */
-const DIS_ESTILOS = { claro: { fondo: 'fondo', claro: 'principal' }, oscuro: { fondo: 'negro', claro: 'blanco' }, azul: { fondo: 'principal', claro: 'fondo' } };
+const DIS_ESTILOS = { claro: { fondo: 'fondo', claro: 'principal', velo: 'fondo', veloOp: 0.62 }, oscuro: { fondo: 'negro', claro: 'blanco', velo: 'negro', veloOp: 0.5 }, azul: { fondo: 'principal', claro: 'fondo', velo: 'principal', veloOp: 0.62 } };
 function disEstilo(k){
   const d = DIS.ed; if (!DIS_ESTILOS[k] || !d) return; _disMemo(); _disEstiloAplicar(d, k); d._sucio = true; disEdPintar();
 }
@@ -1802,12 +1813,15 @@ function _disRankTit(p){ const r = _disRank(p); return r ? ' · S/ ' + String(Ma
 
 /* estilo aplicado a cualquier diseño (el editor y las variantes usan lo mismo) */
 function _disEstiloAplicar(d, k){
+  /* 22-nov noche · Claro = franjas crema y letras azules · Oscuro = franjas negras y letras blancas · Azul = franjas azul Tulula y letras crema.
+     «Franja» = forma, degradado o foto oscurecida (como la franja de «Franja oscura con precio»): a la foto se le pone un velo del color. */
   const E = DIS_ESTILOS[k]; if (!E || !d) return d;
   const viejo = (d.ajustes && d.ajustes.fondo) || 'fondo', TXT = ['principal', 'texto', 'blanco', 'fondo', 'negro'];
   d.ajustes = Object.assign({}, d.ajustes || {}, { fondo: E.fondo, estilo: k });
   (d.capas || []).forEach(c => {
     if (c.t === 'texto' && !c.fondo && TXT.indexOf(c.color || 'texto') >= 0) c.color = E.claro;
-    if ((c.t === 'forma' || c.t === 'degradado') && c.color === viejo) c.color = E.fondo;
+    if ((c.t === 'forma' || c.t === 'degradado') && (c.color === viejo || TXT.indexOf(c.color || '') >= 0)) c.color = E.fondo;
+    if (c.t === 'foto' && (c.velo || (c.bri != null && +c.bri < 80))){ c.bri = 100; c.velo = E.velo; c.veloOp = E.veloOp; }
     if (c.t === 'logo') c.color = 'auto';
   });
   return d;
@@ -1837,7 +1851,7 @@ async function disVariantesAbrir(id){
     const el = document.getElementById('disVarL'); if (!el) return;
     el.className = ''; el.innerHTML = !V.length ? '<div class="ui-nota">No encontré qué variar (sin otros colores ni prendas con stock).</div>'
       : '<div class="dis-txs">' + V.map((x, k) => '<label class="dis-var-op"><input type="checkbox" checked data-k="' + k + '"> <span class="dis-etapa e1">' + ({ color: '🎨', prenda: '👗', gancho: '💬', estilo: '◐' }[x.q]) + '</span> ' + esc(x.et) + '</label>').join('') + '</div>'
-      + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disVarRes"></span><span style="flex:1"></span><button class="btn on" onclick="disVariantesCrear()">Crear las elegidas</button></div>';
+      + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disVarRes"></span><span style="flex:1"></span><button class="btn" title="Video 9:16 con sus fotos pasando, sin costo" onclick="document.getElementById(\'disVar\').remove();disVideoAbrir(' + f.id + ');setTimeout(()=>disVideoHacer(' + f.id + ',\'fotos\'),60)">🎞 Su video de fotos</button><button class="btn on" onclick="disVariantesCrear()">Crear las elegidas</button></div>';
   } catch (e) { const el = document.getElementById('disVarL'); if (el) el.innerHTML = '<span class="mal">No pude armar las variantes (' + esc(e.message) + ').</span>'; }
 }
 async function disVariantesCrear(){
@@ -1866,4 +1880,35 @@ function _disAvisoGanadoras(){
   if (DIS._sinAviso) return ''; const L = (DIS.filas || []).filter(f => f.estado !== 'archivada' && _disEsGanadora(f) && !_disVarDe(f)); if (!L.length) return '';
   return '<div class="dis-aviso"><span>🏆 ' + (L.length === 1 ? '#' + _disCod(L[0].id) + ' está ganando y no tiene variantes' : L.length + ' ganadoras sin variantes') + '. Multiplica lo que funciona:</span>'
     + L.slice(0, 3).map(f => '<button class="btn on" onclick="disVariantesAbrir(' + f.id + ')">🧬 #' + _disCod(f.id) + '</button>').join('') + '<span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'DIS._sinAviso=1;disPintar()') + '</div>';
+}
+
+/* ══════════ 22-nov noche (Pablo): editor más claro ══════════ */
+/* close-up por prenda: el encuadre (dónde mira la foto y cuánto se acerca) se guarda por prenda y color */
+function _disEncClave(cx){ return ((cx && cx.p && cx.p.handle) || '') + '|' + ((cx && cx.color) || ''); }
+function _disEnc(d, cx, i){ const E = ((d && d.ajustes) || {}).enc || {}, h = (cx && cx.p && cx.p.handle) || '';
+  return (E[_disEncClave(cx)] || {})[i] || (E[h] || {})[i] || null; }
+function disEncuadreAbrir(i){
+  const c = DIS.ed && DIS.ed.capas[i], cx = DIS._cx; if (!c || c.t !== 'foto' || !cx) return; const v = document.getElementById('disEnc'); if (v) v.remove();
+  const u = _disFotoSrc(cx, c.src), e = Object.assign({ zoom: +c.zoom || 1, fx: c.fx != null ? +c.fx : 50, fy: c.fy != null ? +c.fy : 20 }, _disEnc(DIS.ed, cx, i) || {});
+  DIS._enc = { i, e };
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disEnc"><div class="dis-caja" style="max-width:460px"><div class="dis-cab"><div><div class="ui-pag">🎯 Encuadre de la foto</div><div class="ui-nota">Toca la parte de la prenda que quieres mostrar (por ejemplo, los botones)</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disEnc\').remove()') + '</div>'
+    + '<div class="dis-enc-foto" onclick="disEncPunto(event)"><img src="' + disA(_disTam(u, 700)) + '" draggable="false"><span class="dis-enc-pt" id="disEncPt"></span></div>'
+    + '<label class="dis-prop" style="margin-top:10px"><span class="ui-nota">Acercar</span><input type="range" min="1" max="4" step="0.1" value="' + e.zoom + '" oninput="DIS._enc.e.zoom=+this.value;disEncVer()"></label>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:10px"><span class="ui-nota">Se guarda solo para ' + esc(cx.p.titulo) + (cx.color ? ' · ' + esc(cx.color) : '') + '</span><span style="flex:1"></span><button class="btn on" onclick="disEncGuardar()">Listo</button></div></div></div>');
+  disEncVer();
+}
+function disEncPunto(ev){ const r = ev.currentTarget.getBoundingClientRect(); DIS._enc.e.fx = Math.round((ev.clientX - r.left) / r.width * 100); DIS._enc.e.fy = Math.round((ev.clientY - r.top) / r.height * 100); disEncVer(); }
+function disEncVer(){
+  const pt = document.getElementById('disEncPt'), E = DIS._enc; if (pt && E){ pt.style.left = E.e.fx + '%'; pt.style.top = E.e.fy + '%'; }
+  if (!E || !DIS.ed) return; const a = DIS.ed.ajustes; a.enc = a.enc || {}; const k = _disEncClave(DIS._cx); a.enc[k] = Object.assign({}, a.enc[k] || {}, { [E.i]: Object.assign({}, E.e) }); DIS.ed._sucio = true; _disLienzoRepintar();
+}
+function disEncGuardar(){ const v = document.getElementById('disEnc'); if (v) v.remove(); DIS._enc = null; _disPanel(DIS._cx); }
+
+/* atajos de teclado: en una ventanita con ✕, en palabras simples */
+function disAtajosAbrir(){
+  const v = document.getElementById('disAtj'); if (v){ v.remove(); return; }
+  const L = [['Ctrl + Z', 'Deshacer'], ['Ctrl + Y', 'Rehacer'], ['Ctrl + S', 'Guardar'], ['Ctrl + Enter', '🚀 Listo para anunciar'], ['Ctrl + D', 'Duplicar lo elegido'], ['Ctrl + C / Ctrl + V', 'Copiar y pegar lo elegido'],
+    ['Supr', 'Quitar lo elegido'], ['Flechas', 'Mover un poquito (con Shift, más)'], ['[  y  ]', 'Mandar atrás / traer adelante'], ['Doble clic en un texto', 'Escribir encima'], ['Esc', 'Soltar lo elegido']];
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-atj" id="disAtj"><div class="dis-cab"><span class="ui-tot">⌨️ Atajos del teclado</span><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', 'document.getElementById(\'disAtj\').remove()') + '</div>'
+    + '<table class="tt"><tbody>' + L.map(x => '<tr><td><b>' + esc(x[0]) + '</b></td><td>' + esc(x[1]) + '</td></tr>').join('') + '</tbody></table></div>');
 }
