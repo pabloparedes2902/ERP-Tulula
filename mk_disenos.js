@@ -345,7 +345,7 @@ async function disCargar(){
   const [f, p, m, pu, pz, sf, jn] = await Promise.all([
     _mklSb('/rest/v1/mk_disenos?select=*&order=creado.desc'),
     (DIS.prods && !DIS._refrescar) ? Promise.resolve(DIS.prods) : _mklSb('/rest/v1/rpc/mk_dis_productos', { method: 'POST', body: '{}' }),
-    _mklSb('/rest/v1/mk_dis_config?select=clave,valor&clave=in.(marca,orden_plantillas,descuentos_tienda)').catch(() => []),
+    _mklSb('/rest/v1/mk_dis_config?select=clave,valor&clave=in.(marca,orden_plantillas,descuentos_tienda,colores_oficiales,banco_modelos,mockups_ia)').catch(() => []),
     _mklSb('/rest/v1/rpc/_mk_puede_editar', { method: 'POST', body: '{}' }).catch(() => false),
     _mklSb('/rest/v1/mk_dis_piezas?select=*&estado=neq.archivada&order=creado.desc&limit=2000').catch(() => []),
     _mklSb('/rest/v1/mk_dis_sinfondo?select=foto,url').catch(() => []),
@@ -354,7 +354,7 @@ async function disCargar(){
   DIS.piezas = Array.isArray(pz) ? pz : []; DIS.sinf = {}; (Array.isArray(sf) ? sf : []).forEach(x => { DIS.sinf[x.foto] = x.url; });
   DIS.prods = (Array.isArray(p) ? p : []).filter(x => !/^archived$/i.test(x.estado || '')).sort((a, b) => (_disActivo(a) ? 0 : 1) - (_disActivo(b) ? 0 : 1) || String(a.titulo).localeCompare(String(b.titulo)));
   const cfg = k => ((Array.isArray(m) ? m : []).find(x => x.clave === k) || {}).valor;
-  DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null; DIS.descTienda = cfg('descuentos_tienda') || null;
+  DIS.marca = Object.assign({}, DIS_MARCA_DEF, cfg('marca') || {}); DIS.ordenP = cfg('orden_plantillas') || null; DIS.descTienda = cfg('descuentos_tienda') || null; DIS.colOf = cfg('colores_oficiales') || {}; DIS.banco = cfg('banco_modelos') || []; DIS.mockups = cfg('mockups_ia') || [];
   _disFondosCargar();
   DIS.puede = pu === true;
   /* 21-nov noche (medido: resultados ~2,2 s porque lee anuncios de otra base) · ya no frena la galería: se pinta primero y los
@@ -938,7 +938,7 @@ function disCapaDuplicar(i){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo
 function disModeloAbrir(i){
   const c = DIS.ed && DIS.ed.capas[i], cx = DIS._cx || {}; if (!c) return; const v = document.getElementById('disMod'); if (v) v.remove();
   const prenda = _disFotoSrc(cx, c.src); DIS._mod = { i, prenda, modelo: '', modo: 'vestir' };
-  const mods = []; (DIS.prods || []).filter(_disActivo).slice(0, 40).forEach(p => { const f = _disFotos(p)[0]; if (f && mods.indexOf(f) < 0) mods.push(f); });
+  const mods = (DIS.banco || []).slice(); (DIS.prods || []).filter(_disActivo).slice(0, 40).forEach(p => { const f = _disFotos(p)[0]; if (f && mods.indexOf(f) < 0) mods.push(f); });
   const mini = (u, k) => '<img src="' + disA(_disTam(u, 200)) + '" data-k="' + k + '" onclick="disModeloElegir(this)" style="width:64px;height:80px;object-fit:cover;object-position:top;border-radius:6px;cursor:pointer;border:2px solid transparent">';
   document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disMod" style="z-index:10050"><div class="dis-caja" style="max-width:640px"><div class="dis-cab"><div><div class="ui-pag">👗 Ponérsela a una modelo</div><div class="ui-nota">Para preventas y colores sin foto · revisa que botones, bolsillos y largo sean fieles antes de usarla</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disMod').remove()") + '</div>'
     + '<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap"><div><div class="ui-nota">Prenda</div><img id="disModPrenda" src="' + disA(prenda ? _disTam(prenda, 300) : '') + '" style="width:120px;height:150px;object-fit:cover;border-radius:8px;background:#e9e7e2"><br><label class="btn" style="margin-top:6px;display:inline-block">📷 Otra foto<input type="file" accept="image/*" hidden onchange="disModeloArchivo(this.files[0])"></label></div>'
@@ -963,13 +963,154 @@ async function disModeloHacer(final){
     const r = await fetch(MK_SB_URL + '/functions/v1/fashn-modelo', { method: 'POST', headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
       body: JSON.stringify({ modo: M.modo, prenda: M.prenda, modelo: M.modelo, final, prompt: ((document.getElementById('disModPrompt') || {}).value || '').trim(), formato: DIS.ed && DIS.ed.formato === '9x16' ? '9:16' : '4:5' }) });
     const j = await r.json().catch(() => ({})); if (!r.ok || !j.ok) throw new Error(j.error || ('respondió ' + r.status));
-    if (res) res.textContent = 'Listo · costó ~US$' + String(j.usd).replace('.', ',') + ' · ¿es fiel a la prenda?';
+    if (res) res.textContent = 'Igualando el color al oficial…';
+    const cx = DIS._cx || {}, obj = await _disColorObjetivo((cx.p || {}).handle, cx.color, /^data:/.test(M.prenda) ? '' : M.prenda, j.url), f = await _disFashnFiel(j.url, obj); j.url = f.url;
+    if (res) res.innerHTML = 'Listo · ~US$' + String(j.usd).replace('.', ',') + ' · ' + (f.antes != null ? 'color: ΔE ' + String(f.antes).replace('.', ',') + ' → ' + _disDEchip(f.despues) : 'sin color de referencia') + ' · ¿es fiel a la prenda?';
     if (out) out.innerHTML = '<img src="' + disA(j.url) + '" style="max-width:100%;max-height:420px;border-radius:8px;display:block;margin:0 auto">'
       + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><a class="btn" href="' + disA(j.url) + '" target="_blank" download>⬇ Descargar</a><button class="btn on" onclick="disModeloUsar(\'' + disA(j.url) + '\')">✓ Usar en el diseño</button></div>';
   } catch (e) { if (res) res.innerHTML = '<span class="mal">No se pudo (' + esc(e.message) + ').</span>'; }
   finally { DIS._modCorre = 0; }
 }
 function disModeloUsar(u){ const M = DIS._mod; if (!M) return; const v = document.getElementById('disMod'); if (v) v.remove(); disCapaSet(M.i, 'src', 'url:' + u); }
+/* ══ 23-nov (Pablo: «el tono de color es crucial, sin eso nada vale») · 🎨 COLOR FIEL + 👗 MOCKUPS EN SERIE.
+   1) Color oficial por prenda y color (mk_dis_config «colores_oficiales»: {'handle|Color': '#hex'}); si no hay, se mide en la foto de la prenda.
+   2) Después de la IA, el ERP mide la prenda en el resultado y la lleva a ese color (sube o baja tono y saturación sin tocar sombras ni pliegues).
+   3) Diferencia de color (ΔE): ≤3 no se nota · ≤6 se nota poco · >6 se nota: no se aprueba sin revisar. Criterio de estudios de e-commerce (tarjeta gris / ColorChecker). ══ */
+function _disRgb2Lab(r, g, b){
+  const f = v => { v /= 255; return v > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92; }, R = f(r), G = f(g), B = f(b);
+  let x = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047, y = R * 0.2126 + G * 0.7152 + B * 0.0722, z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883;
+  const h = t => t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116; x = h(x); y = h(y); z = h(z);
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+}
+function _disLab2Rgb(L, a, b){
+  let y = (L + 16) / 116, x = a / 500 + y, z = y - b / 200; const h = t => { const t3 = t * t * t; return t3 > 0.008856 ? t3 : (t - 16 / 116) / 7.787; };
+  x = h(x) * 0.95047; y = h(y); z = h(z) * 1.08883;
+  const g = v => { v = v > 0.0031308 ? 1.055 * Math.pow(v, 1 / 2.4) - 0.055 : 12.92 * v; return Math.max(0, Math.min(255, Math.round(v * 255))); };
+  return [g(x * 3.2406 - y * 1.5372 - z * 0.4986), g(-x * 0.9689 + y * 1.8758 + z * 0.0415), g(x * 0.0557 - y * 0.204 + z * 1.057)];
+}
+function _disHex2Lab(hx){ const m = String(hx || '').match(/^#?([0-9a-f]{6})$/i); if (!m) return null; const n = parseInt(m[1], 16); return _disRgb2Lab(n >> 16 & 255, n >> 8 & 255, n & 255); }
+function _disLab2Hex(l){ return '#' + _disLab2Rgb(l[0], l[1], l[2]).map(v => v.toString(16).padStart(2, '0')).join(''); }
+function _disDE(p, q){ return Math.round(Math.sqrt((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2) * 10) / 10; }
+function _disDEchip(d){ return d == null ? '' : '<span class="ui-chip ' + (d <= 3 ? 'ok' : d <= 6 ? 'am' : 'mal') + '" title="Diferencia de color con el oficial (ΔE): hasta 3 no se nota · hasta 6 se nota poco · más de 6 se nota">ΔE ' + String(d).replace('.', ',') + '</span>'; }
+function _disImgCv(url, max){
+  return new Promise((ok, mal) => { const im = new Image(); im.crossOrigin = 'anonymous';
+    im.onload = () => { const k = Math.min(1, (max || 1400) / Math.max(im.naturalWidth, im.naturalHeight)), cv = document.createElement('canvas'); cv.width = Math.round(im.naturalWidth * k); cv.height = Math.round(im.naturalHeight * k); cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height); ok(cv); };
+    im.onerror = () => mal(new Error('no pude leer la foto')); im.src = url; });
+}
+/* Pixeles de la prenda: los parecidos al color buscado (dos vueltas), sin fondo claro ni piel */
+function _disMascara(d, obj, lim){
+  const n = d.length / 4, lab = new Float32Array(n * 3); let s = [0, 0, 0], c = 0;
+  for (let i = 0; i < n; i++){ const l = _disRgb2Lab(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); lab[i * 3] = l[0]; lab[i * 3 + 1] = l[1]; lab[i * 3 + 2] = l[2];
+    if (_disDE(l, obj) < (lim || 32)){ s[0] += l[0]; s[1] += l[1]; s[2] += l[2]; c++; } }
+  if (c < n * 0.01) return null; const m1 = s.map(v => v / c); s = [0, 0, 0]; c = 0; const w = new Float32Array(n);
+  for (let i = 0; i < n; i++){ const l = [lab[i * 3], lab[i * 3 + 1], lab[i * 3 + 2]], dd = _disDE(l, m1); if (dd < 24){ w[i] = dd < 14 ? 1 : (24 - dd) / 10; s[0] += l[0] * w[i]; s[1] += l[1] * w[i]; s[2] += l[2] * w[i]; c += w[i]; } }
+  return c ? { lab, w, media: s.map(v => v / c), frac: c / n } : null;
+}
+/* Color de la prenda en una foto. Sin semilla: mediana del centro (sin fondo claro ni piel). Con semilla (el color que tiene la prenda
+   en el resultado de la IA): se buscan en la foto original los pixeles de esa misma prenda y se promedian → se compara lo mismo con lo mismo. */
+function _disMediana(cv, fx0, fy0, fw, fh){
+  const d = cv.getContext('2d').getImageData(Math.round(cv.width * fx0), Math.round(cv.height * fy0), Math.round(cv.width * fw), Math.round(cv.height * fh)).data, L = [], A = [], B = [];
+  for (let i = 0; i < d.length; i += 16){ const l = _disRgb2Lab(d[i], d[i + 1], d[i + 2]), C = Math.hypot(l[1], l[2]), hue = Math.atan2(l[2], l[1]) * 180 / Math.PI;
+    if (l[0] > 88 && C < 10) continue; if (C > 12 && C < 38 && hue > 40 && hue < 75 && l[0] > 45) continue; L.push(l[0]); A.push(l[1]); B.push(l[2]); }
+  if (L.length < 30) return null; const med = v => v.sort((p, q) => p - q)[v.length >> 1]; return [med(L), med(A), med(B)];
+}
+async function _disColorDeFoto(url, semilla){
+  const cv = await _disImgCv(url, 600); if (!semilla) return _disMediana(cv, 0.25, 0.3, 0.5, 0.45);
+  const M = _disMascara(cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data, semilla, 30); return M ? M.media : null;
+}
+/* Semilla: el pecho de la modelo en el resultado (la prueba virtual respeta la pose) */
+async function _disSemillaResultado(url){ const cv = await _disImgCv(url, 600); return _disMediana(cv, 0.36, 0.36, 0.28, 0.2); }
+async function disColorIgualar(url, obj){
+  const cv = await _disImgCv(url, 1600), cx = cv.getContext('2d'), im = cx.getImageData(0, 0, cv.width, cv.height), d = im.data, M = _disMascara(d, obj);
+  if (!M) return { cambio: false, antes: null, despues: null };
+  const antes = _disDE(M.media, obj), dl = (obj[0] - M.media[0]) * 0.7, da = obj[1] - M.media[1], db = obj[2] - M.media[2];
+  if (antes <= 1.5) return { cambio: false, antes, despues: antes };
+  for (let i = 0, n = d.length / 4; i < n; i++){ const w = M.w[i]; if (!w) continue; const rgb = _disLab2Rgb(M.lab[i * 3] + dl * w, M.lab[i * 3 + 1] + da * w, M.lab[i * 3 + 2] + db * w); d[i * 4] = rgb[0]; d[i * 4 + 1] = rgb[1]; d[i * 4 + 2] = rgb[2]; }
+  cx.putImageData(im, 0, 0); const M2 = _disMascara(d, obj), despues = M2 ? _disDE(M2.media, obj) : null;
+  const blob = await new Promise(ok => cv.toBlob(ok, 'image/png')); return { cambio: true, blob, antes, despues };
+}
+function _disColClave(handle, color){ return String(handle || '') + '|' + String(color || ''); }
+async function _disCfgSet(clave, valor){ await _mklSb('/rest/v1/rpc/mk_dis_config_guardar', { method: 'POST', body: JSON.stringify({ p_clave: clave, p_valor: valor }) }); }
+async function disColorOficialGuardar(handle, color, hex){ DIS.colOf = Object.assign({}, DIS.colOf || {}); DIS.colOf[_disColClave(handle, color)] = hex; try { await _disCfgSet('colores_oficiales', DIS.colOf); } catch (_) {} }
+/* Objetivo de color: el oficial guardado; si no hay, el medido en la foto de la prenda */
+async function _disColorObjetivo(handle, color, fotoPrenda, urlIA){
+  const hx = (DIS.colOf || {})[_disColClave(handle, color)]; if (hx) return { lab: _disHex2Lab(hx), hex: hx, oficial: true };
+  const sem = urlIA ? await _disSemillaResultado(urlIA).catch(() => null) : null;
+  const l = fotoPrenda ? await _disColorDeFoto(fotoPrenda, sem).catch(() => null) : null; return l ? { lab: l, hex: _disLab2Hex(l), oficial: false } : null;
+}
+/* Resultado de la IA → color fiel → guardado. Devuelve {url, antes, despues} */
+async function _disFashnFiel(urlIA, obj){
+  if (!obj) return { url: urlIA, antes: null, despues: null };
+  const r = await disColorIgualar(urlIA, obj.lab); if (!r.cambio) return { url: urlIA, antes: r.antes, despues: r.despues };
+  const u = await _disSubir(r.blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes: r.antes, despues: r.despues };
+}
+async function _disFashn(cuerpo){
+  const tok = _mkSbTok(); if (!tok) throw new Error('tu sesión del ERP venció: recarga la página');
+  const r = await fetch(MK_SB_URL + '/functions/v1/fashn-modelo', { method: 'POST', headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) });
+  const j = await r.json().catch(() => ({})); if (!r.ok || !j.ok) throw new Error(j.error || ('respondió ' + r.status)); return j;
+}
+/* ── 👗 MOCKUPS EN SERIE: una prenda, todos sus colores, sobre una modelo del banco ── */
+function disSerieAbrir(){
+  const v = document.getElementById('disSer'); if (v) v.remove(); DIS._ser = { p: null, cx: null, modelo: (DIS.banco || [])[0] || '', res: {} };
+  const L = (DIS.prods || []).filter(_disActivo).slice().sort((a, b) => String(a.titulo).localeCompare(String(b.titulo)));
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disSer" style="z-index:10040"><div class="dis-caja" style="max-width:980px"><div class="dis-cab"><div><div class="ui-pag">👗 Mockups en serie</div><div class="ui-nota">Una prenda, todos sus colores, sobre la misma modelo · color fiel al oficial · nada se usa sin aprobar</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disSer').remove()") + '</div>'
+    + '<div class="dis-props"><label class="dis-prop" style="min-width:260px"><span class="ui-nota">Prenda</span><select onchange="disSerieProd(this.value)"><option value="">Elige…</option>' + L.map(p => '<option value="' + disA(p.handle) + '">' + esc(p.titulo) + '</option>').join('') + '</select></label>'
+    + '<label class="dis-prop"><span class="ui-nota">Calidad</span><select id="disSerCal"><option value="0">Prueba · ~US$0,15 c/u</option><option value="1">Final 2K · ~US$0,23 c/u</option></select></label></div>'
+    + '<div id="disSerMod"></div><div id="disSerCols" style="margin-top:10px"></div></div></div>');
+  _disSeriePintarModelos();
+}
+function _disSeriePintarModelos(){
+  const el = document.getElementById('disSerMod'), S = DIS._ser; if (!el || !S) return; const B = DIS.banco || [], extra = [];
+  (DIS.prods || []).filter(_disActivo).slice(0, 30).forEach(p => { const f = _disFotos(p)[0]; if (f && B.indexOf(f) < 0 && extra.indexOf(f) < 0) extra.push(f); });
+  const mini = (u, enBanco) => '<span style="position:relative;display:inline-block"><img src="' + disA(_disTam(u, 200)) + '" onclick="DIS._ser.modelo=\'' + disA(u) + '\';_disSeriePintarModelos()" style="width:60px;height:78px;object-fit:cover;object-position:top;border-radius:6px;cursor:pointer;border:2px solid ' + (S.modelo === u ? '#7c5cff' : 'transparent') + '">'
+    + '<button type="button" class="dis-ib" title="' + (enBanco ? 'Quitar del banco de modelos' : 'Guardar en el banco de modelos (salen primero siempre)') + '" onclick="disBancoAlternar(\'' + disA(u) + '\')" style="position:absolute;right:-4px;top:-6px;font-size:12px">' + (enBanco ? '⭐' : '☆') + '</button></span>';
+  el.innerHTML = '<div class="ui-nota">Modelo · ⭐ banco de modelos (' + B.length + ') · mejor de frente y cuerpo entero</div><div style="display:flex;gap:6px;flex-wrap:wrap;max-height:180px;overflow:auto;margin-top:6px">' + B.map(u => mini(u, true)).join('') + extra.map(u => mini(u, false)).join('') + '</div>';
+}
+async function disBancoAlternar(u){ const B = (DIS.banco || []).slice(), i = B.indexOf(u); if (i >= 0) B.splice(i, 1); else B.unshift(u); DIS.banco = B.slice(0, 12); try { await _disCfgSet('banco_modelos', DIS.banco); } catch (_) {} _disSeriePintarModelos(); }
+async function disSerieProd(h){
+  const S = DIS._ser, el = document.getElementById('disSerCols'); if (!S || !el) return; S.p = _disProd(h); S.res = {}; if (!S.p){ el.innerHTML = ''; return; }
+  el.innerHTML = '<span class="ui-nota">Cargando colores…</span>'; const inf = await disInfo(h); S.cx = disCtx(S.p, inf, '', {}); _disSeriePintar();
+}
+function _disSeriePintar(){
+  const S = DIS._ser, el = document.getElementById('disSerCols'); if (!S || !el || !S.cx) return;
+  const P = (S.cx.portadas || []).filter(o => o.src), cal = +((document.getElementById('disSerCal') || {}).value || 0), usd = (cal ? 0.225 : 0.15) * P.length;
+  el.innerHTML = '<label style="display:flex;gap:8px;align-items:center;margin:4px 0 10px"><input type="checkbox" id="disSerOk"> <span>En las fotos de la prenda se ven <b>bolsillos, botones, cuello y puños</b> (si algo no se ve, la IA lo inventa o lo quita)</span></label>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">' + P.map(o => {
+      const k = _disColClave(S.p.handle, o.c), hx = (DIS.colOf || {})[k] || '', r = S.res[o.c] || {};
+      return '<div class="dis-tarj" style="padding:8px"><div style="display:flex;gap:6px"><img src="' + disA(_disTam(o.src, 300)) + '" style="width:70px;height:92px;object-fit:cover;border-radius:6px">'
+        + (r.url ? '<img src="' + disA(r.url) + '" onclick="window.open(\'' + disA(r.url) + '\')" style="width:110px;height:140px;object-fit:cover;object-position:top;border-radius:6px;cursor:zoom-in">' : '<div class="ui-nota" style="width:110px;display:flex;align-items:center;justify-content:center;text-align:center">' + esc(r.est || 'Sin hacer') + '</div>') + '</div>'
+        + '<div class="ui-tot" style="margin-top:6px">' + esc(o.c) + ' ' + _disDEchip(r.despues) + '</div>'
+        + '<div style="display:flex;gap:6px;align-items:center;margin-top:4px"><input type="color" value="' + disA(hx || r.obj || '#888888') + '" title="Color oficial de la tela (el que debe verse)" onchange="disColorOficialGuardar(\'' + disA(S.p.handle) + '\',\'' + disA(o.c) + '\',this.value);_disSeriePintar()"><span class="ui-nota">' + (hx ? 'Color oficial' : 'Sin oficial: se mide en la foto') + '</span></div>'
+        + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacerlo de nuevo">↻</button>' + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
+    }).join('') + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disSerRes" style="flex:1"></span><button class="btn on" onclick="disSerieHacer()">👗 Hacer ' + P.length + ' mockups · ~US$' + usd.toFixed(2).replace('.', ',') + '</button></div>';
+}
+async function disSerieUno(color){
+  const S = DIS._ser; if (!S || !S.cx) return; const o = (S.cx.portadas || []).find(x => x.c === color); if (!o) return;
+  if (!S.modelo) throw new Error('elige la modelo'); S.res[color] = { est: 'Vistiendo…' }; _disSeriePintar();
+  try {
+    const final = +((document.getElementById('disSerCal') || {}).value || 0) === 1;
+    const j = await _disFashn({ modo: 'vestir', prenda: o.src, modelo: S.modelo, final }); S.res[color] = { est: 'Igualando color…' }; _disSeriePintar();
+    const obj = await _disColorObjetivo(S.p.handle, color, o.src, j.url);
+    const f = await _disFashnFiel(j.url, obj); S.res[color] = Object.assign({ obj: obj && obj.hex, usd: j.usd }, f);
+  } catch (e) { S.res[color] = { est: 'No se pudo: ' + e.message }; }
+  _disSeriePintar();
+}
+async function disSerieHacer(){
+  const S = DIS._ser, res = document.getElementById('disSerRes'); if (!S || !S.cx || DIS._serCorre) return;
+  if (!S.modelo){ if (res) res.textContent = 'Elige la modelo.'; return; }
+  if (!(document.getElementById('disSerOk') || {}).checked){ if (res) res.textContent = 'Primero confirma que en las fotos se ven todos los detalles.'; return; }
+  DIS._serCorre = 1; const P = (S.cx.portadas || []).filter(o => o.src);
+  try { for (let k = 0; k < P.length; k++){ const r2 = document.getElementById('disSerRes'); if (r2) r2.textContent = 'Mockup ' + (k + 1) + ' de ' + P.length + '… (~40 s c/u)'; await disSerieUno(P[k].c); } }
+  finally { DIS._serCorre = 0; const r3 = document.getElementById('disSerRes'); if (r3) r3.textContent = 'Listo. Revisa cada uno: ΔE en verde = color igual al oficial.'; }
+}
+/* Aprobados → «mockups_ia» (se usan en diseños con 👗 y quedan para la web solo si es preventa) */
+async function disMockAprobar(color){
+  const S = DIS._ser, r = S && S.res[color]; if (!r || !r.url) return;
+  if (r.despues != null && r.despues > 6 && !await _uiSeguro('El color se nota distinto al oficial (ΔE ' + r.despues + '). ¿Aprobar igual?', 'Aprobar')) return;
+  r.ok = 1; DIS.mockups = [{ url: r.url, handle: S.p.handle, prenda: S.p.titulo, color, de: r.despues, modelo: S.modelo, fecha: new Date().toISOString() }].concat(DIS.mockups || []).slice(0, 300);
+  try { await _disCfgSet('mockups_ia', DIS.mockups); } catch (_) {} _disSeriePintar();
+}
 const DIS_ESTILO_K = ['tam', 'fuente', 'peso', 'color', 'fondo', 'pad', 'r', 'al', 'ls', 'lh', 'mayus', 'cursiva', 'contorno', 'op', 'bri', 'con', 'sat', 'calidez', 'blur', 'sombra', 'marco', 'marcoColor', 'arco', 'velo', 'veloOp'];
 function disMenuAbrir(i){
   const c = DIS.ed && DIS.ed.capas[i]; if (!c) return; const v = document.getElementById('disMenu'); if (v) v.remove();
@@ -1835,7 +1976,7 @@ async function disVideoHacer(id, modo){
 async function disVideoABiblioteca(){ const v = DIS._vid; if (!v) return; const m = document.getElementById('disVid'); if (m) m.remove(); await _disABiblioteca([v.file], v.d, v.p); }
 
 /* ══ 21-nov noche (Pablo) · sección más simple: sin título, ⚙️ Configuración (Marca + Fondos) y ➕ Nuevo diseño a la derecha ══ */
-function _disBarraBtns(){ return DIS.puede ? '<button class="btn" onclick="disConfigAbrir()">⚙️ Configuración</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : ''; }
+function _disBarraBtns(){ return DIS.puede ? '<button class="btn" onclick="disSerieAbrir()" title="Todos los colores de una prenda sobre la misma modelo, con color fiel">👗 Mockups</button><button class="btn" onclick="disConfigAbrir()">⚙️ Configuración</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : ''; }
 function _disBarraDer(){ return '<div class="dis-barra-der">' + _disBarraBtns() + '</div>'; }
 function disConfigAbrir(){
   const v = document.getElementById('disCfg'); if (v) v.remove();
