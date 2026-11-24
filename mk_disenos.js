@@ -478,7 +478,7 @@ function disHtml(d, cx, s, opt){
   (d.capas || []).forEach((c, i) => {
     if (!_disVis(c, cx)) return;
     const g = _disGeo(c, d.formato), pos = 'position:absolute;left:' + g.x + '%;top:' + g.y + '%;width:' + g.w + '%;' + (g.h != null ? 'height:' + g.h + '%;' : '')
-      + (c.op != null && c.t !== 'forma' && c.t !== 'degradado' ? 'opacity:' + (+c.op) + ';' : '');
+      + (c.op != null && c.t !== 'forma' && c.t !== 'degradado' ? 'opacity:' + (+c.op) + ';' : '') + (+c.rot ? 'transform:rotate(' + (+c.rot) + 'deg);' : '');
     const sel = opt.sel === i ? 'outline:' + Math.max(1, 2) + 'px solid #7c5cff;outline-offset:-1px;' : '', da = opt.edit ? ' data-capa="' + i + '"' : '';
     const cur = opt.edit ? 'cursor:move;' : '';
     let inner = '', estilo = '';
@@ -495,7 +495,7 @@ function disHtml(d, cx, s, opt){
         + (c.marco ? 'border:' + (+c.marco * s) + 'px solid ' + _disCol(c.marcoColor || 'fondo') + ';box-sizing:border-box;' : '')
         + (c.sombra && !c.sinfondo ? 'box-shadow:0 ' + (24 * s) + 'px ' + (60 * s) + 'px rgba(0,0,0,.28);' : '');
       inner = u ? '<img crossorigin="anonymous" src="' + disA(sf ? u : _disTam(u, anchoFoto)) + '" style="width:100%;height:100%;object-fit:' + (c.fit || (c.sinfondo ? 'contain' : 'cover')) + ';object-position:' + op + ';display:block;pointer-events:none;'
-        + (z > 1 ? 'transform:scale(' + z + ');transform-origin:' + fxp + ';' : '') + (fil ? 'filter:' + fil + ';' : '') + '" draggable="false">' : '';
+        + (z > 1 || c.flip ? 'transform:' + (z > 1 ? 'scale(' + z + ') ' : '') + (c.flip ? 'scaleX(-1)' : '') + ';transform-origin:' + fxp + ';' : '') + (fil ? 'filter:' + fil + ';' : '') + '" draggable="false">' : '';
       if (c.velo) inner += '<div style="position:absolute;inset:0;background:' + _disCol(c.velo) + ';opacity:' + (c.veloOp != null ? +c.veloOp : 0.5) + ';pointer-events:none"></div>';
     } else if (c.t === 'forma'){
       estilo = 'background:' + C(c.color) + ';opacity:' + (c.op != null ? +c.op : 1) + ';border-radius:' + (c.elipse ? '50%' : ((+c.r || 0) * s) + 'px') + ';' + (+c.blur ? 'filter:blur(' + (+c.blur * s) + 'px);' : '') + (c.mezcla ? 'mix-blend-mode:' + c.mezcla + ';' : '');
@@ -930,6 +930,76 @@ function disCapaExtremo(i, alFrente){ const C = DIS.ed.capas; if (!C[i]) return;
 function disSombraRapida(i, lado){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); const g = { abajo: [0, 55, 100, 45], arriba: [0, 0, 100, 45], izq: [0, 0, 55, 100], der: [45, 0, 55, 100], toda: [0, 0, 100, 100] }[lado];
   c.x = g[0]; c.y = g[1]; c.w = g[2]; c.h = g[3]; delete c.g916; c.desde = lado === 'toda' ? 'abajo' : lado; if (lado === 'toda') c.op = Math.min(+c.op || 0.5, 0.5); DIS.ed._sucio = true; disEdPintar(); }
 function disCapaDuplicar(i){ const c = DIS.ed.capas[i]; if (!c) return; _disMemo(); const n = JSON.parse(JSON.stringify(c)); n.x = (+n.x || 0) + 2; n.y = (+n.y || 0) + 2; DIS.ed.capas.splice(i + 1, 0, n); DIS.sel = i + 1; DIS.ed._sucio = true; disEdPintar(); }
+/* ══ 23-nov (Pablo) · lo de Canva que faltaba en el editor, tanda 1: menú ⋯ / clic derecho con copiar y pegar estilo, capas,
+   alinear a la página, girar, voltear y bloquear. Lo que ya teníamos (copiar, pegar, duplicar, quitar) también está ahí. ══ */
+/* ══ 23-nov (Pablo aprobó FASHN, empezar por preventas y colores sin foto) · 👗 Ponérsela a una modelo.
+   «Nuestra modelo»: la prenda nueva sobre una foto real de Tulula (misma cara y pose) · «Modelo nueva»: la IA crea la foto desde la prenda sola.
+   Función de Supabase fashn-modelo · prueba ~US$0,15 (1K) · final ~US$0,23 (2K) · solo cobra si sale bien · tope 30 por día. ══ */
+function disModeloAbrir(i){
+  const c = DIS.ed && DIS.ed.capas[i], cx = DIS._cx || {}; if (!c) return; const v = document.getElementById('disMod'); if (v) v.remove();
+  const prenda = _disFotoSrc(cx, c.src); DIS._mod = { i, prenda, modelo: '', modo: 'vestir' };
+  const mods = []; (DIS.prods || []).filter(_disActivo).slice(0, 40).forEach(p => { const f = _disFotos(p)[0]; if (f && mods.indexOf(f) < 0) mods.push(f); });
+  const mini = (u, k) => '<img src="' + disA(_disTam(u, 200)) + '" data-k="' + k + '" onclick="disModeloElegir(this)" style="width:64px;height:80px;object-fit:cover;object-position:top;border-radius:6px;cursor:pointer;border:2px solid transparent">';
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disMod" style="z-index:10050"><div class="dis-caja" style="max-width:640px"><div class="dis-cab"><div><div class="ui-pag">👗 Ponérsela a una modelo</div><div class="ui-nota">Para preventas y colores sin foto · revisa que botones, bolsillos y largo sean fieles antes de usarla</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disMod').remove()") + '</div>'
+    + '<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap"><div><div class="ui-nota">Prenda</div><img id="disModPrenda" src="' + disA(prenda ? _disTam(prenda, 300) : '') + '" style="width:120px;height:150px;object-fit:cover;border-radius:8px;background:#e9e7e2"><br><label class="btn" style="margin-top:6px;display:inline-block">📷 Otra foto<input type="file" accept="image/*" hidden onchange="disModeloArchivo(this.files[0])"></label></div>'
+    + '<div style="flex:1;min-width:280px"><div class="dis-seg" style="margin-bottom:8px"><button type="button" class="on" id="disModV" onclick="disModeloModo(\'vestir\')" title="La prenda sobre una foto real de nuestra modelo: misma cara, pose y fondo">Nuestra modelo</button><button type="button" id="disModP" onclick="disModeloModo(\'prenda\')" title="La IA crea a la modelo y la escena desde la prenda sola">Modelo nueva (IA)</button></div>'
+    + '<div id="disModLista"><div class="ui-nota">Elige la foto de nuestra modelo (mejor de frente y cuerpo entero)</div><div style="display:flex;gap:6px;flex-wrap:wrap;max-height:190px;overflow:auto;margin-top:6px">' + mods.map(mini).join('') + '</div></div>'
+    + '<textarea id="disModPrompt" rows="2" style="width:100%;display:none;margin-top:6px" placeholder="Opcional: escena o estilo (ej. oficina moderna en Lima, luz natural)"></textarea></div></div>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disModRes" style="flex:1"></span><button class="btn" onclick="disModeloHacer(false)" title="1K, para ver si sirve">Probar · ~US$0,15</button><button class="btn on" onclick="disModeloHacer(true)" title="2K, para anunciar">Versión final · ~US$0,23</button></div>'
+    + '<div id="disModOut" style="margin-top:10px"></div></div></div>');
+  DIS._modMods = mods;
+}
+function disModeloModo(m){ if (!DIS._mod) return; DIS._mod.modo = m; const a = document.getElementById('disModV'), b = document.getElementById('disModP'); if (a) a.classList.toggle('on', m === 'vestir'); if (b) b.classList.toggle('on', m === 'prenda');
+  const l = document.getElementById('disModLista'), t = document.getElementById('disModPrompt'); if (l) l.style.display = m === 'vestir' ? '' : 'none'; if (t) t.style.display = m === 'prenda' ? '' : 'none'; }
+function disModeloElegir(el){ if (!DIS._mod) return; DIS._mod.modelo = (DIS._modMods || [])[+el.dataset.k] || ''; el.parentElement.querySelectorAll('img').forEach(x => { x.style.borderColor = 'transparent'; }); el.style.borderColor = '#7c5cff'; }
+async function disModeloArchivo(f){ if (!f || !DIS._mod) return; try { DIS._mod.prenda = await _disImgB64(f, 1600); const im = document.getElementById('disModPrenda'); if (im) im.src = DIS._mod.prenda; } catch (e) { const r = document.getElementById('disModRes'); if (r) r.textContent = e.message; } }
+async function disModeloHacer(final){
+  const M = DIS._mod, res = document.getElementById('disModRes'), out = document.getElementById('disModOut'); if (!M || DIS._modCorre) return;
+  if (!M.prenda) { if (res) res.textContent = 'Falta la foto de la prenda.'; return; }
+  if (M.modo === 'vestir' && !M.modelo) { if (res) res.textContent = 'Elige la foto de nuestra modelo.'; return; }
+  DIS._modCorre = 1; if (res) res.textContent = '👗 Vistiendo a la modelo… (20-60 s, no cierres)';
+  try {
+    const tok = _mkSbTok(); if (!tok) throw new Error('tu sesión del ERP venció: recarga la página');
+    const r = await fetch(MK_SB_URL + '/functions/v1/fashn-modelo', { method: 'POST', headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modo: M.modo, prenda: M.prenda, modelo: M.modelo, final, prompt: ((document.getElementById('disModPrompt') || {}).value || '').trim(), formato: DIS.ed && DIS.ed.formato === '9x16' ? '9:16' : '4:5' }) });
+    const j = await r.json().catch(() => ({})); if (!r.ok || !j.ok) throw new Error(j.error || ('respondió ' + r.status));
+    if (res) res.textContent = 'Listo · costó ~US$' + String(j.usd).replace('.', ',') + ' · ¿es fiel a la prenda?';
+    if (out) out.innerHTML = '<img src="' + disA(j.url) + '" style="max-width:100%;max-height:420px;border-radius:8px;display:block;margin:0 auto">'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px"><a class="btn" href="' + disA(j.url) + '" target="_blank" download>⬇ Descargar</a><button class="btn on" onclick="disModeloUsar(\'' + disA(j.url) + '\')">✓ Usar en el diseño</button></div>';
+  } catch (e) { if (res) res.innerHTML = '<span class="mal">No se pudo (' + esc(e.message) + ').</span>'; }
+  finally { DIS._modCorre = 0; }
+}
+function disModeloUsar(u){ const M = DIS._mod; if (!M) return; const v = document.getElementById('disMod'); if (v) v.remove(); disCapaSet(M.i, 'src', 'url:' + u); }
+const DIS_ESTILO_K = ['tam', 'fuente', 'peso', 'color', 'fondo', 'pad', 'r', 'al', 'ls', 'lh', 'mayus', 'cursiva', 'contorno', 'op', 'bri', 'con', 'sat', 'calidez', 'blur', 'sombra', 'marco', 'marcoColor', 'arco', 'velo', 'veloOp'];
+function disMenuAbrir(i){
+  const c = DIS.ed && DIS.ed.capas[i]; if (!c) return; const v = document.getElementById('disMenu'); if (v) v.remove();
+  const it = (ico, t, fn, atajo) => '<button type="button" onclick="document.getElementById(\'disMenu\').remove();' + fn + '"><span>' + ico + '</span><span style="flex:1">' + t + '</span>' + (atajo ? '<span class="ui-nota">' + atajo + '</span>' : '') + '</button>';
+  const sep = '<hr>', tit = t => '<div class="ui-nota" style="padding:4px 10px 2px">' + t + '</div>';
+  const h = '<div class="dis-menu" id="disMenu" onmousedown="event.stopPropagation()">' + '<div style="display:flex;justify-content:flex-end">' + _disIb('cerrar', 'Cerrar', "document.getElementById('disMenu').remove()") + '</div>'
+    + it('⧉', 'Copiar', 'disMenuCopiar(' + i + ')', 'Ctrl+C') + it('📋', 'Pegar', 'disMenuPegar()', 'Ctrl+V') + it('➕', 'Duplicar', 'disCapaDuplicar(' + i + ')', 'Ctrl+D') + it('🗑', 'Eliminar', 'disCapaQuitar(' + i + ')', 'Supr')
+    + sep + it('🖌', 'Copiar el estilo', 'disEstiloCopiar(' + i + ')') + (DIS._estilo ? it('🎨', 'Pegar el estilo', 'disEstiloPegar(' + i + ')') : '')
+    + sep + tit('Capa') + it('⤒', 'Al frente', 'disCapaExtremo(' + i + ',true)') + it('↑', 'Adelante', 'disCapaMover(' + i + ',1)') + it('↓', 'Atrás', 'disCapaMover(' + i + ',-1)') + it('⤓', 'Al fondo', 'disCapaExtremo(' + i + ',false)')
+    + sep + tit('Alinear a la página') + '<div class="dis-menu-fila">' + [['izq', '⇤'], ['centro', '↔'], ['der', '⇥'], ['arriba', '⤒'], ['medio', '↕'], ['abajo', '⤓']].map(o => '<button type="button" title="' + o[0] + '" onclick="disAlinear(' + i + ',\'' + o[0] + '\')">' + o[1] + '</button>').join('') + '</div>'
+    + sep + tit('Girar') + '<div class="dis-menu-fila">' + [[-15, '↺ 15°'], [15, '↻ 15°'], [90, '↻ 90°'], [0, 'Recto']].map(o => '<button type="button" onclick="disGirar(' + i + ',' + o[0] + ')">' + o[1] + '</button>').join('') + '</div>'
+    + (c.t === 'foto' ? it('⇋', c.flip ? 'Quitar volteo' : 'Voltear (espejo)', 'disCapaSet(' + i + ',\'flip\',' + (c.flip ? 'false' : 'true') + ')') : '')
+    + sep + it(c.lock ? '🔓' : '🔒', c.lock ? 'Desbloquear' : 'Bloquear (no se mueve por error)', 'disCapaSet(' + i + ',\'lock\',' + (c.lock ? 'false' : 'true') + ')') + '</div>';
+  const lz = document.getElementById('disEdLienzo'), el = lz && lz.querySelector('[data-capa="' + i + '"]'); if (!lz || !el) return;
+  lz.insertAdjacentHTML('beforeend', h); const m = document.getElementById('disMenu'), r = el.getBoundingClientRect(), z = lz.getBoundingClientRect();
+  m.style.left = Math.max(4, Math.min(z.width - m.offsetWidth - 4, r.right - z.left + 8)) + 'px'; m.style.top = Math.max(4, Math.min(z.height - m.offsetHeight - 4, r.top - z.top)) + 'px';
+}
+function disMenuCopiar(i){ const c = DIS.ed.capas[i]; if (c) DIS._clip = JSON.stringify(c); }
+function disMenuPegar(){ if (!DIS._clip) return; _disMemo(); const n = JSON.parse(DIS._clip); n.x = (+n.x || 0) + 3; n.y = (+n.y || 0) + 3; DIS.ed.capas.push(n); DIS.sel = DIS.ed.capas.length - 1; DIS.ed._sucio = true; disEdPintar(); }
+function disEstiloCopiar(i){ const c = DIS.ed.capas[i]; if (!c) return; const e = { t: c.t }; DIS_ESTILO_K.forEach(k => { if (c[k] !== undefined) e[k] = c[k]; }); DIS._estilo = e; }
+function disEstiloPegar(i){ const c = DIS.ed.capas[i], e = DIS._estilo; if (!c || !e) return; _disMemo(); DIS_ESTILO_K.forEach(k => { if (e[k] !== undefined && (e.t === c.t || !/^(tam|fuente|peso|al|ls|lh|mayus|cursiva|contorno|bri|con|sat|calidez|velo|veloOp)$/.test(k))) c[k] = e[k]; }); DIS.ed._sucio = true; disEdPintar(); }
+function disGirar(i, d){ const c = DIS.ed.capas[i]; if (!c) return; disCapaSet(i, 'rot', d === 0 ? 0 : (((+c.rot || 0) + d) % 360)); }
+function disAlinear(i, a){
+  const c = DIS.ed.capas[i], f = DIS.ed.formato; if (!c) return; const g = _disGeo(c, f); let h = g.h;
+  if (h == null){ const lz = document.getElementById('disEdLienzo'), cont = lz && lz.querySelector('.dis-lienzo'), el = lz && lz.querySelector('[data-capa="' + i + '"]'); h = el && cont ? el.offsetHeight / cont.clientHeight * 100 : 10; }
+  _disMemo(); const n = { x: g.x, y: g.y, w: g.w, h: g.h };
+  if (a === 'izq') n.x = 0; if (a === 'der') n.x = 100 - g.w; if (a === 'centro') n.x = (100 - g.w) / 2;
+  if (a === 'arriba') n.y = 0; if (a === 'abajo') n.y = 100 - h; if (a === 'medio') n.y = (100 - h) / 2;
+  n.x = Math.round(n.x * 10) / 10; n.y = Math.round(n.y * 10) / 10; _disGeoSet(c, f, n); DIS.ed._sucio = true; disEdPintar();
+}
 function disCapaAgregar(t){
   const n = { texto: { t, txt: '{{nombre}}', x: 8, y: 44, w: 84, tam: 56, fuente: 'titulo', color: 'blanco', al: 'center' }, foto: { t, src: 'color:1', x: 55, y: 55, w: 38, h: 38, r: 0 },
     forma: { t, x: 0, y: 80, w: 100, h: 20, color: 'principal', op: 0.9 }, degradado: { t, x: 0, y: 55, w: 100, h: 45, color: 'principal', desde: 'abajo', op: 0.85 },
@@ -939,6 +1009,7 @@ function disCapaAgregar(t){
 /* mover (arrastrar), agrandar (esquina) y guías de centro */
 function _disArrastreIni(){
   const lz = document.getElementById('disEdLienzo'); if (!lz) return;
+  lz.addEventListener('contextmenu', e => { const el = e.target.closest('[data-capa]'); if (!el || !DIS.ed) return; e.preventDefault(); DIS.sel = +el.dataset.capa; disEdPintar(); setTimeout(() => disMenuAbrir(DIS.sel), 30); });
   lz.addEventListener('mousedown', e => {
     const cont = lz.querySelector('.dis-lienzo'); if (!cont || !DIS.ed || e.target.isContentEditable) return;
     const tir = e.target.closest('[data-tirador]'), el = e.target.closest('[data-capa]');
@@ -946,6 +1017,7 @@ function _disArrastreIni(){
     e.preventDefault(); const i = +(tir ? tir.dataset.tirador : el.dataset.capa), c = DIS.ed.capas[i]; if (!c) return;
     const caja = tir ? tir.parentElement : el;
     if (DIS.sel !== i){ DIS.sel = i; _disPanel(DIS._cx); lz.querySelectorAll('[data-capa]').forEach(x => { x.style.outline = ''; }); caja.style.outline = '2px solid #7c5cff'; }
+    if (c.lock){ _disFlotPintar(); return; }   /* 23-nov · 🔒 bloqueada: se elige, no se mueve */
     _disMemo();
     const g0 = _disGeo(c, DIS.ed.formato), W = cont.clientWidth, H = cont.clientHeight, x0 = e.clientX, y0 = e.clientY, o = { x: g0.x, y: g0.y, w: g0.w, h: g0.h, tam: +c.tam || 40 }; let movio = 0;
     const gv = cont.querySelector('.dis-guia-v'), gh = cont.querySelector('.dis-guia-h'), r2 = v => Math.round(v * 2) / 2;
@@ -1095,6 +1167,7 @@ async function disMarcaGuardar(aprobar){
     + '.dis-flot small{display:block;font:500 11px var(--ui-f);color:#aab1c2;line-height:1.1;margin-top:1px}.dis-flot button:not(.dis-flot-col){display:flex;flex-direction:column;align-items:center;justify-content:center;height:auto;min-width:46px;padding:4px 6px}.dis-flot-cols{display:flex;gap:4px;padding:0 4px}'
     + '.dis-enc-foto{position:relative;cursor:crosshair;border-radius:8px;overflow:hidden;max-height:60vh}.dis-enc-foto img{width:100%;display:block}.dis-enc-pt{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border:3px solid #fff;border-radius:50%;box-shadow:0 0 0 2px #7c5cff,0 2px 8px rgba(0,0,0,.5);pointer-events:none}'
     + '.dis-atj{position:fixed;right:24px;bottom:24px;z-index:9999;background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:12px 14px;box-shadow:0 10px 30px rgba(0,0,0,.5);max-width:380px}'
+    + '.dis-menu{position:absolute;z-index:40;min-width:230px;max-height:80%;overflow:auto;padding:6px;background:#1b1f2a;border:1px solid #2c3242;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.45)}.dis-menu>button{display:flex;gap:10px;align-items:center;width:100%;padding:7px 10px;background:none;border:0;color:#e8ebf2;font:13px var(--ui-f);text-align:left;cursor:pointer;border-radius:6px}.dis-menu>button:hover,.dis-menu-fila button:hover{background:#2a3142}.dis-menu hr{border:0;border-top:1px solid #2c3242;margin:4px 0}.dis-menu-fila{display:flex;gap:4px;padding:2px 8px 6px;flex-wrap:wrap}.dis-menu-fila button{background:#232938;border:0;color:#e8ebf2;border-radius:6px;padding:5px 8px;font:13px var(--ui-f);cursor:pointer}'
     + '.dis-flot{position:absolute;z-index:30;display:flex;align-items:center;gap:2px;padding:4px;background:#1b1f2a;border:1px solid #33394a;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.45);white-space:nowrap}.dis-flot button{min-width:28px;height:28px;padding:0 6px;border:0;border-radius:6px;background:transparent;color:#e9ecf3;font:500 13px var(--ui-f);cursor:pointer}.dis-flot button:hover{background:#2b3142}.dis-flot .dis-flot-col{min-width:18px;width:18px;height:18px;padding:0;border-radius:50%;border:2px solid #555}.dis-flot .dis-flot-col.on{border-color:#7c5cff}.dis-flot-sep{width:1px;height:18px;background:#33394a;margin:0 3px}'
     + '.dis-txs{display:flex;flex-direction:column;gap:6px;max-height:55vh;overflow:auto}.dis-txs button{text-align:left;padding:9px 12px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--txt);font:400 13px var(--ui-f);cursor:pointer}.dis-txs button:hover{border-color:#7c5cff}'
     + '.dis-tira{display:flex;gap:6px;overflow-x:auto;flex:1;padding:2px 0;scrollbar-width:thin;scrollbar-color:#33394a transparent}.dis-tira-p,.dis-tira-c{flex:0 0 auto;padding:0;border:2px solid transparent;border-radius:8px;background:#0d1017;cursor:pointer;overflow:hidden}.dis-tira-p img{width:44px;height:55px;object-fit:cover;display:block}.dis-tira-c img{width:34px;height:34px;object-fit:cover;display:block}.dis-tira-c span{display:block;padding:6px 8px;font:400 12px var(--ui-f);color:var(--txt)}.dis-tira-p.on,.dis-tira-c.on{border-color:#7c5cff}'
@@ -1813,12 +1886,12 @@ function _disFlotHtml(c, i){
   if (c.t === 'texto') h = '<select title="Tamaños fijos, legibles en el celular" onchange="disLetraPreset(' + i + ',this.value)"><option value="">Tamaño…</option>' + DIS_LETRA_PRESET.map((o, k) => '<option value="' + k + '">' + o[0] + ' · ' + o[1] + '</option>').join('') + '</select>' + b('A−', 'Menos', 'Letra más chica', 'disFlotTam(' + i + ',0.9)') + b('A+', 'Más', 'Letra más grande', 'disFlotTam(' + i + ',1.1)') + b('<b>B</b>', 'Negrita', 'Negrita', 'disCapaSet(' + i + ',\'peso\',' + ((+c.peso || 400) >= 600 ? 400 : 700) + ')')
     + sep + b('⟸', 'Izq.', 'Alinear a la izquierda', 'disCapaSet(' + i + ',\'al\',\'left\')') + b('≡', 'Centro', 'Centrar', 'disCapaSet(' + i + ',\'al\',\'center\')') + b('⟹', 'Der.', 'Alinear a la derecha', 'disCapaSet(' + i + ',\'al\',\'right\')')
     + sep + cols('color') + sep + b('💬', 'Textos', 'Textos de la tienda para esta prenda', 'disFlotTextos(' + i + ')');
-  else if (c.t === 'foto') h = b('🎯', 'Encuadre', 'Elegir qué parte de la prenda se ve (se guarda por prenda)', 'disEncuadreAbrir(' + i + ')') + b('↻', 'Otra foto', 'Otra foto de la prenda', 'disFlotFoto(' + i + ')')
+  else if (c.t === 'foto') h = b('👗', 'Modelo', 'Ponerla en una modelo con IA (FASHN · ~US$0,15 la prueba)', 'disModeloAbrir(' + i + ')') + b('🎯', 'Encuadre', 'Elegir qué parte de la prenda se ve (se guarda por prenda)', 'disEncuadreAbrir(' + i + ')') + b('↻', 'Otra foto', 'Otra foto de la prenda', 'disFlotFoto(' + i + ')')
     + sep + b('☀', 'Más luz', 'Más clara', 'disCapaPaso(' + i + ',\'bri\',10)') + b('☾', 'Menos luz', 'Más oscura', 'disCapaPaso(' + i + ',\'bri\',-10)') + b('🔥', 'Cálida', 'Más cálida', 'disFlotCal(' + i + ',8)') + b('❄️', 'Fría', 'Más fría', 'disFlotCal(' + i + ',-8)')
     + sep + b('✂', c.sinfondo ? 'Con fondo' : 'Sin fondo', c.sinfondo ? 'Volver a poner el fondo' : 'Quitar el fondo', 'disCapaSet(' + i + ',\'sinfondo\',' + (c.sinfondo ? 'false' : 'true') + ')');
   else if (c.t === 'forma' || c.t === 'degradado') h = cols('color') + sep + b('◐', 'Más clara', 'Más transparente', 'disFlotOp(' + i + ',-0.1)') + b('●', 'Más sólida', 'Más sólida', 'disFlotOp(' + i + ',0.1)');
   else if (c.t === 'logo') h = b('A', 'Auto', 'El logo elige su color según el fondo', 'disCapaSet(' + i + ',\'color\',\'auto\')') + cols('color');
-  return h + sep + b('⇡', 'Adelante', 'Traer al frente', 'disCapaExtremo(' + i + ',true)') + b('⇣', 'Atrás', 'Mandar al fondo', 'disCapaExtremo(' + i + ',false)') + b('⧉', 'Duplicar', 'Duplicar (Ctrl+D)', 'disCapaDuplicar(' + i + ')') + b('🗑', 'Quitar', 'Quitar (Supr)', 'disCapaQuitar(' + i + ')');
+  return h + sep + b('⇡', 'Adelante', 'Traer al frente', 'disCapaExtremo(' + i + ',true)') + b('⇣', 'Atrás', 'Mandar al fondo', 'disCapaExtremo(' + i + ',false)') + b('⧉', 'Duplicar', 'Duplicar (Ctrl+D)', 'disCapaDuplicar(' + i + ')') + b('⋯', 'Más', 'Más opciones: copiar estilo, alinear, girar, bloquear… (también clic derecho)', 'disMenuAbrir(' + i + ')') + b('🗑', 'Quitar', 'Quitar (Supr)', 'disCapaQuitar(' + i + ')');
 }
 function _disFlotPintar(){
   const lz = document.getElementById('disEdLienzo'); if (!lz) return; const v = lz.querySelector('.dis-flot'); if (v) v.remove();
