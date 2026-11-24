@@ -199,6 +199,7 @@ table.g td.ag{background:rgba(239,68,68,.12)}table.g.lote{margin:4px 0 8px}table
 
 <div id="mNueva" class="modal" onclick="if(event.target===this)cerrar('mNueva')"><div class="box">
   <button class="x" title="Cerrar" onclick="cerrar('mNueva')">✕</button><h2 id="nTit">＋ Nueva producción</h2>
+  <div id="nTipoChips"></div>
   <div class="f">
     <div><label>Producto</label><input id="nDis" list="lDis" placeholder="BLAZER MIRELLA" oninput="nProducto();nFechaSug()"><datalist id="lDis"></datalist></div>
     <div id="nTipoW" style="display:none"><label>Tipo</label><select id="nTipo" onchange="nFechaSug()"><option value="reposicion">Reposición</option><option value="nuevo">Nuevo</option><option value="compra">Compra</option></select></div>
@@ -374,6 +375,8 @@ function aplicarTablero(T){
   if (T.admin != null){ MAT_ADMIN = !!T.admin;  MATS = T.materiales || []; const b = document.getElementById('btnMat'); if (b) b.style.display = MAT_ADMIN ? '' : 'none';
     const dl = document.getElementById('lMatLib'); if (dl) dl.innerHTML = MATS.filter(m => m.activo).map(m => '<option value="' + esc(m.nombre) + '">' + esc([m.proveedor, m.unidad, S2(m.precio)].filter(Boolean).join(' · ')) + '</option>').join(''); }
   D.ordenes.forEach(x => { if (!x.cerrada) x.etapa = etapaActual(x); });
+  if (!D._plzPedido){ D._plzPedido = 1; plzCargar(); }   /* 24-nov · plantillas de plazos por tipo de prenda */
+  { const fv = document.getElementById('fVer'); if (fv && MAT_ADMIN && !fv.querySelector('option[value="plazos"]')) fv.insertAdjacentHTML('beforeend', '<option value="plazos">⏱ Plazos por prenda</option>'); }
 }
 async function cargarViejo(){
   const [o, l, m] = await Promise.all([ sb('/rest/v1/prod_ordenes?select=*&order=id.desc'), sb('/rest/v1/prod_lineas?select=*'), sb('/rest/v1/prod_movs?select=*&order=id') ]);
@@ -436,6 +439,7 @@ function pintar(){
   const el = document.getElementById('tablero');
   try { obsFlot(); } catch (_) {}
   if (ver === 'talleres'){ el.innerHTML = talleresHtml(ta); return; }
+  if (ver === 'plazos'){ el.className = ''; el.innerHTML = plazosAdminHtml(); return; }   /* 24-nov (Pablo) */
   if (ver === 'costos'){ el.innerHTML = costosResHtml(); return; }
   const L = D.ordenes.filter(o => (ver === 'cerradas' ? o.cerrada : !o.cerrada) && (!ta || o.taller === ta));
   if (ver === 'resumen'){   /* 5-nov (Pablo) · abiertas siempre + cerradas del período elegido (las cerradas al final) */
@@ -520,12 +524,65 @@ function plazosDe(o){ const z = (o && o.fechas || {}).plazos; return z && /^\d{4
 function plazoFechas(z){ let f = z.inicio; return z.d.map(n => (f = masD(f, Math.max(0, Math.round(+n || 0))))); }
 function plazosSug(o){   /* órdenes sin plazos: se arman con sus fechas de hoy, para no mover nada */
   const z = plazosDe(o); if (z) return { inicio: z.inicio, d: z.d.map(n => +n || 0) };
-  const ini = String(o && o.creado || iso(hoy0())).slice(0, 10), P = o ? planes(o) : {};
-  if (!P.p1) return { inicio: ini, d: PLAZO_PASOS.map((x, i) => i === 2 ? (+(o && o.dias_taller) || talDias(o && o.taller) || x[2]) : x[2]) };
+  const ini0 = String(o && o.creado || iso(hoy0())).slice(0, 10), P = o ? planes(o) : {}, ini = P.p1 && P.p1 < ini0 ? P.p1 : ini0;
+  if (!P.p1) return { inicio: ini, d: plazosTipo(o && o.diseno, o && o.taller) };
   return { inicio: ini, d: [Math.max(0, difD(P.p1, ini)), Math.max(0, difD(P.p2, P.p1)), Math.max(0, difD(P.p3, P.p2)), Math.max(0, difD(P.p4, P.p3))] };
+}
+/* 24-nov (Pablo) · PLANTILLA DE PLAZOS por TIPO de prenda (primera palabra: BLAZER, BLUSA, PANTALON…), como el calendario «Time & Action»
+   de los sistemas de moda y los plazos estándar de SAP. La pone administración en «⏱ Plazos»; sin plantilla: confección = lo que tarda ese taller. */
+const tipoPrenda = d => nrm(d || '').split(' ')[0] || '';
+function plazosTipo(dis, taller){
+  const T = D.plz && D.plz[tipoPrenda(dis)]; if (T && Array.isArray(T.d) && T.d.length === 4) return T.d.map(n => +n || 0);
+  const d = PLAZO_PASOS.map(x => x[2]), td = taller ? talDias(taller) : 0; if (td) d[2] = td; return d;
+}
+async function plzCargar(){ try { const r = await sb('/rest/v1/prod_plazos_tipo?select=*'); D.plz = {}; (Array.isArray(r) ? r : []).forEach(x => { D.plz[x.tipo] = x; }); } catch (_) { D.plz = D.plz || {}; } }
+function plzReal(tipo){   /* lo que de verdad tardaron las órdenes de ese tipo (mediana): inicio → en stock, y días del taller */
+  const med = a => { a = a.filter(x => x >= 0).sort((x, y) => x - y); return a.length ? a[Math.floor(a.length / 2)] : null; }, tot = [], tal = [];
+  (D.ordenes || []).filter(o => tipoPrenda(o.diseno) === tipo).forEach(o => { const S = pasosOrden(o); if (!S[3]) return;
+    if (S[3].hecho && S[3].real && o.creado) tot.push(difD(S[3].real, String(o.creado).slice(0, 10)));
+    if (S[2].hecho && S[2].real && o.fecha_taller) tal.push(difD(S[2].real, o.fecha_taller)); });
+  return { total: med(tot), taller: med(tal), n: tot.length };
+}
+function plazosAdminHtml(){
+  if (!MAT_ADMIN) return '<div class="vacio">Solo administración.</div>';
+  const tipos = [...new Set(Object.keys(D.prod || {}).concat((D.ordenes || []).map(o => o.diseno)).map(tipoPrenda).filter(Boolean))].sort();
+  return '<div class="mu" style="font-size:12px;margin:0 0 8px">Días que toma cada paso según el tipo de prenda. Se sugieren al crear una producción (se pueden cambiar en cada orden).</div>'
+    + '<table class="g"><tr><th style="text-align:left">Tipo de prenda</th>' + PLAZO_PASOS.map(p => '<th>' + esc(p[0]) + '<br><small style="font-weight:400">' + p[1] + '</small></th>').join('') + '<th>Total</th><th>Real hoy</th><th></th></tr>'
+    + tipos.map(t => { const d = plazosTipo(t), R = plzReal(t), id = 'pz_' + t.replace(/[^A-Z0-9]/g, '');
+      return '<tr><td style="text-align:left"><b>' + esc(t) + '</b>' + (D.plz && D.plz[t] ? '' : ' <span class="mu" style="font-size:11px">(sugerido)</span>') + '</td>'
+        + d.map((n, i) => '<td><input type="number" min="0" max="120" id="' + id + '_' + i + '" value="' + n + '" style="width:56px" oninput="document.getElementById(\'' + id + '_g\').style.display=\'\'"></td>').join('')
+        + '<td><b>' + d.reduce((a, n) => a + n, 0) + '</b></td><td class="mu" title="Mediana de las órdenes de este tipo: desde que se creó hasta que llegó al stock · días del taller">' + (R.total != null ? R.total + ' d' : '—') + (R.taller != null ? ' · taller ' + R.taller + ' d' : '') + (R.n ? ' (' + R.n + ')' : '') + '</td>'
+        + '<td><button id="' + id + '_g" style="display:none" onclick="plazosAdminGuardar(\'' + qs(t) + '\',\'' + id + '\')">💾</button></td></tr>'; }).join('') + '</table>';
+}
+async function plazosAdminGuardar(t, id){
+  const d = [0, 1, 2, 3].map(i => Math.max(0, Math.round(+((document.getElementById(id + '_' + i) || {}).value) || 0)));
+  try { const r = await rpc('prod_plazos_tipo_guardar', { p_tipo: t, p_d: d }); if (!r || r.ok === false) throw new Error((r && r.error) || 'no se guardó');
+    D.plz = D.plz || {}; D.plz[t] = { tipo: t, d }; aviso('✓ Plazos de ' + t + ' guardados'); pintar(); }
+  catch (e) { aviso(/prod_plazos_tipo|PGRST202|404/.test(String(e.message)) ? 'Falta pegar el SQL de plantillas de plazos (24-nov).' : e.message); }
+}
+/* tipo de producción elegido PRIMERO en ➕ Nueva producción (Pablo, 24-nov) */
+function nTipoChips(){
+  const t = NV && NV.tipoElegido, b = (v, txt) => '<button type="button" class="' + (t === v ? 'p' : '') + '" onclick="nTipoElegir(\'' + v + '\')">' + txt + '</button>';
+  return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px"><b style="font-size:14px;font-weight:600">¿Qué vas a producir?</b> ' + b('nuevo', '🆕 Prenda nueva') + b('reposicion', '🔁 Reposición')
+    + (t === 'nuevo' ? ' <span class="mu" style="font-size:12px">¿Aún no existe el producto?</span> <button type="button" onclick="crearProducto(\'\')">➕ Crearlo en 📦 Productos</button>' : '')
+    + (!t ? ' <span class="mu" style="font-size:12px">Elige primero para ver solo esos productos</span>' : '') + '</div>';
+}
+function nTipoElegir(t){
+  NV.tipoElegido = t; const sel = document.getElementById('nTipo'); if (sel) sel.value = t;
+  const fichas = Object.keys(D.prod || {}).filter(k => { const a = nTipoAuto(k); return t === 'nuevo' ? a === 'nuevo' : a !== 'nuevo'; }).sort();
+  const dl = document.getElementById('lDis'); if (dl) dl.innerHTML = fichas.map(x => '<option value="' + esc(x) + '">').join('');
+  const inp = document.getElementById('nDis'); if (inp){ inp.disabled = false; inp.placeholder = fichas.length ? fichas.length + ' productos · escribe para buscar' : 'No hay productos de este tipo'; }
+  const c = document.getElementById('nTipoChips'); if (c) c.innerHTML = nTipoChips(); try { nFechaSug(); } catch (_) {}
+}
+function plzRefrescarNueva(){   /* al elegir producto o taller: los días salen de la plantilla de ese tipo (si no los tocaste) */
+  if (!NV || NV.id || NV.plzMano) return; const pb = document.getElementById('nPzBox'); if (!pb) return;
+  const z0 = plzLeer('nPz') || { inicio: iso(hoy0()) }, S0 = (document.getElementById('nPzS') || {}).value, z = { inicio: z0.inicio, d: plazosTipo((document.getElementById('nDis') || {}).value, (document.getElementById('nTaller') || {}).value) };
+  if (PLZ_ANCLA.nPz === 'S' && S0) z.inicio = masD(S0, -z.d.reduce((a, n) => a + n, 0));
+  pb.innerHTML = plzHtml(z, true, 'nPz'); plzCambio('nPz');
 }
 function estadoOrden(S){
   const hoy = iso(hoy0()); let d = null;
+  if (S[3] && S[3].hecho && S[3].real && S[3].plan) return difD(S[3].real, S[3].plan);   /* la confección termina en el paso 4: su atraso es el final */
   for (let j = 0; j < 4; j++){ const x = S[j]; if (!x) break;
     if (x.hecho){ if (x.real && x.plan) d = difD(x.real, x.plan); continue; }
     if (x.plan && x.plan < hoy) d = Math.max(d == null ? 0 : d, difD(hoy, x.plan)); else if (d == null && x.plan) d = 0;
@@ -536,14 +593,23 @@ const estadoSem = d => d == null ? '—' : d < EST_AMARILLO ? sem('ok', 'a tiemp
 function plzHtml(z, ed, pre){   /* pre = prefijo de ids: nPz (Nueva producción) u oPz (orden abierta) */
   const F = plazoFechas(z), dis = ed ? '' : ' disabled', tot = z.d.reduce((a, n) => a + (+n || 0), 0);
   return '<div class="plz" style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">'
-    + '<label style="margin:0">Inicio<br><input type="date" id="' + pre + 'I" value="' + esc(z.inicio) + '" style="width:130px" oninput="plzCambio(\'' + pre + '\')"' + dis + '></label>'
-    + PLAZO_PASOS.map((p, i) => '<label style="margin:0" title="Responsable: ' + p[1] + '">' + esc(p[0]) + ' <span class="mu" style="font-size:11px">(' + p[1] + ')</span><br><input type="number" min="0" max="120" id="' + pre + i + '" value="' + (+z.d[i] || 0) + '" style="width:60px" oninput="plzCambio(\'' + pre + '\')"' + dis + '> <span class="mu" style="font-size:12px" id="' + pre + 'F' + i + '">días · ' + fD(F[i]) + '</span></label>').join('')
-    + '<span style="font-size:13px" id="' + pre + 'T">📅 Fecha proyectada <b>' + fD(F[3]) + '</b> · ' + tot + ' días</span></div>';
+    + '<label style="margin:0">Inicio<br><input type="date" id="' + pre + 'I" value="' + esc(z.inicio) + '" style="width:130px" oninput="plzCambio(\'' + pre + '\',\'I\')"' + dis + '></label>'
+    + PLAZO_PASOS.map((p, i) => '<label style="margin:0" title="Responsable: ' + p[1] + '">' + esc(p[0]) + ' <span class="mu" style="font-size:11px">(' + p[1] + ')</span><br><input type="number" min="0" max="120" id="' + pre + i + '" value="' + (+z.d[i] || 0) + '" style="width:60px" oninput="plzCambio(\'' + pre + '\',\'d\')"' + dis + '> <span class="mu" style="font-size:12px" id="' + pre + 'F' + i + '">días · ' + fD(F[i]) + '</span></label>').join('')
+    + '<label style="margin:0" title="Pon la fecha en que debe estar en stock y el ERP calcula hacia atrás cuándo empezar">🎯 En stock el<br><input type="date" id="' + pre + 'S" value="' + esc(F[3]) + '" style="width:130px" oninput="plzMeta(\'' + pre + '\')"' + dis + '></label>'
+    + '<span style="font-size:13px" id="' + pre + 'T">' + tot + ' días en total</span></div>';
 }
 function plzLeer(pre){ const I = document.getElementById(pre + 'I'); if (!I || !I.value) return null; return { inicio: I.value, d: [0, 1, 2, 3].map(i => Math.max(0, Math.round(+((document.getElementById(pre + i) || {}).value) || 0))) }; }
-function plzCambio(pre){ const z = plzLeer(pre); if (!z) return; const F = plazoFechas(z);
+const PLZ_ANCLA = {};   /* 'S' = se fijó la fecha En stock (cálculo hacia atrás) · 'I' = se fijó el inicio */
+function plzMeta(pre){ const S = (document.getElementById(pre + 'S') || {}).value, z = plzLeer(pre); if (!S || !z) return; PLZ_ANCLA[pre] = 'S';
+  const I = document.getElementById(pre + 'I'); if (I) I.value = masD(S, -z.d.reduce((a, n) => a + n, 0)); plzCambio(pre); }
+function plzCambio(pre, src){
+  if (src === 'I') PLZ_ANCLA[pre] = 'I';
+  if (src === 'd' && pre === 'nPz' && NV) NV.plzMano = true;
+  if (src === 'd' && PLZ_ANCLA[pre] === 'S'){ const S = (document.getElementById(pre + 'S') || {}).value, z0 = plzLeer(pre), I = document.getElementById(pre + 'I'); if (S && z0 && I) I.value = masD(S, -z0.d.reduce((a, n) => a + n, 0)); }
+  const z = plzLeer(pre); if (!z) return; const F = plazoFechas(z);
+  { const Se = document.getElementById(pre + 'S'); if (Se && document.activeElement !== Se) Se.value = F[3]; }
   F.forEach((f, i) => { const e = document.getElementById(pre + 'F' + i); if (e) e.textContent = 'días · ' + fD(f); });
-  const t = document.getElementById(pre + 'T'); if (t) t.innerHTML = '📅 Fecha proyectada <b>' + fD(F[3]) + '</b> · ' + z.d.reduce((a, n) => a + n, 0) + ' días';
+  const t = document.getElementById(pre + 'T'); if (t) t.innerHTML = z.d.reduce((a, n) => a + n, 0) + ' días en total';
   if (pre === 'nPz'){ const ob = document.getElementById('nObj'); if (ob){ ob.value = F[3]; try { nFechaSug(); } catch (_) {} } }
   else { const b = document.getElementById('oPzG'); if (b) b.style.display = ''; } }
 async function plzGuardar(id, z){ const r = await rpc('prod_orden_plazos', { p_id: id, p_plazos: z }); if (!r || r.ok === false) throw new Error((r && r.error) || 'no se guardaron los plazos'); }
@@ -817,6 +883,7 @@ async function abrirNueva(o, aqui){
   NV = { id: o ? o.id : null, colores: [], q: {}, M: (o && Array.isArray(o.materiales) && o.materiales.length) ? o.materiales.map(m => Object.assign({}, m, { colores: (m.colores || []).slice() })) : null, Msug: false, adPct: o ? o.adelanto_pct : null, lotes: (o && Array.isArray(o.lotes)) ? o.lotes.map(x => Object.assign({}, x)) : [], porLotes: !!(o && Array.isArray(o.lotes) && o.lotes.length) };
   document.getElementById('nTit').textContent = o ? '📝 Pedido ' + o.codigo : '＋ Nueva producción';
   document.getElementById('nDis').value = o ? o.diseno : ''; document.getElementById('nTipo').value = o ? o.tipo : 'reposicion';
+  { const c = document.getElementById('nTipoChips'), inp = document.getElementById('nDis'); if (c) c.innerHTML = o ? '' : nTipoChips(); if (inp) inp.disabled = !o && !NV.tipoElegido; }   /* 24-nov (Pablo) · primero: ¿prenda nueva o reposición? */
   document.getElementById('nTaller').value = o ? (o.taller || '') : ''; document.getElementById('nTela').value = o ? (o.tela || '') : '';
   document.getElementById('nFecha').value = o ? (o.fecha_venta || '') : ''; { const ob = document.getElementById('nObj'); if (ob) ob.value = o ? (o.fecha_objetivo || '') : ''; const pb = document.getElementById('nPzBox'); if (pb){ pb.innerHTML = plzHtml(plazosSug(o || null), true, 'nPz'); plzCambio('nPz'); } } document.getElementById('nCosto').value = o && o.costo_unit != null ? o.costo_unit : '';
   document.getElementById('nFTal').value = o ? (o.fecha_taller || '') : ''; document.getElementById('nDias').value = o && o.dias_taller != null ? o.dias_taller : '';
@@ -869,10 +936,11 @@ async function nuevaDesdeEscala(Px){
   try { localStorage.removeItem('prod_prefill_v1'); } catch (_) {}
   if (!P || !P.diseno) return false;
   await abrirNueva(null);
-  document.getElementById('nDis').value = P.diseno; document.getElementById('nTipo').value = 'reposicion';
+  nTipoElegir('reposicion'); document.getElementById('nDis').value = P.diseno; document.getElementById('nTipo').value = 'reposicion';
   NV.colores = (P.colores || []).slice(); NV.q = Object.assign({}, P.q || {}); { const ob = document.getElementById('nObj'); if (ob && P.objetivo) ob.value = P.objetivo; }   /* 5-nov · Escalamiento manda la fecha objetivo */
   if (P.rojas && P.sug) { try { const pd = partirFicha(P.diseno), F = await rpc('prod_stock_hoy', { p_prenda: pd.prenda, p_diseno: pd.diseno }); Object.assign(NV.q, repoTallasRojas(F, P.sug)); } catch (_) {} }
   nProducto(true); nFechaSug();
+  if (P.objetivo){ const S = document.getElementById('nPzS'); if (S){ S.value = P.objetivo; plzMeta('nPz'); } }   /* 24-nov · Escalamiento manda la fecha En stock: se calcula hacia atrás */
   const n = document.getElementById('nNotas'); if (n && !n.value) n.value = 'Cantidades sugeridas por ' + (P.origen || 'Escalamiento') + (P.rojas ? ', repartidas en las tallas agotadas según lo que vendió cada una' : '') + ' (revisar antes de guardar).';
   return true;
 }
@@ -913,7 +981,7 @@ async function topeGuardar(){
   catch (e) { m.textContent = e.message; m.className = 'err'; }
 }
 function piezasDe(dis){ const k = nrm(dis); return (D.stock || []).filter(x => nrm(x.p + ' ' + x.d) === k); }
-function nCostoSug(){ const nC = document.getElementById('nCosto'); if (!nC || NV.id) return;
+function nCostoSug(){ try { plzRefrescarNueva(); } catch (_) {}   /* 24-nov · el taller cambia los días de confección sugeridos */ const nC = document.getElementById('nCosto'); if (!nC || NV.id) return;
   const s = sugTallerDe(document.getElementById('nDis').value, document.getElementById('nTaller').value); nC.value = s ? s.v : ''; nC.title = s ? s.de : ''; }
 /* 3-nov (Pablo · F5) · Reposición si la prenda ya tuvo stock u órdenes; si no, Nuevo (pasa por diseño y muestra) */
 function nTipoAuto(nom){ const k = nrm(nom); if (D.prod && D.prod[k] && D.prod[k].tipo_origen === 'comprado') return 'compra';   /* 16-nov · producto que se compra hecho → orden de Compra */
@@ -925,7 +993,9 @@ function nProducto(mantener){
   if (!mantener || !NV.colores.length){ if (P.length) NV.colores = [...new Set(P[0].x.filter(a => (+a[2] || 0) > 0 || (+a[4] || 0) > 0).map(a => String(a[0])))].sort(); }
   const nom = nrm(document.getElementById('nDis').value), ay = document.getElementById('nAyuda');
   nCostoSug();   /* 3-nov (F4) · el costo del taller se sugiere por taller (última vez) o con la ficha */
-  if (!NV.id && nom){ const t = nTipoAuto(nom), sel = document.getElementById('nTipo'); if (sel.value !== t){ sel.value = t; nFechaSug(); } }   /* 3-nov (F5) · Nuevo / Reposición lo decide el ERP */
+  if (!NV.id && nom){ const t = nTipoAuto(nom), sel = document.getElementById('nTipo'); if (sel.value !== t){ sel.value = t; nFechaSug(); }
+    if (NV.tipoElegido && ay && (t === 'nuevo') !== (NV.tipoElegido === 'nuevo') && D.prod && D.prod[nom]) ay.innerHTML = '<span style="color:#fbbf24">⚠ «' + esc(nom) + '» ' + (t === 'nuevo' ? 'nunca se produjo: va como 🆕 Prenda nueva' : 'ya tuvo órdenes: va como 🔁 Reposición') + '</span>'; }
+  try { plzRefrescarNueva(); } catch (_) {}   /* 3-nov (F5) · Nuevo / Reposición lo decide el ERP */
   document.getElementById('lColP').innerHTML = nColoresProducto(nom).map(c => '<option value="' + esc(c) + '">').join('');
   ay.innerHTML = (nom ? '<span class="chip">' + ({ nuevo:'Nuevo', compra:'🛍 Compra' }[document.getElementById('nTipo').value] || 'Reposición') + '</span> ' : '') + esc(P.length ? 'Debajo de cada casilla: hay hoy · vendidas en 90 días.' : 'Producto nuevo (todavía sin stock): agrega sus colores.')
     + (nom && D.prod && !D.prod[nom] ? ' <span class="chip am">Sin ficha</span> <button type="button" onclick="crearProducto(nrm(document.getElementById(\'nDis\').value))">➕ Crear ficha aquí</button>' : '');
