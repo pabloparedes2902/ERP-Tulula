@@ -1101,7 +1101,8 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         </div>
         <!-- 24-nov-2026 (Pablo) · Agencia Shalom: aparece solo con courier SHALOM -->
         <div class="fr" id="np-ag-wrap" style="display:none">
-          <div class="fg" style="flex:1"><label>Agencia Shalom</label><input id="np-ag" type="text" list="np-ag-list" autocomplete="off" placeholder="Escribe ciudad, distrito o calle de la agencia..." oninput="_npShAgElegir()"><datalist id="np-ag-list"></datalist></div>
+          <div class="fg" style="flex:1"><label>Agencia Shalom</label><select id="np-ag-sel" onchange="_npShAgElegirSel()" onfocus="_npShAgPorDistrito()"><option value="">— Elige primero el distrito de la clienta —</option></select></div>
+          <div class="fg"><label>Buscar en todo el Perú</label><input id="np-ag" type="text" list="np-ag-list" autocomplete="off" placeholder="Ciudad o calle..." oninput="_npShAgElegir()"><datalist id="np-ag-list"></datalist></div>
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
           <button class="btn bg" id="btn-limpiar">Limpiar</button>
@@ -28355,10 +28356,11 @@ function _npShalomDestino(){
   } else if (obs === TXT) o.value = '';
   try { if (typeof npCalc === 'function') npCalc(); } catch(_){}
 }
-/* 24-nov-2026 (Pablo) · AGENCIA SHALOM: con courier SHALOM aparece el buscador de agencias (erp.shalom_agencias, la base
-   la actualiza sola cada noche desde shalom-api.lat). Al elegir una: Dirección = «SHALOM AGENCIA …», Distrito/Provincia/Región
-   de la agencia (por el mismo ubigeo del ERP) y Referencia = dirección real de la agencia + horario. */
-let _shAg = null;
+/* 24-nov-2026 (Pablo) · AGENCIA SHALOM: con courier SHALOM la asesora elige el distrito y el ERP trae las agencias de ese
+   distrito (luego las de la provincia y la región, por si en su distrito no hay). Catálogo: erp.shalom_agencias, la base lo
+   actualiza sola cada noche desde shalom-api.lat. Al elegir: Dirección = «SHALOM AGENCIA …», Distrito de la agencia,
+   Referencia = dirección real + horario, y el código de la agencia se guarda aparte (erp.pedido_agencia) al crear el pedido. */
+let _shAg = null, _npShAgSel = null;
 async function _shAgCargar(){
   if (_shAg && _shAg.length) return _shAg;
   try { const c = JSON.parse(localStorage.getItem('sh_ag_v1') || 'null'); if (c && Date.now() - c.t < 12 * 36e5 && c.d && c.d.length) { _shAg = c.d; return _shAg; } } catch(_){}
@@ -28371,30 +28373,74 @@ async function _shAgCargar(){
   } catch(_) { return []; }
   return _shAg || [];
 }
+const _shN = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
+const _SH_ALIAS = { 'NAZCA': 'NASCA' };
+let _shUbiK = null;
+/* Distrito del ERP (llave de UBI) de cada agencia: Shalom corta nombres («JOSE CRESPO Y CASTIL»), usa guiones distintos y paréntesis. 567 de 570 medidas el 24-nov. */
+function _shAgDist(a){
+  if (a._dk !== undefined) return a._dk;
+  if (!_shUbiK) _shUbiK = Object.keys(UBI).map(k => ({ k, n: _shN(k.replace(/_[A-Z]+$/, '')), p: _shN(UBI[k][0]), r: _shN(UBI[k][1]) }));
+  const pv = _shN(a.provincia), dp = _shN(a.departamento), z = _shN(a.zona);
+  const al = x => _SH_ALIAS[x] || x;
+  const cands = [z, _shN(z.replace(/\(.*?\)/g, '')), ...((z.match(/\(([^)]*)\)/) || []).slice(1).map(_shN)), _shN(z.replace(/^(BAJO|ALTO|CIUDAD DE|PUERTO) /, ''))].filter(Boolean).map(al);
+  const zona = _shUbiK.filter(x => x.p === al(pv) || x.p === pv || x.r === dp);
+  const uno = m => { if (!m.length) return null; const f = m[0]; return m.every(x => x.p === f.p && x.r === f.r) ? f.k : null; };
+  let k = null;
+  for (const c of cands) { k = uno(zona.filter(x => x.n === c && (x.p === pv || x.p === al(pv)))) || uno(zona.filter(x => x.n === c)); if (k) break; }
+  if (!k) for (const c of cands) { if (c.length >= 8) { k = uno(zona.filter(x => x.n.startsWith(c) || (c.startsWith(x.n) && x.n.length >= 5))); if (k) break; } }
+  if (!k) k = uno(zona.filter(x => x.n === al(pv)));
+  a._dk = k; return k;
+}
 function _shAgEtq(a){ return [a.departamento, a.provincia, a.zona].filter(Boolean).join(' · ') + ' — ' + (a.direccion || '') + ' [' + a.ter_id + ']'; }
 function _shAgNombre(a){
   const p = String(a.nombre || '').split('/').map(x => x.trim()).filter(Boolean), ult = p.length ? p[p.length - 1] : String(a.direccion || '');
   return ('SHALOM AGENCIA ' + (a.zona ? a.zona + ' - ' : '') + ult).toUpperCase();
 }
 function _shAgRef(a){ return [a.direccion, a.hora_atencion, a.hora_domingo ? 'Domingo: ' + a.hora_domingo : ''].filter(Boolean).join(' · '); }
+const _shEsc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 async function _npShAgMostrar(){
   const w = document.getElementById('np-ag-wrap'), c = document.getElementById('np-courier'); if (!w || !c) return;
   const sh = /^SHALOM$/i.test(String(c.value || '').trim()); w.style.display = sh ? '' : 'none'; if (!sh) return;
-  const dl = document.getElementById('np-ag-list'); if (!dl || dl.childElementCount) return;
   const L = await _shAgCargar();
   if (!L.length) { try { toast('Agencias Shalom: no se pudo cargar la lista. Escribe la agencia a mano en Dirección.', 'warn'); } catch(_){} return; }
-  dl.innerHTML = L.map(a => '<option value="' + _shAgEtq(a).replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '"></option>').join('');
+  const dl = document.getElementById('np-ag-list');
+  if (dl && !dl.childElementCount) dl.innerHTML = L.map(a => '<option value="' + _shEsc(_shAgEtq(a)) + '"></option>').join('');
+  _npShAgPorDistrito();
 }
+/* La lista del desplegable: 1) el distrito elegido, 2) su provincia, 3) su región. Sin distrito: pide elegirlo primero. */
+function _npShAgPorDistrito(){
+  const sel = document.getElementById('np-ag-sel'); if (!sel || !_shAg) return;
+  const dk = String((document.getElementById('np-dist') || {}).value || '').trim(), u = UBI[dk];
+  if (!u) { sel.innerHTML = '<option value="">— Elige primero el distrito de la clienta —</option>'; return; }
+  const pv = _shN(u[0]), rg = _shN(u[1]), D = [], P = [], R = [];
+  _shAg.forEach(a => { const k = _shAgDist(a); if (k === dk) D.push(a); else if (k && UBI[k] && _shN(UBI[k][0]) === pv && _shN(UBI[k][1]) === rg) P.push(a); else if (_shN(a.departamento) === rg || (k && UBI[k] && _shN(UBI[k][1]) === rg)) R.push(a); });
+  const op = a => '<option value="' + _shEsc(a.ter_id) + '"' + (_npShAgSel === String(a.ter_id) ? ' selected' : '') + '>' + _shEsc((a.zona || '') + ' — ' + (a.direccion || '')) + '</option>';
+  const g = (t, A) => A.length ? '<optgroup label="' + _shEsc(t) + ' (' + A.length + ')">' + A.map(op).join('') + '</optgroup>' : '';
+  const tot = D.length + P.length + R.length;
+  sel.innerHTML = '<option value="">' + (tot ? (D.length ? '— ' + D.length + ' agencia(s) en ' + dk.replace(/_[A-Z]+$/, '') + ' —' : '— No hay agencia en ' + dk.replace(/_[A-Z]+$/, '') + ': elige una cercana —') : '— Sin agencias Shalom en ' + u[1] + ': usa «Buscar en todo el Perú» —') + '</option>'
+    + g('En ' + dk.replace(/_[A-Z]+$/, ''), D) + g('En la provincia ' + u[0], P) + g('Resto de ' + u[1], R);
+}
+function _npShAgPoner(a){
+  if (!a) return; _npShAgSel = String(a.ter_id);
+  const put = (id, v) => { const e = document.getElementById(id); if (e) e.value = v || ''; };
+  put('np-dir', _shAgNombre(a)); put('np-ref', _shAgRef(a));
+  const dk = _shAgDist(a), cur = String((document.getElementById('np-dist') || {}).value || '').trim();
+  if (dk && UBI[dk]) { if (cur !== dk) { put('np-dist', dk); put('np-prov', UBI[dk][0]); put('np-reg', UBI[dk][1]); } }
+  else { put('np-dist', a.zona); put('np-prov', a.provincia); put('np-reg', a.departamento); }
+  try { toast(dk ? (cur && cur !== dk ? 'Agencia en ' + dk.replace(/_[A-Z]+$/, '') + ': el Distrito pasó al de la agencia.' : 'Agencia Shalom puesta en Dirección y Referencia.') : 'Agencia puesta. Revisa el Distrito: no está en la lista del ERP.', dk ? 'ok' : 'warn'); } catch(_){}
+}
+function _npShAgElegirSel(){ const s = document.getElementById('np-ag-sel'); if (!s || !s.value || !_shAg) return; _npShAgPoner(_shAg.find(x => String(x.ter_id) === s.value)); }
 function _npShAgElegir(){
   const i = document.getElementById('np-ag'); if (!i || !_shAg) return;
   const m = String(i.value || '').match(/\[([^\]]+)\]\s*$/); if (!m) return;
-  const a = _shAg.find(x => String(x.ter_id) === m[1]); if (!a) return;
-  const put = (id, v) => { const e = document.getElementById(id); if (e) e.value = v || ''; };
-  put('np-dir', _shAgNombre(a)); put('np-ref', _shAgRef(a));
-  const av = []; let ok = false;
-  try { ok = typeof _ppPonerDist === 'function' && _ppPonerDist(a.zona, a.provincia, av); } catch(_){}
-  if (!ok) { put('np-dist', a.zona); put('np-prov', a.provincia); put('np-reg', a.departamento); }
-  try { toast(ok ? 'Agencia Shalom puesta en Dirección, Distrito y Referencia.' : 'Agencia puesta. Revisa el Distrito: ' + (av[0] || 'no está en la lista'), ok ? 'ok' : 'warn'); } catch(_){}
+  _npShAgPoner(_shAg.find(x => String(x.ter_id) === m[1])); i.value = ''; _npShAgPorDistrito();
+}
+/* Después de crear el pedido: guarda qué agencia es (para guías y seguimiento). No frena nada si falla. */
+async function _npShAgGuardar(nro, ter){
+  if (!nro || !ter) return;
+  try { const tk = await _sbSesionAsegurar(); if (!tk) return;
+    await fetch(SB_URL + '/rest/v1/rpc/pedido_agencia_guardar', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: JSON.stringify({ p_nro: String(nro), p_ter: String(ter) }) });
+  } catch(e) { try { _errLog('shalom.agencia', e); } catch(_){} }
 }
 function _waEnvioCero(courier, coment, base){
   const cm = String(coment || ''), sh = /^SHALOM$/i.test(String(courier || '').trim());
@@ -30794,7 +30840,7 @@ async function npInit() {
   // Eventos: botones
   document.getElementById('btn-tel').addEventListener('click', () => npAddTel(false));
   document.getElementById('np-env').addEventListener('input', npCalc);
-  { const _cS = document.getElementById('np-courier'); if (_cS) { _cS.addEventListener('change', _npShalomDestino); _cS.addEventListener('change', _npShAgMostrar); } }   // 13-nov (Pablo): Shalom → paga en destino
+  { const _cS = document.getElementById('np-courier'); if (_cS) { _cS.addEventListener('change', _npShalomDestino); _cS.addEventListener('change', _npShAgMostrar); } } { const _dS = document.getElementById('np-dist'); if (_dS) ['change','blur'].forEach(ev => _dS.addEventListener(ev, () => setTimeout(_npShAgPorDistrito, 150))); }   // 24-nov (Pablo): agencias del distrito   // 13-nov (Pablo): Shalom → paga en destino
   // np-dsc eliminado — descuento no aplica
   document.getElementById('btn-prenda').addEventListener('click', () => { loadCAT(); npAddPrenda(); });
   document.getElementById('btn-pago').addEventListener('click', npAddPago);
@@ -33336,6 +33382,7 @@ async function npGuardar() {
       prendasData: prendasData,
       pagosData: pagosData,
       env: env, dsc: dsc, pag: pag,
+      shAg: (/^SHALOM$/i.test(String(_cliSnap.Courier || '')) && _npShAgSel) ? _npShAgSel : null,   // 24-nov · agencia Shalom elegida
       saldosFavor: (_npSaldos.applyFavor || []).slice(),
       saldosDevs: (_npSaldos.applyDevs || []).slice(),
       saldosPendiente: (_npSaldos.applyPendiente || []).slice(),
@@ -33785,6 +33832,7 @@ async function _npExecuteSave(job) {
   // v15 — aplicar saldos sobre el pedido ORIGEN (no sobre el nuevo: el +X / -X
   // ya viaja como línea de pago real del pedido nuevo, evitando doble conteo).
   if (nuevoNro) await _npAplicarSaldosOrigen(job, nuevoNro, cliBase.FechaPago);
+  if (nuevoNro && job.shAg) _npShAgGuardar(nuevoNro, job.shAg);   // 24-nov · qué agencia Shalom (para guías)
   return nuevoNro;
 }
 
@@ -35402,7 +35450,7 @@ function npLimpiar() {
     _npSaldos.applyPendiente = []; _npSaldos.acked = false; _npSaldos.lastKey = '';
   }
   if (typeof _npCupon === 'object') { _npCupon.tel = ''; _npCupon.lista = []; _npCupon.aplicado = ''; _npCupon.previos = []; const cb = document.getElementById('np-cupon-banner'); if (cb) { cb.style.display = 'none'; cb.innerHTML = ''; } }   // 19-nov
-  ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-cumple','np-obs','np-fenv','np-ag'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; }); { const _w = document.getElementById('np-ag-wrap'); if (_w) _w.style.display = 'none'; }
+  ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-cumple','np-obs','np-fenv','np-ag'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; }); { const _w = document.getElementById('np-ag-wrap'); if (_w) _w.style.display = 'none'; _npShAgSel = null; }
   // el selector de documento vuelve a DNI y el campo se destraba (si quedo en N/A
   // estaba en readOnly, y sin esto el formulario nuevo nacia bloqueado)
   try { _npAplicarTipoDoc('DNI'); } catch (_) {}
