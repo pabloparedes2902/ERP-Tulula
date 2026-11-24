@@ -1099,6 +1099,10 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <div class="fg"><label>Courier</label><select id="np-courier"><option value="">— Seleccionar courier —</option></select></div>
           <div class="fg"><label>Comentario Envío</label><input id="np-obs" type="text" list="np-obs-presets" placeholder="Elige o escribe una nota..."><datalist id="np-obs-presets"><option value="Envío paga en destino"></option><option value="Falta pago"></option></datalist></div>
         </div>
+        <!-- 24-nov-2026 (Pablo) · Agencia Shalom: aparece solo con courier SHALOM -->
+        <div class="fr" id="np-ag-wrap" style="display:none">
+          <div class="fg" style="flex:1"><label>Agencia Shalom</label><input id="np-ag" type="text" list="np-ag-list" autocomplete="off" placeholder="Escribe ciudad, distrito o calle de la agencia..." oninput="_npShAgElegir()"><datalist id="np-ag-list"></datalist></div>
+        </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
           <button class="btn bg" id="btn-limpiar">Limpiar</button>
           <button class="btn bp" id="btn-guardar">Confirmar pedido</button>
@@ -28351,6 +28355,47 @@ function _npShalomDestino(){
   } else if (obs === TXT) o.value = '';
   try { if (typeof npCalc === 'function') npCalc(); } catch(_){}
 }
+/* 24-nov-2026 (Pablo) · AGENCIA SHALOM: con courier SHALOM aparece el buscador de agencias (erp.shalom_agencias, la base
+   la actualiza sola cada noche desde shalom-api.lat). Al elegir una: Dirección = «SHALOM AGENCIA …», Distrito/Provincia/Región
+   de la agencia (por el mismo ubigeo del ERP) y Referencia = dirección real de la agencia + horario. */
+let _shAg = null;
+async function _shAgCargar(){
+  if (_shAg && _shAg.length) return _shAg;
+  try { const c = JSON.parse(localStorage.getItem('sh_ag_v1') || 'null'); if (c && Date.now() - c.t < 12 * 36e5 && c.d && c.d.length) { _shAg = c.d; return _shAg; } } catch(_){}
+  try {
+    const tk = await _sbSesionAsegurar(); if (!tk) return [];
+    const r = await fetch(SB_URL + '/rest/v1/shalom_agencias?select=ter_id,nombre,zona,provincia,departamento,direccion,hora_atencion,hora_domingo&activa=eq.true&order=departamento,provincia,zona&limit=3000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
+    if (!r.ok) return [];
+    _shAg = await r.json();
+    try { localStorage.setItem('sh_ag_v1', JSON.stringify({ t: Date.now(), d: _shAg })); } catch(_){}
+  } catch(_) { return []; }
+  return _shAg || [];
+}
+function _shAgEtq(a){ return [a.departamento, a.provincia, a.zona].filter(Boolean).join(' · ') + ' — ' + (a.direccion || '') + ' [' + a.ter_id + ']'; }
+function _shAgNombre(a){
+  const p = String(a.nombre || '').split('/').map(x => x.trim()).filter(Boolean), ult = p.length ? p[p.length - 1] : String(a.direccion || '');
+  return ('SHALOM AGENCIA ' + (a.zona ? a.zona + ' - ' : '') + ult).toUpperCase();
+}
+function _shAgRef(a){ return [a.direccion, a.hora_atencion, a.hora_domingo ? 'Domingo: ' + a.hora_domingo : ''].filter(Boolean).join(' · '); }
+async function _npShAgMostrar(){
+  const w = document.getElementById('np-ag-wrap'), c = document.getElementById('np-courier'); if (!w || !c) return;
+  const sh = /^SHALOM$/i.test(String(c.value || '').trim()); w.style.display = sh ? '' : 'none'; if (!sh) return;
+  const dl = document.getElementById('np-ag-list'); if (!dl || dl.childElementCount) return;
+  const L = await _shAgCargar();
+  if (!L.length) { try { toast('Agencias Shalom: no se pudo cargar la lista. Escribe la agencia a mano en Dirección.', 'warn'); } catch(_){} return; }
+  dl.innerHTML = L.map(a => '<option value="' + _shAgEtq(a).replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '"></option>').join('');
+}
+function _npShAgElegir(){
+  const i = document.getElementById('np-ag'); if (!i || !_shAg) return;
+  const m = String(i.value || '').match(/\[([^\]]+)\]\s*$/); if (!m) return;
+  const a = _shAg.find(x => String(x.ter_id) === m[1]); if (!a) return;
+  const put = (id, v) => { const e = document.getElementById(id); if (e) e.value = v || ''; };
+  put('np-dir', _shAgNombre(a)); put('np-ref', _shAgRef(a));
+  const av = []; let ok = false;
+  try { ok = typeof _ppPonerDist === 'function' && _ppPonerDist(a.zona, a.provincia, av); } catch(_){}
+  if (!ok) { put('np-dist', a.zona); put('np-prov', a.provincia); put('np-reg', a.departamento); }
+  try { toast(ok ? 'Agencia Shalom puesta en Dirección, Distrito y Referencia.' : 'Agencia puesta. Revisa el Distrito: ' + (av[0] || 'no está en la lista'), ok ? 'ok' : 'warn'); } catch(_){}
+}
 function _waEnvioCero(courier, coment, base){
   const cm = String(coment || ''), sh = /^SHALOM$/i.test(String(courier || '').trim());
   const pd = /pag[ao]\s+en\s+destino/i.test(cm) || (sh && !/gratis/i.test(cm));
@@ -30749,7 +30794,7 @@ async function npInit() {
   // Eventos: botones
   document.getElementById('btn-tel').addEventListener('click', () => npAddTel(false));
   document.getElementById('np-env').addEventListener('input', npCalc);
-  { const _cS = document.getElementById('np-courier'); if (_cS) _cS.addEventListener('change', _npShalomDestino); }   // 13-nov (Pablo): Shalom → paga en destino
+  { const _cS = document.getElementById('np-courier'); if (_cS) { _cS.addEventListener('change', _npShalomDestino); _cS.addEventListener('change', _npShAgMostrar); } }   // 13-nov (Pablo): Shalom → paga en destino
   // np-dsc eliminado — descuento no aplica
   document.getElementById('btn-prenda').addEventListener('click', () => { loadCAT(); npAddPrenda(); });
   document.getElementById('btn-pago').addEventListener('click', npAddPago);
@@ -35357,7 +35402,7 @@ function npLimpiar() {
     _npSaldos.applyPendiente = []; _npSaldos.acked = false; _npSaldos.lastKey = '';
   }
   if (typeof _npCupon === 'object') { _npCupon.tel = ''; _npCupon.lista = []; _npCupon.aplicado = ''; _npCupon.previos = []; const cb = document.getElementById('np-cupon-banner'); if (cb) { cb.style.display = 'none'; cb.innerHTML = ''; } }   // 19-nov
-  ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-cumple','np-obs','np-fenv'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-cumple','np-obs','np-fenv','np-ag'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; }); { const _w = document.getElementById('np-ag-wrap'); if (_w) _w.style.display = 'none'; }
   // el selector de documento vuelve a DNI y el campo se destraba (si quedo en N/A
   // estaba en readOnly, y sin esto el formulario nuevo nacia bloqueado)
   try { _npAplicarTipoDoc('DNI'); } catch (_) {}
