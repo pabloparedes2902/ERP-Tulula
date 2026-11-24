@@ -1081,32 +1081,34 @@ async function disSerieProd(h){
 function _disSeriePintar(){
   const S = DIS._ser, el = document.getElementById('disSerCols'); if (!S || !el || !S.cx) return;
   const P = (S.cx.portadas || []).filter(o => o.src), cal = +((document.getElementById('disSerCal') || {}).value || 0), usd = (cal ? 0.225 : 0.15) * P.length;
-  el.innerHTML = '<label style="display:flex;gap:8px;align-items:center;margin:4px 0 10px"><input type="checkbox" id="disSerOk"> <span>En las fotos de la prenda se ven <b>bolsillos, botones, cuello y puños</b> (si algo no se ve, la IA lo inventa o lo quita)</span></label>'
+  el.innerHTML = '<div class="ui-nota" style="margin:4px 0 10px">Consejo: haz con la IA <b>un solo color vivo</b> (rojo, verde, azul), márcalo 🎨 Base y pinta los demás gratis. La IA copia lo que se ve en tu foto: si un bolsillo no se ve, no lo pone.</div>'
     + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">' + P.map(o => {
       const r = S.res[o.c] || {};
       return '<div class="dis-tarj" style="padding:8px"><div style="display:flex;gap:6px"><img src="' + disA(_disTam(o.src, 300)) + '" style="width:70px;height:92px;object-fit:cover;border-radius:6px">'
         + (r.url ? '<img src="' + disA(r.url) + '" onclick="window.open(\'' + disA(r.url) + '\')" style="width:110px;height:140px;object-fit:cover;object-position:top;border-radius:6px;cursor:zoom-in">' : '<div class="ui-nota" style="width:110px;display:flex;align-items:center;justify-content:center;text-align:center">' + esc(r.est || 'Sin hacer') + '</div>') + '</div>'
         + '<div class="ui-tot" style="margin-top:6px">' + esc(o.c) + ' ' + _disDEchip(r.despues) + (r.desde ? ' <span class="ui-nota" title="Misma foto que el ' + esc(r.desde) + ', pintada con el color de tu foto">🎨 del ' + esc(r.desde) + '</span>' : '') + '</div>'
         + (r.obj ? '<div style="display:flex;gap:6px;align-items:center;margin-top:4px" title="Color medido en tu foto de la prenda; el mockup se lleva a este color"><span style="width:18px;height:18px;border-radius:4px;background:' + disA(r.obj) + ';display:inline-block"></span><span class="ui-nota">Color de tu foto ' + esc(r.obj) + '</span></div>' : '')
+        + (!r.url && !/…$/.test(r.est || '') ? '<div style="margin-top:6px"><button class="btn on" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Solo este color, con la IA">👗 Hacer este · ~US$' + (cal ? '0,23' : '0,15') + '</button></div>' : '')
         + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacerlo de nuevo (otra pose: 2 créditos)">↻</button><button class="btn' + (S.base === o.c ? ' on' : '') + '" onclick="disSerieBase(\'' + disA(o.c) + '\')" title="Usar este como molde de forma: los demás colores se pintan sobre esta misma foto, gratis">🎨 Base</button><button class="btn" onclick="disCorrAbrir(\'' + disA(o.c) + '\')" title="Dile qué arreglar (botones, bolsillo, solapa…) sobre esta misma foto · 1 crédito">✏️ Corregir</button>' + (r.prev ? '<button class="btn" onclick="disCorrDeshacer(\'' + disA(o.c) + '\')" title="Volver a la versión anterior">↶</button>' : '') + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
     }).join('') + '</div>'
-    + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disSerRes" style="flex:1"></span>' + (S.base && (S.res[S.base] || {}).url ? '<button class="btn on" onclick="disSeriePintar()" title="Misma forma del ' + esc(S.base) + ', color exacto de cada foto">🎨 Pintar los demás desde ' + esc(S.base) + ' · gratis</button>' : '') + '<button class="btn on" onclick="disSerieHacer()">👗 Hacer ' + P.length + ' mockups · ~US$' + usd.toFixed(2).replace('.', ',') + '</button></div>';
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disSerRes" style="flex:1"></span>' + (S.base && (S.res[S.base] || {}).url ? '<button class="btn on" onclick="disSeriePintar()" title="Misma forma del ' + esc(S.base) + ', color exacto de cada foto">🎨 Pintar los demás desde ' + esc(S.base) + ' · gratis</button>' : '') + '<button class="btn" onclick="disSerieHacer()" title="Todos los colores con la IA (lo caro). Mejor: uno solo y 🎨 Pintar los demás">Hacer todos con IA (' + P.length + ') · ~US$' + usd.toFixed(2).replace('.', ',') + '</button></div>';
 }
 async function disSerieUno(color){
   const S = DIS._ser; if (!S || !S.cx) return; const o = (S.cx.portadas || []).find(x => x.c === color); if (!o) return;
-  if (!S.modelo) throw new Error('elige la modelo'); S.res[color] = { est: 'Vistiendo…' }; _disSeriePintar();
+  if (!S.modelo){ const r0 = document.getElementById('disSerRes'); if (r0) r0.textContent = 'Primero elige la modelo.'; return; }
+  if (DIS._serUno) return; DIS._serUno = 1; S.res[color] = { est: 'Vistiendo…' }; _disSeriePintar();
   try {
     const final = +((document.getElementById('disSerCal') || {}).value || 0) === 1;
     const j = await _disFashn({ modo: 'vestir', prenda: o.src, modelo: S.modelo, final }); S.res[color] = { est: 'Igualando color…' }; _disSeriePintar();
     const obj = await _disColorObjetivo(S.p.handle, color, o.src, j.url);
     const f = await _disFashnFiel(j.url, obj); S.res[color] = Object.assign({ obj: obj && obj.hex, objC: obj, usd: j.usd }, f);
   } catch (e) { S.res[color] = { est: 'No se pudo: ' + e.message }; }
+  finally { DIS._serUno = 0; }
   _disSeriePintar();
 }
 async function disSerieHacer(){
   const S = DIS._ser, res = document.getElementById('disSerRes'); if (!S || !S.cx || DIS._serCorre) return;
   if (!S.modelo){ if (res) res.textContent = 'Elige la modelo.'; return; }
-  if (!(document.getElementById('disSerOk') || {}).checked){ if (res) res.textContent = 'Primero confirma que en las fotos se ven todos los detalles.'; return; }
   DIS._serCorre = 1; const P = (S.cx.portadas || []).filter(o => o.src);
   try { for (let k = 0; k < P.length; k++){ const r2 = document.getElementById('disSerRes'); if (r2) r2.textContent = 'Mockup ' + (k + 1) + ' de ' + P.length + '… (~40 s c/u)'; await disSerieUno(P[k].c); } }
   finally { DIS._serCorre = 0; const r3 = document.getElementById('disSerRes'); if (r3) r3.textContent = 'Listo. Revisa cada uno: ΔE en verde = color igual al de tu foto.'; }
@@ -1125,11 +1127,18 @@ async function _disRecolorear(urlBase, objLab){
   for (let y = Math.round(H * 0.4); y < H * 0.55; y += 4) for (let x = Math.round(W * 0.38); x < W * 0.62; x += 4){ const i = y * W + x; if (cand[i] > 0.5 && !vis[i]){ vis[i] = 1; q.push(i); } }
   if (!q.length) throw new Error('no encontré la prenda en la foto base');
   while (q.length){ const i = q.pop(), x = i % W, y = (i / W) | 0; for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j] && cand[j] > 0){ vis[j] = 1; q.push(j); } } }
-  const s = [0, 0, 0]; let n = 0; for (let i = 0; i < N; i++) if (vis[i]){ s[0] += lab[i * 3]; s[1] += lab[i * 3 + 1]; s[2] += lab[i * 3 + 2]; n++; }
+  const s = [0, 0, 0]; let n = 0, s2L = 0; for (let i = 0; i < N; i++) if (vis[i]){ s[0] += lab[i * 3]; s[1] += lab[i * 3 + 1]; s[2] += lab[i * 3 + 2]; s2L += lab[i * 3] ** 2; n++; }
   const m = s.map(v => v / n), Ct = Math.hypot(objLab[1], objLab[2]), Cm = Math.hypot(m[1], m[2]);
-  const kL = Math.max(0.25, Math.min(1.6, (objLab[0] + 8) / (m[0] + 8))), kc = Math.max(0, Math.min(1, (Ct + 4) / (Cm + 4)));   // sombras y pliegues se conservan
+  const sdB = Math.sqrt(Math.max(0, s2L / n - m[0] ** 2)), kc = Math.max(0, Math.min(1, (Ct + 4) / (Cm + 4)));
+  // Matices (Pablo 24-nov: «en el negro tengo que ver bolsillos, solapas, líneas»): la luz grande sigue a TU foto (sd) y el detalle fino
+  // (costuras, tapas, solapas, raya del pantalón) se conserva entero y se refuerza en colores oscuros, donde el ojo lo pierde.
+  const kL = objLab.sd && sdB ? Math.max(0.45, Math.min(1.6, objLab.sd / sdB * 1.15)) : Math.max(0.25, Math.min(1.6, (objLab[0] + 8) / (m[0] + 8)));
+  const kD = 1 + 0.8 * Math.max(0, Math.min(1, (35 - objLab[0]) / 30)), r = Math.max(4, Math.round(W / 140)), SI = new Float64Array((W + 1) * (H + 1)), SC = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++){ let a = 0, c = 0; for (let x = 0; x < W; x++){ const i = y * W + x; if (vis[i]){ a += lab[i * 3]; c++; } SI[(y + 1) * (W + 1) + x + 1] = SI[y * (W + 1) + x + 1] + a; SC[(y + 1) * (W + 1) + x + 1] = SC[y * (W + 1) + x + 1] + c; } }
+  const borroso = i => { const x = i % W, y = (i / W) | 0, x0 = Math.max(0, x - r), y0 = Math.max(0, y - r), x1 = Math.min(W, x + r + 1), y1 = Math.min(H, y + r + 1), g = A => A[y1 * (W + 1) + x1] - A[y0 * (W + 1) + x1] - A[y1 * (W + 1) + x0] + A[y0 * (W + 1) + x0]; return g(SI) / Math.max(1, g(SC)); };
   for (let i = 0; i < N; i++){ if (!vis[i]) continue; const w = cand[i], L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2];
-    const L = objLab[0] + (L0 - m[0]) * kL, A = objLab[1] + (A0 - m[1]) * kc, B = objLab[2] + (B0 - m[2]) * kc, c = _disLab2Rgb(L0 + (L - L0) * w, A0 + (A - A0) * w, B0 + (B - B0) * w);
+    const bl = borroso(i); let L = objLab[0] + (bl - m[0]) * kL + (L0 - bl) * kD; if (L < 3) L = 3 * Math.exp((L - 3) / 3);   // sombras sin aplastar a negro puro
+    const A = objLab[1] + (A0 - m[1]) * kc, B = objLab[2] + (B0 - m[2]) * kc, c = _disLab2Rgb(L0 + (L - L0) * w, A0 + (A - A0) * w, B0 + (B - B0) * w);
     d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
   const ed = new Uint8Array(N);   // borde: mezcla prenda+fondo (2 px) se corre según cuánto tiene de prenda; sin esto queda un filo rojo
   for (let i = 0; i < N; i++){ if (!vis[i]) continue; const x = i % W, y = (i / W) | 0; for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j]) ed[j] = 1; } }
@@ -1138,7 +1147,12 @@ async function _disRecolorear(urlBase, objLab){
   cx.putImageData(id, 0, 0); return new Promise(ok => cv.toBlob(ok, 'image/png'));
 }
 /* Color de tu foto sin otra foto de referencia: centro de la prenda y luego toda la prenda de ese color */
-async function _disColorPropio(url){ const cv = await _disImgCv(url, 600), sem = _disMediana(cv, 0.36, 0.36, 0.28, 0.2); return sem ? (await _disColorDeFoto(url, sem)) || sem : null; }
+async function _disColorPropio(url){
+  const cv = await _disImgCv(url, 600), sem = _disMediana(cv, 0.36, 0.36, 0.28, 0.2); if (!sem) return null;
+  const M = _disMascara(cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data, sem, 30, cv.width); if (!M) return sem;
+  let sw = 0, s1 = 0, s2 = 0; for (let i = 0; i < M.w.length; i++){ const w = M.w[i]; if (!w) continue; const L = M.lab[i * 3]; sw += w; s1 += w * L; s2 += w * L * L; }
+  const r = M.media.slice(); r.sd = sw ? Math.sqrt(Math.max(0, s2 / sw - (s1 / sw) ** 2)) : 0; return r;   // sd = cuánto varía la luz en TU foto (matices)
+}
 function disSerieBase(color){ const S = DIS._ser; if (!S) return; S.base = S.base === color ? '' : color; _disSeriePintar(); }
 async function disSeriePintar(){
   const S = DIS._ser, res = document.getElementById('disSerRes'); if (!S || !S.cx || !S.base || DIS._serCorre) return; const rb = S.res[S.base]; if (!rb || !rb.url) return;
