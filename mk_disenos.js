@@ -1043,11 +1043,18 @@ async function _disCfgSet(clave, valor){ await _mklSb('/rest/v1/rpc/mk_dis_confi
    el color de la MISMA prenda en la foto que se da, medido buscando en ella lo que la IA vistió */
 async function _disColorObjetivo(handle, color, fotoPrenda, urlIA){
   const sem = urlIA ? await _disSemillaResultado(urlIA).catch(() => null) : null;
-  const l = fotoPrenda ? await _disColorDeFoto(fotoPrenda, sem).catch(() => null) : null; return l ? { lab: l, hex: _disLab2Hex(l), de_foto: true } : null;
+  const l = fotoPrenda ? await _disColorDeFoto(fotoPrenda, sem).catch(() => null) : null; if (!l) return null;
+  const p = await _disColorPropio(fotoPrenda).catch(() => null); if (p && p.q && _disDE(p, l) < 12) l.q = p.q;   // curva de luces y sombras de TU foto
+  return { lab: l, hex: _disLab2Hex(l), de_foto: true };
 }
 /* Resultado de la IA → color fiel → guardado. Devuelve {url, antes, despues} */
 async function _disFashnFiel(urlIA, obj){
   if (!obj) return { url: urlIA, antes: null, despues: null };
+  if (obj.lab && obj.lab.q) try {   // Pablo 24-nov: «el rojo no es el rojo, el normal es más intenso» → no solo el promedio: toda la curva de luz
+    const blob = await _disRecolorear(urlIA, obj.lab), u0 = URL.createObjectURL(blob), m0 = await _disColorPropio(urlIA), m1 = await _disColorPropio(u0);
+    const antes = m0 ? _disDE(m0, obj.lab) : null, despues = m1 ? _disDE(m1, obj.lab) : null;
+    const u = await _disSubir(blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes, despues };
+  } catch (_) { /* base no vívida (negro, beige…): ajuste por promedio */ }
   const r = await disColorIgualar(urlIA, obj.lab); if (!r.cambio) return { url: urlIA, antes: r.antes, despues: r.despues };
   const u = await _disSubir(r.blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes: r.antes, despues: r.despues };
 }
@@ -1135,16 +1142,24 @@ async function _disRecolorear(urlBase, objLab){
   const Lb = []; for (let i = 0; i < N; i++) if (vis[i]) Lb.push(lab[i * 3]); Lb.sort((p, q) => p - q);
   const qb = []; for (let k = 0; k <= 100; k++) qb.push(Lb[Math.round(k / 100 * (Lb.length - 1))]);
   const kL0 = Math.max(0.25, Math.min(1.6, (objLab[0] + 8) / (m[0] + 8))), Q = objLab.q;
-  const curva = L => { if (!Q) return objLab[0] + (L - m[0]) * kL0; if (L <= qb[0]) return Q[0] + (L - qb[0]) * 0.3; if (L >= qb[100]) return Q[100] + (L - qb[100]) * 0.3;
+  const curva0 = L => { if (!Q) return objLab[0] + (L - m[0]) * kL0; if (L <= qb[0]) return Q[0] + (L - qb[0]) * 0.3; if (L >= qb[100]) return Q[100] + (L - qb[100]) * 0.3;
     let lo = 0, hi = 100; while (hi - lo > 1){ const mi = (lo + hi) >> 1; if (qb[mi] <= L) lo = mi; else hi = mi; } const t = qb[hi] > qb[lo] ? (L - qb[lo]) / (qb[hi] - qb[lo]) : 0; return Q[lo] + (Q[hi] - Q[lo]) * t; };
+  // tope de pendiente 3: si la tela de la base es muy pareja, un salto mínimo de luz no se vuelve un borde marcado
+  const LUT = new Float32Array(201); for (let k = 0; k <= 200; k++) LUT[k] = curva0(k / 2); for (let k = 1; k <= 200; k++) LUT[k] = Math.min(LUT[k], LUT[k - 1] + 1.5);
+  const curva = L => { if (!Q) return curva0(L); const x = Math.max(0, Math.min(200, L * 2)), k = Math.min(199, x | 0), f = x - k; return LUT[k] + (LUT[k + 1] - LUT[k]) * f; };
+  const r = Math.max(4, Math.round(W / 140)), SI = new Float64Array((W + 1) * (H + 1)), SC = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++){ let a = 0, c = 0; for (let x = 0; x < W; x++){ const i = y * W + x; if (vis[i]){ a += lab[i * 3]; c++; } SI[(y + 1) * (W + 1) + x + 1] = SI[y * (W + 1) + x + 1] + a; SC[(y + 1) * (W + 1) + x + 1] = SC[y * (W + 1) + x + 1] + c; } }
+  const borroso = i => { const x = i % W, y = (i / W) | 0, x0 = Math.max(0, x - r), y0 = Math.max(0, y - r), x1 = Math.min(W, x + r + 1), y1 = Math.min(H, y + r + 1), g = A => A[y1 * (W + 1) + x1] - A[y0 * (W + 1) + x1] - A[y1 * (W + 1) + x0] + A[y0 * (W + 1) + x0]; return g(SI) / Math.max(1, g(SC)); };
+  // la curva se aplica a la luz grande; el detalle fino sigue la pendiente de la curva (0,3-1,2): ni grano manchado ni bordes plomos
   for (let i = 0; i < N; i++){ if (!vis[i]) continue; const w = cand[i], L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2];
-    const L = Math.max(0, curva(L0));
+    const bl = borroso(i), pend = Math.max(0.3, Math.min(1.2, (curva(bl + 1.5) - curva(bl - 1.5)) / 3)), L = Math.max(0, curva(bl) + (L0 - bl) * pend);
     const A = objLab[1] + (A0 - m[1]) * kc, B = objLab[2] + (B0 - m[2]) * kc, c = _disLab2Rgb(L0 + (L - L0) * w, A0 + (A - A0) * w, B0 + (B - B0) * w);
     d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
+  // borde junto a piel/fondo: mezcla proporcional (sin filo verde)
   const ed = new Uint8Array(N);   // borde: mezcla prenda+fondo (2 px) se corre según cuánto tiene de prenda; sin esto queda un filo rojo
   for (let i = 0; i < N; i++){ if (!vis[i]) continue; const x = i % W, y = (i / W) | 0; for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j]) ed[j] = 1; } }
   for (let i = 0; i < N; i++){ if (!ed[i]) continue; const C = Math.hypot(lab[i * 3 + 1], lab[i * 3 + 2]); if (C < 4 || ang(Math.atan2(lab[i * 3 + 2], lab[i * 3 + 1])) > 35) continue;
-    const al = Math.min(1, C / Math.max(1, Cm)), c = _disLab2Rgb(lab[i * 3] + (curva(m[0]) - m[0]) * al, lab[i * 3 + 1] + (objLab[1] - m[1]) * al, lab[i * 3 + 2] + (objLab[2] - m[2]) * al); d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
+    const al = Math.min(1, C / Math.max(1, Cm)), L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2], c = _disLab2Rgb(L0 + (curva(L0) - L0) * al, A0 + (objLab[1] + (A0 - m[1]) * kc - A0) * al, B0 + (objLab[2] + (B0 - m[2]) * kc - B0) * al); d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
   cx.putImageData(id, 0, 0); return new Promise(ok => cv.toBlob(ok, 'image/png'));
 }
 /* Color de tu foto sin otra foto de referencia: centro de la prenda y luego toda la prenda de ese color */
