@@ -1086,11 +1086,11 @@ function _disSeriePintar(){
       const r = S.res[o.c] || {};
       return '<div class="dis-tarj" style="padding:8px"><div style="display:flex;gap:6px"><img src="' + disA(_disTam(o.src, 300)) + '" style="width:70px;height:92px;object-fit:cover;border-radius:6px">'
         + (r.url ? '<img src="' + disA(r.url) + '" onclick="window.open(\'' + disA(r.url) + '\')" style="width:110px;height:140px;object-fit:cover;object-position:top;border-radius:6px;cursor:zoom-in">' : '<div class="ui-nota" style="width:110px;display:flex;align-items:center;justify-content:center;text-align:center">' + esc(r.est || 'Sin hacer') + '</div>') + '</div>'
-        + '<div class="ui-tot" style="margin-top:6px">' + esc(o.c) + ' ' + _disDEchip(r.despues) + '</div>'
+        + '<div class="ui-tot" style="margin-top:6px">' + esc(o.c) + ' ' + _disDEchip(r.despues) + (r.desde ? ' <span class="ui-nota" title="Misma foto que el ' + esc(r.desde) + ', pintada con el color de tu foto">🎨 del ' + esc(r.desde) + '</span>' : '') + '</div>'
         + (r.obj ? '<div style="display:flex;gap:6px;align-items:center;margin-top:4px" title="Color medido en tu foto de la prenda; el mockup se lleva a este color"><span style="width:18px;height:18px;border-radius:4px;background:' + disA(r.obj) + ';display:inline-block"></span><span class="ui-nota">Color de tu foto ' + esc(r.obj) + '</span></div>' : '')
-        + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacerlo de nuevo (otra pose: 2 créditos)">↻</button><button class="btn" onclick="disCorrAbrir(\'' + disA(o.c) + '\')" title="Dile qué arreglar (botones, bolsillo, solapa…) sobre esta misma foto · 1 crédito">✏️ Corregir</button>' + (r.prev ? '<button class="btn" onclick="disCorrDeshacer(\'' + disA(o.c) + '\')" title="Volver a la versión anterior">↶</button>' : '') + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
+        + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacerlo de nuevo (otra pose: 2 créditos)">↻</button><button class="btn' + (S.base === o.c ? ' on' : '') + '" onclick="disSerieBase(\'' + disA(o.c) + '\')" title="Usar este como molde de forma: los demás colores se pintan sobre esta misma foto, gratis">🎨 Base</button><button class="btn" onclick="disCorrAbrir(\'' + disA(o.c) + '\')" title="Dile qué arreglar (botones, bolsillo, solapa…) sobre esta misma foto · 1 crédito">✏️ Corregir</button>' + (r.prev ? '<button class="btn" onclick="disCorrDeshacer(\'' + disA(o.c) + '\')" title="Volver a la versión anterior">↶</button>' : '') + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
     }).join('') + '</div>'
-    + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disSerRes" style="flex:1"></span><button class="btn on" onclick="disSerieHacer()">👗 Hacer ' + P.length + ' mockups · ~US$' + usd.toFixed(2).replace('.', ',') + '</button></div>';
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disSerRes" style="flex:1"></span>' + (S.base && (S.res[S.base] || {}).url ? '<button class="btn on" onclick="disSeriePintar()" title="Misma forma del ' + esc(S.base) + ', color exacto de cada foto">🎨 Pintar los demás desde ' + esc(S.base) + ' · gratis</button>' : '') + '<button class="btn on" onclick="disSerieHacer()">👗 Hacer ' + P.length + ' mockups · ~US$' + usd.toFixed(2).replace('.', ',') + '</button></div>';
 }
 async function disSerieUno(color){
   const S = DIS._ser; if (!S || !S.cx) return; const o = (S.cx.portadas || []).find(x => x.c === color); if (!o) return;
@@ -1110,6 +1110,49 @@ async function disSerieHacer(){
   DIS._serCorre = 1; const P = (S.cx.portadas || []).filter(o => o.src);
   try { for (let k = 0; k < P.length; k++){ const r2 = document.getElementById('disSerRes'); if (r2) r2.textContent = 'Mockup ' + (k + 1) + ' de ' + P.length + '… (~40 s c/u)'; await disSerieUno(P[k].c); } }
   finally { DIS._serCorre = 0; const r3 = document.getElementById('disSerRes'); if (r3) r3.textContent = 'Listo. Revisa cada uno: ΔE en verde = color igual al de tu foto.'; }
+}
+/* 🎨 PINTAR DESDE LA BASE (idea de Pablo 23-nov): el mockup bueno de un color vivo (ej. rojo) se pinta con el color exacto de tu foto.
+   La forma (bolsillos, tapas, botones, basta redondeada) queda idéntica porque es la MISMA foto. Gratis: no usa la IA. */
+async function _disRecolorear(urlBase, objLab){
+  const cv = await _disImgCv(urlBase, 2048), W = cv.width, H = cv.height, cx = cv.getContext('2d'), id = cx.getImageData(0, 0, W, H), d = id.data;
+  const base = _disMediana(cv, 0.36, 0.36, 0.28, 0.2), hb = Math.atan2(base[2], base[1]), Cb = Math.hypot(base[1], base[2]);
+  if (Cb < 20) throw new Error('la base tiene que ser de un color vivo (rojo, verde, azul…), no negro, blanco ni beige');
+  const N = W * H, lab = new Float32Array(N * 3), cand = new Float32Array(N), ang = v => { let x = Math.abs(v - hb); if (x > Math.PI) x = 2 * Math.PI - x; return x * 180 / Math.PI; };
+  for (let i = 0; i < N; i++){ const L = _disRgb2Lab(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); lab[i * 3] = L[0]; lab[i * 3 + 1] = L[1]; lab[i * 3 + 2] = L[2];
+    const C = Math.hypot(L[1], L[2]); if (C < Math.max(8, Cb * 0.4)) continue; if (C < Cb * 0.55 && L[0] > base[0] + 6) continue;   // pelo y piel fuera
+    const dh = ang(Math.atan2(L[2], L[1])); if (dh < 22) cand[i] = dh < 14 ? 1 : (22 - dh) / 8; }
+  const vis = new Uint8Array(N), q = [];   // solo lo pegado al torso: no pinta labios ni nada suelto
+  for (let y = Math.round(H * 0.4); y < H * 0.55; y += 4) for (let x = Math.round(W * 0.38); x < W * 0.62; x += 4){ const i = y * W + x; if (cand[i] > 0.5 && !vis[i]){ vis[i] = 1; q.push(i); } }
+  if (!q.length) throw new Error('no encontré la prenda en la foto base');
+  while (q.length){ const i = q.pop(), x = i % W, y = (i / W) | 0; for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j] && cand[j] > 0){ vis[j] = 1; q.push(j); } } }
+  const s = [0, 0, 0]; let n = 0; for (let i = 0; i < N; i++) if (vis[i]){ s[0] += lab[i * 3]; s[1] += lab[i * 3 + 1]; s[2] += lab[i * 3 + 2]; n++; }
+  const m = s.map(v => v / n), Ct = Math.hypot(objLab[1], objLab[2]), Cm = Math.hypot(m[1], m[2]);
+  const kL = Math.max(0.25, Math.min(1.6, (objLab[0] + 8) / (m[0] + 8))), kc = Math.max(0, Math.min(1, (Ct + 4) / (Cm + 4)));   // sombras y pliegues se conservan
+  for (let i = 0; i < N; i++){ if (!vis[i]) continue; const w = cand[i], L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2];
+    const L = objLab[0] + (L0 - m[0]) * kL, A = objLab[1] + (A0 - m[1]) * kc, B = objLab[2] + (B0 - m[2]) * kc, c = _disLab2Rgb(L0 + (L - L0) * w, A0 + (A - A0) * w, B0 + (B - B0) * w);
+    d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
+  const ed = new Uint8Array(N);   // borde: mezcla prenda+fondo (2 px) se corre según cuánto tiene de prenda; sin esto queda un filo rojo
+  for (let i = 0; i < N; i++){ if (!vis[i]) continue; const x = i % W, y = (i / W) | 0; for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j]) ed[j] = 1; } }
+  for (let i = 0; i < N; i++){ if (!ed[i]) continue; const C = Math.hypot(lab[i * 3 + 1], lab[i * 3 + 2]); if (C < 4 || ang(Math.atan2(lab[i * 3 + 2], lab[i * 3 + 1])) > 35) continue;
+    const al = Math.min(1, C / Math.max(1, Cm)), c = _disLab2Rgb(lab[i * 3] + (objLab[0] - m[0]) * al, lab[i * 3 + 1] + (objLab[1] - m[1]) * al, lab[i * 3 + 2] + (objLab[2] - m[2]) * al); d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
+  cx.putImageData(id, 0, 0); return new Promise(ok => cv.toBlob(ok, 'image/png'));
+}
+/* Color de tu foto sin otra foto de referencia: centro de la prenda y luego toda la prenda de ese color */
+async function _disColorPropio(url){ const cv = await _disImgCv(url, 600), sem = _disMediana(cv, 0.36, 0.36, 0.28, 0.2); return sem ? (await _disColorDeFoto(url, sem)) || sem : null; }
+function disSerieBase(color){ const S = DIS._ser; if (!S) return; S.base = S.base === color ? '' : color; _disSeriePintar(); }
+async function disSeriePintar(){
+  const S = DIS._ser, res = document.getElementById('disSerRes'); if (!S || !S.cx || !S.base || DIS._serCorre) return; const rb = S.res[S.base]; if (!rb || !rb.url) return;
+  DIS._serCorre = 1; const P = (S.cx.portadas || []).filter(o => o.src && o.c !== S.base);
+  try {
+    for (let k = 0; k < P.length; k++){ const o = P[k], prev = S.res[o.c]; if (res) res.textContent = '🎨 Pintando ' + o.c + ' (' + (k + 1) + ' de ' + P.length + ')…';
+      try {
+        const lab = await _disColorPropio(o.src); if (!lab) throw new Error('no pude medir el color de tu foto');
+        const blob = await _disRecolorear(rb.url, lab), u0 = URL.createObjectURL(blob), g = await disColorIgualar(u0, lab), fin = g.cambio ? g.blob : blob;
+        const url = await _disSubir(fin, 'creativos/fashn/' + Date.now().toString(36) + '-pintado.png'), obj = { lab, hex: _disLab2Hex(lab), de_foto: true };
+        S.res[o.c] = { url, obj: obj.hex, objC: obj, antes: g.antes, despues: g.despues, usd: 0, desde: S.base, prev: prev && prev.url ? prev : undefined };
+      } catch (e) { S.res[o.c] = Object.assign({}, prev || {}, { est: 'No se pudo: ' + e.message }); }
+      _disSeriePintar(); }
+  } finally { DIS._serCorre = 0; const r3 = document.getElementById('disSerRes'); if (r3) r3.textContent = 'Listo: todos con la forma del ' + S.base + ' y el color de tu foto. Revisa y aprueba.'; }
 }
 /* ✏️ CORREGIR: arreglos dictados sobre la MISMA foto (FASHN edit, 1 crédito). Después se vuelve a igualar el color a tu foto. */
 function disDictar(tId, bId, resId){
