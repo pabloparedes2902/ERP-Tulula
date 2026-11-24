@@ -1063,26 +1063,63 @@ async function _disFashn(cuerpo){
   const r = await fetch(MK_SB_URL + '/functions/v1/fashn-modelo', { method: 'POST', headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) });
   const j = await r.json().catch(() => ({})); if (!r.ok || !j.ok) throw new Error(j.error || ('respondió ' + r.status)); return j;
 }
-/* ── 👗 MOCKUPS EN SERIE: una prenda, todos sus colores, sobre una modelo del banco ── */
+/* ── 👗 FUSIÓN (Pablo 24-nov: «no es un mockup, es una fusión»): a la izquierda la prenda (de la tienda o tus fotos), a la derecha la modelo ── */
 function disSerieAbrir(){
-  const v = document.getElementById('disSer'); if (v) v.remove(); DIS._ser = { p: null, cx: null, modelo: (DIS.banco || [])[0] || '', res: {} };
+  const v = document.getElementById('disSer'); if (v) v.remove(); DIS._ser = { p: null, cx: null, modelo: (DIS.banco || [])[0] || '', res: {}, subidas: [] };
   const L = (DIS.prods || []).filter(_disActivo).slice().sort((a, b) => String(a.titulo).localeCompare(String(b.titulo)));
-  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disSer" style="z-index:10040"><div class="dis-caja" style="max-width:980px"><div class="dis-cab"><div><div class="ui-pag">👗 Mockups en serie</div><div class="ui-nota">Una prenda, todos sus colores, sobre la misma modelo · color igual al de tu foto · nada se usa sin aprobar</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disSer').remove()") + '</div>'
-    + '<div class="dis-props"><label class="dis-prop" style="min-width:260px"><span class="ui-nota">Prenda</span><select onchange="disSerieProd(this.value)"><option value="">Elige…</option>' + L.map(p => '<option value="' + disA(p.handle) + '">' + esc(p.titulo) + '</option>').join('') + '</select></label>'
-    + '<label class="dis-prop"><span class="ui-nota">Calidad</span><select id="disSerCal"><option value="0">Prueba · ~US$0,15 c/u</option><option value="1">Final 2K · ~US$0,23 c/u</option></select></label></div>'
-    + '<div id="disSerMod"></div><div id="disSerCols" style="margin-top:10px"></div></div></div>');
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disSer" style="z-index:10040"><div class="dis-caja" style="max-width:1040px"><div class="dis-cab"><div><div class="ui-pag">👗 Fusión</div><div class="ui-nota">Junta la foto de la prenda con la foto de la modelo · color igual al de tu foto · nada se usa sin aprobar</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disSer').remove()") + '</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
+    + '<div class="dis-tarj" style="padding:12px"><div class="ui-blo">1 · Prenda</div>'
+    + '<label class="dis-prop" style="margin-top:8px"><span class="ui-nota">De la tienda</span><select id="disSerProd" onchange="disSerieProd(this.value)"><option value="">Elige…</option>' + L.map(p => '<option value="' + disA(p.handle) + '">' + esc(p.titulo) + '</option>').join('') + '</select></label>'
+    + '<div class="ui-nota" style="margin:8px 0 4px">o sube tus fotos (una por color)</div><label class="btn" style="display:inline-flex;gap:6px;align-items:center;cursor:pointer">⬆ Subir fotos de la prenda<input type="file" accept="image/*" multiple style="display:none" onchange="disFusionPrendas(this.files);this.value=\'\'"></label>'
+    + '<div id="disSerSub" style="margin-top:8px"></div></div>'
+    + '<div class="dis-tarj" style="padding:12px"><div style="display:flex;align-items:center;gap:8px"><div class="ui-blo" style="flex:1">2 · Modelo</div><label class="btn" style="display:inline-flex;gap:6px;align-items:center;cursor:pointer">⬆ Subir foto de la modelo<input type="file" accept="image/*" style="display:none" onchange="disFusionModelo(this.files[0]);this.value=\'\'"></label></div><div id="disSerMod" style="margin-top:8px"></div></div></div>'
+    + '<div class="dis-props" style="margin-top:10px"><label class="dis-prop"><span class="ui-nota">Calidad</span><select id="disSerCal" onchange="_disSeriePintar()"><option value="0">Prueba · ~US$0,15 c/u</option><option value="1">Final 2K · ~US$0,23 c/u</option></select></label></div>'
+    + '<div id="disSerCols" style="margin-top:10px"></div></div></div>');
+  _disSeriePintarModelos();
+}
+async function _disFusionSubir(file, tipo){
+  const d = await _disImgB64(file, 1600), blob = await (await fetch(d)).blob();
+  return _disSubir(blob, 'creativos/fusion/' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5) + '-' + tipo + '.jpg');
+}
+/* Fotos propias de la prenda: cada una es un color; el nombre sale del archivo y se puede cambiar */
+async function disFusionPrendas(files){
+  const S = DIS._ser, el = document.getElementById('disSerSub'); if (!S || !files || !files.length) return;
+  const sel = document.getElementById('disSerProd'); if (sel) sel.value = '';
+  if (!S.p || S.p.handle !== '_fusion'){ S.p = { handle: '_fusion', titulo: 'Prenda subida' }; S.cx = { portadas: [] }; S.res = {}; S.subidas = []; }
+  if (el) el.innerHTML = '<span class="ui-nota">Subiendo ' + files.length + ' foto(s)…</span>';
+  for (const f of Array.from(files).slice(0, 10)){
+    try { const src = await _disFusionSubir(f, 'prenda'); let c = String(f.name || 'Color').replace(/\.[a-z0-9]+$/i, '').replace(/[_-]+/g, ' ').trim().slice(0, 24) || 'Color';
+      while (S.cx.portadas.some(o => o.c === c)) c += ' 2'; S.cx.portadas.push({ c, src }); }
+    catch (e) { if (el) el.innerHTML = '<span class="mal">No se pudo subir (' + esc(e.message) + ')</span>'; }
+  }
+  _disFusionPintarSubidas(); _disSeriePintar();
+}
+function _disFusionPintarSubidas(){
+  const S = DIS._ser, el = document.getElementById('disSerSub'); if (!S || !el) return; if (!S.p || S.p.handle !== '_fusion'){ el.innerHTML = ''; return; }
+  el.innerHTML = '<div style="display:flex;gap:8px;flex-wrap:wrap">' + S.cx.portadas.map((o, k) => '<div style="width:92px"><img src="' + disA(o.src) + '" style="width:92px;height:118px;object-fit:cover;border-radius:6px">'
+    + '<input value="' + disA(o.c) + '" title="Nombre del color" onchange="disFusionNombre(' + k + ',this.value)" style="width:92px;margin-top:4px"' + (S.res[o.c] ? ' disabled' : '') + '>'
+    + '<button class="btn" style="width:92px;margin-top:4px" onclick="disFusionQuitar(' + k + ')">✕ Quitar</button></div>').join('') + '</div>';
+}
+function disFusionNombre(k, v){ const S = DIS._ser, o = S && S.cx && S.cx.portadas[k]; if (!o) return; v = String(v || '').trim().slice(0, 24) || o.c; if (S.cx.portadas.some((x, j) => j !== k && x.c === v)) v += ' 2'; o.c = v; _disFusionPintarSubidas(); _disSeriePintar(); }
+function disFusionQuitar(k){ const S = DIS._ser; if (!S || !S.cx) return; const o = S.cx.portadas.splice(k, 1)[0]; if (o) delete S.res[o.c]; _disFusionPintarSubidas(); _disSeriePintar(); }
+async function disFusionModelo(file){
+  const S = DIS._ser; if (!S || !file) return; const el = document.getElementById('disSerMod'); if (el) el.insertAdjacentHTML('afterbegin', '<div class="ui-nota" id="disSerModSub">Subiendo la foto de la modelo…</div>');
+  try { S.modelo = await _disFusionSubir(file, 'modelo'); S.modelosSubidas = [S.modelo].concat(S.modelosSubidas || []); }
+  catch (e) { const r = document.getElementById('disSerRes'); if (r) r.textContent = 'No se pudo subir la modelo: ' + e.message; }
   _disSeriePintarModelos();
 }
 function _disSeriePintarModelos(){
-  const el = document.getElementById('disSerMod'), S = DIS._ser; if (!el || !S) return; const B = DIS.banco || [], extra = [];
-  (DIS.prods || []).filter(_disActivo).slice(0, 30).forEach(p => { const f = _disFotos(p)[0]; if (f && B.indexOf(f) < 0 && extra.indexOf(f) < 0) extra.push(f); });
+  const el = document.getElementById('disSerMod'), S = DIS._ser; if (!el || !S) return; const B = DIS.banco || [], extra = (S.modelosSubidas || []).filter(u => B.indexOf(u) < 0);
+  (DIS.prods || []).filter(p => _disActivo(p) && !/aret|collar|anillo|pulsera|colet|accesor|cartera|bolso|cintur/i.test(String(p.titulo || '') + ' ' + String(p.tipo || p.categoria || ''))).slice(0, 30).forEach(p => {   // solo prendas: las joyas no sirven de modelo
+  const f = _disFotos(p)[0]; if (f && B.indexOf(f) < 0 && extra.indexOf(f) < 0) extra.push(f); });
   const mini = (u, enBanco) => '<span style="position:relative;display:inline-block"><img src="' + disA(_disTam(u, 200)) + '" onclick="DIS._ser.modelo=\'' + disA(u) + '\';_disSeriePintarModelos()" style="width:60px;height:78px;object-fit:cover;object-position:top;border-radius:6px;cursor:pointer;border:2px solid ' + (S.modelo === u ? '#7c5cff' : 'transparent') + '">'
     + '<button type="button" class="dis-ib" title="' + (enBanco ? 'Quitar del banco de modelos' : 'Guardar en el banco de modelos (salen primero siempre)') + '" onclick="disBancoAlternar(\'' + disA(u) + '\')" style="position:absolute;right:-4px;top:-6px;font-size:12px">' + (enBanco ? '⭐' : '☆') + '</button></span>';
-  el.innerHTML = '<div class="ui-nota">Modelo · ⭐ banco de modelos (' + B.length + ') · mejor de frente y cuerpo entero</div><div style="display:flex;gap:6px;flex-wrap:wrap;max-height:180px;overflow:auto;margin-top:6px">' + B.map(u => mini(u, true)).join('') + extra.map(u => mini(u, false)).join('') + '</div>';
+  el.innerHTML = '<div class="ui-nota">Toca una para elegirla · ⭐ la guarda en el banco · mejor de frente y cuerpo entero</div><div style="display:flex;gap:6px;flex-wrap:wrap;max-height:180px;overflow:auto;margin-top:6px">' + B.map(u => mini(u, true)).join('') + extra.map(u => mini(u, false)).join('') + '</div>';
 }
 async function disBancoAlternar(u){ const B = (DIS.banco || []).slice(), i = B.indexOf(u); if (i >= 0) B.splice(i, 1); else B.unshift(u); DIS.banco = B.slice(0, 12); try { await _disCfgSet('banco_modelos', DIS.banco); } catch (_) {} _disSeriePintarModelos(); }
 async function disSerieProd(h){
-  const S = DIS._ser, el = document.getElementById('disSerCols'); if (!S || !el) return; S.p = _disProd(h); S.res = {}; if (!S.p){ el.innerHTML = ''; return; }
+  const S = DIS._ser, el = document.getElementById('disSerCols'); if (!S || !el) return; S.p = _disProd(h); S.res = {}; if (!S.p){ el.innerHTML = ''; return; } _disFusionPintarSubidas();
   el.innerHTML = '<span class="ui-nota">Cargando colores…</span>'; const inf = await disInfo(h); S.cx = disCtx(S.p, inf, '', {}); _disSeriePintar();
 }
 function _disSeriePintar(){
@@ -2093,7 +2130,7 @@ async function disVideoHacer(id, modo){
 async function disVideoABiblioteca(){ const v = DIS._vid; if (!v) return; const m = document.getElementById('disVid'); if (m) m.remove(); await _disABiblioteca([v.file], v.d, v.p); }
 
 /* ══ 21-nov noche (Pablo) · sección más simple: sin título, ⚙️ Configuración (Marca + Fondos) y ➕ Nuevo diseño a la derecha ══ */
-function _disBarraBtns(){ return DIS.puede ? '<button class="btn" onclick="disSerieAbrir()" title="Todos los colores de una prenda sobre la misma modelo, con color fiel">👗 Mockups</button><button class="btn" onclick="disConfigAbrir()">⚙️ Configuración</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : ''; }
+function _disBarraBtns(){ return DIS.puede ? '<button class="btn" onclick="disSerieAbrir()" title="Fusión: junta la foto de la prenda con la foto de la modelo, con el color de tu foto">👗 Fusión</button><button class="btn" onclick="disConfigAbrir()">⚙️ Configuración</button><button class="btn on" onclick="disNuevoAbrir()">➕ Nuevo diseño</button>' : ''; }
 function _disBarraDer(){ return '<div class="dis-barra-der">' + _disBarraBtns() + '</div>'; }
 function disConfigAbrir(){
   const v = document.getElementById('disCfg'); if (v) v.remove();
