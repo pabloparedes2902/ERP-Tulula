@@ -1130,28 +1130,32 @@ async function _disRecolorear(urlBase, objLab){
   const s = [0, 0, 0]; let n = 0, s2L = 0; for (let i = 0; i < N; i++) if (vis[i]){ s[0] += lab[i * 3]; s[1] += lab[i * 3 + 1]; s[2] += lab[i * 3 + 2]; s2L += lab[i * 3] ** 2; n++; }
   const m = s.map(v => v / n), Ct = Math.hypot(objLab[1], objLab[2]), Cm = Math.hypot(m[1], m[2]);
   const sdB = Math.sqrt(Math.max(0, s2L / n - m[0] ** 2)), kc = Math.max(0, Math.min(1, (Ct + 4) / (Cm + 4)));
-  // Matices (Pablo 24-nov: «en el negro tengo que ver bolsillos, solapas, líneas»): la luz grande sigue a TU foto (sd) y el detalle fino
-  // (costuras, tapas, solapas, raya del pantalón) se conserva entero y se refuerza en colores oscuros, donde el ojo lo pierde.
-  const kL = objLab.sd && sdB ? Math.max(0.45, Math.min(1.6, objLab.sd / sdB * 1.15)) : Math.max(0.25, Math.min(1.6, (objLab[0] + 8) / (m[0] + 8)));
-  const kD = 1 + 0.8 * Math.max(0, Math.min(1, (35 - objLab[0]) / 30)), r = Math.max(4, Math.round(W / 140)), SI = new Float64Array((W + 1) * (H + 1)), SC = new Float64Array((W + 1) * (H + 1));
-  for (let y = 0; y < H; y++){ let a = 0, c = 0; for (let x = 0; x < W; x++){ const i = y * W + x; if (vis[i]){ a += lab[i * 3]; c++; } SI[(y + 1) * (W + 1) + x + 1] = SI[y * (W + 1) + x + 1] + a; SC[(y + 1) * (W + 1) + x + 1] = SC[y * (W + 1) + x + 1] + c; } }
-  const borroso = i => { const x = i % W, y = (i / W) | 0, x0 = Math.max(0, x - r), y0 = Math.max(0, y - r), x1 = Math.min(W, x + r + 1), y1 = Math.min(H, y + r + 1), g = A => A[y1 * (W + 1) + x1] - A[y0 * (W + 1) + x1] - A[y1 * (W + 1) + x0] + A[y0 * (W + 1) + x0]; return g(SI) / Math.max(1, g(SC)); };
+  // Luz (Pablo 24-nov: «en la foto real todo el color es homogéneo, sin bordes plomos»): la curva de luces y sombras de la base se lleva
+  // a la curva de TU foto por percentiles (como «Igualar color» de Photoshop). Sin realce artificial: los detalles quedan como en la foto real.
+  const Lb = []; for (let i = 0; i < N; i++) if (vis[i]) Lb.push(lab[i * 3]); Lb.sort((p, q) => p - q);
+  const qb = []; for (let k = 0; k <= 100; k++) qb.push(Lb[Math.round(k / 100 * (Lb.length - 1))]);
+  const kL0 = Math.max(0.25, Math.min(1.6, (objLab[0] + 8) / (m[0] + 8))), Q = objLab.q;
+  const curva = L => { if (!Q) return objLab[0] + (L - m[0]) * kL0; if (L <= qb[0]) return Q[0] + (L - qb[0]) * 0.3; if (L >= qb[100]) return Q[100] + (L - qb[100]) * 0.3;
+    let lo = 0, hi = 100; while (hi - lo > 1){ const mi = (lo + hi) >> 1; if (qb[mi] <= L) lo = mi; else hi = mi; } const t = qb[hi] > qb[lo] ? (L - qb[lo]) / (qb[hi] - qb[lo]) : 0; return Q[lo] + (Q[hi] - Q[lo]) * t; };
   for (let i = 0; i < N; i++){ if (!vis[i]) continue; const w = cand[i], L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2];
-    const bl = borroso(i); let L = objLab[0] + (bl - m[0]) * kL + (L0 - bl) * kD; if (L < 3) L = 3 * Math.exp((L - 3) / 3);   // sombras sin aplastar a negro puro
+    const L = Math.max(0, curva(L0));
     const A = objLab[1] + (A0 - m[1]) * kc, B = objLab[2] + (B0 - m[2]) * kc, c = _disLab2Rgb(L0 + (L - L0) * w, A0 + (A - A0) * w, B0 + (B - B0) * w);
     d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
   const ed = new Uint8Array(N);   // borde: mezcla prenda+fondo (2 px) se corre según cuánto tiene de prenda; sin esto queda un filo rojo
   for (let i = 0; i < N; i++){ if (!vis[i]) continue; const x = i % W, y = (i / W) | 0; for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j]) ed[j] = 1; } }
   for (let i = 0; i < N; i++){ if (!ed[i]) continue; const C = Math.hypot(lab[i * 3 + 1], lab[i * 3 + 2]); if (C < 4 || ang(Math.atan2(lab[i * 3 + 2], lab[i * 3 + 1])) > 35) continue;
-    const al = Math.min(1, C / Math.max(1, Cm)), c = _disLab2Rgb(lab[i * 3] + (objLab[0] - m[0]) * al, lab[i * 3 + 1] + (objLab[1] - m[1]) * al, lab[i * 3 + 2] + (objLab[2] - m[2]) * al); d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
+    const al = Math.min(1, C / Math.max(1, Cm)), c = _disLab2Rgb(lab[i * 3] + (curva(m[0]) - m[0]) * al, lab[i * 3 + 1] + (objLab[1] - m[1]) * al, lab[i * 3 + 2] + (objLab[2] - m[2]) * al); d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
   cx.putImageData(id, 0, 0); return new Promise(ok => cv.toBlob(ok, 'image/png'));
 }
 /* Color de tu foto sin otra foto de referencia: centro de la prenda y luego toda la prenda de ese color */
 async function _disColorPropio(url){
-  const cv = await _disImgCv(url, 600), sem = _disMediana(cv, 0.36, 0.36, 0.28, 0.2); if (!sem) return null;
+  const cv = await _disImgCv(url, 800), sem = _disMediana(cv, 0.36, 0.36, 0.28, 0.2); if (!sem) return null;
   const M = _disMascara(cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data, sem, 30, cv.width); if (!M) return sem;
   let sw = 0, s1 = 0, s2 = 0; for (let i = 0; i < M.w.length; i++){ const w = M.w[i]; if (!w) continue; const L = M.lab[i * 3]; sw += w; s1 += w * L; s2 += w * L * L; }
-  const r = M.media.slice(); r.sd = sw ? Math.sqrt(Math.max(0, s2 / sw - (s1 / sw) ** 2)) : 0; return r;   // sd = cuánto varía la luz en TU foto (matices)
+  const Ls = []; for (let i = 0; i < M.w.length; i++) if (M.w[i] > 0.5) Ls.push(M.lab[i * 3]); Ls.sort((p, q) => p - q);
+  const r = M.media.slice(); r.sd = sw ? Math.sqrt(Math.max(0, s2 / sw - (s1 / sw) ** 2)) : 0;
+  if (Ls.length > 50){ r.q = []; for (let k = 0; k <= 100; k++) r.q.push(Ls[Math.round(k / 100 * (Ls.length - 1))]); }   // curva de luz de TU foto (percentiles)
+  return r;
 }
 function disSerieBase(color){ const S = DIS._ser; if (!S) return; S.base = S.base === color ? '' : color; _disSeriePintar(); }
 async function disSeriePintar(){

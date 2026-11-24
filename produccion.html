@@ -504,18 +504,76 @@ function planes(o){   /* hacia atrás desde la venta: venta ← fotos (nuevo) �
   const dt = +o.dias_taller || talDias(o.taller) || ETAPAS.corte[2], p2 = masD(p3, -dt), p1 = masD(p2, -ETAPAS.tela[2]);
   return { p1, p2, p3, p4, v };
 }
+/* ══ 24-nov-2026 (Pablo) · ENTREGA DEL TALLER manual + EN STOCK al 95% ══
+   · La entrega del taller cuenta cuando entrega TODO (el lote final): quien recibe sube la FOTO y esa fecha y hora (la de la foto) es la entrega.
+     No depende del conteo ni del ingreso al stock (que puede tardar 2-4 días). Queda quién la subió, fecha y hora.
+   · Solo administración (Ana y Pablo) cambia o quita esa fecha. Órdenes de antes del 25-nov: se puede poner una fecha pasada.
+   · En stock = confección real + observadas ≥ LLEGO_PCT% de lo programado; la fecha es el día del registro que cruzó esa marca. */
+const LLEGO_PCT = 95, TF_DESDE = '2026-11-25';
+const tfDe = o => { const t = (o && o.fechas || {}).taller_fin; return t && t.ts ? t : null; };
+const tfVieja = o => !o.creado || String(o.creado).slice(0, 10) < TF_DESDE;
+const tfDia = ts => new Date(ts).toLocaleDateString('en-CA', { timeZone:'America/Lima' });
+const tfHora = ts => new Date(ts).toLocaleString('es-PE', { timeZone:'America/Lima', day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:false });
+const tfQuien = e => { e = String(e || ''); const n = e.split('@')[0].replace(/[._\d]+/g, ' ').trim(); return n ? n.charAt(0).toUpperCase() + n.slice(1) : '—'; };
+function cuenta95(M){ return (M || []).reduce((a, m) => a + (m.tipo === 'buena' || m.tipo === 'falla' ? m.cantidad : (m.tipo === 'perdida' || m.tipo === 'yayita') ? -m.cantidad : 0), 0); }
+function llegada95(M, pedido){
+  if (!(pedido > 0)) return null; const meta = Math.ceil(pedido * LLEGO_PCT / 100); let n = 0;
+  const F = (M || []).filter(m => m.fecha).slice().sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || a.id - b.id);
+  for (const m of F){ n += cuenta95([m]); if (n >= meta) return { fecha: String(m.fecha).slice(0, 10), n }; }
+  return null;
+}
+function tfHtml(o, ed){
+  const t = tfDe(o), vieja = tfVieja(o), adm = !!MAT_ADMIN;
+  let h = '<div class="sec" id="tfBox" style="margin:6px 0 12px;padding:10px 12px;border:1px solid var(--bd);border-radius:10px">'
+    + '<b style="font-size:14px;font-weight:600">🚚 Entrega del taller · lote final</b> <span class="mu" style="font-size:12px">· cuenta cuando el taller entregó TODO; no espera el conteo ni el ingreso al stock</span><div style="margin-top:6px">';
+  if (t){
+    h += '<span class="vsem ok">✅ Entregado ' + esc(tfHora(t.ts)) + '</span> <span class="mu" style="font-size:12px">· subió la foto ' + esc(tfQuien(t.por)) + (t.subido && Math.abs(new Date(t.subido) - new Date(t.ts)) > 60000 ? ' el ' + esc(tfHora(t.subido)) : '') + (t.editado_por ? ' · fecha cambiada por ' + esc(tfQuien(t.editado_por)) : '') + '</span>'
+      + (t.foto ? ' <button onclick="verArchivo(\'' + qs(t.foto) + '\')">📷 Ver foto</button>' : ' <span class="mu" style="font-size:12px">(sin foto: orden anterior)</span>')
+      + (adm && ed ? ' <input type="datetime-local" id="tfFecha" style="font-size:12px" value="' + esc(new Date(t.ts).toLocaleString('sv-SE', { timeZone:'America/Lima' }).slice(0, 16)) + '"> <button onclick="tfCambiar()">✏️ Cambiar fecha</button> <button onclick="tfQuitar()">✕ Quitar</button>' : '');
+  } else if (ed){
+    h += '<label class="bg" style="cursor:pointer;display:inline-block;padding:6px 10px;border-radius:8px">📷 El taller entregó todo: subir la foto<input type="file" accept="image/*" capture="environment" style="display:none" onchange="tfSubir(this)"></label>'
+      + (vieja || adm ? ' <span class="mu" style="font-size:12px">' + (vieja ? 'Orden anterior: si ya se entregó, pon la fecha real' + (adm ? '' : ' (la foto es opcional)') : 'Administración: fecha distinta') + '</span> <input type="datetime-local" id="tfFecha" style="font-size:12px" max="' + new Date().toLocaleString('sv-SE', { timeZone:'America/Lima' }).slice(0, 16) + '">'
+        + (vieja ? ' <button onclick="tfSubir(null)">Marcar con esa fecha</button>' : '') : ' <span class="mu" style="font-size:12px">La fecha y hora son las de la foto.</span>');
+  } else h += '<span class="mu">Aún no entrega.</span>';
+  return h + '<span id="tfMsg" class="mu" style="font-size:12px;margin-left:6px"></span></div></div>';
+}
+function tfFechaVal(){ const v = (document.getElementById('tfFecha') || {}).value; return v ? new Date(v + ':00-05:00').toISOString() : null; }
+async function tfGuardar(foto, fecha, quitar){
+  const r = await rpc('prod_taller_fin', { p_id: OA.id, p_foto: foto || null, p_fecha: fecha || null, p_quitar: !!quitar });
+  if (!r || r.ok === false) throw new Error((r && r.error) || 'no se guardó');
+  await cargar(); abrirOrden(OA.id);
+}
+async function tfSubir(inp){
+  const msg = document.getElementById('tfMsg'), f = inp && inp.files && inp.files[0], fecha = tfFechaVal();
+  if (!f && !(tfVieja(OA) && fecha)) { if (msg) msg.textContent = 'Falta la foto de la entrega.'; return; }
+  try {
+    let ruta = '';
+    if (f){ if (f.size > 25 * 1024 * 1024) throw new Error('La foto pesa más de 25 MB');
+      if (msg) msg.textContent = 'Subiendo la foto…';
+      ruta = nrm(OA.diseno).replace(/[^A-Z0-9]+/g, '-') + '/entrega_taller/' + OA.id + '_' + Date.now() + '_' + f.name.replace(/[^\w.\-]+/g, '_');
+      const r = await fetch(SB + '/storage/v1/object/produccion/' + ruta, { method:'POST', headers:{ apikey:ANON, Authorization:'Bearer ' + tok(), 'Content-Type': f.type || 'image/jpeg' }, body: f });
+      if (!r.ok) throw new Error('No se pudo subir la foto (' + r.status + ')'); }
+    await tfGuardar(ruta, (tfVieja(OA) || MAT_ADMIN) ? fecha : null, false); aviso('✓ Entrega del taller registrada');
+  } catch (e) { if (msg) msg.textContent = /prod_taller_fin|PGRST202/.test(String(e.message)) ? 'Falta pegar el SQL de la entrega del taller (24-nov) en Supabase.' : e.message; if (inp) inp.value = ''; }
+}
+async function tfCambiar(){ const fecha = tfFechaVal(), msg = document.getElementById('tfMsg'); if (!fecha) { if (msg) msg.textContent = 'Pon la fecha y hora.'; return; }
+  try { await tfGuardar(null, fecha, false); aviso('✓ Fecha de entrega cambiada'); } catch (e) { if (msg) msg.textContent = e.message; } }
+function tfQuitar(){ confirmar('¿Quitar la entrega del taller?', 'La orden vuelve a «sin entregar». La foto se conserva.', 'Sí, quitar', async () => { try { await tfGuardar(null, null, true); aviso('↩ Entrega del taller quitada'); } catch (e) { aviso(e.message); } }); }
 function pasosOrden(o){
   const { T } = saldos(o), k = paso(o), M = D.movs.filter(m => m.orden_id === o.id), P = planes(o), hoy = iso(hoy0()), ix = PASOS.findIndex(p => p[0] === k);
   const ult = tipos => M.filter(m => tipos.indexOf(m.tipo) >= 0).map(m => m.fecha).filter(Boolean).sort().pop() || null;
   const MM = insLimpio(o.materiales || []).filter(m => insTipo(m) === 'Tela' && !insTodos(m)), mPlan = MM.reduce((a, m) => a + (+m.m_plan || 0), 0), mLleg = MM.reduce((a, m) => a + (+m.asignados || 0), 0);
   const entregadas = M.filter(m => m.tipo === 'buena' || m.tipo === 'falla').reduce((a, m) => a + m.cantidad, 0);
-  const hecho4 = o.cerrada || (M.length && !T.falta && !T.correccion && !T.porIngresar), hecho3 = o.cerrada || (M.length && !T.falta);
+  /* 24-nov (Pablo) · 3 · ENTREGA DEL TALLER = la marca manual con foto del lote final (fecha y hora de la foto), sin esperar el conteo.
+     Órdenes de antes del 25-nov sin marca: se queda el cálculo de siempre. 4 · EN STOCK = llegó ≥ LLEGO_PCT% de lo programado (confección real + observadas). */
+  const tf = tfDe(o), viejaAuto = !tf && tfVieja(o) && (o.cerrada || (M.length && !T.falta)), l95 = llegada95(M, T.pedido);
+  const hecho4 = o.cerrada || !!l95, hecho3 = !!tf || viejaAuto;
   const pr = D.prod && D.prod[nrm(o.diseno)], enVenta = pr && (pr.estado_ciclo === 'venta' || pr.shopify_estado === 'ACTIVE' || pr.shopify_estado === 'active');
   const S = [
     { k:'p1', hecho: ix > 0 || o.cerrada, real: (o.fechas || {}).p1 || null, plan: P.p1, pct: MM.length ? Math.round(MM.filter(m => +m.m_plan > 0).length / MM.length * 100) : null },
     { k:'p2', hecho: ix > 1 || o.cerrada, real: o.fecha_taller || null, plan: P.p2, pct: mPlan ? Math.min(100, Math.round(mLleg / mPlan * 100)) : null },
-    { k:'p3', hecho: !!hecho3, real: hecho3 ? ult(['buena', 'falla']) : null, plan: P.p3, pct: T.pedido ? Math.round(entregadas / T.pedido * 100) : null },
-    { k:'p4', hecho: !!hecho4, real: hecho4 ? ult(['buena', 'falla', 'corregida', 'yayita', 'perdida']) : null, plan: P.p4, pct: T.pedido ? Math.round(T.buenas / T.pedido * 100) : null },
+    { k:'p3', hecho: !!hecho3, real: tf ? tfDia(tf.ts) : viejaAuto ? ult(['buena', 'falla']) : null, plan: P.p3, pct: T.pedido ? Math.round(entregadas / T.pedido * 100) : null },
+    { k:'p4', hecho: !!hecho4, real: l95 ? l95.fecha : hecho4 ? ult(['buena', 'falla', 'corregida', 'yayita', 'perdida']) : null, plan: P.p4, pct: T.pedido ? Math.min(100, Math.round(cuenta95(M) / T.pedido * 100)) : null },
     { k:'v', hecho: !!enVenta && !!hecho4, real: (o.fechas || {}).v || null, plan: P.v, pct: null } ];
   return S.map((x, j) => { const actual = !x.hecho && (j === ix || (j === 4 && ix === 3 && hecho4));
     const tarde = x.plan && (x.hecho ? (x.real && x.real > x.plan) : x.plan < hoy);
@@ -1381,6 +1439,7 @@ function vistaPintar(){
     if (L.length > 1) h += '<div class="mu" style="margin:6px 0 10px;font-size:12px">' + (dif.length ? '<span style="color:#fbbf24">⚠ Los lotes suman ' + tl + ' y lo programado ' + tp + ' (lo programado no cambia): ' + esc(dif.slice(0, 8).join(' · ')) + (dif.length > 8 ? '…' : '') + '</span>' : '<span style="color:#4ade80">✓ Los lotes suman lo programado (' + tp + ')</span>') + '</div>'; }
   const sinLote = M.filter(m => lp(m) === -1); if (sinLote.length) h += vBloque('Entregas registradas antes de dividir en lotes', cols, tal, {}, vMovsAgg(sinLote), 'ent', -1, {});
   /* 10-nov (Pablo) · ya no hay barra abajo: Lotes va arriba (en el total) y ↩ Deshacer en la línea de cada lote */
+  if (o.tipo !== 'compra') h += tfHtml(o, ed);   /* 24-nov (Pablo) · entrega del taller con foto, lote final */
   h += vTelaHtml(cols, ed);
   el.className = ''; el.innerHTML = h;
   try { vStkHoyPintar(o, recT); } catch (_) {}
@@ -1511,9 +1570,12 @@ function vColorQuitar(c){ if (!c) return; if (D.movs.some(m => m.orden_id === OA
 function vTelaHtml(cols, ed){   /* tela por color: plegada; es lo previo a programar la confección */
   telaNorm(); const inp = (c, k, val, w, num) => '<input ' + (num ? 'type="number" min="0" step="0.1" ' : 'list="lMatLib" ') + 'placeholder="·" value="' + esc(val == null || val === 0 || /^Monto cargado antes/i.test(String(val)) ? '' : val) + '" style="width:' + w + '" oninput="nTelaSet(\'' + qs(c) + '\',\'' + k + '\',this.value);vSucio()"' + (ed ? '' : ' disabled') + '>';
   const _ro = (c, k, val) => '<span title="Se cambia en la ficha del producto (🧾 Materiales)">' + esc(val == null || val === 0 || /^Monto cargado antes/i.test(String(val)) ? '·' : val) + '</span>';   /* 18-nov (Pablo) · un solo lugar: tela, código y consumo son de la ficha */
-  return '<details class="sec"><summary style="cursor:pointer;font-weight:600">Metros de tela de esta orden</summary><table class="g"><tr><th>Color</th><th>Tela</th><th>Código</th><th>Metros a comprar</th><th>Metros que llegaron</th><th>Consumo (m)</th><th>Prendas estimadas</th></tr>'
+  /* 24-nov (Pablo, 371) · el CONSUMO por prenda se escribe aquí (antes solo se leía de la ficha y quedaba «·» sin poder llenarlo).
+     Si la ficha ya lo tiene, viene escrito; lo que se cambie vale para ESTA orden. */
+  const consInp = (c, val) => '<input type="number" min="0" step="0.01" placeholder="·" title="Metros de tela por prenda" value="' + (+val > 0 ? +val : '') + '" style="width:60px" onchange="nTelaSet(\'' + qs(c) + '\',\'consumo\',this.value);vSucio();vistaPintar()"' + (ed ? '' : ' disabled') + '>';
+  return '<details class="sec"' + (cols.some(c => !(+(telaDe(c) || {}).consumo > 0)) && ed ? ' open' : '') + '><summary style="cursor:pointer;font-weight:600">Metros de tela de esta orden</summary><table class="g"><tr><th>Color</th><th>Tela</th><th>Código</th><th>Metros a comprar</th><th>Metros que llegaron</th><th>Consumo (m)</th><th>Prendas estimadas</th></tr>'
     + cols.map(c => { const m = telaDe(c) || {}, met = +m.asignados || +m.m_plan, est = +m.consumo > 0 && met > 0 ? Math.floor(met / m.consumo) : 0;
-      return '<tr' + colSt(c) + '><td><b>' + esc(c) + '</b></td><td style="text-align:left">' + _ro(c, 'nombre', m.nombre) + '</td><td>' + _ro(c, 'codigo', m.codigo) + '</td><td>' + inp(c, 'm_plan', m.m_plan, '70px', 1) + '</td><td>' + inp(c, 'asignados', m.asignados, '70px', 1) + '</td><td>' + _ro(c, 'consumo', m.consumo) + '</td><td><b>' + (est || '·') + '</b></td></tr>'; }).join('') + '</table></details>';
+      return '<tr' + colSt(c) + '><td><b>' + esc(c) + '</b></td><td style="text-align:left">' + _ro(c, 'nombre', m.nombre) + '</td><td>' + _ro(c, 'codigo', m.codigo) + '</td><td>' + inp(c, 'm_plan', m.m_plan, '70px', 1) + '</td><td>' + inp(c, 'asignados', m.asignados, '70px', 1) + '</td><td>' + consInp(c, m.consumo) + '</td><td><b>' + (est || '·') + '</b></td></tr>'; }).join('') + '</table></details>';
 }
 function vProgSet(i, k, val){ if (typeof progOK === 'function' && !progOK()) return progAviso(); const L = NV.lotes, x = L[i]; x.q = x.q || {}; const v = Math.max(0, Math.round(+val || 0));
   /* 10-nov (Pablo) · un lote NUNCA cambia lo programado. Si escribes en un lote que no es el último, el último lleva lo que falta
