@@ -1050,12 +1050,18 @@ async function _disColorObjetivo(handle, color, fotoPrenda, urlIA){
 /* Resultado de la IA → color fiel → guardado. Devuelve {url, antes, despues} */
 async function _disFashnFiel(urlIA, obj){
   if (!obj) return { url: urlIA, antes: null, despues: null };
-  if (obj.lab && obj.lab.q) try {   // Pablo 24-nov: «el rojo no es el rojo, el normal es más intenso» → no solo el promedio: toda la curva de luz
-    const blob = await _disRecolorear(urlIA, obj.lab), u0 = URL.createObjectURL(blob), m0 = await _disColorPropio(urlIA), m1 = await _disColorPropio(u0);
-    const antes = m0 ? _disDE(m0, obj.lab) : null, despues = m1 ? _disDE(m1, obj.lab) : null;
-    const u = await _disSubir(blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes, despues };
-  } catch (_) { /* base no vívida (negro, beige…): ajuste por promedio */ }
-  const r = await disColorIgualar(urlIA, obj.lab); if (!r.cambio) return { url: urlIA, antes: r.antes, despues: r.despues };
+  const T = obj.lab, Ct = Math.hypot(T[1], T[2]), hue = l => Math.atan2(l[2], l[1]) * 180 / Math.PI;
+  // Pablo 24-nov: «la modelo parece caricatura». Con prendas blancas/crema/grises el ajuste agarraba la PIEL y el fondo (claros como la prenda)
+  // y los pintaba. La IA ya respeta esos tonos: no se toca nada y la modelo queda tal cual.
+  if (Ct < 15 && T[0] > 60){ const m = await _disColorPropio(urlIA).catch(() => null); return { url: urlIA, antes: null, despues: m && Math.hypot(m[1], m[2]) < 15 ? _disDE(m, T) : null }; }
+  if (Ct >= 20) try {   // color vivo: tono e intensidad de TU foto; el brillo se acerca a medias (Pablo: «el del medio, un poquito menos naranja»)
+    const m0 = await _disColorPropio(urlIA); if (!m0) throw 0;
+    let dh = Math.abs(hue(m0) - hue(T)); if (dh > 180) dh = 360 - dh; if (dh > 40) throw 0;   // no se encontró la prenda (piel, fondo): ajuste normal
+    const dL = T[0] - m0[0], meta = [m0[0] + dL * (Math.abs(dL) < 10 ? 0.5 : 1), T[1], T[2]];
+    const blob = await _disRecolorear(urlIA, meta), m1 = await _disColorPropio(URL.createObjectURL(blob));
+    const u = await _disSubir(blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes: _disDE(m0, T), despues: m1 ? _disDE(m1, T) : null };
+  } catch (_) { /* ajuste por promedio */ }
+  const r = await disColorIgualar(urlIA, T); if (!r.cambio) return { url: urlIA, antes: r.antes, despues: r.despues };
   const u = await _disSubir(r.blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes: r.antes, despues: r.despues };
 }
 async function _disFashn(cuerpo){
@@ -1240,7 +1246,7 @@ function disCorrAbrir(color){
   document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disCorr" style="z-index:10050"><div class="dis-caja" style="max-width:520px"><div class="dis-cab"><div><div class="ui-pag">✏️ Corregir ' + esc(color) + '</div><div class="ui-nota">Sobre esta misma foto · la IA mira tu foto de la prenda · 1 crédito (~US$0,08)</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disCorr').remove()") + '</div>'
     + '<div style="display:flex;gap:10px"><img src="' + disA(r.url) + '" style="width:120px;height:150px;object-fit:cover;object-position:top;border-radius:6px"><div style="flex:1;display:flex;flex-direction:column;gap:6px">'
     + '<textarea id="disCorrTxt" rows="5" placeholder="Ej.: el saco tiene un solo botón, quita la segunda fila de botones" style="width:100%"></textarea>'
-    + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + ['un solo botón', 'agrega el bolsillo del pecho', 'solapa más angosta', 'manga hasta la muñeca'].map(x => '<button class="btn" onclick="var t=document.getElementById(\'disCorrTxt\');t.value=(t.value?t.value+\', \':\'\')+\'' + x + '\'">' + x + '</button>').join('') + '</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + ['un solo botón', 'agrega el bolsillo del pecho', 'solapa más angosta', 'mangas apenas más largas (2 cm)', 'manga hasta la muñeca'].map(x => '<button class="btn" onclick="var t=document.getElementById(\'disCorrTxt\');t.value=(t.value?t.value+\', \':\'\')+\'' + x + '\'">' + x + '</button>').join('') + '</div>'
     + '<div style="display:flex;gap:6px;align-items:center"><button class="btn" id="disCorrMic" onclick="disDictar(\'disCorrTxt\',\'disCorrMic\',\'disCorrRes\')">🎤 Dictar</button><span class="ui-nota" id="disCorrRes" style="flex:1"></span><button class="btn on" id="disCorrBtn" onclick="disCorrHacer(\'' + disA(color) + '\')">✏️ Corregir</button></div></div></div></div></div>');
 }
 async function disCorrHacer(color){
