@@ -1088,7 +1088,7 @@ function _disSeriePintar(){
         + (r.url ? '<img src="' + disA(r.url) + '" onclick="window.open(\'' + disA(r.url) + '\')" style="width:110px;height:140px;object-fit:cover;object-position:top;border-radius:6px;cursor:zoom-in">' : '<div class="ui-nota" style="width:110px;display:flex;align-items:center;justify-content:center;text-align:center">' + esc(r.est || 'Sin hacer') + '</div>') + '</div>'
         + '<div class="ui-tot" style="margin-top:6px">' + esc(o.c) + ' ' + _disDEchip(r.despues) + '</div>'
         + (r.obj ? '<div style="display:flex;gap:6px;align-items:center;margin-top:4px" title="Color medido en tu foto de la prenda; el mockup se lleva a este color"><span style="width:18px;height:18px;border-radius:4px;background:' + disA(r.obj) + ';display:inline-block"></span><span class="ui-nota">Color de tu foto ' + esc(r.obj) + '</span></div>' : '')
-        + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacerlo de nuevo">↻</button>' + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
+        + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacerlo de nuevo (otra pose: 2 créditos)">↻</button><button class="btn" onclick="disCorrAbrir(\'' + disA(o.c) + '\')" title="Dile qué arreglar (botones, bolsillo, solapa…) sobre esta misma foto · 1 crédito">✏️ Corregir</button>' + (r.prev ? '<button class="btn" onclick="disCorrDeshacer(\'' + disA(o.c) + '\')" title="Volver a la versión anterior">↶</button>' : '') + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
     }).join('') + '</div>'
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disSerRes" style="flex:1"></span><button class="btn on" onclick="disSerieHacer()">👗 Hacer ' + P.length + ' mockups · ~US$' + usd.toFixed(2).replace('.', ',') + '</button></div>';
 }
@@ -1099,7 +1099,7 @@ async function disSerieUno(color){
     const final = +((document.getElementById('disSerCal') || {}).value || 0) === 1;
     const j = await _disFashn({ modo: 'vestir', prenda: o.src, modelo: S.modelo, final }); S.res[color] = { est: 'Igualando color…' }; _disSeriePintar();
     const obj = await _disColorObjetivo(S.p.handle, color, o.src, j.url);
-    const f = await _disFashnFiel(j.url, obj); S.res[color] = Object.assign({ obj: obj && obj.hex, usd: j.usd }, f);
+    const f = await _disFashnFiel(j.url, obj); S.res[color] = Object.assign({ obj: obj && obj.hex, objC: obj, usd: j.usd }, f);
   } catch (e) { S.res[color] = { est: 'No se pudo: ' + e.message }; }
   _disSeriePintar();
 }
@@ -1111,6 +1111,40 @@ async function disSerieHacer(){
   try { for (let k = 0; k < P.length; k++){ const r2 = document.getElementById('disSerRes'); if (r2) r2.textContent = 'Mockup ' + (k + 1) + ' de ' + P.length + '… (~40 s c/u)'; await disSerieUno(P[k].c); } }
   finally { DIS._serCorre = 0; const r3 = document.getElementById('disSerRes'); if (r3) r3.textContent = 'Listo. Revisa cada uno: ΔE en verde = color igual al de tu foto.'; }
 }
+/* ✏️ CORREGIR: arreglos dictados sobre la MISMA foto (FASHN edit, 1 crédito). Después se vuelve a igualar el color a tu foto. */
+function disDictar(tId, bId, resId){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition, t = document.getElementById(tId), b = document.getElementById(bId), res = document.getElementById(resId);
+  if (!t) return; if (!SR){ if (res) res.textContent = 'Este navegador no permite dictar: usa Chrome.'; return; }
+  if (DIS._rec){ try { DIS._rec.stop(); } catch (_) {} return; }
+  const r = new SR(), base = t.value ? t.value.replace(/\s*$/, ' ') : ''; DIS._rec = r; r.lang = 'es-PE'; r.continuous = true; r.interimResults = true;
+  r.onresult = e => { let x = ''; for (let k = 0; k < e.results.length; k++) x += e.results[k][0].transcript; t.value = base + x.trim(); };
+  r.onerror = e => { if (res) res.textContent = e.error === 'not-allowed' ? 'Permite el micrófono en el candado de la barra de direcciones.' : 'No se escuchó bien, intenta otra vez.'; };
+  r.onend = () => { DIS._rec = null; if (b) { b.textContent = '🎤 Dictar'; b.classList.remove('on'); } if (res && /Escuchando/.test(res.textContent)) res.textContent = 'Listo: revisa el texto.'; };
+  if (b) { b.textContent = '⏹ Parar'; b.classList.add('on'); } if (res) res.textContent = '🎤 Escuchando… habla con calma.'; r.start();
+}
+function disCorrAbrir(color){
+  const S = DIS._ser, r = S && S.res[color]; if (!r || !r.url) return; const v = document.getElementById('disCorr'); if (v) v.remove();
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disCorr" style="z-index:10050"><div class="dis-caja" style="max-width:520px"><div class="dis-cab"><div><div class="ui-pag">✏️ Corregir ' + esc(color) + '</div><div class="ui-nota">Sobre esta misma foto · la IA mira tu foto de la prenda · 1 crédito (~US$0,08)</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disCorr').remove()") + '</div>'
+    + '<div style="display:flex;gap:10px"><img src="' + disA(r.url) + '" style="width:120px;height:150px;object-fit:cover;object-position:top;border-radius:6px"><div style="flex:1;display:flex;flex-direction:column;gap:6px">'
+    + '<textarea id="disCorrTxt" rows="5" placeholder="Ej.: el saco tiene un solo botón, quita la segunda fila de botones" style="width:100%"></textarea>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + ['un solo botón', 'agrega el bolsillo del pecho', 'solapa más angosta', 'manga hasta la muñeca'].map(x => '<button class="btn" onclick="var t=document.getElementById(\'disCorrTxt\');t.value=(t.value?t.value+\', \':\'\')+\'' + x + '\'">' + x + '</button>').join('') + '</div>'
+    + '<div style="display:flex;gap:6px;align-items:center"><button class="btn" id="disCorrMic" onclick="disDictar(\'disCorrTxt\',\'disCorrMic\',\'disCorrRes\')">🎤 Dictar</button><span class="ui-nota" id="disCorrRes" style="flex:1"></span><button class="btn on" id="disCorrBtn" onclick="disCorrHacer(\'' + disA(color) + '\')">✏️ Corregir</button></div></div></div></div></div>');
+}
+async function disCorrHacer(color){
+  const S = DIS._ser, r = S && S.res[color], o = S && S.cx && (S.cx.portadas || []).find(x => x.c === color), t = document.getElementById('disCorrTxt'), res = document.getElementById('disCorrRes'), b = document.getElementById('disCorrBtn');
+  const pedido = ((t || {}).value || '').trim(); if (DIS._rec){ try { DIS._rec.stop(); } catch (_) {} }
+  if (!r || !r.url || !o || DIS._corrCorre) return; if (pedido.length < 3){ if (res) res.textContent = 'Dime qué arreglar.'; return; }
+  DIS._corrCorre = 1; if (b) b.disabled = true; if (res) res.textContent = '✏️ Corrigiendo… (~20-40 s)';
+  try {
+    const j = await _disFashn({ modo: 'corregir', foto: r.urlIA || r.url, prenda: o.src, prompt: pedido });
+    if (res) res.textContent = 'Igualando el color al de tu foto…';
+    const f = await _disFashnFiel(j.url, r.objC);
+    S.res[color] = Object.assign({ obj: r.obj, objC: r.objC, usd: (r.usd || 0) + (j.usd || 0), prev: r, pedido }, f);
+    const v = document.getElementById('disCorr'); if (v) v.remove(); _disSeriePintar();
+  } catch (e) { if (res) res.innerHTML = '<span class="mal">No se pudo (' + esc(e.message) + ').</span>'; }
+  finally { DIS._corrCorre = 0; if (b) b.disabled = false; }
+}
+function disCorrDeshacer(color){ const S = DIS._ser, r = S && S.res[color]; if (r && r.prev){ S.res[color] = r.prev; _disSeriePintar(); } }
 /* Aprobados → «mockups_ia» (se usan en diseños con 👗 y quedan para la web solo si es preventa) */
 async function disMockAprobar(color){
   const S = DIS._ser, r = S && S.res[color]; if (!r || !r.url) return;
