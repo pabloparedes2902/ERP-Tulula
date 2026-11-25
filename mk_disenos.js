@@ -1161,7 +1161,7 @@ function _disSeriePintar(){
         + (r.url ? '<img src="' + disA(r.url) + '" onclick="window.open(\'' + disA(r.url) + '\')" style="width:150px;height:190px;object-fit:cover;object-position:top;border-radius:6px;cursor:zoom-in">' : '<div class="ui-nota" style="width:150px;height:190px;display:flex;align-items:center;justify-content:center;text-align:center">' + esc(r.est || 'Sin hacer') + '</div>') + '</div>'
         + '<div class="ui-tot" style="margin-top:6px">' + esc(o.c) + ' ' + _disDEchip(r.despues) + (r.desde ? ' <span class="ui-nota" title="Misma foto que el ' + esc(r.desde) + ', pintada con el color de tu foto">🎨 del ' + esc(r.desde) + '</span>' : '') + '</div>'
         + (r.obj ? '<div style="display:flex;gap:6px;align-items:center;margin-top:4px" title="Color medido en tu foto de la prenda; el mockup se lleva a este color"><span style="width:18px;height:18px;border-radius:4px;background:' + disA(r.obj) + ';display:inline-block"></span><span class="ui-nota">Color de tu foto ' + esc(r.obj) + '</span></div>' : '')
-        + (!r.url && !/…$/.test(r.est || '') ? '<div style="margin-top:6px"><button class="btn on" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Solo este color, con la IA">👗 Hacer este · ~US$' + (((document.getElementById('disSerMotor') || {}).value || 'v16') === 'v16' ? '0,08' : cal ? '0,23' : '0,15') + '</button></div>' : '')
+        + (!r.url && !/…$/.test(r.est || '') ? '<div style="margin-top:6px"><button class="btn on" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Solo este color, con la IA">👗 Hacer este · ~US$' + (((document.getElementById('disSerMotor') || {}).value || 'v16') === 'v16' ? '0,08' : cal ? '0,23' : '0,15') + '</button> <button class="btn" onclick="disSerieBaseFoto(\'' + disA(o.c) + '\')" title="Sin IA: los demás colores se pintan sobre ESTA foto de la tienda; no cambia nada más que el color">🎨 Esta foto de base · gratis</button></div>' : '')
         + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacer de nuevo este color con la IA (sale otra versión; cuesta igual que hacerlo)">↻ Rehacer</button><button class="btn' + (S.base === o.c ? ' on' : '') + '" onclick="disSerieBase(\'' + disA(o.c) + '\')" title="Usar este como molde de forma: los demás colores se pintan sobre esta misma foto, gratis">🎨 Usar de base</button><button class="btn" onclick="disCorrAbrir(\'' + disA(o.c) + '\')" title="Dile qué arreglar (botones, bolsillo, solapa…) sobre esta misma foto · 1 crédito">✏️ Corregir</button>' + (r.prev ? '<button class="btn" onclick="disCorrDeshacer(\'' + disA(o.c) + '\')" title="Volver a la versión anterior">↶ Volver</button>' : '') + '<button class="btn" onclick="disSerieDescartar(\'' + disA(o.c) + '\')" title="Borrar este resultado y dejar el color sin hacer">🗑 Descartar</button>' + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
     }).join('') + '</div>'
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disSerRes" style="flex:1"></span>' + (S.base && (S.res[S.base] || {}).url ? '<button class="btn on" onclick="disSeriePintar()" title="Misma forma del ' + esc(S.base) + ', color exacto de cada foto">🎨 Pintar los demás desde ' + esc(S.base) + ' · gratis</button>' : '') + '<button class="btn" onclick="disSerieHacer()" title="Todos los colores con la IA (lo caro). Mejor: uno solo y 🎨 Pintar los demás">Hacer todos con IA (' + P.length + ') · ~US$' + usd.toFixed(2).replace('.', ',') + '</button></div>';
@@ -1195,12 +1195,15 @@ async function _disRecolorear(urlBase, objLab){
   if (Cb < 20) throw new Error('la base tiene que ser de un color vivo (rojo, verde, azul…), no negro, blanco ni beige');
   const N = W * H, lab = new Float32Array(N * 3), cand = new Float32Array(N), ang = v => { let x = Math.abs(v - hb); if (x > Math.PI) x = 2 * Math.PI - x; return x * 180 / Math.PI; };
   for (let i = 0; i < N; i++){ const L = _disRgb2Lab(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]); lab[i * 3] = L[0]; lab[i * 3 + 1] = L[1]; lab[i * 3 + 2] = L[2];
-    const C = Math.hypot(L[1], L[2]); if (C < Math.max(8, Cb * 0.4)) continue; if (C < Cb * 0.55 && L[0] > base[0] + 6) continue;   // pelo y piel fuera
-    const dh = ang(Math.atan2(L[2], L[1])); if (dh < 22) cand[i] = dh < 14 ? 1 : (22 - dh) / 8; }
+    const C = Math.hypot(L[1], L[2]), osc = L[0] < base[0] - 5 && C >= 3; if (C < Math.max(8, Cb * 0.4) && !osc) continue;   // sombras oscuras de la prenda (poco color) también if (C < Cb * 0.55 && L[0] > base[0] + 6) continue;   // pelo y piel fuera
+    const dh = ang(Math.atan2(L[2], L[1])), lim = C < Math.max(8, Cb * 0.4) ? 40 : 22; if (dh < lim) cand[i] = dh < 14 ? 1 : Math.min(1, (lim - dh) / 8); }
   const vis = new Uint8Array(N), q = [];   // solo lo pegado al torso: no pinta labios ni nada suelto
   for (let y = Math.round(H * 0.4); y < H * 0.55; y += 4) for (let x = Math.round(W * 0.38); x < W * 0.62; x += 4){ const i = y * W + x; if (cand[i] > 0.5 && !vis[i]){ vis[i] = 1; q.push(i); } }
   if (!q.length) throw new Error('no encontré la prenda en la foto base');
   while (q.length){ const i = q.pop(), x = i % W, y = (i / W) | 0; for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j] && cand[j] > 0){ vis[j] = 1; q.push(j); } } }
+  // 24-nov: pliegues y puntitos muy oscuros encerrados por la prenda (casi negros, sin color) también se pintan: si no, quedan rayas negras
+  { const R = Math.max(6, Math.round(W / 220)), hay = (x, y, dx, dy) => { for (let k = 1; k <= R; k++){ const X = x + dx * k, Y = y + dy * k; if (X < 0 || Y < 0 || X >= W || Y >= H) return false; if (vis[Y * W + X] === 1) return true; } return false; };
+    for (let i = 0; i < N; i++){ if (vis[i] || lab[i * 3] > base[0] + 12) continue; const x = i % W, y = (i / W) | 0; if (hay(x, y, 1, 0) && hay(x, y, -1, 0) && hay(x, y, 0, 1) && hay(x, y, 0, -1)){ vis[i] = 2; cand[i] = 1; } } }
   const s = [0, 0, 0]; let n = 0, s2L = 0; for (let i = 0; i < N; i++) if (vis[i]){ s[0] += lab[i * 3]; s[1] += lab[i * 3 + 1]; s[2] += lab[i * 3 + 2]; s2L += lab[i * 3] ** 2; n++; }
   const m = s.map(v => v / n), Ct = Math.hypot(objLab[1], objLab[2]), Cm = Math.hypot(m[1], m[2]);
   const sdB = Math.sqrt(Math.max(0, s2L / n - m[0] ** 2)), kc = Math.max(0, Math.min(1, (Ct + 4) / (Cm + 4)));
@@ -1218,15 +1221,18 @@ async function _disRecolorear(urlBase, objLab){
   for (let y = 0; y < H; y++){ let a = 0, c = 0; for (let x = 0; x < W; x++){ const i = y * W + x; if (vis[i]){ a += lab[i * 3]; c++; } SI[(y + 1) * (W + 1) + x + 1] = SI[y * (W + 1) + x + 1] + a; SC[(y + 1) * (W + 1) + x + 1] = SC[y * (W + 1) + x + 1] + c; } }
   const borroso = i => { const x = i % W, y = (i / W) | 0, x0 = Math.max(0, x - r), y0 = Math.max(0, y - r), x1 = Math.min(W, x + r + 1), y1 = Math.min(H, y + r + 1), g = A => A[y1 * (W + 1) + x1] - A[y0 * (W + 1) + x1] - A[y1 * (W + 1) + x0] + A[y0 * (W + 1) + x0]; return g(SI) / Math.max(1, g(SC)); };
   // la curva se aplica a la luz grande; el detalle fino sigue la pendiente de la curva (0,3-1,2): ni grano manchado ni bordes plomos
-  for (let i = 0; i < N; i++){ if (!vis[i]) continue; const w = cand[i], L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2];
-    const bl = borroso(i), pend = Math.max(0.3, Math.min(1.2, (curva(bl + 1.5) - curva(bl - 1.5)) / 3)), L = Math.max(0, curva(bl) + (L0 - bl) * pend);
+  for (let i = 0; i < N; i++){ if (!vis[i]) continue; const w = lab[i * 3] < m[0] + 10 ? 1 : cand[i],   /* lo oscuro de la prenda se pinta entero: sin puntitos verdes */ L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2];
+    const bl = borroso(i), pend = Math.max(0.3, Math.min(1.2, (curva(bl + 1.5) - curva(bl - 1.5)) / 3)), L = Math.max(0, curva(bl) + Math.max(-20, Math.min(20, L0 - bl)) * pend);
     const A = objLab[1] + (A0 - m[1]) * kc, B = objLab[2] + (B0 - m[2]) * kc, c = _disLab2Rgb(L0 + (L - L0) * w, A0 + (A - A0) * w, B0 + (B - B0) * w);
     d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
   // borde junto a piel/fondo: mezcla proporcional (sin filo verde)
   const ed = new Uint8Array(N);   // borde: mezcla prenda+fondo (2 px) se corre según cuánto tiene de prenda; sin esto queda un filo rojo
-  for (let i = 0; i < N; i++){ if (!vis[i]) continue; const x = i % W, y = (i / W) | 0; for (let oy = -2; oy <= 2; oy++) for (let ox = -2; ox <= 2; ox++){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j]) ed[j] = 1; } }
-  for (let i = 0; i < N; i++){ if (!ed[i]) continue; const C = Math.hypot(lab[i * 3 + 1], lab[i * 3 + 2]); if (C < 4 || ang(Math.atan2(lab[i * 3 + 2], lab[i * 3 + 1])) > 35) continue;
-    const al = Math.min(1, C / Math.max(1, Cm)), L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2], c = _disLab2Rgb(L0 + (curva(L0) - L0) * al, A0 + (objLab[1] + (A0 - m[1]) * kc - A0) * al, B0 + (objLab[2] + (B0 - m[2]) * kc - B0) * al); d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
+  for (let i = 0; i < N; i++){ if (!vis[i]) continue; const x = i % W, y = (i / W) | 0; for (let oy = -4; oy <= 4; oy++) for (let ox = -4; ox <= 4; ox++){ const X = x + ox, Y = y + oy; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const j = Y * W + X; if (!vis[j]){ const dd = Math.max(Math.abs(ox), Math.abs(oy)); if (!ed[j] || dd < ed[j]) ed[j] = dd; } } }
+  // 24-nov: el filo de la prenda (mezcla de prenda y fondo) se corre hacia el color nuevo según cuánto tiene de prenda: sin contorno oscuro ni rosado
+  const dLm = curva(m[0]) - m[0];
+  for (let i = 0; i < N; i++){ if (!ed[i]) continue; const L0 = lab[i * 3], A0 = lab[i * 3 + 1], B0 = lab[i * 3 + 2], C = Math.hypot(A0, B0), dh = ang(Math.atan2(B0, A0)), claro = L0 >= m[0] + 15; if (claro && ed[i] > 2) continue;   // piel y fondo: solo los 2 px pegados a la prenda
+    const aC = C >= 4 && dh <= (claro ? 35 : 40) ? Math.min(1, (L0 < m[0] + 15 ? 2.5 : 1) * C / Math.max(1, Cm)) : 0,   /* más claro que la prenda (piel, fondo): solo lo que tiene de prenda */ aL = L0 < m[0] + 15 && (dh <= 40 || C < 12) ? 1 : 0, al = Math.max(aC, aL); if (al <= 0.02) continue;
+    const c = _disLab2Rgb(L0 + dLm * al, A0 + (objLab[1] - A0) * al, B0 + (objLab[2] - B0) * al); d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; }
   cx.putImageData(id, 0, 0); return new Promise(ok => cv.toBlob(ok, 'image/png'));
 }
 /* Color de tu foto sin otra foto de referencia: centro de la prenda y luego toda la prenda de ese color */
@@ -1239,6 +1245,9 @@ async function _disColorPropio(url){
   if (Ls.length > 50){ r.q = []; for (let k = 0; k <= 100; k++) r.q.push(Ls[Math.round(k / 100 * (Ls.length - 1))]); }   // curva de luz de TU foto (percentiles)
   return r;
 }
+/* 24-nov (Pablo): «a esta foto simplemente cámbiale el color, no le cambies absolutamente nada más». La foto de la tienda es la base, sin IA. */
+function disSerieBaseFoto(color){ const S = DIS._ser, o = S && S.cx && (S.cx.portadas || []).find(x => x.c === color); if (!o) return;
+  S.res[color] = { url: _disTam(o.src, 1600), obj: '', usd: 0, deTienda: 1, est: 'Foto de la tienda' }; S.base = color; _disSeriePintar(); }
 function disSerieBase(color){ const S = DIS._ser; if (!S) return; S.base = S.base === color ? '' : color; _disSeriePintar(); }
 async function disSeriePintar(){
   const S = DIS._ser, res = document.getElementById('disSerRes'); if (!S || !S.cx || !S.base || DIS._serCorre) return; const rb = S.res[S.base]; if (!rb || !rb.url) return;
