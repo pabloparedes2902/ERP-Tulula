@@ -26469,8 +26469,48 @@ function _despAvisoTabla(nros, est){
     if (ya.length) toast('⚠ ' + (ya.length === 1 ? 'El pedido ' + ya[0] + ' ya se despachó' : 'Los pedidos ' + ya.slice(0, 6).join(', ') + ' ya se despacharon') + ': en la hoja de separación solo saldrá la prenda nueva del cambio.', 'warn');
   } catch(_){}
 }
+/* 24-nov-2026 (Pablo) · GUÍA OBLIGATORIA: un pedido SHALOM u OLVA no pasa a «En camino» sin su guía.
+   Shalom: número de orden (8 a 12 dígitos) + código de 4 caracteres. Olva: número de tracking.
+   Se guarda en erp.pedido_guia (RPC pedido_guia_guardar); la copia _guiaPor evita volver a pedirla. */
+let _guiaPor = {};
+async function _guiaCargar(){
+  try { const tk = await _sbSesionAsegurar(); if (!tk) return;
+    const d = new Date(Date.now() - 120 * 864e5).toISOString();
+    const r = await fetch(SB_URL + '/rest/v1/pedido_guia?select=nro_pedido,guia,codigo,courier&puesto_at=gte.' + d + '&limit=5000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
+    if (!r.ok) return; (await r.json()).forEach(g => { _guiaPor[String(g.nro_pedido)] = g; });
+  } catch(_){}
+}
+function _guiaCourierDe(nro){
+  const f = (Array.isArray(pRaw) ? pRaw : []).find(r => String(r['NroPedido'] || '').trim() === String(nro).trim() && String(r['Courier'] || '').trim());
+  return f ? String(f['Courier']).trim().toUpperCase() : '';
+}
+function _guiaFreno(nros){
+  const L = (Array.isArray(nros) ? nros : [nros]).map(n => String(n).trim()).filter(Boolean);
+  for (const nro of L) {
+    const cour = _guiaCourierDe(nro); if (cour !== 'SHALOM' && cour !== 'OLVA') continue;
+    if (_guiaPor[nro] && String(_guiaPor[nro].guia || '').trim()) continue;
+    const pide = cour === 'SHALOM'
+      ? 'Pedido #' + nro + ' · SHALOM\n\nEscribe el NÚMERO DE ORDEN y el CÓDIGO de la guía, separados por un espacio.\nEjemplo: 123456789 AB12\n\n(Sin guía no se puede marcar «En camino»)'
+      : 'Pedido #' + nro + ' · OLVA\n\nEscribe el NÚMERO DE TRACKING de la guía.\nEjemplo: 12345678\n\n(Sin guía no se puede marcar «En camino»)';
+    let ok = null;
+    for (let i = 0; i < 3 && !ok; i++) {
+      const t = window.prompt(pide + (i ? '\n\n⚠ No es válida, revísala.' : ''), ''); if (t === null) break;
+      const v = String(t).trim().toUpperCase().replace(/[^0-9A-Z ]/g, ' ').replace(/\s+/g, ' ');
+      if (cour === 'SHALOM') { const m = v.match(/^(\d{8,12}) ?([0-9A-Z]{4})$/); if (m) ok = { guia: m[1], codigo: m[2] }; }
+      else { const m = v.replace(/ /g, '').match(/^\d{5,15}$/); if (m) ok = { guia: m[0], codigo: '' }; }
+    }
+    if (!ok) { try { toast('#' + nro + ': falta la guía de ' + cour + '. No se marcó «En camino».', 'warn'); } catch(_){} return false; }
+    _guiaPor[nro] = { nro_pedido: nro, courier: cour, guia: ok.guia, codigo: ok.codigo };
+    (async () => { try { const tk = await _sbSesionAsegurar(); if (!tk) return;
+      const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_guia_guardar', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: JSON.stringify({ p_nro: nro, p_courier: cour, p_guia: ok.guia, p_codigo: ok.codigo }) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+    } catch(e) { try { toast('#' + nro + ': la guía no se pudo guardar en la base. Vuelve a anotarla.', 'err'); } catch(_){} delete _guiaPor[nro]; } })();
+  }
+  return true;
+}
 function _modFrenoEnvio(nros, est){
   try { _despAvisoTabla(nros, est); } catch(_){}
+  try { if (String(est == null ? '' : est).trim().toUpperCase() === 'EN CAMINO' && !_guiaFreno(nros)) return false; } catch(_){}   // 24-nov · guía obligatoria Shalom/Olva
   try {
     if (String(est == null ? '' : est).trim().toUpperCase() !== 'EN CAMINO') return true;
     const set = new Set((Array.isArray(nros) ? nros : [nros]).map(n => String(n).trim()));
@@ -30863,6 +30903,7 @@ async function npInit() {
   // Eventos: botones
   document.getElementById('btn-tel').addEventListener('click', () => npAddTel(false));
   document.getElementById('np-env').addEventListener('input', npCalc);
+  try { setTimeout(_guiaCargar, 4000); setInterval(_guiaCargar, 10 * 60e3); } catch(_){}   // 24-nov · guías Shalom/Olva
   { const _cS = document.getElementById('np-courier'); if (_cS) { _cS.addEventListener('change', _npShalomDestino); _cS.addEventListener('change', _npShAgMostrar); } } { const _dS = document.getElementById('np-dist'); if (_dS) ['change','blur'].forEach(ev => _dS.addEventListener(ev, () => setTimeout(_npShAgPorDistrito, 150))); }   // 24-nov (Pablo): agencias del distrito   // 13-nov (Pablo): Shalom → paga en destino
   // np-dsc eliminado — descuento no aplica
   document.getElementById('btn-prenda').addEventListener('click', () => { loadCAT(); npAddPrenda(); });
