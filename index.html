@@ -1099,9 +1099,9 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <div class="fg"><label>Courier</label><select id="np-courier"><option value="">— Seleccionar courier —</option></select></div>
           <div class="fg"><label>Comentario Envío</label><input id="np-obs" type="text" list="np-obs-presets" placeholder="Elige o escribe una nota..."><datalist id="np-obs-presets"><option value="Envío paga en destino"></option><option value="Falta pago"></option></datalist></div>
         </div>
-        <!-- 24-nov-2026 (Pablo) · Agencia Shalom: aparece solo con courier SHALOM -->
+        <!-- 24-nov-2026 (Pablo) · Agencia Shalom / Olva: aparece solo con courier SHALOM u OLVA -->
         <div class="fr" id="np-ag-wrap" style="display:none">
-          <div class="fg" style="flex:1"><label>Agencia Shalom</label><select id="np-ag-sel" onchange="_npShAgElegirSel()" onfocus="_npShAgPorDistrito()"><option value="">— Elige primero el distrito de la clienta —</option></select></div>
+          <div class="fg" style="flex:1"><label id="np-ag-lbl">Agencia Shalom</label><select id="np-ag-sel" onchange="_npShAgElegirSel()" onfocus="_npShAgPorDistrito()"><option value="">— Elige primero el distrito de la clienta —</option></select></div>
           <div class="fg"><label>Buscar en todo el Perú</label><input id="np-ag" type="text" list="np-ag-list" autocomplete="off" placeholder="Ciudad o calle..." oninput="_npShAgElegir()"><datalist id="np-ag-list"></datalist></div>
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
@@ -28360,16 +28360,22 @@ function _npShalomDestino(){
    distrito (luego las de la provincia y la región, por si en su distrito no hay). Catálogo: erp.shalom_agencias, la base lo
    actualiza sola cada noche desde shalom-api.lat. Al elegir: Dirección = «SHALOM AGENCIA …», Distrito de la agencia,
    Referencia = dirección real + horario, y el código de la agencia se guarda aparte (erp.pedido_agencia) al crear el pedido. */
-let _shAg = null, _npShAgSel = null;
-async function _shAgCargar(){
-  if (_shAg && _shAg.length) return _shAg;
-  try { const c = JSON.parse(localStorage.getItem('sh_ag_v1') || 'null'); if (c && Date.now() - c.t < 12 * 36e5 && c.d && c.d.length) { _shAg = c.d; return _shAg; } } catch(_){}
+/* 24-nov-2026 (Pablo) · lo mismo para OLVA: misma pantalla, otra lista (erp.olva_agencias, sale de olvacourier.com cada noche). */
+const _AG = { SHALOM: { t: 'shalom_agencias', pre: 'SHALOM AGENCIA', n: 'Shalom' }, OLVA: { t: 'olva_agencias', pre: 'OLVA AGENCIA', n: 'Olva' } };
+let _shAg = null, _npShAgSel = null, _agCour = '';
+const _agDe = () => { const v = String((document.getElementById('np-courier') || {}).value || '').trim().toUpperCase(); return _AG[v] ? v : ''; };
+const _agPor = {};
+async function _shAgCargar(cour){
+  cour = cour || _agDe() || 'SHALOM';
+  if (_agPor[cour] && _agPor[cour].length) return (_shAg = _agPor[cour]);
+  const LK = cour === 'SHALOM' ? 'sh_ag_v1' : 'ag_' + cour.toLowerCase() + '_v1';
+  try { const c = JSON.parse(localStorage.getItem(LK) || 'null'); if (c && Date.now() - c.t < 12 * 36e5 && c.d && c.d.length) { _agPor[cour] = c.d; return (_shAg = c.d); } } catch(_){}
   try {
     const tk = await _sbSesionAsegurar(); if (!tk) return [];
-    const r = await fetch(SB_URL + '/rest/v1/shalom_agencias?select=ter_id,nombre,zona,provincia,departamento,direccion,hora_atencion,hora_domingo&activa=eq.true&order=departamento,provincia,zona&limit=3000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
+    const r = await fetch(SB_URL + '/rest/v1/' + _AG[cour].t + '?select=ter_id,nombre,zona,provincia,departamento,direccion,hora_atencion,hora_domingo&activa=eq.true&order=departamento,provincia,zona&limit=3000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
     if (!r.ok) return [];
-    _shAg = await r.json();
-    try { localStorage.setItem('sh_ag_v1', JSON.stringify({ t: Date.now(), d: _shAg })); } catch(_){}
+    _agPor[cour] = await r.json(); _shAg = _agPor[cour];
+    try { localStorage.setItem(LK, JSON.stringify({ t: Date.now(), d: _shAg })); } catch(_){}
   } catch(_) { return []; }
   return _shAg || [];
 }
@@ -28394,16 +28400,18 @@ function _shAgDist(a){
 function _shAgEtq(a){ return [a.departamento, a.provincia, a.zona].filter(Boolean).join(' · ') + ' — ' + (a.direccion || '') + ' [' + a.ter_id + ']'; }
 function _shAgNombre(a){
   const p = String(a.nombre || '').split('/').map(x => x.trim()).filter(Boolean), ult = p.length ? p[p.length - 1] : String(a.direccion || '');
-  return ('SHALOM AGENCIA ' + (a.zona ? a.zona + ' - ' : '') + ult).toUpperCase();
+  const c = _AG[_agCour] || _AG.SHALOM;
+  return (c.pre + ' ' + (a.zona ? a.zona + ' - ' : '') + (_agCour === 'OLVA' ? String(a.direccion || ult) : ult)).toUpperCase();
 }
 function _shAgRef(a){ return [a.direccion, a.hora_atencion, a.hora_domingo ? 'Domingo: ' + a.hora_domingo : ''].filter(Boolean).join(' · '); }
 const _shEsc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 async function _npShAgMostrar(){
   const w = document.getElementById('np-ag-wrap'), c = document.getElementById('np-courier'); if (!w || !c) return;
-  const sh = /^SHALOM$/i.test(String(c.value || '').trim()); w.style.display = sh ? '' : 'none'; if (!sh) return;
-  const L = await _shAgCargar();
-  if (!L.length) { try { toast('Agencias Shalom: no se pudo cargar la lista. Escribe la agencia a mano en Dirección.', 'warn'); } catch(_){} return; }
-  const dl = document.getElementById('np-ag-list');
+  const cour = _agDe(); w.style.display = cour ? '' : 'none'; if (!cour) return;
+  const dl = document.getElementById('np-ag-list'), lb = document.getElementById('np-ag-lbl');
+  if (cour !== _agCour) { _agCour = cour; _npShAgSel = null; if (dl) dl.innerHTML = ''; if (lb) lb.textContent = 'Agencia ' + _AG[cour].n; }
+  const L = await _shAgCargar(cour);
+  if (!L.length) { try { toast('Agencias ' + _AG[cour].n + ': no se pudo cargar la lista. Escribe la agencia a mano en Dirección.', 'warn'); } catch(_){} return; }
   if (dl && !dl.childElementCount) dl.innerHTML = L.map(a => '<option value="' + _shEsc(_shAgEtq(a)) + '"></option>').join('');
   _npShAgPorDistrito();
 }
@@ -28417,7 +28425,7 @@ function _npShAgPorDistrito(){
   const op = a => '<option value="' + _shEsc(a.ter_id) + '"' + (_npShAgSel === String(a.ter_id) ? ' selected' : '') + '>' + _shEsc((a.zona || '') + ' — ' + (a.direccion || '')) + '</option>';
   const g = (t, A) => A.length ? '<optgroup label="' + _shEsc(t) + ' (' + A.length + ')">' + A.map(op).join('') + '</optgroup>' : '';
   const tot = D.length + P.length + R.length;
-  sel.innerHTML = '<option value="">' + (tot ? (D.length ? '— ' + D.length + ' agencia(s) en ' + dk.replace(/_[A-Z]+$/, '') + ' —' : '— No hay agencia en ' + dk.replace(/_[A-Z]+$/, '') + ': elige una cercana —') : '— Sin agencias Shalom en ' + u[1] + ': usa «Buscar en todo el Perú» —') + '</option>'
+  sel.innerHTML = '<option value="">' + (tot ? (D.length ? '— ' + D.length + ' agencia(s) en ' + dk.replace(/_[A-Z]+$/, '') + ' —' : '— No hay agencia en ' + dk.replace(/_[A-Z]+$/, '') + ': elige una cercana —') : '— Sin agencias ' + ((_AG[_agCour] || _AG.SHALOM).n) + ' en ' + u[1] + ': usa «Buscar en todo el Perú» —') + '</option>'
     + g('En ' + dk.replace(/_[A-Z]+$/, ''), D) + g('En la provincia ' + u[0], P) + g('Resto de ' + u[1], R);
 }
 function _npShAgPoner(a){
@@ -28427,7 +28435,7 @@ function _npShAgPoner(a){
   const dk = _shAgDist(a), cur = String((document.getElementById('np-dist') || {}).value || '').trim();
   if (dk && UBI[dk]) { if (cur !== dk) { put('np-dist', dk); put('np-prov', UBI[dk][0]); put('np-reg', UBI[dk][1]); } }
   else { put('np-dist', a.zona); put('np-prov', a.provincia); put('np-reg', a.departamento); }
-  try { toast(dk ? (cur && cur !== dk ? 'Agencia en ' + dk.replace(/_[A-Z]+$/, '') + ': el Distrito pasó al de la agencia.' : 'Agencia Shalom puesta en Dirección y Referencia.') : 'Agencia puesta. Revisa el Distrito: no está en la lista del ERP.', dk ? 'ok' : 'warn'); } catch(_){}
+  try { toast(dk ? (cur && cur !== dk ? 'Agencia en ' + dk.replace(/_[A-Z]+$/, '') + ': el Distrito pasó al de la agencia.' : 'Agencia ' + ((_AG[_agCour] || _AG.SHALOM).n) + ' puesta en Dirección y Referencia.') : 'Agencia puesta. Revisa el Distrito: no está en la lista del ERP.', dk ? 'ok' : 'warn'); } catch(_){}
 }
 function _npShAgElegirSel(){ const s = document.getElementById('np-ag-sel'); if (!s || !s.value || !_shAg) return; _npShAgPoner(_shAg.find(x => String(x.ter_id) === s.value)); }
 function _npShAgElegir(){
@@ -28436,10 +28444,10 @@ function _npShAgElegir(){
   _npShAgPoner(_shAg.find(x => String(x.ter_id) === m[1])); i.value = ''; _npShAgPorDistrito();
 }
 /* Después de crear el pedido: guarda qué agencia es (para guías y seguimiento). No frena nada si falla. */
-async function _npShAgGuardar(nro, ter){
+async function _npShAgGuardar(nro, ter, cour){
   if (!nro || !ter) return;
   try { const tk = await _sbSesionAsegurar(); if (!tk) return;
-    await fetch(SB_URL + '/rest/v1/rpc/pedido_agencia_guardar', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: JSON.stringify({ p_nro: String(nro), p_ter: String(ter) }) });
+    await fetch(SB_URL + '/rest/v1/rpc/pedido_agencia_guardar', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: JSON.stringify({ p_nro: String(nro), p_ter: String(ter), p_courier: String(cour || 'SHALOM') }) });
   } catch(e) { try { _errLog('shalom.agencia', e); } catch(_){} }
 }
 function _waEnvioCero(courier, coment, base){
@@ -33382,7 +33390,8 @@ async function npGuardar() {
       prendasData: prendasData,
       pagosData: pagosData,
       env: env, dsc: dsc, pag: pag,
-      shAg: (/^SHALOM$/i.test(String(_cliSnap.Courier || '')) && _npShAgSel) ? _npShAgSel : null,   // 24-nov · agencia Shalom elegida
+      shAg: (_AG[String(_cliSnap.Courier || '').trim().toUpperCase()] && _npShAgSel && _agCour === String(_cliSnap.Courier || '').trim().toUpperCase()) ? _npShAgSel : null,   // 24-nov · agencia Shalom/Olva elegida
+      shAgCour: _agCour,
       saldosFavor: (_npSaldos.applyFavor || []).slice(),
       saldosDevs: (_npSaldos.applyDevs || []).slice(),
       saldosPendiente: (_npSaldos.applyPendiente || []).slice(),
@@ -33832,7 +33841,7 @@ async function _npExecuteSave(job) {
   // v15 — aplicar saldos sobre el pedido ORIGEN (no sobre el nuevo: el +X / -X
   // ya viaja como línea de pago real del pedido nuevo, evitando doble conteo).
   if (nuevoNro) await _npAplicarSaldosOrigen(job, nuevoNro, cliBase.FechaPago);
-  if (nuevoNro && job.shAg) _npShAgGuardar(nuevoNro, job.shAg);   // 24-nov · qué agencia Shalom (para guías)
+  if (nuevoNro && job.shAg) _npShAgGuardar(nuevoNro, job.shAg, job.shAgCour);   // 24-nov · qué agencia Shalom/Olva (para guías)
   return nuevoNro;
 }
 

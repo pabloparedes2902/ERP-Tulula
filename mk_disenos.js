@@ -1042,9 +1042,11 @@ async function _disCfgSet(clave, valor){ await _mklSb('/rest/v1/rpc/mk_dis_confi
 /* Objetivo de color (decisión de Pablo 23-nov: «debería mantener el color de la foto que te paso», sin colores oficiales):
    el color de la MISMA prenda en la foto que se da, medido buscando en ella lo que la IA vistió */
 async function _disColorObjetivo(handle, color, fotoPrenda, urlIA){
+  // 24-nov: antes se guiaba por el centro del RESULTADO; en fotos de cuerpo entero ese centro es el pantalón y se pintaba el pantalón.
+  const p = fotoPrenda ? await _disColorPropio(fotoPrenda).catch(() => null) : null;
   const sem = urlIA ? await _disSemillaResultado(urlIA).catch(() => null) : null;
-  const l = fotoPrenda ? await _disColorDeFoto(fotoPrenda, sem).catch(() => null) : null; if (!l) return null;
-  const p = await _disColorPropio(fotoPrenda).catch(() => null); if (p && p.q && _disDE(p, l) < 12) l.q = p.q;   // curva de luces y sombras de TU foto
+  const g = fotoPrenda && sem ? await _disColorDeFoto(fotoPrenda, sem).catch(() => null) : null;
+  const l = g && p && _disDE(g, p) < 15 ? g : p; if (!l) return null; if (p && p.q && l !== p) l.q = p.q;
   return { lab: l, hex: _disLab2Hex(l), de_foto: true };
 }
 /* Resultado de la IA → color fiel → guardado. Devuelve {url, antes, despues} */
@@ -1057,7 +1059,7 @@ async function _disFashnFiel(urlIA, obj){
   if (Ct >= 20) try {   // color vivo: tono e intensidad de TU foto; el brillo se acerca a medias (Pablo: «el del medio, un poquito menos naranja»)
     const m0 = await _disColorPropio(urlIA); if (!m0) throw 0;
     let dh = Math.abs(hue(m0) - hue(T)); if (dh > 180) dh = 360 - dh; if (dh > 40) throw 0;   // no se encontró la prenda (piel, fondo): ajuste normal
-    const dL = T[0] - m0[0], meta = [m0[0] + dL * (Math.abs(dL) < 10 ? 0.5 : 1), T[1], T[2]];
+    const dL = T[0] - m0[0], k = Math.abs(dL) < 10 ? 0.5 : 1, meta = [m0[0] + dL * k, m0[1] + (T[1] - m0[1]) * 0.5, m0[2] + (T[2] - m0[2]) * 0.5];   // Pablo 24-nov: «un intermedio entre los dos»
     const blob = await _disRecolorear(urlIA, meta), m1 = await _disColorPropio(URL.createObjectURL(blob));
     const u = await _disSubir(blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes: _disDE(m0, T), despues: m1 ? _disDE(m1, T) : null };
   } catch (_) { /* ajuste por promedio */ }
@@ -1073,14 +1075,15 @@ async function _disFashn(cuerpo){
 function disSerieAbrir(){
   const v = document.getElementById('disSer'); if (v) v.remove(); DIS._ser = { p: null, cx: null, modelo: (DIS.banco || [])[0] || '', res: {}, subidas: [] };
   const L = (DIS.prods || []).filter(_disActivo).slice().sort((a, b) => String(a.titulo).localeCompare(String(b.titulo)));
-  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disSer" style="z-index:10040"><div class="dis-caja" style="max-width:1040px"><div class="dis-cab"><div><div class="ui-pag">👗 Fusión</div><div class="ui-nota">Junta la foto de la prenda con la foto de la modelo · color igual al de tu foto · nada se usa sin aprobar</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disSer').remove()") + '</div>'
+  document.body.insertAdjacentHTML('beforeend', '<div class="dis-modal" id="disSer" style="z-index:10040"><div class="dis-caja" style="max-width:98vw;width:98vw;max-height:96vh;overflow:auto"><div class="dis-cab"><div><div class="ui-pag">👗 Fusión</div></div><span style="flex:1"></span>' + _disIb('cerrar', 'Cerrar', "document.getElementById('disSer').remove()") + '</div>'
     + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">'
     + '<div class="dis-tarj" style="padding:12px"><div class="ui-blo">1 · Prenda</div>'
     + '<label class="dis-prop" style="margin-top:8px"><span class="ui-nota">De la tienda</span><select id="disSerProd" onchange="disSerieProd(this.value)"><option value="">Elige…</option>' + L.map(p => '<option value="' + disA(p.handle) + '">' + esc(p.titulo) + '</option>').join('') + '</select></label>'
     + '<div class="ui-nota" style="margin:8px 0 4px">o sube tus fotos (una por color)</div><label class="btn" style="display:inline-flex;gap:6px;align-items:center;cursor:pointer">⬆ Subir fotos de la prenda<input type="file" accept="image/*" multiple style="display:none" onchange="disFusionPrendas(this.files);this.value=\'\'"></label>'
     + '<div id="disSerSub" style="margin-top:8px"></div></div>'
-    + '<div class="dis-tarj" style="padding:12px"><div style="display:flex;align-items:center;gap:8px"><div class="ui-blo" style="flex:1">2 · Modelo</div><label class="btn" style="display:inline-flex;gap:6px;align-items:center;cursor:pointer">⬆ Subir foto de la modelo<input type="file" accept="image/*" style="display:none" onchange="disFusionModelo(this.files[0]);this.value=\'\'"></label></div><div id="disSerMod" style="margin-top:8px"></div></div></div>'
-    + '<div class="dis-props" style="margin-top:10px"><label class="dis-prop"><span class="ui-nota">Calidad</span><select id="disSerCal" onchange="_disSeriePintar()"><option value="0">Prueba · ~US$0,15 c/u</option><option value="1">Final 2K · ~US$0,23 c/u</option></select></label></div>'
+    + '<div class="dis-tarj" style="padding:12px"><div style="display:flex;align-items:center;gap:8px"><div class="ui-blo" style="flex:1">2 · Modelo</div><label class="btn" style="display:inline-flex;gap:6px;align-items:center;cursor:pointer">⬆ Subir fotos de modelos<input type="file" accept="image/*" multiple style="display:none" onchange="disFusionModelo(this.files);this.value=\'\'"></label></div><div id="disSerMod" style="margin-top:8px"></div></div></div>'
+    + '<div class="dis-props" style="margin-top:10px"><label class="dis-prop" style="min-width:300px"><span class="ui-nota">Forma de vestir</span><select id="disSerMotor" onchange="_disSeriePintar()"><option value="v16">Modelo intacta: solo cambia la prenda · ~US$0,08</option><option value="max">IA libre: rehace la foto · ~US$0,15</option></select></label>'
+    + '<label class="dis-prop"><span class="ui-nota">Calidad (IA libre)</span><select id="disSerCal" onchange="_disSeriePintar()"><option value="0">Prueba</option><option value="1">Final 2K · ~US$0,23</option></select></label></div>'
     + '<div id="disSerCols" style="margin-top:10px"></div></div></div>');
   _disSeriePintarModelos();
 }
@@ -1110,18 +1113,18 @@ function _disFusionPintarSubidas(){
 function disFusionNombre(k, v){ const S = DIS._ser, o = S && S.cx && S.cx.portadas[k]; if (!o) return; v = String(v || '').trim().slice(0, 24) || o.c; if (S.cx.portadas.some((x, j) => j !== k && x.c === v)) v += ' 2'; o.c = v; _disFusionPintarSubidas(); _disSeriePintar(); }
 function disFusionQuitar(k){ const S = DIS._ser; if (!S || !S.cx) return; const o = S.cx.portadas.splice(k, 1)[0]; if (o) delete S.res[o.c]; _disFusionPintarSubidas(); _disSeriePintar(); }
 async function disFusionModelo(file){
-  const S = DIS._ser; if (!S || !file) return; const el = document.getElementById('disSerMod'); if (el) el.insertAdjacentHTML('afterbegin', '<div class="ui-nota" id="disSerModSub">Subiendo la foto de la modelo…</div>');
-  try { S.modelo = await _disFusionSubir(file, 'modelo'); S.modelosSubidas = [S.modelo].concat(S.modelosSubidas || []); }
+  const S = DIS._ser; if (!S || !file) return; const el = document.getElementById('disSerMod'); if (el) el.insertAdjacentHTML('afterbegin', '<div class="ui-nota" id="disSerModSub">Subiendo…</div>');
+  try { for (const f of (file && file.length != null ? Array.from(file) : [file]).slice(0, 10)){ const u = await _disFusionSubir(f, 'modelo'); S.modelosSubidas = [u].concat(S.modelosSubidas || []); S.modelo = u; } }
   catch (e) { const r = document.getElementById('disSerRes'); if (r) r.textContent = 'No se pudo subir la modelo: ' + e.message; }
   _disSeriePintarModelos();
 }
 function _disSeriePintarModelos(){
   const el = document.getElementById('disSerMod'), S = DIS._ser; if (!el || !S) return; const B = DIS.banco || [], extra = (S.modelosSubidas || []).filter(u => B.indexOf(u) < 0);
-  (DIS.prods || []).filter(p => _disActivo(p) && !/aret|collar|anillo|pulsera|colet|accesor|cartera|bolso|cintur/i.test(String(p.titulo || '') + ' ' + String(p.tipo || p.categoria || ''))).slice(0, 30).forEach(p => {   // solo prendas: las joyas no sirven de modelo
+  (DIS.prods || []).filter(p => _disActivo(p) && !/aret|collar|anillo|pulsera|colet|accesor|cartera|bolso|cintur/i.test(String(p.titulo || '') + ' ' + String(p.tipo || p.categoria || ''))).forEach(p => {   // solo prendas: las joyas no sirven de modelo
   const f = _disFotos(p)[0]; if (f && B.indexOf(f) < 0 && extra.indexOf(f) < 0) extra.push(f); });
-  const mini = (u, enBanco) => '<span style="position:relative;display:inline-block"><img src="' + disA(_disTam(u, 200)) + '" onclick="DIS._ser.modelo=\'' + disA(u) + '\';_disSeriePintarModelos()" style="width:60px;height:78px;object-fit:cover;object-position:top;border-radius:6px;cursor:pointer;border:2px solid ' + (S.modelo === u ? '#7c5cff' : 'transparent') + '">'
+  const mini = (u, enBanco) => '<span style="position:relative;display:inline-block"><img src="' + disA(_disTam(u, 200)) + '" onclick="DIS._ser.modelo=\'' + disA(u) + '\';_disSeriePintarModelos();_disSeriePintar()" style="width:78px;height:101px;object-fit:cover;object-position:top;border-radius:6px;cursor:pointer;border:3px solid ' + (S.modelo === u ? '#7c5cff' : 'transparent') + '">'
     + '<button type="button" class="dis-ib" title="' + (enBanco ? 'Quitar del banco de modelos' : 'Guardar en el banco de modelos (salen primero siempre)') + '" onclick="disBancoAlternar(\'' + disA(u) + '\')" style="position:absolute;right:-4px;top:-6px;font-size:12px">' + (enBanco ? '⭐' : '☆') + '</button></span>';
-  el.innerHTML = '<div class="ui-nota">Toca una para elegirla · ⭐ la guarda en el banco · mejor de frente y cuerpo entero</div><div style="display:flex;gap:6px;flex-wrap:wrap;max-height:180px;overflow:auto;margin-top:6px">' + B.map(u => mini(u, true)).join('') + extra.map(u => mini(u, false)).join('') + '</div>';
+  el.innerHTML = '<div class="ui-nota">Toca una para elegirla · ⭐ la guarda en el banco · mejor de frente y cuerpo entero</div><div style="display:flex;gap:6px;flex-wrap:wrap;max-height:330px;overflow:auto;margin-top:6px">' + B.map(u => mini(u, true)).join('') + extra.map(u => mini(u, false)).join('') + '</div>';
 }
 async function disBancoAlternar(u){ const B = (DIS.banco || []).slice(), i = B.indexOf(u); if (i >= 0) B.splice(i, 1); else B.unshift(u); DIS.banco = B.slice(0, 12); try { await _disCfgSet('banco_modelos', DIS.banco); } catch (_) {} _disSeriePintarModelos(); }
 async function disSerieProd(h){
@@ -1132,26 +1135,27 @@ function _disSeriePintar(){
   const S = DIS._ser, el = document.getElementById('disSerCols'); if (!S || !el || !S.cx) return;
   const P = (S.cx.portadas || []).filter(o => o.src), cal = +((document.getElementById('disSerCal') || {}).value || 0), usd = (cal ? 0.225 : 0.15) * P.length;
   el.innerHTML = '<div class="ui-nota" style="margin:4px 0 10px">Consejo: haz con la IA <b>un solo color vivo</b> (rojo, verde, azul), márcalo 🎨 Base y pinta los demás gratis. La IA copia lo que se ve en tu foto: si un bolsillo no se ve, no lo pone.</div>'
-    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px">' + P.map(o => {
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px">' + P.map(o => {
       const r = S.res[o.c] || {};
-      return '<div class="dis-tarj" style="padding:8px"><div style="display:flex;gap:6px"><img src="' + disA(_disTam(o.src, 300)) + '" style="width:70px;height:92px;object-fit:cover;border-radius:6px">'
-        + (r.url ? '<img src="' + disA(r.url) + '" onclick="window.open(\'' + disA(r.url) + '\')" style="width:110px;height:140px;object-fit:cover;object-position:top;border-radius:6px;cursor:zoom-in">' : '<div class="ui-nota" style="width:110px;display:flex;align-items:center;justify-content:center;text-align:center">' + esc(r.est || 'Sin hacer') + '</div>') + '</div>'
+      return '<div class="dis-tarj" style="padding:8px"><div style="display:flex;gap:6px;align-items:flex-start"><div style="display:flex;flex-direction:column;gap:4px"><img src="' + disA(_disTam(o.src, 300)) + '" title="Prenda" style="width:70px;height:92px;object-fit:cover;border-radius:6px">' + (S.modelo ? '<img src="' + disA(_disTam(r.modelo || S.modelo, 300)) + '" title="Modelo" style="width:70px;height:92px;object-fit:cover;object-position:top;border-radius:6px">' : '<span class="ui-nota" style="width:70px">Elige modelo</span>') + '</div>'
+        + (r.url ? '<img src="' + disA(r.url) + '" onclick="window.open(\'' + disA(r.url) + '\')" style="width:150px;height:190px;object-fit:cover;object-position:top;border-radius:6px;cursor:zoom-in">' : '<div class="ui-nota" style="width:150px;height:190px;display:flex;align-items:center;justify-content:center;text-align:center">' + esc(r.est || 'Sin hacer') + '</div>') + '</div>'
         + '<div class="ui-tot" style="margin-top:6px">' + esc(o.c) + ' ' + _disDEchip(r.despues) + (r.desde ? ' <span class="ui-nota" title="Misma foto que el ' + esc(r.desde) + ', pintada con el color de tu foto">🎨 del ' + esc(r.desde) + '</span>' : '') + '</div>'
         + (r.obj ? '<div style="display:flex;gap:6px;align-items:center;margin-top:4px" title="Color medido en tu foto de la prenda; el mockup se lleva a este color"><span style="width:18px;height:18px;border-radius:4px;background:' + disA(r.obj) + ';display:inline-block"></span><span class="ui-nota">Color de tu foto ' + esc(r.obj) + '</span></div>' : '')
-        + (!r.url && !/…$/.test(r.est || '') ? '<div style="margin-top:6px"><button class="btn on" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Solo este color, con la IA">👗 Hacer este · ~US$' + (cal ? '0,23' : '0,15') + '</button></div>' : '')
-        + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacerlo de nuevo (otra pose: 2 créditos)">↻</button><button class="btn' + (S.base === o.c ? ' on' : '') + '" onclick="disSerieBase(\'' + disA(o.c) + '\')" title="Usar este como molde de forma: los demás colores se pintan sobre esta misma foto, gratis">🎨 Base</button><button class="btn" onclick="disCorrAbrir(\'' + disA(o.c) + '\')" title="Dile qué arreglar (botones, bolsillo, solapa…) sobre esta misma foto · 1 crédito">✏️ Corregir</button>' + (r.prev ? '<button class="btn" onclick="disCorrDeshacer(\'' + disA(o.c) + '\')" title="Volver a la versión anterior">↶</button>' : '') + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
+        + (!r.url && !/…$/.test(r.est || '') ? '<div style="margin-top:6px"><button class="btn on" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Solo este color, con la IA">👗 Hacer este · ~US$' + (((document.getElementById('disSerMotor') || {}).value || 'v16') === 'v16' ? '0,08' : cal ? '0,23' : '0,15') + '</button></div>' : '')
+        + (r.url ? '<div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap"><button class="btn on" onclick="disMockAprobar(\'' + disA(o.c) + '\')"' + (r.ok ? ' disabled' : '') + '>' + (r.ok ? '✓ Aprobado' : '✓ Aprobar') + '</button><button class="btn" onclick="disSerieUno(\'' + disA(o.c) + '\')" title="Hacer de nuevo este color con la IA (sale otra versión; cuesta igual que hacerlo)">↻ Rehacer</button><button class="btn' + (S.base === o.c ? ' on' : '') + '" onclick="disSerieBase(\'' + disA(o.c) + '\')" title="Usar este como molde de forma: los demás colores se pintan sobre esta misma foto, gratis">🎨 Usar de base</button><button class="btn" onclick="disCorrAbrir(\'' + disA(o.c) + '\')" title="Dile qué arreglar (botones, bolsillo, solapa…) sobre esta misma foto · 1 crédito">✏️ Corregir</button>' + (r.prev ? '<button class="btn" onclick="disCorrDeshacer(\'' + disA(o.c) + '\')" title="Volver a la versión anterior">↶ Volver</button>' : '') + '<button class="btn" onclick="disSerieDescartar(\'' + disA(o.c) + '\')" title="Borrar este resultado y dejar el color sin hacer">🗑 Descartar</button>' + (r.urlIA ? '<button class="btn" onclick="window.open(\'' + disA(r.urlIA) + '\')" title="Ver cómo salió de la IA, antes de igualar el color">Antes</button>' : '') + '</div>' : '') + '</div>';
     }).join('') + '</div>'
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:12px"><span class="ui-nota" id="disSerRes" style="flex:1"></span>' + (S.base && (S.res[S.base] || {}).url ? '<button class="btn on" onclick="disSeriePintar()" title="Misma forma del ' + esc(S.base) + ', color exacto de cada foto">🎨 Pintar los demás desde ' + esc(S.base) + ' · gratis</button>' : '') + '<button class="btn" onclick="disSerieHacer()" title="Todos los colores con la IA (lo caro). Mejor: uno solo y 🎨 Pintar los demás">Hacer todos con IA (' + P.length + ') · ~US$' + usd.toFixed(2).replace('.', ',') + '</button></div>';
 }
+function disSerieDescartar(color){ const S = DIS._ser; if (!S || !S.res[color]) return; delete S.res[color]; if (S.base === color) S.base = ''; _disSeriePintar(); }
 async function disSerieUno(color){
   const S = DIS._ser; if (!S || !S.cx) return; const o = (S.cx.portadas || []).find(x => x.c === color); if (!o) return;
   if (!S.modelo){ const r0 = document.getElementById('disSerRes'); if (r0) r0.textContent = 'Primero elige la modelo.'; return; }
   if (DIS._serUno) return; DIS._serUno = 1; S.res[color] = { est: 'Vistiendo…' }; _disSeriePintar();
   try {
     const final = +((document.getElementById('disSerCal') || {}).value || 0) === 1;
-    const j = await _disFashn({ modo: 'vestir', prenda: o.src, modelo: S.modelo, final }); S.res[color] = { est: 'Igualando color…' }; _disSeriePintar();
+    const motor = (document.getElementById('disSerMotor') || {}).value || 'v16', j = await _disFashn({ modo: 'vestir', prenda: o.src, modelo: S.modelo, final, motor }); S.res[color] = { est: 'Igualando color…' }; _disSeriePintar();
     const obj = await _disColorObjetivo(S.p.handle, color, o.src, j.url);
-    const f = await _disFashnFiel(j.url, obj); S.res[color] = Object.assign({ obj: obj && obj.hex, objC: obj, usd: j.usd }, f);
+    const f = await _disFashnFiel(j.url, obj); S.res[color] = Object.assign({ obj: obj && obj.hex, objC: obj, usd: j.usd, modelo: S.modelo }, f);
   } catch (e) { S.res[color] = { est: 'No se pudo: ' + e.message }; }
   finally { DIS._serUno = 0; }
   _disSeriePintar();
