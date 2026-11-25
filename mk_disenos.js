@@ -1061,7 +1061,8 @@ async function _disFashnFiel(urlIA, obj){
     let dh = Math.abs(hue(m0) - hue(T)); if (dh > 180) dh = 360 - dh; if (dh > 40) throw 0;   // no se encontró la prenda (piel, fondo): ajuste normal
     const dL = T[0] - m0[0], k = Math.abs(dL) < 10 ? 0.5 : 1, meta = [m0[0] + dL * k, m0[1] + (T[1] - m0[1]) * 0.5, m0[2] + (T[2] - m0[2]) * 0.5];   // Pablo 24-nov: «un intermedio entre los dos»
     const blob = await _disRecolorear(urlIA, meta), m1 = await _disColorPropio(URL.createObjectURL(blob));
-    const u = await _disSubir(blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes: _disDE(m0, T), despues: m1 ? _disDE(m1, T) : null };
+    const a0 = _disDE(m0, T), d1 = m1 ? _disDE(m1, T) : null; if (d1 == null || d1 >= a0) return { url: urlIA, urlIA, antes: a0, despues: a0 };   // 24-nov: si el ajuste no acerca al color, queda la foto de la IA tal cual
+    const u = await _disSubir(blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes: a0, despues: d1 };
   } catch (_) { /* ajuste por promedio */ }
   const r = await disColorIgualar(urlIA, T); if (!r.cambio) return { url: urlIA, antes: r.antes, despues: r.despues };
   const u = await _disSubir(r.blob, 'creativos/fashn/' + Date.now().toString(36) + '-colorfiel.png'); return { url: u, urlIA, antes: r.antes, despues: r.despues };
@@ -1118,13 +1119,32 @@ async function disFusionModelo(file){
   catch (e) { const r = document.getElementById('disSerRes'); if (r) r.textContent = 'No se pudo subir la modelo: ' + e.message; }
   _disSeriePintarModelos();
 }
+/* 24-nov (Pablo): «con el saco cerrado deberías obtener la forma perfecta». Cada color puede usar cualquiera de SUS fotos de la tienda:
+   la IA copia la forma de la foto que recibe; la de saco cerrado y de frente da la caída curva y el saco parejo. */
+function _disFotosColor(c){
+  const cx = DIS._ser && DIS._ser.cx; if (!cx) return []; const o = (cx.portadas || []).find(x => x.c === c); if (!o) return [];
+  if (!cx.fotos || !cx.fotos.length) return [o.src];
+  if (!cx._grp){ cx._grp = {}; const P = cx.portadas.map(x => cx.fotos.indexOf(x.src));
+    cx.portadas.forEach((x, k) => { const a = P[k]; if (a < 0){ cx._grp[x.c] = [x.src]; return; } const nx = P.filter(y => y > a).sort((m, n) => m - n)[0]; cx._grp[x.c] = cx.fotos.slice(a, nx == null ? cx.fotos.length : nx); }); }
+  return cx._grp[c] || [o.src];
+}
+function disSerieFoto(c, d){
+  const S = DIS._ser, o = S && S.cx && (S.cx.portadas || []).find(x => x.c === c), L = _disFotosColor(c); if (!o || L.length < 2) return;
+  const i = Math.max(0, L.indexOf(o.src)); o.src = L[(i + d + L.length) % L.length]; _disSeriePintar();
+}
+function _disSerieFotoMini(o){
+  const L = _disFotosColor(o.c), n = L.length, i = L.indexOf(o.src) + 1, ca = disA(String(o.c).replace(/'/g, ''));
+  const fl = (d, t) => '<button class="btn" onclick="disSerieFoto(\'' + ca + '\',' + d + ')" title="Otra foto de este color · mejor: saco cerrado y de frente" style="position:absolute;top:34px;' + (d < 0 ? 'left:0' : 'right:0') + ';padding:0 4px;min-height:22px;font-size:13px">' + t + '</button>';
+  return '<div style="position:relative;width:70px"><img src="' + disA(_disTam(o.src, 300)) + '" title="Prenda" style="width:70px;height:92px;object-fit:cover;border-radius:6px">'
+    + (n > 1 ? fl(-1, '‹') + fl(1, '›') + '<span class="ui-nota" style="position:absolute;bottom:2px;left:0;right:0;text-align:center;background:rgba(0,0,0,.55);border-radius:0 0 6px 6px">' + i + ' de ' + n + '</span>' : '') + '</div>';
+}
 function _disSeriePintarModelos(){
   const el = document.getElementById('disSerMod'), S = DIS._ser; if (!el || !S) return; const B = DIS.banco || [], extra = (S.modelosSubidas || []).filter(u => B.indexOf(u) < 0);
-  (DIS.prods || []).filter(p => _disActivo(p) && !/aret|collar|anillo|pulsera|colet|accesor|cartera|bolso|cintur/i.test(String(p.titulo || '') + ' ' + String(p.tipo || p.categoria || ''))).forEach(p => {   // solo prendas: las joyas no sirven de modelo
+  (DIS.prods || []).filter(p => _disActivo(p) && !/aret|collar|anillo|pulsera|colet|accesor|cartera|bolso|cintur|cinto|correa|belt/i.test(String(p.titulo || '') + ' ' + String(p.tipo || p.categoria || ''))).forEach(p => {   // solo prendas: las joyas no sirven de modelo
   const f = _disFotos(p)[0]; if (f && B.indexOf(f) < 0 && extra.indexOf(f) < 0) extra.push(f); });
   const mini = (u, enBanco) => '<span style="position:relative;display:inline-block"><img src="' + disA(_disTam(u, 200)) + '" onclick="DIS._ser.modelo=\'' + disA(u) + '\';_disSeriePintarModelos();_disSeriePintar()" style="width:78px;height:101px;object-fit:cover;object-position:top;border-radius:6px;cursor:pointer;border:3px solid ' + (S.modelo === u ? '#7c5cff' : 'transparent') + '">'
     + '<button type="button" class="dis-ib" title="' + (enBanco ? 'Quitar del banco de modelos' : 'Guardar en el banco de modelos (salen primero siempre)') + '" onclick="disBancoAlternar(\'' + disA(u) + '\')" style="position:absolute;right:-4px;top:-6px;font-size:12px">' + (enBanco ? '⭐' : '☆') + '</button></span>';
-  el.innerHTML = '<div class="ui-nota">Toca una para elegirla · ⭐ la guarda en el banco · mejor de frente y cuerpo entero</div><div style="display:flex;gap:6px;flex-wrap:wrap;max-height:330px;overflow:auto;margin-top:6px">' + B.map(u => mini(u, true)).join('') + extra.map(u => mini(u, false)).join('') + '</div>';
+  el.innerHTML = '<div class="ui-nota">Toca una para elegirla · ⭐ la guarda en el banco · mejor de frente, brazos sueltos y sin manos en el saco</div><div style="display:flex;gap:6px;flex-wrap:wrap;max-height:330px;overflow:auto;margin-top:6px">' + B.map(u => mini(u, true)).join('') + extra.map(u => mini(u, false)).join('') + '</div>';
 }
 async function disBancoAlternar(u){ const B = (DIS.banco || []).slice(), i = B.indexOf(u); if (i >= 0) B.splice(i, 1); else B.unshift(u); DIS.banco = B.slice(0, 12); try { await _disCfgSet('banco_modelos', DIS.banco); } catch (_) {} _disSeriePintarModelos(); }
 async function disSerieProd(h){
@@ -1137,7 +1157,7 @@ function _disSeriePintar(){
   el.innerHTML = '<div class="ui-nota" style="margin:4px 0 10px">Consejo: haz con la IA <b>un solo color vivo</b> (rojo, verde, azul), márcalo 🎨 Base y pinta los demás gratis. La IA copia lo que se ve en tu foto: si un bolsillo no se ve, no lo pone.</div>'
     + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:12px">' + P.map(o => {
       const r = S.res[o.c] || {};
-      return '<div class="dis-tarj" style="padding:8px"><div style="display:flex;gap:6px;align-items:flex-start"><div style="display:flex;flex-direction:column;gap:4px"><img src="' + disA(_disTam(o.src, 300)) + '" title="Prenda" style="width:70px;height:92px;object-fit:cover;border-radius:6px">' + (S.modelo ? '<img src="' + disA(_disTam(r.modelo || S.modelo, 300)) + '" title="Modelo" style="width:70px;height:92px;object-fit:cover;object-position:top;border-radius:6px">' : '<span class="ui-nota" style="width:70px">Elige modelo</span>') + '</div>'
+      return '<div class="dis-tarj" style="padding:8px"><div style="display:flex;gap:6px;align-items:flex-start"><div style="display:flex;flex-direction:column;gap:4px">' + _disSerieFotoMini(o) + (S.modelo ? '<img src="' + disA(_disTam(r.modelo || S.modelo, 300)) + '" title="Modelo" style="width:70px;height:92px;object-fit:cover;object-position:top;border-radius:6px">' : '<span class="ui-nota" style="width:70px">Elige modelo</span>') + '</div>'
         + (r.url ? '<img src="' + disA(r.url) + '" onclick="window.open(\'' + disA(r.url) + '\')" style="width:150px;height:190px;object-fit:cover;object-position:top;border-radius:6px;cursor:zoom-in">' : '<div class="ui-nota" style="width:150px;height:190px;display:flex;align-items:center;justify-content:center;text-align:center">' + esc(r.est || 'Sin hacer') + '</div>') + '</div>'
         + '<div class="ui-tot" style="margin-top:6px">' + esc(o.c) + ' ' + _disDEchip(r.despues) + (r.desde ? ' <span class="ui-nota" title="Misma foto que el ' + esc(r.desde) + ', pintada con el color de tu foto">🎨 del ' + esc(r.desde) + '</span>' : '') + '</div>'
         + (r.obj ? '<div style="display:flex;gap:6px;align-items:center;margin-top:4px" title="Color medido en tu foto de la prenda; el mockup se lleva a este color"><span style="width:18px;height:18px;border-radius:4px;background:' + disA(r.obj) + ';display:inline-block"></span><span class="ui-nota">Color de tu foto ' + esc(r.obj) + '</span></div>' : '')
