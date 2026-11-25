@@ -685,6 +685,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
            fija. Antes estaba al final de la barra de pestañas de Pedidos, que se
            desliza de costado: con once pestañas abiertas desaparecía de la vista. -->
       <button class="btn bp bs" id="btn-nuevo-pedido" onclick="navegarA('nuevo')" title="Registrar un pedido nuevo" style="font-size:12px;white-space:nowrap">＋ Nuevo pedido</button>
+      <button class="btn bg bs" id="btn-rotulos" onclick="rotulosAbrir()" title="Subir los rótulos de Shalom y Olva del día: pone la guía y la clave en cada pedido" style="font-size:12px;white-space:nowrap">📦 Rótulos</button>
       <button class="btn bg bs" id="btn-exp-xl" title="Descargar la vista actual a Excel" style="font-size:12px;display:none;white-space:nowrap;padding:4px 8px;align-items:center;gap:3px"><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="18" rx="3" fill="#1D6F42"/><path d="M7.5 8l3.2 4-3.2 4h2.3l2.1-2.7L14 16h2.3l-3.2-4 3.2-4H14l-2.1 2.7L9.8 8z" fill="#fff"/></svg><span style="font-size:13px;line-height:1">↓</span></button>
       <button class="btn bg bs" id="btn-ref" title="Recargar datos del servidor" style="font-size:12px">🔄</button>
     </div>
@@ -1055,7 +1056,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         </div>
         <!-- 10b. Cumpleaños (22-oct · beneficio sorpresa; se guarda en la ficha de la clienta) -->
         <div class="fr">
-          <div class="fg"><label>Cumpleaños 🎂 (beneficio sorpresa)</label><input id="np-cumple" type="date" autocomplete="off"></div>
+          <div class="fg"><label>Cumpleaños 🎂 (20% en una prenda en su mes)</label><input id="np-cumple" type="date" autocomplete="off"></div>
           <div class="fg"></div>
         </div>
         <!-- 11. Canal + 12. Origen -->
@@ -1144,9 +1145,9 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
             <label>Segmento</label>
             <select id="cli-bseg">
               <option value="">Todos</option>
+              <option value="SUPER VIP">Super VIP</option>
               <option value="VIP">VIP</option>
-              <option value="RECURRENTE">Recurrente</option>
-              <option value="NUEVA">Nueva</option>
+              <option value="CLIENTA">Clienta</option>
               <option value="INACTIVA">Inactiva</option>
               <option value="PROBLEMATICA">Problemática</option>
               <option value="SIN_CLASIFICAR">Sin clasificar</option>
@@ -38280,6 +38281,107 @@ function _puenteAviso(min){
 }
 if (location.protocol === 'https:') { setTimeout(_puenteRevisar, 20000); setInterval(_puenteRevisar, PUENTE_CADA_MS); }
 // <<< PUENTE_AVISO_25NOV
+/* 25-nov (Pablo) · ROTULOS_25NOV · 📦 Rótulos: subes los rótulos del día (PDF o fotos) de Shalom y Olva; el ERP lee guía, clave y DNI
+   (PDF: texto del archivo; foto o PDF escaneado: lector de texto gratis del navegador), busca el pedido por DNI y courier, tú marcas
+   cuáles salieron y guarda guía + clave en cada uno (Olva = clave «No aplica»). Nada se guarda sin tu clic. */
+function _rotPartir(txt){
+  const u = String(txt || '').replace(/\r/g, '').toUpperCase();
+  const re = /TRACKING\s*[:#]?\s*\d{5,9}\s*-\s*\d{2}|N\W{0,3}\s*DE\s*ORDEN/g, ix = []; let m;
+  while ((m = re.exec(u))) ix.push(m.index);
+  return ix.map((a, i) => u.slice(i ? a : 0, ix[i + 1] || u.length));
+}
+function _rotLeer(u){
+  let m = /TRACKING\s*[:#]?\s*(\d{5,9})\s*-\s*(\d{2})/.exec(u);
+  if (m) { const rec = u.split(/RECIBE\s*:/)[1] || '';
+    return { courier: 'OLVA', guia: m[1] + '-' + m[2], clave: '', dni: (/DNI\s*:?\s*(\d{8,11})/.exec(rec) || [])[1] || '', nombre: ((/RECIBE\s*:\s*([^\n]+)/.exec(u) || [])[1] || '').trim() }; }
+  m = /ORDEN\s*:?\s*(\d{8,12})/.exec(u);
+  if (m) return { courier: 'SHALOM', guia: m[1], clave: (/C\S{1,3}DIGO\s*:?\s*([0-9A-Z]{4})\b/.exec(u) || [])[1] || '', dni: (/DOC\W{0,3}\s*:?\s*(\d{8,11})/.exec(u) || [])[1] || '', nombre: ((/DESTINATARIO\s*:?\s*\n*\s*([^\n]+)/.exec(u) || [])[1] || '').trim() };
+  return null;
+}
+let _pdfP = null;
+function _pdfCargar(){ if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib); if (_pdfP) return _pdfP;
+  _pdfP = new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+    s.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js'; ok(window.pdfjsLib); };
+    s.onerror = () => { _pdfP = null; no(new Error('No cargó el lector de PDF')); }; document.head.appendChild(s); }); return _pdfP; }
+async function _rotTextos(file, avisar){   // devuelve un texto por página (o uno por foto)
+  const T = [];
+  if (/pdf$/i.test(file.type) || /\.pdf$/i.test(file.name)) {
+    const pdf = await (await _pdfCargar()).getDocument({ data: await file.arrayBuffer() }).promise;
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const pg = await pdf.getPage(i), tc = await pg.getTextContent();
+      let t = tc.items.map(x => x.str + (x.hasEOL ? '\n' : ' ')).join('');
+      if (t.replace(/\s/g, '').length < 30) {   // PDF escaneado: se lee como foto
+        const vp = pg.getViewport({ scale: 2 }), c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+        await pg.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+        avisar('Leyendo página ' + i + ' de ' + file.name + '…');
+        t = ((await (await _tessCargar()).recognize(c, 'spa')).data || {}).text || '';
+      }
+      T.push(t);
+    }
+  } else { avisar('Leyendo ' + file.name + '…'); T.push((((await (await _tessCargar()).recognize(file, 'spa')).data) || {}).text || ''); }
+  return T;
+}
+function _rotPedido(r){   // pedido de la clienta por DNI (o nombre) y courier, el más nuevo que no esté entregado
+  const dig = s => String(s || '').replace(/\D/g, ''), N = s => String(s || '').toUpperCase().normalize('NFD').replace(/[^A-Z ]/g, '').replace(/\s+/g, ' ').trim();
+  const filas = (Array.isArray(pRaw) ? pRaw : []).filter(f => String(f['Courier'] || '').trim().toUpperCase() === r.courier && !/ENTREGADO|DEVOLUCION|ANULADO/i.test(String(f['Estado'] || '')));
+  let c = r.dni ? filas.filter(f => dig(f['DNI']) === r.dni) : [];
+  if (!c.length && r.nombre) { const n = N(r.nombre).split(' ').slice(0, 2).join(' '); if (n.length > 5) c = filas.filter(f => N(f['Nombres y Apellidos']).indexOf(n) === 0); }
+  c.sort((a, b) => (parseInt(b['NroPedido'], 10) || 0) - (parseInt(a['NroPedido'], 10) || 0));
+  return c[0] || null;
+}
+let _rotL = [];
+function rotulosAbrir(){
+  if (document.getElementById('rot-velo')) return;
+  const v = document.createElement('div'); v.id = 'rot-velo';
+  v.style.cssText = 'position:fixed;inset:0;z-index:99990;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:40px 12px;overflow:auto';
+  v.innerHTML = '<div class="card" style="width:100%;max-width:980px;padding:16px;font-family:var(--ui-f,Manrope)">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><div style="font-size:20px;font-weight:600">📦 Rótulos del día</div><button class="btn bg bs" onclick="document.getElementById(\'rot-velo\').remove()" title="Cerrar">✕</button></div>'
+    + '<div style="font-size:12px;color:var(--mu);margin:6px 0 12px">Sube los rótulos de Shalom y Olva (PDF o fotos). Revisa cada uno, marca los que salieron y guarda.</div>'
+    + '<input type="file" id="rot-f" multiple accept="application/pdf,image/*" onchange="rotulosLeer(this.files)">'
+    + '<div id="rot-est" style="font-size:12px;color:var(--mu);margin:10px 0"></div><div id="rot-tb"></div></div>';
+  document.body.appendChild(v);
+}
+async function rotulosLeer(files){
+  const est = document.getElementById('rot-est'), avisar = t => { est.textContent = t; };
+  _rotL = [];
+  for (const f of Array.from(files || [])) {
+    try { for (const t of await _rotTextos(f, avisar)) for (const ch of _rotPartir(t)) { const r = _rotLeer(ch); if (r) { r.archivo = f.name; r.p = _rotPedido(r); r.ok = !!r.p; _rotL.push(r); } } }
+    catch (e) { try { _errLog('rotulos.leer', e); } catch(_){} avisar('No se pudo leer ' + f.name + '.'); }
+  }
+  avisar(_rotL.length ? _rotL.length + ' rótulos leídos · ' + _rotL.filter(r => r.p).length + ' con pedido encontrado.' : 'No encontré rótulos de Shalom u Olva en esos archivos.');
+  rotulosPintar();
+}
+function rotulosPintar(){
+  const tb = document.getElementById('rot-tb'); if (!tb) return;
+  if (!_rotL.length) { tb.innerHTML = ''; return; }
+  tb.innerHTML = '<table class="tt" style="width:100%"><thead><tr><th>Salió</th><th>Courier</th><th>Guía</th><th>Clave</th><th>Destinataria</th><th>DNI</th><th>Pedido</th></tr></thead><tbody>'
+    + _rotL.map((r, i) => '<tr><td style="text-align:center"><input type="checkbox" data-i="' + i + '"' + (r.ok ? ' checked' : '') + (r.p ? '' : ' disabled') + ' onchange="_rotL[' + i + '].ok=this.checked"></td>'
+      + '<td>' + r.courier + '</td><td>' + esc(r.guia) + '</td><td>' + esc(r.clave || (r.courier === 'OLVA' ? 'No aplica' : '—')) + '</td>'
+      + '<td>' + esc(r.nombre) + '</td><td>' + esc(r.dni || '—') + '</td>'
+      + '<td>' + (r.p ? '#' + esc(r.p['NroPedido']) + ' · ' + esc(r.p['Estado'] || '') : '<input data-i="' + i + '" placeholder="Nro" style="width:80px" onchange="_rotManual(' + i + ', this.value)">') + '</td></tr>').join('')
+    + '</tbody></table><div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn bp" id="rot-g" onclick="rotulosGuardar()">Guardar guías de los marcados</button></div>';
+}
+function _rotManual(i, nro){
+  const n = String(nro || '').trim(), f = (Array.isArray(pRaw) ? pRaw : []).find(x => String(x['NroPedido']).trim() === n);
+  if (!f) { toast('No encuentro el pedido #' + n + ' en la lista cargada.', 'warn'); return; }
+  _rotL[i].p = f; _rotL[i].ok = true; rotulosPintar();
+}
+async function rotulosGuardar(){
+  const b = document.getElementById('rot-g'), L = _rotL.filter(r => r.ok && r.p); if (!L.length) return;
+  b.disabled = true; let bien = 0; const mal = [];
+  for (const r of L) {
+    const nro = String(r.p['NroPedido']).trim();
+    b.textContent = 'Guardando #' + nro + '…';
+    try { const x = await _segRpc('pedido_seguimiento_guardar', { p_nro: nro, p_courier: r.courier, p_guia: r.guia, p_clave: r.clave || (r.courier === 'OLVA' ? 'NA' : ''), p_pago_ok: null });
+      if (String(x).indexOf('no:') === 0) mal.push('#' + nro + ' ' + String(x).slice(3).trim());
+      else { bien++; _guiaPor[nro] = { nro_pedido: nro, courier: r.courier, guia: r.courier === 'OLVA' ? r.guia : r.guia, codigo: r.clave || 'N/A' }; r.guardado = true; }
+    } catch (e) { mal.push('#' + nro + ' sin conexión'); }
+  }
+  document.getElementById('rot-est').textContent = bien + ' guías guardadas' + (mal.length ? ' · no se guardaron: ' + mal.join(' · ') : '.');
+  toast(bien + ' guías guardadas desde los rótulos.', mal.length ? 'warn' : 'ok');
+  b.disabled = false; b.textContent = 'Guardar guías de los marcados';
+}
+// <<< ROTULOS_25NOV
 /* 25-nov · edición en la misma celda de la hoja de Pedidos (Guía / Clave). Enter o salir = guarda; Esc = cancela. */
 function _segCelda(td, campo, nro, cour){
   if (td.querySelector('input')) return;
@@ -48701,6 +48803,7 @@ function imprimirRotulo(nro) {
 // ── CONFIGURACIÓN ─────────────────────────────────────────
 let _cfgSegData = [];
 const CFG_CRITERIOS = [
+  {v:'GASTO_12M_MIN',     t:'Compras de los últimos 12 meses (S/)'},   // 25-nov (Pablo) · niveles Tulula
   {v:'GASTO_PRENDAS_MIN', t:'Gasto mínimo en prendas (S/)'},
   {v:'PEDIDOS_MIN',       t:'Pedidos mínimos'},
   {v:'INACTIVO_DIAS_MIN', t:'Días inactivo'},
