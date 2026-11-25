@@ -1104,6 +1104,11 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <div class="fg" style="flex:1"><label id="np-ag-lbl">Agencia Shalom</label><select id="np-ag-sel" onchange="_npShAgElegirSel()" onfocus="_npShAgPorDistrito()"><option value="">— Elige primero el distrito de la clienta —</option></select></div>
           <div class="fg"><label>Buscar en todo el Perú</label><input id="np-ag" type="text" list="np-ag-list" autocomplete="off" placeholder="Ciudad o calle..." oninput="_npShAgElegir()"><datalist id="np-ag-list"></datalist></div>
         </div>
+        <!-- 25-nov (Pablo) · SEGUIMIENTO_25NOV · opcional al registrar: si ya hay guía. Shalom: guía + clave; Olva: tracking con año -->
+        <div class="fr" id="np-seg-wrap" style="display:none">
+          <div class="fg"><label>Guía / tracking (opcional)</label><input id="np-seg-guia" type="text" autocomplete="off" placeholder="105082773 · Olva: 3160684-26"></div>
+          <div class="fg"><label>Clave Shalom (opcional)</label><input id="np-seg-clave" type="text" maxlength="4" autocomplete="off" placeholder="DJDH" style="text-transform:uppercase"></div>
+        </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px">
           <button class="btn bg" id="btn-limpiar">Limpiar</button>
           <button class="btn bp" id="btn-guardar">Confirmar pedido</button>
@@ -14677,7 +14682,7 @@ const PCOLS = [
   {k:'Precio',l:'Precio'},{k:'Envio',l:'Envío'},{k:'Subtotal',l:'Subtotal'},
   {k:'_totalPagado',l:'Pagado',lib:1},{k:'_formasPago',l:'F.Pago'},{k:'_fechaPago',l:'Fec.Pago',lib:1},
   {k:'Fecha Envio',l:'Fec.Envío',lib:1},{k:'Estado',l:'Estado'},{k:'Estado Pago',l:'Est.Pago'},
-  {k:'Courier',l:'Courier'},{k:'Comentarios Envio',l:'C.Envío',lib:1},
+  {k:'Courier',l:'Courier'},{k:'_guia',l:'Guía · clave'},{k:'Comentarios Envio',l:'C.Envío',lib:1},
   {k:'_constancia',l:'Const.',lib:1},
 ];
 /* 23-ago-2026 — Fec.Pago salia como 2026-05-30 y el resto como 30/05/2026.
@@ -24704,6 +24709,10 @@ function mkTBody(rows) {
         // #4 — mostrar teléfonos sin espacios ni guiones; conservar separador " / " si hay varios
         const _cd = _celDisplay(v);
         tds += '<td'+TC+'>'+(_cd ? esc(_cd) : '<span style="color:var(--mu)">—</span>')+'</td>';
+      } else if (c.k==='_guia') {   // 25-nov · SEGUIMIENTO_25NOV: guía y clave (clic = abre el pedido para editarlas)
+        const _nG = String(p['NroPedido']||'').trim(), _g = _guiaPor[_nG], _cG = String(p['Courier']||'').trim().toUpperCase();
+        tds += '<td'+TC+'>'+(_g && _g.guia ? '<button class="btn bg bs" data-vi="'+esc(_nG)+'" style="font-size:11px" title="Abrir el pedido para editar guía, clave y pago">'+esc(_g.guia)+(_g.codigo?' · '+esc(_g.codigo):'')+'</button>'
+          : (_cG==='SHALOM'||_cG==='OLVA') ? '<button class="btn bg bs" data-vi="'+esc(_nG)+'" style="font-size:11px;color:var(--mu)" title="Abrir el pedido para escribir la guía">＋ Guía</button>' : '<span style="color:var(--mu)">—</span>')+'</td>';
       } else if (c.k==='_constancia') {
         const _cnt = (p._constancias||[]).length;
         const _nroC = esc(String(p['NroPedido']||''));
@@ -26469,6 +26478,63 @@ function _despAvisoTabla(nros, est){
     if (ya.length) toast('⚠ ' + (ya.length === 1 ? 'El pedido ' + ya[0] + ' ya se despachó' : 'Los pedidos ' + ya.slice(0, 6).join(', ') + ' ya se despacharon') + ': en la hoja de separación solo saldrá la prenda nueva del cambio.', 'warn');
   } catch(_){}
 }
+/* 25-nov (Pablo) · SEGUIMIENTO_25NOV · guía/tracking, clave y «Pago completo» por pedido (erp.pedido_guia).
+   Shalom: guía (8 a 12 números) + clave de 4. Olva: tracking con año (3160684-26), sin clave.
+   La clienta ve la clave en su app SOLO con el pago completo: pagos registrados = total, Est. Pago COMPLETO, o «Pago completo» marcado acá. */
+function _segHtml(nro, p){
+  const c = String((p && p['Courier']) || '').trim().toUpperCase(); if (c !== 'SHALOM' && c !== 'OLVA') return '';
+  setTimeout(() => _segCargar(String(nro)), 60);
+  return '<div id="seg-box" data-nro="'+esc(nro)+'" data-cour="'+c+'" style="margin-top:12px;padding:14px 16px;border:1px solid var(--bd);border-radius:var(--r)">'
+    + '<div class="ct" style="margin-bottom:6px">Seguimiento '+(c === 'SHALOM' ? 'Shalom' : 'Olva')+'</div><div style="font-size:12px;color:var(--mu)">Cargando…</div></div>';
+}
+async function _segRpc(fn, body){
+  const tk = await _sbSesionAsegurar(); if (!tk) throw new Error('sin sesión');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error('HTTP ' + r.status); return r.json();
+}
+async function _segCargar(nro){
+  const box = document.getElementById('seg-box'); if (!box || box.dataset.nro !== nro) return;
+  try { _segPintar(box, (await _segRpc('pedido_seguimiento_leer', { p_nro: nro })) || {}); }
+  catch(e) { box.lastChild.textContent = 'No se pudo leer el seguimiento. Cierra y vuelve a abrir el pedido.'; }
+}
+function _segEstado(d, sh){
+  if (!d.guia) return sh ? 'Sin guía todavía.' : 'Sin tracking todavía.';
+  if (!sh) return 'La clienta ve el estado de Olva en su cuenta.';
+  if (!d.clave) return 'Falta la clave.';
+  return d.clave_visible ? '✓ La clienta ve su clave en la app.' : '🔒 Clave oculta para la clienta: falta pagar S/ ' + fmt(d.debe) + '. Aparece sola al registrar el pago, o marca «Pago completo».';
+}
+function _segPintar(box, d){
+  const sh = box.dataset.cour === 'SHALOM', st = 'width:100%;padding:7px 10px;background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);color:var(--tx);font-family:inherit;font-size:13px';
+  box.innerHTML = '<div class="ct" style="margin-bottom:6px">Seguimiento ' + (sh ? 'Shalom' : 'Olva') + '</div><div class="fr">'
+    + '<div class="fg"><label>' + (sh ? 'Guía (número de orden)' : 'Tracking con año') + '</label><input id="seg-guia" style="' + st + '" value="' + esc(d.guia || '') + '" placeholder="' + (sh ? '105082773' : '3160684-26') + '"></div>'
+    + (sh ? '<div class="fg"><label>Clave</label><input id="seg-clave" maxlength="4" style="' + st + ';text-transform:uppercase" value="' + esc(d.clave || '') + '" placeholder="DJDH"></div>' : '')
+    + '</div>'
+    + (sh ? '<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:8px"><input type="checkbox" id="seg-pago"' + (d.pago_ok ? ' checked' : '') + '> Pago completo (la clienta ya pagó todo: mostrarle su clave)</label>' : '')
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:8px"><span style="font-size:12px;color:var(--mu)">' + esc(_segEstado(d, sh)) + (d.pago_ok && d.pago_ok_por ? ' · marcado por ' + esc(String(d.pago_ok_por).split('@')[0]) : '') + '</span>'
+    + '<button class="btn bg bs" id="seg-guardar">Guardar seguimiento</button></div>';
+  box.querySelector('#seg-guardar').onclick = () => _segGuardar(box);
+}
+async function _segGuardar(box){
+  const nro = box.dataset.nro, cour = box.dataset.cour, b = box.querySelector('#seg-guardar');
+  const guia = String((box.querySelector('#seg-guia') || {}).value || '').trim(), clave = String((box.querySelector('#seg-clave') || {}).value || '').trim();
+  const pg = box.querySelector('#seg-pago'), pagoOk = pg ? pg.checked : null;
+  b.disabled = true; b.textContent = 'Guardando…';
+  try {
+    const r = await _segRpc('pedido_seguimiento_guardar', { p_nro: nro, p_courier: cour, p_guia: guia, p_clave: clave, p_pago_ok: pagoOk });
+    if (String(r).indexOf('no:') === 0) { toast('#' + nro + ': ' + String(r).slice(3).trim(), 'err'); b.disabled = false; b.textContent = 'Guardar seguimiento'; return; }
+    const d = (await _segRpc('pedido_seguimiento_leer', { p_nro: nro })) || {};
+    if (d.guia) _guiaPor[nro] = { nro_pedido: nro, courier: cour, guia: d.guia, codigo: d.clave || '' };
+    _segPintar(box, d); toast('#' + nro + ': seguimiento guardado.', 'ok');
+  } catch(e) { try { _errLog('seguimiento.guardar', e, { toast: '#' + nro + ': no se pudo guardar. Vuelve a intentar.' }); } catch(_){} b.disabled = false; b.textContent = 'Guardar seguimiento'; }
+}
+/* Nuevo pedido: si ya tienen la guía al registrar, se guarda junto con la agencia. */
+async function _npSegGuardar(nro, cour, guia, clave){
+  if (!nro || !guia) return;
+  try { const r = await _segRpc('pedido_seguimiento_guardar', { p_nro: String(nro), p_courier: cour, p_guia: guia, p_clave: clave, p_pago_ok: null });
+    if (String(r).indexOf('no:') === 0) toast('#' + nro + ': la guía no se guardó (' + String(r).slice(3).trim() + '). Escríbela en Ver pedido.', 'warn');
+    else _guiaPor[String(nro)] = { nro_pedido: String(nro), courier: cour, guia: guia, codigo: clave };
+  } catch(e) { try { _errLog('seguimiento.nuevo', e); } catch(_){} }
+}
 /* 24-nov-2026 (Pablo) · GUÍA OBLIGATORIA: un pedido SHALOM u OLVA no pasa a «En camino» sin su guía.
    Shalom: número de orden (8 a 12 dígitos) + código de 4 caracteres. Olva: número de tracking.
    Se guarda en erp.pedido_guia (RPC pedido_guia_guardar); la copia _guiaPor evita volver a pedirla. */
@@ -26491,13 +26557,13 @@ function _guiaFreno(nros){
     if (_guiaPor[nro] && String(_guiaPor[nro].guia || '').trim()) continue;
     const pide = cour === 'SHALOM'
       ? 'Pedido #' + nro + ' · SHALOM\n\nEscribe el NÚMERO DE ORDEN y el CÓDIGO de la guía, separados por un espacio.\nEjemplo: 123456789 AB12\n\n(Sin guía no se puede marcar «En camino»)'
-      : 'Pedido #' + nro + ' · OLVA\n\nEscribe el NÚMERO DE TRACKING de la guía.\nEjemplo: 12345678\n\n(Sin guía no se puede marcar «En camino»)';
+      : 'Pedido #' + nro + ' · OLVA\n\nEscribe el TRACKING con su año.\nEjemplo: 3160684-26\n\n(Sin guía no se puede marcar «En camino»)';
     let ok = null;
     for (let i = 0; i < 3 && !ok; i++) {
       const t = window.prompt(pide + (i ? '\n\n⚠ No es válida, revísala.' : ''), ''); if (t === null) break;
       const v = String(t).trim().toUpperCase().replace(/[^0-9A-Z ]/g, ' ').replace(/\s+/g, ' ');
       if (cour === 'SHALOM') { const m = v.match(/^(\d{8,12}) ?([0-9A-Z]{4})$/); if (m) ok = { guia: m[1], codigo: m[2] }; }
-      else { const m = v.replace(/ /g, '').match(/^\d{5,15}$/); if (m) ok = { guia: m[0], codigo: '' }; }
+      else { const m = v.match(/^(\d{5,9})(?:[ -]?(\d{2}))?$/); if (m) ok = { guia: m[1] + '-' + (m[2] || String(new Date().getFullYear()).slice(2)), codigo: '' }; }   // 25-nov · Olva = tracking + año (3160684-26)
     }
     if (!ok) { try { toast('#' + nro + ': falta la guía de ' + cour + '. No se marcó «En camino».', 'warn'); } catch(_){} return false; }
     _guiaPor[nro] = { nro_pedido: nro, courier: cour, guia: ok.guia, codigo: ok.codigo };
@@ -28450,7 +28516,9 @@ function _shAgRef(a){ return [a.direccion, a.hora_atencion, a.hora_domingo ? 'Do
 const _shEsc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 async function _npShAgMostrar(){
   const w = document.getElementById('np-ag-wrap'), c = document.getElementById('np-courier'); if (!w || !c) return;
-  const cour = _agDe(); w.style.display = cour ? '' : 'none'; if (!cour) return;
+  const cour = _agDe(); w.style.display = cour ? '' : 'none';
+  try { const sw = document.getElementById('np-seg-wrap'); if (sw) sw.style.display = cour ? '' : 'none'; const sc = document.getElementById('np-seg-clave'); if (sc) sc.parentElement.style.display = cour === 'SHALOM' ? '' : 'none'; } catch(_){}   // 25-nov · guía opcional
+  if (!cour) return;
   const dl = document.getElementById('np-ag-list'), lb = document.getElementById('np-ag-lbl');
   if (cour !== _agCour) { _agCour = cour; _npShAgSel = null; if (dl) dl.innerHTML = ''; if (lb) lb.textContent = 'Agencia ' + _AG[cour].n; }
   const L = await _shAgCargar(cour);
@@ -29199,7 +29267,8 @@ function verPed(p) {
     + eField('Fecha pedido','FechaPedido',p['Fecha Pedido'],{type:'date'})
     + eField('Fecha envío','FechaEnvio',p['Fecha Envio'],{type:'date'})
     +'</div>'
-    + '<div class="fr1">'+eField('Comentarios envío','ComentariosEnvio',p['Comentarios Envio'])+'</div>';
+    + '<div class="fr1">'+eField('Comentarios envío','ComentariosEnvio',p['Comentarios Envio'])+'</div>'
+    + _segHtml(nro, p);   // 25-nov · guía, clave y pago completo
 
   // Sección Pagos — detalle consolidado
   const pagos = p._pagosDetalle || [];
@@ -33471,6 +33540,7 @@ async function npGuardar() {
       env: env, dsc: dsc, pag: pag,
       shAg: (_AG[String(_cliSnap.Courier || '').trim().toUpperCase()] && _npShAgSel && _agCour === String(_cliSnap.Courier || '').trim().toUpperCase()) ? _npShAgSel : null,   // 24-nov · agencia Shalom/Olva elegida
       shAgCour: _agCour,
+      segGuia: String((document.getElementById('np-seg-guia') || {}).value || '').trim(), segClave: String((document.getElementById('np-seg-clave') || {}).value || '').trim().toUpperCase(),   // 25-nov · guía opcional
       saldosFavor: (_npSaldos.applyFavor || []).slice(),
       saldosDevs: (_npSaldos.applyDevs || []).slice(),
       saldosPendiente: (_npSaldos.applyPendiente || []).slice(),
@@ -33920,7 +33990,8 @@ async function _npExecuteSave(job) {
   // v15 — aplicar saldos sobre el pedido ORIGEN (no sobre el nuevo: el +X / -X
   // ya viaja como línea de pago real del pedido nuevo, evitando doble conteo).
   if (nuevoNro) await _npAplicarSaldosOrigen(job, nuevoNro, cliBase.FechaPago);
-  if (nuevoNro && job.shAg) _npShAgGuardar(nuevoNro, job.shAg, job.shAgCour);   // 24-nov · qué agencia Shalom/Olva (para guías)
+  if (nuevoNro && job.shAg) _npShAgGuardar(nuevoNro, job.shAg, job.shAgCour);
+  if (nuevoNro && job.segGuia && job.shAgCour) _npSegGuardar(nuevoNro, job.shAgCour, job.segGuia, job.segClave);   // 25-nov · guía y clave si ya las tenían   // 24-nov · qué agencia Shalom/Olva (para guías)
   return nuevoNro;
 }
 
