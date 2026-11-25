@@ -28368,11 +28368,11 @@ const _agPor = {};
 async function _shAgCargar(cour){
   cour = cour || _agDe() || 'SHALOM';
   if (_agPor[cour] && _agPor[cour].length) return (_shAg = _agPor[cour]);
-  const LK = cour === 'SHALOM' ? 'sh_ag_v1' : 'ag_' + cour.toLowerCase() + '_v1';
+  const LK = 'ag_' + cour.toLowerCase() + '_v2';   // v2 · 24-nov: trae coordenadas
   try { const c = JSON.parse(localStorage.getItem(LK) || 'null'); if (c && Date.now() - c.t < 12 * 36e5 && c.d && c.d.length) { _agPor[cour] = c.d; return (_shAg = c.d); } } catch(_){}
   try {
     const tk = await _sbSesionAsegurar(); if (!tk) return [];
-    const r = await fetch(SB_URL + '/rest/v1/' + _AG[cour].t + '?select=ter_id,nombre,zona,provincia,departamento,direccion,hora_atencion,hora_domingo&activa=eq.true&order=departamento,provincia,zona&limit=3000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
+    const r = await fetch(SB_URL + '/rest/v1/' + _AG[cour].t + '?select=ter_id,nombre,zona,provincia,departamento,direccion,hora_atencion,hora_domingo,latitud,longitud&activa=eq.true&order=departamento,provincia,zona&limit=3000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Accept-Profile': 'erp' } });
     if (!r.ok) return [];
     _agPor[cour] = await r.json(); _shAg = _agPor[cour];
     try { localStorage.setItem(LK, JSON.stringify({ t: Date.now(), d: _shAg })); } catch(_){}
@@ -28381,6 +28381,8 @@ async function _shAgCargar(cour){
 }
 const _shN = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[-_]/g, ' ').replace(/\s+/g, ' ').trim();
 const _SH_ALIAS = { 'NAZCA': 'NASCA' };
+/* 24-nov · Olva usa el nombre del pueblo, no del distrito (5 de 434): pueblo|provincia → distrito */
+const _AG_PUEBLO = { 'SANTA MARIA DE NIEVA|CONDORCANQUI': 'NIEVA', 'TINGO MARIA|LEONCIO PRADO': 'RUPA RUPA', 'CERRO DE PASCO|PASCO': 'CHAUPIMARCA', 'SAN LORENZO|DATEM DEL MARANON': 'BARRANCA', 'SAN MARCOS|SAN MARCOS': 'PEDRO GALVEZ', 'YAURI|ESPINAR': 'ESPINAR' };
 let _shUbiK = null;
 /* Distrito del ERP (llave de UBI) de cada agencia: Shalom corta nombres («JOSE CRESPO Y CASTIL»), usa guiones distintos y paréntesis. 567 de 570 medidas el 24-nov. */
 function _shAgDist(a){
@@ -28388,7 +28390,8 @@ function _shAgDist(a){
   if (!_shUbiK) _shUbiK = Object.keys(UBI).map(k => ({ k, n: _shN(k.replace(/_[A-Z]+$/, '')), p: _shN(UBI[k][0]), r: _shN(UBI[k][1]) }));
   const pv = _shN(a.provincia), dp = _shN(a.departamento), z = _shN(a.zona);
   const al = x => _SH_ALIAS[x] || x;
-  const cands = [z, _shN(z.replace(/\(.*?\)/g, '')), ...((z.match(/\(([^)]*)\)/) || []).slice(1).map(_shN)), _shN(z.replace(/^(BAJO|ALTO|CIUDAD DE|PUERTO) /, ''))].filter(Boolean).map(al);
+  const pu = _AG_PUEBLO[z + '|' + pv];
+  const cands = [...(pu ? [pu] : []), z, _shN(z.replace(/\(.*?\)/g, '')), ...((z.match(/\(([^)]*)\)/) || []).slice(1).map(_shN)), _shN(z.replace(/^(BAJO|ALTO|CIUDAD DE|PUERTO) /, ''))].filter(Boolean).map(al);
   const zona = _shUbiK.filter(x => x.p === al(pv) || x.p === pv || x.r === dp);
   const uno = m => { if (!m.length) return null; const f = m[0]; return m.every(x => x.p === f.p && x.r === f.r) ? f.k : null; };
   let k = null;
@@ -28422,7 +28425,19 @@ function _npShAgPorDistrito(){
   if (!u) { sel.innerHTML = '<option value="">— Elige primero el distrito de la clienta —</option>'; return; }
   const pv = _shN(u[0]), rg = _shN(u[1]), D = [], P = [], R = [];
   _shAg.forEach(a => { const k = _shAgDist(a); if (k === dk) D.push(a); else if (k && UBI[k] && _shN(UBI[k][0]) === pv && _shN(UBI[k][1]) === rg) P.push(a); else if (_shN(a.departamento) === rg || (k && UBI[k] && _shN(UBI[k][1]) === rg)) R.push(a); });
-  const op = a => '<option value="' + _shEsc(a.ter_id) + '"' + (_npShAgSel === String(a.ter_id) ? ' selected' : '') + '>' + _shEsc((a.zona || '') + ' — ' + (a.direccion || '')) + '</option>';
+  /* 24-nov (Pablo) · por cercanía: el punto de partida es el centro de las agencias del distrito (de los dos couriers);
+     si el distrito no tiene, el de la capital de la provincia. Cada grupo se ordena de la más cercana a la más lejana. */
+  const ll = a => { const la = parseFloat(a.latitud), lo = parseFloat(a.longitud); return (isFinite(la) && isFinite(lo) && la && lo) ? [la, lo] : null; };
+  const todas = Object.values(_agPor).flat();
+  const centro = f => { const P2 = todas.filter(f).map(ll).filter(Boolean); return P2.length ? [P2.reduce((t, q) => t + q[0], 0) / P2.length, P2.reduce((t, q) => t + q[1], 0) / P2.length] : null; };
+  const cap = Object.keys(UBI).find(k => _shN(k.replace(/_[A-Z]+$/, '')) === pv && _shN(UBI[k][0]) === pv && _shN(UBI[k][1]) === rg);
+  const ancla = centro(a => _shAgDist(a) === dk) || (cap ? centro(a => _shAgDist(a) === cap) : null);
+  const km = a => { const q = ll(a); if (!ancla || !q) return null; const R0 = 6371, r = x => x * Math.PI / 180, dLa = r(q[0] - ancla[0]), dLo = r(q[1] - ancla[1]);
+    const h = Math.sin(dLa / 2) ** 2 + Math.cos(r(ancla[0])) * Math.cos(r(q[0])) * Math.sin(dLo / 2) ** 2; return 2 * R0 * Math.asin(Math.sqrt(h)); };
+  const ord = A => ancla ? A.map(a => [a, km(a)]).sort((x, y) => (x[1] == null ? 1e9 : x[1]) - (y[1] == null ? 1e9 : y[1])).map(x => x[0]) : A;
+  D.splice(0, D.length, ...ord(D)); P.splice(0, P.length, ...ord(P)); R.splice(0, R.length, ...ord(R));
+  const kmT = a => { const k2 = km(a); return k2 == null ? '' : ' · ' + (k2 < 10 ? k2.toFixed(1) : Math.round(k2)) + ' km'; };
+  const op = a => '<option value="' + _shEsc(a.ter_id) + '"' + (_npShAgSel === String(a.ter_id) ? ' selected' : '') + '>' + _shEsc((a.zona || '') + ' — ' + (a.direccion || '') + kmT(a)) + '</option>';
   const g = (t, A) => A.length ? '<optgroup label="' + _shEsc(t) + ' (' + A.length + ')">' + A.map(op).join('') + '</optgroup>' : '';
   const tot = D.length + P.length + R.length;
   sel.innerHTML = '<option value="">' + (tot ? (D.length ? '— ' + D.length + ' agencia(s) en ' + dk.replace(/_[A-Z]+$/, '') + ' —' : '— No hay agencia en ' + dk.replace(/_[A-Z]+$/, '') + ': elige una cercana —') : '— Sin agencias ' + ((_AG[_agCour] || _AG.SHALOM).n) + ' en ' + u[1] + ': usa «Buscar en todo el Perú» —') + '</option>'
