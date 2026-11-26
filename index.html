@@ -44806,9 +44806,11 @@ function _c2CorregirAdmin(nc) {
 }
 /* 26-nov (Pablo, 375) · EMPAREJAR lo que devuelve con lo que recibe, prenda por prenda (también 1 por 2 y 2 por 1):
    1º mismo tipo de prenda (blazer↔blazer); 2º precio más parecido; 3º orden. Lo que sobra: devuelta sin nueva = saldo a favor; nueva sin devuelta = la clienta paga la diferencia. */
-function _c2Emparejar(dev, nue){
+function _c2Emparejar(dev, nue, base){
   const W = p => String(p || '').trim().toUpperCase().split(/\s+/), tipo = p => W(p)[0], sinT = p => W(p).slice(0, -1).join(' '), dis = p => W(p).slice(0, 2).join(' ');
-  const N = (nue || []).map(n => ({ n, u: false })), P = (dev || []).map(d => ({ d, n: null }));
+  const N = (nue || []).map(n => ({ n, u: false })), P = (dev || []).map(d => ({ d, n: null })), nz = x => String(x || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  /* 26-nov · la pareja VERDADERA está en el pedido: la fila de la nueva lleva «C2ORIG:<la que devuelve>» */
+  (base || []).forEach(b => { const p = P.find(q => !q.n && nz(q.d.Prenda) === nz(b.dev)), k = N.find(x => !x.u && nz(x.n.Prenda) === nz(b.nue)); if (p && k){ k.u = true; p.n = k.n; } });
   /* 26-nov · 1º misma prenda, diseño y color (solo cambia la talla) · 2º mismo diseño · 3º mismo tipo */
   [p => sinT(p), p => dis(p), p => tipo(p)].forEach(key => P.forEach(p => { if (p.n) return; const k = N.find(x => !x.u && key(x.n.Prenda) === key(p.d.Prenda)); if (k){ k.u = true; p.n = k.n; } }));
   P.forEach(p => { if (p.n) return; const L = N.filter(x => !x.u); if (!L.length) return;
@@ -44816,8 +44818,36 @@ function _c2Emparejar(dev, nue){
   N.filter(x => !x.u).forEach(x => P.push({ d: null, n: x.n }));
   return P;
 }
-function _c2PorPrendaHtml(c){
-  const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' }), P = _c2Emparejar(c.devueltas, c.nuevas);
+async function _c2ParesBase(nc){
+  try { const tok = await _sbSesionAsegurar(); if (!tok) return null;
+    const r = await fetch(SB_URL + '/rest/v1/pedidos?select=prenda,cambio2&eliminado=is.null&cambio2_ref=eq.' + encodeURIComponent(nc), { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+    if (!r.ok) return null; const j = await r.json();
+    return (Array.isArray(j) ? j : []).filter(x => /^C2ORIG:/.test(String(x.cambio2 || ''))).map(x => ({ dev: String(x.cambio2).slice(7).trim(), nue: x.prenda }));
+  } catch (_) { return null; }
+}
+/* 26-nov (Pablo, 377) · «La clienta desistió» de UNA prenda: solo admin, con motivo. La base devuelve el pedido a la prenda original
+   y saca esas 2 líneas del cambio (quedan anuladas aparte como CAM-xxxx-D1). Si la prenda ya volvió o la nueva ya salió, se frena. */
+function _c2Desistir(nc, devRid, nueRid, dev, nue){
+  _c2Modal('<div style="font-size:14px;font-weight:600;margin-bottom:8px">🚫 La clienta desistió de esta prenda</div>'
+    + '<div style="font-size:13px;margin-bottom:8px">Se queda con <b>' + esc(dev) + '</b> y no recibe <b>' + esc(nue) + '</b>. El pedido vuelve a la prenda original y esa prenda nueva vuelve al stock.</div>'
+    + '<textarea id="c2-des-mot" rows="2" style="width:100%" placeholder="¿Por qué desistió? (obligatorio)"></textarea>'
+    + '<div id="c2-des-msg" style="font-size:12px;color:var(--rd);margin-top:6px"></div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn bg bs" data-close>Cancelar ✕</button><button class="btn bp bs" id="c2-des-ok">Confirmar</button></div>');
+  const b = document.getElementById('c2-des-ok'); if (!b) return;
+  b.onclick = async () => { const m = (document.getElementById('c2-des-mot').value || '').trim(), msg = document.getElementById('c2-des-msg');
+    if (m.length < 5) { msg.textContent = 'Escribe el motivo.'; return; }
+    b.disabled = true; b.textContent = 'Guardando…';
+    try { const tok = await _sbSesionAsegurar(); const r = await fetch(SB_URL + '/rest/v1/rpc/cambio_desistir_prenda', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_nc: nc, p_dev_rid: devRid, p_nue_rid: nueRid, p_motivo: m }) });
+      const j = await r.json(); if (!r.ok || !j || j.ok !== true) throw new Error(String((j && (j.message || j.error)) || 'no se guardó').replace(/^[A-Z_]+: /, ''));
+      const peds = ((_c2Buscar(nc) || {}).pedidos || []).map(String); toast('✓ Listo: la clienta se queda con ' + dev, 'ok'); document.querySelectorAll('body > div').forEach(x => { if (x.querySelector && x.querySelector('#c2-des-ok, [data-c2pp]')) x.remove(); });
+      try { _c2Hist = null; _c2List = null; window._c2Data = null; } catch (_) {}
+      try { _stockMovido(['stock.resumen', 'catalogo.stock', 'reposicion.calc'], ['stock.resumen', 'catalogo.stock']); } catch (_) {}
+      try { if (typeof _pedsRefrescarNros === 'function') _pedsRefrescarNros(peds); } catch (_) {}
+      try { loadCambios2(); } catch (_) {}
+    } catch (e) { msg.textContent = /cambio_desistir_prenda|PGRST202|404/.test(String(e.message)) ? 'Falta pegar el SQL de «desistir» (26-nov) en Supabase.' : e.message; b.disabled = false; b.textContent = 'Confirmar'; } };
+}
+function _c2PorPrendaHtml(c, base){
+  const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Lima' }), P = _c2Emparejar(c.devueltas, c.nuevas, base);
   const rec = d => d && (d.Recibida != null ? (d.Recibida || (d.FRec && d.FRec.slice(0, 10) <= hoy)) : !!c.RecibidoOriginal);
   const todas = (c.devueltas || []).concat(c.nuevas || []), envG = !!c.EnviadaNueva || todas.some(x => x.FEnv) || todas.some(x => /ENVIADA/.test(String(x.EstadoLinea || '').toUpperCase()));
   const env = n => n && (!!n.FEnv || /ENVIADA/.test(String(n.EstadoLinea || '').toUpperCase()) || envG);   /* el envío se anota en una sola fila del cambio: vale para todas sus nuevas */
@@ -44829,9 +44859,12 @@ function _c2PorPrendaHtml(c){
     return '<div style="border:1px solid var(--bd);border-radius:10px;padding:8px 10px;margin-bottom:8px">'
       + '<div style="font-size:13px">' + (p.d ? '↩️ <b>' + esc(p.d.Prenda) + '</b>' : '<span style="color:var(--mu)">(no devuelve nada)</span>') + ' → ' + (p.n ? '📦 <b>' + esc(p.n.Prenda) + '</b>' + (p.n.Cant > 1 ? ' x' + p.n.Cant : '') : '<span style="color:var(--mu)">(no lleva prenda nueva)</span>') + '</div>'
       + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' + (p.d ? chip(rec(p.d), 'recibida', 'falta recibir') + fut(p.d) : '') + (p.n ? chip(env(p.n), 'enviada', 'falta enviar') : '')
-      + (!p.n ? ' <span style="font-size:11px;color:var(--ac)">💰 queda como saldo a favor</span>' : !p.d ? ' <span style="font-size:11px;color:var(--am)">💵 prenda adicional: paga la diferencia</span>' : '') + '</div></div>'; }).join('');
+      + (!p.n ? ' <span style="font-size:11px;color:var(--ac)">💰 queda como saldo a favor</span>' : !p.d ? ' <span style="font-size:11px;color:var(--am)">💵 prenda adicional: paga la diferencia</span>' : '')
+      + (p.d && p.n && !rec(p.d) && p.d.ID && p.n.ID && typeof _esAdminCuadre === 'function' && _esAdminCuadre() && c.NroCambio
+          ? ' <button class="btn bg bs" style="font-size:11px;margin-left:auto" onclick="_c2Desistir(\'' + esc(c.NroCambio) + '\',\'' + esc(p.d.ID) + '\',\'' + esc(p.n.ID) + '\',\'' + esc(p.d.Prenda) + '\',\'' + esc(p.n.Prenda) + '\')">🚫 Desistió</button>' : '')
+      + '</div></div>'; }).join('');
   const precios = (c.devueltas || []).length && (c.nuevas || []).length && (c.devueltas || []).concat(c.nuevas || []).every(x => +x.Precio > 0);   /* sin precio en alguna prenda no se adivina el saldo */
-  return '<div style="margin:0 0 14px"><div style="font-size:13px;font-weight:600;margin-bottom:6px">Prenda por prenda</div>' + filas
+  return '<div data-c2pp="1" style="margin:0 0 14px"><div style="font-size:13px;font-weight:600;margin-bottom:6px">Prenda por prenda</div>' + filas
     + '<div style="font-size:12px;color:var(--mu)">Recibidas <b style="color:var(--tx)">' + nR + ' de ' + nD + '</b> · Enviadas <b style="color:var(--tx)">' + nE + ' de ' + nN + '</b>'
     + (precios && Math.round(sal) !== 0 ? ' · ' + (sal > 0 ? 'la clienta paga <b style="color:var(--tx)">S/' + fmt(sal) + '</b>' : 'saldo a favor <b style="color:var(--tx)">S/' + fmt(-sal) + '</b>') : '') + '</div></div>';
 }
@@ -44866,6 +44899,7 @@ function timelineCambios2(nc){
     +'<div style="margin-top:4px">Devueltas: <b style="color:var(--tx)">'+dev+'</b></div>'
     +'<div>Nuevas: <b style="color:var(--tx)">'+nue+'</b></div></div>';
   try { html += _c2PorPrendaHtml(c); } catch (_) {}   /* 26-nov (Pablo, 375) */
+  setTimeout(async () => { const B = await _c2ParesBase(nc); if (!B || !B.length) return; const el = document.querySelector('[data-c2pp]'); if (el) try { el.outerHTML = _c2PorPrendaHtml(c, B); } catch (_) {} }, 0);   /* parejas reales del pedido */
   if(fSol && !recibido){ var di=days(fSol); html+='<div style="background:rgba(239,68,68,.12);border:1px solid var(--rd);border-left:3px solid var(--rd);border-radius:var(--r);padding:10px 12px;margin-bottom:12px;font-size:12px">↩️ <b>Prenda original en tránsito</b> hacia la empresa'+(di!=null?(' desde hace <b>'+di+' día'+(di!==1?'s':'')+'</b>'):'')+'</div>'; }
   html+='<div style="position:relative;padding-left:8px">';
   stages.forEach(function(st,i){
