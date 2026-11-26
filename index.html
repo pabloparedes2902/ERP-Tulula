@@ -1153,6 +1153,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
               <option value="SIN_CLASIFICAR">Sin clasificar</option>
             </select>
           </div>
+          <button class="btn bg bs" id="cli-recuperar" style="flex-shrink:0;align-self:flex-end" onclick="exVipAbrir()" title="VIP que dejaron de comprar: recupéralas">♻️ Recuperar VIP</button>
           <button class="btn bg bs" id="cli-lista-negra" style="flex-shrink:0;align-self:flex-end;color:var(--rd)">🚫 Lista negra</button>
           <button class="btn bg bs" id="cli-exportar" style="flex-shrink:0;align-self:flex-end">⬇ Exportar Excel</button>
         </div>
@@ -26514,13 +26515,14 @@ function _segPintar(box, d){
     + '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:8px"><label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" id="seg-na"' + (d.clave === 'N/A' ? ' checked' : '') + ' onchange="document.getElementById(\'seg-clave\').disabled=this.checked"> No aplica clave</label>'
     + '<label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" id="seg-pago"' + (d.pago_ok ? ' checked' : '') + '> Pago completo (mostrarle su clave)</label></div>'
     + '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:8px"><span style="font-size:12px;color:var(--mu)">' + esc(_segEstado(d, sh)) + (d.pago_ok && d.pago_ok_por ? ' · marcado por ' + esc(String(d.pago_ok_por).split('@')[0]) : '') + '</span>'
-    + '<button class="btn bg bs" id="seg-guardar">Guardar seguimiento</button></div>';
-  if (!_segPuedeEditar()) { box.querySelectorAll('input').forEach(i => i.disabled = true); const g = box.querySelector('#seg-guardar'); g.outerHTML = '<span style="font-size:12px;color:var(--mu)">Solo lectura · lo edita logística</span>'; return; }
+    + '<span style="display:flex;gap:8px">' + (d.rotulo ? '<button class="btn bg bs" onclick="rotuloVer(\'' + esc(d.rotulo) + '\')">📄 Rótulo</button>' : '') + '<button class="btn bg bs" id="seg-guardar">Guardar seguimiento</button></span></div>';
+  if (!_segPuedeEditar()) { box.querySelectorAll('#seg-guia,#seg-clave,#seg-na').forEach(i => i.disabled = true); box.dataset.solopago = '1'; }
   box.querySelector('#seg-guardar').onclick = () => _segGuardar(box);
 }
 async function _segGuardar(box){
   const nro = box.dataset.nro, cour = box.dataset.cour, b = box.querySelector('#seg-guardar');
-  const na = (box.querySelector('#seg-na') || {}).checked, guia = String((box.querySelector('#seg-guia') || {}).value || '').trim(), clave = na ? 'NA' : String((box.querySelector('#seg-clave') || {}).value || '').trim();
+  const _sp = box.dataset.solopago === '1';   // ventas: solo marca «Pago completo»
+  const na = (box.querySelector('#seg-na') || {}).checked, guia = _sp ? '' : String((box.querySelector('#seg-guia') || {}).value || '').trim(), clave = _sp ? '' : (na ? 'NA' : String((box.querySelector('#seg-clave') || {}).value || '').trim());
   const pg = box.querySelector('#seg-pago'), pagoOk = pg ? pg.checked : null;
   b.disabled = true; b.textContent = 'Guardando…';
   try {
@@ -38346,20 +38348,24 @@ async function rotulosLeer(files){
   const est = document.getElementById('rot-est'), avisar = t => { est.textContent = t; };
   _rotL = [];
   for (const f of Array.from(files || [])) {
-    try { for (const t of await _rotTextos(f, avisar)) for (const ch of _rotPartir(t)) { const r = _rotLeer(ch); if (r) { r.archivo = f.name; r.p = _rotPedido(r); r.ok = !!r.p; _rotL.push(r); } } }
+    try { const TT = await _rotTextos(f, avisar), esPdf = /pdf$/i.test(f.type) || /\.pdf$/i.test(f.name);
+      TT.forEach((t, pi) => { const R = _rotPartir(t).map(_rotLeer).filter(Boolean);
+        R.forEach(r => { r.archivo = f.name; r.file = f; r.pg = esPdf ? pi + 1 : 0; r.junto = R.length; r.p = _rotPedido(r); r.ok = !!r.p; _rotL.push(r); }); }); }
     catch (e) { try { _errLog('rotulos.leer', e); } catch(_){} avisar('No se pudo leer ' + f.name + '.'); }
   }
-  avisar(_rotL.length ? _rotL.length + ' rótulos leídos · ' + _rotL.filter(r => r.p).length + ' con pedido encontrado.' : 'No encontré rótulos de Shalom u Olva en esos archivos.');
+  const _sinP = _rotL.filter(r => !r.p).length;
+  avisar(_rotL.length ? _rotL.length + ' rótulos leídos · ' + (_rotL.length - _sinP) + ' con pedido encontrado' + (_sinP ? ' · ⚠ ' + _sinP + ' sin pedido: escribe el número o descártalo.' : '.') : 'No encontré rótulos de Shalom u Olva en esos archivos.');
   rotulosPintar();
 }
 function rotulosPintar(){
   const tb = document.getElementById('rot-tb'); if (!tb) return;
   if (!_rotL.length) { tb.innerHTML = ''; return; }
-  tb.innerHTML = '<table class="tt" style="width:100%"><thead><tr><th>Salió</th><th>Courier</th><th>Guía</th><th>Clave</th><th>Destinataria</th><th>DNI</th><th>Pedido</th></tr></thead><tbody>'
-    + _rotL.map((r, i) => '<tr><td style="text-align:center"><input type="checkbox" data-i="' + i + '"' + (r.ok ? ' checked' : '') + (r.p ? '' : ' disabled') + ' onchange="_rotL[' + i + '].ok=this.checked"></td>'
+  tb.innerHTML = '<table class="tt" style="width:100%"><thead><tr><th>Salió</th><th>Courier</th><th>Guía</th><th>Clave</th><th>Destinataria</th><th>DNI</th><th>Pedido</th><th></th></tr></thead><tbody>'
+    + _rotL.map((r, i) => r.descartado ? '' : '<tr' + (r.p ? '' : ' style="background:rgba(255,170,0,.10)"') + '><td style="text-align:center"><input type="checkbox" data-i="' + i + '"' + (r.ok ? ' checked' : '') + (r.p ? '' : ' disabled') + ' onchange="_rotL[' + i + '].ok=this.checked"></td>'
       + '<td>' + r.courier + '</td><td>' + esc(r.guia) + '</td><td>' + esc(r.clave || (r.courier === 'OLVA' ? 'No aplica' : '—')) + '</td>'
       + '<td>' + esc(r.nombre) + '</td><td>' + esc(r.dni || '—') + '</td>'
-      + '<td>' + (r.p ? '#' + esc(r.p['NroPedido']) + ' · ' + esc(r.p['Estado'] || '') : '<input data-i="' + i + '" placeholder="Nro" style="width:80px" onchange="_rotManual(' + i + ', this.value)">') + '</td></tr>').join('')
+      + '<td>' + (r.p ? '#' + esc(r.p['NroPedido']) + ' · ' + esc(r.p['Estado'] || '') + (r.guardado ? ' ✓' : '') : '⚠ <input data-i="' + i + '" placeholder="Nro" style="width:80px" onchange="_rotManual(' + i + ', this.value)">') + '</td>'
+      + '<td><button class="btn bg bs" title="Descartar: este pedido no salió" onclick="_rotL[' + i + '].descartado=true;_rotL[' + i + '].ok=false;rotulosPintar()">✕</button></td></tr>').join('')
     + '</tbody></table><div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn bp" id="rot-g" onclick="rotulosGuardar()">Guardar guías de los marcados</button></div>';
 }
 function _rotManual(i, nro){
@@ -38369,21 +38375,68 @@ function _rotManual(i, nro){
 }
 async function rotulosGuardar(){
   if (!_segPuedeEditar()) return;
-  const b = document.getElementById('rot-g'), L = _rotL.filter(r => r.ok && r.p); if (!L.length) return;
-  b.disabled = true; let bien = 0; const mal = [];
+  const b = document.getElementById('rot-g'), L = _rotL.filter(r => r.ok && r.p && !r.descartado && !r.guardado); if (!L.length) return;
+  b.disabled = true; let bien = 0, hojas = 0; const mal = [], sinHoja = [];
   for (const r of L) {
     const nro = String(r.p['NroPedido']).trim();
     b.textContent = 'Guardando #' + nro + '…';
     try { const x = await _segRpc('pedido_seguimiento_guardar', { p_nro: nro, p_courier: r.courier, p_guia: r.guia, p_clave: r.clave || (r.courier === 'OLVA' ? 'NA' : ''), p_pago_ok: null });
       if (String(x).indexOf('no:') === 0) mal.push('#' + nro + ' ' + String(x).slice(3).trim());
-      else { bien++; _guiaPor[nro] = { nro_pedido: nro, courier: r.courier, guia: r.courier === 'OLVA' ? r.guia : r.guia, codigo: r.clave || 'N/A' }; r.guardado = true; }
+      else { bien++; _guiaPor[nro] = { nro_pedido: nro, courier: r.courier, guia: r.guia, codigo: r.clave || 'N/A' }; r.guardado = true;
+        if (r.junto > 1) sinHoja.push('#' + nro);
+        else { b.textContent = 'Guardando rótulo #' + nro + '…'; try { await _rotSubir(r, nro); hojas++; } catch (e) { sinHoja.push('#' + nro); try { _errLog('rotulos.subir', e); } catch(_){} } } }
     } catch (e) { mal.push('#' + nro + ' sin conexión'); }
   }
-  document.getElementById('rot-est').textContent = bien + ' guías guardadas' + (mal.length ? ' · no se guardaron: ' + mal.join(' · ') : '.');
+  const _pend = _rotL.filter(r => !r.p && !r.descartado).length;
+  document.getElementById('rot-est').textContent = bien + ' guías guardadas · ' + hojas + ' rótulos guardados en su pedido'
+    + (sinHoja.length ? ' · rótulo no separado (la hoja trae varios): ' + sinHoja.join(' ') : '')
+    + (mal.length ? ' · no se guardaron: ' + mal.join(' · ') : '') + (_pend ? ' · ⚠ ' + _pend + ' sin pedido: escribe el número o descártalo.' : '.');
+  rotulosPintar();
   toast(bien + ' guías guardadas desde los rótulos.', mal.length ? 'warn' : 'ok');
   b.disabled = false; b.textContent = 'Guardar guías de los marcados';
 }
+/* 26-nov (Pablo) · cada pedido guarda SOLO su rótulo: del PDF de 15 se separa su página y se sube aparte (depósito privado «rotulos»). */
+let _pdfLibP = null;
+function _pdfLibCargar(){ if (window.PDFLib) return Promise.resolve(window.PDFLib); if (_pdfLibP) return _pdfLibP;
+  _pdfLibP = new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js';
+    s.onload = () => ok(window.PDFLib); s.onerror = () => { _pdfLibP = null; no(new Error('No cargó el separador de PDF')); }; document.head.appendChild(s); }); return _pdfLibP; }
+const _rotSrc = new WeakMap();
+async function _rotSubir(r, nro){
+  let blob, ext;
+  if (r.pg) { const L = await _pdfLibCargar(); let src = _rotSrc.get(r.file);
+    if (!src) { src = await L.PDFDocument.load(await r.file.arrayBuffer(), { ignoreEncryption: true }); _rotSrc.set(r.file, src); }
+    const out = await L.PDFDocument.create(), [pg] = await out.copyPages(src, [r.pg - 1]); out.addPage(pg);
+    blob = new Blob([await out.save()], { type: 'application/pdf' }); ext = 'pdf'; }
+  else { blob = r.file; ext = /png$/i.test(r.file.type) ? 'png' : 'jpg'; }
+  const ruta = nro + '/' + String(r.guia || 'rotulo').replace(/[^0-9A-Za-z-]/g, '') + '.' + ext, tk = await _sbSesionAsegurar();
+  const x = await fetch(SB_URL + '/storage/v1/object/rotulos/' + ruta, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': blob.type || 'application/octet-stream', 'x-upsert': 'true' }, body: blob });
+  if (!x.ok) throw new Error('subida ' + x.status);
+  const y = await _segRpc('pedido_rotulo_guardar', { p_nro: nro, p_ruta: ruta });
+  if (String(y).indexOf('no:') === 0) throw new Error(String(y).slice(3));
+}
+async function rotuloVer(ruta){   // todos lo pueden ver y descargar
+  try { const tk = await _sbSesionAsegurar();
+    const r = await fetch(SB_URL + '/storage/v1/object/sign/rotulos/' + ruta, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresIn: 600 }) });
+    const j = await r.json(), u = j.signedURL || j.signedUrl; if (!u) throw new Error('sin enlace');
+    window.open(SB_URL + '/storage/v1' + u, '_blank');
+  } catch (e) { toast('No se pudo abrir el rótulo.', 'err'); } }
 // <<< ROTULOS_25NOV
+/* 26-nov (Pablo) · EXVIP_26NOV · lista para recuperar: VIP en año de gracia (este año compraron menos) y Ex VIP (más de 24 meses). */
+async function exVipAbrir(){
+  if (document.getElementById('exv-velo')) return;
+  const v = document.createElement('div'); v.id = 'exv-velo';
+  v.style.cssText = 'position:fixed;inset:0;z-index:99990;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:40px 12px;overflow:auto';
+  v.innerHTML = '<div class="card" style="width:100%;max-width:980px;padding:16px;font-family:var(--ui-f,Manrope)"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px">'
+    + '<div style="font-size:20px;font-weight:600">♻️ Recuperar VIP</div><button class="btn bg bs" onclick="document.getElementById(\'exv-velo\').remove()" title="Cerrar">✕</button></div>'
+    + '<div class="ui-nota" style="font-size:12px;color:var(--mu);margin:6px 0 12px">En gracia = fue VIP el año pasado y este año compró menos: si no vuelve, baja de nivel. Ex = más de 24 meses sin nivel.</div><div id="exv-tb">Cargando…</div></div>';
+  document.body.appendChild(v);
+  try { const L = (await _segRpc('ex_vip_lista', {})) || [], tb = document.getElementById('exv-tb'); if (!tb) return;
+    if (!L.length) { tb.textContent = 'Nadie para recuperar por ahora.'; return; }
+    const tel = c => String(c || '').replace(/\D/g, ''), wa = c => { const t = tel(c); return t ? '<a href="https://wa.me/' + (t.length === 9 ? '51' + t : t) + '" target="_blank">' + esc(c) + '</a>' : '—'; };
+    tb.innerHTML = '<table class="tt" style="width:100%"><thead><tr><th>Clienta</th><th>Celular</th><th>Situación</th><th style="text-align:right">Este año</th><th style="text-align:right">Su mejor año</th><th>Última compra</th></tr></thead><tbody>'
+      + L.map(x => '<tr><td>' + esc(x.nombre || x.clave) + '</td><td>' + wa(x.celular) + '</td><td>' + esc(x.fue) + '</td><td style="text-align:right">S/ ' + fmt(x.este_anio || 0) + '</td><td style="text-align:right">S/ ' + fmt(x.mejor_anio || 0) + '</td><td>' + esc(x.ultima || '') + '</td></tr>').join('')
+      + '</tbody></table><div class="ui-nota" style="font-size:12px;color:var(--mu);margin-top:8px">' + L.length + ' clientas · ' + L.filter(x => /Super/.test(x.fue)).length + ' eran Super VIP</div>';
+  } catch (e) { const tb = document.getElementById('exv-tb'); if (tb) tb.textContent = 'No se pudo cargar la lista.'; } }
 /* 25-nov (Pablo) · guía, clave y rótulos: crea y edita LOGÍSTICA (y admin); ventas y los demás solo leen. */
 function _segPuedeEditar(){
   try { const r = String((typeof MY_ROLE !== 'undefined' && MY_ROLE) || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
