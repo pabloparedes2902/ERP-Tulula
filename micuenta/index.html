@@ -170,7 +170,7 @@ function armar(nombre, P, llave){
   const cur = P.filter(ACT), nros = cur.map(x => String(x.nro));
   app.innerHTML = '<h1>' + (nombre ? 'Hola, ' + esc(nombre) : 'Mi cuenta') + '</h1>'
     + '<nav class="tabs">' + [['ped', 'Mis pedidos'], ['pun', 'Puntos y nivel'], ['cam', 'Cambios'], ['cta', 'Mi cuenta']].map((t, i) => '<button data-t="' + t[0] + '"' + (i ? '' : ' class="on"') + ' onclick="tab(\'' + t[0] + '\')">' + t[1] + '</button>').join('') + '</nav>'
-    + '<section data-s="ped">' + (cur.length ? cur.map(tarjeta).join('') : '') + '<div class="card" id="hist" style="display:none"><h2 id="hist-t">Pedidos anteriores</h2><div id="hist-l"></div></div>' + vitrinaCaja() + '</section>'
+    + '<section data-s="ped"><div class="card" id="av-q" style="display:none"><h2>¿Quieres enterarte primero?</h2><p class="nota">Lanzamientos y descuentos exclusivos para clientas, por correo. Puedes darte de baja cuando quieras.</p><div style="display:flex;gap:8px;margin-top:10px"><button class="btn" onclick="noveSi(this)">Sí, quiero</button><button class="btn sec" onclick="noveNo()">Ahora no</button></div></div>' + (cur.length ? cur.map(tarjeta).join('') : '') + '<div class="card" id="hist" style="display:none"><h2 id="hist-t">Pedidos anteriores</h2><div id="hist-l"></div></div>' + vitrinaCaja() + '</section>'
     + '<section data-s="pun" style="display:none">' + perfilCaja() + '</section>'
     + '<section data-s="cam" style="display:none"><div class="card"><h2>Cambios y devoluciones</h2><p class="nota">¿Una talla no te quedó o quieres otro color? Escríbenos con tu número de pedido y lo resolvemos.</p><a class="btn wa" style="display:block;text-align:center;text-decoration:none" target="_blank" rel="noopener" href="https://wa.me/' + WA + '?text=' + encodeURIComponent('Hola 😊 Quiero hacer un cambio de mi pedido' + (P[0] ? ' #' + P[0].nro : '') + '.') + '">Quiero hacer un cambio</a></div></section>'
     + '<section data-s="cta" style="display:none"><div class="card" id="cumple-box" style="display:none"></div>' + avisosCaja() + instalar + '</section>';
@@ -216,7 +216,10 @@ async function porEnlace(tok){
 function enlaces(){ try { return JSON.parse(LS.g('mc_enlaces') || '[]'); } catch(_) { return []; } }
 function guardarEnlace(t){ const L = [t].concat(enlaces().filter(x => x !== t)).slice(0, 10); LS.s('mc_enlaces', JSON.stringify(L)); }
 // 25-nov · Fase 1 «Mis avisos»: la clienta elige qué recibe; cada cambio queda con fecha y hora en la base
-const AVISOS = [['pedido', 'Estado de mis pedidos'], ['lanzamientos', 'Nuevos ingresos'], ['descuentos', 'Descuentos y promociones'], ['puntos', 'Mis puntos y mi cumpleaños']];   // 25-nov (Pablo) · sin videollamadas
+// 26-nov (Pablo) · solo 2 opciones. «Estado de mis pedidos» es del servicio; «Lanzamientos y descuentos» es UNA sola aceptación
+// que guarda lanzamientos + descuentos + puntos. Nunca premarcada ni obligatoria para entrar (Código del Consumidor art. 58.1 e y Ley 29733: consentimiento libre y expreso).
+const AVISOS = [['pedido', 'Estado de mis pedidos'], ['novedades', 'Lanzamientos y descuentos exclusivos']];
+const NOVE = ['lanzamientos', 'descuentos', 'puntos'];
 let _llave = null;
 // 25-nov (Pablo) · «Mi cuenta»: nivel por compras de los últimos 12 meses, cumpleaños (20%) y puntos
 let _pf = null;
@@ -289,11 +292,16 @@ async function avisosCargar(llave){
   try { const r = await rpc('micuenta_pref_leer', { p_llave: llave }); if (!r || r.sin_correo) return;
     $('#av-t').textContent = r.elegido ? 'Mis avisos' : '¿Qué quieres que te avisemos?';
     $('#av-n').textContent = 'Por correo a ' + r.correo + '. Puedes cambiarlo cuando quieras.';
-    $('#av-l').innerHTML = AVISOS.map(([k, t]) => '<label class="sw"><span>' + esc(t) + '</span><input type="checkbox" data-k="' + k + '"' + (r.prefs[k] ? ' checked' : '') + ' onchange="avisoCambiar(this)"></label>').join('')
-      + (AVISOS.some(([k]) => !r.prefs[k]) ? '<button class="btn" style="margin-top:10px" id="av-todo" onclick="avisosTodos()">Sí, quiero recibir todo</button>' : '');   // 25-nov · un toque = consentimiento expreso (Ley 29733)
+    r.prefs.novedades = NOVE.every(k => r.prefs[k]);
+    $('#av-l').innerHTML = AVISOS.map(([k, t]) => '<label class="sw"><span>' + esc(t) + '</span><input type="checkbox" data-k="' + k + '"' + (r.prefs[k] ? ' checked' : '') + ' onchange="avisoCambiar(this)"></label>').join('');
     $('#avisos').style.display = 'block';
+    // arriba de Mis pedidos, una sola pregunta (si todavía no aceptó y no dijo «ahora no» hace menos de 30 días)
+    const q = $('#av-q'); let no = 0; try { no = Number(LS.g('mc_nove_no') || 0); } catch(_) {}
+    if (q && !r.prefs.novedades && Date.now() - no > 30 * 864e5) { q.style.display = 'block'; }
   } catch(_) {}
 }
+function noveSi(b){ const el = document.querySelector('#av-l input[data-k="novedades"]'); b.disabled = true; if (el) { el.checked = true; avisoCambiar(el).then(() => { $('#av-q').innerHTML = '<p class="nota" style="margin:0">¡Listo! Te avisaremos primero de lanzamientos y descuentos. Puedes cambiarlo en Mi cuenta.</p>'; }); } }
+function noveNo(){ try { LS.s('mc_nove_no', String(Date.now())); } catch(_) {} $('#av-q').style.display = 'none'; }
 async function avisosTodos(){
   const b = $('#av-todo'); if (b) b.disabled = true;
   for (const el of document.querySelectorAll('#av-l input')) if (!el.checked) { el.checked = true; await avisoCambiar(el); }
@@ -301,7 +309,9 @@ async function avisosTodos(){
 }
 async function avisoCambiar(el){
   el.disabled = true;
-  try { const r = await rpc('micuenta_pref_guardar', { p_llave: _llave, p_tipo: el.dataset.k, p_activo: el.checked }); if (r !== 'ok') el.checked = !el.checked; $('#av-t').textContent = 'Mis avisos'; }
+  try { const T = el.dataset.k === 'novedades' ? NOVE : [el.dataset.k]; let ok = true;
+    for (const t of T) { const r = await rpc('micuenta_pref_guardar', { p_llave: _llave, p_tipo: t, p_activo: el.checked }); if (r !== 'ok') ok = false; }
+    if (!ok) el.checked = !el.checked; $('#av-t').textContent = 'Mis avisos'; }
   catch(_) { el.checked = !el.checked; }
   el.disabled = false;
 }
