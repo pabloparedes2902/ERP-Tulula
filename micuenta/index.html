@@ -54,6 +54,9 @@ input{width:100%;padding:12px 14px;border:1px solid var(--gr);border-radius:12px
   .pto{background:#1E4870} .ag{background:rgba(237,234,227,.07)} .ag a,.lnk{color:#F4A964}
   .vt a,.fila a{color:#EDEAE3} .velo{background:rgba(0,0,0,.55)} .bt .yo{background:rgba(244,169,100,.16)}
 }
+.tabs{display:flex;gap:6px;overflow-x:auto;margin:0 0 12px;padding-bottom:2px}.tabs button{flex:none;padding:8px 12px;border-radius:20px;border:1px solid var(--gr);background:transparent;color:var(--tx);font:inherit;font-size:13px;cursor:pointer}.tabs button.on{background:var(--az);color:#fff;border-color:var(--az)}
+.hrow{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--gr);cursor:pointer;font-size:14px}.hrow span{color:var(--pl);font-size:13px}.hdet{display:none;padding:0 0 10px}.hdet.ver{display:block}
+@media (prefers-color-scheme: dark){.tabs button.on{background:#EDEAE3;color:#173B61;border-color:#EDEAE3}}
 #inst{display:none}.err{color:#b42318;font-size:13px;min-height:18px}
 </style>
 </head>
@@ -161,14 +164,39 @@ async function validar(){
     LS.s('mc_sesion', t); misPedidos();
   } catch(e) { $('#er').textContent = 'No pudimos conectarnos. Intenta otra vez.'; $('#b2').disabled = false; }
 }
+// 26-nov (Pablo) · la cuenta en 4 módulos: Mis pedidos (en curso arriba + anteriores), Puntos y nivel, Cambios, Mi cuenta (datos y avisos)
+const ACT = x => !/ENTREGADO|ANULADO|DEVOLUCION/i.test(String(x && x.estado || ''));
+function armar(nombre, P, llave){
+  const cur = P.filter(ACT), nros = cur.map(x => String(x.nro));
+  app.innerHTML = '<h1>' + (nombre ? 'Hola, ' + esc(nombre) : 'Mi cuenta') + '</h1>'
+    + '<nav class="tabs">' + [['ped', 'Mis pedidos'], ['pun', 'Puntos y nivel'], ['cam', 'Cambios'], ['cta', 'Mi cuenta']].map((t, i) => '<button data-t="' + t[0] + '"' + (i ? '' : ' class="on"') + ' onclick="tab(\'' + t[0] + '\')">' + t[1] + '</button>').join('') + '</nav>'
+    + '<section data-s="ped">' + (cur.length ? cur.map(tarjeta).join('') : '') + '<div class="card" id="hist" style="display:none"><h2 id="hist-t">Pedidos anteriores</h2><div id="hist-l"></div></div>' + vitrinaCaja() + '</section>'
+    + '<section data-s="pun" style="display:none">' + perfilCaja() + '</section>'
+    + '<section data-s="cam" style="display:none"><div class="card"><h2>Cambios y devoluciones</h2><p class="nota">¿Una talla no te quedó o quieres otro color? Escríbenos con tu número de pedido y lo resolvemos.</p><a class="btn wa" style="display:block;text-align:center;text-decoration:none" target="_blank" rel="noopener" href="https://wa.me/' + WA + '?text=' + encodeURIComponent('Hola 😊 Quiero hacer un cambio de mi pedido' + (P[0] ? ' #' + P[0].nro : '') + '.') + '">Quiero hacer un cambio</a></div></section>'
+    + '<section data-s="cta" style="display:none"><div class="card" id="cumple-box" style="display:none"></div>' + avisosCaja() + instalar + '</section>';
+  iosAviso(); if (evInst) $('#inst').style.display = 'block'; avisosCargar(llave); perfilCargar(llave); vitrinaCargar(P); historialCargar(llave, nros, !cur.length);
+}
+function tab(t){ document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t)); document.querySelectorAll('section[data-s]').forEach(x => x.style.display = x.dataset.s === t ? '' : 'none'); scrollTo(0, 0); }
+async function historialCargar(llave, nros, soloHist){
+  try { const H = ((await rpc('micuenta_historial', { p_llave: llave })) || []).filter(x => nros.indexOf(String(x.nro)) < 0); if (!H.length) return;
+    const fd = t => t ? new Date(t).toLocaleDateString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: 'short', year: 'numeric' }).replace('.', '') : '';
+    const nombreBase = t => String(t || '').split(/\s*·\s*/)[0].replace(/\b(XS|S|M|L|XL|XXL|U|\d{2})\s*$/i, '').trim();
+    $('#hist-t').textContent = soloHist ? 'Mis pedidos' : 'Pedidos anteriores';
+    $('#hist-l').innerHTML = H.map((x, i) => '<div class="hrow" onclick="this.nextElementSibling.classList.toggle(\'ver\')"><div><b>Pedido #' + esc(x.nro) + '</b><br><span>' + esc(fd(x.fecha)) + ' · ' + esc(String(x.estado || '').toLowerCase()) + '</span></div><b>' + sol(x.total) + '</b></div>'
+      + '<div class="hdet">' + (x.prendas ? '<ul class="prendas">' + String(x.prendas).split(/\s*·\s*/).filter(Boolean).map(y => '<li>' + esc(y) + '</li>').join('') + '</ul>' : '')
+      + '<p class="nota">Total ' + sol(x.total) + ' · Pagado ' + sol(x.pagado) + (Number(x.debe) > 0.5 ? ' · <b>Falta S/ ' + Number(x.debe).toFixed(2) + '</b>' : '') + '</p>'
+      + (x.prendas ? '<a class="btn sec" style="display:block;text-align:center;text-decoration:none;margin-top:8px" target="_blank" rel="noopener" href="' + TIENDA + '/search?q=' + encodeURIComponent(nombreBase(x.prendas)) + '&utm_source=micuenta&utm_medium=comprar_de_nuevo">Volver a comprar</a>' : '') + '</div>').join('');
+    $('#hist').style.display = 'block';
+  } catch(_) {}
+}
 async function misPedidos(){
   const t = LS.g('mc_sesion'); if (!t) return entrar();
   try { const r = await rpc('micuenta_mis_pedidos', { p_sesion: t });
     if (!r) { LS.s('mc_sesion', null); return entrar('Tu sesión venció. Entra otra vez.'); }
     const P = r.pedidos || [], n = P[0] && P[0].nombre;
     $('#salir').style.display = '';
-    app.innerHTML = '<h1>' + (n ? 'Hola, ' + esc(n) : 'Mis pedidos') + '</h1>' + (P.length ? P.map(tarjeta).join('') : '<div class="card"><p class="nota">Aún no vemos pedidos con este correo.</p></div>') + perfilCaja() + vitrinaCaja() + avisosCaja() + instalar;
-    iosAviso(); if (evInst) $('#inst').style.display = 'block'; avisosCargar(t); perfilCargar(t); vitrinaCargar(P);
+    if (!P.length) { app.innerHTML = '<h1>Mi cuenta</h1><div class="card"><p class="nota">Aún no vemos pedidos con este correo.</p></div>'; return; }
+    armar(n, P, t);
   } catch(e) { app.innerHTML = '<div class="card"><p class="err">No pudimos conectarnos. Revisa tu internet.</p><button class="btn" onclick="misPedidos()">Reintentar</button></div>'; }
 }
 async function porEnlace(tok){
@@ -177,8 +205,7 @@ async function porEnlace(tok){
     guardarEnlace(tok);
     const otros = enlaces().filter(t => t !== tok), mas = [];   // 25-nov · solo pedidos de la MISMA clienta (p.cli); nunca mezclar clientas en un celular compartido
     for (const t of otros) { try { const q = await rpc('micuenta_por_enlace', { p_token: t }); if (q && p.cli && q.cli === p.cli && q.nro !== p.nro) mas.push(q); } catch(_){} }
-    app.innerHTML = '<h1>' + (p.nombre ? 'Hola, ' + esc(p.nombre) : 'Tu pedido') + '</h1>' + tarjeta(p) + mas.map(tarjeta).join('') + perfilCaja() + vitrinaCaja() + avisosCaja() + instalar;
-    iosAviso(); if (evInst) $('#inst').style.display = 'block'; avisosCargar(tok); perfilCargar(tok); vitrinaCargar([p].concat(mas));
+    armar(p.nombre, [p].concat(mas), tok);
   } catch(e) { app.innerHTML = '<div class="card"><p class="err">No pudimos conectarnos. Revisa tu internet.</p><button class="btn" onclick="location.reload()">Reintentar</button></div>'; }
 }
 // 25-nov · enlaces abiertos en este celular (la app instalada los muestra sin pedir correo)
@@ -189,7 +216,7 @@ const AVISOS = [['pedido', 'Estado de mis pedidos'], ['lanzamientos', 'Nuevos in
 let _llave = null;
 // 25-nov (Pablo) · «Mi cuenta»: nivel por compras de los últimos 12 meses, cumpleaños (20%) y puntos
 let _pf = null;
-function perfilCaja(){ return '<div class="card" id="perfil" style="display:none"><h2>Mi cuenta</h2><div id="pf"></div></div>'; }
+function perfilCaja(){ return '<div class="card" id="perfil" style="display:none"><h2>Mis puntos y nivel</h2><div id="pf"></div></div>'; }
 const sol = n => 'S/ ' + Number(n || 0).toLocaleString('es-PE', { maximumFractionDigits: 0 });
 async function perfilCargar(llave){
   try { const r = await rpc('micuenta_perfil_leer', { p_llave: llave }); if (!r) return; _pf = r;
@@ -198,8 +225,11 @@ async function perfilCargar(llave){
     if (r.siguiente) h += '<p class="nota">' + (Number(r.pendiente) > 0
       ? 'Cuando completes tu pago de ' + sol(r.pendiente) + (Number(r.falta_despues) > 0 ? ', te faltarán ' + sol(r.falta_despues) + ' en compras para ser ' + esc(r.siguiente) + '.' : ', ¡pasas a ' + esc(r.siguiente) + '!')
       : 'Te faltan ' + sol(r.falta) + ' en compras para ser ' + esc(r.siguiente) + '.') + '</p>';
-    if (r.cumple) { const f = r.cumple.split('-'); h += '<div class="sw"><span>🎂 Tu cumpleaños</span><b>' + Number(f[2]) + ' de ' + MES[Number(f[1]) - 1] + '</b></div>'; }
-    else h += '<div class="sw" style="display:block"><b>¿Quieres que te regalemos 20% de descuento en tu mes de cumpleaños?</b><button class="btn" style="margin-top:10px" onclick="cumpleAbrir()">Sí, quiero mi regalo</button></div>';
+    let hc = '<h2>Mis datos</h2>';
+    if (r.cumple) { const f = r.cumple.split('-'); hc += '<div class="sw"><span>🎂 Tu cumpleaños</span><b>' + Number(f[2]) + ' de ' + MES[Number(f[1]) - 1] + '</b></div>'; }
+    else hc += '<div class="sw" style="display:block"><b>¿Quieres que te regalemos 20% de descuento en tu mes de cumpleaños?</b><button class="btn" style="margin-top:10px" onclick="cumpleAbrir()">Sí, quiero mi regalo</button></div>';
+    if (r.correo) hc += '<div class="sw"><span>Correo</span><b>' + esc(r.correo) + '</b></div>';
+    const cb = $('#cumple-box'); if (cb) { cb.innerHTML = hc; cb.style.display = 'block'; }
     h += '<div class="sw" style="display:block"><div style="display:flex;justify-content:space-between"><span>⭐ Mis puntos</span><b>' + Number(r.puntos || 0) + '</b></div>'
       + (Number(r.puntos_en_curso) > 0 ? '<p class="nota">Al completar tu pedido ganarás <b>' + Number(r.puntos_en_curso) + ' puntos</b>.</p>' : '') + '<p class="nota">1 punto por cada S/ 1. 500 puntos = S/ 15 de descuento.</p></div>';
     $('#pf').innerHTML = h; $('#perfil').style.display = 'block';
