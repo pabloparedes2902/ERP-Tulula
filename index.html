@@ -24749,6 +24749,8 @@ function mkTBody(rows) {
         } else {
           tds += '<td'+TC+'><span style="color:var(--ac);font-weight:600">'+esc(String(v||'—'))+'</span>' + _envJuntoBadge(v) + '</td>';   /* 26-oct · 📦 junto con */
         }
+      } else if (c.k==='Direccion' && _dirAgRoja(p)) {   // 26-nov (Pablo) · agencia escrita a mano que no está en la lista de Shalom/Olva
+        tds += '<td'+TC+' style="color:var(--rd);font-weight:600" title="Esta agencia no está en la lista de '+esc(String(p['Courier']||''))+'. Elígela del desplegable en el pedido.">'+esc(String(v||''))+'</td>';
       } else if (c.k==='Estado') {
         tds += '<td'+TC+'>'+badgeE(v)+'</td>';
       } else if (c.k==='Estado Pago') {
@@ -28541,14 +28543,17 @@ function _npShAgPorDistrito(){
   const dk = String((document.getElementById('np-dist') || {}).value || '').trim(), u = UBI[dk];
   if (!u) { sel.innerHTML = '<option value="">— Elige primero el distrito de la clienta —</option>'; return; }
   const pv = _shN(u[0]), rg = _shN(u[1]), D = [], P = [], R = [];
-  _shAg.forEach(a => { const k = _shAgDist(a); if (k === dk) D.push(a); else if (k && UBI[k] && _shN(UBI[k][0]) === pv && _shN(UBI[k][1]) === rg) P.push(a); else if (_shN(a.departamento) === rg || (k && UBI[k] && _shN(UBI[k][1]) === rg)) R.push(a); });
+  /* 26-nov (Pablo) · la lista de distritos trae 7 repetidos con y sin tilde (JOSÉ/JOSE LEONARDO ORTIZ, RÍMAC/RIMAC, ANCÓN/ANCON…):
+     se compara por nombre sin tildes + provincia + región, no por la llave exacta. */
+  const _id = k => (k && UBI[k]) ? _shN(k.replace(/_[A-Z]+$/, '')) + '|' + _shN(UBI[k][0]) + '|' + _shN(UBI[k][1]) : '', dId = _id(dk);
+  _shAg.forEach(a => { const k = _shAgDist(a); if (k === dk || (dId && _id(k) === dId)) D.push(a); else if (k && UBI[k] && _shN(UBI[k][0]) === pv && _shN(UBI[k][1]) === rg) P.push(a); else if (_shN(a.departamento) === rg || (k && UBI[k] && _shN(UBI[k][1]) === rg)) R.push(a); });
   /* 24-nov (Pablo) · por cercanía: el punto de partida es el centro de las agencias del distrito (de los dos couriers);
      si el distrito no tiene, el de la capital de la provincia. Cada grupo se ordena de la más cercana a la más lejana. */
   const ll = a => { const la = parseFloat(a.latitud), lo = parseFloat(a.longitud); return (isFinite(la) && isFinite(lo) && la && lo) ? [la, lo] : null; };
   const todas = Object.values(_agPor).flat();
   const centro = f => { const P2 = todas.filter(f).map(ll).filter(Boolean); return P2.length ? [P2.reduce((t, q) => t + q[0], 0) / P2.length, P2.reduce((t, q) => t + q[1], 0) / P2.length] : null; };
   const cap = Object.keys(UBI).find(k => _shN(k.replace(/_[A-Z]+$/, '')) === pv && _shN(UBI[k][0]) === pv && _shN(UBI[k][1]) === rg);
-  const ancla = centro(a => _shAgDist(a) === dk) || (cap ? centro(a => _shAgDist(a) === cap) : null);
+  const ancla = centro(a => _id(_shAgDist(a)) === dId) || (cap ? centro(a => _shAgDist(a) === cap) : null);
   const km = a => { const q = ll(a); if (!ancla || !q) return null; const R0 = 6371, r = x => x * Math.PI / 180, dLa = r(q[0] - ancla[0]), dLo = r(q[1] - ancla[1]);
     const h = Math.sin(dLa / 2) ** 2 + Math.cos(r(ancla[0])) * Math.cos(r(q[0])) * Math.sin(dLo / 2) ** 2; return 2 * R0 * Math.asin(Math.sqrt(h)); };
   const ord = A => ancla ? A.map(a => [a, km(a)]).sort((x, y) => (x[1] == null ? 1e9 : x[1]) - (y[1] == null ? 1e9 : y[1])).map(x => x[0]) : A;
@@ -38310,6 +38315,25 @@ async function _agenciaRevisar(){
 }
 if (location.protocol === 'https:') { setTimeout(_agenciaRevisar, 30000); setInterval(_agenciaRevisar, 30 * 60 * 1000); }
 // <<< AGENCIA_3D_26NOV
+/* 26-nov (Pablo) · DIR_AGENCIA_26NOV · desde hoy, si la dirección de un pedido Shalom (o Olva a agencia) no es una agencia de la lista, sale en rojo. */
+const _DIR_ROJA_DESDE = Date.parse('2026-11-26T00:00:00-05:00'), _agNom = {};
+function _agNombresDe(cour){
+  if (_agNom[cour]) return _agNom[cour];
+  const L = (_agPor && _agPor[cour]) || null;
+  if (!L) { if (!_agNom['_' + cour]) { _agNom['_' + cour] = 1; const prev = _shAg; _shAgCargar(cour).then(() => { _shAg = prev; }).catch(() => {}); } return null; }
+  const S = new Set(); L.forEach(a => { const p = String(a.nombre || '').split('/').map(x => x.trim()).filter(Boolean), ult = p.length ? p[p.length - 1] : String(a.direccion || '');
+    S.add(_shN(_AG[cour].pre + ' ' + (a.zona ? a.zona + ' - ' : '') + (cour === 'OLVA' ? String(a.direccion || ult) : ult))); });
+  return (_agNom[cour] = S);
+}
+function _dirAgRoja(p){
+  try { const cour = String(p['Courier'] || '').trim().toUpperCase(); if (cour !== 'SHALOM' && cour !== 'OLVA') return false;
+    const d = _shN(p['Direccion']); if (!d) return false;
+    if (cour === 'OLVA' && !/^OLVA/.test(d)) return false;   // Olva a domicilio: no aplica
+    const f = Date.parse(p['Fecha Pedido'] || '') || 0; if (!f || f < _DIR_ROJA_DESDE) return false;
+    const S = _agNombresDe(cour); if (!S) return false;
+    if (S.has(d)) return false; for (const n of S) if (d.startsWith(n)) return false; return true;
+  } catch(_) { return false; } }
+if (location.protocol === 'https:') setTimeout(() => { try { _agNombresDe('SHALOM'); setTimeout(() => _agNombresDe('OLVA'), 3000); } catch(_){} }, 8000);
 /* 25-nov (Pablo) · ROTULOS_25NOV · 📦 Rótulos: subes los rótulos del día (PDF o fotos) de Shalom y Olva; el ERP lee guía, clave y DNI
    (PDF: texto del archivo; foto o PDF escaneado: lector de texto gratis del navegador), busca el pedido por DNI y courier, tú marcas
    cuáles salieron y guarda guía + clave en cada uno (Olva = clave «No aplica»). Nada se guarda sin tu clic. */
