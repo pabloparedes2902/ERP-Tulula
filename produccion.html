@@ -580,6 +580,7 @@ function plzRefrescarNueva(){   /* al elegir producto o taller: los días salen 
   if (PLZ_ANCLA.nPz === 'S' && S0) z.inicio = masD(S0, -z.d.reduce((a, n) => a + n, 0));
   pb.innerHTML = plzHtml(z, true, 'nPz'); plzCambio('nPz');
 }
+function cierreAuto(o, T, S){ return !!(S && S[2] && S[2].hecho && S[3] && S[3].hecho && T && !T.correccion && !T.porIngresar && (tfDe(o) || tfVieja(o))); }
 function estadoOrden(S){
   const hoy = iso(hoy0()); let d = null;
   if (S[3] && S[3].hecho && S[3].real && S[3].plan) return difD(S[3].real, S[3].plan);   /* la confección termina en el paso 4: su atraso es el final */
@@ -735,6 +736,9 @@ function barraCol(o, pct, S){   /* 5-nov (Pablo) · verde ≥90% · ámbar 70–
 function resumenHtml(L, C){
   C = C || []; if (!L.length && !C.length) return '<div class="vacio">No hay órdenes.</div>';
   const F = L.concat(C).map(o => { const { T } = saldos(o), S = pasosOrden(o), fin = finOrden(o, S);
+    /* 26-nov (Pablo, 372) · la orden se CIERRA SOLA cuando el taller entregó todo (foto del lote final), llegó al LLEGO_PCT% y no queda nada por pasar
+       al stock ni en corrección (SAP: «entregada» → «cerrada»). Si no llegará más, «✓ Cerrar orden» (cierre con diferencia anotada). Se puede reabrir. */
+    if (!o.cerrada && !o._cAuto && D.nivel >= 2 && cierreAuto(o, T, S)){ o._cAuto = 1; rpc('prod_etapa', { p_id: o.id, p_etapa: 'cerrada' }).then(r => { if (r && r.ok){ aviso('✓ ' + codOrden(o) + ' se cerró sola: el taller entregó todo y ya está en el stock'); cargar(); } }).catch(() => {}); }
     if (S[4].hecho && !(o.fechas || {}).v && !o._vMarca && D.nivel >= 2){ o._vMarca = 1; rpc('prod_orden_fechas', { p_id: o.id, p_objetivo: null, p_marcas: { v: new Date().toLocaleDateString('en-CA', { timeZone:'America/Lima' }) } }).catch(() => {}); }
     return { o, T, S, fin, pct: T.pedido ? Math.round(T.buenas / T.pedido * 100) : 0 }; });
   /* orden por RIESGO (como los tableros de excepción): primero las más atrasadas, luego por la fecha en que deben estar a la venta; las cerradas al final */
@@ -1519,8 +1523,9 @@ function vistaPintar(){
     return 'programada ' + (ed && (typeof progOK !== 'function' || progOK()) ? '<input type="date" value="' + esc(f || '') + '" onchange="vLoteFecha(' + i + ',this.value)" style="width:128px;font-size:11px;padding:1px 4px;background:transparent;color:inherit;border:1px solid ' + (f ? 'rgba(255,255,255,.25)' : '#f87171') + '">' : (fD(f) || '—'))
       + (sug ? ' <span class="mu">(sugerida)</span>' : '') + (!f ? ' <span style="color:#f87171">ponle fecha</span>' : '')
       + (sinEnt && f && i === L.length - 1 ? '<div>proyección ' + fD(proy) + ' <span class="mu" title="Fecha de entrega al taller + días del taller. El veredicto (a tiempo, en riesgo, atrasado) va en la línea del lote.">(estimada)</span>' + '</div>' : ''); };
-  const fTarde = (F, i) => { const r = ult(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r || !f) return ''; const d = difD(r, f); return d > 0 ? '<span style="color:#f87171">' + d + ' d tarde</span>' : '<span style="color:#4ade80">a tiempo</span>'; };
-  const fLlego = (F, i) => { const r = ult(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r) return ''; const d = f ? difD(r, f) : 0; return 'llegó ' + fD(r) + (f ? (d > 0 ? ' <span style="color:#f87171">' + d + ' d tarde</span>' : ' <span style="color:#4ade80">a tiempo</span>') : ''); };
+  const pri = F => F.map(m => m.fecha).filter(Boolean).sort()[0];   /* 26-nov (Pablo, 374) · la fecha en que llegó queda fija: corregir después no la mueve */
+  const fTarde = (F, i) => { const r = pri(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r || !f) return ''; const d = difD(r, f); return d > 0 ? '<span style="color:#f87171">' + d + ' d tarde</span>' : '<span style="color:#4ade80">a tiempo</span>'; };
+  const fLlego = (F, i) => { const r = pri(entr(F)), f = i >= 0 ? progDe(i) : null; if (!r) return ''; const d = f ? difD(r, f) : 0; return 'llegó ' + fD(r) + (f ? (d > 0 ? ' <span style="color:#f87171">' + d + ' d tarde</span>' : ' <span style="color:#4ade80">a tiempo</span>') : ''); };
   const val = id => esc((document.getElementById(id) || {}).value || ''), dis = ed ? '' : ' disabled';
   let h = '<div class="vcab">'
     + '<label>Taller <input list="lTaller" value="' + val('nTaller') + '" oninput="document.getElementById(\'nTaller\').value=this.value;vSucio()"' + dis + '></label>'
@@ -1568,7 +1573,7 @@ function vistaPintar(){
     const barra = selloStock(Mi, ed) + ' ' + sema + (!ed ? '' : (falta ? ' <button onclick="vLoteTodo(' + i + ')" title="Llena la confección total con lo programado; corriges solo lo que no llegó igual y aprietas «💾 Guardar lo que llegó»">✓ Llegó todo lo programado</button> ' : ' ') + ((typeof progOK === 'function' && !progOK()) ? '' : selB('🎨 Colores', cI.filter(c => !Mi.some(m => m.color === c)).map(c => ['-' + c, '✕ ' + c + ' no va en este lote']).concat(cols.filter(c => cI.indexOf(c) < 0).map(c => ['+' + c, '＋ ' + c])), 'vLoteColor.bind(null,' + i + ')'))
       /* 12-nov-2026 (Pablo) · sin filtro de tallas por lote: todas se muestran siempre */
       + (ultL ? ' ' + selB('↩ Deshacer', [['-' + ultL, '↩ Deshacer el último registro de este lote (' + ultL + ')']], 'vAccEntrega') : ''));
-    h += vLoteBloque(o, i, cI, tI, qL, vMovsAgg(Mi), ed, { p: fProg(i), tot: fLlego(Mi, i), real: enStock(Mi), totISO: String(ult(entr(Mi)) || '').slice(0, 10), totD: fTarde(Mi, i), totHoy: falta > 0 }, barra); });
+    h += vLoteBloque(o, i, cI, tI, qL, vMovsAgg(Mi), ed, { p: fProg(i), tot: fLlego(Mi, i), real: enStock(Mi), totISO: String(pri(entr(Mi)) || '').slice(0, 10), totD: fTarde(Mi, i), totHoy: falta > 0 }, barra); });
   { /* 10-nov (Pablo) · los lotes pueden sumar más o menos que lo programado: eso NO cambia lo programado, solo se avisa */
     const dif = []; cols.forEach(c => tal.forEach(t => { const k = c + '|' + t, p = NV.q[k] || 0, s = L.reduce((a, y) => a + (+(y.q || {})[k] || 0), 0); if (p !== s) dif.push(c + ' ' + t + ': lotes ' + s + ' / programado ' + p); }));
     const tp = Object.values(NV.q).reduce((a, v) => a + (+v || 0), 0), tl = L.reduce((a, y) => a + nLoteTot(y), 0);
@@ -2096,6 +2101,20 @@ function motivos(){ try { return (parent && parent !== window && parent.prodMoti
    que ya estaban en el stock) NO entran solas: en TOP AMELIA pasar 3 observadas a yayitas volvió a ingresar las 200 de la orden.
    El botón «📦 Pasar al stock» (opts.todo) sigue llevando todo lo pendiente, porque ahí lo decide la persona. */
 var ING_DESDE = null;
+/* 26-nov (Pablo, 373) · antes de descontar las observadas del stock (van a No disponible) se ve y se elige el TIPO de falla de cada una */
+function fallaMotivoPedir(G, seguir){
+  const F = G.filter(g => g.destino === 'REPARAR'), L = motivos().filter(m => !/LAVAD|TINTOR/.test(nrm(m)));
+  if (!F.length || L.length < 2) return false;
+  const d = document.createElement('div'); d.className = 'modal'; d.style.display = 'flex'; d.id = 'fallaMotDlg';
+  d.innerHTML = '<div class="box" style="max-width:520px"><button class="x" title="Cerrar" onclick="this.closest(\'.modal\').remove()">✕</button><h3 style="margin:0 0 6px">Observadas que salen del stock vendible</h3>'
+    + '<div class="mu" style="font-size:12px;margin-bottom:10px">Van a Stock › No disponible. Elige el tipo de falla de cada una.</div>'
+    + '<table class="g" style="width:100%"><tr><th style="text-align:left">Prenda</th><th>Cant.</th><th>Tipo de falla</th></tr>'
+    + F.map((g, i) => '<tr><td style="text-align:left">' + esc(g.color + ' ' + g.talla) + '</td><td>' + g.cantidad + '</td><td><select data-k="' + esc(g.color + '|' + g.talla) + '">' + L.map(m => '<option' + (m === g.motivo ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select></td></tr>').join('')
+    + '</table><div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="p" id="fallaMotOk">Descontar del stock</button></div></div>';
+  document.body.appendChild(d);
+  document.getElementById('fallaMotOk').onclick = () => { const mot = {}; d.querySelectorAll('select[data-k]').forEach(x => { mot[x.dataset.k] = x.value; }); d.remove(); seguir(mot); };
+  return true;
+}
 function itemsIngreso(o, opts){
   const soloNuevo = !!(opts && opts.auto && !opts.todo), nuevo = x => !soloNuevo || !!x.entrega || x.tipo === 'corregida' || x.tipo === 'yayita' || (ING_DESDE != null && x.id > ING_DESDE);
   const PI = D.movs.filter(x => x.orden_id === o.id && !x.ingresado && nuevo(x) && (['buena', 'corregida', 'yayita'].indexOf(x.tipo) >= 0 || (x.tipo === 'falla' && x.entrega))), G = {};
@@ -2160,6 +2179,8 @@ function ingresarStock(opts){
     stockYaTiene(o, G).then(info => { if (info) stockYaTieneAbrir(o, info, opts); else ingresarStock(Object.assign({}, opts || {}, { _revisado: true })); });
     return;
   }
+  if (opts && opts._mot) G.forEach(g => { if (g.destino === 'REPARAR' && opts._mot[g.color + '|' + g.talla]) g.motivo = opts._mot[g.color + '|' + g.talla]; });
+  if (!(opts && opts._motOk) && fallaMotivoPedir(G, mot => ingresarStock(Object.assign({}, opts || {}, { _revisado: true, _motOk: true, _mot: mot })))) return;   /* 26-nov (Pablo, 373) */
   if (!(parent && parent !== window && parent.prodIngresarStock)){ msg.textContent = 'Abre Producción desde el ERP para ingresar al stock.'; return; }
   const pf = (D.prod && D.prod[nrm(o.diseno)]) || {};
   const r = parent.prodIngresarStock(G.map(g => ({ prenda:g.prenda, cantidad:g.cantidad, motivo:g.motivo || '', destino:g.destino || '', ficha:g.ficha, color:g.color, talla:g.talla, categoria: pf.categoria || '', op: o.codigo || '' })), async res => {   /* 16-nov · op: la base exige la orden */
