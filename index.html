@@ -1021,6 +1021,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
       <!-- Banner de saldos vigentes del cliente -->
       <div id="np-saldos-banner" style="display:none;margin-bottom:10px"></div>
       <div id="np-cupon-banner" style="display:none;margin-bottom:10px"></div>
+      <div id="np-puntos-banner" style="display:none;margin-bottom:10px"></div>
       <div class="card" id="np-form-card">
         <div class="ct" style="margin-bottom:14px">Datos del cliente</div>
         <!-- 1. Fecha + 2. Nombre -->
@@ -1052,7 +1053,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <!-- 9. Referencia + 10. Email -->
         <div class="fr">
           <div class="fg"><label>Referencia</label><input id="np-ref" type="text" placeholder="Punto de referencia..."></div>
-          <div class="fg"><label style="display:flex;justify-content:space-between;align-items:center">Correo electrónico<button type="button" class="tt-ico" id="np-email-pedir" onclick="npCorreoPedir()" title="Invitarla por WhatsApp a su app Tulula (seguimiento, puntos, lanzamientos)" style="font-size:11px;padding:0 4px">📲 Invitar a la app</button></label><input id="np-email" type="text" placeholder="ejemplo@correo.com" autocomplete="off"></div>
+          <div class="fg"><label style="display:flex;justify-content:space-between;align-items:center">Correo electrónico<button type="button" class="tt-ico" id="np-email-pedir" onclick="npCorreoPedir()" title="Invitarla por WhatsApp a su app Tulula (seguimiento, puntos, lanzamientos)" style="font-size:11px;padding:0 4px">📲 Invitar a la app</button></label><input id="np-email" type="text" placeholder="ejemplo@correo.com" autocomplete="off" onchange="_npPtsBuscar(this.value)"></div>
         </div>
         <!-- 10b. Cumpleaños (22-oct · beneficio sorpresa; se guarda en la ficha de la clienta) -->
         <div class="fr">
@@ -28568,7 +28569,7 @@ function _mcNombre(n){ n = String(n || '').trim().split(/\s+/)[0] || ''; return 
 function _mcInvitacion(nro, nombre, url){
   return 'Hola' + _mcNombre(nombre) + ' 💙 Ya registramos tu pedido #' + nro + '. Entra gratis a tu app Tulula:\n'
     + '📦 Sigue tu pedido paso a paso: cuándo sale, dónde va y cuándo llega\n⭐ Acumula puntos y canjéalos en descuentos\n✨ Entérate primero de los lanzamientos\n🧾 Mira el historial de tus pedidos\n'
-    + '🎁 Actívala con tu correo y te regalamos 25 000 puntos (S/ 5 de descuento).\n👉 ' + url;
+    + '🎁 Actívala con tu correo y te regalamos 500 puntos (S/ 10 de descuento).\n👉 ' + url;
 }
 async function _mcToken(nro){
   if (_mcTok[nro]) return _mcTok[nro];
@@ -32158,6 +32159,7 @@ async function npLookupSaldosDo() {
 const NP_CUPON_MONTO = 50, NP_CUPON_MIN = 150;
 let _npCupon = { tel: '', lista: [], aplicado: '', previos: [] };
 async function _npCuponBuscar(tel) {
+  try { setTimeout(() => _npPtsBuscar((document.getElementById('np-email') || {}).value), 1500); } catch (_) {}   // PUNTOS_CANJE_26NOV · si el correo se llenó solo al reconocer a la clienta
   const d = String(tel || '').replace(/\D/g, '').slice(-9);
   if (d.length < 9 || d === _npCupon.tel) return;
   _npCupon.tel = d; _npCupon.lista = [];
@@ -32180,6 +32182,7 @@ function _npCuponPintar() {
   if (q) q.addEventListener('click', _npCuponQuitar);
 }
 function _npCuponAplicar(cod) {
+  if (typeof _npPts === 'object' && _npPts.canje) { toast('Ya se usaron puntos en este pedido: el cupón no se combina con los puntos.', 'err'); return; }   // PUNTOS_CANJE_26NOV
   const F = _npCuponFilas(), val = x => (parseFloat(x.querySelector('.np-prec').value) || 0) * (parseFloat(x.querySelector('.np-cant').value) || 1);
   const S = F.reduce((s, x) => s + val(x), 0);
   if (S < NP_CUPON_MIN - 0.005) { toast('Las prendas suman S/ ' + fmt(S) + '. El cupón vale en compras desde S/ ' + NP_CUPON_MIN + ' en prendas.', 'err'); return; }
@@ -32203,6 +32206,69 @@ function _npCuponQuitar() {
   _npCupon.aplicado = ''; _npCupon.previos = [];
   try { npCalc(); } catch (_) {}
   _npCuponPintar();
+}
+// 26-nov-2026 (Pablo) · PUNTOS_CANJE_26NOV · programa de puntos estilo Sephora. Al escribir el correo de la clienta aparece su saldo.
+// 500 puntos = S/ 10 menos (todas) · Super VIP: 1 000 = S/ 20 menos, 2 500 = una prenda de hasta S/ 100 gratis. Solo prendas a precio de lista
+// (no Yayitas), un canje por pedido, no se combina con cupones. El descuento baja el precio de las prendas, igual que el cupón de foto.
+let _npPts = { email: '', saldo: null, canje: 0, previos: [], nota: '' };
+async function _erpRpc(fn, body) {
+  const tk = await _sbSesionAsegurar(); if (!tk) throw new Error('Sin sesión con la base');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: JSON.stringify(body || {}) });
+  if (!r.ok) throw new Error('La base respondió ' + r.status); return r.json();
+}
+async function _npPtsBuscar(em) {
+  em = String(em || '').trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(em) || em === _npPts.email) return;
+  _npPts.email = em; _npPts.saldo = null;
+  try { _npPts.saldo = await _erpRpc('puntos_saldo', { p_email: em }); } catch (_) { _npPts.saldo = null; }
+  _npPtsPintar();
+}
+function _npPtsPintar() {
+  const b = document.getElementById('np-puntos-banner'); if (!b) return;
+  const s = _npPts.saldo, d = s ? Number(s.disponibles || 0) : 0, pe = s ? Number(s.por_acreditar || 0) : 0;
+  if (!s || (!d && !pe && !_npPts.canje)) { b.style.display = 'none'; b.innerHTML = ''; return; }
+  const btn = (p, t) => '<button type="button" class="btn bp bs" data-p="' + p + '">' + t + '</button>';
+  let o = '';
+  if (_npPts.canje) o = '<span style="color:var(--gn);font-weight:600">✓ ' + esc(_npPts.nota) + '</span><button type="button" class="btn bg bs" id="np-pts-quitar">Quitar</button>';
+  else {
+    if (d >= 500) o += btn(500, 'Usar 500 (−S/ 10)');
+    if (s.super_vip && d >= 1000) o += btn(1000, 'Usar 1 000 (−S/ 20)');
+    if (s.super_vip && d >= 2500) o += btn(2500, 'Usar 2 500 (prenda hasta S/ 100 gratis)');
+  }
+  b.style.display = '';
+  b.innerHTML = '<div style="background:var(--bg3);border:1px solid var(--bd);border-radius:var(--r);padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px">'
+    + '⭐ <b>' + d.toLocaleString('es-PE') + ' puntos</b> <span style="color:var(--mu)">(= S/ ' + (d / 50).toFixed(2) + (s.super_vip ? ' · Super VIP' : '') + (pe ? ' · ' + pe.toLocaleString('es-PE') + ' por acreditar' : '') + ')</span>' + o + '</div>';
+  b.querySelectorAll('button[data-p]').forEach(x => x.addEventListener('click', () => _npPtsAplicar(Number(x.dataset.p))));
+  const q = document.getElementById('np-pts-quitar'); if (q) q.addEventListener('click', _npPtsQuitar);
+}
+function _npPtsAplicar(p) {
+  if (typeof _npCupon === 'object' && _npCupon.aplicado) { toast('Este pedido ya tiene un cupón: los puntos no se combinan con cupones.', 'err'); return; }
+  const F = _npCuponFilas(), pr = x => parseFloat(x.querySelector('.np-prec').value) || 0, ca = x => parseFloat(x.querySelector('.np-cant').value) || 1;
+  _npPts.previos = F.map(x => [x, x.querySelector('.np-prec').value]);
+  if (p === 2500) {
+    const c = F.filter(x => pr(x) > 0 && pr(x) <= 100).sort((a, z) => pr(z) - pr(a))[0];
+    if (!c) { toast('Para la prenda gratis tiene que haber una prenda de hasta S/ 100 a precio de lista.', 'err'); return; }
+    const u = pr(c), n = ca(c); c.querySelector('.np-prec').value = (Math.round((u - u / n) * 100) / 100).toFixed(2);
+    _npPts.nota = 'Canje 2 500 puntos (prenda de S/ ' + fmt(u) + ' gratis)';
+  } else {
+    const monto = p === 1000 ? 20 : 10, S = F.reduce((t, x) => t + pr(x) * ca(x), 0);
+    if (S < 10) { toast('El canje vale en pedidos desde S/ 10 en prendas a precio de lista.', 'err'); return; }
+    let resto = monto;
+    F.forEach((x, i) => { const baja = i === F.length - 1 ? resto : Math.round(monto * pr(x) * ca(x) / S * 100) / 100; resto = Math.round((resto - baja) * 100) / 100;
+      x.querySelector('.np-prec').value = (Math.round((pr(x) - baja / ca(x)) * 100) / 100).toFixed(2); });
+    _npPts.nota = 'Canje ' + (p === 1000 ? '1 000' : '500') + ' puntos (−S/ ' + monto + ')';
+  }
+  _npPts.canje = p;
+  const o = document.getElementById('np-obs'); if (o && o.value.indexOf(_npPts.nota) < 0) o.value = (o.value ? o.value + ' · ' : '') + _npPts.nota;
+  try { npCalc(); } catch (_) {}
+  _npPtsPintar(); toast('✓ ' + _npPts.nota, 'ok');
+}
+function _npPtsQuitar() {
+  (_npPts.previos || []).forEach(([x, v]) => { if (x && x.isConnected) x.querySelector('.np-prec').value = v; });
+  const o = document.getElementById('np-obs'); if (o && _npPts.nota) o.value = o.value.replace(' · ' + _npPts.nota, '').replace(_npPts.nota, '');
+  _npPts.canje = 0; _npPts.previos = []; _npPts.nota = '';
+  try { npCalc(); } catch (_) {}
+  _npPtsPintar();
 }
 function npRenderSaldosBanner(data) {
   const banner = document.getElementById('np-saldos-banner');
@@ -33615,7 +33681,8 @@ async function npGuardar() {
       saldosFavor: (_npSaldos.applyFavor || []).slice(),
       saldosDevs: (_npSaldos.applyDevs || []).slice(),
       saldosPendiente: (_npSaldos.applyPendiente || []).slice(),
-      cuponFoto: (typeof _npCupon === 'object' && _npCupon.aplicado) || '',   // 19-nov · cupón de foto aplicado
+      cuponFoto: (typeof _npCupon === 'object' && _npCupon.aplicado) || '',
+      ptsCanje: (typeof _npPts === 'object' && _npPts.canje) ? { email: _npPts.email, puntos: _npPts.canje } : null,   // PUNTOS_CANJE_26NOV   // 19-nov · cupón de foto aplicado
       label: cliBase.NombreApellido || 'pedido',
       intentos: 0,
       // #9 Idempotencia: token del FORMULARIO, no del intento.
@@ -33835,6 +33902,7 @@ async function _npProcessSaveQueue() {
       _npQueuePersist();
       _npUpdateSaveIndicator();
       try { _waAvisoGuardado('pedido', String(nroReal || job.nroPedBase || ''), job.modo === 'agregar' ? 'AGREGA' : ''); } catch(_){}   // 22-oct · 📲 WhatsApp
+      if (job.ptsCanje) _erpRpc('puntos_canjear', { p_email: job.ptsCanje.email, p_nro: String(nroReal || job.nroPedBase || ''), p_puntos: job.ptsCanje.puntos }).then(r => { if (r !== 'ok' && r !== 'ya') toast('El pedido se guardó, pero los puntos no se descontaron: ' + r, 'warn'); }).catch(e => toast('El pedido se guardó, pero los puntos no se descontaron: ' + e.message, 'warn'));   // PUNTOS_CANJE_26NOV
       if (job.cuponFoto) _resRpc('resena_cupon_usar_erp', { p_cupon: job.cuponFoto, p_pedido: String(nroReal || job.nroPedBase || '') }).catch(e => toast('El pedido se guardó, pero el cupón ' + job.cuponFoto + ' no quedó marcado como usado: ' + e.message, 'err'));   // 19-nov · cupón de foto
       // PERF v12 — convertir el provisional en REAL al instante (sin esperar al polling).
       try {
@@ -35680,6 +35748,7 @@ function npLimpiar() {
     _npSaldos.items = []; _npSaldos.devs = []; _npSaldos.applyFavor = []; _npSaldos.applyDevs = [];
     _npSaldos.applyPendiente = []; _npSaldos.acked = false; _npSaldos.lastKey = '';
   }
+  if (typeof _npPts === 'object') { _npPts = { email: '', saldo: null, canje: 0, previos: [], nota: '' }; const pb = document.getElementById('np-puntos-banner'); if (pb) { pb.style.display = 'none'; pb.innerHTML = ''; } }   // PUNTOS_CANJE_26NOV
   if (typeof _npCupon === 'object') { _npCupon.tel = ''; _npCupon.lista = []; _npCupon.aplicado = ''; _npCupon.previos = []; const cb = document.getElementById('np-cupon-banner'); if (cb) { cb.style.display = 'none'; cb.innerHTML = ''; } }   // 19-nov
   ['np-nom','np-dnum','np-dir','np-dist','np-prov','np-reg','np-ref','np-email','np-cumple','np-obs','np-fenv','np-ag'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; }); { const _w = document.getElementById('np-ag-wrap'); if (_w) _w.style.display = 'none'; _npShAgSel = null; }
   // el selector de documento vuelve a DNI y el campo se destraba (si quedo en N/A
