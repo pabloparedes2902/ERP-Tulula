@@ -1052,7 +1052,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
         <!-- 9. Referencia + 10. Email -->
         <div class="fr">
           <div class="fg"><label>Referencia</label><input id="np-ref" type="text" placeholder="Punto de referencia..."></div>
-          <div class="fg"><label style="display:flex;justify-content:space-between;align-items:center">Correo electrónico<button type="button" class="tt-ico" id="np-email-pedir" onclick="npCorreoPedir()" title="Pedirle el correo por WhatsApp" style="font-size:11px;padding:0 4px">📩 Solicitar</button></label><input id="np-email" type="text" placeholder="ejemplo@correo.com" autocomplete="off"></div>
+          <div class="fg"><label style="display:flex;justify-content:space-between;align-items:center">Correo electrónico<button type="button" class="tt-ico" id="np-email-pedir" onclick="npCorreoPedir()" title="Invitarla por WhatsApp a su app Tulula (seguimiento, puntos, lanzamientos)" style="font-size:11px;padding:0 4px">📲 Invitar a la app</button></label><input id="np-email" type="text" placeholder="ejemplo@correo.com" autocomplete="off"></div>
         </div>
         <!-- 10b. Cumpleaños (22-oct · beneficio sorpresa; se guarda en la ficha de la clienta) -->
         <div class="fr">
@@ -28553,13 +28553,44 @@ function npEntrega(k){
   if (k === 'DOMICILIO') { _npShAgSel = null; const d = document.getElementById('np-dir'); if (d && /^(SHALOM|OLVA) AGENCIA/i.test(d.value)) { d.value = ''; const r = document.getElementById('np-ref'); if (r) r.value = ''; } try { document.getElementById('np-dir').focus(); } catch(_){} }
   else _npShAgMostrar();
 }
-/* 26-nov (Pablo) · CORREO_26NOV · 📩 Solicitar: abre el WhatsApp de la clienta con el pedido del correo. */
+/* 26-nov (Pablo) · CORREO_26NOV · 📲 Invitar a la app: en vez de pedirle el correo, se la invita a entrar con su enlace privado
+   (ahí agrega su correo y gana los puntos). Pedido nuevo: el enlace existe recién al guardar → aparece el botón para enviarla. */
+let _npInvitar = false;
 function npCorreoPedir(){
-  const t = [...document.querySelectorAll('#np-tels input')].map(i => (i.value || '').replace(/\D/g, '')).find(x => x.length >= 9);
-  if (!t) { try { toast('Primero escribe el teléfono de la clienta.', 'warn'); } catch(_){} return; }
-  const n = String((document.getElementById('np-nom') || {}).value || '').trim().split(/\s+/)[0] || '';
-  const msg = 'Hola' + (n ? ' ' + n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : '') + ' 💙 Para que sigas tu pedido paso a paso —cuándo sale, dónde va y cuándo llega— y acumules puntos, tenemos la app Tulula. ¿Nos compartes tu correo? Con él te enviamos tu acceso. 😊';
-  window.open('https://wa.me/' + (t.length === 9 ? '51' + t : t) + '?text=' + encodeURIComponent(msg), '_blank', 'noopener');
+  const nro = String((typeof NP !== 'undefined' && NP.nroPedBase) || '').trim();
+  const tel = [...document.querySelectorAll('#np-tels input')].map(i => (i.value || '').replace(/\D/g, '')).find(x => x.length >= 9);
+  if (!tel) { try { toast('Primero escribe el teléfono de la clienta.', 'warn'); } catch(_){} return; }
+  if (nro && NP.modo === 'agregar') return micuentaInvitar(nro, tel, (document.getElementById('np-nom') || {}).value);
+  _npInvitar = true; const b = document.getElementById('np-email-pedir'); if (b) b.textContent = '✓ Al guardar';
+  try { toast('Al guardar el pedido te aparece el botón para enviarle la invitación.', 'ok'); } catch(_){}
+}
+function _mcNombre(n){ n = String(n || '').trim().split(/\s+/)[0] || ''; return n ? ' ' + n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : ''; }
+function _mcInvitacion(nro, nombre, url){
+  return 'Hola' + _mcNombre(nombre) + ' 💙 Ya registramos tu pedido #' + nro + '. Entra gratis a tu app Tulula:\n'
+    + '📦 Sigue tu pedido paso a paso: cuándo sale, dónde va y cuándo llega\n⭐ Acumula puntos y canjéalos en descuentos\n✨ Entérate primero de los lanzamientos\n🧾 Mira el historial de tus pedidos\n'
+    + '🎁 Actívala con tu correo y te regalamos 25 000 puntos (S/ 5 de descuento).\n👉 ' + url;
+}
+async function _mcToken(nro){
+  if (_mcTok[nro]) return _mcTok[nro];
+  const tk = await _sbSesionAsegurar(); if (!tk) throw new Error('sin sesión');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/micuenta_enlace_crear', { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: JSON.stringify({ p_nro: nro }) });
+  if (!r.ok) throw new Error('HTTP ' + r.status); const t = await r.json(); if (t) _mcTok[nro] = t; return t;
+}
+async function micuentaInvitar(nro, tel, nombre){
+  const w = window.open('about:blank', '_blank');   // se abre en el clic (si no, el navegador lo bloquea)
+  try { const t = await _mcToken(nro); if (!t) { if (w) w.close(); toast('El pedido #' + nro + ' aún no está en la base. Prueba en un minuto.', 'warn'); return; }
+    tel = String(tel || '').replace(/\D/g, ''); const u = 'https://wa.me/' + (tel.length === 9 ? '51' + tel : tel) + '?text=' + encodeURIComponent(_mcInvitacion(nro, nombre, MC_URL + '?p=' + t));
+    if (w) w.location.href = u; else window.open(u, '_blank');
+  } catch(e) { if (w) w.close(); try { _errLog('micuenta.invitar', e, { toast: 'No se pudo armar la invitación del #' + nro }); } catch(_){} }
+}
+function _mcInvitarAviso(nro, tel, nombre){
+  let b = document.getElementById('mc-invitar'); if (b) b.remove();
+  b = document.createElement('div'); b.id = 'mc-invitar';
+  b.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:99997;background:#173B61;color:#fff;border-radius:10px;padding:10px 12px;font:500 13px var(--ui-f,Manrope);display:flex;gap:10px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.35)';
+  b.innerHTML = '<span>Pedido #' + esc(nro) + ' guardado</span><button class="btn bp bs" style="font-size:12px">📲 Invitar a la app</button><button title="Cerrar" style="background:transparent;color:#fff;border:0;cursor:pointer;font-size:15px">✕</button>';
+  const [bi, bx] = b.querySelectorAll('button');
+  bi.addEventListener('click', () => { micuentaInvitar(nro, tel, nombre); b.remove(); }); bx.addEventListener('click', () => b.remove());
+  document.body.appendChild(b); setTimeout(() => { try { b.remove(); } catch(_){} }, 120000);
 }
 /* La lista del desplegable: 1) el distrito elegido, 2) su provincia, 3) su región. Sin distrito: pide elegirlo primero. */
 function _npShAgPorDistrito(){
@@ -28625,7 +28656,7 @@ async function micuentaEnlaceCopiar(nro){
       t = await r.json(); if (!t) { toast('El pedido #' + nro + ' aún no está en la base. Prueba en un minuto.', 'err'); return; }
       _mcTok[nro] = t;
     }
-    const msg = 'Hola 👋 Aquí puedes seguir tu pedido #' + nro + ' de Tulula paso a paso, con fecha y hora: ' + MC_URL + '?p=' + t;
+    const msg = _mcInvitacion(nro, '', MC_URL + '?p=' + t);
     const ok = await _waCopiarTexto(msg);
     toast(ok ? 'Enlace del #' + nro + ' copiado: pégalo en el chat de la clienta.' : 'No se pudo copiar. Vuelve a intentar.', ok ? 'ok' : 'err');
   } catch(e) { try { _errLog('micuenta.enlace', e, { toast: 'No se pudo crear el enlace del #' + nro }); } catch(_){} }
@@ -33579,6 +33610,7 @@ async function npGuardar() {
       env: env, dsc: dsc, pag: pag,
       shAg: (_AG[String(_cliSnap.Courier || '').trim().toUpperCase()] && _agCour === String(_cliSnap.Courier || '').trim().toUpperCase()) ? (_npEnt === 'DOMICILIO' ? 'DOMICILIO' : (_npShAgSel || null)) : null,   // 24-nov · agencia Shalom/Olva elegida
       shAgCour: _agCour,
+      invitar: (NP.modo !== 'agregar' && (_npInvitar || !String(_cliSnap.Email || '').includes('@'))) ? { tel: String(_cliSnap.Celular || tels || ''), nom: _cliSnap.NombreApellido } : null,   // CORREO_26NOV
       segGuia: String((document.getElementById('np-seg-guia') || {}).value || '').trim(), segClave: String((document.getElementById('np-seg-clave') || {}).value || '').trim().toUpperCase(),   // 25-nov · guía opcional
       saldosFavor: (_npSaldos.applyFavor || []).slice(),
       saldosDevs: (_npSaldos.applyDevs || []).slice(),
@@ -34030,6 +34062,7 @@ async function _npExecuteSave(job) {
   // ya viaja como línea de pago real del pedido nuevo, evitando doble conteo).
   if (nuevoNro) await _npAplicarSaldosOrigen(job, nuevoNro, cliBase.FechaPago);
   if (nuevoNro && job.shAg) _npShAgGuardar(nuevoNro, job.shAg, job.shAgCour);
+  if (nuevoNro && job.invitar) { _npInvitar = false; try { _mcInvitarAviso(nuevoNro, job.invitar.tel, job.invitar.nom); } catch(_){} }   // CORREO_26NOV
   if (nuevoNro && job.segGuia && job.shAgCour) _npSegGuardar(nuevoNro, job.shAgCour, job.segGuia, job.segClave);   // 25-nov · guía y clave si ya las tenían   // 24-nov · qué agencia Shalom/Olva (para guías)
   return nuevoNro;
 }
@@ -35665,6 +35698,7 @@ function npLimpiar() {
   document.getElementById('np-bq').value = '';
   document.getElementById('btn-guardar').textContent = 'Confirmar pedido';
   NP.modo = 'nuevo'; NP.nroPedBase = null; NP.pc = 0; NP.gc = 0;
+  try { _npInvitar = false; const _bi = document.getElementById('np-email-pedir'); if (_bi) _bi.textContent = '📲 Invitar a la app'; } catch(_){}   // CORREO_26NOV
   // Resetear botones de modo
   document.querySelectorAll('.np-modo-btn').forEach(btn => {
     const on = btn.getAttribute('data-modo') === 'nuevo';
@@ -38299,19 +38333,21 @@ async function _puenteRevisar(){
     if (!r.ok) return;
     const e = await r.json(); const min = _puenteMinutos(e && e.shalom, new Date((e && e.ahora) || ahora).getTime());
     const b = document.getElementById('puente-aviso');
+    if (e && e.sesion_caida) { _puenteAviso(min, true); return; }   // 26-nov · Shalom cerró la sesión: avisar al toque, con botón para entrar
     if (min === null || min <= PUENTE_MAX_MIN) { if (b) b.remove(); return; }
     _puenteAviso(min);
   } catch(_){}
 }
-function _puenteAviso(min){
+function _puenteAviso(min, caida){
   let b = document.getElementById('puente-aviso');
-  const h = min >= 120 ? Math.floor(min / 60) + ' h' : min + ' min';
-  const txt = 'Shalom no actualiza estados hace ' + h + '. Abre Shalom Pro en tu Chrome con la sesión iniciada.';
-  if (b) { b.querySelector('span').textContent = txt; return; }
+  const h = min >= 120 ? Math.floor(min / 60) + ' h' : (min || 0) + ' min';
+  const txt = caida ? 'Shalom Pro cerró tu sesión: los estados de los envíos están detenidos.' : 'Shalom no actualiza estados hace ' + h + '. Abre Shalom Pro en tu Chrome con la sesión iniciada.';
+  if (b) { b.querySelector('span').textContent = txt; const a = b.querySelector('a'); if (a) { a.textContent = caida ? '🔑 Volver a entrar' : 'Abrir Shalom Pro'; a.href = caida ? 'https://pro.shalom.pe/login' : 'https://pro.shalom.pe/seguimientoenvios'; } return; }
   b = document.createElement('div'); b.id = 'puente-aviso';
   b.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:99998;background:#7c2d12;color:#fff;border-radius:10px;padding:10px 14px;font:500 13px var(--ui-f,Manrope);display:flex;gap:10px;align-items:center;box-shadow:0 6px 24px rgba(0,0,0,.35);max-width:calc(100vw - 32px)';
   b.innerHTML = '<span></span><a href="https://pro.shalom.pe/seguimientoenvios" target="_blank" rel="noopener" style="color:#fff;font-weight:600">Abrir Shalom Pro</a><button title="Cerrar" style="background:transparent;color:#fff;border:0;cursor:pointer;font-size:15px">✕</button>';
   b.querySelector('span').textContent = txt;
+  if (caida) { const a = b.querySelector('a'); a.textContent = '🔑 Volver a entrar'; a.href = 'https://pro.shalom.pe/login'; }
   b.querySelector('button').addEventListener('click', function(){ try { sessionStorage.setItem('puente_callado', String(Date.now() + 2 * 3600 * 1000)); } catch(_){} b.remove(); });
   document.body.appendChild(b);
 }
