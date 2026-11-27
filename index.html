@@ -941,6 +941,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <!-- 11-nov (Pablo) · Todos · Activos · Enviar hoy · Modificados · Separados · Más. Fuera: Cambio, Devoluciones y Enviar. -->
           <button class="tab" data-e="_HOY"><span class="lbl">Enviar hoy</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
           <button class="tab" data-e="_MODIF"><span class="lbl">Modificados</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>
+          <button class="tab" data-e="_RECOJO" title="Pedidos listos para recoger en el almacén: salen cuando la clienta viene"><span class="lbl">Recojo</span> <span class="cnt" style="opacity:.65;font-size:11px"></span></button>   <!-- 26-nov (Pablo, 382) -->
           <!-- 21-ago-2026 — MENÚ "Más". Las once pestañas empujaban el botón
                "Nuevo pedido" fuera de la pantalla. Las cuatro de uso esporádico
                (Enviar, Showroom, Cambio, Devoluciones) viven acá dentro: NO se
@@ -6107,6 +6108,7 @@ window.prodIngresarStock = function(items, alTerminar, opts){   /* 3-nov (F6) ·
   }
   if (faltan.length) return { ok:false, faltan };
   window._stkPrefill = ok; window._stkAlTerminar = alTerminar || null; window._stkAuto = !!(opts && opts.auto);
+  window._stkReqFijo = (opts && opts.req) || '';   /* 26-nov (378) · el mismo ingreso de Producción repetido no vuelve a sumar */
   _confAbrirIngresarStock(null);
   return { ok:true };
 };
@@ -21768,12 +21770,16 @@ function _renderPedsDesde(rawRows, estVal, _suave) {   // 16-oct · _suave=true 
 
   // 11-nov (Pablo) · «Enviar hoy» y «Modificados» son pestañas: se arman acá, de las mismas filas.
   try { window._modHoySet = _modHoySetDe(_byNroAll, _activosSet); window._modModSet = _modModSetDe(_byNroAll); } catch (_) { window._modHoySet = new Set(); window._modModSet = new Set(); }
+  /* 26-nov (Pablo, 382-1) · RECOJO en almacén no es «Enviar hoy»: depende de la clienta. Tiene su pestaña «Recojo». */
+  try { window._modRecSet = new Set(); [...window._modHoySet].forEach(n => { const p = _modPedidoDeFilas(_byNroAll[n]); if (p && String(p['Courier']||'').trim().toUpperCase() === 'RECOJO') { window._modRecSet.add(n); window._modHoySet.delete(n); } }); } catch (_) { window._modRecSet = new Set(); }
   // Filtro de tab. El período SOLO recorta "Todos" (estVal vacío) y "Entregados".
   let filtered;
   if (estVal === '_ACTIVOS') {
     filtered = pRaw.filter(r => _activosSet.has(String(r['NroPedido']||'').trim()));
   } else if (estVal === '_HOY') {
     filtered = pRaw.filter(r => window._modHoySet.has(String(r['NroPedido']||'').trim()));
+  } else if (estVal === '_RECOJO') {
+    filtered = pRaw.filter(r => (window._modRecSet || new Set()).has(String(r['NroPedido']||'').trim()));
   } else if (estVal === '_MODIF') {
     filtered = pRaw.filter(r => window._modModSet.has(String(r['NroPedido']||'').trim()));
   } else if (estVal === '_INCOMPLETOS') {
@@ -22209,6 +22215,7 @@ function _updateTabCounts(rawRows, incompletosSet, activosSet, nCambio, nDevol, 
     let n = 0;
     if (e === '_ACTIVOS')          n = activosSet ? activosSet.size : 0;
     else if (e === '_HOY')         n = window._modHoySet ? window._modHoySet.size : 0;
+    else if (e === '_RECOJO')      n = window._modRecSet ? window._modRecSet.size : 0;   /* 382 */
     else if (e === '_MODIF')       n = window._modModSet ? window._modModSet.size : 0;
     else if (e === '')             n = all.size;                 // Todos = período
     else if (e === '_INCOMPLETOS') n = incompletosSet ? incompletosSet.size : 0;
@@ -26206,7 +26213,7 @@ function pAply() {
   } catch (_) { window._pUnidadesFiltro = null; window._pUnidadesDevueltas = 0; }
   /* 15-nov-2026 (Pablo) · en Activos, Enviar hoy y Modificados, un filtro de Prenda (texto o color) muestra SOLO las prendas que
      cumplen («cuántas Blusa Victoria llegaron»), no el pedido completo. En las demás pestañas sigue el pedido completo. */
-  const _soloPrendas = ['_ACTIVOS', '_HOY', '_MODIF'].indexOf(typeof pEst !== 'undefined' ? pEst : '') >= 0
+  const _soloPrendas = (['_ACTIVOS', '_HOY', '_MODIF'].indexOf(typeof pEst !== 'undefined' ? pEst : '') >= 0 || (typeof pEst !== 'undefined' && pEst === '_RECOJO'))
     && ['Prenda', 'ColorPrenda'].some(c => { const f = (pFlt || {})[c]; return f && (f.lib ? String(f.val || '').trim() !== '' : (f.val && f.val.size)); });
   window._pSoloPrendas = _soloPrendas;
   if (!_filtraPorPedido && !_soloPrendas) filtered = _pedsCompletarPedidos(filtered, _filasPestana);
@@ -41172,7 +41179,7 @@ function _confAbrirIngresarStock(confEl) {
       const r = await fetch(SB_URL + '/rest/v1/rpc/stock_crear_lote', {
         method: 'POST',
         headers: { 'apikey': SB_ANON, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ p_items: items.map(it => ({ prenda: it.prenda, cantidad: it.cantidad, op: it.op || '' })), p_request: req }),
+        body: JSON.stringify({ p_items: items.map(it => ({ prenda: it.prenda, cantidad: it.cantidad, op: it.op || '' })), p_request: (_prodPrefill && window._stkReqFijo) || req }),   // 378 · pedido fijo de Producción
       });
       if (!r.ok) { _cronCerrar(_c, false);
         try { const _m = ((await r.json()) || {}).message || ''; _msgBase = _m.replace(/^PRENDA_NO_ENCONTRADA: */, 'Esta prenda no existe en Stock: '); } catch(_){}   // 16-nov · el «no» de la base se muestra tal cual (cualquiera)
