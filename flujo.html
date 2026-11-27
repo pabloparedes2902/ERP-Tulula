@@ -3058,8 +3058,14 @@ function cargarEmbudoWeb(){
   /* 5-oct-2026 · ventas web del ERP (anuncios/organico) para las tres vistas */
   const _vw = _ventasWebRango(_embFecha(r.desde), _embFecha(r.hasta)).catch(() => null);
   const _vwP = _ventasWebRango(_embFecha(pDesde), _embFecha(pHasta)).catch(() => null);
+  /* 27-nov-2026 (Pablo: «28 empezaron el pago y 1 compró»): en la vista Anuncios las etapas venian de
+     TODA la tienda y las compras solo de anuncios. Ahora las etapas salen de las visitas que entraron por
+     anuncio (mismo dato que Marketing › Anuncios, /embudo-web-anuncio) */
+  const _pg = _embPagado(_embFecha(r.desde), _embFecha(r.hasta));
+  const _pgP = _embPagado(_embFecha(pDesde), _embFecha(pHasta));
   _flGetJSON(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(r.desde))}&hasta=${encodeURIComponent(_fISO(r.hasta))}`).then(async d=>{
     try { d.__web = await _vw; } catch (e) {}
+    try { d.__pagado = await _pg; } catch (e) {}
     embDataWeb = { d: d, dPrev: (embDataWeb && embDataWeb.dPrev) || null, lbl: r.lbl };
     pintarTodo(); _pintado = true; _guardar();
     document.getElementById('embEstado').textContent = '';
@@ -3071,6 +3077,7 @@ function cargarEmbudoWeb(){
   });
   _flGetJSON(`${URL_EMBUDO_WEB}?desde=${encodeURIComponent(_fISO(pDesde))}&hasta=${encodeURIComponent(_fISO(pHasta))}`).then(async dp=>{
     try { dp.__web = await _vwP; } catch (e) {}
+    try { dp.__pagado = await _pgP; } catch (e) {}
     if (!embDataWeb || !embDataWeb.d) return;
     embDataWeb.dPrev = dp; pintarTodo(); _guardar();
   }).catch(()=>{});
@@ -3241,7 +3248,8 @@ function pintarSerie(idx){
     if (!val[k]) val[k] = (SER || _trabajaV(v, new Date(f+'T12:00:00'))) ? 0 : null;
   }));
   let maxV = 0; Object.keys(val).forEach(k => { if ((val[k]||0) > maxV) maxV = val[k]; });
-  const techo = Math.max(SER ? 3 : META_VENTAS_DIA + 1, Math.ceil(maxV));
+  const metaG = metaVentasDia(fechas.length ? fechas[fechas.length - 1] : null);   /* 27-nov: meta vigente al final del rango */
+  const techo = Math.max(SER ? 3 : metaG + 1, Math.ceil(maxV));
   const pasoY = techo <= 6 ? 1 : (techo <= 12 ? 2 : Math.ceil(techo / 6));
   const tope = Math.ceil(techo / pasoY) * pasoY;
 
@@ -3251,7 +3259,7 @@ function pintarSerie(idx){
   let resumenSolo = '';
   if (solo){
     let enTurno = 0, enMeta = 0;
-    fechas.forEach(f => { const y = val[solo + '|' + f]; if (y != null){ enTurno++; if (y >= META_VENTAS_DIA) enMeta++; } });
+    fechas.forEach(f => { const y = val[solo + '|' + f]; if (y != null){ enTurno++; if (y >= metaVentasDia(f)) enMeta++; } });
     resumenSolo = '<span style="font-size:12px;color:var(--txt2)">' + capsulaAsesora(solo) + ' lleg\u00f3 a la meta <b style="color:var(--txt)">' + enMeta + ' de ' + enTurno + '</b> d\u00edas de turno'
       + ' \u00b7 <a href="javascript:void(0)" onclick="serieSolo(\'' + solo + '\')" style="color:var(--txt2)">ver todas</a></span>';
   }
@@ -3281,9 +3289,9 @@ function pintarSerie(idx){
             + '<text x="'+(mL-8)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="11" fill="var(--txt2)">'+v+'</text>';
     }
     /* linea de META (4 ventas/dia por asesora) — no aplica a Web */
-    const yM = py(META_VENTAS_DIA);
+    const yM = py(metaG);
     if (!SER) grid += '<line x1="'+mL+'" y1="'+yM.toFixed(1)+'" x2="'+(W-mR)+'" y2="'+yM.toFixed(1)+'" stroke="#FF3B30" stroke-width="1.6" stroke-dasharray="6 5"/>'
-          + '<text x="'+(W-mR-4)+'" y="'+(yM-6).toFixed(1)+'" text-anchor="end" font-size="11" font-weight="600" fill="#FF3B30">meta '+META_VENTAS_DIA+'/d\u00eda</text>';
+          + '<text x="'+(W-mR-4)+'" y="'+(yM-6).toFixed(1)+'" text-anchor="end" font-size="11" font-weight="600" fill="#FF3B30">meta '+metaG+'/d\u00eda</text>';
     const paso = Math.max(1, Math.ceil(fechas.length / Math.max(2, Math.floor((W-mL-mR)/56))));
     let ejeX='';
     fechas.forEach((f,i)=>{
@@ -3302,7 +3310,7 @@ function pintarSerie(idx){
         d += (abierto?' L ':' M ') + px(i).toFixed(1) + ' ' + py(y).toFixed(1);
         abierto = true;
         /* una sola asesora: cada dia verde si llego a la meta, rojo si no */
-        const colP = (solo && v !== 'Tula') ? (y >= META_VENTAS_DIA ? '#34C759' : '#FF3B30') : col;
+        const colP = (solo && v !== 'Tula') ? (y >= metaVentasDia(f) ? '#34C759' : '#FF3B30') : col;
         puntos += '<circle cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="'+(solo?'5':'3.2')+'" fill="'+colP+'" stroke="var(--card)" stroke-width="1.5"/>'
                 + '<circle class="ptHit" cx="'+px(i).toFixed(1)+'" cy="'+py(y).toFixed(1)+'" r="11" fill="transparent" style="cursor:pointer"'
                 + ' data-a="'+(SER ? (SER.find(x => x.k === v) || {}).label : v)+'" data-f="'+f+'" data-v="'+(+y)+(+y===1?' venta':' ventas')+'" data-c="'+col+'"/>';
@@ -3355,6 +3363,11 @@ try{ if (parent !== window) parent.postMessage({tipo:'erp-tema-pedir'}, '*'); }c
    Tula todos los dias. 0 = domingo ... 6 = sabado. */
 const ASESORAS_VENTAS = ['Angie', 'Camila', 'Lucia', 'Mari', 'Tula'];   /* 22-nov: Luz → Mari */   /* 12-nov-2026 (Pablo): Camila reemplaza a Dayann · 21-nov (Pablo): + Luz (vende desde el 12-nov) */
 const META_VENTAS_DIA = 4;   /* 5-oct-2026 (Pablo): 4 ventas diarias por asesora */
+/* 27-nov-2026 (Pablo): desde el 1-dic la meta sube a 5 ventas/dia. Cada dia usa la meta vigente ese dia. */
+const META_VENTAS_TRAMOS = [['2026-12-01', 5]];
+function metaVentasDia(f){ const k = (f instanceof Date) ? (f.getFullYear() + '-' + String(f.getMonth() + 1).padStart(2, '0') + '-' + String(f.getDate()).padStart(2, '0')) : String(f || _fHoy()).slice(0, 10); let m = META_VENTAS_DIA; META_VENTAS_TRAMOS.forEach(t => { if (k >= t[0]) m = t[1]; }); return m; }
+/* 27-nov-2026 (Pablo): Mari empezo el sab 14-nov; antes de su primer dia no cuenta turno (su promedio y su meta se miden solo desde ahi) */
+const INICIO_ASESORA = { Mari: '2026-11-14' };
 const TURNO_ASESORA = { Angie: [1,2,3,4,5], Camila: [5,6,0,1,2], Lucia: [6,0], Mari: [6,0], Tula: [0,1,2,3,4,5,6] };   /* Luz: sus días salen de Comisiones › Asesoras (turnos) cuando se carguen */
 /* 9-oct-2026 (OK de Pablo): los dias de trabajo salen de la MISMA base que Comisiones > Asesoras
    (erp.turnos_leer: dias fijos + cambios de una fecha puntual). Lo de arriba queda solo de respaldo
@@ -3372,6 +3385,7 @@ function _turnosVentasAplicar(tt){
 function _trabajaV(nombre, d){
   const p = x => String(x).padStart(2, '0');
   const k = nombre + '|' + d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  if (INICIO_ASESORA[nombre] && k.slice(nombre.length + 1) < INICIO_ASESORA[nombre]) return false;
   if (Object.prototype.hasOwnProperty.call(TURNO_CAMBIOS, k)) return TURNO_CAMBIOS[k];
   const t = TURNO_ASESORA[nombre]; return !!t && t.indexOf(d.getDay()) > -1;
 }
@@ -3414,6 +3428,15 @@ function diasTurno(nombre, desdeSeg, hastaSeg){
   return n;
 }
 function _fHoy(){ const d = new Date(), p = x => String(x).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
+/* 27-nov: meta del rango = suma de la meta vigente en cada dia de turno (4 hasta nov, 5 desde dic) */
+function metaPeriodo(nombre, desdeSeg, hastaSeg){
+  if (!TURNO_ASESORA[nombre]) return 0;
+  const d = new Date(desdeSeg * 1000); d.setHours(12, 0, 0, 0);
+  const fin = new Date(Math.min(hastaSeg * 1000, Date.now())); fin.setHours(12, 0, 0, 0);
+  let m = 0, g = 0;
+  while (d <= fin && g++ < 400){ if (_trabajaV(nombre, d)) m += metaVentasDia(d); d.setDate(d.getDate() + 1); }
+  return m;
+}
 /* dias de turno entre dos fechas (Date), SIN tope de hoy: sirve para el mes completo */
 function diasTurnoEntre(nombre, d1, d2){
   const t = TURNO_ASESORA[nombre]; if (!t) return 0;
@@ -3459,7 +3482,7 @@ function pieMeta(a, d){
   const v = +((a.acumulado || {}).compras || a.compras || 0);
   const r = d.__rango || (typeof rango === 'function' ? rango() : null);
   const dias = r ? diasTurno(nombre, r.desde, r.hasta) : 0;
-  const meta = META_VENTAS_DIA * dias;
+  const meta = r ? metaPeriodo(nombre, r.desde, r.hasta) : 0;
   const pct = meta ? Math.round(v / meta * 100) : 0;
   const colPct = pct >= 100 ? 'var(--ok)' : (pct >= 75 ? '#FFCC00' : 'var(--bad)');
   const fil = (txt) => '<div style="font-size:12px;color:var(--txt2);margin-top:6px;line-height:1.35">' + txt + '</div>';
@@ -3489,8 +3512,9 @@ function esquinaVentasDia(a, d){
   const dias = r ? diasTurno(nombre, r.desde, r.hasta) : 0;
   const pd = dias ? (v / dias) : 0;
   /* verde si llega a la meta, rojo si no. Tula (el bot) no tiene meta: va en blanco. */
-  const col = nombre === 'Tula' ? 'var(--txt)' : (pd >= META_VENTAS_DIA ? 'var(--ok)' : 'var(--bad)');
-  return '<span title="'+v+' ventas en '+dias+' d\u00edas de turno'+(nombre==='Tula'?'':' \u00b7 meta '+META_VENTAS_DIA+'/d\u00eda')+'" style="text-align:right;line-height:1.05">'
+  const mD = (r && dias) ? metaPeriodo(nombre, r.desde, r.hasta) / dias : metaVentasDia();
+  const col = nombre === 'Tula' ? 'var(--txt)' : (pd >= mD - 1e-9 ? 'var(--ok)' : 'var(--bad)');
+  return '<span title="'+v+' ventas en '+dias+' d\u00edas de turno'+(nombre==='Tula'?'':' \u00b7 meta '+(+mD.toFixed(1))+'/d\u00eda')+'" style="text-align:right;line-height:1.05">'
     + '<b style="font-size:20px;font-weight:600;color:'+col+'">'+pd.toFixed(1)+'</b>'
     + '<span style="display:block;font-size:11px;font-weight:500;color:var(--txt2);letter-spacing:.06em;text-transform:uppercase">VENTAS/D\u00cdA</span></span>';
 }
@@ -3544,6 +3568,21 @@ function _dispClave(x){
    de cada caja y del embudo son las ventas del ERP de la vista elegida (Anuncios o Todos), contadas
    por el dispositivo de su orden de Shopify. Las ventas web sin orden (cargadas a mano) se avisan
    aparte. Visitas, carrito y checkout siguen siendo del rastreador (no existen en el ERP). */
+/* 27-nov-2026 · etapas del embudo web SOLO de visitas de anuncios (PostHog, utm_medium=paid) */
+async function _embPagado(desde, hasta){
+  try {
+    const o = await _flGetJSON(BASE_N8N + '/embudo-web-anuncio?desde=' + desde + '&hasta=' + hasta);
+    if (!o || o.error || !Array.isArray(o.filas)) return null;
+    const t = { visitas: 0, vieron_prenda: 0, carrito: 0, checkout: 0 };
+    o.filas.forEach(x => { t.visitas += +x.sesiones || 0; t.vieron_prenda += +x.vista_producto || 0; t.carrito += +x.agregado_carrito || 0; t.checkout += +x.checkout_iniciado || 0; });
+    return t;
+  } catch (e) { return null; }
+}
+/* vista Anuncios: reemplaza visitas/prenda/carrito/pago por las de anuncios; «eligieron talla» no existe por anuncio */
+function _embSoloAnuncios(ac, pg){
+  if (!ac || !pg) return ac;
+  return Object.assign({}, ac, { visitas: pg.visitas, vieron_prenda: pg.vieron_prenda, carrito: pg.carrito, checkout: pg.checkout });
+}
 function _webComprasVista(d, W, grupos){
   if (!d || !W) return { d: d, sin: 0 };
   const n = grupos.reduce((s, k) => s + (+((W[k] || {}).n) || 0), 0);
@@ -3788,7 +3827,9 @@ function pintarTodoWeb(){
   /* 6-oct · compras del embudo y de las cajas = ventas del ERP de la vista elegida */
   const _grp = origen === 'todos' ? ['ads', 'org'] : ['ads'];
   const _vd = _webComprasVista(d, W, _grp), _vdp = _webComprasVista(dp, WP, _grp);
-  pintarEmbudo(_vd.d.acumulado, '', _vdp.d && _vdp.d.acumulado, EMB_ETAPAS_WEB, EMB_NEON_WEB);
+  if (origen === 'ads' && d.__pagado)   /* 27-nov: mismo universo arriba y abajo (solo anuncios) */
+    pintarEmbudo(_embSoloAnuncios(_vd.d.acumulado, d.__pagado), '', _vdp.d && _embSoloAnuncios(_vdp.d.acumulado, dp && dp.__pagado), EMB_ETAPAS_WEB.filter(x => x.k !== 'eligieron_talla'), EMB_NEON_WEB.filter((c, i) => i !== 2));
+  else pintarEmbudo(_vd.d.acumulado, '', _vdp.d && _vdp.d.acumulado, EMB_ETAPAS_WEB, EMB_NEON_WEB);
   const acA = Object.assign({}, d.acumulado, W ? { compras: W.ads.n, ingreso: W.ads.ingreso } : {});
   const acAP = dp && dp.acumulado ? Object.assign({}, dp.acumulado, WP ? { compras: WP.ads.n, ingreso: WP.ads.ingreso } : {}) : null;
   if (origen === 'todos'){

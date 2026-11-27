@@ -324,7 +324,10 @@ function _configProductosAuto_() {
   var conjuntos = {};
   for (var diseno in porDiseno) {
     var par = porDiseno[diseno];
-    if (par.BLAZER && par.PANTALON) conjuntos[diseno] = par;
+    // 27-nov-2026 (Pablo: «el conjunto Catalina no está en Margen») · un diseño sin blazer pero con BLUSA + PANTALON
+    // también es conjunto (CATALINA = BLUSA CATALINA + PANTALON CATALINA, igual que su ficha de Costos). La blusa
+    // ocupa el lugar de la pieza de arriba; los diseños con blazer no cambian (ROMA sigue blazer + pantalón).
+    if (par.PANTALON && (par.BLAZER || par.BLUSA)) conjuntos[diseno] = par.BLAZER ? par : { BLAZER: par.BLUSA, PANTALON: par.PANTALON };
   }
 
   return { activos: activos, conjuntos: conjuntos, _n: Object.keys(activos).length };
