@@ -1134,6 +1134,7 @@ input[type="number"]{-moz-appearance:textfield;appearance:textfield}
           <label class="cli-in" style="flex:1;min-width:200px">Cliente <input id="cli-bq" type="text" placeholder="Escribe para filtrar..." autocomplete="off" style="flex:1"></label>
           <label class="cli-in">Zona <select id="cli-bzona"><option value="">Todas</option><option value="Lima">Lima</option><option value="Callao">Callao</option><option value="Provincia">Provincia</option></select></label>
           <label class="cli-in">Segmento <select id="cli-bseg"><option value="">Todos</option><option value="SUPER VIP">Super VIP</option><option value="VIP">VIP</option><option value="CLIENTA">Clienta</option><option value="INACTIVA">Inactiva</option><option value="PROBLEMATICA">Problemática</option><option value="SIN_CLASIFICAR">Sin clasificar</option></select></label>
+          <button class="btn bp bs" id="cli-hoy" style="flex-shrink:0" onclick="cliHoyAbrir()" title="Las clientas a escribir hoy: VIP que dejaron de comprar, a las que les toca y las que van por su 2.ª compra">📞 Para contactar hoy</button>
           <button class="btn bg bs" id="cli-recuperar" style="flex-shrink:0" onclick="exVipAbrir()" title="VIP que dejaron de comprar: recupéralas">♻️ Recuperar VIP</button>
           <button class="btn bg bs" id="cli-lista-negra" style="flex-shrink:0;color:var(--rd)">🚫 Lista negra</button>
           <button class="btn bg bs" id="cli-exportar" style="flex-shrink:0">⬇ Exportar Excel</button>
@@ -35453,12 +35454,57 @@ function _lgPintar() {
       + '<table style="width:100%;border-collapse:collapse;font-size:13px"><tr style="text-align:left;color:#555"><th>Días</th><th>Cambio / pedido</th><th>Clienta</th><th>Qué hacer</th><th></th></tr>'
       + L.map(x => '<tr style="border-top:1px solid #eee' + (x.nivel === 'rojo' ? ';background:#fff1f2' : '') + '"><td>' + (x.dias == null ? '—' : x.dias) + (x.nivel === 'rojo' ? ' 🔴' : ' 🟡') + '</td>'
         + '<td>' + _feEsc(x.cambio ? x.cambio + ' · ' : '') + _feEsc(x.pedido) + '</td><td>' + _feEsc(x.nombre) + (x.prendas && x.prendas.length ? '<br><span style="color:#666;font-size:12px">' + _feEsc(x.prendas.join(', ')) + '</span>' : '') + '</td>'
-        + '<td>' + que(x) + '</td><td>' + (x.pedido ? '<button data-lg="' + _feEsc(x.pedido) + '" style="border:0;border-radius:8px;padding:3px 10px;background:#0369a1;color:#fff;cursor:pointer">Ver pedido</button>' : '') + '</td></tr>').join('')
+        + '<td>' + que(x) + '</td><td style="white-space:nowrap">' + (x.pedido ? '<button data-lg="' + _feEsc(x.pedido) + '" style="border:0;border-radius:8px;padding:3px 10px;background:#0369a1;color:#fff;cursor:pointer">Ver pedido</button>' : '')
+          + (x.tipo === 'SEPARADO' && !_lgSoloVentas() ? ' <button data-lglib="' + _feEsc(x.pedido) + '" style="border:0;border-radius:8px;padding:3px 10px;background:#b45309;color:#fff;cursor:pointer" title="Devuelve sus prendas al stock; lo pagado queda como saldo a favor">Liberar</button>' : '') + '</td></tr>').join('')
       + '</table><div style="color:#666;font-size:12px;margin-top:6px">Cambios: se actualiza cada 15 min. Pedidos por confirmar: salen del cuadre (cada 2 horas).</div></div>';
   }
   b.innerHTML = h;
   document.getElementById('lg-ver').onclick = () => { _LG.abierto = !_LG.abierto; _lgPintar(); };
   b.querySelectorAll('button[data-lg]').forEach(bt => bt.onclick = () => { _LG.abierto = false; _lgPintar(); try { _abrirPedidoDesdeBusqueda(bt.getAttribute('data-lg')); } catch (e) { toast('No se pudo abrir el pedido', 'err'); } });
+  b.querySelectorAll('button[data-lglib]').forEach(bt => bt.onclick = () => _lgLiberarAbrir(bt.getAttribute('data-lglib')));
+}
+/* 27-nov (Pablo) · LIBERAR un separado vencido, por PEDIDO: todo lo que no salió vuelve al stock (las filas se quitan del pedido),
+   el pedido queda en el historial como LIBERADO (quién y cuándo) y lo pagado queda como saldo a favor (Nuevo pedido lo ofrece solo).
+   Solo administración y logística (la base lo vuelve a revisar). Confirmar = escribir el número del pedido. rpc pedido_liberar. */
+async function _lgLiberarAbrir(nro) {
+  try {
+    const tok = await _sbSesionAsegurar(); if (!tok) throw new Error('sin sesión');
+    const H = { apikey: SB_ANON, Authorization: 'Bearer ' + tok }, e = encodeURIComponent(nro);
+    const [fr, pg] = await Promise.all([
+      fetch(SB_URL + '/rest/v1/pedidos?select=prenda,estado,subtotal,nombres&eliminado=is.null&nro_pedido=eq.' + e, { headers: H }).then(r => r.json()),
+      fetch(SB_URL + '/rest/v1/pagos?select=monto&or=(eliminado.is.null,eliminado.is.false)&nro_pedido=eq.' + e, { headers: H }).then(r => r.json())]);
+    const F = Array.isArray(fr) ? fr : [], up = s => String(s || '').trim().toUpperCase();
+    const salio = F.some(x => /^(EN CAMINO|ENTREGADO)$/.test(up(x.estado)));
+    const lib = F.filter(x => !/^_PAGO/.test(up(x.prenda)) && !/^(EN CAMINO|ENTREGADO)$/.test(up(x.estado)) && !(salio && /^(ENVIO|ENVÍO|DELIVERY)/.test(up(x.prenda))));
+    const pagado = (Array.isArray(pg) ? pg : []).reduce((a, p) => a + (+p.monto || 0), 0);
+    const queda = F.filter(x => !/^_PAGO/.test(up(x.prenda)) && lib.indexOf(x) < 0).reduce((a, x) => a + (+x.subtotal || 0), 0);
+    const saldo = Math.max(0, Math.round((pagado - queda) * 100) / 100), nom = (F.find(x => x.nombres) || {}).nombres || '';
+    const o = document.createElement('div'); o.id = 'lg-lib';
+    o.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+    o.innerHTML = '<div style="position:relative;background:var(--bg2,#fff);color:var(--tx,#111);border-radius:12px;max-width:520px;width:100%;padding:16px 18px;font-family:var(--ui-f);font-size:13px">'
+      + '<button data-x style="position:absolute;top:8px;right:10px;border:0;background:none;font-size:18px;cursor:pointer;color:inherit">✕</button>'
+      + '<div style="font-size:14px;font-weight:600;margin-bottom:8px">Liberar el pedido ' + _feEsc(nro) + ' · ' + _feEsc(nom) + '</div>'
+      + '<div style="margin-bottom:6px">Vuelven al stock (' + lib.length + '):</div>'
+      + '<div style="max-height:30vh;overflow:auto;margin-bottom:8px">' + (lib.length ? lib.map(x => '• ' + _feEsc(x.prenda || '(fila sin prenda)') + ' · ' + _feEsc(x.estado || '') + ' · S/ ' + fmt(+x.subtotal || 0)).join('<br>') : '—') + '</div>'
+      + '<div>Pagado: <b>S/ ' + fmt(pagado) + '</b> → queda como <b>saldo a favor: S/ ' + fmt(saldo) + '</b> (Nuevo pedido lo ofrece solo).</div>'
+      + (salio ? '<div style="color:var(--mu);margin-top:4px">Lo que ya salió (EN CAMINO / ENTREGADO) y su envío no se tocan.</div>' : '')
+      + '<div style="margin-top:10px">Para confirmar, escribe el número del pedido: <input id="lg-lib-n" style="width:110px;margin-left:6px" autocomplete="off"></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn" data-x>Cancelar</button><button class="btn btn-primary" id="lg-lib-ok">Liberar</button></div></div>';
+    document.body.appendChild(o);
+    o.querySelectorAll('[data-x]').forEach(x => x.onclick = () => o.remove());
+    o.querySelector('#lg-lib-ok').onclick = async function () {
+      const n = String(o.querySelector('#lg-lib-n').value || '').trim();
+      if (n !== String(nro)) { toast('Escribe el número ' + nro + ' para confirmar', 'err'); return; }
+      this.disabled = true; this.textContent = 'Liberando…';
+      try {
+        const r = await fetch(SB_URL + '/rest/v1/rpc/pedido_liberar', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, H), body: JSON.stringify({ p_nro: String(nro), p_confirma: n }) });
+        const d = await r.json(); if (!r.ok || !d || !d.ok) throw new Error((d && (d.message || d.hint)) || ('HTTP ' + r.status));
+        o.remove(); toast('✓ Pedido ' + nro + ' liberado: ' + d.liberadas + ' fila(s) al stock · saldo a favor S/ ' + fmt(+d.saldo_favor || 0), 'ok');
+        try { stData = null; _invalidarPrefetch(); } catch (_) {}
+        _lgRevisar();
+      } catch (er) { this.disabled = false; this.textContent = 'Liberar'; toast('No se pudo liberar: ' + ((er && er.message) || er), 'err'); }
+    };
+  } catch (e) { toast('No se pudo preparar la liberación: ' + ((e && e.message) || e), 'err'); }
 }
 try { window.addEventListener('load', () => { setTimeout(_lgRevisar, 10000); setInterval(_lgRevisar, 15 * 60 * 1000); setInterval(() => { if (_LG.lista.length) _lgPintar(); }, 30000); }); } catch (_) {}
 
@@ -36381,6 +36427,46 @@ async function cliCuentaAbrir(clave, nombre, key) {
     b().innerHTML = '<div style="flex:1;overflow:auto;min-width:300px">' + iz + '</div><div style="width:400px;flex:none;border-radius:14px;overflow:hidden;border:1px solid var(--bd)"><iframe title="Mi cuenta de la clienta" src="' + esc(url) + '" style="width:100%;height:100%;border:0"></iframe></div>';
     const bh = document.getElementById('cli-cta-hist'); if (bh) bh.addEventListener('click', () => cliOpenHistorial(key));
   } catch(e) { if (b()) b().innerHTML = '<div class="empty">No se pudo abrir la cuenta. Vuelve a intentar en un momento.</div>'; try { _errLog('clientes.cuenta', e); } catch(_){} }
+}
+
+// 27-nov (Pablo) · CLIENTES_FASE3_27NOV · «Para contactar hoy» (como Klaviyo/clienteling): 30 al día, 10 de cada motivo.
+// Quien ya tiene un pedido en curso o fue contactada en los últimos 14 días no aparece. El mensaje lo manda la asesora desde su WhatsApp.
+const CLI_HOY_MOT = { vip_sin_comprar: ['VIP sin comprar', 'var(--rd)'], le_toca: ['Le toca comprar', 'var(--gn)'], segunda_compra: ['2.ª compra', 'var(--am)'] };
+function _cliHoyMsg(x) {
+  const n = String(x.nombre || '').trim().split(/\s+/)[0] || ''; const nom = n ? n.charAt(0) + n.slice(1).toLowerCase() : '';
+  const t = x.talla_arriba || x.talla_abajo ? ' en tu talla ' + (x.talla_arriba || x.talla_abajo) : '';
+  if (x.motivo === 'vip_sin_comprar') return 'Hola ' + nom + ' 😊 Te escribe Tulula. Como clienta ' + (x.segmento === 'SUPER VIP' ? 'Super VIP' : 'VIP') + ' tienes acceso antes que nadie a lo nuevo. Llegaron prendas' + t + ', ¿te muestro algunas?';
+  if (x.motivo === 'le_toca') return 'Hola ' + nom + ' 😊 Te escribe Tulula. Ya tenemos lo nuevo de temporada' + t + '. ¿Te envío fotos?';
+  return 'Hola ' + nom + ' 😊 Te escribe Tulula. ¿Qué tal te quedó tu compra? Si quieres, te muestro prendas que combinan con lo que llevaste' + t + '.';
+}
+async function _cliRpcErp(fn, args) {
+  const tk = await _sbSesionAsegurar(); if (!tk) throw new Error('sin sesión');
+  const r = await fetch(SB_URL + '/rest/v1/rpc/' + fn, { method: 'POST', headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json', 'Content-Profile': 'erp', 'Accept-Profile': 'erp' }, body: JSON.stringify(args || {}) });
+  if (!r.ok) throw new Error('HTTP ' + r.status); return r.json();
+}
+async function cliHoyAbrir() {
+  const v = document.createElement('div'); v.id = 'cli-hoy-v'; const _o = document.getElementById('cli-hoy-v'); if (_o) _o.remove();
+  v.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;display:flex;align-items:center;justify-content:center';
+  v.innerHTML = '<div class="card" style="width:min(1000px,96vw);max-height:90vh;display:flex;flex-direction:column;padding:12px 14px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b style="font-size:14px">📞 Para contactar hoy</b><button class="btn bg bs" onclick="document.getElementById(\'cli-hoy-v\').remove()">✕</button></div><div id="cli-hoy-b" style="overflow:auto"><div class="ld"><div class="sp"></div>Armando la lista…</div></div></div>';
+  v.addEventListener('click', e => { if (e.target === v) v.remove(); }); document.body.appendChild(v);
+  const b = document.getElementById('cli-hoy-b');
+  try {
+    let L = (await _cliRpcErp('clientes_contactar_hoy', { p_limite: 30 })) || [];
+    if (typeof _lnMatch === 'function') L = L.filter(x => !_lnMatch('', [x.telefono]));   // lista negra fuera
+    if (!L.length) { b.innerHTML = '<div class="empty">No hay clientas para contactar hoy. 🎉</div>'; return; }
+    window._cliHoyL = L;
+    b.innerHTML = '<table class="pt" id="cli-hoy-t" style="width:100%"><thead><tr><th>Clienta</th><th>Motivo</th><th>Última compra</th><th>Próxima compra</th><th>Talla</th><th>Segmento</th><th></th></tr></thead><tbody>'
+      + L.map((x, i) => { const m = CLI_HOY_MOT[x.motivo] || [x.motivo, 'var(--mu)'];
+        const c = { Proxima: x.proxima_compra, Compras: x.compras, DiasEntre: x.dias_entre };
+        return '<tr data-i="' + i + '"><td style="text-align:left">' + esc(x.nombre) + '</td><td style="text-align:center"><span class="badge" style="color:' + m[1] + ';border:1px solid ' + m[1] + '">' + m[0] + '</span></td>'
+          + '<td style="text-align:center">' + _cliFecha(x.ultima_compra) + '</td><td style="text-align:center">' + _cliProxima(c) + '</td><td style="text-align:center">' + esc(_cliTalla({ TallaArriba: x.talla_arriba, TallaAbajo: x.talla_abajo }) || '—') + '</td><td style="text-align:center">' + esc(x.segmento || '') + '</td>'
+          + '<td style="white-space:nowrap"><a class="btn bp bs cli-hoy-wa" data-i="' + i + '" target="_blank" rel="noopener" href="https://wa.me/51' + String(x.telefono).replace(/\D/g, '').slice(-9) + '?text=' + encodeURIComponent(_cliHoyMsg(x)) + '">💬 WhatsApp</a> <button class="btn bg bs cli-hoy-ok" data-i="' + i + '" title="Ya la contacté por otro medio">✓</button></td></tr>'; }).join('')
+      + '</tbody></table><div style="font-size:11px;color:var(--mu);margin-top:6px">Al escribirle sale de la lista por 14 días. Quien tiene un pedido en curso no aparece.</div>';
+    const marcar = async i => { const x = L[i]; const tr = b.querySelector('tr[data-i="' + i + '"]'); if (tr) tr.style.opacity = '.35';
+      try { await _cliRpcErp('cliente_contactado', { p_clave: x.clave, p_motivo: x.motivo }); if (tr) tr.remove(); } catch(e) { if (tr) tr.style.opacity = ''; toast('No se pudo marcar. Vuelve a intentar.', 'err'); } };
+    b.querySelectorAll('.cli-hoy-wa').forEach(a => a.addEventListener('click', () => marcar(+a.dataset.i)));
+    b.querySelectorAll('.cli-hoy-ok').forEach(a => a.addEventListener('click', () => marcar(+a.dataset.i)));
+  } catch(e) { b.innerHTML = '<div class="empty">No se pudo armar la lista. Vuelve a intentar en un momento.</div>'; try { _errLog('clientes.hoy', e); } catch(_){} }
 }
 
 // Bind drag-to-resize en el handle de una columna
