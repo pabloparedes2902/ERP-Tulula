@@ -2677,8 +2677,29 @@ function resumenSemanaHtml(){
   return '<div class="sec" style="margin-bottom:10px"><h4>Resumen de la semana (últimos 7 días)</h4>'
     + L.map(g => '<div style="font-size:13px;margin:3px 0"><b>' + esc(g.t) + ':</b> ' + esc(resumenLinea(g)) + (g.pf7 != null && g.pf7 >= 10 ? ' <span class="chip rd">fallas altas</span>' : '') + '</div>').join('') + '</div>';
 }
+/* 26-nov (Pablo, 378 · aviso) · LOTE REPETIDO: el mismo ingreso de una orden entró 2 o más veces a Stock (mismo lote, mismas prendas y cantidades,
+   pedidos distintos). Se revisan los lotes de producción de los últimos 14 días y sale 🔴 en Alertas › Producción para todos los que la ven. */
+var DUP_LOTES = [], DUP_AT = 0;
+function dupLotesCalc(filas){
+  const L = {};
+  (filas || []).forEach(f => { const j = f.row_json || {}; if (String(j.Eliminado || '').toUpperCase() === 'SI') return; const lote = String(j.Lote || '').trim(), ref = String(j.Referencia || '').trim();
+    if (!lote || !ref) return; const g = (L[lote] = L[lote] || {})[ref] = (L[lote] || {})[ref] || { n: 0, firma: [] };
+    g.n += parseInt(j.Cantidad, 10) || 0; g.firma.push([f.prenda, f.diseno, f.color, f.talla, j.Cantidad].join('|')); });
+  const out = [];
+  Object.keys(L).forEach(lote => { const R = Object.values(L[lote]).filter(g => g.n > 0), F = R.map(g => g.firma.sort().join('#'));
+    const veces = Math.max(0, ...F.map(x => F.filter(y => y === x).length)); if (veces >= 2) out.push({ lote, veces, n: R[F.findIndex(x => F.filter(y => y === x).length === veces)].n }); });
+  return out;
+}
+async function dupLotesCargar(){
+  DUP_AT = Date.now();
+  try { const desde = new Date(Date.now() - 14 * 864e5).toISOString();
+    const r = await fetch(SB + '/rest/v1/confeccion?tipo=eq.PRODUCCION&actualizado=gte.' + desde + '&select=prenda,diseno,color,talla,row_json&limit=3000', { headers: { apikey: ANON, Authorization: 'Bearer ' + tok() } });
+    if (r.ok) { DUP_LOTES = dupLotesCalc(await r.json()); publicarAlerta(); } } catch (_) {}
+}
 function publicarAlerta(){
-  try { const snap = { at: Date.now(), items: alertaItems(), semana: resumenSemana() };   /* 21-oct · 📊 resumen semanal por taller (el ERP lo muestra los lunes) */
+  try { const snap = { at: Date.now(), items: alertaItems(), semana: resumenSemana() };
+    (DUP_LOTES || []).forEach(d => snap.items.unshift({ id: null, nivel:'rojo', titulo:'el lote ' + d.lote + ' de Stock' + ' entró ' + d.veces + ' veces igual (' + d.n + ' prendas cada vez)', act:'Anular las copias repetidas del lote para que el stock no quede inflado (avisar a sistemas)', q:'Producción y Logística' }));
+    if (Date.now() - DUP_AT >= 10 * 60000) dupLotesCargar();   /* 21-oct · 📊 resumen semanal por taller (el ERP lo muestra los lunes) */
     try { localStorage.setItem('prod_alerta_v1', JSON.stringify(snap)); } catch (_) {}
     if (parent && parent !== window) parent.postMessage({ tipo:'prod-alerta', snap }, '*'); } catch (_) {}
 }
