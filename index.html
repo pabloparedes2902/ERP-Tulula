@@ -35361,7 +35361,8 @@ try { window.addEventListener('load', () => { setTimeout(_feRevisar, 8000); setT
 // NUEVA por enviar («PRENDA ORIGINAL RECIBIDA») · 3) pedidos del cuadre donde no se sabe qué prenda salió (lista 3, cada 2 h).
 // Lo ven: administradores y quien no es asesora y tiene Cambios en Edición. Amarillo = al día · rojo = 7 días o más.
 var _LG = { lista: [], abierto: false };
-function _lgVe(){ return _avisoPara('logistica'); }   /* 26-oct (Pablo) · la barra de logística solo a logística (y admin): ni ventas ni marketing */
+function _lgVe(){ return _avisoPara('logistica') || _avisoPara('ventas'); }   /* 27-nov (Pablo) · ventas solo ve los SEPARADOS de 30+ días (los suyos) */
+function _lgSoloVentas(){ return !_avisoPara('logistica') && _avisoPara('ventas'); }   /* 26-oct (Pablo) · la barra de logística solo a logística (y admin): ni ventas ni marketing */
 function _lgDias(f){ const t = Date.parse(String(f || '').slice(0, 10) + 'T12:00:00-05:00'); return isNaN(t) ? null : Math.max(0, Math.round((Date.now() - t) / 864e5)); }
 async function _lgRevisar() {
   try {
@@ -35390,7 +35391,19 @@ async function _lgRevisar() {
           [String(x.fecha_pedido || '').slice(0, 10), String(x.ultima_modif || '').slice(0, 10)].forEach(f => { if (f && f > o.desde) o.desde = f; }); });
         desp = Object.keys(P).map(k => P[k]).filter(o => !o.falta && o.desde && o.desde <= lim); }
     } catch (_) {}
-    conf = conf.concat(desp);
+    /* 27-nov (Pablo) · SEPARADOS DE 30+ DÍAS: la separación dura hasta 30 días. Pasado eso se avisa a Logística y a Ventas
+       (cada asesora ve los suyos) para confirmar con la clienta o liberar las prendas: un separado viejo frena sus otros pedidos. */
+    let sep = [];
+    try {
+      const lim30 = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+      const q = await fetch(SB_URL + '/rest/v1/pedidos?select=nro_pedido,nombres,prenda,fecha_pedido,ase:row_json-%3E%3EAsesora&estado=eq.SEPARAR&eliminado=is.null&fecha_pedido=lte.' + lim30 + '&limit=1000', { headers: { apikey: SB_ANON, Authorization: 'Bearer ' + tok } });
+      if (q.ok) { const S = {}; (await q.json()).forEach(x => { const n = String(x.nro_pedido || '').trim(); if (!n || /^R-/i.test(n)) return;
+          const o = S[n] = S[n] || { tipo: 'SEPARADO', pedido: n, nombre: x.nombres || '', prendas: [], desde: String(x.fecha_pedido || '').slice(0, 10), ase: String(x.ase || '').trim().toUpperCase() };
+          if (x.prenda && o.prendas.indexOf(x.prenda) < 0) o.prendas.push(x.prenda); });
+        sep = Object.keys(S).map(k => S[k]); }
+    } catch (_) {}
+    if (_lgSoloVentas()) { const yo = _miAsesoraERP(); _LG.lista = sep.filter(x => !yo || x.ase === yo).map(x => { x.dias = _lgDias(x.desde); x.nivel = 'rojo'; return x; }).sort((a, b) => (b.dias || 0) - (a.dias || 0)); _lgPintar(); return; }
+    conf = conf.concat(desp, sep);
     _LG.lista = Object.keys(C).map(k => C[k]).concat(conf.map(x => Object.assign({ desde: x.fecha }, x)))
       .map(x => { x.dias = _lgDias(x.desde); x.nivel = x.dias != null && x.dias >= 7 ? 'rojo' : 'amarillo'; return x; })
       .sort((a, b) => (b.dias || 0) - (a.dias || 0));
@@ -35408,11 +35421,12 @@ function _lgPintar() {
   const alto = el => (el && el.style.display !== 'none' && el.getAttribute('data-avx-cerrado') !== '1') ? el.offsetHeight : 0;
   b.style.cssText = 'position:fixed;left:0;right:0;top:' + (alto(camp) + alto(fe)) + 'px;z-index:99997;font-family:system-ui,sans-serif;font-size:14px;padding:8px 16px;line-height:1.5;box-shadow:0 2px 8px rgba(0,0,0,.25);' +
     (rojo ? 'background:#9a3412;color:#fff' : 'background:#e0f2fe;color:#0c2a3b');
-  const n = t => L.filter(x => x.tipo === t).length, nr = n('RECIBIR'), ne = n('ENVIAR'), nc = n('CONFIRMAR'), ns = n('SALIO'), nd = n('DESPACHAR');   // 21-oct · + lista 1: ¿salió esta prenda?
-  const partes = [nd ? nd + ' pedido' + (nd > 1 ? 's' : '') + ' con todas sus prendas y sin despachar hace 3+ días' : '', nr ? nr + ' cambio' + (nr > 1 ? 's' : '') + ' por RECIBIR la prenda original' : '', ne ? ne + ' cambio' + (ne > 1 ? 's' : '') + ' por ENVIAR la prenda nueva' : '', nc ? nc + ' pedido' + (nc > 1 ? 's' : '') + ' por CONFIRMAR qué prenda salió' : '', ns ? ns + ' prenda' + (ns > 1 ? 's' : '') + ' del ERP que no están en el Drive' : ''].filter(Boolean);
-  let h = '📦 <b>Logística: ' + partes.join(' · ') + '</b> &nbsp;<button id="lg-ver" style="margin-left:6px;border:0;border-radius:8px;padding:2px 10px;font-weight:600;cursor:pointer">' + (_LG.abierto ? 'Ocultar' : 'Ver') + '</button>';
+  const nsep = L.filter(x => x.tipo === 'SEPARADO').length; const n = t => L.filter(x => x.tipo === t).length, nr = n('RECIBIR'), ne = n('ENVIAR'), nc = n('CONFIRMAR'), ns = n('SALIO'), nd = n('DESPACHAR');   // 21-oct · + lista 1: ¿salió esta prenda?
+  const partes = [nsep ? nsep + ' pedido' + (nsep > 1 ? 's' : '') + ' SEPARADO' + (nsep > 1 ? 'S' : '') + ' hace 30+ días' : '', nd ? nd + ' pedido' + (nd > 1 ? 's' : '') + ' con todas sus prendas y sin despachar hace 3+ días' : '', nr ? nr + ' cambio' + (nr > 1 ? 's' : '') + ' por RECIBIR la prenda original' : '', ne ? ne + ' cambio' + (ne > 1 ? 's' : '') + ' por ENVIAR la prenda nueva' : '', nc ? nc + ' pedido' + (nc > 1 ? 's' : '') + ' por CONFIRMAR qué prenda salió' : '', ns ? ns + ' prenda' + (ns > 1 ? 's' : '') + ' del ERP que no están en el Drive' : ''].filter(Boolean);
+  let h = (_lgSoloVentas() ? '🛍 <b>Ventas: ' : '📦 <b>Logística: ') + partes.filter(Boolean).join(' · ') + '</b> &nbsp;<button id="lg-ver" style="margin-left:6px;border:0;border-radius:8px;padding:2px 10px;font-weight:600;cursor:pointer">' + (_LG.abierto ? 'Ocultar' : 'Ver') + '</button>';
   if (_LG.abierto) {
-    const que = x => x.tipo === 'DESPACHAR' ? 'Tiene todas sus prendas: despacharlo y marcar <b>EN CAMINO</b> (o ENTREGADO) en Pedidos'
+    const que = x => x.tipo === 'SEPARADO' ? 'Separado hace ' + (x.dias == null ? '30+' : x.dias) + ' días (el plazo es 30): confirmar con la clienta si lo recoge o lo envía, o pasarlo a <b>ENVIAR</b> / liberar las prendas' + (x.ase ? ' · asesora ' + _feEsc(x.ase) : '')
+      : x.tipo === 'DESPACHAR' ? 'Tiene todas sus prendas: despacharlo y marcar <b>EN CAMINO</b> (o ENTREGADO) en Pedidos'
       : x.tipo === 'RECIBIR' ? 'Recibir la original y marcar <b>PRENDA ORIGINAL RECIBIDA</b> en Cambios'
       : x.tipo === 'ENVIAR' ? 'Enviar la nueva y marcar <b>PRENDA NUEVA ENVIADA</b> en Cambios'
       : x.tipo === 'SALIO' ? 'ERP: <b>' + _feEsc(x.erp) + '</b> · ' + _feEsc(x.que) + (x.fila ? ' (fila ' + _feEsc(x.fila) + ' del Drive)' : '')
