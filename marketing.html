@@ -1004,6 +1004,7 @@ html .card,html .pl-card,html .pl-box,html .pl-ses,html .inv-k,html .inv-b{borde
   <div id="mkAnuncios">
 
   <div class="mkkpis" id="mkKpis"></div>
+  <div id="mkConcil" style="display:none;font-size:12px;color:var(--txt2);margin:6px 2px 0;line-height:1.5"></div>
   <div id="mkAviso" class="mkaviso" style="display:none"></div>
   <div id="mkDesinc" class="mkaviso alto" style="display:none"></div>
 
@@ -1738,6 +1739,7 @@ async function mkCargarVentas(desde, hasta){
   /* 5-oct: el costo del ERP sale a la vez (nunca lanza: devuelve null si falla) */
   const _costoProm = Promise.all([ _mkCostoPeriodo(desde, hasta), _mkCostoPeriodo(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
   const _liveProm = Promise.all([ _mkVentasLive(desde, hasta), _mkVentasLive(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);   /* 20-nov · ventas del live con anuncio */
+  const _concProm = _mkConcilWeb(desde, hasta);   /* 27-nov · Meta vs ERP en la web */
   const _det = (typeof _mkDetalleVentas === 'function') ? _mkDetalleVentas : (() => Promise.resolve(null));   /* 13-oct */
   const _detProm = Promise.all([ _det(desde, hasta), _det(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
   const _apProm = (typeof _mkAnuncioProducto === 'function') ? _mkAnuncioProducto() : Promise.resolve(null);   /* 14-nov · anuncio no identificado por producto */
@@ -1751,6 +1753,7 @@ async function mkCargarVentas(desde, hasta){
   if (typeof _mkIngresoPrendas === 'function'){ _mkIngresoPrendas(MKV, MKDET); _mkIngresoPrendas(MKVP, MKDETP); }
   [MKC, MKCP] = await _costoProm;
   [MKLV, MKLVP] = await _liveProm;
+  MKCONC = await _concProm;
 }
 
 /* 5-oct-2026 · COSTO DE PRENDAS DESDE EL ERP (pedido de Pablo).
@@ -1766,6 +1769,44 @@ let MKC = null, MKCP = null;   /* { ad_id: {all:{costo,sin}, wa:{...}, web:{...}
    en el TikTok Live. El origen del pedido se queda en LIVE; aquí suman a la fila de SU anuncio con la marca «+N Live».
    Fuente: rpc mk_ventas_live (erp.evidencia_live, se llena cada hora). Si no responde, todo sigue igual. */
 let MKLV = null, MKLVP = null;   /* { ad_id: {pedidos, ingreso} } */
+/* 27-nov-2026 (Pablo) · LÍNEA META vs ERP en Página web: «Meta = 6 · ERP = 1 · Diferencia = 5» y el porqué de cada
+   venta de diferencia, para que no quede a la interpretación. Fuente: rpc mk_conciliacion_web (órdenes de Shopify del
+   periodo: si entraron por clic de anuncio y si el ERP las unió a su anuncio). Si no responde, la línea no sale. */
+let MKCONC = null;
+async function _mkConcilWeb(desde, hasta){
+  try {
+    const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+    if (!tok) return null;
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_conciliacion_web', { method: 'POST',
+      headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_desde: desde, p_hasta: hasta }) });
+    if (!r.ok) return null;
+    const o = await r.json(); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : null;
+  } catch (e) { return null; }
+}
+/* texto de la línea: cada venta de diferencia queda en un solo motivo; lo que es error del ERP va en rojo */
+function _mkConcilTexto(meta, c){
+  if (!c) return '';
+  meta = Math.round(+meta || 0);
+  const erp = +c.erp_con_anuncio || 0, nod = Array.isArray(c.no_detectadas) ? c.no_detectadas : [], pen = +c.pendientes || 0;
+  const dif = meta - erp;
+  const ind = +c.indirectas || 0;
+  let h = '<b style="color:var(--txt)">Meta = ' + meta + ' · ERP = ' + erp + (ind ? ' (' + (erp - ind) + ' directa' + (erp - ind === 1 ? '' : 's') + ' + ' + ind + ' indirecta' + (ind === 1 ? '' : 's') + ')' : '') + ' · Diferencia = ' + dif + '</b>';
+  if (dif === 0 && !nod.length) return h + ' → <b style="color:var(--ok)">cuadra</b>';
+  const p = [];
+  if (nod.length) p.push('<b style="color:var(--bad)">' + nod.length + ' el ERP no detectó (' + nod.join(', ') + ')</b>');
+  if (pen) p.push(pen + ' con pago pendiente en Shopify');
+  const resto = dif - nod.length - pen;
+  if (resto > 0) p.push(resto + ' sin clic de anuncio en la tienda: Meta las cuenta porque la clienta vio el anuncio o entró antes por uno (no es error del ERP)');
+  if (resto < 0) p.push(Math.abs(resto) + ' que el ERP tiene y Meta no le atribuye al anuncio (no es error del ERP)');
+  return h + ' → ' + p.join(' · ');
+}
+function _mkConcilPintar(){
+  const z = document.getElementById('mkConcil'); if (!z) return;
+  if (MKCANAL !== 'web' || !MKCONC){ z.style.display = 'none'; return; }
+  const meta = _mkFilasCanal().reduce((n, r) => n + (Number((r.act || {}).conv_meta) || 0), 0);
+  z.innerHTML = _mkConcilTexto(meta, MKCONC); z.style.display = '';
+}
 async function _mkVentasLive(desde, hasta){
   try {
     const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
@@ -4107,6 +4148,7 @@ function mkPintar(){
     kpiEmbudo,
     kpi('CVR',        mkPct(A.tasa_cierre), A.tasa_cierre, P.tasa_cierre, 'tasa_cierre')
   ].join('');
+  try { _mkConcilPintar(); } catch (e) {}   /* 27-nov · Meta vs ERP en la web */
 
   /* 6-sep-2026 — La cobertura salió de los KPI. No es un número para mirar todos
      los días: es una ALARMA de que la atribución dejó de cuadrar. Compara las
