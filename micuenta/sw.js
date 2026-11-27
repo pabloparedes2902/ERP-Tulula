@@ -1,5 +1,5 @@
 // Mi Cuenta Tulula · trabajador mínimo: guarda la pantalla para abrir rápido; los datos siempre van a la base.
-const V = 'micuenta-20261126i';
+const V = 'micuenta-20261126j';
 self.addEventListener('install', e => { e.waitUntil(caches.open(V).then(c => c.addAll(['./', './index.html', './manifest.json']))); self.skipWaiting(); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k))))); self.clients.claim(); });
 self.addEventListener('fetch', e => {
