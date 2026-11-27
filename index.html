@@ -11412,6 +11412,7 @@ async function loadResenas() {
   const w = document.getElementById('res-w'); if (!w) return;
   w.innerHTML = '<div class="ld"><div class="sp"></div>Cargando reseñas...</div>';
   if (RES.ver === 'cupones') return _resCuponesCargar(w);   // 19-nov · pestaña Cupones
+  if (RES.ver === 'encuesta') return _resEncuestaCargar(w);   // 27-nov · ENCUESTA_27NOV
   try { const [d, ce] = await Promise.all([_resRpc('resenas_admin_lista', { p_ver: RES.ver }), _resRpc('resenas_cupones_estado', {}).catch(() => ({}))]); RES.cest = ce || {}; /* 19-nov: uso, anulación y recordatorio del cupón */ RES.rows = d.rows || []; RES.niv = Number(d.nivel) || 0; RES.cuentas = d.cuentas || {}; _resBadge(d.pendientes || 0); _resPintar(d.pendientes || 0); }
   catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudieron leer las reseñas: ' + esc(e.message) + (/Sin permiso/.test(e.message) ? ' · Pide acceso a «↳Prod. Shopify» en Configuración › Usuarios.' : '') + '</div>'; }
 }
@@ -11598,7 +11599,7 @@ function _resPrevia(r, i) {
 }
 function _resVence(s) { try { return new Date(s + 'T12:00:00').toLocaleDateString('es-PE', { day: 'numeric', month: 'long' }); } catch (_) { return ''; } }
 // 19-nov-2026 (Pablo) · RESEÑAS › 🎁 CUPONES: todo el programa en una tabla — quién tiene cupón, si se le envió, si lo usó, en qué pedido y cuándo vence.
-const RES_TABS = [['por_aprobar', 'Por aprobar'], ['pendientes', 'Fotos por revisar'], ['aprobadas', 'Aprobadas'], ['todas', 'Todas'], ['cupones', '🎁 Cupones']];
+const RES_TABS = [['por_aprobar', 'Por aprobar'], ['pendientes', 'Fotos por revisar'], ['aprobadas', 'Aprobadas'], ['todas', 'Todas'], ['cupones', '🎁 Cupones'], ['encuesta', '⭐ Encuesta']];
 function _resCupEstado(x) {
   const hoy = new Date().toISOString().slice(0, 10);
   if (x.usado_at) return ['Usado', 'ok', 5];
@@ -11633,6 +11634,26 @@ async function _resCuponesCargar(w) {
         }).join('') + '</tbody></table></div>'
       : '<div style="padding:30px;text-align:center;color:var(--mu)">Todavía no hay cupones de foto.</div>')
     + '<p class="ui-nota" style="margin-top:8px">Para enviar o recordar un cupón: pestaña Aprobadas, botón de cada reseña.</p></div>';
+  w.querySelectorAll('.res-ver').forEach(b => b.addEventListener('click', () => { RES.ver = b.dataset.v; RES.sel = {}; loadResenas(); }));
+}
+// 27-nov-2026 (Pablo) · RESEÑAS › ⭐ ENCUESTA_27NOV: la nota de 1 a 5 que la clienta da desde su app (correo 3-10 días tras recibir).
+// Solo el equipo ve esta lista; la clienta solo ve su propia respuesta. Con 3 o menos, además, sale una alerta en el ERP.
+async function _resEncuestaCargar(w) {
+  let L = [];
+  try { L = (await _cliRpcErp('calificaciones_lista', {})) || []; }
+  catch (e) { w.innerHTML = '<div style="padding:20px;color:var(--rd)">No se pudo leer la encuesta: ' + esc(e.message) + '</div>'; return; }
+  const f = s => { try { return s ? new Date(s).toLocaleDateString('es-PE', { timeZone: 'America/Lima', day: 'numeric', month: 'short' }) : '—'; } catch (_) { return '—'; } };
+  const kpi = (lab, v, nota) => '<div><div class="ui-lab">' + lab + '</div><div class="ui-kpi">' + v + '</div>' + (nota ? '<div class="ui-nota">' + nota + '</div>' : '') + '</div>';
+  const n = L.length, prom = n ? (L.reduce((a, x) => a + Number(x.n || 0), 0) / n) : 0, c5 = L.filter(x => x.n == 5).length, bajas = L.filter(x => x.n <= 3).length;
+  const pct = k => n ? Math.round(k * 100 / n) + '%' : '';
+  w.innerHTML = '<div style="padding:16px;max-width:1100px">'
+    + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px"><h2 class="ui-pag">Reseñas</h2>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + RES_TABS.map(t => '<button type="button" class="btn ' + (RES.ver === t[0] ? 'bp' : 'bg') + ' bs res-ver" data-v="' + t[0] + '">' + t[1] + '</button>').join('') + '</div></div>'
+    + '<div class="ui-kpis" style="margin-bottom:14px">' + kpi('Respuestas', n) + kpi('Nota promedio', n ? prom.toFixed(1) + ' ★' : '—') + kpi('5 estrellas', c5, pct(c5)) + kpi('3 o menos', bajas, pct(bajas)) + '</div>'
+    + (n ? '<div class="tt-w" style="max-height:calc(100vh - 280px);overflow:auto"><table class="tt" style="width:100%"><thead><tr><th>Clienta</th><th>Pedido</th><th>Nota</th><th>Motivos</th><th>Comentario</th><th>Fecha</th></tr></thead><tbody>'
+      + L.map(x => '<tr><td>' + esc(x.nombre || '') + '</td><td>' + esc(x.nro || '') + '</td><td><span class="ui-chip ' + (x.n <= 3 ? 'rd' : x.n == 4 ? 'am' : 'ok') + '">' + x.n + ' ★</span></td><td>' + esc((x.motivos || []).join(' · ') || '—') + '</td><td title="' + esc(x.comentario || '') + '">' + esc(String(x.comentario || '—').slice(0, 80)) + '</td><td>' + f(x.ts) + '</td></tr>').join('') + '</tbody></table></div>'
+      : '<div style="padding:30px;text-align:center;color:var(--mu)">Todavía no hay respuestas. La encuesta sale por correo cuando se enciendan los avisos a clientas.</div>')
+    + '</div>';
   w.querySelectorAll('.res-ver').forEach(b => b.addEventListener('click', () => { RES.ver = b.dataset.v; RES.sel = {}; loadResenas(); }));
 }
 function _resPintar(pend) {
@@ -36424,10 +36445,13 @@ async function cliCuentaAbrir(clave, nombre, key) {
     const cam = d.cambios || [];
     iz += '<div style="font-size:13px;font-weight:600;margin:14px 0 4px">Cambios pedidos desde la app (' + cam.length + ')</div>'
       + (cam.length ? cam.map(x => '<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--bd)">#' + esc(x.nro) + ' · ' + esc(x.prenda) + ' · ' + esc(x.motivo) + (x.detalle ? ' · ' + esc(x.detalle) : '') + ' <span style="color:var(--mu)">' + f(x.ts) + '</span></div>').join('') : '<div style="font-size:12px;color:var(--mu)">Ninguno.</div>');
+    iz += '<div id="cli-cta-cal"></div>';   // 27-nov · ENCUESTA_27NOV · sus notas de la encuesta (solo las ve el equipo)
     const url = MC_URL + '?p=' + d.token + '&ver=1';
     iz += '<div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn bg bs" id="cli-cta-hist">📋 Historial</button><a class="btn bg bs" target="_blank" rel="noopener" href="' + esc(url) + '">↗ Abrir en otra pestaña</a></div>';
     b().innerHTML = '<div style="flex:1;overflow:auto;min-width:300px">' + iz + '</div><div style="width:400px;flex:none;border-radius:14px;overflow:hidden;border:1px solid var(--bd)"><iframe title="Mi cuenta de la clienta" src="' + esc(url) + '" style="width:100%;height:100%;border:0"></iframe></div>';
     const bh = document.getElementById('cli-cta-hist'); if (bh) bh.addEventListener('click', () => cliOpenHistorial(key));
+    _cliRpcErp('calificaciones_lista', { p_clave: clave }).then(C => { const e = document.getElementById('cli-cta-cal'); if (!e) return; C = C || [];
+      e.innerHTML = '<div style="font-size:13px;font-weight:600;margin:14px 0 4px">Encuesta de satisfacción (' + C.length + ')</div>' + (C.length ? C.map(x => '<div style="font-size:12px;padding:4px 0;border-bottom:1px solid var(--bd)">#' + esc(x.nro) + ' · <b style="color:' + (x.n <= 3 ? 'var(--rd)' : x.n == 4 ? 'var(--am)' : 'var(--gn)') + '">' + x.n + ' ★</b>' + ((x.motivos || []).length ? ' · ' + esc(x.motivos.join(' · ')) : '') + (x.comentario ? ' · «' + esc(x.comentario) + '»' : '') + ' <span style="color:var(--mu)">' + f(x.ts) + '</span></div>').join('') : '<div style="font-size:12px;color:var(--mu)">Aún no ha calificado ningún pedido.</div>'); }).catch(() => {});
   } catch(e) { if (b()) b().innerHTML = '<div class="empty">No se pudo abrir la cuenta. Vuelve a intentar en un momento.</div>'; try { _errLog('clientes.cuenta', e); } catch(_){} }
 }
 

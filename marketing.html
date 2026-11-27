@@ -1740,6 +1740,7 @@ async function mkCargarVentas(desde, hasta){
   const _costoProm = Promise.all([ _mkCostoPeriodo(desde, hasta), _mkCostoPeriodo(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
   const _liveProm = Promise.all([ _mkVentasLive(desde, hasta), _mkVentasLive(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);   /* 20-nov · ventas del live con anuncio */
   const _concProm = _mkConcilWeb(desde, hasta);   /* 27-nov · Meta vs ERP en la web */
+  const _concWaProm = _mkConcilWeb(desde, hasta, 'mk_conciliacion_wa');   /* 27-nov · Meta vs ERP en WhatsApp */
   const _det = (typeof _mkDetalleVentas === 'function') ? _mkDetalleVentas : (() => Promise.resolve(null));   /* 13-oct */
   const _detProm = Promise.all([ _det(desde, hasta), _det(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
   const _apProm = (typeof _mkAnuncioProducto === 'function') ? _mkAnuncioProducto() : Promise.resolve(null);   /* 14-nov · anuncio no identificado por producto */
@@ -1754,6 +1755,7 @@ async function mkCargarVentas(desde, hasta){
   [MKC, MKCP] = await _costoProm;
   [MKLV, MKLVP] = await _liveProm;
   MKCONC = await _concProm;
+  MKCONCWA = await _concWaProm;
 }
 
 /* 5-oct-2026 · COSTO DE PRENDAS DESDE EL ERP (pedido de Pablo).
@@ -1772,12 +1774,12 @@ let MKLV = null, MKLVP = null;   /* { ad_id: {pedidos, ingreso} } */
 /* 27-nov-2026 (Pablo) · LÍNEA META vs ERP en Página web: «Meta = 6 · ERP = 1 · Diferencia = 5» y el porqué de cada
    venta de diferencia, para que no quede a la interpretación. Fuente: rpc mk_conciliacion_web (órdenes de Shopify del
    periodo: si entraron por clic de anuncio y si el ERP las unió a su anuncio). Si no responde, la línea no sale. */
-let MKCONC = null;
-async function _mkConcilWeb(desde, hasta){
+let MKCONC = null, MKCONCWA = null;
+async function _mkConcilWeb(desde, hasta, rpc){
   try {
     const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
     if (!tok) return null;
-    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_conciliacion_web', { method: 'POST',
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/' + (rpc || 'mk_conciliacion_web'), { method: 'POST',
       headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
       body: JSON.stringify({ p_desde: desde, p_hasta: hasta }) });
     if (!r.ok) return null;
@@ -1801,11 +1803,29 @@ function _mkConcilTexto(meta, c){
   if (resto < 0) p.push(Math.abs(resto) + ' que el ERP tiene y Meta no le atribuye al anuncio (no es error del ERP)');
   return h + ' → ' + p.join(' · ');
 }
+/* WhatsApp: Meta solo se entera de las ventas que el ERP le manda con el código del clic (ctwa), cada día a las 6 am */
+function _mkConcilTextoWa(meta, c){
+  if (!c) return '';
+  meta = Math.round(+meta || 0);
+  const erp = +c.erp || 0, sin = Array.isArray(c.sin_anuncio) ? c.sin_anuncio : [], sc = +c.sin_clic || 0, pe = +c.por_enviar || 0;
+  const dif = meta - erp;
+  let h = '<b style="color:var(--txt)">Meta = ' + meta + ' · ERP = ' + erp + ' · Diferencia = ' + dif + '</b>';
+  if (dif === 0 && !sin.length) return h + ' → <b style="color:var(--ok)">cuadra</b>';
+  const p = [];
+  if (sin.length) p.push('<b style="color:var(--bad)">' + sin.length + ' sin anuncio identificado en el ERP (' + sin.join(', ') + ')</b>');
+  if (sc) p.push(sc + ' con anuncio pero sin código del clic: el ERP no se las puede mandar a Meta');
+  if (pe) p.push(pe + ' se mandan a Meta mañana 6 am');
+  const resto = -dif - sin.length - sc - pe;
+  if (resto > 0) p.push(resto + ' enviadas que Meta cuenta en otra fecha (la del clic)');
+  if (resto < 0) p.push(Math.abs(resto) + ' que Meta cuenta de más (clic de otra fecha o solo vio el anuncio)');
+  return h + ' → ' + p.join(' · ');
+}
 function _mkConcilPintar(){
   const z = document.getElementById('mkConcil'); if (!z) return;
-  if (MKCANAL !== 'web' || !MKCONC){ z.style.display = 'none'; return; }
+  const c = MKCANAL === 'web' ? MKCONC : (MKCANAL === 'wa' ? MKCONCWA : null);
+  if (!c){ z.style.display = 'none'; return; }
   const meta = _mkFilasCanal().reduce((n, r) => n + (Number((r.act || {}).conv_meta) || 0), 0);
-  z.innerHTML = _mkConcilTexto(meta, MKCONC); z.style.display = '';
+  z.innerHTML = (MKCANAL === 'web' ? _mkConcilTexto : _mkConcilTextoWa)(meta, c); z.style.display = '';
 }
 async function _mkVentasLive(desde, hasta){
   try {
