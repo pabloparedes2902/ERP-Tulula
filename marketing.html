@@ -1741,6 +1741,8 @@ async function mkCargarVentas(desde, hasta){
   const _costoProm = Promise.all([ _mkCostoPeriodo(desde, hasta), _mkCostoPeriodo(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
   const _liveProm = Promise.all([ _mkVentasLive(desde, hasta), _mkVentasLive(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);   /* 20-nov · ventas del live con anuncio */
   const _concProm = _mkConcilWeb(desde, hasta);   /* 27-nov · Meta vs ERP en la web */
+  const _mcProm = Promise.all([ _mkMetaClic(desde, hasta), _mkMetaClic(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);   /* 28-nov · compras de Meta por clic y solo vista, por anuncio */
+  const _capiProm = _mkConcilWeb(desde, hasta, 'mk_capi_resumen');   /* 28-nov · qué ventas recibió Meta, por canal */
   const _concWaProm = _mkConcilWeb(desde, hasta, 'mk_conciliacion_wa');   /* 27-nov · Meta vs ERP en WhatsApp */
   const _det = (typeof _mkDetalleVentas === 'function') ? _mkDetalleVentas : (() => Promise.resolve(null));   /* 13-oct */
   const _detProm = Promise.all([ _det(desde, hasta), _det(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
@@ -1755,6 +1757,8 @@ async function mkCargarVentas(desde, hasta){
   if (typeof _mkIngresoPrendas === 'function'){ _mkIngresoPrendas(MKV, MKDET); _mkIngresoPrendas(MKVP, MKDETP); }
   [MKC, MKCP] = await _costoProm;
   [MKLV, MKLVP] = await _liveProm;
+  [MKMC, MKMCP] = await _mcProm;
+  MKCAPI = await _capiProm;
   MKCONC = await _concProm;
   MKCONCWA = await _concWaProm;
 }
@@ -1827,7 +1831,22 @@ function _mkConcilPintar(){
   if (!c){ z.style.display = 'none'; return; }
   /* 27-nov · Meta = COMPRAS de Meta (las da la base); conv_meta del cuadro es conversaciones en WhatsApp */
   const meta = (c.meta != null) ? +c.meta : _mkFilasCanal().reduce((n, r) => n + (Number((r.act || {}).conv_meta) || 0), 0);
-  z.innerHTML = (MKCANAL === 'web' ? _mkConcilTexto : _mkConcilTextoWa)(meta, c); z.style.display = '';
+  z.innerHTML = (MKCANAL === 'web' ? _mkConcilTexto : _mkConcilTextoWa)(meta, c) + _mkMetaClicTexto() + _mkCapiTexto(MKCAPI); z.style.display = '';
+}
+/* 28-nov · «de las de Meta: X por clic · Y solo vio» (web) */
+function _mkMetaClicTexto(){
+  if (MKCANAL !== 'web' || !MKMC) return '';
+  let cl = 0, vi = 0; _mkFilasCanal().forEach(r => { const m = MKMC[String(r.ad_id || '')]; if (m){ cl += +m.clic || 0; vi += +m.vista || 0; } });
+  return (cl || vi) ? ' · de las de Meta: <b>' + Math.round(cl) + ' por clic</b> (cuentan) y ' + Math.round(vi) + ' solo vio (no cuentan)' : '';
+}
+/* 28-nov (Pablo: «mandarle todo para que aprenda») · qué ventas del periodo recibió Meta, por canal */
+function _mkCapiTexto(k){
+  if (!k || typeof k !== 'object') return '';
+  const N = { WHATSAPP:'WhatsApp', SHOWROOM:'Showroom', TIKTOK:'TikTok Live', CONTACTO:'Contacto', MARKETPLACE:'Marketplace' };
+  const w = k['PAGINA WEB'], p = [];
+  if (w) p.push('web ' + (+w.ventas || 0) + ' (las manda Shopify)');
+  Object.keys(N).forEach(c => { const x = k[c]; if (x && +x.ventas) p.push(N[c] + ' ' + (+x.env || 0) + ' de ' + (+x.ventas)); });
+  return p.length ? '<br>Meta recibió para aprender: ' + p.join(' · ') + '. Las de hoy salen mañana 6 am.' : '';
 }
 async function _mkVentasLive(desde, hasta){
   try {
@@ -1841,6 +1860,33 @@ async function _mkVentasLive(desde, hasta){
     const o = {}; a.forEach(x => { o[String(x.ad_id)] = { pedidos: +x.pedidos || 0, ingreso: +x.ingreso || 0 }; });
     return o;
   } catch (e) { return null; }
+}
+/* 28-nov-2026 (Pablo) · VENTAS DEL ANUNCIO EN LA WEB = el mayor entre el ERP y Meta POR CLIC (7 días).
+   Meta no dice qué órdenes contó, solo cuántas: el mayor es lo más alto que se puede afirmar sin inventar.
+   Las de «solo vio el anuncio» (1 día) se muestran en gris y NO deciden. Las que Meta suma de más entran con el
+   ticket del ERP de ese anuncio (o el de referencia) y su costo de prendas con el margen del anuncio.
+   Fuente: rpc mk_meta_por_anuncio (bot.gasto_anuncios: compras_meta_clic / compras_meta_vista). */
+let MKMC = null, MKMCP = null, MKCAPI = null;   /* { ad_id: {clic, vista} } */
+async function _mkMetaClic(desde, hasta){
+  try {
+    const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;
+    if (!tok) return null;
+    const r = await fetch(MK_SB_URL + '/rest/v1/rpc/mk_meta_por_anuncio', { method: 'POST',
+      headers: { apikey: MK_SB_ANON, Authorization: 'Bearer ' + tok, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ p_desde: desde, p_hasta: hasta }) });
+    if (!r.ok) return null;
+    const a = await r.json(); if (!Array.isArray(a)) return null;
+    const o = {}; a.forEach(x => { o[String(x.ad_id)] = { clic: +x.clic || 0, vista: +x.vista || 0 }; });
+    return o;
+  } catch (e) { return null; }
+}
+function _mkMetaGana(a, m, erpPed, erpIng, tkRef){
+  if (!a || !m) return null;
+  const clic = Math.round(+m.clic || 0), vista = Math.round(+m.vista || 0);
+  const extra = Math.max(0, clic - (+erpPed || 0));
+  const tk = (+erpPed > 0) ? (+erpIng || 0) / (+erpPed) : (+tkRef || 0);
+  if (extra > 0){ a.pedidos = (+a.pedidos || 0) + extra; a.pagados = (+a.pagados || 0) + extra; a.ingreso = (+a.ingreso || 0) + extra * tk; }
+  return { clic, vista, extra, ing: extra * tk };
 }
 async function _mkCostoPeriodo(desde, hasta){
   try {
@@ -1896,6 +1942,7 @@ function mkAplicarVentas(){
   MK.filas.forEach(r => {
     const id = String(r.ad_id || '');
     const a = Object.assign({}, _mkVentaCanal(MKV.porAd[id])), p = Object.assign({}, _mkVentaCanal(MKVP && MKVP.porAd[id]));
+    const _a0 = { p: +a.pedidos || 0, i: +a.ingreso || 0 }, _p0 = { p: +p.pedidos || 0, i: +p.ingreso || 0 };   /* 28-nov · lo del ERP en su canal, antes de cruces y live */
     r._cruce = { act: 0, prev: 0 };
     if (MKCANAL === mkCanalDe(r)){   /* 11-nov · venta cruzada: suma la del otro canal a SU anuncio */
       const xa = _mkVentaOtroCanal(MKV.porAd[id]), xp = _mkVentaOtroCanal(MKVP && MKVP.porAd[id]);
@@ -1906,12 +1953,23 @@ function mkAplicarVentas(){
     { const _lv = (typeof MKLV !== 'undefined') ? MKLV : null, _lvp = (typeof MKLVP !== 'undefined') ? MKLVP : null; const la = _lv && _lv[id], lp = _lvp && _lvp[id];
       if (la){ a.pedidos = (+a.pedidos||0) + la.pedidos; a.pagados = (+a.pagados||0) + la.pedidos; a.ingreso = (+a.ingreso||0) + la.ingreso; r._live = { act: la.pedidos, prev: lp ? lp.pedidos : 0, ing: la.ingreso }; }
       if (lp){ p.pedidos = (+p.pedidos||0) + lp.pedidos; p.pagados = (+p.pagados||0) + lp.pedidos; p.ingreso = (+p.ingreso||0) + lp.ingreso; } }
+    r._meta = null; r._metaP = null;   /* 28-nov · web: el mayor entre ERP y Meta por clic */
+    if (mkCanalDe(r) === 'web' && MKCANAL !== 'wa' && typeof _mkMetaGana === 'function'){
+      const _n = x => (+x || 0), _mc = (typeof MKMC !== 'undefined') ? MKMC : null, _mcp = (typeof MKMCP !== 'undefined') ? MKMCP : null;
+      const _tk = (r.act && _n(r.act.ticket)) || (MK && MK.total && MK.total.act && _n(MK.total.act.ticket)) || 150;
+      r._meta  = _mkMetaGana(a, _mc && _mc[id], _a0.p, _a0.i, _tk);
+      r._metaP = _mkMetaGana(p, _mcp && _mcp[id], _p0.p, _p0.i, _tk);
+    }
     if (r.act){  r.act.pedidos  = a.pedidos; r.act.pagados  = a.pagados; r.act.ingreso  = a.ingreso; }
     if (r.prev){ r.prev.pedidos = p.pedidos; r.prev.pagados = p.pagados; r.prev.ingreso = p.ingreso; }
     /* 5-oct-2026 · costo de prendas del ERP (ver _mkCostoPeriodo) */
     const ca = _mkCostoERP(MKC, id), cp = _mkCostoERP(MKCP, id);
     if (r.act  && ca !== null) r.act.costo  = ca;
     if (r.prev && cp !== null) r.prev.costo = cp;
+    /* 28-nov · costo de prendas de las ventas que Meta suma de más: ingreso × (1 − margen del anuncio) */
+    const _mg = (x, o) => { const ing = (+o.ingreso || 0) - x.ing, cos = +o.costo || 0; return (ing > 0 && cos > 0) ? Math.max(0.01, Math.min(0.99, (ing - cos) / ing)) : Math.max(1, Math.min(95, Number((document.getElementById('mkMargen') || {}).value) || 60)) / 100; };
+    if (r.act  && r._meta  && r._meta.extra  > 0) r.act.costo  = (+r.act.costo || 0)  + r._meta.ing  * (1 - _mg(r._meta, r.act));
+    if (r.prev && r._metaP && r._metaP.extra > 0) r.prev.costo = (+r.prev.costo || 0) + r._metaP.ing * (1 - _mg(r._metaP, r.prev));
   });
 }
 
@@ -3146,7 +3204,7 @@ function _mkSnapGuardar(k){
     .sort((a, b) => b.t - a.t).slice(1).forEach(o => localStorage.removeItem(o.x)); } catch (_) {}
   try {   /* 22-nov · la foto (~1,3 MB) va a IndexedDB: en el almacén compartido del ERP no entraba (lo llenaba solo) */
     const o = JSON.parse(JSON.stringify({ v: MK_SNAP_V, ts: Date.now(),
-      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP, MKLV: MKLV, MKLVP: MKLVP, MKDET: MKDET, MK_AP: MK_AP, MK_APN: MK_APN }));
+      MK: MK, MKV: MKV, MKVP: MKVP, MKE: MKE, MKEP: MKEP, MKTXT: MKTXT, MKEW: MKEW, MKEWP: MKEWP, MKH: MKH, MKD: MKD, MKC: MKC, MKCP: MKCP, MKLV: MKLV, MKLVP: MKLVP, MKMC: MKMC, MKMCP: MKMCP, MKCAPI: MKCAPI, MKDET: MKDET, MK_AP: MK_AP, MK_APN: MK_APN }));
     MKSNAP_MEM[k] = o; const viejas = Object.keys(MKSNAP_MEM).filter(x => x !== k).sort((a, b) => (MKSNAP_MEM[b].ts || 0) - (MKSNAP_MEM[a].ts || 0)).slice(1);
     viejas.forEach(x => { delete MKSNAP_MEM[x]; });
     try { localStorage.removeItem(k); } catch (_) {}
@@ -3161,7 +3219,7 @@ function _mkSnapUsar(k){
   try {
     const o = MKSNAP_MEM[k] || JSON.parse(localStorage.getItem(k) || 'null');
     if (!o || o.v !== MK_SNAP_V || !o.MK || !Array.isArray(o.MK.filas)) return 0;
-    MK = o.MK; MKV = o.MKV; MKVP = o.MKVP; MKC = o.MKC || null; MKCP = o.MKCP || null; MKLV = o.MKLV || null; MKLVP = o.MKLVP || null; MKE = o.MKE; MKEP = o.MKEP; MKTXT = o.MKTXT || {};
+    MK = o.MK; MKV = o.MKV; MKVP = o.MKVP; MKC = o.MKC || null; MKCP = o.MKCP || null; MKLV = o.MKLV || null; MKLVP = o.MKLVP || null; MKMC = o.MKMC || null; MKMCP = o.MKMCP || null; MKCAPI = o.MKCAPI || null; MKE = o.MKE; MKEP = o.MKEP; MKTXT = o.MKTXT || {};
     MKEW = o.MKEW; MKEWP = o.MKEWP; MKH = o.MKH; MKD = o.MKD; MKDET = o.MKDET || null; if (o.MK_AP) MK_AP = o.MK_AP; if (o.MK_APN) MK_APN = o.MK_APN;
     mkAplicarVentas(); mkAplicarEmbudo(); mkAplicarEmbudoAnuncio();
     mkPintarCols(); mkPintar();
@@ -4323,6 +4381,8 @@ function mkPintar(){
       if (c === 'pedidos' && MKDET){   /* 13-oct · pasar el mouse = detalle de cada venta */
         const _ids = r._grupo ? (r._ads || []) : [String(r.ad_id || '')];
         if (!r._grupo && r._live && r._live.act > 0) cuerpo += ' <span class="mkcruce" title="' + r._live.act + ' venta(s) cerradas en el TikTok Live por clientas que escribieron por este anuncio en los 30 días previos">+' + r._live.act + ' Live</span>';   /* 20-nov */
+        if (!r._grupo && r._meta && r._meta.extra > 0) cuerpo += ' <span class="mkcruce" title="Meta contó ' + r._meta.clic + ' por clic y el ERP ' + (r._meta.clic - r._meta.extra) + ': se toma el mayor">+' + r._meta.extra + ' Meta</span>';   /* 28-nov */
+        if (!r._grupo && r._meta && r._meta.vista > 0) cuerpo += ' <span class="mkcruce" style="opacity:.5" title="Meta suma además ' + r._meta.vista + ' que solo vieron el anuncio, sin tocarlo. No cuentan para decidir">vio ' + r._meta.vista + '</span>';   /* 28-nov */
         if (!r._grupo && r._cruce && r._cruce.act > 0) cuerpo += ' <span class="mkcruce" title="' + r._cruce.act + ' venta(s) de este anuncio cerradas por ' + (MKCANAL === 'web' ? 'WhatsApp' : 'Pagina web') + '">+' + r._cruce.act + ' ' + (MKCANAL === 'web' ? 'WA' : 'web') + '</span>';   /* 11-nov · venta cruzada */
         return '<td' + _mkVenAttr('ads', _ids, (r._grupo ? (r._nivelGrupo === 'campana' ? r.campana : r.conjunto) : r.anuncio) || 'Ventas', { pedidos: mkN(r.act.pedidos) || 0, ingreso: mkN(r.act.ingreso) || 0 }).replace('class="mkvcel"', 'class="mkvcel ' + (mkFam(c) || '').trim() + '"') + '>' + cuerpo + '</td>';
       }
