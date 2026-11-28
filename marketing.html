@@ -1742,7 +1742,8 @@ async function mkCargarVentas(desde, hasta){
   const _liveProm = Promise.all([ _mkVentasLive(desde, hasta), _mkVentasLive(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);   /* 20-nov · ventas del live con anuncio */
   const _concProm = _mkConcilWeb(desde, hasta);   /* 27-nov · Meta vs ERP en la web */
   const _mcProm = Promise.all([ _mkMetaClic(desde, hasta), _mkMetaClic(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);   /* 28-nov · compras de Meta por clic y solo vista, por anuncio */
-  const _capiProm = _mkConcilWeb(desde, hasta, 'mk_capi_resumen');   /* 28-nov · qué ventas recibió Meta, por canal */
+  const _capiProm = _mkConcilWeb(desde, hasta, 'mk_capi_resumen');
+  const _conProm = _mkConcilWeb(desde, hasta, 'mk_conocio_resumen');   /* 28-nov · ¿dónde nos conocieron? (encuesta) */   /* 28-nov · qué ventas recibió Meta, por canal */
   const _concWaProm = _mkConcilWeb(desde, hasta, 'mk_conciliacion_wa');   /* 27-nov · Meta vs ERP en WhatsApp */
   const _det = (typeof _mkDetalleVentas === 'function') ? _mkDetalleVentas : (() => Promise.resolve(null));   /* 13-oct */
   const _detProm = Promise.all([ _det(desde, hasta), _det(_mkDiaMenos(desde, dias), _mkDiaMenos(desde, 1)) ]);
@@ -1759,6 +1760,7 @@ async function mkCargarVentas(desde, hasta){
   [MKLV, MKLVP] = await _liveProm;
   [MKMC, MKMCP] = await _mcProm;
   MKCAPI = await _capiProm;
+  MKCONOCIO = await _conProm;
   MKCONC = await _concProm;
   MKCONCWA = await _concWaProm;
 }
@@ -1831,7 +1833,16 @@ function _mkConcilPintar(){
   if (!c){ z.style.display = 'none'; return; }
   /* 27-nov · Meta = COMPRAS de Meta (las da la base); conv_meta del cuadro es conversaciones en WhatsApp */
   const meta = (c.meta != null) ? +c.meta : _mkFilasCanal().reduce((n, r) => n + (Number((r.act || {}).conv_meta) || 0), 0);
-  z.innerHTML = (MKCANAL === 'web' ? _mkConcilTexto : _mkConcilTextoWa)(meta, c) + _mkMetaClicTexto() + _mkCapiTexto(MKCAPI); z.style.display = '';
+  z.innerHTML = (MKCANAL === 'web' ? _mkConcilTexto : _mkConcilTextoWa)(meta, c) + _mkMetaClicTexto() + _mkCapiTexto(MKCAPI) + _mkConocioTexto(MKCONOCIO, MKCANAL); z.style.display = '';
+}
+/* 28-nov (Pablo) · encuesta «¿Dónde conociste Tulula?»: reparto de las respuestas del periodo en el canal que se mira.
+   Sirve para saber cuánto vale de verdad cada red (incluye a las que solo VIERON un anuncio), no para decidir cada anuncio. */
+function _mkConocioTexto(k, canal){
+  if (!k || typeof k !== 'object') return '';
+  const C = { web: 'PAGINA WEB', wa: 'WHATSAPP' }[canal], tot = {};
+  Object.keys(k).forEach(cn => { if (C && cn !== C) return; const o = k[cn] || {}; Object.keys(o).forEach(op => { tot[op] = (tot[op] || 0) + (+o[op] || 0); }); });
+  const n = Object.values(tot).reduce((a, b) => a + b, 0); if (!n) return '';
+  return '<br>¿Dónde nos conocieron? (' + n + ' respuesta' + (n === 1 ? '' : 's') + '): ' + Object.keys(tot).sort((a, b) => tot[b] - tot[a]).map(op => op + ' ' + tot[op] + ' (' + Math.round(tot[op] * 100 / n) + '%)').join(' · ');
 }
 /* 28-nov · «de las de Meta: X por clic · Y solo vio» (web) */
 function _mkMetaClicTexto(){
@@ -1866,7 +1877,7 @@ async function _mkVentasLive(desde, hasta){
    Las de «solo vio el anuncio» (1 día) se muestran en gris y NO deciden. Las que Meta suma de más entran con el
    ticket del ERP de ese anuncio (o el de referencia) y su costo de prendas con el margen del anuncio.
    Fuente: rpc mk_meta_por_anuncio (bot.gasto_anuncios: compras_meta_clic / compras_meta_vista). */
-let MKMC = null, MKMCP = null, MKCAPI = null;   /* { ad_id: {clic, vista} } */
+let MKMC = null, MKMCP = null, MKCAPI = null, MKCONOCIO = null;   /* { ad_id: {clic, vista} } */
 async function _mkMetaClic(desde, hasta){
   try {
     const tok = (typeof _mkSbTok === 'function') ? _mkSbTok() : null;

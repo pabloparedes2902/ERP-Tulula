@@ -315,6 +315,7 @@ function velo(html){ const v = document.createElement('div'); v.className = 'vel
 // Lo que responde solo lo ve ella (su propia respuesta) y el equipo en el ERP (Reseñas y ficha de la clienta). Con 3 o menos sale una alerta en el ERP.
 const CAL_MAL = ['La talla o el calce no me quedó', 'La tela o la calidad no fue la esperada', 'Llegó tarde o hubo problemas con el envío', 'La atención no fue buena', 'Otros'];
 const CAL_BIEN = ['La tela y la calidad', 'Cómo me queda', 'La rapidez del envío', 'La atención', 'Otros'];
+const CAL_CONOCIO = ['Instagram', 'Facebook', 'TikTok', 'Google', 'Me la recomendó alguien', 'Ya era clienta', 'Otro'];   // CONOCIO_28NOV (Pablo) · ¿dónde nos conociste? una sola respuesta
 const RESENA = 'https://tulula.com.pe/pages/tu-opinion';
 let _cal = null;
 async function calAbrir(nro, n){
@@ -329,13 +330,15 @@ function calPintar(){
     + '<div class="estr">' + [1, 2, 3, 4, 5].map(i => '<button type="button" aria-label="' + i + ' estrellas" class="' + (i <= n ? 'on' : '') + '" onclick="_cal.n=' + i + ';calPintar()">★</button>').join('') + '</div>'
     + (n ? '<p class="nota">' + (mal ? 'Sentimos que no haya sido lo que esperabas. ¿Qué pasó? Elige una o más:' : '¿Qué es lo que más te gustó? (opcional)') + '</p><div class="mot">'
       + L.map(t => '<label><input type="checkbox" value="' + esc(t) + '" onchange="calOtros()"><span>' + esc(t) + '</span></label>').join('') + '</div>'
+      + '<p class="nota" style="margin-top:12px">¿Dónde conociste Tulula?</p><div class="mot con">'
+      + CAL_CONOCIO.map(t => '<label><input type="radio" name="cal-con" value="' + esc(t) + '"' + (_cal.con === t ? ' checked' : '') + ' onchange="_cal.con=this.value"><span>' + esc(t) + '</span></label>').join('') + '</div>'
       + '<textarea id="cal-c" maxlength="600" rows="3" placeholder="' + (mal ? 'Cuéntanos qué pasó para mejorar' : 'Cuéntanos más si quieres (opcional)') + '"></textarea><div class="err" id="cal-e"></div>'
       + '<button class="btn" id="cal-b" onclick="calEnviar(this)">Enviar mi opinión</button>'
       : '<p class="nota" style="text-align:center">Toca una estrella · 1 = no me gustó · 5 = me encantó</p>');
 }
 function calOtros(){ const o = document.querySelector('#cal .mot input[value="Otros"]'), c = $('#cal-c'); if (c) c.placeholder = o && o.checked ? 'Explícanos qué pasó (obligatorio)' : (_cal.n <= 3 ? 'Cuéntanos qué pasó para mejorar' : 'Cuéntanos más si quieres (opcional)'); }
 async function calEnviar(b){
-  const m = Array.from(document.querySelectorAll('#cal .mot input:checked')).map(x => x.value), c = String($('#cal-c').value || '').trim(), er = $('#cal-e'), n = _cal.n; er.textContent = '';
+  const m = Array.from(document.querySelectorAll('#cal .mot:not(.con) input:checked')).map(x => x.value), c = String($('#cal-c').value || '').trim(), er = $('#cal-e'), n = _cal.n; er.textContent = '';
   if (n <= 3 && !m.length && !c) { er.textContent = 'Elige al menos un motivo o cuéntanos qué pasó.'; return; }
   if (m.includes('Otros') && c.length < 5) { er.textContent = 'Elegiste «Otros»: explícanos en pocas palabras qué pasó.'; $('#cal-c').focus(); return; }
   b.disabled = true;
@@ -343,6 +346,7 @@ async function calEnviar(b){
     if (r === 'falta_motivo') { er.textContent = 'Elige al menos un motivo o cuéntanos qué pasó.'; b.disabled = false; return; }
     if (r === 'falta_detalle') { er.textContent = 'Elegiste «Otros»: explícanos en pocas palabras qué pasó.'; b.disabled = false; return; }
     if (r !== 'ok') { er.textContent = 'No pudimos guardar tu opinión. Intenta otra vez.'; b.disabled = false; return; }
+    if (_cal.con) { try { await rpc('micuenta_conocio', { p_llave: _llave, p_nro: _cal.nro, p_opcion: _cal.con }); } catch (_) {} }   // CONOCIO_28NOV
     history.replaceState(null, '', location.pathname + '?p=' + encodeURIComponent(tok || ''));
     $('#cal').innerHTML = n === 5
       ? '<h2>¡Gracias! Nos alegra que te encante 💛</h2><p class="nota">¿Nos regalas un testimonio de tu prenda? Con una foto ayudas a otras clientas a elegir su talla.</p><a class="btn wa" style="display:block;text-align:center;text-decoration:none" target="_blank" rel="noopener" href="' + RESENA + '?pedido=' + encodeURIComponent(_cal.nro) + '&' + UTM('testimonio') + '">Dejar mi testimonio</a>'
@@ -361,11 +365,11 @@ const _pModos = (m) => '<div class="rad"><label><input type="radio" name="push-m
 async function pushCargar(){
   if (VER || !_llave) return;
   try {
-    _pk = await rpc('micuenta_push_clave', {});
-    const prueba = LS.g('mc_push_prueba') === '1';
-    if (!_pk || !_pk.publica || !(_pk.modo === 'encendido' || (_pk.modo === 'prueba' && prueba))) return;
+    // 28-nov · la base decide si se muestra (encendido para todas, o modo prueba solo para las clientas de prueba): la app instalada en iPhone no guarda lo del navegador
+    _pk = await rpc('micuenta_push_estado', { p_llave: _llave });
+    if (!_pk || !_pk.mostrar) return;
     const c = $('#push-c'), n = $('#push-n'), b = $('#push-b'); c.style.display = 'block';
-    if (_iOS && !_standalone) { n.textContent = 'En iPhone, primero agrega la app a tu pantalla de inicio (botón Compartir › «Agregar a inicio») y ábrela desde ahí.'; return; }
+    if (_iOS && !_standalone) { n.innerHTML = 'En iPhone, primero instala la app: toca <b>Compartir</b> (⬆ abajo en Safari, arriba a la derecha en Chrome), elige <b>Agregar a inicio</b> y ábrela desde el ícono nuevo. Ahí aparece «Activar avisos».'; return; }
     if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { n.textContent = 'Este navegador no permite avisos. Abre la app desde Chrome o instálala.'; return; }
     if (Notification.permission === 'denied') { n.textContent = 'Bloqueaste los avisos de Tulula. Actívalos en los ajustes del navegador (candado junto a la dirección › Notificaciones).'; return; }
     const reg = await navigator.serviceWorker.ready; _psub = await reg.pushManager.getSubscription();
