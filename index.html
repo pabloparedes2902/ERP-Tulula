@@ -51071,6 +51071,8 @@ const AL_EMO = { rojo: '🔴 ', naranja: '🟠 ', amarillo: '' };
 const AL_RE_MKT = /marketing|anuncio|\bads\b|fatiga|carrusel|swipe|campa[ñn]a|embudo/i;
 // Avisos de erp.alertas por su origen (6-oct). Lo que no esté acá conserva su nivel.
 const AL_ORIGEN = {
+  // 28-nov (Pablo) · ENCUESTA_WA_28NOV: clienta que calificó con 3 o menos → una tarjeta por pedido, pide acción, con 📲 a su WhatsApp
+  'Encuesta':              { nivel: 'naranja', q: 'Ventas', s: 'Escríbele hoy: una respuesta rápida suele recuperar a la clienta.' },
   'guardian':              { q: 'Sistemas' },
   'salud':                 { nivel: a => (AL_RE_PARADO.test(String(a.titulo || '') + ' ' + String(a.detalle || '')) ? 'rojo' : 'amarillo'), t: a => 'El bot Tula tiene ' + ((String(a.titulo).match(/\d+/) || ['varios'])[0]) + ' indicadores de calidad en rojo', s: 'No frena la venta. Lo revisa sistemas.', q: 'Sistemas' },
   // 8-oct (pedido de Pablo): los avisos de plata nacen 🟡 y recién al día sin resolverse pasan a 🔴
@@ -51166,14 +51168,14 @@ function _alClasificarTodo(r, buzon) {
     if (a._erp) {   // erp.alertas: una sola línea por origen (la más nueva) y reglas por origen
       const o = String(a.origen || '');
       // 7-oct: los avisos que antes eran correo traen asuntos distintos: uno por asunto
-      const kv = o === 'correo' ? o + ':' + String(a.titulo || '').toLowerCase().replace(/[0-9]+/g, '#') : o;
+      const kv = o === 'correo' ? o + ':' + String(a.titulo || '').toLowerCase().replace(/[0-9]+/g, '#') : o === 'Encuesta' ? o + ':' + a.id : o;   // ENCUESTA_WA_28NOV: una por pedido
       if (_vistoOrigen[kv]) return;
       _vistoOrigen[kv] = 1;
       const rg = AL_ORIGEN[o] || {};
       const nv = (typeof rg.nivel === 'function' ? rg.nivel(a) : rg.nivel) || (a.nivel === 'critica' ? 'rojo' : a.nivel === 'aviso' ? 'amarillo' : 'historial');
       const rp = Number(a.repeticiones || 1);
       const y = { nivel: nv, t: rg.t ? rg.t(a) : String(a.titulo || ''), s: rg.s || '', q: rg.q || 'Sistemas',
-        cant: 0, det: a.detalle ? [String(a.detalle).slice(0, 700)] : [], id: a.id, idAt: a.id, orig: o,
+        cant: 0, det: a.detalle ? [String(a.detalle).slice(0, 700)] : [], id: a.id, idAt: a.id, orig: o, waNro: o === 'Encuesta' ? ((String(a.titulo || '').match(/#(\d+)/) || [])[1] || null) : null,
         cuando: (typeof rg.nivel === 'function' && /_alEscala24/.test(String(rg.nivel)))
           ? 'abierto hace ' + _alHorasTxt(_alEdadErpH(a)) + (_alEdadErpH(a) < 24 ? ' · pasa a 🟠 en ' + _alHorasTxt(24 - _alEdadErpH(a)) : '')
           : _alertaCuando(a.creada_at) + (rp > 1 ? ' · se repitió ' + rp + ' veces' : '') };
@@ -51195,6 +51197,21 @@ function _alClasificarTodo(r, buzon) {
 let _AL_HAY_ROJO = false;
 function _alRojosN(r, buzon) { const g = _alClasificarTodo(r, buzon); _AL_HAY_ROJO = g.rojo.length > 0; return g.rojo.length + g.naranja.length; }
 
+// 28-nov (Pablo) · ENCUESTA_WA_28NOV: 📲 en la alerta de encuesta abre el WhatsApp de la clienta con el mensaje armado (nombre, pedido, lo que respondió)
+async function alEncuestaWa(nro, b) {
+  if (b) b.disabled = true;
+  try {
+    const d = await _cliRpcErp('encuesta_whatsapp', { p_nro: String(nro) });
+    if (!d || !d.celular) { toast('Ese pedido no tiene celular registrado', 'warn'); return; }
+    let cel = String(d.celular).replace(/\D/g, ''); if (cel.length === 9) cel = '51' + cel;
+    const n0 = String(d.nombre || '').trim().split(/\s+/)[0] || '', nom = n0 ? n0.charAt(0) + n0.slice(1).toLowerCase() : '';
+    const mot = (d.motivos || []).filter(m => m !== 'Otros').map(m => m.charAt(0).toLowerCase() + m.slice(1));
+    const txt = 'Hola ' + nom + ' 😊 Te escribe Tulula. Vimos tu opinión sobre tu pedido #' + d.nro + ' y lamentamos que no haya sido lo que esperabas'
+      + (mot.length ? ' (' + mot.join(', ') + ')' : '') + '. Queremos solucionarlo contigo: ¿nos cuentas un poco más?';
+    window.open('https://wa.me/' + cel + '?text=' + encodeURIComponent(txt), '_blank', 'noopener');
+  } catch (e) { toast('No se pudo abrir el WhatsApp: ' + e.message, 'err'); }
+  finally { if (b) b.disabled = false; }
+}
 function _alCard(x) {
   const col = AL_COL[x.nivel] || 'var(--mu)';
   let h = '<div style="background:var(--bg3);border-radius:var(--r);padding:12px;margin-bottom:8px;border-left:3px solid ' + col + '"'
@@ -51207,6 +51224,7 @@ function _alCard(x) {
     + ((x.q || x.cuando) ? '<div style="font-size:11px;color:var(--mu);margin-top:4px">' + (x.q ? 'Lo ve: ' + esc(x.q) : '') + (x.q && x.cuando ? ' · ' : '') + (x.cuando ? esc(x.cuando) : '') + '</div>' : '')
     + '</div><div style="display:flex;gap:6px">'
     + (x.modulo ? '<button class="btn bg bs" onclick="navegarA(\'' + esc(x.modulo) + '\')">Ir a resolverlo →</button>' : '')
+    + (x.waNro ? '<button class="btn bg bs" title="Abrir su WhatsApp con el mensaje listo" onclick="alEncuestaWa(\'' + esc(x.waNro) + '\', this)">📲 WhatsApp</button>' : '')
     + (x.idEsc != null ? '<button class="btn bg bs alerta-atender-escalado" data-id="' + esc(String(x.idEsc)) + '">✓ Atendida</button>' : '')
     + (x.idAt != null ? '<button class="btn bg bs alerta-atender" data-id="' + esc(String(x.idAt)) + '">✓ Atendida</button>' : '')
     + '</div></div>';
