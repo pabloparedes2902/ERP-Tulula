@@ -8,6 +8,7 @@
    3) REINTENTOS CON FRENO: como todo pasa por aquí, ningún reintento de ninguna pantalla puede superar
       el cupo ni golpear la base con la llave abierta (el bucle del 27-nov habría quedado en ~6 pedidos).
    Las escrituras (guardar pagos, pedidos…) NUNCA se bloquean. /auth, /storage y /realtime no se tocan.
+   4) CANDADO 7: si la base falla, se entrega la última copia buena de esa misma lectura (ver COPIA).
    Prueba: tests/regresion_freno_base_27nov.js. REVERSA: localStorage 'freno_base_off' = '1' o quitar el <script>. */
 (function (W) {
   if (!W || !W.fetch || W.__frenoBase) return;
@@ -18,8 +19,25 @@
   var LECT_RPC = /\/rpc\/(viaje_versiones|viaje_pago_oficial|datos_version|mi_sesion|pref_get|salida_esperar|puerta_[a-z_]*|stock_libro_[a-z_]*|pedidos_(pagina|buscar|huella|contadores|pendiente_de|pendientes|duplicados|cambios_desde|colores_snapshot)|clientes_buscar|dashboard_[a-z_]*|comisiones_trimestre|cola_estado|prendas_no_reconocidas|catalogo_listar|pedido_por_request|margen_fuente|mk_escalamiento_stock|df_resumen|mk_propuestas_medir|prod_en_camino|prod_en_camino_detalle|prod_llego_stock|prod_lead_dias|[a-z_]*_(listar|calc|leer|resumen))(\?|$)/;
   var FALLA = { 0: 1, 408: 1, 500: 1, 502: 1, 503: 1, 504: 1, 520: 1, 521: 1, 522: 1, 523: 1, 524: 1, 544: 1 };
   var S = { tokens: CFG.cap, tUlt: reloj(), fallos: [], abiertaHasta: 0, abrirMs: CFG.abrirMs, enVuelo: 0,
-            frenadas: 0, esperas: 0, aperturas: 0, apagado: apagado };
+            frenadas: 0, esperas: 0, aperturas: 0, copias: 0, apagado: apagado };
   var orig = W.fetch.bind(W), COLA = [];
+  /* 4) CANDADO 7 · COPIA DE LO ÚLTIMO BUENO (stale-if-error de los navegadores/CDN): cada lectura que salió bien se guarda
+     en memoria de la pestaña; si la base falla o el freno está abierto, la pantalla recibe esa copia (encabezado
+     X-Freno-Copia) en vez de un error. Tope 1,5 MB por respuesta y 20 MB por pestaña (se descarta lo más viejo). */
+  var COPIA = new Map(), COPIA_TOT = 0, COPIA_MAX_ITEM = 1500000, COPIA_MAX_TOT = 20000000;
+  function claveDe(u, init) { var b = init && init.body; return u + '|' + (typeof b === 'string' ? b : ''); }
+  function guardarCopia(k, r) {
+    try { r.clone().text().then(function (t) {
+      if (t.length > COPIA_MAX_ITEM) return;
+      var v = COPIA.get(k); if (v) { COPIA_TOT -= v.t.length; COPIA.delete(k); }
+      COPIA.set(k, { t: t, ct: r.headers.get('Content-Type') || 'application/json' }); COPIA_TOT += t.length;
+      while (COPIA_TOT > COPIA_MAX_TOT && COPIA.size) { var k0 = COPIA.keys().next().value; COPIA_TOT -= COPIA.get(k0).t.length; COPIA.delete(k0); }
+    }).catch(function () {}); } catch (_) {}
+  }
+  function copiaDe(k) {
+    var v = COPIA.get(k); if (!v) return null; S.copias++;
+    return new Response(v.t, { status: 200, headers: { 'Content-Type': v.ct, 'X-Freno-Copia': '1' } });
+  }
 
   function urlDe(input) { try { return typeof input === 'string' ? input : (input && input.url) || String(input); } catch (_) { return ''; } }
   function esBase(u) { return /\.supabase\.co\/(rest|functions)\/v1\//.test(u); }
@@ -62,9 +80,9 @@
   async function frenoFetch(input, init) {
     var u = urlDe(input);
     if (S.apagado || !esBase(u)) return orig(input, init);
-    var lect = esLectura(u, init, input);
+    var lect = esLectura(u, init, input), k = lect ? claveDe(u, init) : '';
     if (lect) {
-      if (abierta()) return respuestaFreno();
+      if (abierta()) return copiaDe(k) || respuestaFreno();
       rellenar();
       var espero = false;
       while (S.tokens < 1 || S.enVuelo >= CFG.enVuelo) {
@@ -72,17 +90,20 @@
         if (S.tokens < 1) await dormir(Math.ceil((1 - S.tokens) / CFG.porSeg * 1000));
         else await new Promise(function (res) { COLA.push(res); });   // sale apenas otra termina (sin sondeo)
         rellenar();
-        if (abierta()) return respuestaFreno();
+        if (abierta()) return copiaDe(k) || respuestaFreno();
       }
       S.tokens -= 1;
     } else { rellenar(); S.tokens = Math.max(0, S.tokens - 1); }   // la escritura gasta cupo pero no espera
     S.enVuelo++;
     try {
       var r = await orig(input, init);
-      if (lect) { if (FALLA[r.status]) anotarFallo(); else anotarBien(); }
+      if (lect) {
+        if (FALLA[r.status]) { anotarFallo(); var c = copiaDe(k); if (c) return c; }
+        else { anotarBien(); if (r.ok) guardarCopia(k, r); }
+      }
       return r;
     } catch (e) {
-      if (lect && !(e && e.name === 'AbortError')) anotarFallo();
+      if (lect && !(e && e.name === 'AbortError')) { anotarFallo(); var c2 = copiaDe(k); if (c2) return c2; }
       throw e;
     } finally { S.enVuelo--; var sig = COLA.shift(); if (sig) sig(); }
   }
